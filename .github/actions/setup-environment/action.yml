@@ -134,27 +134,19 @@ runs:
       if: ${{ inputs.install-rust-linker == 'true' }}
       shell: bash
       run: |
+        set -euo pipefail
         mapfile -t rust_linker_programs < <(python3.12 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE")
-        if [ "${#rust_linker_programs[@]}" -eq 0 ]; then
-          echo "::error::remote_fast_linker has no configured programs"
+        if [ "${#rust_linker_programs[@]}" -ne 1 ]; then
+          echo "::error::remote_fast_linker must configure exactly one program"
           exit 1
         fi
-        for rust_linker_program in "${rust_linker_programs[@]}"; do
-          if command -v "$rust_linker_program" >/dev/null; then
-            echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
-            exit 0
-          fi
-        done
-        if sudo apt-get update; then
-          for rust_linker_program in "${rust_linker_programs[@]}"; do
-            if sudo apt-get install -y --no-install-recommends "$rust_linker_program"; then
-              echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
-              exit 0
-            fi
-          done
+        rust_linker_program="${rust_linker_programs[0]}"
+        if ! command -v "$rust_linker_program" >/dev/null; then
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "$rust_linker_program"
         fi
-        echo "::warning::failed to install any configured Rust linker; continuing without fast linker"
-        echo "Rust linker: unavailable; continuing without BOLT_RUST_FAST_LINKER" >> "$GITHUB_STEP_SUMMARY"
+        command -v "$rust_linker_program" >/dev/null
+        echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
 
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}

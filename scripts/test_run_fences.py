@@ -38,7 +38,7 @@ def assert_discovers_static_verify_modules_by_name() -> None:
 
         discovered = [path.name for path in runner.discover_fence_paths(scripts)]
 
-    if discovered != ["verify_bolt_v3_alpha.py", "verify_ra_beta.py"]:
+    if discovered != ["verify_bolt_v3_alpha.py", "verify_ra_beta.py", "verify_runtime_capture_yaml.py"]:
         raise AssertionError(discovered)
 
 
@@ -161,6 +161,31 @@ def assert_runner_argv_does_not_leak_to_fences() -> None:
                 status = runner.run_fences(root=root, scripts_dir=scripts, run_tests=False)
         finally:
             sys.argv = original_argv
+
+    if status != 0:
+        raise AssertionError((status, stdout.getvalue(), stderr.getvalue()))
+
+
+def assert_protected_fence_code_resolves_the_subject_root() -> None:
+    runner = load_runner()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        governance_scripts = root / "governance" / "scripts"
+        subject = root / "subject"
+        write(subject / "subject-marker", "subject\n")
+        write(
+            governance_scripts / "verify_bolt_v3_subject_root.py",
+            "from pathlib import Path\n"
+            "REPO_ROOT = Path(__file__).resolve().parents[1]\n"
+            "def main():\n"
+            "    if not (REPO_ROOT / 'subject-marker').is_file():\n"
+            "        raise RuntimeError(f'wrong repository root: {REPO_ROOT}')\n"
+            "    return 0\n",
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = runner.run_fences(root=subject, scripts_dir=governance_scripts, run_tests=False)
 
     if status != 0:
         raise AssertionError((status, stdout.getvalue(), stderr.getvalue()))
@@ -351,6 +376,7 @@ def main() -> int:
     assert_reports_raised_fence_and_continues()
     assert_shared_filesystem_cache_spans_fences()
     assert_runner_argv_does_not_leak_to_fences()
+    assert_protected_fence_code_resolves_the_subject_root()
     assert_system_exit_none_is_success()
     assert_tests_run_without_filesystem_cache()
     assert_fences_only_cli_skips_test_phase()

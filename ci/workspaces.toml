@@ -1,0 +1,27 @@
+schema_version = 1
+
+[repository]
+cheap_checks = ["source_fence_static", "workflow_lint"]
+
+[exempt_manifests]
+paths = []
+
+[workspaces.bolt_v2]
+path = "."
+manifest = "Cargo.toml"
+lockfile = "Cargo.lock"
+policy = "ci/rust-verification.toml"
+members = []
+cheap_checks = ["root_fmt_check", "root_deny"]
+formatter_check = "root_fmt_check"
+formatter_write = "root_fmt_write"
+
+[workspaces.backtesting_vertical_slice]
+path = "crates/backtesting-vertical-slice"
+manifest = "crates/backtesting-vertical-slice/Cargo.toml"
+lockfile = "crates/backtesting-vertical-slice/Cargo.lock"
+policy = "crates/backtesting-vertical-slice/ci/rust-verification.toml"
+members = []
+cheap_checks = ["bvs_fmt_check", "bvs_deny"]
+formatter_check = "bvs_fmt_check"
+formatter_write = "bvs_fmt_write"

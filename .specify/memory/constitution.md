@@ -1,17 +1,16 @@
 <!--
 Sync Impact Report
-Version change: 2.1.0 -> 2.1.1
-Modified principles: IV. Evidence-Driven Verification Gates removes staged CI and queue authority from the approved combined cutover;
-V. Evidence Before Claims keeps exact-head evidence risk-based without granting CI merge authority
+Version change: 2.1.1 -> 2.2.0
+Modified principles: V. Evidence Before Claims records the single fixed final-review evidence transaction
 Additional Constraints: unchanged
-Added sections: v2.1.1 migration note
+Added sections: v2.2.0 migration note
 Removed sections: none
 Templates reviewed: .specify/templates/plan-template.md - no update needed;
 .specify/templates/spec-template.md - no update needed;
 .specify/templates/tasks-template.md - no update needed;
 .specify/templates/constitution-template.md - no update needed;
 .specify/templates/commands - absent in this repo
-Runtime guidance updated: AGENTS.md removes staged CI authority and states the final admission contract
+Runtime guidance updated: AGENTS.md establishes the fixed preflight, publication, and final-review path while preserving single-PR queue mechanics
 Follow-up items: none
 -->
 
@@ -55,7 +54,7 @@ exact SHAs, exact PR/check state, or live run artifacts. Passing tests, static
 checks, reviews, or local mocks are not readiness evidence unless the checked
 behavior covers the stated requirement.
 
-External review is requested only after the branch is clean, pushed, and all local findings are resolved. Applicable exact-head evidence remains required for claims, but advisory CI cannot authorize or veto review or merge. no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
+External review is requested only after the branch is clean, pushed, and all local findings are resolved. The single fixed final-review workflow always executes the same root, Backtester, repository-static, and host workload. It invokes every configured reviewer against one captured head only after the complete workload passes. Its results are evidence for claims, but advisory automation cannot authorize or veto review or merge. no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
 
 ### VI. Minimal Slice Discipline
 
@@ -90,7 +89,7 @@ External data providers are allowed when they avoid rebuilding commodity data in
 2. Contract: update this constitution or feature contracts before runtime code when the boundary changes.
 3. Plan: decompose into independently reviewable slices with a named verification approach.
 4. Implementation: collect current evidence before claiming completion.
-5. Review: no external review request until the local branch is clean, pushed, known findings are resolved, and applicable exact-head evidence supports the changed claims.
+5. Review: no external review request until the local branch is clean, pushed, known findings are resolved, and the fixed final-review workflow can evaluate the exact head.
 6. Merge: no merge without explicit user approval.
 
 ## Governance
@@ -100,6 +99,11 @@ repo governance and agent workflow source. Any PR that violates a MUST rule in
 this artifact requires redesign, not waiver-by-documentation. Amendments require
 an explicit user-approved diff, a migration note for affected specs/plans, and a
 version bump.
+
+Migration note for v2.2.0: repository verification uses one workspace registry,
+one non-compile preflight, exact-SHA publication, and one fixed final-review
+transaction. Single-PR queue preflight remains the team-controlled Mergify
+entrypoint and does not interpret advisory evidence as merge authority.
 
 Migration note for v2.1.1: the combined #1398, #1399, and #1400 cutover removes
 staged CI, Mergify-predicate, and queue-preflight merge authority. No active
@@ -135,4 +139,4 @@ and `specs/023-nt-research-analytics-platform/tasks.md`. Runtime code is not
 changed by this amendment; implementation remains gated by feature-branch
 SpecKit checks and exact-head verification.
 
-**Version**: 2.1.1 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-07-17
+**Version**: 2.2.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-07-19

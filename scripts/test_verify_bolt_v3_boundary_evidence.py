@@ -345,23 +345,16 @@ cheap_lane_labels = ["test_verify_bolt_v3_boundary_evidence.py", "verify_bolt_v3
     )
     write(
         root,
-        ".github/workflows/ci.yml",
+        ".github/workflows/reference-boundary-capture.yml",
         """
 on:
   workflow_dispatch:
     inputs:
-      capture_reference_boundary_fixture: {}
-      credential_ssm_gate: {}
+      credential_confirmation: {}
 jobs:
-  source-fence:
-    steps:
-      - name: source-fence
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: just source-fence
   capture:
     steps:
+      - run: echo CREDENTIAL-SSM ci/reference-boundary-capture.toml
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -369,12 +362,22 @@ jobs:
           echo "check_suite_id=$check_suite_id" >> "$GITHUB_OUTPUT"
       - run: ops capture-reference-boundary-fixture --root-config config/root.toml
           --check-suite-id "${{ steps.provenance.outputs.check_suite_id }}"
-      - run: echo CREDENTIAL-SSM credential_ssm_gate
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-  capture-gate:
-    needs: [capture]
-    steps:
-      - run: echo capture-gate
+      - uses: actions/upload-artifact@ea165f8d65b6e75b5404495a51ac03f51d2c05c8
+""",
+    )
+    write(
+        root,
+        "ci/reference-boundary-capture.toml",
+        """
+schema_version = 1
+workflow_path = ".github/workflows/reference-boundary-capture.yml"
+root_config = "config/root.toml"
+client_key = "chainlink_reference"
+wait_timeout_seconds = 60
+aws_region = "eu-west-2"
+output_directory = "target/capture"
+artifact_name = "capture"
+artifact_retention_days = 14
 """,
     )
     initialize_fixture_repo(root)
@@ -1410,7 +1413,7 @@ def test_stale_registry_row_fails() -> None:
 
 def test_capture_workflow_must_not_use_run_id_as_check_suite_id() -> None:
     def mutate(root: Path) -> None:
-        path = root / ".github/workflows/ci.yml"
+        path = root / ".github/workflows/reference-boundary-capture.yml"
         text = path.read_text(encoding="utf-8")
         expected = '--check-suite-id "${{ steps.provenance.outputs.check_suite_id }}"'
         if expected not in text:

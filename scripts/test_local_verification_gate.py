@@ -28,7 +28,7 @@ def _load(name: str):
 
 GATE = _load("local_verification_gate")
 
-CHEAP_FRONT_DOOR_GATE = "source-fence-static"
+CHEAP_FRONT_DOOR_GATE = "preflight"
 HEAVY_FRONT_DOOR_GATE = "unlisted-heavy-gate"
 
 

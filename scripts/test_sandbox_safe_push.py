@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 import textwrap
-import tomllib
 from ci_workflow_hygiene_test_helpers import init_fixture_repo, repo_git_command
 
 
@@ -59,18 +58,6 @@ def write_policy(repo: pathlib.Path, *, remote: str = "origin") -> None:
     )
 
 
-def assert_fallback_config_loader_matches_tomllib_for_full_policy() -> None:
-    helper = load_helper_module()
-    helper.tomllib = None
-    path = REPO_ROOT / "ci" / "rust-verification.toml"
-
-    with path.open("rb") as handle:
-        expected = tomllib.load(handle)
-    parsed = helper.load_config(REPO_ROOT)
-    if parsed != expected:
-        raise AssertionError("sandbox_safe_push fallback config loader must match tomllib for full policy")
-
-
 def init_work_repo(tmp: pathlib.Path, *, remote_path: pathlib.Path) -> pathlib.Path:
     repo = tmp / "repo"
     init_fixture_repo(repo, "-b", "main")
@@ -78,8 +65,9 @@ def init_work_repo(tmp: pathlib.Path, *, remote_path: pathlib.Path) -> pathlib.P
     git(repo, "config", "user.email", "sandbox-push@example.invalid")
     git(repo, "checkout", "-b", BRANCH)
     (repo / "README.md").write_text("sandbox-safe push test\n", encoding="utf-8")
+    (repo / "justfile").write_text("preflight:\n    @true\n", encoding="utf-8")
     write_policy(repo)
-    git(repo, "add", "README.md", "ci/rust-verification.toml")
+    git(repo, "add", "README.md", "justfile", "ci/rust-verification.toml")
     git(repo, "commit", "-m", "seed branch")
     git(repo, "remote", "add", "origin", str(remote_path))
     return repo
@@ -87,7 +75,8 @@ def init_work_repo(tmp: pathlib.Path, *, remote_path: pathlib.Path) -> pathlib.P
 
 def run_helper(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
     return run(
-        [sys.executable, str(SCRIPT), "--repo", str(repo), *args],
+        [sys.executable, str(SCRIPT), *args],
+        cwd=repo,
         check=False,
     )
 
@@ -185,7 +174,9 @@ def assert_push_url_rejects_embedded_credentials() -> None:
         calls.append(args_tuple)
         outputs = {
             ("status", "--porcelain", "--untracked-files=normal"): "",
+            ("ls-files", "-v"): "H README.md\n",
             ("rev-parse", "HEAD"): "a" * 40,
+            ("rev-parse", "HEAD^{tree}"): "b" * 40,
             ("remote", "get-url", "--push", "--all", "origin"): "https://token@example.invalid/repo.git",
         }
         if args_tuple not in outputs:
@@ -229,7 +220,7 @@ def assert_rejects_unsafe_branch_before_push() -> None:
         result = run_helper(repo, "--branch", "bad branch")
         if result.returncode != 2:
             raise AssertionError(result)
-        if "must be a safe git branch" not in result.stderr:
+        if "unrecognized arguments: --branch" not in result.stderr:
             raise AssertionError(result.stderr)
         remote_ref = run(repo_git_command("ls-remote", "--heads", str(bare), BRANCH)).stdout.strip()
         if remote_ref:
@@ -256,7 +247,8 @@ def assert_git_commands_use_option_boundary_before_remote_url() -> None:
     helper = load_helper_module()
     url = "--receive-pack=/tmp/evil"
     head = "a" * 40
-    refspec = f"HEAD:refs/heads/{BRANCH}"
+    refspec = f"{head}:refs/heads/{BRANCH}"
+    preflight_calls: list[pathlib.Path] = []
     calls: list[tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = []
 
     def fake_run_git(
@@ -270,8 +262,11 @@ def assert_git_commands_use_option_boundary_before_remote_url() -> None:
         calls.append((args_tuple, tuple(display_args or ()), redact_values))
         outputs = {
             ("status", "--porcelain", "--untracked-files=normal"): "",
+            ("ls-files", "-v"): "H README.md\n",
             ("rev-parse", "HEAD"): head,
+            ("rev-parse", "HEAD^{tree}"): "b" * 40,
             ("remote", "get-url", "--push", "--all", "origin"): url,
+            ("branch", "--show-current"): BRANCH,
             ("push", "--", url, refspec): "",
             ("ls-remote", "--heads", "--", url, BRANCH): f"{head}\trefs/heads/{BRANCH}\n",
         }
@@ -282,12 +277,19 @@ def assert_git_commands_use_option_boundary_before_remote_url() -> None:
     original_run_git = helper.run_git
     try:
         helper.run_git = fake_run_git
-        pushed_head = helper.push_head(pathlib.Path("."), remote="origin", branch=BRANCH)
+        pushed_head = helper.push_head(
+            pathlib.Path("."),
+            remote="origin",
+            branch=BRANCH,
+            preflight_runner=lambda repo: preflight_calls.append(repo),
+        )
     finally:
         helper.run_git = original_run_git
 
     if pushed_head != head:
         raise AssertionError(pushed_head)
+    if preflight_calls != [pathlib.Path(".")]:
+        raise AssertionError(preflight_calls)
     expected_push = ("push", "--", url, refspec)
     expected_ls_remote = ("ls-remote", "--heads", "--", url, BRANCH)
     if expected_push not in [call[0] for call in calls]:
@@ -325,7 +327,144 @@ def assert_requires_clean_worktree() -> None:
             raise AssertionError(result.stderr)
 
 
-def assert_git_prompt_is_forced_off() -> None:
+def assert_hidden_index_flags_are_rejected() -> None:
+    with tempfile.TemporaryDirectory() as tmp_raw:
+        tmp = pathlib.Path(tmp_raw)
+        bare = tmp / "origin.git"
+        init_fixture_repo(bare, "--bare", "-b", "main")
+        repo = init_work_repo(tmp, remote_path=bare)
+        git(repo, "update-index", "--assume-unchanged", "README.md")
+
+        result = run_helper(repo)
+        if result.returncode != 2:
+            raise AssertionError(result)
+        if "hidden index flags" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
+def assert_skip_worktree_is_rejected() -> None:
+    with tempfile.TemporaryDirectory() as tmp_raw:
+        tmp = pathlib.Path(tmp_raw)
+        bare = tmp / "origin.git"
+        init_fixture_repo(bare, "--bare", "-b", "main")
+        repo = init_work_repo(tmp, remote_path=bare)
+        git(repo, "update-index", "--skip-worktree", "README.md")
+
+        result = run_helper(repo)
+        if result.returncode != 2 or "hidden index flags" not in result.stderr:
+            raise AssertionError(result)
+
+
+def assert_failed_preflight_prevents_push() -> None:
+    with tempfile.TemporaryDirectory() as tmp_raw:
+        tmp = pathlib.Path(tmp_raw)
+        bare = tmp / "origin.git"
+        init_fixture_repo(bare, "--bare", "-b", "main")
+        repo = init_work_repo(tmp, remote_path=bare)
+        (repo / "justfile").write_text("preflight:\n    @false\n", encoding="utf-8")
+        git(repo, "add", "justfile")
+        git(repo, "commit", "-m", "make preflight fail")
+
+        result = run_helper(repo)
+        if result.returncode != 2 or "preflight failed" not in result.stderr:
+            raise AssertionError(result)
+        remote_ref = run(repo_git_command("ls-remote", "--heads", str(bare), BRANCH)).stdout.strip()
+        if remote_ref:
+            raise AssertionError(f"failed preflight pushed {remote_ref}")
+
+
+def assert_head_movement_during_preflight_prevents_push() -> None:
+    helper = load_helper_module()
+    with tempfile.TemporaryDirectory() as tmp_raw:
+        tmp = pathlib.Path(tmp_raw)
+        bare = tmp / "origin.git"
+        init_fixture_repo(bare, "--bare", "-b", "main")
+        repo = init_work_repo(tmp, remote_path=bare)
+
+        def moving_preflight(target: pathlib.Path) -> None:
+            (target / "README.md").write_text("moved during preflight\n", encoding="utf-8")
+            git(target, "add", "README.md")
+            git(target, "commit", "-m", "move head")
+
+        try:
+            helper.push_head(repo, remote="origin", branch=BRANCH, preflight_runner=moving_preflight)
+        except helper.PushError as exc:
+            if "HEAD or its tree changed" not in str(exc):
+                raise
+        else:
+            raise AssertionError("HEAD movement was accepted")
+
+
+def assert_same_sha_branch_switch_during_preflight_prevents_push() -> None:
+    helper = load_helper_module()
+    with tempfile.TemporaryDirectory() as tmp_raw:
+        tmp = pathlib.Path(tmp_raw)
+        bare = tmp / "origin.git"
+        init_fixture_repo(bare, "--bare", "-b", "main")
+        repo = init_work_repo(tmp, remote_path=bare)
+        git(repo, "branch", "alternate")
+
+        def switching_preflight(target: pathlib.Path) -> None:
+            git(target, "switch", "alternate")
+
+        try:
+            helper.push_head(repo, remote="origin", branch=BRANCH, preflight_runner=switching_preflight)
+        except helper.PushError as exc:
+            if "current branch changed" not in str(exc):
+                raise
+        else:
+            raise AssertionError("same-SHA branch switch was accepted")
+
+
+def assert_remote_mismatch_fails_closed() -> None:
+    helper = load_helper_module()
+    head = "a" * 40
+    other = "c" * 40
+    url = "ssh://git@example.invalid/repo.git"
+    refspec = f"{head}:refs/heads/{BRANCH}"
+
+    def fake_run_git(
+        _repo: pathlib.Path,
+        args: list[str],
+        *,
+        display_args: list[str] | None = None,
+        redact_values: tuple[str, ...] = (),
+    ) -> subprocess.CompletedProcess[str]:
+        outputs = {
+            ("status", "--porcelain", "--untracked-files=normal"): "",
+            ("ls-files", "-v"): "H README.md\n",
+            ("rev-parse", "HEAD"): head,
+            ("rev-parse", "HEAD^{tree}"): "b" * 40,
+            ("remote", "get-url", "--push", "--all", "origin"): url,
+            ("branch", "--show-current"): BRANCH,
+            ("push", "--", url, refspec): "",
+            ("ls-remote", "--heads", "--", url, BRANCH): f"{other}\trefs/heads/{BRANCH}\n",
+        }
+        key = tuple(args)
+        if key not in outputs:
+            raise AssertionError(key)
+        return subprocess.CompletedProcess(["git", *args], 0, outputs[key], "")
+
+    original_run_git = helper.run_git
+    try:
+        helper.run_git = fake_run_git
+        try:
+            helper.push_head(
+                pathlib.Path("."),
+                remote="origin",
+                branch=BRANCH,
+                preflight_runner=lambda _repo: None,
+            )
+        except helper.PushError as exc:
+            if "expected" not in str(exc):
+                raise
+        else:
+            raise AssertionError("remote mismatch was accepted")
+    finally:
+        helper.run_git = original_run_git
+
+
+def assert_git_environment_is_isolated_and_prompt_is_forced_off() -> None:
     helper = load_helper_module()
     captured_env: dict[str, str] = {}
 
@@ -341,24 +480,48 @@ def assert_git_prompt_is_forced_off() -> None:
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     original_run = helper.subprocess.run
-    original_prompt = os.environ.get("GIT_TERMINAL_PROMPT")
+    original_environment = {key: os.environ.get(key) for key in ("GIT_TERMINAL_PROMPT", "GIT_DIR")}
     try:
         os.environ["GIT_TERMINAL_PROMPT"] = "1"
+        os.environ["GIT_DIR"] = "/tmp/hostile-git-dir"
         helper.subprocess.run = fake_run
         helper.run_git(pathlib.Path("."), ["status"])
     finally:
         helper.subprocess.run = original_run
-        if original_prompt is None:
-            os.environ.pop("GIT_TERMINAL_PROMPT", None)
-        else:
-            os.environ["GIT_TERMINAL_PROMPT"] = original_prompt
+        for key, value in original_environment.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     if captured_env.get("GIT_TERMINAL_PROMPT") != "0":
         raise AssertionError(captured_env.get("GIT_TERMINAL_PROMPT"))
+    if "GIT_DIR" in captured_env:
+        raise AssertionError(captured_env["GIT_DIR"])
+    if captured_env.get("GIT_CONFIG_NOSYSTEM") != "1" or captured_env.get("GIT_CONFIG_GLOBAL") != os.devnull:
+        raise AssertionError(captured_env)
+
+
+def assert_cli_has_no_repository_selector() -> None:
+    helper = load_helper_module()
+    try:
+        helper.parse_args(["--repo", "/tmp/other"])
+    except SystemExit:
+        return
+    raise AssertionError("sandbox-safe-push accepted a caller-selected repository")
+
+
+def assert_push_url_rejects_query_and_fragment() -> None:
+    helper = load_helper_module()
+    for url in ("https://github.com/example/repo.git?token=secret", "ssh://git@example/repo.git#token"):
+        try:
+            helper.validate_push_url(url)
+        except helper.PushError:
+            continue
+        raise AssertionError(f"credential-shaped URL suffix accepted: {url}")
 
 
 def main() -> int:
-    assert_fallback_config_loader_matches_tomllib_for_full_policy()
     assert_push_uses_url_without_remote_tracking_write()
     assert_push_uses_configured_push_url()
     assert_multiple_push_urls_fail_closed()
@@ -368,7 +531,15 @@ def main() -> int:
     assert_push_errors_redact_remote_url()
     assert_git_commands_use_option_boundary_before_remote_url()
     assert_requires_clean_worktree()
-    assert_git_prompt_is_forced_off()
+    assert_hidden_index_flags_are_rejected()
+    assert_skip_worktree_is_rejected()
+    assert_failed_preflight_prevents_push()
+    assert_head_movement_during_preflight_prevents_push()
+    assert_same_sha_branch_switch_during_preflight_prevents_push()
+    assert_remote_mismatch_fails_closed()
+    assert_git_environment_is_isolated_and_prompt_is_forced_off()
+    assert_cli_has_no_repository_selector()
+    assert_push_url_rejects_query_and_fragment()
     print("OK: sandbox-safe push tests passed.")
     return 0
 

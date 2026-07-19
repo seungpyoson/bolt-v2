@@ -1,4 +1,4 @@
-name: Kimi Review Worker
+name: GLM Review Worker
 
 on:
   workflow_call:
@@ -25,7 +25,7 @@ on:
         required: true
         type: number
     secrets:
-      KIMI_API_KEY:
+      GLM_API_KEY:
         required: true
 
 permissions:
@@ -46,32 +46,21 @@ jobs:
         with:
           name: ${{ inputs.evidence_artifact }}
           path: .ai-review/evidence
-      - name: Load configured Kimi runtime
+      - name: Load configured GLM runtime
         id: config
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import tomllib
           from pathlib import Path
           config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
-          kimi = config["kimi"]
-          workflow = kimi["workflow"]
+          glm = config["glm"]
           review = config["review"]
-          print(f"api_base={kimi['api_base']}")
-          print(f"model={kimi['model']}")
-          print(f"provider_type={kimi['provider_type']}")
-          print(f"context={kimi['model_max_context_size']}")
-          print(f"thinking={str(kimi['default_thinking']).lower()}")
-          print(f"telemetry={'1' if kimi['telemetry_disabled'] else '0'}")
-          print(f"timeout={kimi['cli_timeout_seconds']}")
-          print(f"chunk={kimi['review_max_chunk_chars']}")
+          print(f"api_base={glm['api_base']}")
+          print(f"model={glm['model']}")
+          print(f"timeout={glm['api_timeout_seconds']}")
+          print(f"chunk={glm['review_max_chunk_chars']}")
           print(f"comment={review['max_comment_chars']}")
-          print(f"package={kimi['cli_package']}")
-          print(f"node={workflow['node_version']}")
           PY
-      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
-        with:
-          node-version: ${{ steps.config.outputs.node }}
-      - run: npm install -g "${{ steps.config.outputs.package }}"
       - name: Prepare review instructions
         run: |
           mkdir -p .ai-review/standards
@@ -80,16 +69,16 @@ jobs:
             printf '\n# Exact final-review evidence\n\n'
             cat .ai-review/evidence/final-review-evidence.md
             printf '\nReview PR %s at exact head %s. Review the complete diff and report every hard-evidence substantive finding. Do not edit, push, merge, expose credentials, or choose another model or provider.\n' "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
-          } > .ai-review/standards/kimi-review-standards.md
-      - name: Run Kimi review
+          } > .ai-review/standards/glm-review-standards.md
+      - name: Run GLM review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ inputs.pr_number }}
           PR_BASE_SHA: ${{ inputs.base_sha }}
           PR_HEAD_SHA: ${{ inputs.head_sha }}
           PR_DIFF_PATH: .ai-review/evidence/review.diff
-          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
         run: >-
-          python3 scripts/direct_ai_review.py kimi
-          --instructions-file .ai-review/standards/kimi-review-standards.md
+          python3 scripts/direct_ai_review.py glm
+          --instructions-file .ai-review/standards/glm-review-standards.md
           --config-file ci/ai-review.toml

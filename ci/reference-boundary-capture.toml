@@ -1,0 +1,9 @@
+schema_version = 1
+workflow_path = ".github/workflows/reference-boundary-capture.yml"
+root_config = "config/root.toml"
+client_key = "chainlink_reference"
+wait_timeout_seconds = 60
+aws_region = "eu-west-2"
+output_directory = "target/chainlink-reference-fixture-capture"
+artifact_name = "chainlink-reference-fixture-capture"
+artifact_retention_days = 14

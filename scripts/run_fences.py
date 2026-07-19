@@ -23,13 +23,10 @@ from typing import Any
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent
-# These verifier families are owned by actionlint/ci-lint/full source-capture
-# lanes. New static source-fence verifiers must not use these prefixes without
-# adding explicit wiring here and in the owning lane.
+# These verifier families are owned by workflow lint rather than source fences.
 NON_STATIC_VERIFY_PREFIXES = (
     "verify_ai_",
     "verify_ci_",
-    "verify_runtime_capture_yaml",
 )
 # Add new standalone source-fence test suites here; paired test_verify_*.py
 # suites are discovered automatically from their verifier filenames.
@@ -37,9 +34,7 @@ STANDALONE_TEST_FILENAMES = (
     "test_ethereum_keccak.py",
     "test_generate_polymarket_redemption_config.py",
     "test_migrate_bolt_v3_decision_evidence_to_v15.py",
-    "test_verify_runtime_capture_yaml.py",
     "test_local_verification_gate.py",
-    "test_lane_governor.py",
     "test_run_fences.py",
     "test_verifier_io.py",
 )
@@ -205,7 +200,13 @@ def discover_test_paths(
     return paths
 
 
-def import_module_from_path(path: pathlib.Path, index: int, phase: str) -> ModuleType:
+def import_module_from_path(
+    path: pathlib.Path,
+    index: int,
+    phase: str,
+    *,
+    logical_path: pathlib.Path | None = None,
+) -> ModuleType:
     if not path.is_file():
         raise FileNotFoundError(path)
     module_name = f"_source_fence_{phase}_{index}_{path.stem}"
@@ -213,6 +214,8 @@ def import_module_from_path(path: pathlib.Path, index: int, phase: str) -> Modul
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not import {path}")
     module = importlib.util.module_from_spec(spec)
+    if logical_path is not None:
+        module.__file__ = str(logical_path)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
@@ -263,9 +266,10 @@ def run_module(
     *,
     phase: str,
     cache: SharedFenceCache | None = None,
+    logical_path: pathlib.Path | None = None,
 ) -> int:
     try:
-        module = import_module_from_path(path, index, phase)
+        module = import_module_from_path(path, index, phase, logical_path=logical_path)
         original_argv = sys.argv
         sys.argv = [str(path)]
         try:
@@ -299,7 +303,13 @@ def run_fences_with_stats(
     failed = 0
     fence_paths = discover_fence_paths(scripts_dir)
     for index, path in enumerate(fence_paths, start=1):
-        failed |= run_module(path, index, phase="verify", cache=cache)
+        failed |= run_module(
+            path,
+            index,
+            phase="verify",
+            cache=cache,
+            logical_path=root / "scripts" / path.name,
+        )
     if run_tests:
         for index, path in enumerate(discover_test_paths(fence_paths, scripts_dir), start=1):
             failed |= run_module(path, index, phase="test")

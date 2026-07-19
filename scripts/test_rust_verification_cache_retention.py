@@ -16,7 +16,7 @@ import textwrap
 import time
 import types
 
-from test_fixtures import load_owner_module, write_executable, write_policy
+from rust_verification_test_fixtures import load_owner_module, write_executable, write_policy
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]

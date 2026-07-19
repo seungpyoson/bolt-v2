@@ -75,12 +75,6 @@ RUST_PROBE_MODES = (
 )
 RUST_PROBE_SUGGEST_COMMAND = "suggest"
 RUST_PROBE_COMMANDS = (RUST_PROBE_SUGGEST_COMMAND, *RUST_PROBE_MODES)
-GATE_NAME_KEYS = (
-    "gate_required",
-    "gate_iteration",
-    "backtester_required",
-    "backtester_iteration",
-)
 RUST_PROBE_HELP_EPILOG = """\
 Examples:
   just rust-probe suggest
@@ -91,8 +85,8 @@ Examples:
   just rust-probe nextest-test-target <harness_target>
   just rust-probe nextest-test-target-name <harness_target> <member_stem>::
 
-Rust Probe is targeted remote debugging evidence only. It cannot authorize or veto merge.
-Use just verify-remote for full exact-head remote evidence; its result remains advisory.
+Rust Probe is targeted remote debugging feedback only. It is not merge proof.
+The fixed final-review workflow is the complete remote evidence path.
 """
 RUST_PROBE_INPUT_KEYS = (
     "runner_tier",
@@ -269,8 +263,6 @@ def validate_policy_data(data: dict[str, Any]) -> None:
     validate_remote_compile_cache_policy(data)
     validate_remote_fast_linker_policy(data)
     validate_local_lane_policy(data)
-    if "remote_verification" in data:
-        validate_remote_verification_policy(data)
     if "remote_probe" in data:
         validate_remote_probe_policy(data)
     if "cache" in data:
@@ -437,8 +429,8 @@ def validate_remote_fast_linker_policy(data: dict[str, Any]) -> None:
     if policy["ci_env"] != "GITHUB_ACTIONS":
         raise PolicyError("remote_fast_linker.ci_env must be 'GITHUB_ACTIONS'")
     programs = string_array_policy_value(policy, "programs")
-    if programs != ["mold", "lld"]:
-        raise PolicyError("remote_fast_linker.programs must prefer mold with lld fallback")
+    if programs != ["mold"]:
+        raise PolicyError("remote_fast_linker.programs must select only mold")
 
 
 def validate_local_lane_policy(data: dict[str, Any]) -> None:
@@ -512,27 +504,6 @@ def validate_local_lane_policy(data: dict[str, Any]) -> None:
         or cheap_lane_max_concurrent < 0
     ):
         raise PolicyError("local_lane_policy.cheap_lane_max_concurrent must be a non-negative integer")
-
-
-def validate_remote_verification_policy(data: dict[str, Any]) -> None:
-    policy = data.get("remote_verification")
-    if not isinstance(policy, dict):
-        raise PolicyError("remote_verification table must be a table")
-    values: dict[str, int] = {}
-    for key in (
-        "poll_interval_seconds",
-        "checks_appear_timeout_seconds",
-        "overall_timeout_seconds",
-        "diagnostic_log_max_lines",
-        "diagnostic_log_max_bytes",
-        "diagnostic_unavailable_notice_interval_polls",
-    ):
-        value = policy.get(key)
-        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-            raise PolicyError(f"remote_verification.{key} must be a positive integer")
-        values[key] = value
-    if values["checks_appear_timeout_seconds"] >= values["overall_timeout_seconds"]:
-        raise PolicyError("remote_verification.checks_appear_timeout_seconds must be less than overall_timeout_seconds")
 
 
 def require_non_empty_string(table: dict[str, Any], key: str, prefix: str) -> str:
@@ -618,28 +589,6 @@ def validate_remote_probe_policy(data: dict[str, Any]) -> None:
     max_workflow_timeout_seconds = max(int(timeouts[job]) for job in expected_timeout_keys) * 60
     if values["overall_timeout_seconds"] <= max_workflow_timeout_seconds:
         raise PolicyError("remote_probe.overall_timeout_seconds must exceed remote_probe.workflow_timeouts")
-    separate_workspaces = policy.get("separate_workspaces")
-    if not isinstance(separate_workspaces, dict) or not separate_workspaces:
-        raise PolicyError("remote_probe.separate_workspaces table is required")
-    paths: set[str] = set()
-    for name, workspace in separate_workspaces.items():
-        prefix = f"remote_probe.separate_workspaces.{name}"
-        if not SAFE_IDENTIFIER_RE.match(str(name)):
-            raise PolicyError("remote_probe.separate_workspaces keys must be safe identifiers")
-        if not isinstance(workspace, dict):
-            raise PolicyError(f"{prefix} must be a table")
-        path = require_non_empty_string(workspace, "path", prefix)
-        validate_relative_workspace_path(path, f"{prefix}.path")
-        if path in paths:
-            raise PolicyError("remote_probe.separate_workspaces paths must not contain duplicates")
-        paths.add(path)
-        message = require_non_empty_string(workspace, "message", prefix)
-        if message.strip() != message or "\n" in message:
-            raise PolicyError(f"{prefix}.message must be a single trimmed line")
-        commands = require_non_empty_string_array(workspace, "commands", prefix)
-        for command in commands:
-            if command.strip() != command or "\n" in command:
-                raise PolicyError(f"{prefix}.commands entries must be single trimmed lines")
 
 
 def status_for_repo(repo: pathlib.Path) -> str:
@@ -988,7 +937,7 @@ def managed_remote_fast_linker_env(repo: pathlib.Path, policy: dict[str, Any]) -
     selected = os.environ.get(str(linker_policy["linker_env"]), "")
     programs = list(linker_policy["programs"])
     if selected not in programs:
-        return {}
+        raise PolicyError(f"remote Rust commands require {linker_policy['linker_env']}={programs[0]}")
     wrapper_dir = target_dir(repo, policy) / "fast-linker-bin"
     base_path = os.environ.get("PATH", "")
     wrapper_dir_key = os.path.normcase(os.path.realpath(wrapper_dir))
@@ -998,14 +947,14 @@ def managed_remote_fast_linker_env(repo: pathlib.Path, policy: dict[str, Any]) -
         if part and os.path.normcase(os.path.realpath(part)) != wrapper_dir_key
     )
     if shutil.which(selected, path=filtered_path) is None:
-        return {}
+        raise PolicyError(f"remote Rust commands require configured linker {selected}")
     real_cc = shutil.which("cc", path=filtered_path)
     if real_cc is None:
-        return {}
+        raise PolicyError("remote Rust commands require cc for the configured linker wrapper")
     real_cc_key = os.path.normcase(os.path.realpath(real_cc))
     wrapper_cc_key = os.path.normcase(os.path.realpath(wrapper_dir / "cc"))
     if real_cc_key == wrapper_cc_key:
-        return {}
+        raise PolicyError("remote Rust linker wrapper resolved recursively")
     wrapper_dir.mkdir(parents=True, exist_ok=True)
     wrapper = wrapper_dir / "cc"
     wrapper.write_text(
@@ -1025,7 +974,14 @@ def managed_remote_fast_linker_env(repo: pathlib.Path, policy: dict[str, Any]) -
                 "    -Xassembler|-Xclang|-Xlinker|-Xpreprocessor)",
                 "      skip_next=1",
                 "      ;;",
-                "    -c|-S|-E|-M|-MM|--help|--help=*|--version|-###|-dumpmachine|-dumpversion|-dumpfullversion|-dumpspecs|-print-*|-fuse-ld=*)",
+                '    "-fuse-ld=$fast_linker")',
+                '      exec "$real_cc" "$@"',
+                "      ;;",
+                "    -fuse-ld=*)",
+                '      echo "refusing alternate linker: $arg; required: -fuse-ld=$fast_linker" >&2',
+                "      exit 2",
+                "      ;;",
+                "    -c|-S|-E|-M|-MM|--help|--help=*|--version|-###|-dumpmachine|-dumpversion|-dumpfullversion|-dumpspecs|-print-*)",
                 '      exec "$real_cc" "$@"',
                 "      ;;",
                 "  esac",
@@ -2944,13 +2900,9 @@ def local_compile_refusal_payload(
         "next_steps": [
             "for targeted Rust debugging after cheap local checks: run: just rust-probe suggest",
             "then commit and push the branch before running the smallest suggested just rust-probe command",
-            "for full remote feedback on a draft PR: run: just verify-remote",
-            "for exact-head remote Rust evidence: commit local changes",
-            "for exact-head remote Rust evidence: push the branch",
-            (
-                "when ready-only workflows are applicable: mark the PR ready, then run: just verify-remote; "
-                "treat the result as advisory evidence, never merge authority"
-            ),
+            "for complete remote evidence: commit local changes",
+            "for complete remote evidence: publish the exact branch head with just sandbox-safe-push",
+            "after resolving local findings: invoke just final-review <PR> exactly once",
         ],
         "reclaimability_measured": False,
         "reclaimable_bytes": None,
@@ -3176,35 +3128,11 @@ def load_json_command(argv: list[str], *, repo: pathlib.Path) -> tuple[Any | Non
         return None, f"{pathlib.Path(argv[0]).name} returned invalid JSON: {exc}"
 
 
-def remote_verification_policy(policy: dict[str, Any]) -> dict[str, int]:
-    raw = policy.get("remote_verification")
-    if not isinstance(raw, dict):
-        raise PolicyError("remote_verification table is required for verify-remote")
-    validate_remote_verification_policy(policy)
-    return {
-        "poll_interval_seconds": int(raw["poll_interval_seconds"]),
-        "checks_appear_timeout_seconds": int(raw["checks_appear_timeout_seconds"]),
-        "overall_timeout_seconds": int(raw["overall_timeout_seconds"]),
-        "diagnostic_log_max_lines": int(raw["diagnostic_log_max_lines"]),
-        "diagnostic_log_max_bytes": int(raw["diagnostic_log_max_bytes"]),
-        "diagnostic_unavailable_notice_interval_polls": int(
-            raw["diagnostic_unavailable_notice_interval_polls"]
-        ),
-    }
-
-
 def remote_probe_policy(policy: dict[str, Any]) -> dict[str, Any]:
     raw = policy.get("remote_probe")
     if not isinstance(raw, dict):
         raise PolicyError("remote_probe table is required for rust-probe")
     validate_remote_probe_policy(policy)
-    separate_workspaces = {
-        str(workspace["path"]): {
-            "message": str(workspace["message"]),
-            "commands": list(workspace["commands"]),
-        }
-        for workspace in raw["separate_workspaces"].values()
-    }
     return {
         "workflow_name": str(raw["workflow_name"]),
         "workflow_path": str(raw["workflow_path"]),
@@ -3218,7 +3146,6 @@ def remote_probe_policy(policy: dict[str, Any]) -> dict[str, Any]:
         "mode_runner_tiers": dict(raw["mode_runner_tiers"]),
         "workflow_timeouts": dict(raw["workflow_timeouts"]),
         "suggest_base_ref": str(raw["suggest_base_ref"]),
-        "separate_workspaces": separate_workspaces,
     }
 
 
@@ -3313,33 +3240,6 @@ def validate_push_url(url: str) -> str | None:
     return None
 
 
-def fallback_push_remote(
-    repo: pathlib.Path,
-    *,
-    command_name: str,
-) -> tuple[str | None, str | None]:
-    configured_remote, config_error = sandbox_safe_push_remote(repo)
-    if config_error is not None:
-        return None, config_error
-    remotes, error = git_output(repo, "remote")
-    if error is not None:
-        return None, error
-    if not remotes:
-        return None, f"{command_name} requires a configured Git remote"
-    names = [line for line in remotes.splitlines() if line]
-    if configured_remote is not None:
-        if configured_remote in names:
-            return configured_remote, None
-        joined = ", ".join(sorted(names))
-        return None, f"sandbox_safe_push.remote {configured_remote} is not among configured Git remotes: {joined}"
-    if "origin" in names:
-        return "origin", None
-    if len(names) == 1:
-        return names[0], None
-    joined = ", ".join(sorted(names))
-    return None, f"{command_name} requires local upstream metadata when multiple remotes are configured: {joined}"
-
-
 def live_remote_branch_head(
     repo: pathlib.Path,
     *,
@@ -3359,61 +3259,6 @@ def live_remote_branch_head(
         if len(fields) >= 2 and fields[1] == f"refs/heads/{branch}":
             return fields[0], None
     return None, None
-
-
-def fallback_live_upstream_head(
-    repo: pathlib.Path,
-    branch: str,
-    *,
-    command_name: str,
-) -> tuple[str | None, str | None, str | None, str | None]:
-    fallback_remote, remote_error = fallback_push_remote(repo, command_name=command_name)
-    if remote_error is not None or fallback_remote is None:
-        return None, None, None, remote_error
-    push_url, push_url_error = single_push_url(repo, fallback_remote, command_name=command_name)
-    if push_url_error is not None or push_url is None:
-        return None, None, None, push_url_error
-    upstream, upstream_error = live_remote_branch_head(
-        repo,
-        remote=push_url,
-        branch=branch,
-        redact_value=push_url,
-    )
-    return upstream, branch, fallback_remote, upstream_error
-
-
-def live_upstream_head(
-    repo: pathlib.Path,
-    branch: str,
-    *,
-    command_name: str = "verify-remote",
-) -> tuple[str | None, str | None, str | None, str | None]:
-    remote, error = git_output(repo, "config", f"branch.{branch}.remote")
-    if error is not None or not remote:
-        return fallback_live_upstream_head(repo, branch, command_name=command_name)
-    merge_ref, error = git_output(repo, "config", f"branch.{branch}.merge")
-    if error is not None:
-        return None, None, None, error
-    if not merge_ref:
-        return fallback_live_upstream_head(repo, branch, command_name=command_name)
-    if not merge_ref.startswith("refs/heads/"):
-        return None, None, None, f"{command_name} requires upstream to be a branch, got {merge_ref}"
-    upstream_branch = merge_ref.removeprefix("refs/heads/")
-    configured_remote, config_error = sandbox_safe_push_remote(repo)
-    if config_error is not None:
-        return None, None, None, config_error
-    if configured_remote is not None and remote != configured_remote:
-        return None, None, None, f"branch.{branch}.remote {remote} must match sandbox_safe_push.remote {configured_remote}"
-    push_url, push_url_error = single_push_url(repo, remote, command_name=command_name)
-    if push_url_error is not None or push_url is None:
-        return None, None, None, push_url_error
-    upstream, error = live_remote_branch_head(
-        repo,
-        remote=push_url,
-        branch=upstream_branch,
-        redact_value=push_url,
-    )
-    return upstream, upstream_branch, remote, error
 
 
 def sandbox_safe_push_hint(current_branch_name: str, target_branch: str | None) -> str:
@@ -3440,203 +3285,27 @@ def ensure_clean_pushed_head_preconditions(
         return None, None, error
     if not branch:
         return None, None, f"{command_name} requires a named branch"
-    upstream, upstream_branch, remote, error = live_upstream_head(repo, branch, command_name=command_name)
+    remote, error = sandbox_safe_push_remote(repo)
     if error is not None:
         return None, None, error
-    if upstream is None or upstream_branch is None:
-        hint = sandbox_safe_push_hint(branch, upstream_branch)
+    if remote is None:
+        return None, None, f"{command_name} requires sandbox_safe_push.remote"
+    push_url, error = single_push_url(repo, remote, command_name=command_name)
+    if error is not None or push_url is None:
+        return None, None, error
+    upstream, error = live_remote_branch_head(repo, remote=push_url, branch=branch, redact_value=push_url)
+    if error is not None:
+        return None, None, error
+    if upstream is None:
+        hint = sandbox_safe_push_hint(branch, branch)
         return None, None, f"{command_name} requires HEAD to be pushed to a remote branch; run: {hint}"
     if upstream != head:
-        return None, None, f"{command_name} requires HEAD to be pushed to the upstream branch"
-    return head, upstream_branch, None
-
-
-def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
-    return ensure_clean_pushed_head_preconditions(repo, command_name="verify-remote")
+        return None, None, f"{command_name} requires HEAD to be pushed to {remote}/{branch}"
+    return head, branch, None
 
 
 def ensure_rust_probe_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
     return ensure_clean_pushed_head_preconditions(repo, command_name="rust-probe")
-
-
-def pr_create_hint(branch: str) -> str:
-    return f"gh pr create --draft --fill --head {shlex.quote(branch)}"
-
-
-def pr_for_current_branch(repo: pathlib.Path, branch: str) -> tuple[dict[str, Any] | None, str | None]:
-    payload, error = load_json_command(
-        [
-            "gh",
-            "pr",
-            "view",
-            branch,
-            "--json",
-            "number,url,headRefOid,headRefName,state,isDraft,headRepositoryOwner,headRepository",
-        ],
-        repo=repo,
-    )
-    if error is not None:
-        lowered = error.lower()
-        if "no pull requests found" in lowered or "no pull request found" in lowered:
-            return None, f"verify-remote requires an open or draft PR for this branch; run: {pr_create_hint(branch)}"
-        return None, f"verify-remote could not inspect pull request state: {error}"
-    if not isinstance(payload, dict):
-        return None, "gh pr view returned an unexpected payload"
-    if payload.get("state") != "OPEN":
-        return None, f"PR for this branch is {payload.get('state') or 'not open'}; start from main instead of stale branch"
-    if payload.get("headRefName") != branch:
-        return None, f"verify-remote resolved PR for branch {payload.get('headRefName')}, expected {branch}"
-    return payload, None
-
-
-def pr_for_exact_head(
-    repo: pathlib.Path,
-    branch: str,
-    head: str,
-    *,
-    during_watch: bool,
-) -> tuple[dict[str, Any] | None, str | None]:
-    pr, error = pr_for_current_branch(repo, branch)
-    if error is not None or pr is None:
-        return None, error or "unable to inspect pull request"
-    if pr.get("headRefOid") != head:
-        if during_watch:
-            return (
-                None,
-                f"PR branch advanced during watch: headRefOid {pr.get('headRefOid')} no longer matches "
-                f"local HEAD {head}; fetch the branch and rerun verify-remote",
-            )
-        return (
-            None,
-            f"PR headRefOid {pr.get('headRefOid')} does not match local HEAD {head}; "
-            f"run: just sandbox-safe-push --branch {shlex.quote(branch)}",
-        )
-    return pr, None
-
-
-def pr_checks(repo: pathlib.Path) -> tuple[list[dict[str, Any]] | None, str | None]:
-    argv = ["gh", "pr", "checks", "--json", "name,bucket,state,link,workflow"]
-    try:
-        result = run_capture(argv, repo=repo)
-    except FileNotFoundError:
-        return None, "gh is required for remote verification"
-    if result.returncode not in {0, 8}:
-        return None, command_error(argv, result)
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        return None, f"gh returned invalid PR checks JSON: {exc}"
-    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
-        return None, "gh pr checks returned an unexpected payload"
-    return payload, None
-
-
-def check_summary(check: dict[str, Any]) -> str:
-    name = str(check.get("name") or "<unnamed>")
-    bucket = str(check.get("bucket") or check.get("state") or "unknown")
-    link = str(check.get("link") or "")
-    return f"{name} [{bucket}]" + (f" {link}" if link else "")
-
-
-def github_actions_output_safe_check_name(value: str) -> bool:
-    return (
-        value == value.strip()
-        and "${{" not in value
-        and "}}" not in value
-        and all(char not in "\r\n" and 32 <= ord(char) < 127 for char in value)
-    )
-
-
-def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
-    errors: list[str] = []
-    keys = (
-        "gate_required",
-        "backtester_required",
-        "gate_iteration",
-        "backtester_iteration",
-    )
-    seen: dict[str, str] = {}
-    for key in keys:
-        value = gate_names.get(key)
-        if value is None:
-            continue
-        previous = seen.get(value)
-        if previous is not None:
-            errors.append(f"ci_provenance.gate_names.{key} must not equal {previous}")
-        else:
-            seen[value] = key
-    return errors
-
-
-def verify_remote_head_current_or_fail(repo: pathlib.Path, branch: str, head: str) -> int | None:
-    _pr, error = pr_for_exact_head(repo, branch, head, during_watch=True)
-    if error is not None:
-        return verify_remote_fail(error)
-    return None
-
-
-def ci_provenance_dispatch_config(repo: pathlib.Path) -> tuple[dict[str, Any] | None, str | None]:
-    path = repo / CI_RUNNERS_RELATIVE_PATH
-    if not path.exists():
-        return None, f"{CI_RUNNERS_RELATIVE_PATH} is required for verify-remote dispatch"
-    try:
-        data = load_toml(path)
-    except (OSError, PolicyError) as exc:
-        return None, str(exc)
-    provenance = data.get("ci_provenance")
-    if not isinstance(provenance, dict):
-        return None, "ci_provenance table is required for verify-remote dispatch"
-    dispatch = provenance.get("dispatch")
-    if not isinstance(dispatch, dict):
-        return None, "ci_provenance.dispatch table is required for verify-remote dispatch"
-    workflow_name = provenance.get("workflow_name")
-    workflow_path = provenance.get("workflow_path")
-    run_name_iteration = dispatch.get("run_name_iteration")
-    proof_gate_job = dispatch.get("proof_gate_job")
-    gate_names = provenance.get("gate_names")
-    if not isinstance(workflow_name, str) or not workflow_name:
-        return None, "ci_provenance.workflow_name must be a non-empty string"
-    if not isinstance(workflow_path, str) or not workflow_path:
-        return None, "ci_provenance.workflow_path must be a non-empty string"
-    if not isinstance(run_name_iteration, str) or not run_name_iteration:
-        return None, "ci_provenance.dispatch.run_name_iteration must be a non-empty string"
-    if not isinstance(proof_gate_job, str) or not proof_gate_job:
-        return None, "ci_provenance.dispatch.proof_gate_job must be a non-empty string"
-    if not github_actions_output_safe_check_name(proof_gate_job):
-        return None, "ci_provenance.dispatch.proof_gate_job must be a GitHub Actions output-safe check name"
-    if not isinstance(gate_names, dict):
-        return None, "ci_provenance.gate_names table is required for verify-remote dispatch"
-    configured_gate_names: dict[str, str] = {}
-    for key in GATE_NAME_KEYS:
-        if key not in gate_names:
-            continue
-        value = gate_names.get(key)
-        if not isinstance(value, str) or not value:
-            return None, f"ci_provenance.gate_names.{key} must be a non-empty string"
-        if not github_actions_output_safe_check_name(value):
-            return None, f"ci_provenance.gate_names.{key} must be a GitHub Actions output-safe check name"
-        configured_gate_names[key] = value
-    gate_required = configured_gate_names.get("gate_required")
-    if gate_required is not None and proof_gate_job != gate_required:
-        return None, "ci_provenance.dispatch.proof_gate_job must match required gate name"
-    gate_name_errors = gate_name_collision_errors(configured_gate_names)
-    if gate_name_errors:
-        return None, "; ".join(gate_name_errors)
-    api_limits = provenance.get("api_limits")
-    run_limit = None
-    if isinstance(api_limits, dict):
-        raw_limit = api_limits.get("workflow_runs_per_page")
-        if raw_limit is not None:
-            if not isinstance(raw_limit, int) or isinstance(raw_limit, bool) or raw_limit <= 0:
-                return None, "ci_provenance.api_limits.workflow_runs_per_page must be a positive integer"
-            run_limit = raw_limit
-    return {
-        "workflow_name": workflow_name,
-        "workflow_path": workflow_path,
-        "run_name_iteration": run_name_iteration,
-        "proof_gate_job": proof_gate_job,
-        "workflow_runs_per_page": run_limit,
-    }, None
 
 
 WORKFLOW_RUN_FIELDS = "attempt,databaseId,event,headSha,status,conclusion,createdAt,url,displayTitle"
@@ -3654,45 +3323,11 @@ DRAFT_FULL_CI_GUIDANCE = (
 )
 
 
-class RemoteFailureDiagnosticsState:
-    def __init__(self) -> None:
-        self.reported_job_ids: set[int] = set()
-        self.unavailable_notice_polls: dict[int, int] = {}
-        self.jobs_unavailable_notice_polls: dict[int, int] = {}
-
-
-def workflow_run_list(
-    repo: pathlib.Path,
-    dispatch_config: dict[str, Any],
-    branch: str,
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    argv = [
-        "gh",
-        "run",
-        "list",
-        "--workflow",
-        str(dispatch_config["workflow_name"]),
-        "--branch",
-        branch,
-        "--json",
-        WORKFLOW_RUN_FIELDS,
-    ]
-    run_limit = dispatch_config.get("workflow_runs_per_page")
-    if isinstance(run_limit, int):
-        argv.extend(["--limit", str(run_limit)])
-    payload, error = load_json_command(argv, repo=repo)
-    if error is not None:
-        return None, f"verify-remote could not inspect workflow runs: {error}"
-    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
-        return None, "gh run list returned an unexpected payload"
-    return payload, None
-
-
 def workflow_run_view(
     repo: pathlib.Path,
     run_id: int,
     *,
-    command_name: str = "verify-remote",
+    command_name: str = "rust-probe",
 ) -> tuple[dict[str, Any] | None, str | None]:
     payload, error = load_json_command(
         ["gh", "run", "view", str(run_id), "--json", WORKFLOW_RUN_FIELDS],
@@ -3703,38 +3338,6 @@ def workflow_run_view(
     if not isinstance(payload, dict):
         return None, "gh run view returned an unexpected payload"
     return payload, None
-
-
-def workflow_run_jobs(
-    repo: pathlib.Path,
-    run_id: int,
-    attempt: int | None,
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    argv = ["gh", "run", "view", str(run_id), "--json", "jobs"]
-    if attempt is not None:
-        argv.extend(["--attempt", str(attempt)])
-    payload, error = load_json_command(argv, repo=repo)
-    if error is not None:
-        return None, f"verify-remote could not inspect workflow run {run_id} jobs: {error}"
-    if not isinstance(payload, dict):
-        return None, "gh run view returned an unexpected jobs payload"
-    jobs = payload.get("jobs")
-    if not isinstance(jobs, list) or not all(isinstance(item, dict) for item in jobs):
-        return None, "gh run view returned an unexpected jobs payload"
-    return jobs, None
-
-
-def job_log_failed(repo: pathlib.Path, job_id: int) -> tuple[str | None, str | None]:
-    argv = ["gh", "run", "view", "--job", str(job_id), "--log-failed"]
-    try:
-        result = run_capture(argv, repo=repo)
-    except FileNotFoundError:
-        return None, "gh is required for remote verification"
-    if result.returncode != 0:
-        return None, command_error(argv, result)
-    if not ANSI_ESCAPE_RE.sub("", result.stdout).strip():
-        return None, "failed job log is not available yet"
-    return result.stdout, None
 
 
 def run_created_at(run: dict[str, Any]) -> str:
@@ -3770,125 +3373,6 @@ def run_display_title(run: dict[str, Any]) -> str:
     return value if isinstance(value, str) else ""
 
 
-def job_database_id(job: dict[str, Any]) -> int | None:
-    database_id = job.get("databaseId")
-    if database_id is None:
-        database_id = job.get("id")
-    if isinstance(database_id, int) and not isinstance(database_id, bool):
-        return database_id
-    if isinstance(database_id, str) and database_id.isdecimal():
-        return int(database_id)
-    return None
-
-
-def job_text(job: dict[str, Any], key: str) -> str | None:
-    value = job.get(key)
-    if isinstance(value, str) and value:
-        return value
-    return None
-
-
-def failed_job_summary(job: dict[str, Any], job_id: int) -> str:
-    name = job_text(job, "name") or f"job {job_id}"
-    status = job_text(job, "status") or "unknown"
-    conclusion = job_text(job, "conclusion") or "unknown"
-    url = job_text(job, "url")
-    summary = f"{name} [{status}/{conclusion}]"
-    return summary + (f" {url}" if url else "")
-
-
-def mask_obvious_secrets(line: str) -> str:
-    line = SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}<redacted>", line)
-    return BEARER_RE.sub("Authorization: Bearer <redacted>", line)
-
-
-def diagnostic_log_excerpt(text: str, *, max_lines: int, max_bytes: int) -> str:
-    cleaned = ANSI_ESCAPE_RE.sub("", text)
-    lines = [mask_obvious_secrets(line) for line in cleaned.splitlines()]
-    excerpt = "\n".join(lines[-max_lines:])
-    encoded = excerpt.encode("utf-8")
-    if len(encoded) > max_bytes:
-        excerpt = encoded[-max_bytes:].decode("utf-8", errors="replace")
-    return excerpt.strip()
-
-
-def emit_failed_job_diagnostics(
-    *,
-    repo: pathlib.Path,
-    run: dict[str, Any],
-    state: RemoteFailureDiagnosticsState,
-    remote_policy: dict[str, int],
-) -> bool:
-    run_id = run_database_id(run)
-    if run_id is None:
-        print("CI failed-job diagnostics unavailable: workflow run databaseId missing", file=sys.stderr)
-        return False
-    attempt = run_attempt(run)
-    if attempt is None:
-        print("CI failed-job diagnostics unavailable: workflow run attempt missing", file=sys.stderr)
-        return False
-    jobs, error = workflow_run_jobs(repo, run_id, attempt)
-    if error is not None or jobs is None:
-        notice_interval = remote_policy["diagnostic_unavailable_notice_interval_polls"]
-        poll_count = state.jobs_unavailable_notice_polls.get(run_id, 0) + 1
-        state.jobs_unavailable_notice_polls[run_id] = poll_count
-        if poll_count == 1 or poll_count % notice_interval == 0:
-            print(f"CI failed-job diagnostics unavailable: {error or 'unable to inspect workflow run jobs'}", file=sys.stderr)
-        return False
-    state.jobs_unavailable_notice_polls.pop(run_id, None)
-    notice_interval = remote_policy["diagnostic_unavailable_notice_interval_polls"]
-    for job in jobs:
-        if job_text(job, "status") != "completed" or job_text(job, "conclusion") != "failure":
-            continue
-        job_id = job_database_id(job)
-        if job_id is None or job_id in state.reported_job_ids:
-            continue
-        log_text, log_error = job_log_failed(repo, job_id)
-        excerpt = (
-            diagnostic_log_excerpt(
-                log_text,
-                max_lines=remote_policy["diagnostic_log_max_lines"],
-                max_bytes=remote_policy["diagnostic_log_max_bytes"],
-            )
-            if log_text is not None
-            else ""
-        )
-        if not excerpt:
-            poll_count = state.unavailable_notice_polls.get(job_id, 0) + 1
-            state.unavailable_notice_polls[job_id] = poll_count
-            if poll_count == 1 or poll_count % notice_interval == 0:
-                print(f"CI failed job: {failed_job_summary(job, job_id)}", file=sys.stderr)
-                print(f"  job_log=unavailable yet: {log_error or 'not available'}", file=sys.stderr)
-            continue
-        state.reported_job_ids.add(job_id)
-        state.unavailable_notice_polls.pop(job_id, None)
-        print(f"CI failed job: {failed_job_summary(job, job_id)}", file=sys.stderr)
-        print(excerpt, file=sys.stderr)
-    return True
-
-
-def matching_full_ci_runs(
-    runs: list[dict[str, Any]],
-    *,
-    head: str,
-    events: set[str],
-    created_at_floor: str | None = None,
-    ignored_run_ids: set[int] | None = None,
-) -> list[dict[str, Any]]:
-    matching = []
-    for run in runs:
-        event = run.get("event")
-        if run.get("headSha") != head or event not in events:
-            continue
-        run_id = run_database_id(run)
-        if ignored_run_ids is not None and run_id in ignored_run_ids:
-            continue
-        if created_at_floor is not None and run_created_at(run) < created_at_floor:
-            continue
-        matching.append(run)
-    return sorted(matching, key=run_created_at, reverse=True)
-
-
 def workflow_run_state(run: dict[str, Any]) -> str:
     status = str(run.get("status") or "")
     if status != "completed":
@@ -3905,10 +3389,6 @@ def workflow_run_summary(run: dict[str, Any]) -> str:
     conclusion = str(run.get("conclusion") or "none")
     url = str(run.get("url") or "")
     return f"workflow run {run_id} [{status}/{conclusion}]" + (f" {url}" if url else "")
-
-
-def run_ids(runs: list[dict[str, Any]]) -> set[int]:
-    return {run_id for run in runs if (run_id := run_database_id(run)) is not None}
 
 
 def rust_probe_run_list(
@@ -4062,17 +3542,8 @@ def rust_probe_test_target_for_path(
     return manifest.member_to_harness.get(stem)
 
 
-def rust_probe_separate_workspace_for_path(path: str, separate_workspaces: dict[str, Any]) -> tuple[str, ...] | None:
-    normalized = path.strip().replace("\\", "/")
-    for prefix, suggestion in separate_workspaces.items():
-        if normalized == prefix or normalized.startswith(f"{prefix}/"):
-            return (str(suggestion["message"]), *(str(command) for command in suggestion["commands"]))
-    return None
-
-
 def rust_probe_suggestions(
     changed_files: list[str],
-    separate_workspaces: dict[str, Any],
     *,
     manifest_path: pathlib.Path | None = None,
     tests_root: pathlib.Path | None = None,
@@ -4105,14 +3576,6 @@ def rust_probe_suggestions(
     )
     if lib_or_workspace_changed:
         suggestions.append("just rust-probe check-lib")
-    for suggestion_lines in sorted(
-        {
-            suggestion
-            for path in normalized
-            if (suggestion := rust_probe_separate_workspace_for_path(path, separate_workspaces)) is not None
-        }
-    ):
-        suggestions.extend(suggestion_lines)
     for target, stems in sorted(target_to_stems.items()):
         suggestions.extend(
             [
@@ -4132,7 +3595,7 @@ def rust_probe_suggestions(
     if any(path.startswith("crates/") for path in normalized):
         return [
             "No root Rust Probe suggestion was inferred for changed crates/ paths.",
-            "Configure remote_probe.separate_workspaces for separate workspaces that need non-root guidance.",
+            "The fixed final-review workflow always covers every registered workspace.",
         ]
     return [
         "No Rust source or top-level integration-test target was inferred from changed files.",
@@ -4192,9 +3655,9 @@ def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
     else:
         print("changed files considered: <none>")
     print("commands:")
-    for suggestion in rust_probe_suggestions(changed_files, probe_policy["separate_workspaces"]):
+    for suggestion in rust_probe_suggestions(changed_files):
         print(f"- {suggestion}")
-    print("Rust Probe is debugging evidence only. Draft verify-remote is full remote feedback; neither is merge authority.")
+    print("Rust Probe is diagnostic only. The fixed final-review workflow is the complete remote evidence path.")
     return 0
 
 
@@ -4229,7 +3692,7 @@ def evaluate_rust_probe_run(
         return None
     if state == "pass":
         print(f"OK: Rust Probe {probe_id} passed for {head}: {summary}")
-        print("Rust Probe is debugging evidence only. Draft verify-remote is full remote feedback; neither is merge authority.")
+        print("DIAGNOSTIC ONLY -- the fixed final-review workflow is the complete remote evidence path")
         return 0
     conclusion = str(run.get("conclusion") or "")
     if conclusion == "cancelled":
@@ -4240,10 +3703,7 @@ def evaluate_rust_probe_run(
         return 2
     print(f"Rust Probe {probe_id} failed for {head}; this is debugging feedback only:", file=sys.stderr)
     print(f"- {summary}", file=sys.stderr)
-    print(
-        "Rust Probe is debugging evidence only. Draft verify-remote is full remote feedback; neither is merge authority.",
-        file=sys.stderr,
-    )
+    print("DIAGNOSTIC ONLY -- the fixed final-review workflow is the complete remote evidence path", file=sys.stderr)
     return 1
 
 
@@ -4283,142 +3743,6 @@ def wait_for_rust_probe_run(
             continue
         result = evaluate_rust_probe_run(run, head=head, probe_id=probe_id)
         if result is not None:
-            return result
-        time.sleep(interval)
-
-
-def evaluate_full_ci_run(
-    repo: pathlib.Path,
-    run: dict[str, Any],
-    *,
-    dispatch_config: dict[str, Any],
-    head: str,
-    pr_url: str,
-) -> int | None:
-    state = workflow_run_state(run)
-    if state == "pending":
-        return None
-    if state == "pass":
-        required_gate_job = None
-        missing_gate_message = ""
-        if run.get("event") == "pull_request":
-            required_gate_job = dispatch_config["proof_gate_job"]
-            missing_gate_message = "pull_request run lacks successful required gate job"
-        else:
-            print(
-                f"Remote full CI failed for {head} on {pr_url}: unsupported workflow event {run.get('event')!r}",
-                file=sys.stderr,
-            )
-            print(f"- {workflow_run_summary(run)}", file=sys.stderr)
-            return 1
-        if required_gate_job is not None:
-            run_id = run_database_id(run)
-            if run_id is None:
-                print(f"Remote full CI failed for {head} on {pr_url}: workflow run databaseId missing", file=sys.stderr)
-                return 1
-            jobs, error = workflow_run_jobs(repo, run_id, run_attempt(run))
-            if error is not None or jobs is None:
-                print(f"Remote full CI failed for {head} on {pr_url}: {error or 'unable to inspect gate job'}", file=sys.stderr)
-                return 1
-            if not any(
-                job_text(job, "name") == required_gate_job
-                and job_text(job, "conclusion") == "success"
-                for job in jobs
-            ):
-                print(
-                    f"Remote full CI failed for {head} on {pr_url}: {missing_gate_message}",
-                    file=sys.stderr,
-                )
-                print(f"- {workflow_run_summary(run)}", file=sys.stderr)
-                return 1
-        print(f"OK: remote full CI passed for {head} on {pr_url}: {workflow_run_summary(run)}")
-        return 0
-    print(f"Remote full CI failed for {head} on {pr_url}:", file=sys.stderr)
-    print(f"- {workflow_run_summary(run)}", file=sys.stderr)
-    return 1
-
-
-def wait_for_full_ci_run(
-    *,
-    repo: pathlib.Path,
-    dispatch_config: dict[str, Any],
-    branch: str,
-    head: str,
-    pr_url: str,
-    remote_policy: dict[str, int],
-    events: set[str],
-    created_at_floor: str | None = None,
-    ignored_run_ids: set[int] | None = None,
-    initial_tracked_run_id: int | None = None,
-    sleep_before_initial_tracked_poll: bool = False,
-    track_run_once_found: bool = False,
-) -> int:
-    appear_deadline = time.monotonic() + remote_policy["checks_appear_timeout_seconds"]
-    overall_deadline = time.monotonic() + remote_policy["overall_timeout_seconds"]
-    interval = remote_policy["poll_interval_seconds"]
-    tracked_run_id: int | None = initial_tracked_run_id
-    diagnostics_state = RemoteFailureDiagnosticsState()
-    if tracked_run_id is not None and sleep_before_initial_tracked_poll:
-        time.sleep(interval)
-    while True:
-        now = time.monotonic()
-        if now >= overall_deadline:
-            head_result = verify_remote_head_current_or_fail(repo, branch, head)
-            if head_result is not None:
-                return head_result
-            return verify_remote_fail(f"timed out waiting for full-CI workflow run on {pr_url}")
-        head_result = verify_remote_head_current_or_fail(repo, branch, head)
-        if head_result is not None:
-            return head_result
-        run: dict[str, Any] | None = None
-        if tracked_run_id is not None:
-            run, error = workflow_run_view(repo, tracked_run_id)
-            if error is not None or run is None:
-                return verify_remote_fail(error or "unable to inspect tracked workflow run")
-        else:
-            runs, error = workflow_run_list(repo, dispatch_config, branch)
-            if error is not None or runs is None:
-                return verify_remote_fail(error or "unable to inspect workflow runs")
-            matching = matching_full_ci_runs(
-                runs,
-                head=head,
-                events=events,
-                created_at_floor=created_at_floor,
-                ignored_run_ids=ignored_run_ids,
-            )
-            if matching:
-                run = matching[0]
-                if track_run_once_found:
-                    tracked_run_id = run_database_id(run)
-        if run is None:
-            if now >= appear_deadline:
-                return verify_remote_fail(f"no matching full-CI workflow run appeared for {head} on {pr_url}")
-            time.sleep(interval)
-            continue
-        head_result = verify_remote_head_current_or_fail(repo, branch, head)
-        if head_result is not None:
-            return head_result
-        emit_failed_job_diagnostics(
-            repo=repo,
-            run=run,
-            state=diagnostics_state,
-            remote_policy=remote_policy,
-        )
-        if workflow_run_state(run) != "pending":
-            head_result = verify_remote_head_current_or_fail(repo, branch, head)
-            if head_result is not None:
-                return head_result
-        result = evaluate_full_ci_run(
-            repo,
-            run,
-            dispatch_config=dispatch_config,
-            head=head,
-            pr_url=pr_url,
-        )
-        if result is not None:
-            head_result = verify_remote_head_current_or_fail(repo, branch, head)
-            if head_result is not None:
-                return head_result
             return result
         time.sleep(interval)
 
@@ -4483,129 +3807,13 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
     print(f"sha: {head}")
     print(f"scope: {scope}")
     print(f"runner_tier: {runner_tier}")
-    print("Rust Probe is debugging evidence only. Draft verify-remote is full remote feedback; neither is merge authority.")
+    print("DIAGNOSTIC ONLY -- the fixed final-review workflow is the complete remote evidence path")
     return wait_for_rust_probe_run(
         repo=repo,
         remote_policy=probe_policy,
         branch=branch,
         head=head,
         probe_id=probe_id,
-    )
-
-
-def cmd_ci_logs(args: argparse.Namespace) -> int:
-    repo = repo_path(args.repo)
-    try:
-        policy = load_policy(repo)
-        remote_policy = remote_verification_policy(policy)
-    except (OSError, PolicyError, FileNotFoundError) as exc:
-        return verify_remote_fail(str(exc))
-    head, branch, error = ensure_verify_remote_preconditions(repo)
-    if error is not None or head is None or branch is None:
-        return verify_remote_fail(error or "unable to inspect git state")
-    pr, error = pr_for_exact_head(repo, branch, head, during_watch=False)
-    if error is not None or pr is None:
-        return verify_remote_fail(error or "unable to inspect pull request")
-    pr_url = pr.get("url") or f"PR #{pr.get('number')}"
-    if bool(pr.get("isDraft")):
-        return verify_remote_fail(DRAFT_FULL_CI_GUIDANCE)
-    dispatch_config, error = ci_provenance_dispatch_config(repo)
-    if error is not None or dispatch_config is None:
-        return verify_remote_fail(error or "unable to inspect CI dispatch config")
-    runs, error = workflow_run_list(repo, dispatch_config, branch)
-    if error is not None or runs is None:
-        return verify_remote_fail(error or "unable to inspect workflow runs")
-    matching = matching_full_ci_runs(
-        runs,
-        head=head,
-        events=FULL_CI_READY_EVENTS,
-    )
-    if not matching:
-        return verify_remote_fail(f"no matching full-CI workflow run found for {head} on {pr_url}")
-    diagnostics_available = emit_failed_job_diagnostics(
-        repo=repo,
-        run=matching[0],
-        state=RemoteFailureDiagnosticsState(),
-        remote_policy=remote_policy,
-    )
-    return 2 if diagnostics_available is False else 0
-
-
-def cmd_verify_remote(args: argparse.Namespace) -> int:
-    repo = repo_path(args.repo)
-    try:
-        policy = load_policy(repo)
-        remote_policy = remote_verification_policy(policy)
-    except (OSError, PolicyError, FileNotFoundError) as exc:
-        return verify_remote_fail(str(exc))
-    head, branch, error = ensure_verify_remote_preconditions(repo)
-    if error is not None or head is None or branch is None:
-        return verify_remote_fail(error or "unable to inspect git state")
-    pr, error = pr_for_exact_head(repo, branch, head, during_watch=False)
-    if error is not None or pr is None:
-        return verify_remote_fail(error or "unable to inspect pull request")
-    pr_url = pr.get("url") or f"PR #{pr.get('number')}"
-    dispatch_config, error = ci_provenance_dispatch_config(repo)
-    if error is not None or dispatch_config is None:
-        return verify_remote_fail(error or "unable to inspect CI dispatch config")
-
-    print(
-        "verify-remote full CI feedback: use just rust-probe suggest for targeted Rust debugging "
-        "before spending full CI."
-    )
-
-    if bool(pr.get("isDraft")):
-        return verify_remote_fail(DRAFT_FULL_CI_GUIDANCE)
-
-    runs, error = workflow_run_list(repo, dispatch_config, branch)
-    if error is not None or runs is None:
-        return verify_remote_fail(error or "unable to inspect workflow runs")
-    existing = matching_full_ci_runs(
-        runs,
-        head=head,
-        events=FULL_CI_READY_EVENTS,
-    )
-    if existing:
-        run = existing[0]
-        state = workflow_run_state(run)
-        if state == "pass":
-            result = evaluate_full_ci_run(
-                repo,
-                run,
-                dispatch_config=dispatch_config,
-                head=head,
-                pr_url=str(pr_url),
-            )
-            head_result = verify_remote_head_current_or_fail(repo, branch, head)
-            if head_result is not None:
-                return head_result
-            return result
-        if state == "pending":
-            run_id = run_database_id(run)
-            if run_id is not None:
-                return wait_for_full_ci_run(
-                    repo=repo,
-                    dispatch_config=dispatch_config,
-                    branch=branch,
-                    head=head,
-                    pr_url=str(pr_url),
-                    remote_policy=remote_policy,
-                    events=FULL_CI_READY_EVENTS,
-                    initial_tracked_run_id=run_id,
-                    sleep_before_initial_tracked_poll=True,
-                    track_run_once_found=True,
-                )
-
-    return wait_for_full_ci_run(
-        repo=repo,
-        dispatch_config=dispatch_config,
-        branch=branch,
-        head=head,
-        pr_url=str(pr_url),
-        remote_policy=remote_policy,
-        events=FULL_CI_READY_EVENTS,
-        ignored_run_ids=run_ids(existing),
-        track_run_once_found=True,
     )
 
 
@@ -4953,13 +4161,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("args", nargs=argparse.REMAINDER)
     run.set_defaults(func=cmd_run)
 
-    verify_remote = subparsers.add_parser("verify-remote")
-    verify_remote.add_argument("--repo", required=True)
-    verify_remote.set_defaults(func=cmd_verify_remote)
-
     rust_probe = subparsers.add_parser(
         "rust-probe",
-        description="Dispatch a bounded remote Rust Probe for debugging evidence; never merge authority.",
+        description="Dispatch a bounded remote Rust Probe for debugging feedback; not merge proof.",
         epilog=RUST_PROBE_HELP_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -4969,13 +4173,6 @@ def build_parser() -> argparse.ArgumentParser:
     rust_probe.add_argument("test_target", nargs="?")
     rust_probe.add_argument("test_name", nargs="?")
     rust_probe.set_defaults(func=cmd_rust_probe)
-
-    ci_logs = subparsers.add_parser(
-        "ci-logs",
-        description="Print failed-job diagnostics for the matching exact-head full-CI run; not a CI pass/fail gate.",
-    )
-    ci_logs.add_argument("--repo", required=True)
-    ci_logs.set_defaults(func=cmd_ci_logs)
 
     scrub = subparsers.add_parser("scrub-env-keys")
     scrub.set_defaults(func=cmd_scrub_env_keys)

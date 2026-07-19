@@ -1,5 +1,8 @@
 schema_version = 1
 
+[action_pins]
+upload_artifact = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+
 # Repository Actions variables (Settings → Secrets and variables → Actions)
 # must match [runners.*.label]. Workflows reference runners only via vars.<variable>.
 
@@ -15,104 +18,16 @@ label = "ubicloud-standard-4-arm"
 variable = "CI_RUNNER_MANAGED_LIGHT"
 label = "ubicloud-standard-2"
 
-[workflows.ci]
-merge-readiness-progress = "github_hosted"
-ci-policy = "github_hosted"
-detector = "github_hosted"
-host-health = "github_hosted"
-deny = "managed_light"
-# NT develop increased the restored managed target enough that full-repo clippy
-# now refuses on the light tier before compilation with disk_pressure. Keep it
-# on the heavy tier, matching other NT-heavy compile lanes.
-clippy = "managed_heavy"
-check-aarch64 = "managed_heavy"
-source-fence = "managed_heavy"
-source-fence-static = "managed_light"
-nextest-fingerprint = "managed_heavy"
-test-archive = "managed_heavy"
-nextest-fingerprint-reuse = "github_hosted"
-cache-persistence-audit = "github_hosted"
-test = "github_hosted"
-build = "managed_heavy"
-ci-provenance-emit = "managed_light"
-same-sha-main-evidence = "github_hosted"
-gate = "github_hosted"
-deploy = "github_hosted"
+[workflows.final_review]
+capture-head = "github_hosted"
+evidence = "managed_heavy"
+
+[workflows.reference_boundary_capture]
 capture = "managed_heavy"
-capture-gate = "github_hosted"
 
-[workflows.backtester_ci]
-ci-policy = "managed_light"
-detect = "managed_light"
-fmt = "managed_light"
-# This config is a full proof path for merge-queue probe PRs; comment-only
-# probe edits here still exercise both required gates before queueing.
-# clippy compiles the full NT-heavy crate (same footprint as test) and rides above the disk-pressure
-# floor only on the heavy tier; on managed_light (ubicloud-standard-2) the preflight refused at
-# free_bytes=10,622,885,888 < min_free_bytes=10,737,418,240. Kept consistent with the test lane,
-# which already compiles this crate on managed_heavy.
-clippy = "managed_heavy"
-test-archive = "managed_heavy"
-issue_789 = "managed_heavy"
-gate = "github_hosted"
-
-[backtester.test_archive_timeout]
-ordinary_max_job_minutes = 360
-
-[backtester.ra001a_durable_tracer]
-max_job_minutes = 120
-max_registry_packs = 64
-max_total_selected_object_bytes = 1073741824
-max_worker_executable_bytes = 1073741824
-max_wall_seconds = 3600
-termination_grace_seconds = 30
-receipt_artifact_name = "ra001a-durable-tracer-receipt"
-receipt_retention_days = 7
-
-[backtester.ra001a_durable_tracer.git_executable]
-path = "/usr/bin/git"
-max_bytes = 67108864
-
-[backtester.ra001a_durable_tracer.aws]
-role_arn = "arn:aws:iam::675819144420:role/bolt-v2-github-ra001a-tracer"
-region = "us-east-1"
-
-# Trusted-default-branch bounds checked against every committed pack before
-# worker capture. `max_*` values are ceilings; `min_*` values are safety floors;
-# unprefixed retention ages are exact because either direction changes cost.
-[backtester.ra001a_durable_tracer.pack_limits]
-max_concurrent_records = 1
-max_fetch_timeout_seconds = 300
-max_worker_termination_grace_seconds = 30
-max_worker_virtual_memory_bytes = 2147483648
-min_worker_reserved_overhead_bytes = 536870912
-max_decoded_bytes = 1073741824
-max_source_rows = 1000000
-max_projected_row_groups = 128
-max_operator_wall_seconds = 1800
-max_terminal_commit_timeout_seconds = 60
-max_launch_artifact_bytes = 65536
-max_control_artifact_bytes = 65536
-max_retained_control_input_bytes = 262144
-max_final_object_bytes = 4194304
-max_workspace_bytes = 34359738368
-max_cache_bytes = 17179869184
-min_free_space_reserve_bytes = 10737418240
-min_one_record_worst_case_bytes = 4294967296
-cache_retention_age_seconds = 2592000
-candidate_retention_age_seconds = 86400
-max_lifecycle_cleanup_entries = 1000000
-max_lifecycle_cleanup_depth = 64
-
-[backtester.ra001a_durable_tracer.checkout]
-allowed_ignored_runtime_roots = [
-  ".nextest-archive/",
-  ".rust-verification/",
-  "scripts/__pycache__/",
-  "target/",
-]
-max_ignored_entry_bytes = 4096
-max_ignored_entries = 128
+[workflows.root_artifact]
+preflight = "github_hosted"
+produce = "managed_heavy"
 
 [workflows.flaky_test_detection]
 flaky-detection-rust-root = "managed_heavy"
@@ -128,28 +43,14 @@ flaky-smoke-rust-backtester-issue-789 = "managed_heavy"
 debug-heavy = "managed_heavy"
 debug-light = "managed_light"
 
-[workflows.debug_test]
-debug-test = "managed_heavy"
-
 [workflows.rust_probe]
 probe-unsupported-runner-tier = "managed_light"
 probe-unsupported-job-timeout = "managed_light"
 probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
-[workflows.root_artifact]
-preflight = "github_hosted"
-produce = "managed_heavy"
-
-[cargo_build_jobs.ci]
-clippy = 3
-check-aarch64 = 3
-source-fence = 3
-test-archive = 3
-
-[cargo_build_jobs.backtester_ci]
-clippy = 3
-test-archive = 3
+[cargo_build_jobs.final_review]
+evidence = 6
 
 [cargo_build_jobs.rust_probe]
 probe-heavy = 3
@@ -165,29 +66,15 @@ flaky-smoke-rust-root = 3
 flaky-smoke-rust-backtester = 3
 flaky-smoke-rust-backtester-issue-789 = 3
 
-[cargo_build_jobs.debug_test]
-debug-test = 3
-
-[workflows.actionlint]
-actionlint = "github_hosted"
-
-[workflows.ai_review_glm_pr_agent]
-glm-pr-agent-review = "github_hosted"
+[workflows.ai_review_glm]
+review = "github_hosted"
 
 [workflows.ai_review_kimi_cli]
-kimi-cli-review = "github_hosted"
+review = "github_hosted"
 
 [workflows.claude_code_review]
-claude-review = "github_hosted"
-
-[workflows.dispatch_ci_cancel]
-cancel-obsolete-dispatch = "github_hosted"
-
-[workflows.merge_readiness_finalizer]
-mark-stalled = "github_hosted"
-
-[workflows.coverage_enforcer]
-coverage-enforcer = "managed_light"
+analysis = "github_hosted"
+publish = "github_hosted"
 
 [workflows.ci_storage_tripwire]
 storage-tripwire = "github_hosted"
@@ -227,17 +114,13 @@ session_timeout_minutes = 10
 require_plan_approval = true
 
 [meter]
-fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
-fingerprint_workflow = "ci"
 debug_workflow = "ci_runner_debug"
 included_workflows = [
-  "ci",
-  "backtester_ci",
-  "coverage_enforcer",
+  "final_review",
+  "reference_boundary_capture",
   "flaky_test_detection",
   "flaky_test_smoke",
   "ci_runner_debug",
-  "debug_test",
   "rust_probe",
   "root_artifact",
 ]
@@ -245,187 +128,8 @@ included_workflows = [
 [meter.api_limits]
 workflow_runs_per_page = 100
 run_jobs_per_page = 100
-run_artifacts_per_page = 100
 branch_pull_requests_per_page = 20
 draft_timeline_items = 100
-
-[ci_provenance]
-schema_version = 1
-artifact_name_template = "ci-provenance-attempt-{run_attempt}"
-workflow_key = "ci"
-workflow_name = "CI"
-workflow_path = ".github/workflows/ci.yml"
-fingerprint_source = "meter"
-
-[ci_provenance.artifact_name_template_vars]
-run_attempt = "${{ github.run_attempt }}"
-
-[backtester.issue_789]
-artifact_name_template = "issue-789-first-pl-{run_id}-{run_attempt}"
-max_job_minutes = 120
-
-[backtester.issue_789.artifact_name_template_vars]
-run_id = "${{ github.run_id }}"
-run_attempt = "${{ github.run_attempt }}"
-
-[ci_provenance.full_ci]
-required_jobs = [
-  "detector",
-  "deny",
-  "clippy",
-  "check-aarch64",
-  "source-fence",
-  "nextest-fingerprint",
-  "test-archive",
-  "test",
-]
-conditional_jobs = ["build"]
-conditional_job_outputs = { build = "detector.build_required" }
-
-[ci_provenance.full_ci.jobs.detector]
-check_name = "detector"
-
-[ci_provenance.full_ci.jobs.deny]
-check_name = "deny"
-
-[ci_provenance.full_ci.jobs.clippy]
-check_name = "clippy"
-
-[ci_provenance.full_ci.jobs.check-aarch64]
-check_name = "check-aarch64"
-
-[ci_provenance.full_ci.jobs.source-fence]
-check_name = "source-fence"
-
-[ci_provenance.full_ci.jobs.nextest-fingerprint]
-check_name = "nextest fingerprint"
-
-[ci_provenance.full_ci.jobs.test-archive]
-check_name = "nextest archive"
-
-[ci_provenance.full_ci.jobs.test]
-check_name = "test"
-
-[ci_provenance.full_ci.jobs.build]
-check_name = "build"
-conditional = "detector.build_required"
-
-[ci_provenance.deploy]
-artifact_name = "bolt-v2-binary"
-artifact_upload_if = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
-artifact_retention_days = 3
-artifact_lookback_age_seconds = 259200
-require_source_event = "push"
-require_source_branch = "main"
-require_gate_check = true
-
-[ci_provenance.dispatch]
-run_name_default = "CI"
-run_name_iteration = "CI [dispatch:iteration]"
-proof_gate_job = "gate"
-
-[ci_provenance.merge_readiness]
-comment_marker = "bolt-v2-merge-readiness"
-poll_seconds = 30
-max_watch_seconds = 14400
-
-[ci_provenance.gate_names]
-gate_required = "gate"
-gate_iteration = "gate-iteration"
-backtester_required = "backtester-gate"
-backtester_iteration = "backtester-gate-iteration"
-
-[ci_provenance.required_checks.gate]
-context = "gate"
-reporter = "ci.yml gate summary job"
-integration_id = 15368
-required = true
-target = true
-runs_on_tags = true
-arrivals = ["pull_request", "merge_group"]
-
-[ci_provenance.required_checks.gate.proof_rule]
-fresh = ["docs", "full", "tag_reuse"]
-
-[ci_provenance.required_checks.backtester-gate]
-context = "backtester-gate"
-reporter = "backtester-ci.yml gate job"
-integration_id = 15368
-required = true
-target = true
-runs_on_tags = true
-arrivals = ["pull_request", "merge_group"]
-
-[ci_provenance.required_checks.backtester-gate.proof_rule]
-fresh = ["docs", "full", "tag_reuse"]
-
-[ci_provenance.required_checks.host-health]
-context = "host-health"
-reporter = "ci.yml host-health lane"
-integration_id = 15368
-required = true
-target = true
-runs_on_tags = false
-arrivals = ["pull_request", "merge_group"]
-
-[ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["docs", "full", "iteration"]
-
-[ci_provenance.required_checks.actionlint]
-context = "actionlint"
-reporter = "actionlint.yml"
-integration_id = 15368
-required = true
-target = true
-runs_on_tags = false
-arrivals = ["pull_request", "merge_group"]
-
-[ci_provenance.required_checks.actionlint.proof_rule]
-fresh = ["docs", "full", "iteration"]
-
-[ci_provenance.required_checks.coverage-enforcer]
-context = "coverage-enforcer"
-reporter = "self"
-integration_id = 15368
-required = false
-target = true
-runs_on_tags = false
-arrivals = ["pull_request", "merge_group"]
-
-[ci_provenance.required_checks.coverage-enforcer.proof_rule]
-fresh = ["docs", "full", "iteration"]
-
-[ci_provenance.docs]
-safe_paths = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  "GEMINI.md",
-  "REASONIX.md",
-  "LICENSE",
-  "SECURITY.md",
-  ".github/ISSUE_TEMPLATE/**",
-  ".claude/**",
-  ".codex/**",
-  ".gemini/**",
-  ".opencode/**",
-  ".pi/**",
-  ".specify/**",
-]
-forbidden_ignored_build_paths = [
-  ".claude/rust-verification.toml",
-]
-non_heavy_required_jobs = ["detector", "source-fence"]
-
-[ci_provenance.api_limits]
-workflow_runs_per_page = 100
-run_jobs_per_page = 100
-run_artifacts_per_page = 100
-max_lookback_pages = 10
-max_lookback_age_seconds = 1209600
-inherited_emitter_probe_timeout_seconds = 30
-
-[ci_provenance.artifacts]
-retention_days = 14
 
 [artifact_retention.classes.deployable]
 max_retention_days = 3
@@ -439,73 +143,10 @@ max_retention_days = 14
 [artifact_retention.classes.transient]
 max_retention_days = 7
 
-[artifact_retention.uploads.".github/workflows/ci.yml::nextest-fingerprint::upload-nextest-fingerprint"]
-artifact_name = "${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}"
-artifact_class = "reuse-bound"
-retention_days_config_file = "ci/github-actions-runners.toml"
-retention_days_config_ref = "ci_provenance.artifacts.retention_days"
-
-[artifact_retention.uploads.".github/workflows/ci.yml::build::upload-bolt-v2-binary"]
-artifact_name_config_file = "ci/github-actions-runners.toml"
-artifact_name_config_ref = "ci_provenance.deploy.artifact_name"
-artifact_class = "deployable"
-retention_days_config_file = "ci/github-actions-runners.toml"
-retention_days_config_ref = "ci_provenance.deploy.artifact_retention_days"
-required_if_config_file = "ci/github-actions-runners.toml"
-required_if_config_ref = "ci_provenance.deploy.artifact_upload_if"
-
-[artifact_retention.uploads.".github/workflows/ci.yml::ci-provenance-emit::upload-ci-provenance"]
-artifact_name_template_config_file = "ci/github-actions-runners.toml"
-artifact_name_template_config_ref = "ci_provenance.artifact_name_template"
-artifact_name_template_vars_config_file = "ci/github-actions-runners.toml"
-artifact_name_template_vars_config_ref = "ci_provenance.artifact_name_template_vars"
-artifact_class = "reuse-bound"
-retention_days_config_file = "ci/github-actions-runners.toml"
-retention_days_config_ref = "ci_provenance.artifacts.retention_days"
-
-[artifact_retention.uploads.".github/workflows/ci.yml::capture::upload-capture-artifact"]
-artifact_name = "${{ steps.provenance.outputs.artifact_name }}"
-artifact_class = "capture-provenance"
-retention_days_config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"
-retention_days_config_ref = "ci_provenance.artifacts.retention_days"
-
-[artifact_retention.uploads.".github/workflows/backtester-ci.yml::issue_789::upload-issue-789-first-pl"]
-artifact_name_template_config_file = "ci/github-actions-runners.toml"
-artifact_name_template_config_ref = "backtester.issue_789.artifact_name_template"
-artifact_name_template_vars_config_file = "ci/github-actions-runners.toml"
-artifact_name_template_vars_config_ref = "backtester.issue_789.artifact_name_template_vars"
-artifact_class = "transient"
-retention_days = 7
-
 [artifact_retention.uploads.".github/workflows/ci-storage-cleanup-alert.yml::cleanup-alert::upload-cleanup-feasibility-json"]
 artifact_name = "ci-storage-cleanup-feasibility"
 artifact_class = "transient"
 retention_days = 7
-
-# Every artifact reused from a prior run must have a binding here.
-[artifact_retention.lookback_bindings.build_deploy]
-upload = ".github/workflows/ci.yml::build::upload-bolt-v2-binary"
-config_file = "ci/github-actions-runners.toml"
-retention_ref = "ci_provenance.deploy.artifact_retention_days"
-lookback_ref = "ci_provenance.deploy.artifact_lookback_age_seconds"
-
-[artifact_retention.lookback_bindings.nextest_fingerprint]
-upload = ".github/workflows/ci.yml::nextest-fingerprint::upload-nextest-fingerprint"
-config_file = "ci/github-actions-runners.toml"
-retention_ref = "ci_provenance.artifacts.retention_days"
-lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
-
-[artifact_retention.lookback_bindings.ci_provenance]
-upload = ".github/workflows/ci.yml::ci-provenance-emit::upload-ci-provenance"
-config_file = "ci/github-actions-runners.toml"
-retention_ref = "ci_provenance.artifacts.retention_days"
-lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
-
-[artifact_retention.lookback_bindings.capture]
-upload = ".github/workflows/ci.yml::capture::upload-capture-artifact"
-config_file = "ci/chainlink-reference-fixture-capture-provenance.toml"
-retention_ref = "ci_provenance.artifacts.retention_days"
-lookback_ref = "ci_provenance.api_limits.max_lookback_age_seconds"
 
 [storage_audit.cleanup_feasibility]
 schema_version = 1
@@ -612,38 +253,6 @@ candidate_reason = "expired nextest archive outside protected refs"
 keep_reason = "nextest archive is retained until it expires"
 
 [[storage_audit.cleanup_feasibility.classes]]
-id = "backtester_payload"
-name_equals = ["bvs-test-payload"]
-name_prefixes_from_templates = ["backtester.issue_789.artifact_name_template"]
-expired_decision = "DELETE-CANDIDATE"
-candidate_reason = "expired backtester test payload outside protected refs"
-keep_reason = "backtester test payload is retained until it expires"
-
-[[storage_audit.cleanup_feasibility.classes]]
-id = "deploy_binary"
-name_equals = []
-name_equals_from = ["ci_provenance.deploy.artifact_name"]
-name_prefixes = []
-expired_decision = "KEEP"
-keep_reason = "deploy binary is not a cleanup candidate"
-
-[[storage_audit.cleanup_feasibility.classes]]
-id = "ci_provenance"
-name_equals = []
-name_prefixes = []
-name_prefixes_from_templates = ["ci_provenance.artifact_name_template"]
-expired_decision = "KEEP"
-keep_reason = "CI provenance evidence is not a cleanup candidate"
-
-[[storage_audit.cleanup_feasibility.classes]]
-id = "nextest_fingerprint"
-name_equals = []
-name_prefixes = []
-name_prefixes_from = ["meter.fingerprint_artifact_prefix"]
-expired_decision = "KEEP"
-keep_reason = "nextest fingerprint evidence is not a cleanup candidate"
-
-[[storage_audit.cleanup_feasibility.classes]]
 id = "sarif_code_scanning"
 name_equals = []
 name_prefixes = ["sarif-artifact-"]
@@ -668,46 +277,6 @@ name_prefixes = [
 ]
 expired_decision = "KEEP"
 keep_reason = "personal/non-CI artifact is not a cleanup candidate"
-
-# Draft PRs and manual workflow_dispatch are cheap iteration feedback. Ready PR
-# opened/synchronize/ready_for_review runs publish the automatic full signal;
-# ready metadata-only edits stay on iteration names, while reopened and
-# merge-boundary paths run fresh full proof.
-[ci_provenance.policy]
-draft_pr_synchronize = "iteration"
-draft_pr_opened = "iteration"
-draft_pr_reopened = "iteration"
-draft_pr_edited = "iteration"
-converted_to_draft = "iteration"
-ready_pr = "full"
-ready_pr_edited_no_base = "iteration"
-ready_pr_reopened = "full"
-ready_for_review = "full"
-docs = "docs"
-workflow_dispatch = "iteration"
-main_push = "full"
-merge_group = "full"
-mergify_temp_pr = "full"
-tag = "tag_reuse"
-unknown_event = "full"
-
-[ci_provenance.mergify]
-temp_pr_head_ref_prefix = "mergify/merge-queue/"
-# GAP-1 (#981): a head-ref prefix alone must never earn the required gate. The temp PR
-# is recognized only when github.event.sender.id is this bound mergify[bot] actor id.
-# Evidence: author.id == 37929162 == mergify[bot], verified on merge-queue temp PRs
-# #998, #984, #980 (github.event.sender.id on those temp PRs). Do not re-litigate.
-mergify_temp_pr_actor_id = 37929162
-
-[ci_provenance.policy.override]
-force_full_ci = false
-ignore_emit_failure = false
-
-[dispatch_cancel]
-workflow_event = "workflow_dispatch"
-active_statuses = ["queued", "requested", "waiting", "pending", "in_progress"]
-workflow_runs_per_page = 100
-max_pages = 3
 
 [ci_runner_debug]
 ssh_wait_minutes_variable = "CI_DEBUG_SSH_WAIT_MINUTES"

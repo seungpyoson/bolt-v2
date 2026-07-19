@@ -117,6 +117,7 @@ MERGIFY_QUEUE_RULE_KEYS = frozenset(
         "queue_conditions",
         "merge_conditions",
         "branch_protection_injection_mode",
+        "merge_bot_account",
         "batch_size",
         "batch_max_wait_time",
         "batch_max_failure_resolution_attempts",
@@ -353,6 +354,13 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
             f"{rule_name} merge_conditions",
             errors,
         )
+        expect_scalar(
+            rule.get("merge_bot_account"),
+            MERGIFY_CONFIG_EXPECTATIONS["merge_bot_account"],
+            config_name,
+            f"{rule_name} merge_bot_account",
+            errors,
+        )
         for key in (
             "branch_protection_injection_mode",
             "batch_max_wait_time",
@@ -482,6 +490,7 @@ MERGIFY_CONFIG_FIELD_HANDLING = {
     "queue_rules[].queue_conditions": "effective_pr_to_queue_routing",
     "queue_rules[].merge_conditions": "required_reviewer_evidence",
     "queue_rules[].branch_protection_injection_mode": "explicit_support_or_inconclusive",
+    "queue_rules[].merge_bot_account": "required_merge_identity",
     "queue_rules[].batch_size": "scalar_single_pr_model",
     "queue_rules[].batch_max_wait_time": "explicit_support_or_inconclusive",
     "queue_rules[].batch_max_failure_resolution_attempts": "explicit_support_or_inconclusive",

@@ -1,0 +1,84 @@
+name: GLM Review Worker
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+      governance_sha:
+        required: true
+        type: string
+      evidence_run_id:
+        required: true
+        type: string
+      evidence_artifact:
+        required: true
+        type: string
+      job_timeout_minutes:
+        required: true
+        type: number
+    secrets:
+      GLM_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    timeout-minutes: ${{ inputs.job_timeout_minutes }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.governance_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.evidence_artifact }}
+          path: .ai-review/evidence
+      - name: Load configured GLM runtime
+        id: config
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          from pathlib import Path
+          config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          glm = config["glm"]
+          review = config["review"]
+          print(f"api_base={glm['api_base']}")
+          print(f"model={glm['model']}")
+          print(f"timeout={glm['api_timeout_seconds']}")
+          print(f"chunk={glm['review_max_chunk_chars']}")
+          print(f"comment={review['max_comment_chars']}")
+          PY
+      - name: Prepare review instructions
+        run: |
+          mkdir -p .ai-review/standards
+          {
+            cat AGENTS.md
+            printf '\n# Exact final-review evidence\n\n'
+            cat .ai-review/evidence/final-review-evidence.md
+            printf '\nReview PR %s at exact head %s. Review the complete diff and report every hard-evidence substantive finding. Do not edit, push, merge, expose credentials, or choose another model or provider.\n' "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
+          } > .ai-review/standards/glm-review-standards.md
+      - name: Run GLM review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_BASE_SHA: ${{ inputs.base_sha }}
+          PR_HEAD_SHA: ${{ inputs.head_sha }}
+          PR_DIFF_PATH: .ai-review/evidence/review.diff
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+        run: >-
+          python3 scripts/direct_ai_review.py glm
+          --instructions-file .ai-review/standards/glm-review-standards.md
+          --config-file ci/ai-review.toml

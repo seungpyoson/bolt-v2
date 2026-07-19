@@ -1,14 +1,14 @@
 [github]
 api_url = "https://api.github.com"
-server_url = "https://github.com"
-expected_bot_login = "github-actions[bot]"
+comment_timeout_seconds = 30
+
+[final_review]
+actionlint_version = "1.7.7"
+evidence_timeout_minutes = 240
+obligation_timeout_seconds = 900
 
 [review]
 max_comment_chars = 60000
-response_chars_per_chunk = 8000
-
-[model_freshness]
-notice_marker_template = "<!-- ai-review-model-freshness-notice-{provider} -->"
 
 [review.output_contract]
 finding_required_labels = [
@@ -35,54 +35,23 @@ no_findings_guidance = [
   "supplied diff only; no omitted files, logs, or external state were assumed.",
   "correctness, security, workflow safety, verification, and repo-governance impact visible in this chunk.",
 ]
-non_deliverable_indicators = [
-  "review did not produce a deliverable",
-  "review notice",
-]
-
-[review.pr_agent_output]
-deliverable_headings = [
-  "## PR Reviewer Guide",
-  "## Incremental PR Reviewer Guide",
-]
-disabled_noise = []
-
 [glm]
+adapter = "openai_chat"
+secret_env = "GLM_API_KEY"
 api_base = "https://api.z.ai/api/coding/paas/v4"
 model = "glm-5.2"
 temperature = 0.2
 api_timeout_seconds = 180
 review_max_chunk_chars = 60000
-comment_marker = "<!-- ai-pr-reviewer-glm -->"
-notice_marker = "<!-- ai-pr-reviewer-glm-notice -->"
-source_label_template = "GLM direct fallback (`{model}`)"
-deliverable_markers = [
-  "## PR Reviewer Guide",
-  "## Incremental PR Reviewer Guide",
-  "<!-- ai-pr-reviewer-glm -->",
-]
-
-[glm.smart_trigger]
-review_labels = ["ai-review", "ai-review-glm"]
-
-[glm.pr_agent]
-model = "openai/glm-5.2"
-fallback_models = ["openai/glm-5.2"]
-source_label_template = "GLM PR-Agent (`{model}`)"
-custom_model_max_tokens = 128000
-large_patch_policy = "clip"
-timeout_seconds = 300
-auto_review = true
-auto_describe = false
-auto_improve = false
+deliverable_marker = "<!-- ai-pr-reviewer-glm -->"
+source_label_template = "GLM Direct (`{model}`)"
 
 [glm.workflow]
 job_timeout_minutes = 35
-primary_timeout_minutes = 8
-fallback_timeout_minutes = 20
-setup_overhead_timeout_minutes = 7
 
 [kimi]
+adapter = "kimi_cli"
+secret_env = "KIMI_API_KEY"
 api_base = "https://api.kimi.com/coding/v1"
 model = "kimi-k2.7-code"
 provider_type = "kimi"
@@ -92,51 +61,25 @@ telemetry_disabled = true
 cli_timeout_seconds = 180
 review_max_chunk_chars = 60000
 deliverable_marker = "<!-- ai-pr-reviewer-kimi -->"
-notice_marker = "<!-- ai-pr-reviewer-kimi-notice -->"
 source_label_template = "Kimi Code CLI (`{model}`)"
 cli_package = "@moonshot-ai/kimi-code@0.19.0"
-
-[kimi.smart_trigger]
-review_labels = ["ai-review", "ai-review-kimi"]
+cli_binary = "kimi"
 
 [kimi.workflow]
 node_version = "24"
 job_timeout_minutes = 45
-primary_timeout_minutes = 20
-fallback_timeout_minutes = 20
-setup_overhead_timeout_minutes = 5
 
 [claude]
 model = "claude-opus-4-8"
 track_progress = false
-notice_marker = "<!-- ai-pr-reviewer-claude-notice -->"
 deliverable_marker = "<!-- ai-pr-reviewer-claude -->"
-deliverable_bot_logins = ["claude[bot]"]
 source_label_template = "Claude Code (`{model}`)"
 allowed_tools = [
-  "mcp__github_inline_comment__create_inline_comment",
-  "Bash(gh pr comment:*)",
-  "Bash(gh pr diff:*)",
-  "Bash(gh pr view:*)",
-]
-
-[claude.smart_trigger]
-debounce_seconds = 90
-review_labels = ["ai-review", "ai-review-claude", "claude-review"]
-review_paths = [
-  "AGENTS.md",
-  ".github/**",
-  "ci/**",
-  "config/**",
-  "crates/**",
-  "scripts/**",
-  "src/**",
-  "tests/**",
-  "Cargo.toml",
-  "Cargo.lock",
+  "Read",
+  "Grep",
+  "Glob",
 ]
 
 [claude.workflow]
 job_timeout_minutes = 35
-primary_timeout_minutes = 20
 max_turns = 10

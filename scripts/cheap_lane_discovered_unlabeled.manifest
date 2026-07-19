@@ -1,14 +1,8 @@
-scripts/cancel_obsolete_dispatch_runs.py
 scripts/cargo-shim
-scripts/ci_provenance.py
-scripts/clean_merged_artifacts.py
 scripts/command_understanding.py
-scripts/developer_tool_storage_hygiene.py
-scripts/find_same_sha_main_evidence.py
 scripts/install-cargo-shim
 scripts/lane_governor.py
 scripts/local_verification_gate.py
-scripts/nextest_fingerprint.py
 scripts/rust_verification.py
 scripts/sync_ci_debug_ssh_secret.py
 scripts/ubicloud_runner_minutes.py

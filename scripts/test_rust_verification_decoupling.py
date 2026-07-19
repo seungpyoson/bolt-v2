@@ -69,7 +69,9 @@ def tracked_runtime_surfaces() -> tuple[pathlib.Path, ...]:
         if any(fnmatch.fnmatch(relative, pattern) for pattern in RUNTIME_SURFACE_EXCLUDES):
             continue
         if any(fnmatch.fnmatch(relative, pattern) for pattern in RUNTIME_SURFACE_PATTERNS):
-            surfaces.append(REPO_ROOT / relative)
+            path = REPO_ROOT / relative
+            if path.exists():
+                surfaces.append(path)
     return tuple(sorted(surfaces))
 
 

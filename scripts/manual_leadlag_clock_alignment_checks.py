@@ -14,7 +14,7 @@
 # ///
 """Manual self-tests for the #633 clock-alignment research guards.
 
-Run with `uv run --script scripts/test_leadlag_clock_alignment.py`; these
+Run with `uv run --script scripts/manual_leadlag_clock_alignment_checks.py`; these
 research-script dependency checks are intentionally outside source-fence CI.
 """
 

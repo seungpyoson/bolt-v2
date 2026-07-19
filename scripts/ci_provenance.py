@@ -1781,6 +1781,7 @@ def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
 MERGIFY_TEMP_PR_TRANSIENT_PREFIX = "tmp-"
 MERGIFY_CONFIG_EXPECTATIONS = {
     "required_reviewer": "sp-reviewer",
+    "merge_bot_account": "seungpyoson",
     "merge_queue": {
         "max_parallel_checks": 1,
         "reset_on_external_merge": "always",

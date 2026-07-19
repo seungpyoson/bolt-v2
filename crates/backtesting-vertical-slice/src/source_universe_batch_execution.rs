@@ -10,7 +10,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -45,10 +45,20 @@ pub trait SourceUniverseOperatorRunner {
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
         object_bytes: &[u8],
-        run_spec_path: &Path,
-        execution_plan_path: &Path,
+        controls: &SourceUniverseAdmittedControls,
         output_dir: &Path,
     ) -> Result<SourceUniverseBatchExecutionRunOutput>;
+}
+
+/// Exact control bytes admitted before any source fetch or output creation.
+///
+/// The operator runner consumes this owned snapshot rather than reopening the
+/// pack's paths, so later filesystem changes cannot alter the admitted run.
+#[derive(Debug, Clone)]
+pub struct SourceUniverseAdmittedControls {
+    pub run_spec_bytes: Arc<[u8]>,
+    pub accepted_tranche_bytes: Arc<[u8]>,
+    pub execution_plan_bytes: Arc<[u8]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,8 +71,8 @@ pub struct SourceUniverseBatchExecutionRunOutput {
 /// Tuning for a source-universe batch execution run.
 ///
 /// Every field beyond the original three is opt-in: the defaults
-/// (`max_concurrent_records: None`, `resume_report: None`) reproduce the
-/// original serial, non-resuming behavior byte-for-byte. Object caching is
+/// (`max_concurrent_records: None`, `resume_report: None`) preserve the
+/// original serial, non-resuming scheduling behavior. Object caching is
 /// deliberately NOT a config field: the one way to enable it is wrapping the
 /// fetcher in [`CachingSourceUniverseObjectFetcher`] (the CLI does this for
 /// `--object-cache-dir`), so a cache can never be requested without taking
@@ -315,16 +325,13 @@ impl SourceUniverseOperatorRunner for LocalSourceUniverseOperatorRunner {
         &mut self,
         _record: &SourceUniverseExecutionPackRecord,
         object_bytes: &[u8],
-        run_spec_path: &Path,
-        _execution_plan_path: &Path,
+        controls: &SourceUniverseAdmittedControls,
         output_dir: &Path,
     ) -> Result<SourceUniverseBatchExecutionRunOutput> {
-        let run_spec_bytes = fs::read(run_spec_path)
-            .with_context(|| format!("read run-spec {}", run_spec_path.display()))?;
-        let run_spec_text = std::str::from_utf8(&run_spec_bytes)
-            .with_context(|| format!("decode run-spec {} as UTF-8", run_spec_path.display()))?;
-        let run_spec: RunSpec = toml::from_str(run_spec_text)
-            .with_context(|| format!("parse run-spec TOML {}", run_spec_path.display()))?;
+        let run_spec_text = std::str::from_utf8(&controls.run_spec_bytes)
+            .context("decode admitted run-spec as UTF-8")?;
+        let run_spec: RunSpec =
+            toml::from_str(run_spec_text).context("parse admitted run-spec TOML")?;
         let artifacts = run_from_run_spec(&run_spec, object_bytes, output_dir)?;
         Ok(SourceUniverseBatchExecutionRunOutput {
             canonical_rows: artifacts.output.canonical_table.rows.len() as u64,
@@ -379,14 +386,7 @@ where
     // report is identical for the same outcomes.
     let mut slots: Vec<Option<RecordSlot>> = (0..plan.work_items.len()).map(|_| None).collect();
     for (slot_index, work_item) in plan.work_items.iter().enumerate() {
-        let slot = process_work_item(
-            work_item,
-            &plan.pack_base_dir,
-            output_dir,
-            &config,
-            fetcher,
-            runner,
-        );
+        let slot = process_work_item(work_item, output_dir, &config, fetcher, runner);
         let stop = !config.continue_on_error && matches!(slot, RecordSlot::Stopped(_));
         slots[slot_index] = Some(slot);
         if stop {
@@ -440,7 +440,6 @@ where
     let stop_flag = AtomicBool::new(false);
 
     let work_items = plan.work_items.as_slice();
-    let pack_base_dir = plan.pack_base_dir.as_path();
     std::thread::scope(|scope| -> Result<()> {
         let mut handles = Vec::with_capacity(worker_count);
         for _ in 0..worker_count {
@@ -462,14 +461,8 @@ where
                         break;
                     }
                     let work_item = &work_items[index];
-                    let slot = process_work_item(
-                        work_item,
-                        pack_base_dir,
-                        output_dir,
-                        config,
-                        &mut fetcher,
-                        &mut runner,
-                    );
+                    let slot =
+                        process_work_item(work_item, output_dir, config, &mut fetcher, &mut runner);
                     if !config.continue_on_error && matches!(slot, RecordSlot::Stopped(_)) {
                         stop_flag.store(true, Ordering::SeqCst);
                     }
@@ -506,7 +499,10 @@ where
 /// similarly sized.
 enum BatchWorkItem<'pack> {
     Carried(Box<SourceUniverseBatchExecutionRecord>),
-    NeedsWork(&'pack SourceUniverseExecutionPackRecord),
+    NeedsWork {
+        record: &'pack SourceUniverseExecutionPackRecord,
+        controls: &'pack SourceUniverseAdmittedControls,
+    },
 }
 
 /// Outcome for one work item, kept in original-sequence slot order so the
@@ -523,7 +519,6 @@ struct StoppedRecord {
 }
 
 struct BatchPlan<'pack> {
-    pack_base_dir: PathBuf,
     work_items: Vec<BatchWorkItem<'pack>>,
 }
 
@@ -562,9 +557,6 @@ fn prepare_batch(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    fs::create_dir_all(output_dir)
-        .with_context(|| format!("create batch output dir {}", output_dir.display()))?;
-
     // Resuming into the dir holding the resume report itself would only fail
     // later, at the clean-write report guard (which refuses to overwrite the
     // prior report). Reject the contract violation up front, before any fetch.
@@ -604,16 +596,45 @@ fn prepare_batch(
         })?;
     }
 
-    let resume_records = load_resume_records(config.resume_report.as_deref(), &pack)?;
-
     let record_limit = config
         .record_limit
         .and_then(|limit| usize::try_from(limit).ok())
         .unwrap_or(usize::MAX);
 
+    let mut admitted_controls = BTreeMap::new();
+    for record in pack
+        .records
+        .iter()
+        .filter(|record| {
+            config
+                .start_sequence
+                .is_none_or(|start_sequence| record.sequence >= start_sequence)
+        })
+        .take(record_limit)
+    {
+        let controls = admit_record_controls(&pack_base_dir, record).with_context(|| {
+            format!(
+                "admit controls for pack record {} ({})",
+                record.sequence, record.operator_run_id
+            )
+        })?;
+        ensure!(
+            admitted_controls
+                .insert(record.sequence, controls)
+                .is_none(),
+            "execution pack {} has duplicate selected sequence {}",
+            pack.pack_id,
+            record.sequence
+        );
+    }
+
+    let resume_records = load_resume_records(config.resume_report.as_deref(), &pack)?;
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("create batch output dir {}", output_dir.display()))?;
+
     Ok(OwnedBatchPlan {
         pack,
-        pack_base_dir,
+        admitted_controls,
         resume_records,
         start_sequence: config.start_sequence,
         record_limit,
@@ -624,7 +645,7 @@ fn prepare_batch(
 /// work items can borrow from it without an extra clone of every pack record.
 struct OwnedBatchPlan {
     pack: SourceUniverseExecutionPack,
-    pack_base_dir: PathBuf,
+    admitted_controls: BTreeMap<u64, SourceUniverseAdmittedControls>,
     resume_records: BTreeMap<u64, SourceUniverseBatchExecutionRecord>,
     start_sequence: Option<u64>,
     record_limit: usize,
@@ -658,14 +679,76 @@ impl OwnedBatchPlan {
                 {
                     BatchWorkItem::Carried(Box::new(prior.clone()))
                 }
-                _ => BatchWorkItem::NeedsWork(record),
+                _ => BatchWorkItem::NeedsWork {
+                    record,
+                    controls: self
+                        .admitted_controls
+                        .get(&record.sequence)
+                        .expect("selected record controls admitted before plan construction"),
+                },
             })
             .collect();
-        BatchPlan {
-            pack_base_dir: self.pack_base_dir.clone(),
-            work_items,
-        }
+        BatchPlan { work_items }
     }
+}
+
+fn admit_record_controls(
+    pack_base_dir: &Path,
+    record: &SourceUniverseExecutionPackRecord,
+) -> Result<SourceUniverseAdmittedControls> {
+    Ok(SourceUniverseAdmittedControls {
+        run_spec_bytes: read_pinned_control(
+            pack_base_dir,
+            record,
+            "run_spec",
+            &record.run_spec_path,
+            &record.run_spec_sha256,
+        )?,
+        accepted_tranche_bytes: read_pinned_control(
+            pack_base_dir,
+            record,
+            "accepted_tranche",
+            &record.accepted_tranche_path,
+            &record.accepted_tranche_sha256,
+        )?,
+        execution_plan_bytes: read_pinned_control(
+            pack_base_dir,
+            record,
+            "execution_plan",
+            &record.execution_plan_path,
+            &record.execution_plan_sha256,
+        )?,
+    })
+}
+
+fn read_pinned_control(
+    pack_base_dir: &Path,
+    record: &SourceUniverseExecutionPackRecord,
+    role: &str,
+    declared_path: &Path,
+    expected_sha256: &str,
+) -> Result<Arc<[u8]>> {
+    validate_sha256_hex(expected_sha256)
+        .with_context(|| format!("pack record {} has invalid {role}_sha256", record.sequence))?;
+    let resolved_path = resolve_existing_path(pack_base_dir, declared_path);
+    let metadata = fs::metadata(&resolved_path)
+        .with_context(|| format!("inspect pinned {role} {}", resolved_path.display()))?;
+    ensure!(
+        metadata.is_file(),
+        "pinned {role} {} is not a regular file",
+        resolved_path.display()
+    );
+    let bytes = fs::read(&resolved_path)
+        .with_context(|| format!("read pinned {role} {}", resolved_path.display()))?;
+    let actual_sha256 = hex::encode(Sha256::digest(&bytes));
+    ensure!(
+        actual_sha256 == expected_sha256,
+        "pack record {} pinned {role} sha256 mismatch: expected {}, got {}",
+        record.sequence,
+        expected_sha256,
+        actual_sha256
+    );
+    Ok(Arc::from(bytes))
 }
 
 /// Re-prove a carried record's prior OUTPUT before it is reused on resume.
@@ -729,7 +812,6 @@ fn load_resume_records(
 
 fn process_work_item<F, R>(
     work_item: &BatchWorkItem<'_>,
-    pack_base_dir: &Path,
     output_dir: &Path,
     config: &SourceUniverseBatchExecutionConfig,
     fetcher: &mut F,
@@ -739,7 +821,7 @@ where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
 {
-    let record = match work_item {
+    let (record, controls) = match work_item {
         // Carried records are pushed verbatim, skipping fetch + verify + run.
         // Verbatim includes the prior run's output_dir (provenance is kept,
         // not rewritten), so a resumed report can reference artifacts outside
@@ -747,7 +829,7 @@ where
         BatchWorkItem::Carried(record) => {
             return RecordSlot::Completed((**record).clone());
         }
-        BatchWorkItem::NeedsWork(record) => *record,
+        BatchWorkItem::NeedsWork { record, controls } => (*record, *controls),
     };
 
     let object_bytes = match fetcher
@@ -763,17 +845,9 @@ where
         return record_error_slot(record, "verify_object", error, config);
     }
 
-    let run_spec_path = resolve_existing_path(pack_base_dir, &record.run_spec_path);
-    let execution_plan_path = resolve_existing_path(pack_base_dir, &record.execution_plan_path);
     let record_output_dir = output_dir.join(&record.operator_run_id);
     let run_output = match runner
-        .run(
-            record,
-            &object_bytes,
-            &run_spec_path,
-            &execution_plan_path,
-            &record_output_dir,
-        )
+        .run(record, &object_bytes, controls, &record_output_dir)
         .with_context(|| format!("run operator {}", record.operator_run_id))
     {
         Ok(run_output) => run_output,
@@ -1128,9 +1202,17 @@ mod tests {
         };
         let mut resume_records = BTreeMap::new();
         resume_records.insert(prior.sequence, prior.clone());
+        let admitted_controls = BTreeMap::from([(
+            prior.sequence,
+            SourceUniverseAdmittedControls {
+                run_spec_bytes: Arc::from([]),
+                accepted_tranche_bytes: Arc::from([]),
+                execution_plan_bytes: Arc::from([]),
+            },
+        )]);
         OwnedBatchPlan {
             pack,
-            pack_base_dir: PathBuf::from("."),
+            admitted_controls,
             resume_records,
             start_sequence: None,
             record_limit: usize::MAX,
@@ -1202,7 +1284,10 @@ mod tests {
         let owned_plan = owned_plan_with_carry(&record);
         let plan = owned_plan.plan();
         assert!(
-            matches!(plan.work_items.as_slice(), [BatchWorkItem::NeedsWork(_)]),
+            matches!(
+                plan.work_items.as_slice(),
+                [BatchWorkItem::NeedsWork { .. }]
+            ),
             "a carried record with a missing prior catalog must re-execute, not carry forward"
         );
     }

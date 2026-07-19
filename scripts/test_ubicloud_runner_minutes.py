@@ -57,15 +57,12 @@ debug-heavy = "managed_heavy"
 debug-light = "managed_light"
 
 [meter]
-fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
-fingerprint_workflow = "ci"
 debug_workflow = "ci_runner_debug"
 included_workflows = ["ci", "backtester_ci", "ci_runner_debug"]
 
 [meter.api_limits]
 workflow_runs_per_page = 100
 run_jobs_per_page = 100
-run_artifacts_per_page = 100
 branch_pull_requests_per_page = 20
 draft_timeline_items = 100
 """
@@ -107,42 +104,12 @@ def job_payload(name: str, label: str, started_at: str, completed_at: str, concl
     }
 
 
-def artifact_payload(name: str):
-    return {"name": name, "expired": False}
-
-
-def assert_extract_fingerprint_ignores_empty_suffix() -> None:
-    module = load_script()
-    prefix = "nextest-archive-fingerprint-"
-    assert module.extract_fingerprint({"artifacts": [artifact_payload(prefix)]}, prefix) is None
-    assert (
-        module.extract_fingerprint(
-            {
-                "artifacts": [
-                    artifact_payload(f"{prefix}inputs-b"),
-                    artifact_payload(f"{prefix}inputs-a"),
-                ]
-            },
-            prefix,
-        )
-        is None
-    )
-    assert (
-        module.extract_fingerprint(
-            {"artifacts": [artifact_payload(prefix), artifact_payload(f"{prefix}inputs-a")]},
-            prefix,
-        )
-        == "inputs-a"
-    )
-
-
 def assert_meter_api_limits_come_from_config() -> None:
     module = load_script()
     config_text = (
         runner_config_text()
         .replace("workflow_runs_per_page = 100", "workflow_runs_per_page = 37")
         .replace("run_jobs_per_page = 100", "run_jobs_per_page = 38")
-        .replace("run_artifacts_per_page = 100", "run_artifacts_per_page = 39")
         .replace("branch_pull_requests_per_page = 20", "branch_pull_requests_per_page = 7")
         .replace("draft_timeline_items = 100", "draft_timeline_items = 11")
     )
@@ -162,8 +129,6 @@ def assert_meter_api_limits_come_from_config() -> None:
                 return {"workflows": [{"path": ".github/workflows/ci.yml"}]}
             if path == "actions/runs/81/jobs":
                 return {"jobs": []}
-            if path == "actions/runs/81/artifacts":
-                return {"artifacts": []}
             if path == "pulls":
                 return [
                     {
@@ -194,7 +159,7 @@ def assert_meter_api_limits_come_from_config() -> None:
 
     client = FakeClient()
     runs_payload = module.fetch_runs(client, config, [], 1, None)
-    module.fetch_jobs_and_artifacts(client, runs_payload, config)
+    module.fetch_jobs(client, runs_payload, config)
     module.resolve_pr_states(
         client,
         "example/repo",
@@ -211,7 +176,6 @@ def assert_meter_api_limits_come_from_config() -> None:
     )
     assert ("actions/runs", {"per_page": "37", "created": client.api_calls[0][1]["created"]}, True) in client.api_calls
     assert ("actions/runs/81/jobs", {"per_page": "38"}, True) in client.api_calls
-    assert ("actions/runs/81/artifacts", {"per_page": "39"}, True) in client.api_calls
     assert ("pulls", {"head": "example:feature/cost", "state": "all", "per_page": "7"}, True) in client.api_calls
     assert "timelineItems(first:$timelineLimit" in client.graphql_queries[0], client.graphql_queries
     assert client.graphql_fields[0]["timelineLimit"] == 11, client.graphql_fields
@@ -729,7 +693,6 @@ def assert_timeline_truncation_is_visible_in_report() -> None:
                 ]
             }
         },
-        artifacts_payload_by_run_id={37: {"artifacts": []}},
         pr_state_by_run_id=states,
         runner_config=config,
         generated_at="2026-06-12T02:00:00Z",
@@ -771,7 +734,6 @@ def assert_resolve_pr_states_handles_null_graphql_payloads() -> None:
                 ]
             }
         },
-        artifacts_payload_by_run_id={38: {"artifacts": []}},
         pr_state_by_run_id=states,
         runner_config=config,
         generated_at="2026-06-12T02:00:00Z",
@@ -797,12 +759,10 @@ def assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap() -> 
             }
             for run in runs
         }
-        artifacts_by_run_id = {run["id"]: {"artifacts": []} for run in runs}
         return module.build_report(
             repo="example/repo",
             runs_payload={"workflow_runs": runs},
             jobs_payload_by_run_id=jobs_by_run_id,
-            artifacts_payload_by_run_id=artifacts_by_run_id,
             pr_state_by_run_id=pr_states,
             runner_config=config,
             generated_at="2026-06-12T02:00:00Z",
@@ -963,21 +923,6 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
             ]
         },
     }
-    artifacts_by_run_id = {
-        10: {"artifacts": []},
-        11: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-inputs-a")]},
-        12: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-inputs-a")]},
-        13: {"artifacts": []},
-        14: {"artifacts": []},
-        15: {"artifacts": []},
-        16: {
-            "artifacts": [
-                artifact_payload("nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-inputs-b"),
-                artifact_payload("nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-inputs-c"),
-            ]
-        },
-        17: {"artifacts": []},
-    }
     pr_state_by_run_id = {
         10: {"number": 648, "draft_at_run": True, "ready_at": "2026-06-12T00:04:00Z"},
         11: {"number": 648, "draft_at_run": False, "ready_at": "2026-06-12T00:04:00Z"},
@@ -989,7 +934,6 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
         repo="example/repo",
         runs_payload={"workflow_runs": runs},
         jobs_payload_by_run_id=jobs_by_run_id,
-        artifacts_payload_by_run_id=artifacts_by_run_id,
         pr_state_by_run_id=pr_state_by_run_id,
         runner_config=config,
         generated_at="2026-06-12T02:00:00Z",
@@ -998,15 +942,10 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
     runs_by_id = {run["id"]: run for run in report["runs"]}
     assert "cancelled-superseded" in runs_by_id[10]["classifications"], runs_by_id[10]
     assert "draft-stage" in runs_by_id[10]["classifications"], runs_by_id[10]
-    assert "fingerprint-unknown" in runs_by_id[10]["classifications"], runs_by_id[10]
     assert "completed-green" in runs_by_id[11]["classifications"], runs_by_id[11]
-    assert "fingerprint-identical" in runs_by_id[12]["classifications"], runs_by_id[12]
     assert "failed" in runs_by_id[15]["classifications"], runs_by_id[15]
-    assert "fingerprint-ambiguous" in runs_by_id[16]["classifications"], runs_by_id[16]
-    assert "fingerprint-unknown" not in runs_by_id[16]["classifications"], runs_by_id[16]
     assert "draft-stage" in runs_by_id[17]["classifications"], runs_by_id[17]
     assert "cancelled-superseded" not in runs_by_id[17]["classifications"], runs_by_id[17]
-    assert runs_by_id[11]["fingerprint"] == "v2-Linux-X64-test-profile-shards-4-inputs-a", runs_by_id[11]
     assert runs_by_id[13]["workflow_key"] == "ci_runner_debug", runs_by_id[13]
     assert runs_by_id[14]["workflow_key"] == "backtester_ci", runs_by_id[14]
 
@@ -1016,47 +955,6 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
     assert report["lever_b_bounds"]["draft_stage"]["managed_heavy"]["minutes"] == 5.0, report["lever_b_bounds"]
     assert report["lever_b_bounds"]["draft_stage_cancelled_superseded"]["managed_heavy"]["minutes"] == 2.0, report["lever_b_bounds"]
     assert report["debug_sessions"][0]["id"] == 13, report["debug_sessions"]
-
-
-def assert_fingerprint_identity_is_scoped_to_fingerprint_workflow() -> None:
-    module = load_script()
-    config = load_test_config(module)
-    runs = [
-        run_payload(
-            70,
-            name="Backtester CI",
-            path=".github/workflows/backtester-ci.yml",
-            created_at="2026-06-12T00:00:00Z",
-        ),
-        run_payload(
-            71,
-            name="Backtester CI",
-            path=".github/workflows/backtester-ci.yml",
-            created_at="2026-06-12T00:01:00Z",
-        ),
-        run_payload(72, created_at="2026-06-12T00:02:00Z"),
-        run_payload(73, created_at="2026-06-12T00:03:00Z"),
-    ]
-    artifacts = {
-        run["id"]: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-inputs-z")]}
-        for run in runs
-    }
-    report = module.build_report(
-        repo="example/repo",
-        runs_payload={"workflow_runs": runs},
-        jobs_payload_by_run_id={run["id"]: {"jobs": []} for run in runs},
-        artifacts_payload_by_run_id=artifacts,
-        pr_state_by_run_id={},
-        runner_config=config,
-        generated_at="2026-06-12T02:00:00Z",
-    )
-    runs_by_id = {run["id"]: run for run in report["runs"]}
-    assert "fingerprint-identical" not in runs_by_id[71]["classifications"], runs_by_id[71]
-    assert "fingerprint-identical" not in runs_by_id[72]["classifications"], runs_by_id[72]
-    assert "fingerprint-identical" in runs_by_id[73]["classifications"], runs_by_id[73]
-    assert runs_by_id[70]["fingerprint"] is None, runs_by_id[70]
-    assert runs_by_id[71]["fingerprint"] is None, runs_by_id[71]
-    assert runs_by_id[72]["fingerprint"] == "v2-Linux-X64-test-profile-shards-4-inputs-z", runs_by_id[72]
 
 
 def assert_unknown_labels_are_reported_without_crashing() -> None:
@@ -1075,7 +973,6 @@ def assert_unknown_labels_are_reported_without_crashing() -> None:
                 ]
             }
         },
-        artifacts_payload_by_run_id={20: {"artifacts": []}},
         pr_state_by_run_id={},
         runner_config=config,
         generated_at="2026-06-12T02:00:00Z",
@@ -1087,7 +984,6 @@ def assert_unknown_labels_are_reported_without_crashing() -> None:
 
 
 def main() -> int:
-    assert_extract_fingerprint_ignores_empty_suffix()
     assert_meter_api_limits_come_from_config()
     assert_configured_workflow_paths_paginates_workflow_list()
     assert_gh_client_flattens_paginated_list_pages()
@@ -1105,7 +1001,6 @@ def main() -> int:
     assert_resolve_pr_states_handles_null_graphql_payloads()
     assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap()
     assert_build_report_classifies_runs_and_totals_minutes()
-    assert_fingerprint_identity_is_scoped_to_fingerprint_workflow()
     assert_unknown_labels_are_reported_without_crashing()
     print("OK: Ubicloud runner-minute meter self-tests passed.")
     return 0

@@ -410,12 +410,12 @@ MERGIFY_CONFIG_SNAPSHOT_STATES = {
     True: (
         STATUS_READY,
         "mergify_config_snapshot_read",
-        ".mergify.yml snapshot read from expected base",
+        ".mergify.yml snapshot read from candidate integration",
     ),
     False: (
         STATUS_INCONCLUSIVE,
         "mergify_config_snapshot_unavailable",
-        ".mergify.yml snapshot unavailable at expected base",
+        ".mergify.yml snapshot unavailable at candidate integration",
     ),
 }
 MERGIFY_CONFIG_VALIDATION_STATES = {
@@ -792,13 +792,13 @@ def integration_pr_ready_finding(pr: int) -> dict[str, object]:
 def mergify_config_snapshot_finding(
     *,
     repo: pathlib.Path,
-    base_sha: str,
+    candidate_sha: str,
     input_timeout_seconds: int,
 ) -> dict[str, object]:
     result = git(
         repo,
         "rev-parse",
-        f"{base_sha}:{MERGIFY_CONFIG_PATH}",
+        f"{candidate_sha}:{MERGIFY_CONFIG_PATH}",
         check=False,
         timeout_seconds=input_timeout_seconds,
     )
@@ -814,7 +814,7 @@ def mergify_config_snapshot_finding(
         "message": message,
         "evidence": {
             "path": MERGIFY_CONFIG_PATH,
-            "base_sha": base_sha,
+            "candidate_sha": candidate_sha,
             "blob_sha": blob_sha,
             "git_returncode": result.returncode,
             "git_stderr": result.stderr.strip(),
@@ -825,7 +825,7 @@ def mergify_config_snapshot_finding(
 def mergify_config_validation_finding(
     *,
     repo: pathlib.Path,
-    base_sha: str,
+    candidate_sha: str,
     blob_sha: str,
     input_timeout_seconds: int,
 ) -> dict[str, object]:
@@ -849,7 +849,7 @@ def mergify_config_validation_finding(
         "message": message,
         "evidence": {
             "path": MERGIFY_CONFIG_PATH,
-            "base_sha": base_sha,
+            "candidate_sha": candidate_sha,
             "blob_sha": blob_sha,
             "validator": "merge_queue_preflight.verify_mergify_config",
             "git_returncode": result.returncode,
@@ -1134,20 +1134,20 @@ MERGIFY_QUEUE_ROUTE_FINDING_BUILDERS = {
 def mergify_config_findings(
     *,
     repo: pathlib.Path,
-    base_sha: str,
+    candidate_sha: str,
     readiness: Mapping[str, object],
     input_timeout_seconds: int,
 ) -> tuple[dict[str, object], ...]:
     snapshot = mergify_config_snapshot_finding(
         repo=repo,
-        base_sha=base_sha,
+        candidate_sha=candidate_sha,
         input_timeout_seconds=input_timeout_seconds,
     )
     if snapshot["status"] != STATUS_READY:
         return (snapshot,)
     validation = mergify_config_validation_finding(
         repo=repo,
-        base_sha=base_sha,
+        candidate_sha=candidate_sha,
         blob_sha=str(snapshot["evidence"]["blob_sha"]),
         input_timeout_seconds=input_timeout_seconds,
     )
@@ -2117,13 +2117,8 @@ def preflight_with_fetch_refs(
         ),
         *readiness_blocks(readiness),
     ]
-    mergify_findings = mergify_config_findings(
-        repo=git_repo,
-        base_sha=base_sha,
-        readiness=readiness,
-        input_timeout_seconds=input_timeout_seconds,
-    )
     integration_finding: dict[str, object] | None = None
+    candidate_sha: str | None = None
     if not blocked_prs and head is not None:
         synthetic = synthesize_merge(
             git_repo,
@@ -2142,7 +2137,14 @@ def preflight_with_fetch_refs(
                 }
             )
         else:
+            candidate_sha = synthetic
             integration_finding = integration_pr_ready_finding(pr_number)
+    mergify_findings = () if candidate_sha is None else mergify_config_findings(
+        repo=git_repo,
+        candidate_sha=candidate_sha,
+        readiness=readiness,
+        input_timeout_seconds=input_timeout_seconds,
+    )
     contract_findings = (
         *base_identity_findings(
             expected_base_sha=expected_base_sha,

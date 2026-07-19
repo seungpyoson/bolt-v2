@@ -223,16 +223,16 @@ def residual_risk_findings() -> list[dict[str, object]]:
     ]
 
 
-def mergify_config_finding(base_sha: str, blob_sha: str) -> dict[str, object]:
+def mergify_config_finding(candidate_sha: str, blob_sha: str) -> dict[str, object]:
     return {
         "lane": "mergify_config",
         "scope": "run",
         "status": "ready",
         "reason_code": "mergify_config_snapshot_read",
-        "message": ".mergify.yml snapshot read from expected base",
+        "message": ".mergify.yml snapshot read from candidate integration",
         "evidence": {
             "path": ".mergify.yml",
-            "base_sha": base_sha,
+            "candidate_sha": candidate_sha,
             "blob_sha": blob_sha,
             "git_returncode": 0,
             "git_stderr": "",
@@ -240,7 +240,7 @@ def mergify_config_finding(base_sha: str, blob_sha: str) -> dict[str, object]:
     }
 
 
-def mergify_config_valid_finding(base_sha: str, blob_sha: str) -> dict[str, object]:
+def mergify_config_valid_finding(candidate_sha: str, blob_sha: str) -> dict[str, object]:
     return {
         "lane": "mergify_config",
         "scope": "run",
@@ -249,7 +249,7 @@ def mergify_config_valid_finding(base_sha: str, blob_sha: str) -> dict[str, obje
         "message": ".mergify.yml snapshot satisfies Mergify config contract",
         "evidence": {
             "path": ".mergify.yml",
-            "base_sha": base_sha,
+            "candidate_sha": candidate_sha,
             "blob_sha": blob_sha,
             "validator": "merge_queue_preflight.verify_mergify_config",
             "git_returncode": 0,
@@ -1240,12 +1240,17 @@ def assert_private_fetch_failure_redacts_remote_credentials() -> None:
         assert "<remote-url>" in message, message
 
 
-def assert_mergify_config_snapshot_uses_base_blob() -> None:
+def assert_mergify_config_snapshot_uses_candidate_integration_blob() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
-        fixture.make_pr(1, {"one.txt": "one\n"})
-        base_blob = git(fixture.repo, "rev-parse", f"{fixture.base}:.mergify.yml")
-        write(fixture.repo / ".mergify.yml", "not: [valid\n")
+        write(
+            fixture.repo / ".mergify.yml",
+            MERGIFY_YML.replace("queue_controls_comment: false", "queue_controls_comment: true"),
+        )
+        fixture.base = commit(fixture.repo, "old mergify contract")
+        git(fixture.repo, "push", "origin", "main")
+        head = fixture.make_pr(1, {".mergify.yml": MERGIFY_YML, "one.txt": "one\n"})
+        candidate_blob = git(fixture.repo, "rev-parse", f"{head}:.mergify.yml")
 
         rc, stdout, _ = run_preflight(
             fixture.repo,
@@ -1255,8 +1260,15 @@ def assert_mergify_config_snapshot_uses_base_blob() -> None:
         )
         assert_equal(rc, 3, "mergify snapshot no-gh rc")
         payload = parse_json(stdout)
-        assert mergify_config_finding(fixture.base, base_blob) in payload["findings"], payload["findings"]
-        assert mergify_config_valid_finding(fixture.base, base_blob) in payload["findings"], payload["findings"]
+        snapshot = next(
+            finding
+            for finding in payload["findings"]
+            if finding["reason_code"] == "mergify_config_snapshot_read"
+        )
+        candidate_sha = snapshot["evidence"]["candidate_sha"]
+        assert candidate_sha not in (fixture.base, head), candidate_sha
+        assert mergify_config_finding(candidate_sha, candidate_blob) in payload["findings"], payload["findings"]
+        assert mergify_config_valid_finding(candidate_sha, candidate_blob) in payload["findings"], payload["findings"]
 
 
 def assert_fetches_use_private_refs_without_fetch_head() -> None:
@@ -1712,14 +1724,6 @@ def assert_pr_that_conflicts_with_base_is_blocked() -> None:
             [
                 matching_base_finding(payload["base_sha"]),
                 matching_head_finding(2, payload["pr_heads"]["2"]),
-                mergify_config_finding(
-                    payload["base_sha"],
-                    git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),
-                ),
-                mergify_config_valid_finding(
-                    payload["base_sha"],
-                    git(fixture.repo, "rev-parse", f"{payload['base_sha']}:.mergify.yml"),
-                ),
                 no_gh_finding(),
                 *residual_risk_findings(),
                 {
@@ -2569,7 +2573,7 @@ def main() -> int:
     assert_preflight_artifact_classification_is_declarative()
     assert_preflight_artifact_finding_uses_classification_table()
     assert_contract_evaluator_reduces_normalized_evidence()
-    assert_mergify_config_snapshot_uses_base_blob()
+    assert_mergify_config_snapshot_uses_candidate_integration_blob()
     assert_fetches_use_private_refs_without_fetch_head()
     assert_private_fetches_do_not_write_checkout_refs()
     assert_private_fetch_repo_persists_auto_maintenance_suppression()

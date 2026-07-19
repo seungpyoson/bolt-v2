@@ -12,7 +12,7 @@ An authoritative run verifies:
 - the fetched base and PR head match those expected identities;
 - the PR is open, non-draft, targets the configured base, and is mergeable;
 - GitHub reports the existing required-reviewer approval state;
-- the `.mergify.yml` blob at the expected base is valid and routes the PR to exactly one supported queue rule;
+- the `.mergify.yml` blob in the synthetic integration commit is valid and routes the PR to exactly one supported queue rule;
 - each queue rule requires only the configured reviewer and has `batch_size: 1`;
 - the PR merges cleanly with the expected base.
 
@@ -33,7 +33,8 @@ CI and source-fence output can support engineering claims, but they are evidence
 ## Source Of Truth
 
 - Runtime values come from `ci/rust-verification.toml`.
-- Queue shape and routing come from the `.mergify.yml` blob at the operator-supplied expected base SHA, never from the local worktree or PR head.
+- Queue shape and routing come from the `.mergify.yml` blob in the synthetic integration commit, never from the local worktree, base alone, or PR head alone.
+- This candidate-state invariant permits a queue-policy change to establish its successor contract without requiring the predecessor configuration to satisfy that successor contract first.
 - Required-reviewer identity and expected queue shape are mirrored by `scripts/ci_provenance.py` and checked by workflow-hygiene tests.
 - The live GitHub ruleset is the source of truth for native review controls.
 

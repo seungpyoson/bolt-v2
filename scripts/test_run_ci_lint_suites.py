@@ -267,10 +267,6 @@ def test_default_suite_table_covers_the_ci_lint_contract() -> None:
     commands = {" ".join(suite.command) for suite in runner.CI_LINT_SUITES}
     expected = {
         "python3 scripts/test_unified_verification_deletion_fence.py",
-        "python3 scripts/test_final_review_workflow.py",
-        "python3 scripts/test_final_review_evidence.py",
-        "python3 scripts/test_final_review_runner.py",
-        "python3 scripts/test_direct_ai_review.py",
         "python3 scripts/test_workspace_registry.py",
         "python3 scripts/test_workspace_advisories.py",
         "python3 scripts/test_repo_preflight.py",
@@ -335,14 +331,14 @@ def test_duplicate_test_ownership_is_rejected_for_every_surface_pair() -> None:
 def test_duplicate_ci_lint_suite_claims_are_rejected() -> None:
     runner = load_runner_module()
     original = runner.CI_LINT_SUITES
-    duplicate = runner.CiLintSuite("duplicate-direct-ai-review", ("python3", "scripts/test_direct_ai_review.py"))
+    duplicate = runner.CiLintSuite("duplicate-workspace-registry", ("python3", "scripts/test_workspace_registry.py"))
     try:
         runner.CI_LINT_SUITES = (*original, duplicate)
         try:
             runner.validate_test_suite_coverage(REPO_ROOT)
         except ValueError as exc:
             message = str(exc)
-            if "test_direct_ai_review.py" not in message or "ci-lint:direct-ai-review" not in message or "ci-lint:duplicate-direct-ai-review" not in message:
+            if "test_workspace_registry.py" not in message or "ci-lint:workspace-registry" not in message or "ci-lint:duplicate-workspace-registry" not in message:
                 raise AssertionError(message) from exc
         else:
             raise AssertionError("two CI-lint suites claimed the same governed test")

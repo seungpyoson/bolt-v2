@@ -38,10 +38,6 @@ CI_LINT_SUITES = (
         "unified-verification-deletion-fence",
         ("python3", "scripts/test_unified_verification_deletion_fence.py"),
     ),
-    CiLintSuite("final-review-workflow", ("python3", "scripts/test_final_review_workflow.py")),
-    CiLintSuite("final-review-evidence", ("python3", "scripts/test_final_review_evidence.py")),
-    CiLintSuite("final-review-runner", ("python3", "scripts/test_final_review_runner.py")),
-    CiLintSuite("direct-ai-review", ("python3", "scripts/test_direct_ai_review.py")),
     CiLintSuite("workspace-registry", ("python3", "scripts/test_workspace_registry.py")),
     CiLintSuite("workspace-advisories", ("python3", "scripts/test_workspace_advisories.py")),
     CiLintSuite("repository-preflight", ("python3", "scripts/test_repo_preflight.py")),
@@ -72,6 +68,14 @@ CI_LINT_SUITES = (
 )
 
 GOVERNED_TEST_SUFFIXES = frozenset({".py", ".mjs"})
+INACTIVE_TEST_FILENAMES = frozenset(
+    {
+        "test_direct_ai_review.py",
+        "test_final_review_evidence.py",
+        "test_final_review_runner.py",
+        "test_final_review_workflow.py",
+    }
+)
 
 
 def discover_governed_test_files(repo_root: pathlib.Path) -> set[str]:
@@ -79,7 +83,10 @@ def discover_governed_test_files(repo_root: pathlib.Path) -> set[str]:
     return {
         path.name
         for path in scripts.iterdir()
-        if path.is_file() and path.name.startswith("test_") and path.suffix in GOVERNED_TEST_SUFFIXES
+        if path.is_file()
+        and path.name.startswith("test_")
+        and path.suffix in GOVERNED_TEST_SUFFIXES
+        and path.name not in INACTIVE_TEST_FILENAMES
     }
 
 

@@ -391,23 +391,88 @@ fn workspace_crate_files() -> Vec<PathBuf> {
     rust_files_below(&repo_path("crates"))
 }
 
+fn anonymous_use_group_open(actual: &[&str], index: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for cursor in (0..index).rev() {
+        match actual[cursor] {
+            "}" => depth += 1,
+            "{" if depth > 0 => depth -= 1,
+            "{" => {
+                let anonymous_root = actual.get(cursor.wrapping_sub(1)) == Some(&"use")
+                    || (actual.get(cursor.wrapping_sub(1)) == Some(&"::")
+                        && actual.get(cursor.wrapping_sub(2)) == Some(&"use"));
+                return anonymous_root.then_some(cursor);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_root_alias_binding(actual: &[&str], index: usize, aliases: &BTreeSet<String>) -> bool {
+    if !actual
+        .get(index)
+        .is_some_and(|root| aliases.contains(*root))
+        || actual.get(index + 1) != Some(&"as")
+        || actual.get(index + 2) == Some(&"_")
+    {
+        return false;
+    }
+    match actual.get(index.wrapping_sub(1)) {
+        Some(&"use") => true,
+        Some(&"::") => actual.get(index.wrapping_sub(2)) == Some(&"use"),
+        Some(&"{") | Some(&",") => anonymous_use_group_open(actual, index).is_some(),
+        _ => false,
+    }
+}
+
 fn bolt_v2_root_aliases(actual: &[&str]) -> BTreeSet<String> {
     let mut aliases = BTreeSet::from(["bolt_v2".to_string()]);
     loop {
         let previous_len = aliases.len();
-        for window in actual.windows(3) {
-            if aliases.contains(window[0]) && window[1] == "as" {
-                aliases.insert(window[2].to_string());
+        for index in 0..actual.len() {
+            if is_root_alias_binding(actual, index, &aliases)
+                && let Some(alias) = actual.get(index + 2)
+            {
+                aliases.insert((*alias).to_string());
             }
         }
         for window in actual.windows(5) {
             if window[0..2] == ["extern", "crate"]
                 && aliases.contains(window[2])
                 && window[3] == "as"
+                && window[4] != "_"
             {
                 aliases.insert(window[4].to_string());
             }
         }
+        let mut grouped_aliases = Vec::new();
+        for (open, root) in actual.iter().enumerate() {
+            if !aliases.contains(*root) || actual.get(open + 1..open + 3) != Some(&["::", "{"]) {
+                continue;
+            }
+            let mut depth = 1usize;
+            let mut cursor = open + 3;
+            while cursor < actual.len() && depth > 0 {
+                match actual[cursor] {
+                    "{" => depth += 1,
+                    "}" => depth = depth.saturating_sub(1),
+                    "self"
+                        if depth == 1
+                            && is_use_tree_segment_start(actual, cursor)
+                            && actual.get(cursor + 1) == Some(&"as")
+                            && actual.get(cursor + 2) != Some(&"_") =>
+                    {
+                        if let Some(alias) = actual.get(cursor + 2) {
+                            grouped_aliases.push((*alias).to_string());
+                        }
+                    }
+                    _ => {}
+                }
+                cursor += 1;
+            }
+        }
+        aliases.extend(grouped_aliases);
         if aliases.len() == previous_len {
             return aliases;
         }
@@ -440,7 +505,7 @@ fn belongs_to_bolt_v2_path(actual: &[&str], index: usize, root_aliases: &BTreeSe
 }
 
 fn publicly_reexports_bolt_v2_root(actual: &[&str], aliases: &BTreeSet<String>) -> bool {
-    actual.windows(4).any(|window| {
+    let direct = actual.windows(4).any(|window| {
         window[0..2] == ["pub", "use"]
             && aliases.contains(window[2])
             && matches!(window[3], ";" | "as")
@@ -454,7 +519,32 @@ fn publicly_reexports_bolt_v2_root(actual: &[&str], aliases: &BTreeSet<String>) 
         window[0..3] == ["pub", "use", "{"]
             && aliases.contains(window[3])
             && window[4..6] == ["}", ";"]
-    })
+    });
+    let anonymous_group = actual.iter().enumerate().any(|(index, root)| {
+        if !aliases.contains(*root) || !is_use_tree_segment_start(actual, index) {
+            return false;
+        }
+        let Some(open) = anonymous_use_group_open(actual, index) else {
+            return false;
+        };
+        (actual.get(open.wrapping_sub(2)..open) == Some(&["pub", "use"]))
+            || (actual.get(open.wrapping_sub(3)..open) == Some(&["pub", "use", "::"]))
+    });
+    direct
+        || anonymous_group
+        || actual.iter().enumerate().any(|(start, token)| {
+            if *token != "pub" || actual.get(start + 1) != Some(&"use") {
+                return false;
+            }
+            let (root, open_brace) = if actual.get(start + 2) == Some(&"::") {
+                (actual.get(start + 3), start + 5)
+            } else {
+                (actual.get(start + 2), start + 4)
+            };
+            root.is_some_and(|root| aliases.contains(*root))
+                && actual.get(open_brace) == Some(&"{")
+                && use_tree_contains_at_depth(actual, open_brace, "self")
+        })
 }
 
 fn imports_bolt_v2_strategies_namespace(actual: &[&str], root_aliases: &BTreeSet<String>) -> bool {
@@ -480,8 +570,7 @@ fn imports_bolt_v2_strategies_namespace(actual: &[&str], root_aliases: &BTreeSet
 fn references_retired_registry_type(tokens: &[Token], type_name: &str) -> bool {
     let actual = texts(tokens);
     let root_aliases = bolt_v2_root_aliases(&actual);
-    if root_aliases.len() > 1
-        || publicly_reexports_bolt_v2_root(&actual, &root_aliases)
+    if publicly_reexports_bolt_v2_root(&actual, &root_aliases)
         || imports_bolt_v2_strategies_namespace(&actual, &root_aliases)
     {
         return true;
@@ -577,27 +666,96 @@ fn relative(path: &Path) -> String {
         .replace('\\', "/")
 }
 
+fn public_item_kind<'a>(tokens: &'a [Token], start: usize) -> Option<&'a str> {
+    let mut cursor = start + 1;
+    if tokens.get(cursor).is_some_and(|token| token.text == "(") {
+        let mut depth = 1usize;
+        cursor += 1;
+        while cursor < tokens.len() && depth > 0 {
+            match tokens[cursor].text.as_str() {
+                "(" => depth += 1,
+                ")" => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            cursor += 1;
+        }
+    }
+    while tokens.get(cursor).is_some_and(|token| {
+        matches!(
+            token.text.as_str(),
+            "async" | "auto" | "const" | "default" | "extern" | "unsafe"
+        )
+    }) {
+        cursor += 1;
+    }
+    tokens.get(cursor).map(|token| token.text.as_str())
+}
+
 fn public_declarations(tokens: &[Token]) -> Vec<Vec<&str>> {
     let mut declarations = Vec::new();
     for (start, token) in tokens.iter().enumerate() {
         if token.text != "pub" {
             continue;
         }
+        let item_kind = public_item_kind(tokens, start);
+        let include_body = matches!(item_kind, Some("enum" | "trait"));
         let mut declaration = Vec::new();
         let mut cursor = start;
         let mut parentheses = 0usize;
         let mut brackets = 0usize;
         let mut angles = 0usize;
+        let mut braces = 0usize;
         while let Some(current) = tokens.get(cursor) {
+            if item_kind == Some("trait") && braces == 1 && current.text == "{" {
+                let mut implementation_depth = 1usize;
+                cursor += 1;
+                while let Some(implementation) = tokens.get(cursor) {
+                    match implementation.text.as_str() {
+                        "{" => implementation_depth += 1,
+                        "}" => {
+                            implementation_depth = implementation_depth.saturating_sub(1);
+                            if implementation_depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    cursor += 1;
+                }
+                cursor += 1;
+                continue;
+            }
             declaration.push(current.text.as_str());
             match current.text.as_str() {
+                "(" if item_kind == Some("struct")
+                    && parentheses == 0
+                    && brackets == 0
+                    && angles == 0 =>
+                {
+                    break;
+                }
                 "(" => parentheses += 1,
                 ")" => parentheses = parentheses.saturating_sub(1),
                 "[" => brackets += 1,
                 "]" => brackets = brackets.saturating_sub(1),
                 "<" => angles += 1,
                 ">" => angles = angles.saturating_sub(1),
-                "{" | ";" | "," if parentheses == 0 && brackets == 0 && angles == 0 => break,
+                "{" if parentheses == 0 && brackets == 0 && angles == 0 => {
+                    if !include_body {
+                        break;
+                    }
+                    braces += 1;
+                }
+                "{" if braces > 0 => braces += 1,
+                "}" if braces > 0 => {
+                    braces = braces.saturating_sub(1);
+                    if braces == 0 {
+                        break;
+                    }
+                }
+                ";" | "," if parentheses == 0 && brackets == 0 && angles == 0 && braces == 0 => {
+                    break;
+                }
                 _ => {}
             }
             cursor += 1;
@@ -616,6 +774,16 @@ fn normalized_public_declarations(tokens: &[Token]) -> Vec<String> {
         .into_iter()
         .map(|declaration| declaration.join(" "))
         .collect()
+}
+
+fn brace_opens_inline_module(tokens: &[Token], brace: usize) -> bool {
+    let header_start = (0..brace)
+        .rev()
+        .find(|index| matches!(tokens[*index].text.as_str(), ";" | "{" | "}"))
+        .map_or(0, |index| index + 1);
+    tokens[header_start..brace]
+        .windows(2)
+        .any(|window| window[0].text == "mod" && window[1].text != "!")
 }
 
 fn forbidden_aliases_across_sources(
@@ -638,15 +806,15 @@ fn forbidden_aliases_across_sources(
                     discovered.push((window[2].text.clone(), root.clone()));
                 }
             }
-            let mut brace_depth = 0usize;
+            let mut scopes_are_modules = Vec::new();
             for (index, token) in tokens.iter().enumerate() {
                 match token.text.as_str() {
                     "{" => {
-                        brace_depth += 1;
+                        scopes_are_modules.push(brace_opens_inline_module(tokens, index));
                         continue;
                     }
                     "}" => {
-                        brace_depth = brace_depth.saturating_sub(1);
+                        scopes_are_modules.pop();
                         continue;
                     }
                     _ => {}
@@ -654,10 +822,10 @@ fn forbidden_aliases_across_sources(
                 if token.text != "type" {
                     continue;
                 }
-                // Source files are modules, so only depth-zero `type` items can
-                // name a module API. Associated types inside impl/trait bodies
-                // and function-local aliases are separate scopes.
-                if brace_depth != 0 {
+                // A source file and its inline `mod` bodies are module scopes.
+                // Associated types and function-local aliases are not aliases
+                // in the public item's module namespace.
+                if scopes_are_modules.iter().any(|is_module| !is_module) {
                     continue;
                 }
                 let Some(alias) = tokens.get(index + 1) else {
@@ -748,12 +916,20 @@ fn retired_registry_matcher_covers_wildcard_and_reexport_paths() {
         "pub use bolt_v2::strategies::registry as retired_registry;",
         "pub use bolt_v2::strategies::{registry as retired_registry};",
         "use bolt_v2 as b; use b::strategies::registry::FeeProvider;",
+        "use {bolt_v2 as b}; use b::strategies::registry::FeeProvider;",
         "extern crate bolt_v2 as b; use b::strategies::registry::*;",
         "pub use bolt_v2;",
         "pub use ::bolt_v2;",
         "pub use {bolt_v2};",
+        "pub use {other, bolt_v2};",
+        "use bolt_v2 as b; pub use {other, b};",
+        "pub use bolt_v2::{self};",
+        "pub use bolt_v2::{self as b};",
+        "pub use ::bolt_v2::{self as b};",
         "pub use bolt_v2::strategies as shared_strategies;",
         "use bolt_v2::{strategies::*};",
+        "use bolt_v2::{self as b}; use b::strategies::registry::FeeProvider;",
+        "use bolt_v2::{self as b, self as c}; use c::strategies::registry::FeeProvider;",
     ] {
         assert!(
             references_retired_registry_type(&tokenize(source), "FeeProvider"),
@@ -762,6 +938,8 @@ fn retired_registry_matcher_covers_wildcard_and_reexport_paths() {
     }
     for source in [
         "use other::strategies::registry::*;",
+        "use other::bolt_v2 as b; use b::strategies::registry::FeeProvider;",
+        "use bolt_v2 as b; use b::unrelated::FeeProvider;",
         "pub use bolt_v2::strategies::registry::nested::*;",
         "pub use bolt_v2::strategies::{nested::registry};",
     ] {
@@ -850,6 +1028,9 @@ fn public_api_forbidden_type_aliases_cannot_launder_handle_types() {
         tokenize("pub type NeutralHandle = LiveNodeHandle;"),
         tokenize("type SecondAlias = NeutralHandle;"),
         tokenize("pub fn leak() -> SecondAlias { loop {} }"),
+        tokenize(
+            "pub mod nested { type NestedAlias = LiveNodeHandle; pub fn leak() -> NestedAlias { loop {} } }",
+        ),
     ];
     let aliases = forbidden_aliases_across_sources(&sources, &["LiveNodeHandle"]);
     assert_eq!(
@@ -860,10 +1041,19 @@ fn public_api_forbidden_type_aliases_cannot_launder_handle_types() {
         aliases.get("SecondAlias").map(String::as_str),
         Some("LiveNodeHandle")
     );
+    assert_eq!(
+        aliases.get("NestedAlias").map(String::as_str),
+        Some("LiveNodeHandle")
+    );
     let public = public_declaration_tokens(&sources[2]);
     assert!(
         aliases.keys().any(|alias| public.contains(&alias.as_str())),
         "transitive forbidden alias should remain visible to the public-API scan"
+    );
+    let nested_public = public_declaration_tokens(&sources[3]);
+    assert!(
+        nested_public.contains(&"NestedAlias"),
+        "inline-module aliases must remain visible to the public-API scan"
     );
 }
 
@@ -875,6 +1065,39 @@ fn associated_types_are_not_treated_as_module_aliases() {
     ];
     let aliases = forbidden_aliases_across_sources(&sources, &["BinaryOracleEdgeTaker"]);
     assert_eq!(aliases.get("Strategy"), None);
+}
+
+#[test]
+fn public_api_scan_includes_enum_variants_and_trait_signatures() {
+    let tokens = tokenize(
+        "pub enum LeakingEnum { Handle(LiveNodeHandle) }\n\
+         pub trait LeakingTrait {\n\
+             fn handle(&self) -> LiveNodeHandle;\n\
+             fn internal_only(&self) -> bool {\n\
+                 let _handle: PrivateImplementationHandle;\n\
+                 true\n\
+             }\n\
+         }\n\
+         pub struct NamedFields { pub handle: LiveNodeHandle, private: PrivateNamedHandle }\n\
+         pub struct TupleFields(pub LiveNodeHandle, PrivateTupleHandle);\n\
+         pub union UnionFields { pub handle: LiveNodeHandle, private: PrivateUnionHandle }",
+    );
+    let public = public_declaration_tokens(&tokens);
+    assert!(
+        public.contains(&"LiveNodeHandle"),
+        "public enum variants, trait signatures, and public fields must be part of the public-API scan"
+    );
+    for private in [
+        "PrivateImplementationHandle",
+        "PrivateNamedHandle",
+        "PrivateTupleHandle",
+        "PrivateUnionHandle",
+    ] {
+        assert!(
+            !public.contains(&private),
+            "private implementation and field types are not part of the public API: {private}"
+        );
+    }
 }
 
 #[test]
@@ -1275,7 +1498,7 @@ fn shared_runtime_public_apis_expose_no_taker_private_or_nt_handle_types() {
         .into_iter()
         .map(|path| {
             let source = std::fs::read_to_string(path).expect("crate source should be readable");
-            tokenize(&source)
+            production_tokens(&source)
         })
         .collect::<Vec<_>>();
     let aliases = forbidden_aliases_across_sources(&crate_sources, &forbidden);

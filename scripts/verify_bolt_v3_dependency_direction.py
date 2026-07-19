@@ -50,10 +50,9 @@ a surrounding `use` block or a line — so the allowlist is stable against
 unrelated edits and a newly-added strategy symbol is caught even inside an
 already-coupled `use` block.
 
-Current code already contains pre-existing back-references (tracked under #446 and
-the #522 decomposition). They are captured in `FINDING_ALLOWANCES` so the fence is
-GREEN on today's code while FAILING on every NEW back-reference. The allowlist may
-only SHRINK:
+The enforced `FINDING_ALLOWANCES` set is empty and is asserted to remain empty,
+so the fence is GREEN on today's code while FAILING on every back-reference. The
+shrink-only mechanism remains enforced, which means the allowance set cannot grow:
 
 - a stale allowance (one that no longer matches any reference) FAILS, forcing its
   removal once the underlying reference is relocated to a shared module;

@@ -1341,7 +1341,7 @@ fn test_economics_admission_with_binding_and_purpose(
 }
 
 #[cfg(test)]
-struct TestEconomicsAdmissionSource;
+struct TestEconomicsAdmissionSource(String);
 
 #[cfg(test)]
 impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
@@ -1366,7 +1366,7 @@ impl EconomicsAdmissionSource for TestEconomicsAdmissionSource {
         &self,
         intent: EconomicsAdmissionQuoteIntent,
     ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
-        test_economics_admission_source_support::quote_admission(intent, Decimal::ONE)
+        test_economics_admission_source_support::quote_admission(intent, Decimal::ONE, &self.0)
     }
 }
 
@@ -1404,6 +1404,7 @@ mod test_economics_admission_source_support {
     pub(super) fn quote_admission(
         intent: EconomicsAdmissionQuoteIntent,
         schedule_factor: Decimal,
+        provider_key: &str,
     ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
         let valid_until_ns = u64::MAX;
         let source = SourceValidity {
@@ -1445,7 +1446,7 @@ mod test_economics_admission_source_support {
                 .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?,
         )?
         .quote_admission(EconomicsAdmissionIntent {
-            provider_key: "execution_client".to_string(),
+            provider_key: provider_key.to_string(),
             authority_refreshed_at_ns: intent.request.requested_at_ns,
             edge_basis: EdgeBasisEvidence {
                 policy_id: intent.request.edge_basis_policy_id.clone(),
@@ -1486,17 +1487,17 @@ mod resting_order_refresh_tests {
     fn remaining_quantity_refreshes_at_the_configured_margin() {
         let prior = maker_admission();
         let refresh = refresh_resting_order_economics(
-            &TestEconomicsAdmissionSource,
+            &TestEconomicsAdmissionSource("execution_client".to_string()),
             &prior,
             Decimal::new(2, 0),
             Decimal::new(2, 0),
             true,
-            u64::MAX - 1,
+            u64::MAX - 2,
         );
         let RestingOrderEconomicsRefresh::Refreshed(admission) = refresh else {
             panic!("expected refreshed resting economics, got {refresh:?}");
         };
-        assert_eq!(admission.request.requested_at_ns, u64::MAX - 1);
+        assert_eq!(admission.request.requested_at_ns, u64::MAX - 2);
         assert_ne!(admission.order_binding, prior.order_binding);
         assert_eq!(
             admission.request.planned_fill_legs[0].quantity,
@@ -1508,7 +1509,7 @@ mod resting_order_refresh_tests {
     fn lost_maker_guarantee_requires_cancellation() {
         assert_eq!(
             refresh_resting_order_economics(
-                &TestEconomicsAdmissionSource,
+                &TestEconomicsAdmissionSource("execution_client".to_string()),
                 &maker_admission(),
                 Decimal::new(2, 0),
                 Decimal::new(2, 0),
@@ -1526,7 +1527,7 @@ mod resting_order_refresh_tests {
         let prior = maker_admission();
         assert_eq!(
             refresh_resting_order_economics(
-                &TestEconomicsAdmissionSource,
+                &TestEconomicsAdmissionSource("execution_client".to_string()),
                 &prior,
                 Decimal::new(3, 0),
                 Decimal::new(2, 0),
@@ -1541,7 +1542,7 @@ mod resting_order_refresh_tests {
         let partial = test_maker_economics_admission(Decimal::ONE);
         assert_eq!(
             refresh_resting_order_economics(
-                &TestEconomicsAdmissionSource,
+                &TestEconomicsAdmissionSource("execution_client".to_string()),
                 &partial,
                 Decimal::new(15, 1),
                 Decimal::new(2, 0),
@@ -1558,7 +1559,7 @@ mod resting_order_refresh_tests {
     fn negative_remaining_quantity_requires_cancellation() {
         assert_eq!(
             refresh_resting_order_economics(
-                &TestEconomicsAdmissionSource,
+                &TestEconomicsAdmissionSource("execution_client".to_string()),
                 &maker_admission(),
                 Decimal::NEGATIVE_ONE,
                 Decimal::new(2, 0),
@@ -1625,7 +1626,7 @@ mod resting_order_refresh_tests {
             instrument_id: &crate::economics::InstrumentId,
             candidates: &[crate::economics::ProductSurfaceId],
         ) -> Result<crate::economics::ProductSurfaceId, EconomicsUnavailable> {
-            TestEconomicsAdmissionSource.resolve_product_surface(
+            TestEconomicsAdmissionSource("execution_client".to_string()).resolve_product_surface(
                 execution_client_id,
                 instrument_id,
                 candidates,
@@ -1636,7 +1637,11 @@ mod resting_order_refresh_tests {
             &self,
             intent: EconomicsAdmissionQuoteIntent,
         ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
-            test_economics_admission_source_support::quote_admission(intent, Decimal::new(2, 0))
+            test_economics_admission_source_support::quote_admission(
+                intent,
+                Decimal::new(2, 0),
+                "execution_client",
+            )
         }
     }
 
@@ -1649,7 +1654,7 @@ mod resting_order_refresh_tests {
                 Decimal::new(2, 0),
                 Decimal::new(2, 0),
                 true,
-                u64::MAX - 1,
+                u64::MAX - 2,
             ),
             RestingOrderEconomicsRefresh::CancelRequired(
                 RestingOrderEconomicsCancelReason::TermsChanged
@@ -1663,7 +1668,9 @@ pub(crate) fn test_order_routing_handle(
     execution_client_id: &str,
 ) -> crate::bolt_v3_order_execution::BoltV3OrderRoutingHandle {
     crate::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new(
-        Arc::new(TestEconomicsAdmissionSource),
+        Arc::new(TestEconomicsAdmissionSource(
+            execution_client_id.to_string(),
+        )),
         crate::bolt_v3_order_execution::BoltV3OrderRoutingConfig {
             execution_client_id,
             account_id: "test-account",

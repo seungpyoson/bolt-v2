@@ -2737,7 +2737,10 @@ mod tests {
                 ),
                 &mut sink,
                 order,
-                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+                BoltV3SubmitContext::with_client_id_and_position_id(
+                    ClientId::from("execution_client"),
+                    PositionId::from("POSITION-001"),
+                ),
             )
             .expect("missing venue truth should pass through with explicit evidence");
 

@@ -364,7 +364,10 @@ fn configured_source_quotes_from_exact_authoritative_client_instrument_and_surfa
         admission.full_reservation_liability().amount(),
         decimal("5.25")
     );
-    assert_eq!(admission.net_edge().basis().normalized_amount, decimal("5"));
+    assert_eq!(
+        admission.net_edge().basis().normalized_amount.amount(),
+        decimal("5")
+    );
     assert_eq!(
         admission.net_edge().basis().resolver_id.as_str(),
         "fixture-resolver"
@@ -442,7 +445,10 @@ fn configured_source_keeps_planned_edge_basis_distinct_from_reservation_basis() 
         })
         .expect("planned execution value and reservation basis are distinct facts");
 
-    assert_eq!(admission.net_edge().basis().normalized_amount, decimal("5"));
+    assert_eq!(
+        admission.net_edge().basis().normalized_amount.amount(),
+        decimal("5")
+    );
     assert_eq!(admission.planned_fill_notional().amount(), decimal("5"));
     assert_eq!(admission.reservation_basis().amount(), decimal("5.50"));
     assert_eq!(admission.guaranteed_debit().amount(), decimal("0.25"));

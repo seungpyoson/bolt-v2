@@ -815,11 +815,6 @@ fn notional_equal_to_cap_is_admitted() {
 }
 
 #[test]
-fn negative_full_liability_cannot_cross_the_typed_boundary() {
-    assert!(bolt_v2::economics::FullReservationLiability::new(Decimal::NEGATIVE_ONE).is_err());
-}
-
-#[test]
 fn quote_quantity_sell_limit_helper_floors_to_submitted_quote_quantity() {
     let notional =
         conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {

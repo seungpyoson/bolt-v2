@@ -738,6 +738,10 @@ pub struct BacktestingRunManifest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
     MissingField(&'static str),
+    InvalidEconomicsSnapshot {
+        index: usize,
+        message: String,
+    },
     InlineStrategyCode {
         registry_key: String,
     },
@@ -857,6 +861,9 @@ impl std::fmt::Display for ManifestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "missing required field: {field}"),
+            Self::InvalidEconomicsSnapshot { index, message } => {
+                write!(f, "invalid economics snapshot at index {index}: {message}")
+            }
             Self::InlineStrategyCode { registry_key } => {
                 write!(
                     f,
@@ -2207,9 +2214,12 @@ impl BacktestingRunManifest {
             if self.economics_snapshots.is_empty() {
                 return Err(ManifestError::MissingField("economics_snapshots"));
             }
-            for snapshot in &self.economics_snapshots {
+            for (index, snapshot) in self.economics_snapshots.iter().enumerate() {
                 crate::economics::ReplayEconomicsAdapter::from_snapshot(snapshot.clone())
-                    .map_err(|_| ManifestError::MissingField("economics_snapshots"))?;
+                    .map_err(|error| ManifestError::InvalidEconomicsSnapshot {
+                        index,
+                        message: format!("{error:?}"),
+                    })?;
             }
         }
         validate_starting_balances(&self.venue.starting_balances)?;

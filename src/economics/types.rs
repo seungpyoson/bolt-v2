@@ -354,12 +354,14 @@ pub struct PlannedFillLeg {
 }
 
 macro_rules! economic_amount {
-    ($name:ident, $is_valid:expr) => {
+    ($name:ident, $constructor_visibility:vis, $is_valid:expr) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct $name(Decimal);
 
         impl $name {
-            pub fn new(amount: Decimal) -> Result<Self, EconomicsUnavailable> {
+            $constructor_visibility fn new(
+                amount: Decimal,
+            ) -> Result<Self, EconomicsUnavailable> {
                 if !($is_valid)(amount) {
                     return Err(EconomicsUnavailable::InvalidDecimal);
                 }
@@ -373,13 +375,14 @@ macro_rules! economic_amount {
     };
 }
 
-economic_amount!(PlannedFillNotional, |amount: Decimal| amount
+economic_amount!(PlannedFillNotional, pub(crate), |amount: Decimal| amount
     > Decimal::ZERO);
-economic_amount!(ReservationBasis, |amount: Decimal| amount >= Decimal::ZERO);
-economic_amount!(GuaranteedDebit, |amount: Decimal| amount >= Decimal::ZERO);
-economic_amount!(FullReservationLiability, |amount: Decimal| amount
+economic_amount!(ReservationBasis, pub, |amount: Decimal| amount
     >= Decimal::ZERO);
-economic_amount!(EdgeBasisAmount, |amount: Decimal| amount > Decimal::ZERO);
+economic_amount!(GuaranteedDebit, pub(crate), |amount: Decimal| amount >= Decimal::ZERO);
+economic_amount!(FullReservationLiability, pub(crate), |amount: Decimal| amount >= Decimal::ZERO);
+economic_amount!(EdgeBasisAmount, pub, |amount: Decimal| amount
+    > Decimal::ZERO);
 
 impl PlannedFillNotional {
     pub fn from_legs(legs: &[PlannedFillLeg]) -> Result<Self, EconomicsUnavailable> {
@@ -410,6 +413,22 @@ impl FullReservationLiability {
             .checked_add(debit.amount())
             .ok_or(EconomicsUnavailable::InvalidDecimal)?;
         Ok(Self(amount))
+    }
+}
+
+#[cfg(test)]
+mod economic_amount_tests {
+    use super::*;
+
+    #[test]
+    fn full_reservation_liability_overflow_fails_closed() {
+        let basis = ReservationBasis::new(Decimal::MAX).expect("maximum decimal is non-negative");
+        let debit = GuaranteedDebit::new(Decimal::ONE).expect("one is non-negative");
+
+        assert_eq!(
+            FullReservationLiability::from_parts(basis, debit),
+            Err(EconomicsUnavailable::InvalidDecimal)
+        );
     }
 }
 

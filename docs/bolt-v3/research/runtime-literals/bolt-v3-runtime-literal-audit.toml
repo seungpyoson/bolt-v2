@@ -103,54 +103,6 @@ reason = "Versioned provider source composition name; runtime cadence and freshn
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"stable_pair_scale"'''
-context = '''"stable_pair_scale",'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable TOML schema field name; the coefficient itself is loaded from configuration and never defaulted in Rust."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"growth_mode_scale"'''
-context = '''"growth_mode_scale",'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable TOML schema field name; the coefficient itself is loaded from configuration and never defaulted in Rust."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"hip3_scale_threshold"'''
-context = '''"hip3_scale_threshold",'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable TOML schema field name; the threshold itself is loaded from configuration and never defaulted in Rust."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"hip3_below_threshold_base"'''
-context = '''"hip3_below_threshold_base",'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable TOML schema field name; the base coefficient itself is loaded from configuration and never defaulted in Rust."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"hip3_at_or_above_threshold_multiplier"'''
-context = '''"hip3_at_or_above_threshold_multiplier",'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable TOML schema field name; the multiplier itself is loaded from configuration and never defaulted in Rust."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"hip3_at_or_above_deployer_share"'''
-context = '''"hip3_at_or_above_deployer_share",'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable TOML schema field name; the share itself is loaded from configuration and never defaulted in Rust."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
 literal = '''"settlement"'''
 context = '''if economics.assets.len() != 1 || !economics.assets.contains_key("settlement") {'''
 classification = "hyperliquid_economics_asset_role_schema_key"
@@ -3755,7 +3707,6 @@ literal = '''"poly_gnosis_safe"'''
 context = '''super::PolymarketSignatureType::PolyGnosisSafe => "poly_gnosis_safe",'''
 classification = "polymarket_signature_type_label"
 reason = "This is a stable proof label for the configured Polymarket signature_type enum variant, not an operator runtime value."
-
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -21576,54 +21527,6 @@ literal = '''"account_fees"'''
 context = '''.get("account_fees")'''
 classification = "hyperliquid_economics_source_schema_key"
 reason = "Stable provider-owned TOML authority role; the selected source remains mandatory configuration."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
-literal = '''"stable_pair_scale"'''
-context = '''stable_pair_scale: decimal("stable_pair_scale")?,'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
-literal = '''"growth_mode_scale"'''
-context = '''growth_mode_scale: decimal("growth_mode_scale")?,'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
-literal = '''"hip3_scale_threshold"'''
-context = '''hip3_scale_threshold: decimal("hip3_scale_threshold")?,'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
-literal = '''"hip3_below_threshold_base"'''
-context = '''hip3_below_threshold_base: decimal("hip3_below_threshold_base")?,'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
-literal = '''"hip3_at_or_above_threshold_multiplier"'''
-context = '''"hip3_at_or_above_threshold_multiplier",'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
-literal = '''"hip3_at_or_above_deployer_share"'''
-context = '''hip3_at_or_above_deployer_share: decimal("hip3_at_or_above_deployer_share")?,'''
-classification = "hyperliquid_economics_formula_schema_key"
-reason = "Stable provider-owned TOML formula field; its numeric value is configuration-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid/economics.rs"

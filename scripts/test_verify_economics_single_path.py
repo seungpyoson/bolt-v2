@@ -15,6 +15,25 @@ class EconomicsSinglePathTest(unittest.TestCase):
             path = root / verifier.ADAPTER_ROOT / "synthetic" / "economics.rs"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(source, encoding="utf-8")
+            for relative in verifier.SEALED_CONSUMER_RULES:
+                consumer = root / relative
+                consumer.parent.mkdir(parents=True, exist_ok=True)
+                consumer.write_text("consume(sealed.full_reservation_liability());\n", encoding="utf-8")
+            return verifier.verify(root)
+
+    def verify_sealed_consumer_source(self, relative: pathlib.Path, source: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            adapter = root / verifier.ADAPTER_ROOT / "synthetic" / "economics.rs"
+            adapter.parent.mkdir(parents=True, exist_ok=True)
+            adapter.write_text("quote(closed_plan);\n", encoding="utf-8")
+            for consumer_relative in verifier.SEALED_CONSUMER_RULES:
+                consumer = root / consumer_relative
+                consumer.parent.mkdir(parents=True, exist_ok=True)
+                consumer.write_text(
+                    source if consumer_relative == relative else "consume(sealed);\n",
+                    encoding="utf-8",
+                )
             return verifier.verify(root)
 
     def test_discovers_new_provider_adapter(self) -> None:
@@ -55,6 +74,20 @@ class EconomicsSinglePathTest(unittest.TestCase):
             '// snapshot.rate.unwrap_or(config.rate)\nconst NOTE: &str = "if self.product.hip3";\n'
         )
         self.assertEqual(errors, [])
+
+    def test_rejects_scanner_cost_as_basket_authority(self) -> None:
+        errors = self.verify_sealed_consumer_source(
+            pathlib.Path("src/bolt_v3_basket_admission.rs"),
+            "reserve(request.scanner_evidence.total_adjusted_cost);\n",
+        )
+        self.assertTrue(any("scanner economics" in error for error in errors), errors)
+
+    def test_rejects_capital_price_quantity_recalculation(self) -> None:
+        errors = self.verify_sealed_consumer_source(
+            pathlib.Path("src/bolt_v3_capital_admission.rs"),
+            "let liability = request.limit_price.checked_mul(request.quantity);\n",
+        )
+        self.assertTrue(any("re-derived price/quantity" in error for error in errors), errors)
 
 
 if __name__ == "__main__":

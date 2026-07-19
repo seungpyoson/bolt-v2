@@ -6109,8 +6109,12 @@ impl BinaryOracleEdgeTaker {
             .ok_or_else(|| anyhow::anyhow!("exit economics requires a valid entry cost basis"))?;
         let exit_quantity = Decimal::from_str(&quantity.to_string())
             .context("exit economics quantity is not representable as Decimal")?;
+        let economics_fill_legs = planned_fill_legs
+            .iter()
+            .map(crate::economics::PlannedFillLeg::from)
+            .collect::<Vec<_>>();
         let planned_fill_notional =
-            crate::economics::PlannedFillNotional::from_legs(&planned_fill_legs)
+            crate::economics::PlannedFillNotional::from_legs(&economics_fill_legs)
                 .context("exit planned-fill legs are invalid")?;
         let entry_notional = entry_cost
             .checked_mul(exit_quantity)

@@ -121,7 +121,7 @@ fn immutable_snapshot_maps_to_canonical_quote_and_edge_basis() {
 
     assert_eq!(estimate.authority.snapshot_id.as_str(), "quote-snapshot");
     assert_eq!(estimate.components.len(), 1);
-    assert_eq!(edge_basis.normalized_amount, dec("5"));
+    assert_eq!(edge_basis.normalized_amount.amount(), dec("5"));
 }
 
 #[test]

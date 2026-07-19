@@ -149,6 +149,25 @@ fn exponent_two_blocks_until_governed_settlement_evidence_exists() {
 }
 
 #[test]
+fn maker_charging_descriptor_blocks_until_governed_evidence_exists() {
+    let mut wire: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/bolt_v3/boundary_evidence/polymarket-market-info-fee-bearing.json"
+    ))
+    .unwrap();
+    wire["fd"]["to"] = serde_json::Value::Bool(false);
+    let snapshot = PolymarketMarketInfoSnapshot::from_wire_json(
+        metadata(),
+        &serde_json::to_string(&wire).unwrap(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        PolymarketEconomicsAdapter::try_new(config(), snapshot),
+        Err(PolymarketEconomicsError::InvalidMarketInfo)
+    ));
+}
+
+#[test]
 fn market_info_parser_rejects_missing_or_unknown_economics_shape() {
     let missing = r#"{
         "r":{},"t":[{"t":"token-yes","o":"Yes"}],"mos":5,"mts":0.001,

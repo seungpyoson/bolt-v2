@@ -202,6 +202,37 @@ fn basket_rejects_a_scanner_blocked_candidate_before_reservation() {
 }
 
 #[test]
+fn basket_liability_overflow_rejects_before_submit_slot_mutation() {
+    let writer = Arc::new(RecordingBasketDecisionWriter::default());
+    let basket_state = BoltV3BasketAdmissionState::new(
+        writer.clone(),
+        BoltV3BasketAdmissionLimits {
+            max_basket_notional: Decimal::MAX,
+            ..admission_limits()
+        },
+    );
+    let submit_state = submit_state(writer, 2, Decimal::MAX);
+    let group = fixture_group();
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
+
+    assert_eq!(
+        basket_state
+            .admit(
+                &basket_request(
+                    "basket-overflow",
+                    &group,
+                    &scan,
+                    entry_claims(&group, Decimal::MAX),
+                ),
+                &submit_state,
+            )
+            .expect_err("checked sealed-liability sum must reject overflow"),
+        BoltV3BasketAdmissionError::BasketNotionalCapExceeded
+    );
+    assert_eq!(submit_state.admitted_order_count(), 0);
+}
+
+#[test]
 fn stuck_reason_cannot_release_basket_exposure_reservation() {
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
     let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());

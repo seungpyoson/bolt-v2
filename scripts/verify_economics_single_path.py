@@ -12,6 +12,20 @@ from rust_source_scanner import strip_rust_comments_and_literals
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 ADAPTER_ROOT = pathlib.Path("src/bolt_v3_providers")
+SEALED_CONSUMER_RULES = {
+    pathlib.Path("src/bolt_v3_basket_admission.rs"): (
+        (re.compile(r"\bscanner_evidence\s*\.\s*total_adjusted_cost\b"), "scanner economics used by basket admission"),
+    ),
+    pathlib.Path("src/bolt_v3_capital_admission.rs"): (
+        (
+            re.compile(
+                r"\b(?:limit_price|effective_price|quantity)\s*(?:\.\s*checked_mul\s*\(|\*)|"
+                r"\b(?:limit_price|effective_price|quantity)\s*\*"
+            ),
+            "capital admission re-derived price/quantity economics",
+        ),
+    ),
+}
 FORBIDDEN_PATTERNS = (
     (
         re.compile(
@@ -49,6 +63,17 @@ def verify(root: pathlib.Path = REPO_ROOT) -> list[str]:
         relative = path.relative_to(root)
         scanned = strip_rust_comments_and_literals(path.read_text(encoding="utf-8"))
         for pattern, reason in FORBIDDEN_PATTERNS:
+            for match in pattern.finditer(scanned):
+                errors.append(
+                    f"{relative}:{line_number(scanned, match.start())}: {reason}: {match.group(0)}"
+                )
+    for relative, rules in SEALED_CONSUMER_RULES.items():
+        path = root / relative
+        if not path.is_file():
+            errors.append(f"missing sealed economics consumer {relative}")
+            continue
+        scanned = strip_rust_comments_and_literals(path.read_text(encoding="utf-8"))
+        for pattern, reason in rules:
             for match in pattern.finditer(scanned):
                 errors.append(
                     f"{relative}:{line_number(scanned, match.start())}: {reason}: {match.group(0)}"

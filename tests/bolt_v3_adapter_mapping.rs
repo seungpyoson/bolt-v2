@@ -279,12 +279,6 @@ builder_approval = "max_builder_fee"
 funding = "user_funding_stream_and_history"
 
 [execution.economics.formula]
-stable_pair_scale = "0.2"
-growth_mode_scale = "0.1"
-hip3_scale_threshold = "1"
-hip3_below_threshold_base = "1"
-hip3_at_or_above_threshold_multiplier = "2"
-hip3_at_or_above_deployer_share = "0.5"
 standard_perp_collateral_token = "0"
 fee_volume_history_days = "15"
 fee_eligibility_window_days = "14"

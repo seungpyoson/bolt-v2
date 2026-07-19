@@ -29,12 +29,6 @@ fn config() -> HyperliquidEconomicsAdapterConfig {
         fee_eligibility: fee_eligibility_policy(1, 1),
         formula: HyperliquidFormulaPolicy {
             standard_perp_collateral_token: 0,
-            stable_pair_scale: decimal("1"),
-            growth_mode_scale: decimal("1"),
-            hip3_scale_threshold: decimal("1"),
-            hip3_below_threshold_base: decimal("1"),
-            hip3_at_or_above_threshold_multiplier: decimal("1"),
-            hip3_at_or_above_deployer_share: decimal("0"),
         },
         carry: Some(HyperliquidCarryPolicy {
             component_id: EconomicComponentId::new("funding-carry").unwrap(),
@@ -239,66 +233,15 @@ fn perp_request() -> bolt_v2::economics::EconomicQuoteRequest {
 }
 
 #[test]
-fn spot_buy_fee_uses_base_unit_and_omits_builder_charge() {
-    let adapter = HyperliquidEconomicsAdapter::try_new(
-        config(),
-        user_fees("0"),
-        product("spot", false, true, "1", "2"),
-    )
-    .unwrap();
-    let mut request = canonical_fixture_request();
-    request.order_side = bolt_v2::economics::OrderSide::Buy;
-    request.planned_fill_legs[0].price = decimal("100");
-    request.planned_fill_legs[0].quantity = decimal("2");
-    request.routing.attached_charge = Some(RoutingAttachment {
-        attachment_id: RoutingAttachmentId::new("builder-profile").unwrap(),
-    });
-
-    let components = adapter.quote_components(&request).unwrap();
-
-    assert_eq!(components.len(), 1);
+fn spot_fee_surface_is_not_a_slice_one_success_path() {
     assert_eq!(
-        components[0].point_estimate.effect().unwrap().amount(),
-        decimal("-0.0014")
-    );
-    assert_eq!(
-        components[0]
-            .point_estimate
-            .effect()
-            .unwrap()
-            .unit()
-            .as_str(),
-        "BTC"
-    );
-}
-
-#[test]
-fn spot_sell_fee_and_builder_charge_use_quote_unit() {
-    let adapter = HyperliquidEconomicsAdapter::try_new(
-        config(),
-        user_fees("0"),
-        product("spot", false, true, "1", "2"),
-    )
-    .unwrap();
-    let mut request = canonical_fixture_request();
-    request.order_side = bolt_v2::economics::OrderSide::Sell;
-    request.planned_fill_legs[0].price = decimal("100");
-    request.planned_fill_legs[0].quantity = decimal("2");
-    request.routing.attached_charge = Some(RoutingAttachment {
-        attachment_id: RoutingAttachmentId::new("builder-profile").unwrap(),
-    });
-
-    let components = adapter.quote_components(&request).unwrap();
-
-    assert_eq!(components.len(), 2);
-    assert!(
-        components.iter().all(|component| component
-            .point_estimate
-            .effect()
-            .unwrap()
-            .unit()
-            .as_str()
-            == "USDC")
+        HyperliquidEconomicsAdapter::try_new(
+            config(),
+            user_fees("0"),
+            product("spot", false, true, "1", "2"),
+        )
+        .err(),
+        Some(HyperliquidEconomicsError::InvalidFeeSurface)
     );
 }
 
@@ -350,12 +293,12 @@ fn official_user_fees_wire_shape_drives_effective_taker_rate_without_double_stak
 }
 
 #[test]
-fn negative_maker_rate_bypasses_referral_and_hip3_scaling() {
+fn negative_maker_rate_is_not_reduced_by_referral_discount() {
     let product = HyperliquidProductEconomicsSnapshot::from_json(
         r#"{
             "snapshotId":"product-snapshot","sourceAtNs":91,"fetchedAtNs":96,
             "validUntilNs":110,"productKind":"perp","stablePair":false,
-            "alignedQuoteOrCollateral":false,"hip3":true,"deployerScale":0.5,
+            "alignedQuoteOrCollateral":false,"hip3":false,"deployerScale":0,
             "growthMode":false,"builderProfileId":"builder-profile",
             "builderRateBps":0,"builderApprovedMaxBps":0,
             "spotDustAuthorityComplete":false,
@@ -695,6 +638,32 @@ fn governed_live_hyperliquid_quote_authority_captures_parse() {
 }
 
 #[test]
+fn configured_standard_perp_collateral_identity_rejects_provider_mismatch() {
+    let mut wire: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/bolt_v3/boundary_evidence/hyperliquid-meta-and-asset-ctxs.json"
+    ))
+    .unwrap();
+    wire[0]["collateralToken"] = serde_json::json!(1);
+    let metadata = HyperliquidSnapshotMetadata {
+        snapshot_id: "collateral-mismatch".to_string(),
+        source_at_ns: 1_000_000_000_000,
+        fetched_at_ns: 1_000_000_000_005,
+        valid_until_ns: 1_000_000_000_110,
+    };
+
+    assert_eq!(
+        HyperliquidProductEconomicsSnapshot::from_perp_meta_wire(
+            metadata,
+            &serde_json::to_vec(&wire).unwrap(),
+            "BTC",
+            config().carry.as_ref().unwrap(),
+            config().formula.standard_perp_collateral_token,
+        ),
+        Err(HyperliquidEconomicsError::InvalidProductMetadata)
+    );
+}
+
+#[test]
 fn user_fees_parser_rejects_number_encoded_decimal_fields() {
     let mut wire: serde_json::Value = serde_json::from_str(include_str!(
         "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"
@@ -868,6 +837,39 @@ fn user_fees_parser_rejects_invalid_vip_tier_ordering() {
 
         assert_governed_user_fees_invalid(wire);
     }
+}
+
+fn vip_second_tier_wire() -> serde_json::Value {
+    let mut wire: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"
+    ))
+    .unwrap();
+    for row in wire["dailyUserVlm"].as_array_mut().unwrap() {
+        row["userCross"] = serde_json::Value::String("2000000".to_string());
+    }
+    wire
+}
+
+#[test]
+fn user_fees_parser_accepts_the_highest_eligible_vip_tier() {
+    let mut wire = vip_second_tier_wire();
+    wire["userCrossRate"] = serde_json::Value::String("0.00035".to_string());
+
+    HyperliquidUserFeesSnapshot::from_wire_json(
+        governed_user_fees_metadata(),
+        "account",
+        &serde_json::to_string(&wire).unwrap(),
+        &governed_fee_eligibility_policy(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn user_fees_parser_rejects_a_lower_vip_tier_when_a_higher_tier_is_eligible() {
+    let mut wire = vip_second_tier_wire();
+    wire["userCrossRate"] = serde_json::Value::String("0.0004".to_string());
+
+    assert_governed_user_fees_invalid(wire);
 }
 
 #[test]

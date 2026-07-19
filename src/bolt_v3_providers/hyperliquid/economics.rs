@@ -38,12 +38,6 @@ const NEXT_CALENDAR_DAY_DELTA: i64 = 1;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HyperliquidFormulaPolicy {
     pub standard_perp_collateral_token: u32,
-    pub stable_pair_scale: Decimal,
-    pub growth_mode_scale: Decimal,
-    pub hip3_scale_threshold: Decimal,
-    pub hip3_below_threshold_base: Decimal,
-    pub hip3_at_or_above_threshold_multiplier: Decimal,
-    pub hip3_at_or_above_deployer_share: Decimal,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -202,14 +196,6 @@ impl HyperliquidEconomicsAdapterConfig {
             fee_eligibility,
             formula: HyperliquidFormulaPolicy {
                 standard_perp_collateral_token: unsigned(STANDARD_PERP_COLLATERAL_TOKEN_KEY)?,
-                stable_pair_scale: decimal("stable_pair_scale")?,
-                growth_mode_scale: decimal("growth_mode_scale")?,
-                hip3_scale_threshold: decimal("hip3_scale_threshold")?,
-                hip3_below_threshold_base: decimal("hip3_below_threshold_base")?,
-                hip3_at_or_above_threshold_multiplier: decimal(
-                    "hip3_at_or_above_threshold_multiplier",
-                )?,
-                hip3_at_or_above_deployer_share: decimal("hip3_at_or_above_deployer_share")?,
             },
             carry,
         })
@@ -1153,20 +1139,6 @@ enum BuilderQuotePlan {
     },
 }
 
-enum ScalePlan {
-    Identity,
-    Multiply(Decimal),
-}
-
-impl ScalePlan {
-    fn apply(&self, rate: Decimal) -> Decimal {
-        match self {
-            Self::Identity => rate,
-            Self::Multiply(scale) => rate * scale,
-        }
-    }
-}
-
 impl HyperliquidEconomicsAdapter {
     pub fn try_new(
         config: HyperliquidEconomicsAdapterConfig,
@@ -1174,63 +1146,28 @@ impl HyperliquidEconomicsAdapter {
         product: HyperliquidProductEconomicsSnapshot,
     ) -> Result<Self, HyperliquidEconomicsError> {
         validate_authority_snapshots(&user_fees, &product)?;
-        let product_flags_valid = match product.product_kind {
-            HyperliquidProductKind::Spot => !product.hip3 && !product.growth_mode,
-            HyperliquidProductKind::Perp => !product.stable_pair,
-        };
-        if product.deployer_scale < Decimal::ZERO
-            || !product_flags_valid
-            || config.formula.stable_pair_scale < Decimal::ZERO
-            || config.formula.growth_mode_scale < Decimal::ZERO
-            || config.formula.hip3_scale_threshold < Decimal::ZERO
-            || config.formula.hip3_below_threshold_base < Decimal::ZERO
-            || config.formula.hip3_at_or_above_threshold_multiplier < Decimal::ZERO
+        if product.product_kind != HyperliquidProductKind::Perp
+            || product.stable_pair
+            || product.aligned_quote_or_collateral
+            || product.hip3
+            || product.growth_mode
+            || !product.deployer_scale.is_zero()
         {
             return Err(HyperliquidEconomicsError::InvalidFeeSurface);
         }
-        let base_rates = match product.product_kind {
-            HyperliquidProductKind::Perp => ProtocolRatePlan {
-                maker: user_fees.perp_maker_rate,
-                taker: user_fees.perp_taker_rate,
-            },
-            HyperliquidProductKind::Spot => ProtocolRatePlan {
-                maker: user_fees.spot_maker_rate,
-                taker: user_fees.spot_taker_rate,
-            },
-        };
-        let stable = match product.stable_pair {
-            false => ScalePlan::Identity,
-            true => ScalePlan::Multiply(config.formula.stable_pair_scale),
-        };
-        let growth = match product.growth_mode {
-            false => ScalePlan::Identity,
-            true => ScalePlan::Multiply(config.formula.growth_mode_scale),
-        };
-        let hip3 = match (
-            product.hip3,
-            product.deployer_scale < config.formula.hip3_scale_threshold,
-        ) {
-            (false, _) => ScalePlan::Identity,
-            (true, true) => ScalePlan::Multiply(
-                config.formula.hip3_below_threshold_base + product.deployer_scale,
-            ),
-            (true, false) => ScalePlan::Multiply(
-                config.formula.hip3_at_or_above_threshold_multiplier * product.deployer_scale,
-            ),
+        let base_rates = ProtocolRatePlan {
+            maker: user_fees.perp_maker_rate,
+            taker: user_fees.perp_taker_rate,
         };
         let referral_scale = Decimal::ONE - user_fees.active_referral_discount;
-        let maker_before_product_and_referral = growth.apply(stable.apply(base_rates.maker));
         let rates = ProtocolRatePlan {
-            maker: if maker_before_product_and_referral > Decimal::ZERO {
-                hip3.apply(maker_before_product_and_referral) * referral_scale
+            maker: if base_rates.maker > Decimal::ZERO {
+                base_rates.maker * referral_scale
             } else {
-                maker_before_product_and_referral
+                base_rates.maker
             },
-            taker: hip3.apply(growth.apply(stable.apply(base_rates.taker))) * referral_scale,
+            taker: base_rates.taker * referral_scale,
         };
-        if config.formula.hip3_at_or_above_deployer_share < Decimal::ZERO {
-            return Err(HyperliquidEconomicsError::InvalidFeeSurface);
-        }
         let builder = match (
             product.builder_profile_id.as_ref(),
             product.builder_rate_bps,

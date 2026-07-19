@@ -800,12 +800,6 @@ fn validate_quote_economics_policy(
     }
     let expected_formula_keys = BTreeSet::from([
         economics::STANDARD_PERP_COLLATERAL_TOKEN_KEY,
-        "stable_pair_scale",
-        "growth_mode_scale",
-        "hip3_scale_threshold",
-        "hip3_below_threshold_base",
-        "hip3_at_or_above_threshold_multiplier",
-        "hip3_at_or_above_deployer_share",
         economics::FEE_VOLUME_HISTORY_DAYS_KEY,
         economics::FEE_ELIGIBILITY_WINDOW_DAYS_KEY,
         economics::FEE_HISTORY_LATEST_DAY_OFFSET_KEY,

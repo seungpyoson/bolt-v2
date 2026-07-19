@@ -151,6 +151,15 @@ pub struct BoltV3PlannedFillLeg {
     pub quantity: Decimal,
 }
 
+impl From<&BoltV3PlannedFillLeg> for crate::economics::PlannedFillLeg {
+    fn from(leg: &BoltV3PlannedFillLeg) -> Self {
+        Self {
+            price: leg.price,
+            quantity: leg.quantity,
+        }
+    }
+}
+
 pub struct BoltV3OrderRoutingConfig<'a> {
     pub execution_client_id: &'a str,
     pub account_id: &'a str,

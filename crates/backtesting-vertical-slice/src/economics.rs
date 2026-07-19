@@ -1,8 +1,9 @@
 use std::{str::FromStr, sync::Arc};
 
 use bolt_v2::bolt_v3_economics_runtime::{
-    AuthoritativeValuationObservation, BoltV3EconomicsRuntime, ConfiguredEconomicsSourcePolicy,
-    ConfiguredValuationProvider, EconomicsAdmission, EconomicsAdmissionIntent,
+    AuthoritativeEconomicsInputStore, AuthoritativeEconomicsQuoteDependencies,
+    AuthoritativeEdgeBasis, AuthoritativeValuationObservation, ConfiguredEconomicsAdmissionSource,
+    ConfiguredEconomicsSourcePolicy, ConfiguredValuationProvider, EconomicsAdmission,
     EconomicsAdmissionQuoteIntent, EconomicsAdmissionSource,
 };
 use bolt_v2::bolt_v3_providers::{
@@ -168,27 +169,27 @@ impl ReplayEconomicsAdmissionSource {
         if matching.is_empty() {
             return Err(EconomicsUnavailable::MissingQuoteAuthority);
         }
-        let eligible = matching.iter().copied().filter(|snapshot| {
+        let activated = matching.iter().copied().filter(|snapshot| {
             snapshot.source_at_ns <= request.requested_at_ns
                 && snapshot.fetched_at_ns <= request.requested_at_ns
-                && request.requested_at_ns <= snapshot.valid_until_ns
         });
-        let Some(latest_activation) = eligible
+        let selected_activation = activated
             .clone()
             .map(|snapshot| (snapshot.fetched_at_ns, snapshot.source_at_ns))
             .max()
-        else {
-            let source_id = SourceId::new(matching[0].source_id.clone())?;
-            if matching.iter().any(|snapshot| {
-                snapshot.source_at_ns > request.requested_at_ns
-                    || snapshot.fetched_at_ns > request.requested_at_ns
-            }) {
-                return Err(EconomicsUnavailable::InvalidSourceTimeline { source_id });
-            }
-            return Err(EconomicsUnavailable::StaleSource { source_id });
-        };
-        let selected = eligible
-            .filter(|snapshot| (snapshot.fetched_at_ns, snapshot.source_at_ns) == latest_activation)
+            .or_else(|| {
+                matching
+                    .iter()
+                    .map(|snapshot| (snapshot.fetched_at_ns, snapshot.source_at_ns))
+                    .min()
+            })
+            .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
+        let selected = matching
+            .iter()
+            .copied()
+            .filter(|snapshot| {
+                (snapshot.fetched_at_ns, snapshot.source_at_ns) == selected_activation
+            })
             .collect::<Vec<_>>();
         match selected.as_slice() {
             [snapshot] => Ok(*snapshot),
@@ -295,11 +296,6 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
     ) -> Result<EconomicsAdmission, EconomicsUnavailable> {
         let snapshot = self.snapshot_for_request(&intent.request)?;
         let adapter = ReplayEconomicsAdapter::from_snapshot(snapshot.clone())?;
-        let planned_fill_notional =
-            bolt_v2::economics::PlannedFillNotional::from_legs(
-                &intent.request.planned_fill_legs,
-            )?;
-        let edge_basis = adapter.edge_basis(&intent.request, planned_fill_notional)?;
         let observations = canonical_valuation_observations(snapshot)?;
         let valuation_provider = Arc::new(ConfiguredValuationProvider::from_config(
             &adapter.economics.valuation,
@@ -323,21 +319,35 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
                 adapter.economics.resting_order_refresh_margin_ms,
             )?,
         };
-        let authority_refreshed_at_ns = snapshot.fetched_at_ns;
-        BoltV3EconomicsRuntime::try_new(std::sync::Arc::new(adapter), policy)?.quote_admission(
-            EconomicsAdmissionIntent {
+        let inputs = AuthoritativeEconomicsInputStore::default();
+        inputs.publish(
+            &snapshot.execution_client_id,
+            &snapshot.instrument_id,
+            &snapshot.product_surface_id,
+            AuthoritativeEconomicsQuoteDependencies {
                 provider_key: snapshot.provider_key.clone(),
-                request: intent.request,
-                order_binding: intent.order_binding,
-                purpose: intent.purpose,
-                gross_expected_value: intent.gross_expected_value,
-                edge_basis,
-                planned_fill_notional,
+                refreshed_at_ns: snapshot.fetched_at_ns,
+                adapter: Arc::new(adapter),
+                edge_basis: AuthoritativeEdgeBasis {
+                    resolver_id: FormulaId::new(snapshot.edge_basis.resolver_id.clone())?,
+                    product_metadata_source: SourceId::new(
+                        snapshot.edge_basis.product_metadata_source.clone(),
+                    )?,
+                    policy_version: snapshot.edge_basis.policy_version,
+                    source_snapshot_ids: snapshot
+                        .edge_basis
+                        .source_snapshot_ids
+                        .iter()
+                        .cloned()
+                        .map(SnapshotId::new)
+                        .collect::<Result<Vec<_>, _>>()?,
+                    valid_until_ns: snapshot.edge_basis.valid_until_ns,
+                },
                 valuation_provider,
-                reservation_basis: intent.reservation_basis,
-                authority_refreshed_at_ns,
             },
-        )
+        )?;
+        ConfiguredEconomicsAdmissionSource::new(snapshot.provider_key.clone(), inputs, policy)?
+            .quote_admission(intent)
     }
 }
 
@@ -473,13 +483,6 @@ impl bolt_v2::economics::VenueEconomicsAdapter for ReplayEconomicsAdapter {
         planned_fill_notional: bolt_v2::economics::PlannedFillNotional,
     ) -> Result<bolt_v2::economics::VenueQuoteEstimate, EconomicsUnavailable> {
         validate_request_binding(&self.snapshot, request)?;
-        if request.requested_at_ns < self.snapshot.source_at_ns
-            || request.requested_at_ns > self.snapshot.valid_until_ns
-        {
-            return Err(EconomicsUnavailable::StaleSource {
-                source_id: SourceId::new(self.snapshot.source_id.clone())?,
-            });
-        }
         self.adapter.quote(request, planned_fill_notional)
     }
 }

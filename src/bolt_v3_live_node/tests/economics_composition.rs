@@ -13,7 +13,7 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use rust_decimal::Decimal;
-use std::{cell::RefCell, rc::Rc, str::FromStr, sync::Arc, time::Duration};
+use std::{cell::RefCell, rc::Rc, str::FromStr, sync::Arc};
 use ustr::Ustr;
 
 use crate::{
@@ -219,7 +219,6 @@ async fn shipped_shaped_capture_publishes_quotes_reserves_and_rolls_back() {
         &cache,
         vec![binary_instrument()],
         &|| Ok(NOW_NS),
-        Duration::from_secs(1),
     )
     .await
     .expect("the production one-shot refresh must succeed");
@@ -310,7 +309,6 @@ async fn malformed_capture_never_publishes_quote_authority() {
         &cache_with_valuation(),
         vec![binary_instrument()],
         &|| Ok(NOW_NS),
-        Duration::from_secs(1),
     )
     .await
     .expect("per-instrument malformed input is isolated by the production publisher");

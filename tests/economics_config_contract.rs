@@ -192,6 +192,21 @@ legs = [
 }
 
 #[test]
+fn slice_one_rejects_unimplemented_asset_quantity_identity() {
+    let source = valid_config().replace(
+        "identity_kind = \"currency\"",
+        "identity_kind = \"asset_quantity\"",
+    );
+    let config = parse(&source).unwrap();
+
+    assert!(config.validate(&reporting(), &BTreeSet::new()).contains(
+        &EconomicsConfigError::UnsupportedAssetIdentityKind {
+            asset_id: "settlement".to_string(),
+        }
+    ));
+}
+
+#[test]
 fn missing_edge_resolver_and_reporting_policy_mismatch_fail_closed() {
     let missing = parse(&valid_config().replace(
         "product_surface_policies = { perp = \"default\" }",

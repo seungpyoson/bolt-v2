@@ -107,16 +107,6 @@ use sha2::{Digest, Sha256};
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
-async fn await_economics_refresh_before_deadline<F, T>(
-    deadline: Duration,
-    refresh: F,
-) -> Result<T, tokio::time::error::Elapsed>
-where
-    F: Future<Output = T>,
-{
-    tokio::time::timeout(deadline, refresh).await
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoltV3LoggingNotReadyForRun {
     max_level: LevelFilter,
@@ -1068,13 +1058,8 @@ async fn refresh_compile_publish_economics_once(
     cache: &Rc<RefCell<nautilus_common::cache::Cache>>,
     instruments: Vec<InstrumentAny>,
     receipt_clock: &dyn crate::bolt_v3_economics_runtime::EconomicsReceiptClock,
-    refresh_deadline: Duration,
 ) -> anyhow::Result<usize> {
-    let refreshes = await_economics_refresh_before_deadline(
-        refresh_deadline,
-        authority.refresh_batch(instruments, receipt_clock),
-    )
-    .await??;
+    let refreshes = authority.refresh_batch(instruments, receipt_clock).await?;
     let mut published_instruments = Vec::new();
     for refresh in refreshes {
         let instrument_id = refresh.instrument_id;
@@ -1396,7 +1381,6 @@ impl BoltV3LiveNodeRuntime {
                         &cache,
                         instruments,
                         &current_unix_nanos,
-                        refresh_interval,
                     )
                     .await
                     {

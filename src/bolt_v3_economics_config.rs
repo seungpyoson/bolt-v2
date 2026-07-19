@@ -270,6 +270,9 @@ pub enum EconomicsConfigError {
     EmptyFormulaPolicy,
     EmptyQuoteComponentMapping,
     EmptyAssetIdentityMapping,
+    UnsupportedAssetIdentityKind {
+        asset_id: String,
+    },
     MissingValuationRoute {
         native_unit: String,
         reporting_currency: String,
@@ -376,6 +379,11 @@ impl ExecutionEconomicsConfig {
                 EconomicsConfigField::AssetEvidenceFixture,
                 &mut errors,
             );
+            if asset.identity_kind != EconomicsAssetIdentityKind::Currency {
+                errors.push(EconomicsConfigError::UnsupportedAssetIdentityKind {
+                    asset_id: asset_id.clone(),
+                });
+            }
             if asset.native_unit != reporting.pnl_currency
                 && !self.valuation.routes.values().any(|route| {
                     route.from_unit == asset.native_unit

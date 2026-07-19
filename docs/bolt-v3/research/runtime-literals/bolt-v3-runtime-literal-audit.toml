@@ -21677,7 +21677,7 @@ reason = "Versioned official Info API account field; the account value comes fro
 path = "src/bolt_v3_providers/hyperliquid/economics.rs"
 kind = "string"
 literal = '''"type"'''
-context = '''.post_info(serde_json::json!({ "type": "metaAndAssetCtxs" }))'''
+context = '''self.post_info(serde_json::json!({ "type": "metaAndAssetCtxs" })),'''
 classification = "hyperliquid_info_wire_field"
 reason = "Versioned official Info API request discriminator field, fenced by boundary fixtures."
 
@@ -21685,7 +21685,7 @@ reason = "Versioned official Info API request discriminator field, fenced by bou
 path = "src/bolt_v3_providers/hyperliquid/economics.rs"
 kind = "string"
 literal = '''"metaAndAssetCtxs"'''
-context = '''.post_info(serde_json::json!({ "type": "metaAndAssetCtxs" }))'''
+context = '''self.post_info(serde_json::json!({ "type": "metaAndAssetCtxs" })),'''
 classification = "hyperliquid_info_wire_discriminator"
 reason = "Versioned official Info API product-metadata request discriminator, fenced by boundary fixtures."
 

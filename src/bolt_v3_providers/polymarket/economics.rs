@@ -30,6 +30,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FeeRoundingMode {
@@ -81,6 +82,11 @@ impl PolymarketEconomicsAdapterConfig {
             .assets
             .get("collateral")
             .ok_or(PolymarketEconomicsError::InvalidIdentity)?;
+        if collateral.identity_kind
+            != crate::bolt_v3_economics_config::EconomicsAssetIdentityKind::Currency
+        {
+            return Err(PolymarketEconomicsError::InvalidIdentity);
+        }
         let rounding_mode = match economics
             .formula
             .get("fee_rounding_mode")
@@ -586,10 +592,12 @@ impl PolymarketEconomicsAuthority {
         max_age_ns: u64,
     ) -> anyhow::Result<PolymarketMarketAuthorityPart> {
         let instrument_id = instrument.id();
-        let body = self
-            .source
-            .fetch_market_info_body(self, instrument_id)
-            .await?;
+        let body = tokio::time::timeout(
+            Duration::from_secs(self.economics.quote_refresh_secs),
+            self.source.fetch_market_info_body(self, instrument_id),
+        )
+        .await
+        .context("Polymarket economics market-info exceeded its refresh deadline")??;
         let receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
         let body_json = std::str::from_utf8(&body)
             .context("Polymarket economics market-info was not UTF-8 JSON")?;
@@ -756,10 +764,14 @@ impl ProviderEconomicsAuthority for PolymarketEconomicsAuthority {
             .await
         };
         let collateral = async {
-            self.source
-                .observe_collateral_redemption(self, receipt_clock, max_age_ns)
-                .await
-                .context("Polymarket collateral redemption authority is unavailable")
+            tokio::time::timeout(
+                Duration::from_secs(self.economics.quote_refresh_secs),
+                self.source
+                    .observe_collateral_redemption(self, receipt_clock, max_age_ns),
+            )
+            .await
+            .context("Polymarket collateral authority exceeded its refresh deadline")?
+            .context("Polymarket collateral redemption authority is unavailable")
         };
         let (market_results, valuation_observation) = tokio::join!(market_info, collateral);
         let valuation_observation = valuation_observation?;

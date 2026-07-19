@@ -24,7 +24,7 @@ use nautilus_network::http::{HttpClient, USER_AGENT};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, num::NonZeroUsize, str::FromStr, sync::Arc};
+use std::{collections::HashMap, num::NonZeroUsize, str::FromStr, sync::Arc, time::Duration};
 use zeroize::Zeroizing;
 
 pub(super) const FEE_VOLUME_HISTORY_DAYS_KEY: &str = "fee_volume_history_days";
@@ -82,6 +82,11 @@ impl HyperliquidEconomicsAdapterConfig {
             .assets
             .get("settlement")
             .ok_or(HyperliquidEconomicsError::InvalidIdentity)?;
+        if settlement.identity_kind
+            != crate::bolt_v3_economics_config::EconomicsAssetIdentityKind::Currency
+        {
+            return Err(HyperliquidEconomicsError::InvalidIdentity);
+        }
         let decimal = |key: &str| {
             economics
                 .formula
@@ -1006,19 +1011,25 @@ impl ProviderEconomicsAuthority for HyperliquidEconomicsAuthority {
             .and_then(|value| value.checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64))
             .context("Hyperliquid economics maximum age overflows nanoseconds")?;
         let user_fees = async {
-            let body = self
-                .post_info(serde_json::json!({
+            let body = tokio::time::timeout(
+                Duration::from_secs(self.economics.quote_refresh_secs),
+                self.post_info(serde_json::json!({
                     "type": "userFees",
                     "user": self.account_address.as_str(),
-                }))
-                .await?;
+                })),
+            )
+            .await
+            .context("Hyperliquid userFees exceeded its refresh deadline")??;
             let receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
             Ok::<_, anyhow::Error>((body, receipt))
         };
         let product_meta = async {
-            let body = self
-                .post_info(serde_json::json!({ "type": "metaAndAssetCtxs" }))
-                .await?;
+            let body = tokio::time::timeout(
+                Duration::from_secs(self.economics.quote_refresh_secs),
+                self.post_info(serde_json::json!({ "type": "metaAndAssetCtxs" })),
+            )
+            .await
+            .context("Hyperliquid metaAndAssetCtxs exceeded its refresh deadline")??;
             let receipt = capture_economics_source_receipt(receipt_clock, max_age_ns)?;
             Ok::<_, anyhow::Error>((body, receipt))
         };

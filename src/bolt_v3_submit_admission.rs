@@ -4662,3 +4662,76 @@ mod loss_governor_halt_evidence_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod fail_closed_invariant_tests {
+    use super::*;
+
+    #[test]
+    fn missing_capital_rejection_reason_is_a_typed_invariant_error() {
+        assert_eq!(
+            capital_admission_rejection_error(None),
+            BoltV3SubmitAdmissionError::InvariantViolation {
+                invariant: BoltV3SubmitAdmissionInvariant::MissingCapitalAdmissionRejectionReason,
+            }
+        );
+    }
+
+    #[test]
+    fn contradictory_stale_loss_state_is_a_typed_invariant_error() {
+        let policy = LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: None,
+            max_daily_loss: None,
+            max_rolling_loss: None,
+            max_drawdown: None,
+        };
+        let snapshot = LossSnapshot {
+            source: "nt_portfolio".to_string(),
+            observed_at_ns: 10_000,
+            per_trade_pnl: None,
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
+            source_observations: LossSourceObservationTimestamps::unobserved(),
+        };
+
+        assert_eq!(
+            stale_loss_governor_halt_reason(&policy, Some(&snapshot), 10_001),
+            Err(BoltV3SubmitAdmissionError::InvariantViolation {
+                invariant: BoltV3SubmitAdmissionInvariant::MissingStaleLossReason,
+            })
+        );
+    }
+
+    #[test]
+    fn checked_counter_values_reject_every_overflow_boundary() {
+        for (total, client, forced, forced_increment) in [
+            (u32::MAX, 0, 0, 0),
+            (0, u32::MAX, 0, 0),
+            (0, 0, u32::MAX, 1),
+        ] {
+            assert_eq!(
+                checked_admission_counter_values(total, client, forced, 1, forced_increment),
+                Err(BoltV3SubmitAdmissionError::CountCapExhausted)
+            );
+        }
+
+        assert_eq!(
+            checked_admission_counter_values(u32::MAX - 1, u32::MAX - 1, u32::MAX - 1, 1, 1),
+            Ok(BoltV3SubmitAdmissionCounterValues {
+                admitted_order_count: u32::MAX,
+                execution_client_order_count: u32::MAX,
+                forced_reduction_order_count: u32::MAX,
+            })
+        );
+    }
+
+    #[test]
+    fn rejected_fallback_patterns_stay_retired() {
+        let source = include_str!("bolt_v3_submit_admission.rs");
+        assert!(!source.contains(".unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected)"));
+        assert!(!source.contains(".unwrap_or(BoltV3StaleLossReason::MissingSnapshot)"));
+    }
+}

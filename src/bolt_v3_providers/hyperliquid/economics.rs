@@ -53,9 +53,6 @@ pub struct HyperliquidEconomicsAdapterConfig {
     pub protocol_component_id: crate::economics::EconomicComponentId,
     pub protocol_formula_id: FormulaId,
     pub protocol_rate_factor_id: FormulaId,
-    pub builder_component_id: crate::economics::EconomicComponentId,
-    pub builder_formula_id: FormulaId,
-    pub builder_rate_factor_id: FormulaId,
     pub source_id: SourceId,
     pub fee_eligibility: HyperliquidFeeEligibilityPolicy,
     pub formula: HyperliquidFormulaPolicy,
@@ -70,10 +67,6 @@ impl HyperliquidEconomicsAdapterConfig {
             .quote_components
             .get("protocol")
             .ok_or(HyperliquidEconomicsError::InvalidIdentity)?;
-        let builder = economics
-            .quote_components
-            .get("builder")
-            .ok_or(HyperliquidEconomicsError::InvalidIdentity)?;
         let settlement = economics
             .assets
             .get("settlement")
@@ -83,13 +76,6 @@ impl HyperliquidEconomicsAdapterConfig {
         {
             return Err(HyperliquidEconomicsError::InvalidIdentity);
         }
-        let decimal = |key: &str| {
-            economics
-                .formula
-                .get(key)
-                .and_then(|value| Decimal::from_str(value).ok())
-                .ok_or(HyperliquidEconomicsError::InvalidIdentity)
-        };
         let count = |key: &str| {
             economics
                 .formula
@@ -133,8 +119,15 @@ impl HyperliquidEconomicsAdapterConfig {
                         .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
                     risk_policy_id: FormulaId::new(carry.risk_policy_id.clone())
                         .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
-                    stress_fixture_id: FormulaId::new(carry.stress_fixture_id.clone())
-                        .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                    standard_stress_artifact_id: FormulaId::new(
+                        carry.standard_stress.artifact_id.clone(),
+                    )
+                    .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
+                    standard_stress_artifact_version: carry.standard_stress.artifact_version,
+                    standard_stress_artifact_version_factor_id: FormulaId::new(
+                        carry.standard_stress.artifact_version_factor_id.clone(),
+                    )
+                    .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
                     oracle_price_factor_id: FormulaId::new(carry.oracle_price_factor_id.clone())
                         .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
                     next_funding_at_factor_id: FormulaId::new(
@@ -156,11 +149,11 @@ impl HyperliquidEconomicsAdapterConfig {
                         })
                         .ok_or(HyperliquidEconomicsError::InvalidIdentity)?,
                     venue_rate_cap_fraction: basis_points_to_fraction(
-                        Decimal::from_str(&carry.funding_venue_rate_cap_bps_per_hour)
+                        Decimal::from_str(&carry.standard_stress.venue_rate_cap_bps_per_hour)
                             .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
                     ),
                     standard_price_stress_multiplier: Decimal::from_str(
-                        &carry.funding_standard_price_stress_multiplier,
+                        &carry.standard_stress.price_multiplier,
                     )
                     .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
                 })
@@ -176,14 +169,6 @@ impl HyperliquidEconomicsAdapterConfig {
             protocol_formula_id: FormulaId::new(protocol.formula_id.clone())
                 .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
             protocol_rate_factor_id: FormulaId::new(protocol.rate_factor_id.clone())
-                .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
-            builder_component_id: crate::economics::EconomicComponentId::new(
-                builder.component_id.clone(),
-            )
-            .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
-            builder_formula_id: FormulaId::new(builder.formula_id.clone())
-                .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
-            builder_rate_factor_id: FormulaId::new(builder.rate_factor_id.clone())
                 .map_err(|_| HyperliquidEconomicsError::InvalidIdentity)?,
             source_id: SourceId::new(
                 economics
@@ -209,7 +194,9 @@ pub struct HyperliquidCarryPolicy {
     pub point_rate_factor_id: FormulaId,
     pub bound_rate_factor_id: FormulaId,
     pub risk_policy_id: FormulaId,
-    pub stress_fixture_id: FormulaId,
+    pub standard_stress_artifact_id: FormulaId,
+    pub standard_stress_artifact_version: std::num::NonZeroU64,
+    pub standard_stress_artifact_version_factor_id: FormulaId,
     pub oracle_price_factor_id: FormulaId,
     pub next_funding_at_factor_id: FormulaId,
     pub funding_interval_ns: u64,
@@ -713,8 +700,7 @@ fn valid_fee_schedule(
         && staking_link_valid
         && wire.fee_trial_escrow >= Decimal::ZERO
         && unit_interval(schedule.referral_discount)
-        && unit_interval(wire.active_referral_discount)
-        && wire.active_referral_discount <= schedule.referral_discount
+        && wire.active_referral_discount.is_zero()
         && wire.active_staking_discount.bps_of_max_supply >= Decimal::ZERO
         && unit_interval(wire.active_staking_discount.discount)
 }
@@ -749,9 +735,6 @@ pub struct HyperliquidProductEconomicsSnapshot {
     hip3: bool,
     deployer_scale: Decimal,
     growth_mode: bool,
-    builder_profile_id: Option<String>,
-    builder_rate_bps: Option<Decimal>,
-    builder_approved_max_bps: Option<Decimal>,
     spot_dust_authority_complete: bool,
     carry_oracle_price: Option<Decimal>,
     carry_point_rate_per_interval: Option<Decimal>,
@@ -843,9 +826,6 @@ impl HyperliquidProductEconomicsSnapshot {
             hip3: false,
             deployer_scale: Decimal::ZERO,
             growth_mode: false,
-            builder_profile_id: None,
-            builder_rate_bps: None,
-            builder_approved_max_bps: None,
             spot_dust_authority_complete: false,
             carry_oracle_price: Some(context.oracle_px),
             carry_point_rate_per_interval: Some(context.funding),
@@ -873,9 +853,7 @@ pub enum HyperliquidEconomicsError {
     InvalidCarryBound,
     StaleSnapshot,
     BlockedUnsupported(BlockedUnsupported),
-    MissingBuilderApproval,
-    BuilderApprovalExceeded,
-    BuilderProfileMismatch,
+    AttachedRoutingUnsupported,
     InvalidFillLeg,
     InvalidIdentity,
     InvalidEffect,
@@ -886,7 +864,6 @@ pub struct HyperliquidEconomicsAdapter {
     user_fees: HyperliquidUserFeesSnapshot,
     product: HyperliquidProductEconomicsSnapshot,
     rates: ProtocolRatePlan,
-    builder: BuilderQuotePlan,
 }
 
 pub struct HyperliquidEconomicsAuthority {
@@ -916,18 +893,12 @@ impl HyperliquidEconomicsAuthority {
         let adapter_config =
             HyperliquidEconomicsAdapterConfig::from_execution_config(&execution.economics)
                 .map_err(|error| anyhow::anyhow!("invalid economics adapter config: {error:?}"))?;
-        anyhow::ensure!(
-            execution.economics.product_surface_policies.len() == 1,
-            "Hyperliquid economics requires exactly one configured product surface"
-        );
         let product_surface_id = execution
             .economics
-            .product_surface_policies
-            .iter()
-            .next()
-            .context("Hyperliquid economics product surface is missing")?
+            .single_product_surface_binding()
+            .map_err(|error| anyhow::anyhow!("invalid product surface binding: {error:?}"))?
             .0
-            .clone();
+            .to_string();
         let http_client = HttpClient::new(
             HashMap::from([
                 (USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string()),
@@ -1131,14 +1102,6 @@ struct ProtocolRatePlan {
     taker: Decimal,
 }
 
-enum BuilderQuotePlan {
-    Unavailable,
-    Approved {
-        profile_id: String,
-        rate_bps: Decimal,
-    },
-}
-
 impl HyperliquidEconomicsAdapter {
     pub fn try_new(
         config: HyperliquidEconomicsAdapterConfig,
@@ -1159,40 +1122,15 @@ impl HyperliquidEconomicsAdapter {
             maker: user_fees.perp_maker_rate,
             taker: user_fees.perp_taker_rate,
         };
-        let referral_scale = Decimal::ONE - user_fees.active_referral_discount;
         let rates = ProtocolRatePlan {
-            maker: if base_rates.maker > Decimal::ZERO {
-                base_rates.maker * referral_scale
-            } else {
-                base_rates.maker
-            },
-            taker: base_rates.taker * referral_scale,
-        };
-        let builder = match (
-            product.builder_profile_id.as_ref(),
-            product.builder_rate_bps,
-            product.builder_approved_max_bps,
-        ) {
-            (None, None, None) => BuilderQuotePlan::Unavailable,
-            (Some(profile_id), Some(rate_bps), Some(approved_max_bps))
-                if rate_bps >= Decimal::ZERO && rate_bps <= approved_max_bps =>
-            {
-                BuilderQuotePlan::Approved {
-                    profile_id: profile_id.clone(),
-                    rate_bps,
-                }
-            }
-            (Some(_), Some(_), Some(_)) => {
-                return Err(HyperliquidEconomicsError::BuilderApprovalExceeded);
-            }
-            _ => return Err(HyperliquidEconomicsError::MissingBuilderApproval),
+            maker: base_rates.maker,
+            taker: base_rates.taker,
         };
         Ok(Self {
             config,
             user_fees,
             product,
             rates,
-            builder,
         })
     }
 
@@ -1258,48 +1196,8 @@ impl HyperliquidEconomicsAdapter {
             )?);
         }
 
-        let builder_applies = !matches!(
-            (self.product.product_kind, request.order_side),
-            (
-                HyperliquidProductKind::Spot,
-                crate::economics::OrderSide::Buy
-            )
-        );
-        match (
-            &request.routing.attached_charge,
-            &self.builder,
-            builder_applies,
-        ) {
-            (_, _, false) => {}
-            (None, _, true) => {}
-            (Some(_), BuilderQuotePlan::Unavailable, true) => {
-                return Err(HyperliquidEconomicsError::MissingBuilderApproval);
-            }
-            (
-                Some(attachment),
-                BuilderQuotePlan::Approved {
-                    profile_id,
-                    rate_bps,
-                },
-                true,
-            ) => {
-                if profile_id != attachment.attachment_id.as_str() {
-                    return Err(HyperliquidEconomicsError::BuilderProfileMismatch);
-                }
-                let signed_builder_amount = -(notional * basis_points_to_fraction(*rate_bps));
-                if !signed_builder_amount.is_zero() {
-                    components.push(self.component(
-                        request,
-                        self.config.builder_component_id.clone(),
-                        self.config.builder_formula_id.clone(),
-                        self.config.builder_rate_factor_id.clone(),
-                        *rate_bps,
-                        signed_builder_amount,
-                        ExecutionKind::AttachedRouting,
-                        protocol_unit,
-                    )?);
-                }
-            }
+        if request.routing.attached_charge.is_some() {
+            return Err(HyperliquidEconomicsError::AttachedRoutingUnsupported);
         }
         if self.product.product_kind == HyperliquidProductKind::Perp
             && let Some(carry) = self.carry_component(request)?
@@ -1462,8 +1360,12 @@ impl HyperliquidEconomicsAdapter {
                     value: event_count,
                 },
                 CalculationFactor {
-                    factor_id: policy.stress_fixture_id.clone(),
+                    factor_id: policy.standard_stress_artifact_id.clone(),
                     value: policy.standard_price_stress_multiplier,
+                },
+                CalculationFactor {
+                    factor_id: policy.standard_stress_artifact_version_factor_id.clone(),
+                    value: Decimal::from(policy.standard_stress_artifact_version.get()),
                 },
                 CalculationFactor {
                     factor_id: policy.oracle_price_factor_id.clone(),
@@ -1545,7 +1447,7 @@ fn validate_authority_snapshots(
         && user_fees.fetched_at_ns <= user_fees.valid_until_ns
         && user_fees.daily_user_volume >= Decimal::ZERO
         && user_fees.trial_escrow >= Decimal::ZERO
-        && (Decimal::ZERO..=Decimal::ONE).contains(&user_fees.active_referral_discount)
+        && user_fees.active_referral_discount.is_zero()
         && (Decimal::ZERO..=Decimal::ONE).contains(&user_fees.active_staking_discount)
         && user_fees.perp_taker_rate >= Decimal::ZERO
         && user_fees.spot_taker_rate >= Decimal::ZERO;

@@ -18,7 +18,6 @@ use crate::bolt_v3_iv::{
     runtime::{IvRuntimeEngine, runtime_derived_inputs_from_profile},
     store::{IvRetentionPolicy, IvStore},
 };
-use crate::bolt_v3_numeric::{MILLIS_PER_SECOND_U64, NANOS_PER_MILLI_U64};
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
 use crate::bolt_v3_order_execution::{BoltV3CarryPlan, BoltV3OrderRoutingHandle};
@@ -608,44 +607,8 @@ pub(crate) fn build_order_routing_handle(
             format!("execution economics configuration is invalid: {error}"),
         )
     })?;
-    let quote_validity_ns = economics
-        .quote_validity_ms
-        .checked_mul(NANOS_PER_MILLI_U64)
-        .ok_or_else(|| {
-            binding_error(
-                strategy,
-                "execution economics quote validity overflows nanoseconds".to_string(),
-            )
-        })?;
-    let quote_refresh_ns = economics
-        .quote_refresh_secs
-        .checked_mul(MILLIS_PER_SECOND_U64)
-        .and_then(|value| value.checked_mul(NANOS_PER_MILLI_U64))
-        .ok_or_else(|| {
-            binding_error(
-                strategy,
-                "execution economics quote refresh overflows nanoseconds".to_string(),
-            )
-        })?;
-    let quote_max_age_ns = economics
-        .quote_max_age_secs
-        .checked_mul(MILLIS_PER_SECOND_U64)
-        .and_then(|value| value.checked_mul(NANOS_PER_MILLI_U64))
-        .ok_or_else(|| {
-            binding_error(
-                strategy,
-                "execution economics quote maximum age overflows nanoseconds".to_string(),
-            )
-        })?;
-    let resting_order_refresh_margin_ns = economics
-        .resting_order_refresh_margin_ms
-        .checked_mul(NANOS_PER_MILLI_U64)
-        .ok_or_else(|| {
-            binding_error(
-                strategy,
-                "execution economics resting refresh margin overflows nanoseconds".to_string(),
-            )
-        })?;
+    let source_policy = ConfiguredEconomicsSourcePolicy::from_execution_config(economics)
+        .map_err(|error| binding_error(strategy, format!("economics source policy: {error:?}")))?;
     let product_surface_routes = economics
         .product_surface_policies
         .iter()
@@ -671,12 +634,7 @@ pub(crate) fn build_order_routing_handle(
     let source = ConfiguredEconomicsAdmissionSource::new(
         client.venue.as_str(),
         economics_inputs.clone(),
-        ConfiguredEconomicsSourcePolicy {
-            quote_refresh_ns,
-            quote_max_age_ns,
-            quote_validity_ns,
-            resting_order_refresh_margin_ns,
-        },
+        source_policy,
     )
     .map_err(|error| binding_error(strategy, format!("economics source: {error}")))?;
     let account_id = execution_account_id_from_client(client).ok_or_else(|| {

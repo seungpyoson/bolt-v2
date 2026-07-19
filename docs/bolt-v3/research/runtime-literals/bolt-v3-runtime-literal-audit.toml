@@ -21329,30 +21329,6 @@ classification = "diagnostic_template"
 reason = "Stable missing-capability diagnostic; it does not select an economics implementation."
 
 [[allowed]]
-path = "src/bolt_v3_strategy_registration.rs"
-kind = "string"
-literal = '''"execution economics quote validity overflows nanoseconds"'''
-context = '''"execution economics quote validity overflows nanoseconds".to_string(),'''
-classification = "diagnostic_template"
-reason = "Stable checked-conversion diagnostic; quote validity remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_strategy_registration.rs"
-kind = "string"
-literal = '''"execution economics quote refresh overflows nanoseconds"'''
-context = '''"execution economics quote refresh overflows nanoseconds".to_string(),'''
-classification = "diagnostic_template"
-reason = "Stable checked-conversion diagnostic; quote refresh remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_strategy_registration.rs"
-kind = "string"
-literal = '''"execution economics resting refresh margin overflows nanoseconds"'''
-context = '''"execution economics resting refresh margin overflows nanoseconds".to_string(),'''
-classification = "diagnostic_template"
-reason = "Stable checked-conversion diagnostic; the resting-order refresh margin remains TOML-owned."
-
-[[allowed]]
 path = "src/bolt_v3_economics_runtime.rs"
 kind = "number"
 literal = '''0'''
@@ -21507,14 +21483,6 @@ reason = "Stable provider-owned TOML component role; its component identifier an
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid/economics.rs"
 kind = "string"
-literal = '''"builder"'''
-context = '''.get("builder")'''
-classification = "hyperliquid_economics_component_schema_key"
-reason = "Stable provider-owned TOML component role; its component identifier and formula remain mandatory configuration."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid/economics.rs"
-kind = "string"
 literal = '''"settlement"'''
 context = '''.get("settlement")'''
 classification = "hyperliquid_economics_asset_role_schema_key"
@@ -21615,14 +21583,6 @@ literal = '''"Hyperliquid product surface has no edge-basis policy"'''
 context = '''.context("Hyperliquid product surface has no edge-basis policy")?;'''
 classification = "diagnostic_template"
 reason = "Stable fail-closed missing-policy diagnostic; policy selection remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"builder"'''
-context = '''!= BTreeSet::from(["builder", "protocol"])'''
-classification = "hyperliquid_economics_component_schema_key"
-reason = "Closed provider-owned TOML component-role schema used to reject missing or extra configured authorities."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
@@ -21956,7 +21916,7 @@ reason = "Compile-time tuple field selection for the sole validated product-surf
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
 literal = '''"protocol"'''
-context = '''!= BTreeSet::from(["builder", "protocol"])'''
+context = '''!= BTreeSet::from(["protocol"])'''
 classification = "hyperliquid_economics_component_schema_key"
 reason = "Closed provider-owned TOML component-role schema used to reject missing or extra configured authorities."
 
@@ -21965,14 +21925,6 @@ path = "src/bolt_v3_providers/polymarket/economics.rs"
 kind = "string"
 literal = '''"platform"'''
 context = '''.get("platform")'''
-classification = "polymarket_economics_component_schema_key"
-reason = "Stable provider-owned TOML component role; its identifier and formula remain mandatory configuration."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/economics.rs"
-kind = "string"
-literal = '''"builder"'''
-context = '''.get("builder")'''
 classification = "polymarket_economics_component_schema_key"
 reason = "Stable provider-owned TOML component role; its identifier and formula remain mandatory configuration."
 
@@ -22051,16 +22003,8 @@ reason = "Stable checked-conversion diagnostic; maximum age remains TOML-owned."
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
-literal = '''"builder"'''
-context = '''!= BTreeSet::from(["builder", "platform"])'''
-classification = "polymarket_economics_component_schema_key"
-reason = "Closed provider-owned TOML component-role schema used to reject missing or extra configured authorities."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket.rs"
-kind = "string"
 literal = '''"platform"'''
-context = '''!= BTreeSet::from(["builder", "platform"])'''
+context = '''!= BTreeSet::from(["platform"])'''
 classification = "polymarket_economics_component_schema_key"
 reason = "Closed provider-owned TOML component-role schema used to reject missing or extra configured authorities."
 
@@ -22071,14 +22015,6 @@ literal = '''0'''
 context = '''|| policy.quote_max_age_ns == 0'''
 classification = "fail_closed_policy_validation"
 reason = "Zero is the invalid sentinel for the mandatory TOML-derived maximum source age."
-
-[[allowed]]
-path = "src/bolt_v3_strategy_registration.rs"
-kind = "string"
-literal = '''"execution economics quote maximum age overflows nanoseconds"'''
-context = '''"execution economics quote maximum age overflows nanoseconds".to_string(),'''
-classification = "diagnostic_template"
-reason = "Stable checked-conversion diagnostic; the maximum age value remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_live_node/risk_admission_loss.rs"

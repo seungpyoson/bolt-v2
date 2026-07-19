@@ -289,11 +289,6 @@ component_id = "hyperliquid-protocol-execution"
 formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
 
-[execution.economics.quote_components.builder]
-component_id = "hyperliquid-builder-execution"
-formula_id = "hyperliquid-builder-notional-fee"
-rate_factor_id = "hyperliquid-live-builder-rate"
-
 [execution.economics.assets.settlement]
 native_unit = "USD"
 identity_kind = "currency"
@@ -1558,11 +1553,6 @@ sub_fee_quantum_behavior = "round_to_zero"
 component_id = "polymarket-platform-execution"
 formula_id = "polymarket-price-shaped-fee"
 rate_factor_id = "polymarket-live-fee-rate"
-
-[clients.polymarket_main.execution.economics.quote_components.builder]
-component_id = "polymarket-builder-execution"
-formula_id = "polymarket-builder-notional-fee"
-rate_factor_id = "polymarket-live-builder-rate"
 
 [clients.polymarket_main.execution.economics.assets.collateral]
 native_unit = "USD"

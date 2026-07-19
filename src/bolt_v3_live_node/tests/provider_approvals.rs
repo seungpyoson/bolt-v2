@@ -73,11 +73,6 @@ component_id = "hyperliquid-protocol-execution"
 formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
 
-[execution.economics.quote_components.builder]
-component_id = "hyperliquid-builder-execution"
-formula_id = "hyperliquid-builder-notional-fee"
-rate_factor_id = "hyperliquid-live-builder-rate"
-
 [execution.economics.assets.settlement]
 native_unit = "USD"
 identity_kind = "currency"
@@ -255,11 +250,6 @@ component_id = "hyperliquid-protocol-execution"
 formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
 
-[execution.economics.quote_components.builder]
-component_id = "hyperliquid-builder-execution"
-formula_id = "hyperliquid-builder-notional-fee"
-rate_factor_id = "hyperliquid-live-builder-rate"
-
 [execution.economics.assets.settlement]
 native_unit = "USD"
 identity_kind = "currency"
@@ -427,11 +417,6 @@ fee_history_latest_day_offset_days = "0"
 component_id = "hyperliquid-protocol-execution"
 formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
-
-[execution.economics.quote_components.builder]
-component_id = "hyperliquid-builder-execution"
-formula_id = "hyperliquid-builder-notional-fee"
-rate_factor_id = "hyperliquid-live-builder-rate"
 
 [execution.economics.assets.settlement]
 native_unit = "USD"
@@ -630,11 +615,6 @@ component_id = "hyperliquid-protocol-execution"
 formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
 
-[execution.economics.quote_components.builder]
-component_id = "hyperliquid-builder-execution"
-formula_id = "hyperliquid-builder-notional-fee"
-rate_factor_id = "hyperliquid-live-builder-rate"
-
 [execution.economics.assets.settlement]
 native_unit = "USD"
 identity_kind = "currency"
@@ -803,11 +783,6 @@ component_id = "hyperliquid-protocol-execution"
 formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
 
-[execution.economics.quote_components.builder]
-component_id = "hyperliquid-builder-execution"
-formula_id = "hyperliquid-builder-notional-fee"
-rate_factor_id = "hyperliquid-live-builder-rate"
-
 [execution.economics.assets.settlement]
 native_unit = "USD"
 identity_kind = "currency"
@@ -966,11 +941,6 @@ component_id = "hyperliquid-protocol-execution"
 formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
 
-[execution.economics.quote_components.builder]
-component_id = "hyperliquid-builder-execution"
-formula_id = "hyperliquid-builder-notional-fee"
-rate_factor_id = "hyperliquid-live-builder-rate"
-
 [execution.economics.assets.settlement]
 native_unit = "USD"
 identity_kind = "currency"
@@ -1127,11 +1097,6 @@ component_id = "hyperliquid-protocol-execution"
 formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
 
-[execution.economics.quote_components.builder]
-component_id = "hyperliquid-builder-execution"
-formula_id = "hyperliquid-builder-notional-fee"
-rate_factor_id = "hyperliquid-live-builder-rate"
-
 [execution.economics.assets.settlement]
 native_unit = "USD"
 identity_kind = "currency"
@@ -1287,11 +1252,6 @@ fee_history_latest_day_offset_days = "0"
 component_id = "hyperliquid-protocol-execution"
 formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
-
-[execution.economics.quote_components.builder]
-component_id = "hyperliquid-builder-execution"
-formula_id = "hyperliquid-builder-notional-fee"
-rate_factor_id = "hyperliquid-live-builder-rate"
 
 [execution.economics.assets.settlement]
 native_unit = "USD"

@@ -59,9 +59,6 @@ pub struct PolymarketEconomicsAdapterConfig {
     pub platform_component_id: crate::economics::EconomicComponentId,
     pub platform_formula_id: FormulaId,
     pub platform_rate_factor_id: FormulaId,
-    pub builder_component_id: crate::economics::EconomicComponentId,
-    pub builder_formula_id: FormulaId,
-    pub builder_rate_factor_id: FormulaId,
     pub source_id: SourceId,
     pub formula: PolymarketFormulaPolicy,
 }
@@ -73,10 +70,6 @@ impl PolymarketEconomicsAdapterConfig {
         let platform = economics
             .quote_components
             .get("platform")
-            .ok_or(PolymarketEconomicsError::InvalidIdentity)?;
-        let builder = economics
-            .quote_components
-            .get("builder")
             .ok_or(PolymarketEconomicsError::InvalidIdentity)?;
         let collateral = economics
             .assets
@@ -106,14 +99,6 @@ impl PolymarketEconomicsAdapterConfig {
             platform_formula_id: FormulaId::new(platform.formula_id.clone())
                 .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
             platform_rate_factor_id: FormulaId::new(platform.rate_factor_id.clone())
-                .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
-            builder_component_id: crate::economics::EconomicComponentId::new(
-                builder.component_id.clone(),
-            )
-            .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
-            builder_formula_id: FormulaId::new(builder.formula_id.clone())
-                .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
-            builder_rate_factor_id: FormulaId::new(builder.rate_factor_id.clone())
                 .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?,
             source_id: SourceId::new(
                 economics
@@ -264,8 +249,7 @@ pub enum PolymarketEconomicsError {
     InvalidRate,
     InvalidFillLeg,
     StaleSnapshot,
-    MissingBuilderDescriptor,
-    BuilderProfileMismatch,
+    AttachedRoutingUnsupported,
     InvalidIdentity,
     InvalidEffect,
 }
@@ -274,7 +258,6 @@ pub struct PolymarketEconomicsAdapter {
     config: PolymarketEconomicsAdapterConfig,
     snapshot: PolymarketMarketInfoSnapshot,
     platform_plan: PlatformQuotePlan,
-    builder_plan: BuilderQuotePlan,
 }
 
 #[async_trait(?Send)]
@@ -334,18 +317,12 @@ impl PolymarketEconomicsAuthority {
             .find(|(_, asset)| asset.native_unit == adapter_config.collateral_unit.as_str())
             .map(|(asset_id, _)| asset_id.clone())
             .context("Polymarket economics collateral identity is missing")?;
-        anyhow::ensure!(
-            execution.economics.product_surface_policies.len() == 1,
-            "Polymarket economics requires exactly one configured product surface"
-        );
         let (product_surface_id, edge_basis_policy_id) = execution
             .economics
-            .product_surface_policies
-            .iter()
-            .next()
-            .context("Polymarket economics product surface is missing")?;
-        let product_surface_id = product_surface_id.clone();
-        let edge_basis_policy_id = edge_basis_policy_id.clone();
+            .single_product_surface_binding()
+            .map_err(|error| anyhow::anyhow!("invalid product surface binding: {error:?}"))?;
+        let product_surface_id = product_surface_id.to_string();
+        let edge_basis_policy_id = edge_basis_policy_id.to_string();
         let base_url = Url::parse(&execution.base_url_http)
             .context("invalid configured Polymarket HTTP base URL")?;
         let http_client = HttpClient::new(
@@ -818,10 +795,6 @@ enum PlatformQuotePlan {
     },
 }
 
-enum BuilderQuotePlan {
-    Unavailable,
-}
-
 impl PolymarketEconomicsAdapter {
     pub fn try_new(
         config: PolymarketEconomicsAdapterConfig,
@@ -854,12 +827,10 @@ impl PolymarketEconomicsAdapter {
             },
             _ => return Err(PolymarketEconomicsError::InvalidMarketInfo),
         };
-        let builder_plan = BuilderQuotePlan::Unavailable;
         Ok(Self {
             config,
             snapshot,
             platform_plan,
-            builder_plan,
         })
     }
 
@@ -894,11 +865,8 @@ impl PolymarketEconomicsAdapter {
             PlatformQuotePlan::PriceShaped { .. } => {}
         }
 
-        match (&request.routing.attached_charge, &self.builder_plan) {
-            (None, _) => {}
-            (Some(_), BuilderQuotePlan::Unavailable) => {
-                return Err(PolymarketEconomicsError::MissingBuilderDescriptor);
-            }
+        if request.routing.attached_charge.is_some() {
+            return Err(PolymarketEconomicsError::AttachedRoutingUnsupported);
         }
         Ok(components)
     }

@@ -139,11 +139,6 @@ component_id = "polymarket-platform-execution"
 formula_id = "polymarket-price-shaped-fee"
 rate_factor_id = "polymarket-live-fee-rate"
 
-[client_execution.polymarket_main.economics.quote_components.builder]
-component_id = "polymarket-builder-execution"
-formula_id = "polymarket-builder-notional-fee"
-rate_factor_id = "polymarket-live-builder-rate"
-
 [client_execution.polymarket_main.economics.assets.collateral]
 native_unit = "pUSD"
 identity_kind = "currency"

@@ -558,6 +558,32 @@ pub struct ConfiguredEconomicsSourcePolicy {
     pub resting_order_refresh_margin_ns: u64,
 }
 
+impl ConfiguredEconomicsSourcePolicy {
+    pub fn from_execution_config(
+        economics: &crate::bolt_v3_economics_config::ExecutionEconomicsConfig,
+    ) -> Result<Self, EconomicsUnavailable> {
+        let seconds_to_ns = |seconds: u64| {
+            seconds
+                .checked_mul(crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64)
+                .and_then(|value| value.checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64))
+                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)
+        };
+        let millis_to_ns = |millis: u64| {
+            millis
+                .checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64)
+                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)
+        };
+        Ok(Self {
+            quote_refresh_ns: seconds_to_ns(economics.quote_refresh_secs)?,
+            quote_max_age_ns: seconds_to_ns(economics.quote_max_age_secs)?,
+            quote_validity_ns: millis_to_ns(economics.quote_validity_ms)?,
+            resting_order_refresh_margin_ns: millis_to_ns(
+                economics.resting_order_refresh_margin_ms,
+            )?,
+        })
+    }
+}
+
 impl ConfiguredEconomicsAdmissionSource {
     pub fn new(
         provider_key: &str,
@@ -1236,32 +1262,32 @@ fn test_economics_admission_with_binding_and_purpose(
         requested_at_ns,
         decision_correlation_id: decision_correlation_id.clone(),
     };
+    let components = vec![EstimatedEconomicComponent {
+        component_id: EconomicComponentId::new("test-core-credit")
+            .expect("valid test component id"),
+        class: EconomicClass::Credit,
+        kind: EconomicKind::Execution(ExecutionKind::ProtocolTrading),
+        scope: EconomicScope::Decision {
+            decision_correlation_id: decision_correlation_id.clone(),
+        },
+        point_estimate: PointEstimate::NonZero(
+            SignedNativeEffect::currency(Decimal::ONE, reporting_unit).expect("valid test effect"),
+        ),
+        debit_risk_bound: None,
+        admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
+        calculation_factors: vec![CalculationFactor {
+            factor_id: FormulaId::new("test-schedule-factor")
+                .expect("valid test schedule factor id"),
+            value: Decimal::ONE,
+        }],
+        formula_id: FormulaId::new("test-credit-formula").expect("valid test formula id"),
+        source: source.clone(),
+        normalized: None,
+    }];
     let adapter = TestAdapter(VenueQuoteEstimate {
         authority: source.clone(),
         dependency_sources: Vec::new(),
-        components: vec![EstimatedEconomicComponent {
-            component_id: EconomicComponentId::new("test-core-credit")
-                .expect("valid test component id"),
-            class: EconomicClass::Credit,
-            kind: EconomicKind::Execution(ExecutionKind::ProtocolTrading),
-            scope: EconomicScope::Decision {
-                decision_correlation_id: decision_correlation_id.clone(),
-            },
-            point_estimate: PointEstimate::NonZero(
-                SignedNativeEffect::currency(Decimal::ONE, reporting_unit)
-                    .expect("valid test effect"),
-            ),
-            debit_risk_bound: None,
-            admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
-            calculation_factors: vec![CalculationFactor {
-                factor_id: FormulaId::new("test-schedule-factor")
-                    .expect("valid test schedule factor id"),
-                value: Decimal::ONE,
-            }],
-            formula_id: FormulaId::new("test-credit-formula").expect("valid test formula id"),
-            source: source.clone(),
-            normalized: None,
-        }],
+        components,
     });
     let planned_fill_notional =
         PlannedFillNotional::from_legs(&request.planned_fill_legs).expect("valid planned fill");

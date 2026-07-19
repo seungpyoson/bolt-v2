@@ -106,11 +106,6 @@ component_id = "hyperliquid-protocol-execution"
 formula_id = "hyperliquid-effective-account-rate"
 rate_factor_id = "hyperliquid-live-effective-rate"
 
-[execution.economics.quote_components.builder]
-component_id = "hyperliquid-builder-execution"
-formula_id = "hyperliquid-builder-notional-fee"
-rate_factor_id = "hyperliquid-live-builder-rate"
-
 [execution.economics.assets.settlement]
 native_unit = "USDC"
 identity_kind = "currency"
@@ -119,16 +114,20 @@ evidence_fixture_id = "hyperliquid-usdc-settlement-v1"
 [execution.economics.carry]
 funding_interval_secs = 3600
 funding_schedule_phase_secs = 0
-funding_venue_rate_cap_bps_per_hour = "400"
-funding_standard_price_stress_multiplier = "1.5"
 component_id = "funding-carry"
 formula_id = "funding-rate-bound"
 point_rate_factor_id = "funding-point-rate"
 bound_rate_factor_id = "funding-bound-rate"
 risk_policy_id = "funding-risk-policy"
-stress_fixture_id = "funding-standard-stress"
 oracle_price_factor_id = "funding-oracle-price"
 next_funding_at_factor_id = "funding-next-event-at"
+
+[execution.economics.carry.standard_stress]
+artifact_id = "funding-standard-stress"
+artifact_version = 1
+artifact_version_factor_id = "funding-standard-stress-version"
+venue_rate_cap_bps_per_hour = "400"
+price_multiplier = "1.5"
 
 [execution.economics.edge_basis.primary]
 resolver_id = "product-metadata"

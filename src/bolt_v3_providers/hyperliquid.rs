@@ -209,11 +209,9 @@ pub(crate) fn build_offline_economics_adapter(
         .sources
         .get("account_fees")
         .ok_or_else(|| "offline Hyperliquid account-fees source is missing".to_string())?;
-    let edge_policy_id = economics
-        .product_surface_policies
-        .values()
-        .next()
-        .ok_or_else(|| "offline Hyperliquid product surface is missing".to_string())?;
+    let (_, edge_policy_id) = economics
+        .single_product_surface_binding()
+        .map_err(|error| format!("invalid offline Hyperliquid product surface: {error:?}"))?;
     let product_source = &economics
         .edge_basis
         .get(edge_policy_id)
@@ -839,10 +837,10 @@ fn validate_quote_economics_policy(
         .keys()
         .map(String::as_str)
         .collect::<BTreeSet<_>>()
-        != BTreeSet::from(["builder", "protocol"])
+        != BTreeSet::from(["protocol"])
     {
         errors.push(format!(
-            "clients.{key}.execution.economics.quote_components must bind exactly the protocol and builder component identities"
+            "clients.{key}.execution.economics.quote_components must bind exactly the protocol component identity"
         ));
     }
     if economics.assets.len() != 1 || !economics.assets.contains_key("settlement") {

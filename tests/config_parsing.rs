@@ -235,11 +235,6 @@ component_id = "polymarket-platform-execution"
 formula_id = "polymarket-price-shaped-fee"
 rate_factor_id = "polymarket-live-fee-rate"
 
-[economics.quote_components.builder]
-component_id = "polymarket-builder-execution"
-formula_id = "polymarket-builder-notional-fee"
-rate_factor_id = "polymarket-live-builder-rate"
-
 [economics.assets.collateral]
 native_unit = "USD"
 identity_kind = "currency"
@@ -5942,11 +5937,6 @@ component_id = "polymarket-platform-execution"
 formula_id = "polymarket-price-shaped-fee"
 rate_factor_id = "polymarket-live-fee-rate"
 
-[clients.polymarket_main.execution.economics.quote_components.builder]
-component_id = "polymarket-builder-execution"
-formula_id = "polymarket-builder-notional-fee"
-rate_factor_id = "polymarket-live-builder-rate"
-
 [clients.polymarket_main.execution.economics.assets.collateral]
 native_unit = "USD"
 identity_kind = "currency"
@@ -6440,11 +6430,6 @@ sub_fee_quantum_behavior = "round_to_zero"
 component_id = "polymarket-platform-execution"
 formula_id = "polymarket-price-shaped-fee"
 rate_factor_id = "polymarket-live-fee-rate"
-
-[clients.polymarket_main.execution.economics.quote_components.builder]
-component_id = "polymarket-builder-execution"
-formula_id = "polymarket-builder-notional-fee"
-rate_factor_id = "polymarket-live-builder-rate"
 
 [clients.polymarket_main.execution.economics.assets.collateral]
 native_unit = "USD"

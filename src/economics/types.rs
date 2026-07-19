@@ -161,10 +161,6 @@ pub enum EconomicClass {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecutionKind {
     ProtocolTrading,
-    AttachedRouting,
-    Integrator,
-    CombinedVenueFee,
-    PaidOrderAction,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

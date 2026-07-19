@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    num::NonZeroUsize,
+    num::{NonZeroU64, NonZeroUsize},
 };
 
 use serde::Deserialize;
@@ -169,16 +169,24 @@ pub enum ValuationOrientation {
 pub struct CarryQuotePolicyConfig {
     pub funding_interval_secs: u64,
     pub funding_schedule_phase_secs: u64,
-    pub funding_venue_rate_cap_bps_per_hour: String,
-    pub funding_standard_price_stress_multiplier: String,
     pub component_id: String,
     pub formula_id: String,
     pub point_rate_factor_id: String,
     pub bound_rate_factor_id: String,
     pub risk_policy_id: String,
-    pub stress_fixture_id: String,
     pub oracle_price_factor_id: String,
     pub next_funding_at_factor_id: String,
+    pub standard_stress: CarryStandardStressConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CarryStandardStressConfig {
+    pub artifact_id: String,
+    pub artifact_version: NonZeroU64,
+    pub artifact_version_factor_id: String,
+    pub venue_rate_cap_bps_per_hour: String,
+    pub price_multiplier: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -191,7 +199,8 @@ pub enum EconomicsConfigField {
     EdgeBasisResolverId,
     EdgeBasisMetadataSource,
     CarryRiskPolicyId,
-    CarryStressFixtureId,
+    CarryStressArtifactId,
+    CarryStressArtifactVersionFactorId,
     CarryOraclePriceFactorId,
     CarryNextFundingAtFactorId,
     CarryComponentId,
@@ -222,6 +231,7 @@ pub enum EconomicsConfigError {
     InvalidQuoteWindow,
     InvalidRefreshMargin,
     EmptyEdgeBasisMapping,
+    InvalidProductSurfaceCount,
     MissingEdgeBasisPolicy {
         surface: String,
         policy_id: String,
@@ -298,12 +308,26 @@ impl EconomicsRootConfig {
 }
 
 impl ExecutionEconomicsConfig {
+    pub fn single_product_surface_binding(&self) -> Result<(&str, &str), EconomicsConfigError> {
+        let mut bindings = self.product_surface_policies.iter();
+        let Some((surface, policy_id)) = bindings.next() else {
+            return Err(EconomicsConfigError::InvalidProductSurfaceCount);
+        };
+        if bindings.next().is_some() {
+            return Err(EconomicsConfigError::InvalidProductSurfaceCount);
+        }
+        Ok((surface.as_str(), policy_id.as_str()))
+    }
+
     pub fn validate(
         &self,
         reporting: &EconomicsReportingConfig,
         active_data_clients: &BTreeSet<String>,
     ) -> Vec<EconomicsConfigError> {
         let mut errors = Vec::new();
+        if let Err(error) = self.single_product_surface_binding() {
+            errors.push(error);
+        }
         require_text(
             &self.reporting_policy,
             EconomicsConfigField::ExecutionReportingPolicy,
@@ -485,8 +509,8 @@ impl ExecutionEconomicsConfig {
                 errors.push(EconomicsConfigError::InvalidQuoteWindow);
             }
             for value in [
-                &carry.funding_venue_rate_cap_bps_per_hour,
-                &carry.funding_standard_price_stress_multiplier,
+                &carry.standard_stress.venue_rate_cap_bps_per_hour,
+                &carry.standard_stress.price_multiplier,
             ] {
                 let Ok(value) = value.parse::<rust_decimal::Decimal>() else {
                     errors.push(EconomicsConfigError::InvalidQuoteWindow);
@@ -522,8 +546,13 @@ impl ExecutionEconomicsConfig {
                 &mut errors,
             );
             require_text(
-                &carry.stress_fixture_id,
-                EconomicsConfigField::CarryStressFixtureId,
+                &carry.standard_stress.artifact_id,
+                EconomicsConfigField::CarryStressArtifactId,
+                &mut errors,
+            );
+            require_text(
+                &carry.standard_stress.artifact_version_factor_id,
+                EconomicsConfigField::CarryStressArtifactVersionFactorId,
                 &mut errors,
             );
             require_text(

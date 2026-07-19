@@ -55,16 +55,20 @@ routes = {}
 [carry]
 funding_interval_secs = 3600
 funding_schedule_phase_secs = 0
-funding_venue_rate_cap_bps_per_hour = "400"
-funding_standard_price_stress_multiplier = "1.5"
 component_id = "funding-carry"
 formula_id = "funding-rate-bound"
 point_rate_factor_id = "funding-point-rate"
 bound_rate_factor_id = "funding-bound-rate"
 risk_policy_id = "funding-bound"
-stress_fixture_id = "funding-stress-v1"
 oracle_price_factor_id = "funding-oracle-price"
 next_funding_at_factor_id = "funding-next-event-at"
+
+[carry.standard_stress]
+artifact_id = "funding-stress"
+artifact_version = 1
+artifact_version_factor_id = "funding-stress-version"
+venue_rate_cap_bps_per_hour = "400"
+price_multiplier = "1.5"
 "#
 }
 
@@ -81,6 +85,33 @@ fn quote_only_config_is_strict_and_validates_freshness_and_policy() {
             &valid_config().replace("refresh_max_concurrency = 8", "refresh_max_concurrency = 0")
         )
         .is_err()
+    );
+}
+
+#[test]
+fn carry_standard_stress_is_a_required_versioned_toml_artifact() {
+    assert!(
+        parse(&valid_config().replace("artifact_version = 1", "artifact_version = 0")).is_err()
+    );
+
+    let config =
+        parse(&valid_config().replace("price_multiplier = \"1.5\"", "price_multiplier = \"0\""))
+            .unwrap();
+    assert!(!config.validate(&reporting(), &BTreeSet::new()).is_empty());
+}
+
+#[test]
+fn slice_one_accepts_exactly_one_product_surface_in_every_mode() {
+    let source = valid_config().replace(
+        "product_surface_policies = { perp = \"default\" }",
+        "product_surface_policies = { perp = \"default\", spot = \"default\" }",
+    );
+    let config = parse(&source).unwrap();
+    assert!(
+        config
+            .validate(&reporting(), &BTreeSet::new())
+            .iter()
+            .any(|error| { matches!(error, EconomicsConfigError::InvalidProductSurfaceCount) })
     );
 }
 

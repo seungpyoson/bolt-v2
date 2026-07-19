@@ -146,10 +146,10 @@ impl ReplayEconomicsAdmissionSource {
                 None => configured_policy = Some(policy),
             }
         }
-        let (_, _, _, resting_order_refresh_margin_ms) = configured_policy
-            .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
+        let (_, _, _, resting_order_refresh_margin_ms) =
+            configured_policy.ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
         let resting_order_refresh_margin_ns = resting_order_refresh_margin_ms
-            .checked_mul(1_000_000)
+            .checked_mul(bolt_v2::bolt_v3_numeric::NANOS_PER_MILLI_U64)
             .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?;
         Ok(Self {
             snapshots,
@@ -301,24 +301,7 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
             &adapter.economics.valuation,
             &observations,
         )?);
-        let seconds_to_ns = |seconds: u64| {
-            seconds
-                .checked_mul(1_000_000_000)
-                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)
-        };
-        let millis_to_ns = |millis: u64| {
-            millis
-                .checked_mul(1_000_000)
-                .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)
-        };
-        let policy = ConfiguredEconomicsSourcePolicy {
-            quote_refresh_ns: seconds_to_ns(adapter.economics.quote_refresh_secs)?,
-            quote_max_age_ns: seconds_to_ns(adapter.economics.quote_max_age_secs)?,
-            quote_validity_ns: millis_to_ns(adapter.economics.quote_validity_ms)?,
-            resting_order_refresh_margin_ns: millis_to_ns(
-                adapter.economics.resting_order_refresh_margin_ms,
-            )?,
-        };
+        let policy = ConfiguredEconomicsSourcePolicy::from_execution_config(&adapter.economics)?;
         let inputs = AuthoritativeEconomicsInputStore::default();
         inputs.publish(
             &snapshot.execution_client_id,
@@ -381,9 +364,10 @@ impl ReplayEconomicsAdapter {
             },
         )
         .map_err(|_| EconomicsUnavailable::MissingQuoteAuthority)?;
-        if binding.economics.product_surface_policies.len() != 1 {
-            return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
-        }
+        binding
+            .economics
+            .single_product_surface_binding()
+            .map_err(|_| EconomicsUnavailable::AmbiguousQuoteAuthority)?;
         let configured_edge_basis = binding
             .economics
             .edge_basis

@@ -12,7 +12,7 @@ use bolt_v2::{
         SnapshotId, SourceId, VenueEconomicsAdapter,
     },
 };
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 use super::economics_support::{canonical_fixture_request, decimal, native_unit};
 
@@ -22,9 +22,6 @@ fn config() -> HyperliquidEconomicsAdapterConfig {
         protocol_component_id: EconomicComponentId::new("protocol-fee").unwrap(),
         protocol_formula_id: FormulaId::new("developer-formula").unwrap(),
         protocol_rate_factor_id: FormulaId::new("effective-rate").unwrap(),
-        builder_component_id: EconomicComponentId::new("builder-fee").unwrap(),
-        builder_formula_id: FormulaId::new("builder-formula").unwrap(),
-        builder_rate_factor_id: FormulaId::new("builder-rate").unwrap(),
         source_id: SourceId::new("user-fees-and-product").unwrap(),
         fee_eligibility: fee_eligibility_policy(1, 1),
         formula: HyperliquidFormulaPolicy {
@@ -36,7 +33,10 @@ fn config() -> HyperliquidEconomicsAdapterConfig {
             point_rate_factor_id: FormulaId::new("funding-point-rate").unwrap(),
             bound_rate_factor_id: FormulaId::new("funding-bound-rate").unwrap(),
             risk_policy_id: FormulaId::new("funding-risk-policy").unwrap(),
-            stress_fixture_id: FormulaId::new("funding-stress-fixture").unwrap(),
+            standard_stress_artifact_id: FormulaId::new("funding-stress").unwrap(),
+            standard_stress_artifact_version: NonZeroU64::new(1).unwrap(),
+            standard_stress_artifact_version_factor_id: FormulaId::new("funding-stress-version")
+                .unwrap(),
             oracle_price_factor_id: FormulaId::new("funding-oracle-price").unwrap(),
             next_funding_at_factor_id: FormulaId::new("funding-next-event-at").unwrap(),
             funding_interval_ns: 3_600_000_000_000,
@@ -91,8 +91,8 @@ fn user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
     user_fees_with_discounts(maker_rate, "0", "0", "0.00045", "0.0007", "0.0004")
 }
 
-fn official_user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
-    user_fees_with_discounts(maker_rate, "0.04", "0.3", "0.000315", "0.00049", "0.00028")
+fn staked_user_fees(maker_rate: &str) -> HyperliquidUserFeesSnapshot {
+    user_fees_with_discounts(maker_rate, "0", "0.3", "0.000315", "0.00049", "0.00028")
 }
 
 fn user_fees_with_discounts(
@@ -178,21 +178,14 @@ fn user_fees_with_discounts(
     .unwrap()
 }
 
-fn product(
-    kind: &str,
-    aligned: bool,
-    dust_complete: bool,
-    builder_rate_bps: &str,
-    builder_max_bps: &str,
-) -> HyperliquidProductEconomicsSnapshot {
+fn product(kind: &str, aligned: bool, dust_complete: bool) -> HyperliquidProductEconomicsSnapshot {
     HyperliquidProductEconomicsSnapshot::from_json(&format!(
         r#"{{
             "snapshotId":"product-snapshot","sourceAtNs":91,"fetchedAtNs":96,
             "validUntilNs":110,"productKind":"{kind}","stablePair":false,
             "baseUnit":"BTC","quoteUnit":"USDC",
             "alignedQuoteOrCollateral":{aligned},"hip3":false,"deployerScale":0,
-            "growthMode":false,"builderProfileId":"builder-profile",
-            "builderRateBps":{builder_rate_bps},"builderApprovedMaxBps":{builder_max_bps},
+            "growthMode":false,
             "spotDustAuthorityComplete":{dust_complete},
             "carryOraclePrice":100,
             "carryPointRatePerInterval":0.001,
@@ -210,8 +203,7 @@ fn product_with_carry(point_rate: &str, bound_rate: &str) -> HyperliquidProductE
             "validUntilNs":110,"productKind":"perp","stablePair":false,
             "baseUnit":"BTC","quoteUnit":"USDC",
             "alignedQuoteOrCollateral":false,"hip3":false,"deployerScale":0,
-            "growthMode":false,"builderProfileId":"builder-profile",
-            "builderRateBps":0,"builderApprovedMaxBps":0,
+            "growthMode":false,
             "spotDustAuthorityComplete":false,
             "carryOraclePrice":100,
             "carryPointRatePerInterval":{point_rate},
@@ -238,7 +230,7 @@ fn spot_fee_surface_is_not_a_slice_one_success_path() {
         HyperliquidEconomicsAdapter::try_new(
             config(),
             user_fees("0"),
-            product("spot", false, true, "1", "2"),
+            product("spot", false, true),
         )
         .err(),
         Some(HyperliquidEconomicsError::InvalidFeeSurface)
@@ -246,11 +238,11 @@ fn spot_fee_surface_is_not_a_slice_one_success_path() {
 }
 
 #[test]
-fn complete_perp_surface_applies_account_rate_and_builder_approval() {
+fn complete_perp_surface_applies_account_rate_and_rejects_attached_routing() {
     let adapter = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("-0.00001"),
-        product("perp", false, false, "1", "2"),
+        product("perp", false, false),
     )
     .unwrap();
     let mut request = perp_request();
@@ -260,24 +252,18 @@ fn complete_perp_surface_applies_account_rate_and_builder_approval() {
         attachment_id: RoutingAttachmentId::new("builder-profile").unwrap(),
     });
 
-    let components = adapter.quote_components(&request).unwrap();
-    assert_eq!(components.len(), 3);
     assert_eq!(
-        components[0].point_estimate.effect().unwrap().amount(),
-        decimal("-4.50")
-    );
-    assert_eq!(
-        components[1].point_estimate.effect().unwrap().amount(),
-        decimal("-1.00")
+        adapter.quote_components(&request),
+        Err(HyperliquidEconomicsError::AttachedRoutingUnsupported)
     );
 }
 
 #[test]
-fn official_user_fees_wire_shape_drives_effective_taker_rate_without_double_staking() {
+fn documented_staking_state_drives_effective_taker_rate_without_double_staking() {
     let adapter = HyperliquidEconomicsAdapter::try_new(
         config(),
-        official_user_fees("0.000105"),
-        product("perp", false, false, "0", "0"),
+        staked_user_fees("0.000105"),
+        product("perp", false, false),
     )
     .unwrap();
     let mut request = perp_request();
@@ -288,19 +274,18 @@ fn official_user_fees_wire_shape_drives_effective_taker_rate_without_double_stak
 
     assert_eq!(
         components[0].point_estimate.effect().unwrap().amount(),
-        decimal("-3.024")
+        decimal("-3.15")
     );
 }
 
 #[test]
-fn negative_maker_rate_is_not_reduced_by_referral_discount() {
+fn negative_maker_rate_is_consumed_without_local_discount_recomposition() {
     let product = HyperliquidProductEconomicsSnapshot::from_json(
         r#"{
             "snapshotId":"product-snapshot","sourceAtNs":91,"fetchedAtNs":96,
             "validUntilNs":110,"productKind":"perp","stablePair":false,
             "alignedQuoteOrCollateral":false,"hip3":false,"deployerScale":0,
-            "growthMode":false,"builderProfileId":"builder-profile",
-            "builderRateBps":0,"builderApprovedMaxBps":0,
+            "growthMode":false,
             "spotDustAuthorityComplete":false,
             "carryOraclePrice":100,
             "carryPointRatePerInterval":0.001,
@@ -310,8 +295,7 @@ fn negative_maker_rate_is_not_reduced_by_referral_discount() {
     )
     .unwrap();
     let adapter =
-        HyperliquidEconomicsAdapter::try_new(config(), official_user_fees("-0.00001"), product)
-            .unwrap();
+        HyperliquidEconomicsAdapter::try_new(config(), user_fees("-0.00001"), product).unwrap();
     let mut request = perp_request();
     request.liquidity_role = LiquidityRoleAssumption::GuaranteedMaker;
     request.planned_fill_legs[0].price = decimal("100");
@@ -330,7 +314,7 @@ fn sealed_quote_evidence_names_account_and_product_snapshots() {
     let adapter = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("0"),
-        product("perp", false, false, "0", "0"),
+        product("perp", false, false),
     )
     .unwrap();
 
@@ -357,7 +341,7 @@ fn negative_maker_rate_is_guaranteed_credit_not_forecast_reward() {
     let adapter = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("-0.00001"),
-        product("perp", false, false, "0", "0"),
+        product("perp", false, false),
     )
     .unwrap();
     let mut request = perp_request();
@@ -379,7 +363,7 @@ fn perp_without_horizon_or_debit_bound_fails_closed() {
     let adapter = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("0"),
-        product("perp", false, false, "0", "0"),
+        product("perp", false, false),
     )
     .unwrap();
     assert_eq!(
@@ -401,9 +385,6 @@ fn perp_without_horizon_or_debit_bound_fails_closed() {
             "hip3": false,
             "deployerScale": 0,
             "growthMode": false,
-            "builderProfileId": "builder-profile",
-            "builderRateBps": 0,
-            "builderApprovedMaxBps": 0,
             "spotDustAuthorityComplete": false,
             "carryOraclePrice": 100,
             "carryPointRatePerInterval": 0.001,
@@ -425,7 +406,7 @@ fn funding_bound_counts_intersected_events_at_the_exact_boundary() {
     let adapter = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("0"),
-        product("perp", false, false, "0", "0"),
+        product("perp", false, false),
     )
     .unwrap();
     let mut before = perp_request();
@@ -506,8 +487,7 @@ fn zero_point_funding_still_seals_the_venue_debit_bound() {
             "validUntilNs":110,"productKind":"perp","stablePair":false,
             "baseUnit":"BTC","quoteUnit":"USDC","alignedQuoteOrCollateral":false,
             "hip3":false,"deployerScale":0,"growthMode":false,
-            "builderProfileId":"builder-profile","builderRateBps":0,
-            "builderApprovedMaxBps":0,"spotDustAuthorityComplete":false,
+            "spotDustAuthorityComplete":false,
             "carryOraclePrice":100,"carryPointRatePerInterval":0,
             "carryDebitRateBoundPerInterval":0.002,"carryNextFundingAtNs":500
         }"#,
@@ -534,7 +514,7 @@ fn aligned_and_unproved_spot_surfaces_are_explicitly_blocked() {
     let aligned = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("0"),
-        product("perp", true, false, "0", "0"),
+        product("perp", true, false),
     );
     assert_eq!(
         aligned.err(),
@@ -546,7 +526,7 @@ fn aligned_and_unproved_spot_surfaces_are_explicitly_blocked() {
     let spot = HyperliquidEconomicsAdapter::try_new(
         config(),
         user_fees("0"),
-        product("spot", false, false, "0", "0"),
+        product("spot", false, false),
     );
     assert_eq!(
         spot.err(),
@@ -557,15 +537,20 @@ fn aligned_and_unproved_spot_surfaces_are_explicitly_blocked() {
 }
 
 #[test]
-fn builder_rate_above_account_approval_fails_closed() {
-    let adapter = HyperliquidEconomicsAdapter::try_new(
-        config(),
-        user_fees("0"),
-        product("perp", false, false, "3", "2"),
-    );
+fn builder_metadata_is_not_a_slice_one_success_path() {
     assert_eq!(
-        adapter.err(),
-        Some(HyperliquidEconomicsError::BuilderApprovalExceeded)
+        HyperliquidProductEconomicsSnapshot::from_json(
+            r#"{
+            "snapshotId":"product-snapshot","sourceAtNs":91,"fetchedAtNs":96,
+            "validUntilNs":110,"productKind":"perp","stablePair":false,
+            "baseUnit":"BTC","quoteUnit":"USDC",
+            "alignedQuoteOrCollateral":false,"hip3":false,"deployerScale":0,
+            "growthMode":false,"builderProfileId":"builder-profile",
+            "builderRateBps":3,"builderApprovedMaxBps":2,
+            "spotDustAuthorityComplete":false
+        }"#,
+        ),
+        Err(HyperliquidEconomicsError::InvalidProductMetadata)
     );
 }
 
@@ -576,8 +561,7 @@ fn negative_hip3_deployer_scale_fails_closed() {
             "snapshotId":"product-snapshot","sourceAtNs":91,"fetchedAtNs":96,
             "validUntilNs":110,"productKind":"perp","stablePair":false,
             "alignedQuoteOrCollateral":false,"hip3":true,"deployerScale":-0.1,
-            "growthMode":false,"builderProfileId":"builder-profile",
-            "builderRateBps":0,"builderApprovedMaxBps":0,
+            "growthMode":false,
             "spotDustAuthorityComplete":false
         }"#,
     )
@@ -983,6 +967,16 @@ fn user_fees_parser_rejects_effective_rate_that_disagrees_with_schedule() {
 }
 
 #[test]
+fn active_referral_discount_without_governed_account_capture_is_rejected() {
+    let mut wire: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"
+    ))
+    .unwrap();
+    wire["activeReferralDiscount"] = serde_json::Value::String("0.04".to_string());
+    assert_governed_user_fees_invalid(wire);
+}
+
+#[test]
 fn user_fees_parser_rejects_active_discount_that_contradicts_the_resolved_staking_tier() {
     let mut wire: serde_json::Value = serde_json::from_str(include_str!(
         "fixtures/bolt_v3/boundary_evidence/hyperliquid-user-fees.json"
@@ -1113,8 +1107,7 @@ fn contradictory_product_kind_flags_fail_closed() {
             "validUntilNs":110,"productKind":"spot","stablePair":false,
             "baseUnit":"BTC","quoteUnit":"USDC",
             "alignedQuoteOrCollateral":false,"hip3":true,"deployerScale":0.5,
-            "growthMode":false,"builderProfileId":"builder-profile",
-            "builderRateBps":0,"builderApprovedMaxBps":0,
+            "growthMode":false,
             "spotDustAuthorityComplete":true
         }"#,
     )
@@ -1130,8 +1123,7 @@ fn contradictory_product_kind_flags_fail_closed() {
             "validUntilNs":110,"productKind":"perp","stablePair":true,
             "baseUnit":"BTC","quoteUnit":"USDC",
             "alignedQuoteOrCollateral":false,"hip3":false,"deployerScale":0,
-            "growthMode":false,"builderProfileId":"builder-profile",
-            "builderRateBps":0,"builderApprovedMaxBps":0,
+            "growthMode":false,
             "spotDustAuthorityComplete":false
         }"#,
     )

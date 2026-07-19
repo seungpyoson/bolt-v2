@@ -669,10 +669,10 @@ fn validate_quote_economics_policy(
         .keys()
         .map(String::as_str)
         .collect::<BTreeSet<_>>()
-        != BTreeSet::from(["builder", "platform"])
+        != BTreeSet::from(["platform"])
     {
         errors.push(format!(
-            "clients.{key}.execution.economics.quote_components must bind exactly the platform and builder component identities"
+            "clients.{key}.execution.economics.quote_components must bind exactly the platform component identity"
         ));
     }
     if economics.assets.len() != 1 || !economics.assets.contains_key("collateral") {

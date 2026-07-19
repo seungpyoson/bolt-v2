@@ -19,9 +19,6 @@ fn config() -> PolymarketEconomicsAdapterConfig {
         platform_component_id: EconomicComponentId::new("platform-fee").unwrap(),
         platform_formula_id: FormulaId::new("platform-formula").unwrap(),
         platform_rate_factor_id: FormulaId::new("platform-rate").unwrap(),
-        builder_component_id: EconomicComponentId::new("builder-fee").unwrap(),
-        builder_formula_id: FormulaId::new("builder-formula").unwrap(),
-        builder_rate_factor_id: FormulaId::new("builder-rate").unwrap(),
         source_id: SourceId::new("clob-market-info").unwrap(),
         formula: PolymarketFormulaPolicy {
             fee_round_decimal_places: 5,
@@ -116,7 +113,7 @@ fn attached_builder_charge_without_profile_authority_fails_closed() {
 
     assert_eq!(
         adapter.quote_components(&request),
-        Err(PolymarketEconomicsError::MissingBuilderDescriptor)
+        Err(PolymarketEconomicsError::AttachedRoutingUnsupported)
     );
 }
 
@@ -206,7 +203,7 @@ fn side_specific_base_fee_values_do_not_become_unbound_builder_authority() {
 
     assert_eq!(
         adapter.quote_components(&request),
-        Err(PolymarketEconomicsError::MissingBuilderDescriptor)
+        Err(PolymarketEconomicsError::AttachedRoutingUnsupported)
     );
 }
 

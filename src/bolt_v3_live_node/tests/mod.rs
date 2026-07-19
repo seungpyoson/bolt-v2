@@ -87,6 +87,7 @@ impl BoltV3DecisionEvidenceProducerStopper for RecordingProducerStopper {
 }
 
 mod data_client_probe;
+mod economics_composition;
 mod fixtures;
 mod governance_mode;
 mod iv_runtime;

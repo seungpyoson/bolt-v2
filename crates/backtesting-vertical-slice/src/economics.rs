@@ -303,6 +303,7 @@ impl EconomicsAdmissionSource for ReplayEconomicsAdmissionSource {
         let authority_refreshed_at_ns = snapshot.fetched_at_ns;
         BoltV3EconomicsRuntime::try_new(std::sync::Arc::new(adapter), policy)?.quote_admission(
             EconomicsAdmissionIntent {
+                provider_key: snapshot.provider_key.clone(),
                 request: intent.request,
                 order_binding: intent.order_binding,
                 purpose: intent.purpose,

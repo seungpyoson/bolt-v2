@@ -134,6 +134,7 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
         )?
         .quote_admission(
             bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
+                provider_key: "POLYMARKET".to_string(),
                 edge_basis: EdgeBasisEvidence {
                     policy_id: intent.request.edge_basis_policy_id.clone(),
                     resolver_id: FormulaId::new("test-edge-resolver")?,
@@ -360,6 +361,7 @@ fn sample_economics_admission_with_component(
     .expect("sample economics runtime policy should be valid")
     .quote_admission(
         bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
+            provider_key: "POLYMARKET".to_string(),
             request,
             order_binding: bolt_v2::bolt_v3_economics_runtime::EconomicsOrderBinding::from_sha256(
                 <sha2::Sha256 as sha2::Digest>::digest(b"test-order-binding"),

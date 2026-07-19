@@ -296,6 +296,7 @@ impl crate::bolt_v3_economics_runtime::EconomicsAdmissionSource
                 .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?,
         )?
         .quote_admission(crate::bolt_v3_economics_runtime::EconomicsAdmissionIntent {
+            provider_key: "POLYMARKET".to_string(),
             authority_refreshed_at_ns: intent.request.requested_at_ns,
             edge_basis: EdgeBasisEvidence {
                 policy_id: intent.request.edge_basis_policy_id.clone(),

@@ -1062,6 +1062,82 @@ fn economics_valuation_provider_from_cache(
     .map_err(Into::into)
 }
 
+async fn refresh_compile_publish_economics_once(
+    authority: &Arc<dyn crate::bolt_v3_economics_runtime::ProviderEconomicsAuthority>,
+    inputs: &crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore,
+    cache: &Rc<RefCell<nautilus_common::cache::Cache>>,
+    instruments: Vec<InstrumentAny>,
+    receipt_clock: &dyn crate::bolt_v3_economics_runtime::EconomicsReceiptClock,
+    refresh_deadline: Duration,
+) -> anyhow::Result<usize> {
+    let refreshes = await_economics_refresh_before_deadline(
+        refresh_deadline,
+        authority.refresh_batch(instruments, receipt_clock),
+    )
+    .await??;
+    let mut published_instruments = Vec::new();
+    for refresh in refreshes {
+        let instrument_id = refresh.instrument_id;
+        let snapshot = match refresh.snapshot {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                log::error!(
+                    "economics authority refresh failed: execution_client_id={} instrument_id={} error={error:#}",
+                    authority.execution_client_id(),
+                    instrument_id
+                );
+                continue;
+            }
+        };
+        let valuation_provider = match economics_valuation_provider_from_cache(
+            &authority.economics_config().valuation,
+            cache,
+            snapshot.valuation_observations,
+        ) {
+            Ok(provider) => provider,
+            Err(error) => {
+                log::error!(
+                    "economics valuation authority unavailable: execution_client_id={} error={error:#}",
+                    authority.execution_client_id()
+                );
+                continue;
+            }
+        };
+        if !authority
+            .economics_config()
+            .product_surface_policies
+            .contains_key(&snapshot.product_surface_id)
+        {
+            log::error!(
+                "economics authority selected an unconfigured product surface: execution_client_id={} surface={}",
+                authority.execution_client_id(),
+                snapshot.product_surface_id
+            );
+            continue;
+        }
+        match inputs.publish(
+            authority.execution_client_id(),
+            &instrument_id.to_string(),
+            &snapshot.product_surface_id,
+            crate::bolt_v3_economics_runtime::AuthoritativeEconomicsQuoteDependencies {
+                provider_key: authority.provider_key().to_string(),
+                refreshed_at_ns: snapshot.refreshed_at_ns,
+                adapter: snapshot.adapter,
+                edge_basis: snapshot.edge_basis,
+                valuation_provider,
+            },
+        ) {
+            Ok(()) => published_instruments.push(instrument_id),
+            Err(error) => log::error!(
+                "economics authority publish failed: execution_client_id={} instrument_id={} error={error}",
+                authority.execution_client_id(),
+                instrument_id
+            ),
+        }
+    }
+    Ok(published_instruments.len())
+}
+
 impl BoltV3LiveNodeRuntime {
     fn new(
         node: LiveNode,
@@ -1314,84 +1390,20 @@ impl BoltV3LiveNodeRuntime {
                         .into_iter()
                         .cloned()
                         .collect::<Vec<_>>();
-                    let refreshes = await_economics_refresh_before_deadline(
+                    if let Err(error) = refresh_compile_publish_economics_once(
+                        &authority,
+                        &inputs,
+                        &cache,
+                        instruments,
+                        &current_unix_nanos,
                         refresh_interval,
-                        authority.refresh_batch(instruments, &current_unix_nanos),
                     )
-                    .await;
-                    let refreshes = match refreshes {
-                        Ok(refreshes) => refreshes,
-                        Err(error) => {
-                            log::error!(
-                                "economics authority batch refresh failed: execution_client_id={} error={error}",
-                                authority.execution_client_id()
-                            );
-                            continue;
-                        }
-                    };
-                    match refreshes {
-                        Ok(refreshes) => {
-                            for refresh in refreshes {
-                                let instrument_id = refresh.instrument_id;
-                                match refresh.snapshot {
-                                    Ok(snapshot) => {
-                                        let valuation_provider = match economics_valuation_provider_from_cache(
-                                            &authority.economics_config().valuation,
-                                            &cache,
-                                            snapshot.valuation_observations,
-                                        ) {
-                                            Ok(provider) => provider,
-                                            Err(error) => {
-                                                log::error!(
-                                                    "economics valuation authority unavailable: execution_client_id={} error={error:#}",
-                                                    authority.execution_client_id()
-                                                );
-                                                continue;
-                                            }
-                                        };
-                                        if !authority
-                                            .economics_config()
-                                            .product_surface_policies
-                                            .contains_key(&snapshot.product_surface_id)
-                                        {
-                                            log::error!(
-                                                "economics authority selected an unconfigured product surface: execution_client_id={} surface={}",
-                                                authority.execution_client_id(),
-                                                snapshot.product_surface_id
-                                            );
-                                            continue;
-                                        }
-                                        if let Err(error) = inputs.publish(
-                                            authority.execution_client_id(),
-                                            &instrument_id.to_string(),
-                                            &snapshot.product_surface_id,
-                                            crate::bolt_v3_economics_runtime::AuthoritativeEconomicsQuoteDependencies {
-                                                provider_key: authority.provider_key().to_string(),
-                                                refreshed_at_ns: snapshot.refreshed_at_ns,
-                                                adapter: snapshot.adapter,
-                                                edge_basis: snapshot.edge_basis,
-                                                valuation_provider: valuation_provider.clone(),
-                                            },
-                                        ) {
-                                            log::error!(
-                                                "economics authority publish failed: execution_client_id={} instrument_id={} error={error}",
-                                                authority.execution_client_id(),
-                                                instrument_id
-                                            );
-                                        }
-                                    }
-                                    Err(error) => log::error!(
-                                        "economics authority refresh failed: execution_client_id={} instrument_id={} error={error:#}",
-                                        authority.execution_client_id(),
-                                        instrument_id
-                                    ),
-                                }
-                            }
-                        }
-                        Err(error) => log::error!(
+                    .await
+                    {
+                        log::error!(
                             "economics authority batch refresh failed: execution_client_id={} error={error:#}",
                             authority.execution_client_id()
-                        ),
+                        );
                     }
                 }
             }));

@@ -23,6 +23,7 @@ use crate::economics::{
 use crate::bolt_v3_economics_config::{ValuationConfig, ValuationLegConfig, ValuationOrientation};
 
 pub struct EconomicsAdmissionIntent {
+    pub provider_key: String,
     pub request: EconomicQuoteRequest,
     pub order_binding: EconomicsOrderBinding,
     pub purpose: EconomicsAdmissionPurpose,
@@ -631,6 +632,7 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
         };
         BoltV3EconomicsRuntime::try_new(dependencies.adapter, self.policy)?.quote_admission(
             EconomicsAdmissionIntent {
+                provider_key: self.provider_key.clone(),
                 request: intent.request,
                 order_binding: intent.order_binding,
                 purpose: intent.purpose,
@@ -646,6 +648,7 @@ impl EconomicsAdmissionSource for ConfiguredEconomicsAdmissionSource {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EconomicsAdmission {
+    provider_key: String,
     request: EconomicQuoteRequest,
     order_binding: EconomicsOrderBinding,
     purpose: EconomicsAdmissionPurpose,
@@ -659,6 +662,10 @@ pub struct EconomicsAdmission {
 }
 
 impl EconomicsAdmission {
+    pub fn provider_key(&self) -> &str {
+        &self.provider_key
+    }
+
     pub fn request(&self) -> &EconomicQuoteRequest {
         &self.request
     }
@@ -1097,6 +1104,7 @@ impl BoltV3EconomicsRuntime {
         source_snapshot_ids.sort();
         source_snapshot_ids.dedup();
         Ok(EconomicsAdmission {
+            provider_key: intent.provider_key,
             request: intent.request,
             order_binding: intent.order_binding,
             purpose: intent.purpose,
@@ -1304,6 +1312,7 @@ fn test_economics_admission_with_binding_and_purpose(
     test_economics_runtime(Arc::new(adapter), valid_until_ns - requested_at_ns)
         .expect("test economics runtime policy should be valid")
         .quote_admission(EconomicsAdmissionIntent {
+            provider_key: "execution_client".to_string(),
             authority_refreshed_at_ns: requested_at_ns,
             request,
             order_binding,
@@ -1436,6 +1445,7 @@ mod test_economics_admission_source_support {
                 .ok_or(EconomicsUnavailable::InvalidQuoteValidityPolicy)?,
         )?
         .quote_admission(EconomicsAdmissionIntent {
+            provider_key: "execution_client".to_string(),
             authority_refreshed_at_ns: intent.request.requested_at_ns,
             edge_basis: EdgeBasisEvidence {
                 policy_id: intent.request.edge_basis_policy_id.clone(),

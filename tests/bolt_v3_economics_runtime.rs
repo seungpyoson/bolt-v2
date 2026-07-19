@@ -122,6 +122,7 @@ fn configured_source_resolves_the_one_published_surface_for_an_instrument() {
 fn intent(request: EconomicQuoteRequest) -> EconomicsAdmissionIntent {
     let authority_refreshed_at_ns = request.requested_at_ns;
     EconomicsAdmissionIntent {
+        provider_key: "configured-provider".to_string(),
         order_binding: test_order_binding(),
         purpose: EconomicsAdmissionPurpose::TradingEdge,
         edge_basis: EdgeBasisEvidence {

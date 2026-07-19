@@ -777,6 +777,22 @@ impl BoltV3OrderExecutionPolicy {
                     .into(),
             );
         }
+        let submit_client_matches = context.client_id.as_ref().is_some_and(|client_id| {
+            client_id.as_str() == request.economics_admission.provider_key()
+        });
+        let submit_position_matches = match &request.risk_reducing_exit_proof {
+            Some(proof) => context
+                .position_id
+                .as_ref()
+                .is_some_and(|position_id| position_id.as_str() == proof.position_id),
+            None => context.position_id.is_none(),
+        };
+        if !submit_client_matches || !submit_position_matches {
+            return Err(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionError::EconomicsOrderMismatch
+                    .into(),
+            );
+        }
         match self.mode {
             BoltV3OrderExecutionMode::Live => {
                 let permit = submit_admission.admit(&request)?;
@@ -2446,6 +2462,81 @@ mod tests {
             BoltV3AdmissionOutcome::Admitted
         );
         assert_eq!(admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn live_submit_rejects_a_different_final_execution_client() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            writer.clone(),
+            live_submit_cap(),
+        ));
+        let mut sink = RecordingVenueMutationSink::default();
+        let order = limit_order("O-19700101-000000-001-CLIENT-BINDING-1");
+        let intent = intent_for_order(&order);
+        let request = submit_request_for_order(&order, Decimal::new(50, 0));
+
+        let error = BoltV3OrderExecutionPolicy::live()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::new(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("different_client")),
+            )
+            .expect_err("a different final execution client must require a fresh admission");
+
+        assert_eq!(
+            error.to_string(),
+            "bolt-v3 submit admission final order no longer matches its sealed economics quote"
+        );
+        assert_eq!(sink.submit_calls, 0);
+        assert_eq!(admission.admitted_order_count(), 0);
+    }
+
+    #[test]
+    fn live_exit_rejects_a_different_final_position() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            writer.clone(),
+            live_submit_cap(),
+        ));
+        let mut sink = RecordingVenueMutationSink::default();
+        let order = limit_exit_order(
+            "O-19700101-000000-001-POSITION-BINDING-1",
+            Quantity::new(1.0, 2),
+        );
+        let intent = exit_intent_for_order(&order);
+        let request =
+            risk_reducing_exit_submit_request_for_order(&order, Decimal::ONE, Decimal::ONE);
+
+        let error = BoltV3OrderExecutionPolicy::live()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::new(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id_and_position_id(
+                    ClientId::from("execution_client"),
+                    PositionId::from("POSITION-OTHER"),
+                ),
+            )
+            .expect_err("a different final position must require a fresh admission");
+
+        assert_eq!(
+            error.to_string(),
+            "bolt-v3 submit admission final order no longer matches its sealed economics quote"
+        );
+        assert_eq!(sink.submit_calls, 0);
+        assert_eq!(admission.admitted_order_count(), 0);
     }
 
     #[test]

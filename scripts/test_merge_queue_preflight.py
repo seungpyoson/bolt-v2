@@ -251,7 +251,7 @@ def mergify_config_valid_finding(base_sha: str, blob_sha: str) -> dict[str, obje
             "path": ".mergify.yml",
             "base_sha": base_sha,
             "blob_sha": blob_sha,
-            "validator": "verify_ci_workflow_hygiene.verify_mergify_config",
+            "validator": "merge_queue_preflight.verify_mergify_config",
             "git_returncode": 0,
             "git_stderr": "",
             "errors": [],
@@ -710,6 +710,7 @@ def write_fake_gh(
     required_checks: dict[int, list[dict[str, object]]] | None = None,
     failed_views: dict[int, str] | None = None,
     check_exit_codes: dict[int, int] | None = None,
+    calls_path: pathlib.Path | None = None,
 ) -> pathlib.Path:
     bin_dir = root / "bin"
     bin_dir.mkdir()
@@ -727,7 +728,11 @@ def write_fake_gh(
         f"required_checks = {required_checks_by_pr!r}\n"
         f"failed_views = {(failed_views or {})!r}\n"
         f"check_exit_codes = {check_exit_codes_by_pr!r}\n"
+        f"calls_path = {str(calls_path) if calls_path is not None else None!r}\n"
         "args = sys.argv[1:]\n"
+        "if calls_path is not None:\n"
+        "    with open(calls_path, 'a', encoding='utf-8') as calls:\n"
+        "        calls.write(json.dumps(args) + '\\n')\n"
         "if len(args) >= 3 and args[0:2] == ['pr', 'view']:\n"
         "    if int(args[2]) in failed_views:\n"
         "        print(failed_views[int(args[2])], file=sys.stderr)\n"
@@ -827,16 +832,20 @@ def assert_advisory_check_matrix_does_not_affect_admission() -> None:
         for label, checks in variants.items():
             variant_root = root / label
             variant_root.mkdir()
+            calls_path = variant_root / "gh-calls.jsonl"
             bin_dir = write_fake_gh(
                 variant_root,
                 views={1: approved_pr_view(head)},
                 checks={1: checks},
                 required_checks={1: checks},
                 check_exit_codes={1: 127 if label == "unavailable" else 0},
+                calls_path=calls_path,
             )
             result = run_preflight_with_gh(fixture.repo, fixture.remote, bin_dir, "1")
             payload = parse_json(result.stdout)
             decisions[label] = (result.returncode, str(payload["verdict"]))
+            calls = [json.loads(line) for line in calls_path.read_text(encoding="utf-8").splitlines()]
+            assert not any(call[:2] == ["pr", "checks"] for call in calls), (label, calls)
     expected = (0, "queue_as_one_wave")
     assert_equal(decisions, {label: expected for label in variants}, "advisory check matrix")
 
@@ -1251,11 +1260,6 @@ def assert_mergify_config_snapshot_uses_base_blob() -> None:
 
 
 def assert_fetches_use_private_refs_without_fetch_head() -> None:
-    source = SCRIPT_PATH.read_text(encoding="utf-8")
-    if "FETCH_HEAD" in source:
-        raise AssertionError("merge_queue_preflight.py must not read FETCH_HEAD")
-    if "--no-tags" not in source:
-        raise AssertionError("merge_queue_preflight.py must not mutate shared tag refs")
     with tempfile.TemporaryDirectory() as tmp:
         fixture = GitFixture(pathlib.Path(tmp))
         fixture.make_pr(1, {"one.txt": "one\n"})
@@ -1914,7 +1918,7 @@ def assert_invalid_pr_input_is_rejected() -> None:
             check=False,
         )
         assert_equal(result.returncode, 4, "invalid PR rc")
-        assert "PR numbers must be positive integers" in result.stderr, result.stderr
+        assert "argument pr:" in result.stderr, result.stderr
 
 
 def assert_missing_expected_base_sha_is_rejected() -> None:

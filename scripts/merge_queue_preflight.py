@@ -851,7 +851,7 @@ def mergify_config_validation_finding(
             "path": MERGIFY_CONFIG_PATH,
             "base_sha": base_sha,
             "blob_sha": blob_sha,
-            "validator": "verify_ci_workflow_hygiene.verify_mergify_config",
+            "validator": "merge_queue_preflight.verify_mergify_config",
             "git_returncode": result.returncode,
             "git_stderr": result.stderr.strip(),
             "errors": list(errors),
@@ -1581,9 +1581,13 @@ def load_config(path: pathlib.Path) -> PreflightConfig:
 
 
 def positive_pr_number(value: str) -> int:
-    if not value.isdecimal() or int(value) <= 0:
+    try:
+        pr = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("PR numbers must use canonical positive decimal form") from exc
+    if value != str(pr) or pr <= 0:
         raise argparse.ArgumentTypeError("PR numbers must be positive integers")
-    return int(value)
+    return pr
 
 
 def commit_sha(value: str) -> str:

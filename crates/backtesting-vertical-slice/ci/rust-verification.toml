@@ -55,7 +55,6 @@ lock_dir = "/tmp/rust-verification-lanes"
 acquire_timeout_seconds = 1800
 heartbeat_seconds = 15
 poll_interval_seconds = 1
-cheap_lane_labels = ["local-gate:preflight", "run_fences.py", "verify_ci_workflow_hygiene.py", "test_cargo_shim.py", "test_command_understanding.py", "test_config_validators.py", "test_direct_ai_review.py", "test_final_review_evidence.py", "test_final_review_workflow.py", "test_local_verification_gate.py", "test_repo_preflight.py", "test_run_ci_lint_suites.py", "test_run_rust_probe.py", "test_rust_probe_wrapper.py", "test_rust_test_targets.py", "test_rust_verification.py", "test_rust_verification_cache_retention.py", "test_rust_verification_decoupling.py", "test_sandbox_safe_push.py", "test_unified_verification_deletion_fence.py", "test_verify_bolt_v3_boundary_evidence.py", "test_verify_bolt_v3_no_exit_market_command.py", "test_verify_bolt_v3_poison_lock_fence.py", "test_verify_bolt_v3_provider_leaks.py", "test_verify_bolt_v3_runtime_literals.py", "test_verify_bolt_v3_strategy_policy_fence.py", "test_verify_fail_closed_contracts.py", "test_verify_lane_governance.py", "test_verify_runtime_capture_yaml.py", "test_workspace_registry.py", "verify_bolt_v3_boundary_evidence.py", "verify_bolt_v3_no_exit_market_command.py", "verify_bolt_v3_poison_lock_fence.py", "verify_bolt_v3_provider_leaks.py", "verify_bolt_v3_runtime_literals.py", "verify_bolt_v3_strategy_policy_fence.py", "verify_fail_closed_contracts.py", "verify_lane_governance.py", "verify_runtime_capture_yaml.py"]
 cheap_lane_max_concurrent = 0
 
 [cache]

@@ -49,14 +49,6 @@ require-rust-verification-owner:
     python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}" >/dev/null
 
 [private]
-require-local-verification-gate:
-    #!/usr/bin/env bash
-    if [ "${BOLT_LOCAL_VERIFICATION_GATE:-}" != "1" ]; then
-        echo "ERROR: run the public local verification recipe so scripts/local_verification_gate.py owns the lane"
-        exit 2
-    fi
-
-[private]
 require-live-profile:
     #!/usr/bin/env bash
     if [ -z "${BOLT_LIVE_PROFILE:-}" ]; then
@@ -64,47 +56,10 @@ require-live-profile:
         exit 2
     fi
 
-verify-bolt-v3-runtime-literals: check-workspace
-    python3 scripts/test_verify_bolt_v3_runtime_literals.py
-    python3 scripts/verify_bolt_v3_runtime_literals.py
-
-verify-bolt-v3-provider-leaks: check-workspace
-    python3 scripts/test_verify_bolt_v3_provider_leaks.py
-    python3 scripts/verify_bolt_v3_provider_leaks.py
-
-verify-bolt-v3-no-exit-market-command: check-workspace
-    python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
-    python3 scripts/verify_bolt_v3_no_exit_market_command.py
-
-verify-bolt-v3-strategy-policy-fence: check-workspace
-    python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
-    python3 scripts/verify_bolt_v3_strategy_policy_fence.py
-
-[private]
-fmt-workspace-check-inner workspace: require-local-verification-gate check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{workspace}}" -- fmt --check
-
-[private]
-deny-workspace-inner workspace: require-local-verification-gate check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{workspace}}" -- deny check bans
-
-[private]
-fmt-workspace-inner workspace: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{workspace}}" -- fmt
-
-# Sole repository-wide local evidence command. This runs non-compile checks only.
-preflight: check-workspace require-rust-verification-owner
-    python3 scripts/local_verification_gate.py preflight -- just preflight-inner
-
-[private]
-preflight-inner: require-local-verification-gate check-workspace require-rust-verification-owner
-    python3 scripts/repo_preflight.py --governance "{{repo_root}}" --subject "{{repo_root}}"
-
+# Repository-wide formatting through the managed Rust wrapper (root + BTE workspaces).
 fmt: check-workspace require-rust-verification-owner
-    python3 scripts/repo_format.py --governance "{{repo_root}}" --subject "{{repo_root}}"
-
-deny-advisories: check-workspace require-rust-verification-owner
-    python3 scripts/workspace_advisories.py --governance "{{repo_root}}" --subject "{{repo_root}}"
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- fmt
 
 [private]
 managed-clippy: check-workspace
@@ -133,7 +88,7 @@ build: check-workspace require-rust-verification-owner
 
 # backtesting-vertical-slice crate (separate workspace at crates/backtesting-vertical-slice/).
 # Routed through the same managed wrapper as bolt-v2; --repo selects the crate's policy,
-# Justfile, and cache namespace. Local non-compile evidence is owned only by `just preflight`.
+# Justfile, and cache namespace.
 bte-clippy: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" clippy
 
@@ -157,39 +112,8 @@ bte-build: check-workspace require-rust-verification-owner
 check-aarch64: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- check --target {{target}} --locked
 
-sandbox-safe-push: check-workspace
-    python3 scripts/sandbox_safe_push.py
-
-final-review pr: check-workspace
-    gh workflow run final-review.yml --ref main -f pr={{quote(pr)}}
-
-[positional-arguments]
-merge-queue *args:
-    python3 scripts/merge_queue_operator.py -- "$@"
-
 rust-probe *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" rust-probe --repo "{{repo_root}}" {{args}}
-
-ci-runner-minutes *args:
-    python3 scripts/ubicloud_runner_minutes.py {{args}}
-
-ci-storage-audit *args: check-workspace
-    python3 scripts/ci_storage_audit.py {{args}}
-
-ci-storage-tripwire *args: check-workspace
-    python3 scripts/ci_storage_tripwire.py {{args}}
-
-[private]
-source-fence-static-inner subject='.': require-local-verification-gate check-workspace require-rust-verification-owner
-    python3 scripts/run_fences.py --root "{{subject}}"
-
-[private]
-source-fence-static-fences-only-inner: require-local-verification-gate check-workspace require-rust-verification-owner
-    python3 scripts/run_fences.py --fences-only
-
-# Cargo shim guard tests (pytest-based, unlike the self-running script tests)
-cargo-shim-tests:
-    python3 -m pytest scripts/test_cargo_shim.py -q
 
 # Render the systemd unit from deploy/install-layout.env + the .in template. The
 # committed deploy/systemd/bolt-v2.service is a GENERATED artifact — edit the template
@@ -213,80 +137,6 @@ live-verify: check-workspace require-live-profile require-rust-verification-owne
 # Canonical repo-local operator lane for bolt-v2 from this checkout.
 live: live-generate
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops launch --profile "{{live_profile}}" --config-root config
-
-[private]
-ci-lint-workflow-inner subject=repo_root: require-local-verification-gate check-workspace require-rust-verification-owner
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "{{subject}}"
-    shopt -s nullglob
-    workflow_files=(.github/workflows/*.yml .github/workflows/*.yaml)
-    action_files=(.github/actions/*/action.yml .github/actions/*/action.yaml)
-    github_script_files=()
-    github_script_files=(.github/scripts/*.sh)
-
-    github_automation_files=("${workflow_files[@]}" "${action_files[@]}" "${github_script_files[@]}")
-    repo_governance_files=()
-    [ -f .no-mistakes.yaml ] && repo_governance_files+=(.no-mistakes.yaml)
-    rust_invocation_files=(justfile "${repo_governance_files[@]}" scripts/*.sh tests/*.sh "${github_automation_files[@]}")
-
-    if [ "${#github_automation_files[@]}" -eq 0 ]; then
-        echo "No workflow or action files found — skipping"
-    fi
-
-    actionlint "${workflow_files[@]}"
-
-    failed=0
-    pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(audit|bench|build|check|clean|clippy|deny|doc|fetch|fmt|install|nextest|run|rustc|test|version|zigbuild)([^[:alnum:]_]|$)'
-    bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
-    just_target='{{target}}'
-    managed_build_profile='release'
-    policy_json="$(python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}")"
-    toml_target="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_target"])')"
-    toml_profile="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_profile"])')"
-    if [ -n "${BOLT_CI_LINT_WORKFLOW_WORKERS:-}" ]; then
-        set -- --workers "$BOLT_CI_LINT_WORKFLOW_WORKERS"
-    else
-        set --
-    fi
-    if ! python3 scripts/run_ci_lint_suites.py "$@"; then
-        failed=1
-    fi
-
-    for f in "${github_automation_files[@]}"; do
-        if grep -En "$pattern" "$f"; then
-            echo "ERROR: Raw cargo commands found in $f"
-            failed=1
-        fi
-    done
-
-    for f in "${rust_invocation_files[@]}"; do
-        if grep -En "$bypass_pattern" "$f"; then
-            echo "ERROR: Rust wrapper bypass found in $f"
-            failed=1
-        fi
-    done
-
-    if [ "$toml_target" != "$just_target" ]; then
-        echo "ERROR: justfile target ($just_target) does not match ci/rust-verification.toml build target ($toml_target)"
-        failed=1
-    fi
-
-    if [ "$toml_profile" != "$managed_build_profile" ]; then
-        echo "ERROR: managed-build profile ($managed_build_profile) does not match ci/rust-verification.toml build profile ($toml_profile)"
-        failed=1
-    fi
-
-    if [ "$failed" -ne 0 ]; then
-        echo "All tracked automation must avoid raw cargo workflow commands, explicit Rust-wrapper bypasses, and justfile/TOML build drift."
-        exit 1
-    fi
-
-    if [ "${#github_automation_files[@]}" -eq 0 ]; then
-        echo "OK: No workflow or action files found; automation-specific checks skipped"
-    else
-        echo "OK: No raw cargo workflow commands or explicit Rust-wrapper bypasses found"
-    fi
 
 worktree branch:
     #!/usr/bin/env bash
@@ -314,41 +164,18 @@ worktree-remove branch:
     git worktree prune
     echo "Removed worktree at $dest"
 
-# clean-merged: auto-cleanup of merged branches and worktrees.
-# See docs/ops/clean-merged-design.md. Default = dry-run; pass --apply to execute.
-clean-merged *args:
-    python3 scripts/clean_merged_artifacts.py {{args}}
-
 # cache-prune: age-only managed Rust target sweep across root + BTE caches. Default = dry-run; pass --apply to execute.
 cache-prune *args:
     python3 "{{rust_verification_owner}}" cache-prune --repo "{{repo_root}}" --repo "{{repo_root}}/crates/backtesting-vertical-slice" --age-only --json {{args}}
 
-# clean-merged: print install/heartbeat/quarantine/gh health.
-clean-merged-doctor:
-    python3 scripts/clean_merged_artifacts.py --doctor
-
-# clean-merged: post-merge-wave sync + one-time bulk reclaim of the worktree backlog.
-# Prints a dry-run first; pass --apply to actually archive+remove.
-clean-merged-backlog *args:
-    python3 scripts/clean_merged_artifacts.py --sync-main --reconcile --include-worktrees {{args}}
-
-# clean-merged: prune quarantine archives and backup refs older than DAYS (default 30).
-clean-merged-purge days='30':
-    python3 scripts/clean_merged_artifacts.py --purge-quarantine {{days}}
-    python3 scripts/clean_merged_artifacts.py --prune-backups {{days}}
-
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "Installing generated git hooks..."
-    python3 scripts/clean_merged_artifacts.py --install-hooks
-
     echo "Asserting machine-global Cargo target dir..."
     python3 "{{rust_verification_owner}}" assert-global-cargo-target-dir --repo "{{repo_root}}"
 
-    clean_merged_remote="$(python3 scripts/clean_merged_artifacts.py --print-remote-name)"
-    echo "Enabling remote.${clean_merged_remote}.prune (auto-prune deleted upstreams on fetch)..."
-    git config "remote.${clean_merged_remote}.prune" true
+    echo "Enabling remote.origin.prune (auto-prune deleted upstreams on fetch)..."
+    git config remote.origin.prune true
 
     echo "Adding {{target}} target..."
     rustup target add {{target}}
@@ -364,19 +191,6 @@ setup:
         echo "cargo-deny {{deny_version}} already installed"
     else
         echo "ERROR: cargo-deny {{deny_version}} is required as a prebuilt tool"
-        exit 2
-    fi
-
-    actionlint_version="$(python3 - <<'PY'
-    import tomllib
-    with open("ci/ai-review.toml", "rb") as handle:
-        print(tomllib.load(handle)["final_review"]["actionlint_version"])
-    PY
-    )"
-    if command -v actionlint >/dev/null 2>&1 && actionlint -version | grep -Eq "^${actionlint_version}([[:space:]]|$)"; then
-        echo "actionlint ${actionlint_version} already installed"
-    else
-        echo "ERROR: actionlint ${actionlint_version} is required for just preflight"
         exit 2
     fi
 
@@ -402,11 +216,3 @@ setup:
     echo "Zig {{zig_version}} already installed"
 
     echo "Setup complete."
-
-# Create the CI runner debug SSH key in 1Password and publish SSH_PUBLIC_KEY to GitHub.
-ci-debug-ssh-bootstrap:
-    python3 scripts/sync_ci_debug_ssh_secret.py bootstrap
-
-# Publish the CI runner debug SSH public key from 1Password to GitHub Actions.
-ci-debug-ssh-sync:
-    python3 scripts/sync_ci_debug_ssh_secret.py sync

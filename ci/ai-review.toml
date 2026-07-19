@@ -5,7 +5,7 @@ comment_timeout_seconds = 30
 [final_review]
 actionlint_version = "1.7.7"
 evidence_timeout_minutes = 240
-obligation_timeout_seconds = 900
+obligation_timeout_seconds = 1800
 
 [review]
 max_comment_chars = 60000

@@ -24,7 +24,7 @@ Rust binary for automated trading on Polymarket via NautilusTrader.
 
 ## Commands
 
-All via `just` (must be installed). The justfile is the single source of truth. `just build`, `just test`, and `just clippy` are workflow/operator lanes. The local agent path is `just fmt`, `just preflight`, and `just sandbox-safe-push`; one coherent pushed head is reviewed through `just final-review <PR>`.
+All via `just` (must be installed). The justfile is the single source of truth. `just build`, `just test`, and `just clippy` are workflow/operator lanes. The local agent path is `just fmt`, `just preflight`, and `just sandbox-safe-push`; automated final-review dispatch is disabled.
 
 | Command | What it does |
 |---------|-------------|
@@ -33,7 +33,6 @@ All via `just` (must be installed). The justfile is the single source of truth. 
 | `just fmt` | Format every registered Cargo workspace. |
 | `just preflight` | Run every registered local non-compile check and report the complete inventory. |
 | `just sandbox-safe-push` | Rerun preflight, push the captured commit SHA, and verify the remote SHA. |
-| `just final-review <PR>` | Dispatch the single fixed root+BVS+static+host evidence and reviewer transaction. |
 | `just clippy` | `cargo clippy` (gated by rust-verification wrapper, `-D warnings`). |
 | `just deny-advisories` | `cargo deny check advisories`. |
 | `just check-aarch64` | `cargo check --target aarch64-unknown-linux-gnu`. |

@@ -8,8 +8,10 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 from unittest import mock
 
+import final_review_runner as runner
 from final_review_runner import (
     FINAL_REVIEW_OBLIGATIONS,
     Obligation,
@@ -28,13 +30,23 @@ EXPECTED_OBLIGATION_IDS = (
     "root-aarch64",
     "root-build",
     "root-archive",
+    "root-cache-release",
     "root-tests",
     "root-special-proofs",
     "bvs-clippy",
     "bvs-archive",
+    "bvs-cache-release",
     "bvs-s3-smoke",
     "bvs-tests",
 )
+
+EXPECTED_PHASES = {
+    "static": ("preflight", "host-health", "host-health-viewer"),
+    "root-analysis": ("root-clippy", "root-aarch64", "root-build"),
+    "root-tests": ("root-archive", "root-cache-release", "root-tests", "root-special-proofs"),
+    "bvs-analysis": ("bvs-clippy",),
+    "bvs-tests": ("bvs-archive", "bvs-cache-release", "bvs-s3-smoke", "bvs-tests"),
+}
 
 
 def assert_fixed_obligation_inventory_is_complete() -> None:
@@ -47,6 +59,50 @@ def assert_fixed_obligation_inventory_is_complete() -> None:
             raise AssertionError(f"{obligation_id} lost complete failure collection")
     if {"workflow-lint", "actionlint"} & set(ids):
         raise AssertionError("final review duplicates workflow lint already owned by preflight")
+
+
+def assert_fixed_phases_partition_the_inventory() -> None:
+    actual = {
+        phase: tuple(obligation.obligation_id for obligation in obligations)
+        for phase, obligations in runner.FINAL_REVIEW_PHASES.items()
+    }
+    if actual != EXPECTED_PHASES:
+        raise AssertionError(actual)
+    flattened = tuple(
+        obligation_id
+        for phase_ids in actual.values()
+        for obligation_id in phase_ids
+    )
+    if flattened != EXPECTED_OBLIGATION_IDS:
+        raise AssertionError(flattened)
+
+
+def assert_preflight_uses_the_public_gate_owner() -> None:
+    command = runner.FINAL_REVIEW_PHASES["static"][0].command
+    expected_prefix = (
+        "python3",
+        "{governance}/scripts/local_verification_gate.py",
+        "preflight",
+        "--",
+        "python3",
+        "{governance}/scripts/repo_preflight.py",
+    )
+    if command[: len(expected_prefix)] != expected_prefix:
+        raise AssertionError(command)
+
+
+def assert_archive_phases_release_only_their_managed_cache() -> None:
+    commands = {
+        obligation.obligation_id: obligation.command
+        for obligation in FINAL_REVIEW_OBLIGATIONS
+    }
+    expected = {
+        "root-cache-release": ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "clean"),
+        "bvs-cache-release": ("python3", "{owner}", "cargo", "--repo", "{bvs}", "--", "clean"),
+    }
+    for obligation_id, command in expected.items():
+        if commands.get(obligation_id) != command:
+            raise AssertionError((obligation_id, commands.get(obligation_id)))
 
 
 def assert_all_fixed_obligations_run_and_failures_remain_raw() -> None:
@@ -90,6 +146,7 @@ def assert_subject_commands_receive_no_github_credentials() -> None:
         captured: dict[str, object] = {}
 
         process = mock.Mock()
+        process.pid = 123
         process.wait.return_value = 0
 
         def fake_popen(*args: object, **kwargs: object) -> mock.Mock:
@@ -103,6 +160,7 @@ def assert_subject_commands_receive_no_github_credentials() -> None:
                 clear=False,
             ),
             mock.patch("final_review_runner.subprocess.Popen", side_effect=fake_popen),
+            mock.patch("final_review_runner.os.killpg") as killpg,
         ):
             execute_command(("subject-command",), root, root / "command.log", 30)
 
@@ -113,6 +171,7 @@ def assert_subject_commands_receive_no_github_credentials() -> None:
             raise AssertionError("subject command inherited GitHub credentials")
         if env.get("SAFE_VALUE") != "kept":
             raise AssertionError(env)
+        killpg.assert_called_once_with(123, runner.signal.SIGKILL)
 
 
 def assert_spawn_exception_is_recorded_and_siblings_continue() -> None:
@@ -175,6 +234,32 @@ def assert_execute_command_records_timeout() -> None:
             raise AssertionError(timeout_log)
 
 
+def assert_successful_command_cannot_leave_background_writer() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        marker = root / "background-writer-ran"
+        child = (
+            "import pathlib,sys,time; "
+            "time.sleep(0.2); "
+            "pathlib.Path(sys.argv[1]).write_text('tampered', encoding='utf-8')"
+        )
+        parent = (
+            "import subprocess,sys; "
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])"
+        )
+        result = execute_command(
+            (sys.executable, "-c", parent, child, str(marker)),
+            root,
+            root / "background.log",
+            30,
+        )
+        if result != 0:
+            raise AssertionError(result)
+        time.sleep(0.4)
+        if marker.exists():
+            raise AssertionError("successful command left a background writer alive")
+
+
 def assert_timeout_is_recorded_and_siblings_continue() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -229,10 +314,14 @@ def assert_final_review_uses_registry_workspace_paths() -> None:
 
 def main() -> int:
     assert_fixed_obligation_inventory_is_complete()
+    assert_fixed_phases_partition_the_inventory()
+    assert_preflight_uses_the_public_gate_owner()
+    assert_archive_phases_release_only_their_managed_cache()
     assert_all_fixed_obligations_run_and_failures_remain_raw()
     assert_subject_commands_receive_no_github_credentials()
     assert_spawn_exception_is_recorded_and_siblings_continue()
     assert_execute_command_records_timeout()
+    assert_successful_command_cannot_leave_background_writer()
     assert_timeout_is_recorded_and_siblings_continue()
     assert_final_review_uses_registry_workspace_paths()
     print("OK: final-review runner tests passed.")

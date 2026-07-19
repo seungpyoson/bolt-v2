@@ -10,6 +10,8 @@ import pathlib
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 
+from final_review_runner import FINAL_REVIEW_PHASES
+
 
 class EvidenceError(RuntimeError):
     """Raised when evidence cannot be bound to one fixed workflow head."""
@@ -43,6 +45,69 @@ def _parse_record(record: Mapping[str, object]) -> JobEvidence:
         run_attempt=_required_text(record, "run_attempt"),
         conclusion=_required_text(record, "conclusion"),
         artifact_path=_required_text(record, "artifact_path"),
+    )
+
+
+def merge_phase_evidence(parts_root: pathlib.Path) -> tuple[dict[str, object], list[dict[str, object]]]:
+    expected_phases = tuple(FINAL_REVIEW_PHASES)
+    artifact_names = {phase: f"final-review-phase-{phase}" for phase in expected_phases}
+    actual_phases = tuple(sorted(path.name for path in parts_root.iterdir() if path.is_dir()))
+    if tuple(sorted(artifact_names.values())) != actual_phases:
+        raise EvidenceError(f"evidence phases must be exactly {expected_phases!r}")
+
+    identity: tuple[str, str, str] | None = None
+    obligation_ids: list[str] = []
+    records: list[dict[str, object]] = []
+    for phase, obligations in FINAL_REVIEW_PHASES.items():
+        artifact_name = artifact_names[phase]
+        phase_root = parts_root / artifact_name
+        try:
+            envelope = json.loads((phase_root / "expected.json").read_text(encoding="utf-8"))
+            raw_records = json.loads((phase_root / "records.json").read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            raise EvidenceError(f"invalid evidence envelope for phase {phase}") from exc
+        if not isinstance(envelope, dict) or not isinstance(raw_records, list):
+            raise EvidenceError(f"invalid evidence shape for phase {phase}")
+
+        phase_ids = tuple(obligation.obligation_id for obligation in obligations)
+        if tuple(envelope.get("obligation_ids", ())) != phase_ids:
+            raise EvidenceError(f"wrong obligation inventory for phase {phase}")
+        phase_identity = (
+            _required_text(envelope, "head_sha"),
+            _required_text(envelope, "run_id"),
+            _required_text(envelope, "run_attempt"),
+        )
+        if identity is None:
+            identity = phase_identity
+        elif phase_identity != identity:
+            raise EvidenceError(f"mixed run identity for phase {phase}")
+
+        obligation_ids.extend(phase_ids)
+        record_ids = tuple(
+            _required_text(raw, "obligation_id")
+            for raw in raw_records
+            if isinstance(raw, dict)
+        )
+        if len(record_ids) != len(raw_records) or record_ids != phase_ids:
+            raise EvidenceError(f"wrong evidence records for phase {phase}")
+        for raw in raw_records:
+            if not isinstance(raw, dict):
+                raise EvidenceError(f"invalid evidence record for phase {phase}")
+            record = dict(raw)
+            artifact_path = _required_text(record, "artifact_path")
+            record["artifact_path"] = f"{artifact_name}/{artifact_path}"
+            records.append(record)
+
+    if identity is None:
+        raise EvidenceError("final-review phase inventory is empty")
+    return (
+        {
+            "obligation_ids": obligation_ids,
+            "head_sha": identity[0],
+            "run_id": identity[1],
+            "run_attempt": identity[2],
+        },
+        records,
     )
 
 
@@ -129,24 +194,28 @@ def render_markdown(manifest: Mapping[str, object]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--expected", required=True, type=pathlib.Path)
-    parser.add_argument("--records", required=True, type=pathlib.Path)
+    parser.add_argument("--parts-root", required=True, type=pathlib.Path)
     parser.add_argument("--json-output", required=True, type=pathlib.Path)
     parser.add_argument("--markdown-output", required=True, type=pathlib.Path)
     args = parser.parse_args()
 
-    envelope = json.loads(args.expected.read_text(encoding="utf-8"))
-    if not isinstance(envelope, dict):
-        raise EvidenceError("expected evidence envelope must be an object")
+    envelope, records = merge_phase_evidence(args.parts_root)
     expected = tuple(envelope.get("obligation_ids", ()))
-    records = json.loads(args.records.read_text(encoding="utf-8"))
     manifest = build_manifest(
         expected,
         records,
         expected_head=_required_text(envelope, "head_sha"),
         expected_run_id=_required_text(envelope, "run_id"),
         expected_run_attempt=_required_text(envelope, "run_attempt"),
-        evidence_root=args.records.parent,
+        evidence_root=args.parts_root,
+    )
+    (args.parts_root / "expected.json").write_text(
+        json.dumps(envelope, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (args.parts_root / "records.json").write_text(
+        json.dumps(records, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
     args.json_output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     args.markdown_output.write_text(render_markdown(manifest), encoding="utf-8")

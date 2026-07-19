@@ -439,7 +439,7 @@ def assert_changed_files_produce_targeted_suggestions() -> None:
     )
     if any(suggestion == "just rust-probe check-lib" for suggestion in bte_suggestions):
         raise AssertionError(bte_suggestions)
-    if not any("fixed final-review workflow" in suggestion for suggestion in bte_suggestions):
+    if bte_suggestions != ["No root Rust Probe suggestion was inferred for changed crates/ paths."]:
         raise AssertionError(bte_suggestions)
     generic_suggestions = owner.rust_probe_suggestions([])
     if "No Rust source or top-level integration-test target was inferred from changed files." not in generic_suggestions:
@@ -553,7 +553,7 @@ def assert_cmd_rust_probe_suggest_reports_policy_and_rejects_runner_tier() -> No
             raise AssertionError(output)
         if "just rust-probe nextest-test-target-name platform_config config_parsing::" not in output:
             raise AssertionError(output)
-        if "fixed final-review workflow is the complete remote evidence path" not in output:
+        if "Rust Probe is diagnostic only and never authorizes merge." not in output:
             raise AssertionError(output)
         if "base ref: origin/main" not in output or "fetched and current" not in output:
             raise AssertionError(output)
@@ -906,7 +906,7 @@ def assert_cmd_rust_probe_dispatches_and_reports_not_proof() -> None:
         raise AssertionError((result, stdout.getvalue(), stderr.getvalue()))
     if calls != [(UPSTREAM_BRANCH, HEAD, "check-lib", "", "", "heavy", 60, "probe-123")]:
         raise AssertionError(calls)
-    if "DIAGNOSTIC ONLY -- the fixed final-review workflow is the complete remote evidence path" not in stdout.getvalue():
+    if "DIAGNOSTIC ONLY -- Rust Probe never authorizes merge" not in stdout.getvalue():
         raise AssertionError(stdout.getvalue())
 
 

@@ -68,12 +68,16 @@ jobs:
             echo "evidence_timeout=$evidence_timeout"
           } >> "$GITHUB_OUTPUT"
 
-  evidence:
+  evidence-phase:
     needs: capture-head
     timeout-minutes: ${{ fromJSON(needs.capture-head.outputs.evidence_timeout) }}
     permissions:
       contents: read
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [static, root-analysis, root-tests, bvs-analysis, bvs-tests]
     steps:
       - name: Checkout protected governance
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -95,13 +99,20 @@ jobs:
           toolchain-components: rustfmt,clippy
           include-deny-version: "true"
           include-nextest-version: "true"
+          include-build-values: "true"
+          use-default-target: "true"
           include-managed-target-dir: "true"
           install-rust-linker: "true"
-          build-jobs-key: final_review.evidence
+          build-jobs-key: final_review.evidence-phase
       - uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
-          tool: cargo-deny@${{ steps.setup.outputs.deny_version }},cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }},cargo-nextest@${{ steps.setup.outputs.nextest_version }},cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
           fallback: none
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Install configured Zig
+        run: python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
       - name: Install configured actionlint
         run: |
           version="$(python3 - <<'PY'
@@ -112,17 +123,7 @@ jobs:
           GOBIN="$RUNNER_TEMP/bin" go install "github.com/rhysd/actionlint/cmd/actionlint@v${version}"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - uses: ./.github/actions/setup-bvs-minio-s3-smoke
-      - name: Capture exact review diff
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ needs.capture-head.outputs.base_sha }}
-          HEAD_SHA: ${{ needs.capture-head.outputs.head_sha }}
-        run: |
-          mkdir -p final-review-output
-          gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_SHA}...${HEAD_SHA}" \
-            -H "Accept: application/vnd.github.diff" > final-review-output/review.diff
-          test -s final-review-output/review.diff
-      - name: Execute fixed evidence sequence
+      - name: Execute fixed evidence phase
         env:
           BVS_MINIO_S3_SMOKE_ENV_VAR: ${{ env.BVS_MINIO_S3_SMOKE_ENV_VAR }}
           BVS_MINIO_S3_SMOKE_ENV_VALUE: ${{ env.BVS_MINIO_S3_SMOKE_ENV_VALUE }}
@@ -133,11 +134,44 @@ jobs:
             --head-sha "${{ needs.capture-head.outputs.head_sha }}" \
             --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --phase "${{ matrix.phase }}" \
             --obligation-timeout-seconds "${{ needs.capture-head.outputs.obligation_timeout }}" \
-            --output final-review-output
+            --output "final-review-output/${{ matrix.phase }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: final-review-phase-${{ matrix.phase }}
+          path: final-review-output/${{ matrix.phase }}
+          if-no-files-found: error
+
+  evidence:
+    needs: [capture-head, evidence-phase]
+    permissions:
+      contents: read
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - name: Checkout protected governance
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: final-review-phase-*
+          path: final-review-output
+          merge-multiple: false
+      - name: Capture exact review diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ needs.capture-head.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.capture-head.outputs.head_sha }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_SHA}...${HEAD_SHA}" \
+            -H "Accept: application/vnd.github.diff" > final-review-output/review.diff
+          test -s final-review-output/review.diff
+      - name: Assemble fixed evidence
+        run: |
           python3 scripts/final_review_evidence.py \
-            --expected final-review-output/expected.json \
-            --records final-review-output/records.json \
+            --parts-root final-review-output \
             --json-output final-review-output/final-review-evidence.json \
             --markdown-output final-review-output/final-review-evidence.md
           cat final-review-output/final-review-evidence.md >> "$GITHUB_STEP_SUMMARY"

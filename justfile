@@ -160,9 +160,6 @@ check-aarch64: check-workspace require-rust-verification-owner
 sandbox-safe-push: check-workspace
     python3 scripts/sandbox_safe_push.py
 
-final-review pr: check-workspace
-    gh workflow run final-review.yml --ref main -f pr={{quote(pr)}}
-
 [positional-arguments]
 merge-queue *args:
     python3 scripts/merge_queue_operator.py -- "$@"

@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import tempfile
 
-from final_review_evidence import EvidenceError, build_manifest, render_markdown
+from final_review_evidence import EvidenceError, build_manifest, merge_phase_evidence, render_markdown
+from test_final_review_runner import EXPECTED_PHASES
 
 
 HEAD = "a" * 40
@@ -101,10 +103,70 @@ def assert_wrong_identity_conclusion_and_path_are_rejected() -> None:
             raise AssertionError(f"invalid evidence accepted: {invalid!r}")
 
 
+def assert_phase_evidence_is_combined_without_inherited_or_missing_results() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        expected_ids: list[str] = []
+        for phase, obligation_ids in EXPECTED_PHASES.items():
+            phase_root = root / f"final-review-phase-{phase}"
+            logs = phase_root / "logs"
+            logs.mkdir(parents=True)
+            (phase_root / "expected.json").write_text(
+                json.dumps(
+                    {
+                        "obligation_ids": list(obligation_ids),
+                        "head_sha": HEAD,
+                        "run_id": "42",
+                        "run_attempt": "1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            records = []
+            for obligation_id in obligation_ids:
+                expected_ids.append(obligation_id)
+                (logs / f"{obligation_id}.log").write_text("observed\n", encoding="utf-8")
+                records.append(record(obligation_id))
+            (phase_root / "records.json").write_text(
+                json.dumps(records),
+                encoding="utf-8",
+            )
+
+        envelope, records = merge_phase_evidence(root)
+        if envelope["obligation_ids"] != expected_ids:
+            raise AssertionError(envelope)
+        if any(not str(item["artifact_path"]).startswith(tuple(f"final-review-phase-{phase}/" for phase in EXPECTED_PHASES)) for item in records):
+            raise AssertionError(records)
+
+        static_records_path = root / "final-review-phase-static" / "records.json"
+        static_records = json.loads(static_records_path.read_text(encoding="utf-8"))
+        static_records[0]["obligation_id"] = "root-clippy"
+        static_records_path.write_text(json.dumps(static_records), encoding="utf-8")
+        try:
+            merge_phase_evidence(root)
+        except EvidenceError:
+            pass
+        else:
+            raise AssertionError("cross-phase obligation evidence was accepted")
+        static_records[0]["obligation_id"] = "preflight"
+        static_records_path.write_text(json.dumps(static_records), encoding="utf-8")
+
+        missing_phase = root / "final-review-phase-bvs-tests"
+        renamed_phase = root / "final-review-phase-bvs-tests-missing"
+        missing_phase.rename(renamed_phase)
+        try:
+            merge_phase_evidence(root)
+        except EvidenceError:
+            pass
+        else:
+            raise AssertionError("missing phase evidence was accepted")
+
+
 def main() -> int:
     assert_missing_and_failed_jobs_remain_raw_evidence()
     assert_mixed_heads_and_duplicates_are_rejected()
     assert_wrong_identity_conclusion_and_path_are_rejected()
+    assert_phase_evidence_is_combined_without_inherited_or_missing_results()
     print("OK: final-review evidence tests passed.")
     return 0
 

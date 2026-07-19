@@ -130,7 +130,7 @@ def assert_repo_local_owner_contract() -> None:
             raise AssertionError((result.returncode, result.stdout, result.stderr))
         refusal = json.loads(result.stderr)
         next_steps = '\n'.join(refusal.get('next_steps', []))
-        if refusal.get('refusal_code') != 'local_compile_disabled' or 'just rust-probe suggest' not in next_steps or 'publish the exact branch head with just sandbox-safe-push' not in next_steps or ('invoke just final-review <PR> exactly once' not in next_steps):
+        if refusal.get('refusal_code') != 'local_compile_disabled' or 'just rust-probe suggest' not in next_steps or 'publish the exact branch head with just sandbox-safe-push' not in next_steps or 'final-review' in next_steps:
             raise AssertionError(refusal)
         allowed_env = env.copy()
         allowed_env['GITHUB_ACTIONS'] = 'true'
@@ -160,7 +160,7 @@ def assert_repo_local_owner_contract() -> None:
 
 def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
     owner = load_owner_module()
-    expected_guidance = 'fixed final-review workflow is the complete remote evidence path'
+    expected_guidance = 'Rust Probe is targeted remote debugging feedback only. It is not merge proof.'
     if expected_guidance not in owner.RUST_PROBE_HELP_EPILOG:
         raise AssertionError(owner.RUST_PROBE_HELP_EPILOG)
     stdout = io.StringIO()
@@ -170,7 +170,7 @@ def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
     output = stdout.getvalue()
     if result != 0:
         raise AssertionError((result, output))
-    if expected_guidance not in output:
+    if 'DIAGNOSTIC ONLY -- Rust Probe never authorizes merge' not in output:
         raise AssertionError(output)
 
 def assert_fmt_avoids_managed_cache_lock() -> None:

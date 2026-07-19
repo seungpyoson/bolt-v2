@@ -11,6 +11,11 @@ import tomllib
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 FINAL_REVIEW = REPO_ROOT / ".github/workflows/final-review.yml"
 WORKFLOW_ROOT = REPO_ROOT / ".github/workflows"
+FINAL_REVIEW_GUIDANCE_SURFACES = (
+    REPO_ROOT / "AGENTS.md",
+    REPO_ROOT / "REASONIX.md",
+    REPO_ROOT / "scripts/rust_verification.py",
+)
 RUNNERS_CONFIG = REPO_ROOT / "ci/github-actions-runners.toml"
 ALTERNATE_REVIEW_WORKFLOWS = (
     REPO_ROOT / ".github/workflows/ai-review-coding-plan-smoke.yml",
@@ -23,6 +28,7 @@ WORKERS = (
 )
 FIXED_JOBS = (
     "capture-head",
+    "evidence-phase",
     "evidence",
     "claude-review",
     "kimi-review",
@@ -59,24 +65,40 @@ def assert_final_review_has_one_fixed_graph() -> None:
     if_lines = [line.strip() for line in text.splitlines() if line.lstrip().startswith("if:")]
     if if_lines:
         raise AssertionError(f"final-review must have one unconditional fixed sequence, got {if_lines!r}")
+    evidence_phase = text.split("  evidence-phase:\n", 1)[1].split("  evidence:\n", 1)[0]
     evidence = text.split("  evidence:\n", 1)[1].split("  claude-review:\n", 1)[0]
-    evidence_permissions = evidence.split("    runs-on:", 1)[0]
+    evidence_permissions = evidence_phase.split("    runs-on:", 1)[0]
     if "actions: write" in evidence_permissions or "pull-requests: write" in evidence_permissions:
         raise AssertionError("subject evidence job must not receive write-capable GitHub permissions")
-    if "ref: ${{ github.sha }}" not in evidence:
+    if "ref: ${{ github.sha }}" not in evidence_phase:
         raise AssertionError("evidence machinery must execute from the governance workflow SHA")
-    if "path: subject" not in evidence or "ref: ${{ needs.capture-head.outputs.head_sha }}" not in evidence:
+    if "path: subject" not in evidence_phase or "ref: ${{ needs.capture-head.outputs.head_sha }}" not in evidence_phase:
         raise AssertionError("the immutable subject tree must be checked out only as data")
-    if "scripts/final_review_runner.py" not in evidence:
+    if "scripts/final_review_runner.py" not in evidence_phase:
         raise AssertionError("evidence must use the single governance-owned runner")
-    if "timeout-minutes: ${{ fromJSON(needs.capture-head.outputs.evidence_timeout) }}" not in evidence:
+    if "timeout-minutes: ${{ fromJSON(needs.capture-head.outputs.evidence_timeout) }}" not in evidence_phase:
         raise AssertionError("evidence does not enforce its configured timeout")
-    if "--obligation-timeout-seconds" not in evidence or "obligation_timeout_seconds" not in text:
+    if "--obligation-timeout-seconds" not in evidence_phase or "obligation_timeout_seconds" not in text:
         raise AssertionError("evidence does not propagate the configured per-obligation timeout")
     if "Assert every evidence obligation passed" not in evidence:
         raise AssertionError("reviewers are not gated on complete successful evidence")
     if '"failed_tests": []' in evidence:
         raise AssertionError("production evidence must not claim an always-empty failure inventory")
+    phases = ("static", "root-analysis", "root-tests", "bvs-analysis", "bvs-tests")
+    matrix = re.search(r"phase:\s*\[([^]]+)\]", evidence_phase)
+    if matrix is None or tuple(part.strip() for part in matrix.group(1).split(",")) != phases:
+        raise AssertionError("final-review evidence phases are not one fixed isolated matrix")
+    for required in (
+        'include-build-values: "true"',
+        'use-default-target: "true"',
+        "cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
+        'ziglang=="${{ steps.setup.outputs.zig_version }}"',
+        "path: final-review-output/${{ matrix.phase }}",
+        "actions/download-artifact@",
+        "merge-multiple: false",
+    ):
+        if required not in text:
+            raise AssertionError(f"final-review workflow is missing {required}")
     for worker in WORKERS:
         relative = worker.relative_to(REPO_ROOT).as_posix()
         if f"uses: ./{relative}" not in text:
@@ -86,8 +108,11 @@ def assert_final_review_has_one_fixed_graph() -> None:
     outer = config["final_review"]["evidence_timeout_minutes"] * 60
     from final_review_runner import FINAL_REVIEW_OBLIGATIONS
 
-    if per_obligation <= 0 or len(FINAL_REVIEW_OBLIGATIONS) * per_obligation >= outer:
-        raise AssertionError("configured obligation timeouts can exhaust the evidence job before inventory completion")
+    from final_review_runner import FINAL_REVIEW_PHASES
+
+    longest_phase = max(len(obligations) for obligations in FINAL_REVIEW_PHASES.values())
+    if per_obligation <= 0 or longest_phase * per_obligation >= outer:
+        raise AssertionError("configured obligation timeouts can exhaust an evidence phase before inventory completion")
 
 
 def assert_provider_workers_are_triggerless() -> None:
@@ -170,18 +195,28 @@ def assert_no_alternate_review_or_archive_reuse_workflow() -> None:
         raise AssertionError(f"alternate review/reuse workflows remain: {', '.join(surviving)}")
 
 
-def assert_public_command_surface_is_single_path() -> None:
+def assert_final_review_has_no_public_dispatch_command() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     headers = {
         line.split(":", 1)[0].split(" ", 1)[0]
         for line in justfile.splitlines()
         if line and not line[0].isspace() and ":" in line
     }
-    if "final-review" not in headers:
-        raise AssertionError("just final-review is missing")
+    if "final-review" in headers:
+        raise AssertionError("just final-review must remain disabled")
     surviving = sorted(headers & {"certify", "review-ready", "verify-remote"})
     if surviving:
         raise AssertionError(f"legacy public commands remain: {', '.join(surviving)}")
+
+
+def assert_agent_guidance_does_not_dispatch_final_review() -> None:
+    stale = [
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in FINAL_REVIEW_GUIDANCE_SURFACES
+        if "just final-review" in path.read_text(encoding="utf-8")
+    ]
+    if stale:
+        raise AssertionError(f"disabled final-review dispatch guidance remains: {', '.join(stale)}")
 
 
 def assert_rust_linker_has_one_mandatory_route() -> None:
@@ -232,13 +267,26 @@ def assert_upload_artifact_uses_one_configured_pin() -> None:
             "upload-artifact actions must match the configured pin: " + ", ".join(mismatches)
         )
 
+    expected_download = config["action_pins"]["download_artifact"]
+    if not isinstance(expected_download, str) or not re.fullmatch(
+        r"actions/download-artifact@[0-9a-f]{40}", expected_download
+    ):
+        raise AssertionError("configured download-artifact action must use an immutable commit SHA")
+    download_references = re.findall(
+        r"uses:\s*[\"']?(actions/download-artifact@[^\"'\s#]+)",
+        "\n".join(path.read_text(encoding="utf-8") for path in workflow_paths),
+    )
+    if not download_references or any(reference != expected_download for reference in download_references):
+        raise AssertionError("download-artifact actions must match the configured pin")
+
 
 def main() -> int:
     assert_final_review_has_one_fixed_graph()
     assert_provider_workers_are_triggerless()
     assert_reviewers_use_exact_diff_and_compatible_permissions()
     assert_no_alternate_review_or_archive_reuse_workflow()
-    assert_public_command_surface_is_single_path()
+    assert_final_review_has_no_public_dispatch_command()
+    assert_agent_guidance_does_not_dispatch_final_review()
     assert_rust_linker_has_one_mandatory_route()
     assert_setup_checks_configured_actionlint()
     assert_upload_artifact_uses_one_configured_pin()

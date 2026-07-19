@@ -2,6 +2,7 @@ schema_version = 1
 
 [action_pins]
 upload_artifact = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+download_artifact = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
 
 # Repository Actions variables (Settings → Secrets and variables → Actions)
 # must match [runners.*.label]. Workflows reference runners only via vars.<variable>.
@@ -20,7 +21,8 @@ label = "ubicloud-standard-2"
 
 [workflows.final_review]
 capture-head = "github_hosted"
-evidence = "managed_heavy"
+evidence-phase = "managed_heavy"
+evidence = "github_hosted"
 
 [workflows.reference_boundary_capture]
 capture = "managed_heavy"
@@ -50,7 +52,7 @@ probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
 [cargo_build_jobs.final_review]
-evidence = 6
+evidence-phase = 6
 
 [cargo_build_jobs.rust_probe]
 probe-heavy = 3

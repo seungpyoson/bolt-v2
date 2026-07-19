@@ -27,20 +27,53 @@ class Obligation:
     cwd: pathlib.Path
 
 
-FINAL_REVIEW_OBLIGATIONS = (
-    Obligation("preflight", ("python3", "{governance}/scripts/repo_preflight.py", "--governance", "{governance}", "--subject", "{subject}"), pathlib.Path("governance")),
-    Obligation("host-health", ("python3", "scripts/test_host_health_sampler.py"), pathlib.Path("subject")),
-    Obligation("host-health-viewer", ("node", "scripts/test_host_health_viewer.mjs"), pathlib.Path("subject")),
-    Obligation("root-clippy", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "clippy", "--locked", "--", "-D", "warnings"), pathlib.Path("governance")),
-    Obligation("root-aarch64", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "check", "--target", "aarch64-unknown-linux-gnu", "--locked"), pathlib.Path("governance")),
-    Obligation("root-build", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "zigbuild", "--release", "--target", "aarch64-unknown-linux-gnu", "--locked"), pathlib.Path("governance")),
-    Obligation("root-archive", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "nextest", "archive", "--locked", "--archive-file", "{root_archive}"), pathlib.Path("subject")),
-    Obligation("root-tests", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "nextest", "run", "--archive-file", "{root_archive}", "--extract-to", ".nextest-root", "--extract-overwrite", "--workspace-remap", "{subject}", "--no-fail-fast"), pathlib.Path("subject")),
-    Obligation("root-special-proofs", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "nextest", "run", "--archive-file", "{root_archive}", "--extract-to", ".nextest-proofs", "--extract-overwrite", "--workspace-remap", "{subject}", "--no-tests=fail", "-E", "binary(=binance_sbe_quote_timestamps)"), pathlib.Path("subject")),
-    Obligation("bvs-clippy", ("python3", "{owner}", "cargo", "--repo", "{bvs}", "--", "clippy", "--locked", "--", "-D", "warnings"), pathlib.Path("governance")),
-    Obligation("bvs-archive", ("python3", "{governance}/scripts/bvs_archive.py", "--owner", "{owner}", "--repo", "{bvs}", "--archive", "{bvs_archive}"), pathlib.Path("governance")),
-    Obligation("bvs-s3-smoke", ("python3", "{owner}", "cargo", "--repo", "{bvs}", "--", "nextest", "run", "--archive-file", "{bvs_archive}", "--extract-to", ".nextest-bvs-s3", "--extract-overwrite", "--workspace-remap", "{bvs}", "--no-tests=fail", "backtesting_vertical_slice_s3_catalog_smoke"), pathlib.Path("subject")),
-    Obligation("bvs-tests", ("python3", "{owner}", "cargo", "--repo", "{bvs}", "--", "nextest", "run", "--archive-file", "{bvs_archive}", "--extract-to", ".nextest-bvs", "--extract-overwrite", "--workspace-remap", "{bvs}", "--no-fail-fast", "--", "--skip", "backtesting_vertical_slice_s3_catalog_smoke"), pathlib.Path("subject")),
+FINAL_REVIEW_PHASES = {
+    "static": (
+        Obligation(
+            "preflight",
+            (
+                "python3",
+                "{governance}/scripts/local_verification_gate.py",
+                "preflight",
+                "--",
+                "python3",
+                "{governance}/scripts/repo_preflight.py",
+                "--governance",
+                "{governance}",
+                "--subject",
+                "{subject}",
+            ),
+            pathlib.Path("governance"),
+        ),
+        Obligation("host-health", ("python3", "scripts/test_host_health_sampler.py"), pathlib.Path("subject")),
+        Obligation("host-health-viewer", ("node", "scripts/test_host_health_viewer.mjs"), pathlib.Path("subject")),
+    ),
+    "root-analysis": (
+        Obligation("root-clippy", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "clippy", "--locked", "--", "-D", "warnings"), pathlib.Path("governance")),
+        Obligation("root-aarch64", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "check", "--target", "aarch64-unknown-linux-gnu", "--locked"), pathlib.Path("governance")),
+        Obligation("root-build", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "zigbuild", "--release", "--target", "aarch64-unknown-linux-gnu", "--locked"), pathlib.Path("governance")),
+    ),
+    "root-tests": (
+        Obligation("root-archive", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "nextest", "archive", "--locked", "--archive-file", "{root_archive}"), pathlib.Path("subject")),
+        Obligation("root-cache-release", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "clean"), pathlib.Path("governance")),
+        Obligation("root-tests", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "nextest", "run", "--archive-file", "{root_archive}", "--extract-to", ".nextest-root", "--extract-overwrite", "--workspace-remap", "{subject}", "--no-fail-fast"), pathlib.Path("subject")),
+        Obligation("root-special-proofs", ("python3", "{owner}", "cargo", "--repo", "{subject}", "--", "nextest", "run", "--archive-file", "{root_archive}", "--extract-to", ".nextest-proofs", "--extract-overwrite", "--workspace-remap", "{subject}", "--no-tests=fail", "-E", "binary(=binance_sbe_quote_timestamps)"), pathlib.Path("subject")),
+    ),
+    "bvs-analysis": (
+        Obligation("bvs-clippy", ("python3", "{owner}", "cargo", "--repo", "{bvs}", "--", "clippy", "--locked", "--", "-D", "warnings"), pathlib.Path("governance")),
+    ),
+    "bvs-tests": (
+        Obligation("bvs-archive", ("python3", "{governance}/scripts/bvs_archive.py", "--owner", "{owner}", "--repo", "{bvs}", "--archive", "{bvs_archive}"), pathlib.Path("governance")),
+        Obligation("bvs-cache-release", ("python3", "{owner}", "cargo", "--repo", "{bvs}", "--", "clean"), pathlib.Path("governance")),
+        Obligation("bvs-s3-smoke", ("python3", "{owner}", "cargo", "--repo", "{bvs}", "--", "nextest", "run", "--archive-file", "{bvs_archive}", "--extract-to", ".nextest-bvs-s3", "--extract-overwrite", "--workspace-remap", "{bvs}", "--no-tests=fail", "backtesting_vertical_slice_s3_catalog_smoke"), pathlib.Path("subject")),
+        Obligation("bvs-tests", ("python3", "{owner}", "cargo", "--repo", "{bvs}", "--", "nextest", "run", "--archive-file", "{bvs_archive}", "--extract-to", ".nextest-bvs", "--extract-overwrite", "--workspace-remap", "{bvs}", "--no-fail-fast", "--", "--skip", "backtesting_vertical_slice_s3_catalog_smoke"), pathlib.Path("subject")),
+    ),
+}
+
+FINAL_REVIEW_OBLIGATIONS = tuple(
+    obligation
+    for phase_obligations in FINAL_REVIEW_PHASES.values()
+    for obligation in phase_obligations
 )
 
 
@@ -53,14 +86,14 @@ def registered_workspace_roots(governance: pathlib.Path, subject: pathlib.Path) 
     }
 
 
-def render_obligations(values: dict[str, str]) -> tuple[Obligation, ...]:
+def render_obligations(phase: str, values: dict[str, str]) -> tuple[Obligation, ...]:
     return tuple(
         Obligation(
             obligation.obligation_id,
             tuple(part.format_map(values) for part in obligation.command),
             obligation.cwd,
         )
-        for obligation in FINAL_REVIEW_OBLIGATIONS
+        for obligation in FINAL_REVIEW_PHASES[phase]
     )
 
 
@@ -79,13 +112,23 @@ def execute_command(command: tuple[str, ...], cwd: pathlib.Path, log: pathlib.Pa
             text=True,
             start_new_session=True,
         )
+        timed_out = False
         try:
-            return process.wait(timeout=timeout_seconds)
+            return_code = process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
+            timed_out = True
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if process.poll() is None:
+                process.wait()
+
+        if timed_out:
             stream.write(f"command timed out after {timeout_seconds:g} seconds\n")
             raise TimeoutError(f"command timed out after {timeout_seconds:g} seconds") from None
+        return return_code
 
 
 def run_obligations(
@@ -144,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
     parser.add_argument("--output", required=True, type=pathlib.Path)
+    parser.add_argument("--phase", required=True, choices=tuple(FINAL_REVIEW_PHASES))
     parser.add_argument("--obligation-timeout-seconds", required=True, type=float)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     governance = args.governance.resolve()
@@ -155,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     root_archive = str(root / ".nextest-archive/root.tar.zst")
     bvs_archive = str(bvs_root / ".nextest-archive/bvs.tar.zst")
     obligations = render_obligations(
+        args.phase,
         {
             "governance": str(governance),
             "subject": str(root),

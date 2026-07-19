@@ -189,8 +189,8 @@ mod tests {
 
 def test_recovery_bearing_producer_cannot_enable_suppression() -> None:
     text = _registry_text().replace(
-        'recovery_bearing = true\nsuppression = "unsuppressed"',
-        'recovery_bearing = true\nsuppression = "finite-monotone-mask"',
+        'recovery_bearing = true\nruntime_status = "implemented"\nrequired_suppression = "unsuppressed"',
+        'recovery_bearing = true\nruntime_status = "implemented"\nrequired_suppression = "finite-monotone-mask"',
         1,
     )
     try:
@@ -199,6 +199,34 @@ def test_recovery_bearing_producer_cannot_enable_suppression() -> None:
         assert "recovery-bearing" in str(error)
     else:
         raise AssertionError("registry allowed suppression of recovery-bearing evidence")
+
+
+def test_runtime_status_distinguishes_implemented_and_remaining_work() -> None:
+    registry = verifier.load_registry(verifier.REPO_ROOT / verifier.REGISTRY_PATH)
+    statuses = {producer.name: producer.runtime_status for producer in registry.producers}
+    assert statuses["strategy_input_snapshot_blocked_rv"] == "implemented"
+    assert statuses["entry_skip"] == "implemented"
+    assert statuses["exit_decision"] == "monotone-migration-required"
+    assert statuses["exit_evaluation"] == "monotone-migration-required"
+    assert statuses["loss_governor_halt"] == "monotone-migration-required"
+    assert statuses["order_reject"] == "monotone-migration-required"
+    assert statuses["requote_throttle"] == "monotone-migration-required"
+    assert statuses["venue_truth_capture_failure"] == "owner-decision-required"
+    assert statuses["venue_truth_divergence"] == "owner-decision-required"
+
+
+def test_pending_monotone_migration_must_name_finite_required_suppression() -> None:
+    text = _registry_text().replace(
+        'runtime_status = "monotone-migration-required"\nrequired_suppression = "finite-monotone-mask"',
+        'runtime_status = "monotone-migration-required"\nrequired_suppression = "unsuppressed"',
+        1,
+    )
+    try:
+        _load(text)
+    except ValueError as error:
+        assert "monotone migration" in str(error)
+    else:
+        raise AssertionError("pending monotone migration allowed an unsuppressed target")
 
 
 def test_non_evidence_appender_sweep_detects_production_and_ignores_tests() -> None:

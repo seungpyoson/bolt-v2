@@ -102,7 +102,8 @@ class Producer:
     repeat_semantics: str
     dedupe_key_evidence: str
     recovery_bearing: bool
-    suppression: str
+    runtime_status: str
+    required_suppression: str
     owner_decision_required: bool
 
 
@@ -149,6 +150,7 @@ def load_registry(path: pathlib.Path) -> Registry:
             "canonical_state_family",
             "allowed_classifications",
             "allowed_suppression",
+            "allowed_runtime_status",
             "producer_census_roots",
             "producer_census_exclusions",
             "reader_census_roots",
@@ -291,10 +293,17 @@ def load_registry(path: pathlib.Path) -> Registry:
 
     allowed_classifications = document["allowed_classifications"]
     allowed_suppression = document["allowed_suppression"]
+    allowed_runtime_status = document["allowed_runtime_status"]
     if allowed_classifications != ["event-keyed", "state-observation", "already-deduped", "no-named-reader"]:
         raise ValueError("allowed_classifications must remain the frozen closed set")
     if allowed_suppression != ["unsuppressed", "finite-monotone-mask"]:
         raise ValueError("allowed_suppression must remain the frozen closed set")
+    if allowed_runtime_status != [
+        "implemented",
+        "monotone-migration-required",
+        "owner-decision-required",
+    ]:
+        raise ValueError("allowed_runtime_status must remain the frozen closed set")
     raw_producers = document["producer"]
     if not isinstance(raw_producers, list) or not raw_producers:
         raise ValueError("registry requires producer rows")
@@ -302,14 +311,18 @@ def load_registry(path: pathlib.Path) -> Registry:
     producer_keys = {
         "name", "method", "record_kind", "family", "state_id", "allocation",
         "classification", "handler_reachability", "call_sites", "named_readers",
-        "repeat_semantics", "dedupe_key_evidence", "recovery_bearing", "suppression",
-        "owner_decision_required",
+        "repeat_semantics", "dedupe_key_evidence", "recovery_bearing", "runtime_status",
+        "required_suppression", "owner_decision_required",
     }
     reader_names = {reader.name for reader in readers}
     families_by_name = {family.name: family for family in families}
     for index, value in enumerate(raw_producers):
         raw_producer = _strict_keys(value, producer_keys, f"producer[{index}]")
-        scalar_names = ("name", "method", "record_kind", "family", "allocation", "classification", "repeat_semantics", "dedupe_key_evidence", "suppression")
+        scalar_names = (
+            "name", "method", "record_kind", "family", "allocation", "classification",
+            "repeat_semantics", "dedupe_key_evidence", "runtime_status",
+            "required_suppression",
+        )
         if not all(isinstance(raw_producer[key], str) and raw_producer[key] for key in scalar_names):
             raise ValueError(f"producer[{index}] string fields must be non-empty")
         if not re.fullmatch(r"record_[a-z0-9_]+", raw_producer["method"]):
@@ -325,11 +338,14 @@ def load_registry(path: pathlib.Path) -> Registry:
         if type(state_id) is not int or not allocation.id_start <= state_id < allocation.id_end_exclusive:
             raise ValueError(f"producer[{index}].state_id is outside its allocation")
         classification = raw_producer["classification"]
-        suppression = raw_producer["suppression"]
+        runtime_status = raw_producer["runtime_status"]
+        required_suppression = raw_producer["required_suppression"]
         if classification not in allowed_classifications:
             raise ValueError(f"producer[{index}] has unknown classification")
-        if suppression not in allowed_suppression:
-            raise ValueError(f"producer[{index}] has unknown suppression")
+        if runtime_status not in allowed_runtime_status:
+            raise ValueError(f"producer[{index}] has unknown runtime status")
+        if required_suppression not in allowed_suppression:
+            raise ValueError(f"producer[{index}] has unknown required suppression")
         list_fields: dict[str, tuple[str, ...]] = {}
         for key in ("handler_reachability", "call_sites", "named_readers"):
             raw_list = raw_producer[key]
@@ -360,12 +376,18 @@ def load_registry(path: pathlib.Path) -> Registry:
         owner_decision_required = raw_producer["owner_decision_required"]
         if type(recovery_bearing) is not bool or type(owner_decision_required) is not bool:
             raise ValueError(f"producer[{index}] boolean fields must be boolean")
-        if recovery_bearing and suppression != "unsuppressed":
+        if recovery_bearing and required_suppression != "unsuppressed":
             raise ValueError(f"producer[{index}] recovery-bearing updates must remain unsuppressed")
-        if suppression == "finite-monotone-mask" and recovery_bearing:
+        if required_suppression == "finite-monotone-mask" and recovery_bearing:
             raise ValueError(f"producer[{index}] finite suppression cannot carry recovery")
         if classification == "no-named-reader" and not owner_decision_required:
             raise ValueError(f"producer[{index}] without a domain reader requires an owner decision")
+        if runtime_status == "monotone-migration-required" and required_suppression != "finite-monotone-mask":
+            raise ValueError(f"producer[{index}] monotone migration requires finite suppression")
+        if runtime_status == "owner-decision-required" and not owner_decision_required:
+            raise ValueError(f"producer[{index}] owner-decision runtime status requires its decision flag")
+        if owner_decision_required and runtime_status != "owner-decision-required":
+            raise ValueError(f"producer[{index}] owner decision must remain visibly pending")
         producers.append(Producer(
             name=raw_producer["name"], method=raw_producer["method"],
             record_kind=raw_producer["record_kind"], family=raw_producer["family"],
@@ -375,7 +397,8 @@ def load_registry(path: pathlib.Path) -> Registry:
             call_sites=list_fields["call_sites"], named_readers=list_fields["named_readers"],
             repeat_semantics=raw_producer["repeat_semantics"],
             dedupe_key_evidence=raw_producer["dedupe_key_evidence"],
-            recovery_bearing=recovery_bearing, suppression=suppression,
+            recovery_bearing=recovery_bearing, runtime_status=runtime_status,
+            required_suppression=required_suppression,
             owner_decision_required=owner_decision_required,
         ))
     if len({producer.name for producer in producers}) != len(producers):

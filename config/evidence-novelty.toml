@@ -2,6 +2,7 @@ schema_version = 2
 canonical_state_family = "market"
 allowed_classifications = ["event-keyed", "state-observation", "already-deduped", "no-named-reader"]
 allowed_suppression = ["unsuppressed", "finite-monotone-mask"]
+allowed_runtime_status = ["implemented", "monotone-migration-required", "owner-decision-required"]
 producer_census_roots = ["src"]
 producer_census_exclusions = [
   "src/bolt_v3_capital_admission_runtime_feed.rs::record_venue_truth_settlement::record_settlement::1",
@@ -337,7 +338,8 @@ named_readers = ["read_latest_entry_decision_evidence_chain", "read_submit_reser
 repeat_semantics = "every submit-linked snapshot remains append-complete"
 dedupe_key_evidence = "non-empty client_order_id event identity; no suppression"
 recovery_bearing = true
-suppression = "unsuppressed"
+runtime_status = "implemented"
+required_suppression = "unsuppressed"
 owner_decision_required = false
 
 [[producer]]
@@ -354,7 +356,8 @@ named_readers = ["read_latest_entry_decision_evidence_chain", "read_submit_reser
 repeat_semantics = "finite per-episode monotone suppression over six RV gate results and watermark presence"
 dedupe_key_evidence = "EvidenceEpisodeId plus the exact twelve-state TOML domain; payload churn and writer failure cannot claim a state"
 recovery_bearing = false
-suppression = "finite-monotone-mask"
+runtime_status = "implemented"
+required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 
 [[producer]]
@@ -374,7 +377,8 @@ named_readers = ["read_latest_entry_decision_evidence_chain", "read_submit_reser
 repeat_semantics = "every distinct order intent remains append-complete"
 dedupe_key_evidence = "client_order_id event identity; no suppression"
 recovery_bearing = true
-suppression = "unsuppressed"
+runtime_status = "implemented"
+required_suppression = "unsuppressed"
 owner_decision_required = false
 
 [[producer]]
@@ -398,7 +402,8 @@ named_readers = ["read_latest_entry_decision_evidence_chain", "read_submit_reser
 repeat_semantics = "every submit admission result remains append-complete"
 dedupe_key_evidence = "client_order_id event identity; no suppression"
 recovery_bearing = true
-suppression = "unsuppressed"
+runtime_status = "implemented"
+required_suppression = "unsuppressed"
 owner_decision_required = false
 
 [[producer]]
@@ -422,7 +427,8 @@ named_readers = ["read_latest_entry_decision_evidence_chain", "read_submit_reser
 repeat_semantics = "each basket admission result remains append-complete until its owner approves a finite diagnostic domain"
 dedupe_key_evidence = "basket_id event identity; no suppression"
 recovery_bearing = false
-suppression = "unsuppressed"
+runtime_status = "owner-decision-required"
+required_suppression = "unsuppressed"
 owner_decision_required = true
 
 [[producer]]
@@ -439,7 +445,8 @@ named_readers = ["read_latest_entry_decision_evidence_chain", "read_submit_reser
 repeat_semantics = "every rebuild observation remains append-complete"
 dedupe_key_evidence = "none; recovery-bearing updates are unsuppressed"
 recovery_bearing = true
-suppression = "unsuppressed"
+runtime_status = "owner-decision-required"
+required_suppression = "unsuppressed"
 owner_decision_required = true
 
 [[producer]]
@@ -459,7 +466,8 @@ named_readers = ["read_latest_entry_decision_evidence_chain", "read_submit_reser
 repeat_semantics = "every changing reservation record remains append-complete"
 dedupe_key_evidence = "submit_reservation_id event identity; no suppression"
 recovery_bearing = true
-suppression = "unsuppressed"
+runtime_status = "implemented"
+required_suppression = "unsuppressed"
 owner_decision_required = false
 
 [[producer]]
@@ -476,7 +484,8 @@ named_readers = ["read_latest_entry_decision_evidence_chain", "read_submit_reser
 repeat_semantics = "every fill remains append-complete"
 dedupe_key_evidence = "trade_id event identity; no suppression"
 recovery_bearing = true
-suppression = "unsuppressed"
+runtime_status = "implemented"
+required_suppression = "unsuppressed"
 owner_decision_required = false
 
 [[producer]]
@@ -493,7 +502,8 @@ named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migration
 repeat_semantics = "finite per-episode monotone suppression over the closed twenty-state reason domain"
 dedupe_key_evidence = "EvidenceEpisodeId plus TOML canonical state; payload churn and writer failure cannot claim a state"
 recovery_bearing = false
-suppression = "finite-monotone-mask"
+runtime_status = "implemented"
+required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 
 [[producer]]
@@ -507,10 +517,11 @@ classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer", "index-price"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_decision_once::record_exit_decision::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "A-B-A suppression over the existing closed exit-outcome domain"
-dedupe_key_evidence = "semantic outcome only; volatile market and timing fields are excluded"
+repeat_semantics = "current last-key guard suppresses only adjacent repeats and re-emits A-B-A; migrate to the closed exit-outcome domain"
+dedupe_key_evidence = "current key includes market and position identity plus semantic outcome; the required monotone state excludes volatile timing fields"
 recovery_bearing = false
-suppression = "finite-monotone-mask"
+runtime_status = "monotone-migration-required"
+required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 
 [[reader]]
@@ -636,10 +647,11 @@ classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer", "index-price"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_evaluation_evidence::record_exit_evaluation::1"]
 named_readers = ["read_exit_evaluation_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "A-B-A suppression over the existing exit outcome and RV-gate domain"
-dedupe_key_evidence = "semantic outcome and RV gate only; prices, timestamps, ages, and counters are excluded"
+repeat_semantics = "current last-outcome guard suppresses only adjacent repeats per position and re-emits A-B-A; migrate to the closed exit outcome and RV-gate domain"
+dedupe_key_evidence = "current key is semantic but non-monotone; the required state excludes prices, timestamps, ages, and counters"
 recovery_bearing = false
-suppression = "finite-monotone-mask"
+runtime_status = "monotone-migration-required"
+required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 
 [[producer]]
@@ -653,10 +665,11 @@ classification = "already-deduped"
 handler_reachability = ["quote", "timer"]
 call_sites = ["src/bolt_v3_submit_admission.rs::record_stale_loss_governor_halt::record_loss_governor_halt::1"]
 named_readers = ["read_loss_governor_halt_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "A-B-A suppression over the existing stale-loss reason domain"
-dedupe_key_evidence = "stale-loss reason only; source, retries, counters, and elapsed time are excluded"
+repeat_semantics = "current per-key power-of-two sampling continues indefinitely; migrate to one emission per closed stale-loss reason state"
+dedupe_key_evidence = "current episode key also includes source and mutable counters; the required state is stale-loss reason only"
 recovery_bearing = false
-suppression = "finite-monotone-mask"
+runtime_status = "monotone-migration-required"
+required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 
 [[producer]]
@@ -673,10 +686,11 @@ call_sites = [
   "src/bolt_v3_submit_admission.rs::record_submit_admission_order_reject::record_order_reject::1",
 ]
 named_readers = ["read_order_reject_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "A-B-A suppression over the existing reject-source and reject-reason domain"
-dedupe_key_evidence = "reject source and reason only; identifiers, retry, elapsed, and raw reason are excluded"
+repeat_semantics = "current per-episode power-of-two sampling and bounded map continue emitting and can forget episodes; migrate to the closed reject-source and reject-reason domain"
+dedupe_key_evidence = "current episode keys and counters are not the required monotone state; the required state excludes identifiers, retry, elapsed, and raw reason"
 recovery_bearing = false
-suppression = "finite-monotone-mask"
+runtime_status = "monotone-migration-required"
+required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 
 [[producer]]
@@ -693,7 +707,8 @@ named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migration
 repeat_semantics = "every evolving lifecycle update remains append-complete"
 dedupe_key_evidence = "none; recovery-bearing updates are unsuppressed"
 recovery_bearing = true
-suppression = "unsuppressed"
+runtime_status = "owner-decision-required"
+required_suppression = "unsuppressed"
 owner_decision_required = true
 
 [[producer]]
@@ -707,10 +722,11 @@ classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer"]
 call_sites = ["src/strategies/binary_oracle_maker/mod.rs::update_requote_throttle_edge::record_requote_throttle::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "A-B-A suppression over the existing leg and throttle-bound domain"
-dedupe_key_evidence = "leg and bound only; family and action class remain payload"
+repeat_semantics = "current per-family/leg last-key set suppresses adjacent repeats and re-emits A-B-A; migrate to the closed leg and throttle-bound domain"
+dedupe_key_evidence = "current key includes family and action class; the required monotone state is the approved semantic leg and bound domain"
 recovery_bearing = false
-suppression = "finite-monotone-mask"
+runtime_status = "monotone-migration-required"
+required_suppression = "finite-monotone-mask"
 owner_decision_required = false
 
 [[producer]]
@@ -727,7 +743,8 @@ named_readers = ["read_settlement_evidence", "read_settlement_evidence_records",
 repeat_semantics = "every settlement update remains append-complete"
 dedupe_key_evidence = "settlement_key recovery identity; no suppression"
 recovery_bearing = true
-suppression = "unsuppressed"
+runtime_status = "implemented"
+required_suppression = "unsuppressed"
 owner_decision_required = false
 
 [[producer]]
@@ -744,7 +761,8 @@ named_readers = ["read_settlement_booking_error_evidence", "read_settlement_book
 repeat_semantics = "the append capability remains for legacy evidence compatibility but has no production caller after canonical terminal settlement"
 dedupe_key_evidence = "settlement_key recovery identity; no suppression"
 recovery_bearing = true
-suppression = "unsuppressed"
+runtime_status = "owner-decision-required"
+required_suppression = "unsuppressed"
 owner_decision_required = true
 
 [[producer]]
@@ -761,7 +779,8 @@ named_readers = ["read_terminal_settlement_evidence", "read_terminal_settlement_
 repeat_semantics = "every canonical terminal settlement update remains append-complete"
 dedupe_key_evidence = "settlement_key recovery identity; no suppression"
 recovery_bearing = true
-suppression = "unsuppressed"
+runtime_status = "implemented"
+required_suppression = "unsuppressed"
 owner_decision_required = false
 
 [[producer]]
@@ -775,10 +794,11 @@ classification = "no-named-reader"
 handler_reachability = ["timer"]
 call_sites = ["src/bolt_v3_submit_admission.rs::suspend_capital_admission_for_venue_truth_capture_failure::record_venue_truth_capture_failure::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "existing diagnostic suppression remains bounded to the capture-failure state"
-dedupe_key_evidence = "capture-failure state only; diagnostics are payload"
+repeat_semantics = "the writer currently appends on every call; the owner must approve retention or a closed diagnostic domain"
+dedupe_key_evidence = "no approved monotone key; source and diagnostics remain payload candidates only"
 recovery_bearing = false
-suppression = "finite-monotone-mask"
+runtime_status = "owner-decision-required"
+required_suppression = "finite-monotone-mask"
 owner_decision_required = true
 
 [[producer]]
@@ -792,8 +812,9 @@ classification = "no-named-reader"
 handler_reachability = ["timer"]
 call_sites = ["src/bolt_v3_submit_admission.rs::record_venue_truth_divergence_evidence::record_venue_truth_divergence::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "existing diagnostic suppression remains bounded to the three alarm classes"
-dedupe_key_evidence = "alarm class only; account, field, values, explanation, and time are payload"
+repeat_semantics = "the writer currently appends on every call; the owner must approve retention or the three-alarm-class domain"
+dedupe_key_evidence = "no approved monotone key; account, field, values, explanation, and time must remain outside any approved state"
 recovery_bearing = false
-suppression = "finite-monotone-mask"
+runtime_status = "owner-decision-required"
+required_suppression = "finite-monotone-mask"
 owner_decision_required = true

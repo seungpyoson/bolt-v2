@@ -1709,16 +1709,23 @@ impl BoltV3SubmitAdmissionState {
             .expect("submit admission state mutex should not be poisoned");
         let now_ns = current_unix_ns()?;
         let evaluation = self.evaluate(&mut inner, request, now_ns)?;
-        let record_result = self.record_admission_decision(request, &evaluation, now_ns);
+        let admission_result = Self::admission_result(&inner, request, &evaluation);
         if let Some(rollback) = evaluation.rollback.as_ref() {
             rollback_capital_admission_reservation(&mut inner, rollback);
         }
-        if let Err(err) = record_result {
-            return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                reason: format!("{err:#}"),
-            });
+        match admission_result {
+            Ok(()) => self
+                .record_admission_decision(request, &evaluation, now_ns)
+                .map_err(|err| BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                    reason: format!("{err:#}"),
+                }),
+            Err(error) => {
+                let _ = record_decision(RiskDirection::Neutral, || {
+                    self.record_admission_decision(request, &evaluation, now_ns)
+                });
+                Err(error)
+            }
         }
-        Self::admission_result(&inner, request, &evaluation)
     }
 
     fn record_admission_decision(

@@ -3450,6 +3450,26 @@ fn rejected_admission_preserves_primary_error_when_evidence_write_fails() {
 }
 
 #[test]
+fn rejected_shadow_admission_preserves_primary_error_when_evidence_write_fails() {
+    let admission = limited_admission_with_writer(
+        Arc::new(FailingDecisionEvidenceWriter),
+        1,
+        Decimal::new(1, 0),
+    );
+
+    let error = admission
+        .evaluate_and_record_without_consuming_capacity(&submit_request(Decimal::ZERO))
+        .expect_err("a rejected shadow admission must preserve its typed rejection");
+
+    assert_eq!(error, BoltV3SubmitAdmissionError::NonPositiveNotional);
+    assert_eq!(
+        admission.admitted_order_count(),
+        0,
+        "a shadow evaluation must not consume admission capacity"
+    );
+}
+
+#[test]
 fn admit_serializes_while_admission_evidence_is_in_flight() {
     let writer = Arc::new(BlockingFirstAdmissionDecisionWriter::default());
     let admission = Arc::new(limited_admission_with_writer(

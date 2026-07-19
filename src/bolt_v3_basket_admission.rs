@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::bolt_v3_decision_evidence::{
     BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
-    BoltV3DecisionEvidenceWriter,
+    BoltV3DecisionEvidenceWriter, RiskDirection, record_decision,
 };
 use crate::bolt_v3_outcome_group_scanner::OutcomeGroupScanEvidence;
 use crate::bolt_v3_outcome_group_sources::outcome_group_observation_is_fresh;
@@ -180,12 +180,18 @@ impl BoltV3BasketAdmissionState {
         submit_admission: &BoltV3SubmitAdmissionState,
     ) -> Result<BoltV3BasketAdmissionPermit, BoltV3BasketAdmissionError> {
         if let Err(error) = self.evaluate_basket_request(request) {
-            self.record_basket_decision(request, basket_outcome_from_error(&error))?;
+            let _ = record_decision(RiskDirection::Neutral, || -> anyhow::Result<()> {
+                self.record_basket_decision(request, basket_outcome_from_error(&error))?;
+                Ok(())
+            });
             return Err(error);
         }
         let evidence = basket_decision_evidence(request, BoltV3BasketAdmissionOutcome::Admitted)?;
         if let Err(error) = self.reserve_open_basket(request) {
-            self.record_basket_decision(request, basket_outcome_from_error(&error))?;
+            let _ = record_decision(RiskDirection::Neutral, || -> anyhow::Result<()> {
+                self.record_basket_decision(request, basket_outcome_from_error(&error))?;
+                Ok(())
+            });
             return Err(error);
         }
 

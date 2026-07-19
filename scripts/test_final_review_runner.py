@@ -155,6 +155,26 @@ def assert_spawn_exception_is_recorded_and_siblings_continue() -> None:
             raise AssertionError(expected)
 
 
+def assert_execute_command_records_timeout() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        log = root / "timeout.log"
+        try:
+            execute_command(
+                (sys.executable, "-c", "import time; time.sleep(1)"),
+                root,
+                log,
+                0.05,
+            )
+        except TimeoutError:
+            pass
+        else:
+            raise AssertionError("timed-out command returned normally")
+        timeout_log = log.read_text(encoding="utf-8")
+        if "timed out after 0.05 seconds" not in timeout_log:
+            raise AssertionError(timeout_log)
+
+
 def assert_timeout_is_recorded_and_siblings_continue() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
@@ -162,10 +182,19 @@ def assert_timeout_is_recorded_and_siblings_continue() -> None:
         subject = root / "subject"
         governance.mkdir()
         subject.mkdir()
+        calls: list[tuple[str, ...]] = []
+
+        def execute(command: tuple[str, ...], _cwd: pathlib.Path, log: pathlib.Path, _timeout_seconds: float) -> int:
+            calls.append(command)
+            if command == ("timeout",):
+                raise TimeoutError("command timed out after 0.05 seconds")
+            log.write_text("passed\n", encoding="utf-8")
+            return 0
+
         records = run_obligations(
             (
-                Obligation("first", (sys.executable, "-c", "import time; time.sleep(1)"), pathlib.Path("subject")),
-                Obligation("second", (sys.executable, "-c", "print('passed')"), pathlib.Path("subject")),
+                Obligation("first", ("timeout",), pathlib.Path("subject")),
+                Obligation("second", ("pass",), pathlib.Path("subject")),
             ),
             governance=governance,
             subject=subject,
@@ -173,8 +202,11 @@ def assert_timeout_is_recorded_and_siblings_continue() -> None:
             run_id="12",
             run_attempt="3",
             output=root / "out",
-            timeout_seconds=0.05,
+            execute=execute,
+            timeout_seconds=30,
         )
+        if calls != [("timeout",), ("pass",)]:
+            raise AssertionError(calls)
         if [record["conclusion"] for record in records] != ["infrastructure_failure", "success"]:
             raise AssertionError(records)
         timeout_log = (root / "out/logs/first.log").read_text(encoding="utf-8")
@@ -200,6 +232,7 @@ def main() -> int:
     assert_all_fixed_obligations_run_and_failures_remain_raw()
     assert_subject_commands_receive_no_github_credentials()
     assert_spawn_exception_is_recorded_and_siblings_continue()
+    assert_execute_command_records_timeout()
     assert_timeout_is_recorded_and_siblings_continue()
     assert_final_review_uses_registry_workspace_paths()
     print("OK: final-review runner tests passed.")

@@ -466,7 +466,12 @@ impl ExecutionEconomicsConfig {
                 errors.push(EconomicsConfigError::InvalidQuoteWindow);
             }
         }
-        let configured_sources = self.sources.keys().cloned().collect();
+        let configured_sources = self
+            .sources
+            .keys()
+            .chain(self.assets.keys())
+            .cloned()
+            .collect();
         errors.extend(self.valuation.validate(
             &reporting.pnl_currency,
             active_data_clients,

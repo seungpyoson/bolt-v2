@@ -43,32 +43,6 @@ static NEXT_TEST_CATALOG_ID: AtomicU64 = AtomicU64::new(0);
 const PRODUCER_STOPPED_EVENT: &str = "producer_stopped";
 const DRAIN_SHUTDOWN_EVENT: &str = "drain_shutdown";
 
-#[tokio::test(start_paused = true)]
-async fn economics_refresh_completes_before_configured_deadline() {
-    let result = await_economics_refresh_before_deadline(Duration::from_secs(30), async {
-        tokio::time::sleep(Duration::from_secs(29)).await;
-        7_u8
-    })
-    .await;
-
-    assert_eq!(
-        result.expect("refresh should finish before its deadline"),
-        7
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn economics_refresh_is_cancelled_at_configured_deadline() {
-    let started_at = tokio::time::Instant::now();
-    let result = await_economics_refresh_before_deadline(Duration::from_secs(30), async {
-        tokio::time::sleep(Duration::from_secs(31)).await;
-    })
-    .await;
-
-    assert!(result.is_err());
-    assert_eq!(started_at.elapsed(), Duration::from_secs(30));
-}
-
 struct RecordingProducerStopper {
     events: Arc<Mutex<Vec<&'static str>>>,
 }

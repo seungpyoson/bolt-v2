@@ -54,7 +54,7 @@ Repo governance for agents; higher-level standing instructions apply.
 
 - Agents push the exact branch head with a plain `git push` (no credentials in push URLs) and open a PR. Advisory CI (`advisory.yml`) runs four parallel raw-cargo jobs — `fmt`, `clippy`, `test`, `build` — on every pull request and every push to `main`. Each job is one ✓/✗ line on the PR; a red check shows the raw cargo command and its raw output, and is reproduced locally by running the same command from the repo root.
 - Advisory results are evidence to adjudicate, never merge authority. Agents do not wait on CI: push, report the head SHA, and detach.
-- The owner (code owner, node ID `U_kgDOEZMFhA`) reviews and approves. On approval, Mergify (`.mergify.yml`) queues the PR serially, updates the branch with latest `main`, requires all four checks to pass on the combined result, then squash-merges. `.mergify.yml` is the single source of truth for queue behavior — nothing in the repo may mirror, parse, or validate it.
+- The owner (code owner, node ID `U_kgDOEZMFhA`) reviews and approves. Approved PRs go through the Mergify queue (`.mergify.yml`), which updates queued work with latest `main` (batching approved PRs where the queue config allows), requires all four checks to pass on the combined result, then squash-merges. `.mergify.yml` is the single source of truth for queue behavior — enqueue mechanics, batching, and lane selection are defined there and nowhere else; nothing in the repo may mirror, parse, or validate it.
 - Rust verification is remote-first as an economic default, not a fence: prefer advisory CI evidence over local compile-heavy runs. The commands are plain cargo and run anywhere.
 
 ## Evidence Fallback

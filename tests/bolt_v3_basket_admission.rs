@@ -52,13 +52,11 @@ use bolt_v2::{
         role_binding_attestation_sha256,
     },
     bolt_v3_submit_admission::{
-        BoltV3BasketSubmitSlotClaim, BoltV3CompiledOrderAdmissionEvidence, BoltV3CompiledOrderKind,
-        BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide, BoltV3CompiledProductKind,
-        BoltV3LiveSubmitApprovalLimits, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
-        BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+        BoltV3BasketSubmitSlotClaim, BoltV3CompiledOrderAdmissionEvidence, BoltV3CompiledOrderSide,
+        BoltV3CompiledProductKind, BoltV3LiveSubmitApprovalLimits, BoltV3RiskReducingExitProof,
+        BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
         BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitCapitalAdmissionNtComponents,
-        BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
-        live_submit_count_cap_outcome,
+        BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, live_submit_count_cap_outcome,
     },
 };
 use nautilus_model::{
@@ -1119,15 +1117,7 @@ fn attach_capital_admission(claims: &mut [BoltV3BasketSubmitSlotClaim]) {
             product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
             side: BoltV3CompiledOrderSide::Buy,
             quantity: claim.order_quantity,
-            effective_price: claim.economics_admission.reservation_basis().amount(),
-            order_kind: BoltV3CompiledOrderKind::Limit,
-            liquidity: BoltV3CompiledOrderLiquidity::Taker,
-            quote_set_id: None,
-            prediction_market_outcome: Some(if index == 0 {
-                PredictionMarketOutcomeSide::Yes
-            } else {
-                PredictionMarketOutcomeSide::No
-            }),
+            reservation_basis_factor: claim.economics_admission.reservation_basis().amount(),
         });
     }
 }

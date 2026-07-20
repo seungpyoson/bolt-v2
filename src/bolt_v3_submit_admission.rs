@@ -1,8 +1,7 @@
 use crate::bolt_v3_capital_admission::{
     CapitalAdmissionGate, CapitalAdmissionGateInputs, CapitalAdmissionLifecycleAction,
     CapitalAdmissionLifecycleKind, CapitalAdmissionLifecycleUpdate, CapitalAdmissionPolicy,
-    CapitalAdmissionRequest, IntentLiquidity, IntentOrderKind, IntentSide,
-    ProductAdmissionSnapshot, ProductKind,
+    CapitalAdmissionRequest, IntentSide, ProductAdmissionSnapshot, ProductKind,
 };
 use crate::bolt_v3_capital_admission_state::{
     NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
@@ -2930,11 +2929,7 @@ pub struct BoltV3CompiledOrderAdmissionEvidence {
     pub product_kind: BoltV3CompiledProductKind,
     pub side: BoltV3CompiledOrderSide,
     pub quantity: Decimal,
-    pub effective_price: Decimal,
-    pub order_kind: BoltV3CompiledOrderKind,
-    pub liquidity: BoltV3CompiledOrderLiquidity,
-    pub quote_set_id: Option<String>,
-    pub prediction_market_outcome: Option<PredictionMarketOutcomeSide>,
+    pub reservation_basis_factor: Decimal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2982,40 +2977,6 @@ fn compiled_order_side_evidence_value(side: BoltV3CompiledOrderSide) -> &'static
         BoltV3CompiledOrderSide::Buy => "buy",
         BoltV3CompiledOrderSide::Sell => "sell",
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoltV3CompiledOrderKind {
-    Limit,
-}
-
-impl BoltV3CompiledOrderKind {
-    fn to_capital_admission(self) -> IntentOrderKind {
-        match self {
-            Self::Limit => IntentOrderKind::Limit,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoltV3CompiledOrderLiquidity {
-    RestingMaker,
-    Taker,
-}
-
-impl BoltV3CompiledOrderLiquidity {
-    fn to_capital_admission(self) -> IntentLiquidity {
-        match self {
-            Self::RestingMaker => IntentLiquidity::RestingMaker,
-            Self::Taker => IntentLiquidity::Taker,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PredictionMarketOutcomeSide {
-    Yes,
-    No,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3311,6 +3272,12 @@ pub fn build_submit_admission_request_from_order(
         } else {
             None
         };
+    let admission_evidence = compiled_order_admission_evidence(
+        input.order,
+        input.valuation.instrument,
+        facts.quantity,
+        &economics_admission,
+    )?;
 
     Ok(BoltV3SubmitAdmissionRequest {
         strategy_id: input.intent.strategy_id.clone(),
@@ -3323,9 +3290,38 @@ pub fn build_submit_admission_request_from_order(
         lifecycle_policy: input.lifecycle_policy,
         risk_reducing_exit_proof,
         kill_switch_forced_reduction: None,
-        admission_evidence: None,
+        admission_evidence,
         economics_admission,
     })
+}
+
+fn compiled_order_admission_evidence(
+    order: &OrderAny,
+    instrument: Option<&InstrumentAny>,
+    quantity: Decimal,
+    economics_admission: &EconomicsAdmission,
+) -> anyhow::Result<Option<BoltV3CompiledOrderAdmissionEvidence>> {
+    let Some(InstrumentAny::BinaryOption(_)) = instrument else {
+        return Ok(None);
+    };
+    let side = match order.order_side() {
+        OrderSide::Buy => BoltV3CompiledOrderSide::Buy,
+        OrderSide::Sell => BoltV3CompiledOrderSide::Sell,
+        _ => anyhow::bail!("bolt-v3 capital admission rejects unsupported order side"),
+    };
+    let reservation_basis_factor = economics_admission
+        .reservation_basis()
+        .amount()
+        .checked_div(quantity)
+        .context("bolt-v3 capital admission reservation basis arithmetic failed")?;
+
+    Ok(Some(BoltV3CompiledOrderAdmissionEvidence {
+        venue_id: order.instrument_id().venue.to_string(),
+        product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
+        side,
+        quantity,
+        reservation_basis_factor,
+    }))
 }
 
 fn economics_purpose(intent_kind: BoltV3SubmitIntentKind) -> EconomicsAdmissionPurpose {
@@ -3573,7 +3569,6 @@ pub enum BoltV3CapitalAdmissionRejectReason {
     ProductKindMismatch,
     CollateralCurrencyMismatch,
     UnsupportedProductKind,
-    MissingPredictionMarketOutcome,
     OutcomeInstrumentMismatch,
     ReplaceSubmitUnsupported,
     DuplicateClientOrderId,
@@ -3793,28 +3788,14 @@ fn evaluate_capital_admission_submit(
         );
     }
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &state.product_state;
-    let Some(outcome) = evidence.prediction_market_outcome else {
+    let outcome_position = if request.instrument_id == product.yes_instrument_id {
+        product.yes_position
+    } else if request.instrument_id == product.no_instrument_id {
+        product.no_position
+    } else {
         return rejected_capital_admission(
-            BoltV3CapitalAdmissionRejectReason::MissingPredictionMarketOutcome,
+            BoltV3CapitalAdmissionRejectReason::OutcomeInstrumentMismatch,
         );
-    };
-    let outcome_position = match outcome {
-        PredictionMarketOutcomeSide::Yes => {
-            if request.instrument_id != product.yes_instrument_id {
-                return rejected_capital_admission(
-                    BoltV3CapitalAdmissionRejectReason::OutcomeInstrumentMismatch,
-                );
-            }
-            product.yes_position
-        }
-        PredictionMarketOutcomeSide::No => {
-            if request.instrument_id != product.no_instrument_id {
-                return rejected_capital_admission(
-                    BoltV3CapitalAdmissionRejectReason::OutcomeInstrumentMismatch,
-                );
-            }
-            product.no_position
-        }
     };
 
     if request.intent_kind == BoltV3SubmitIntentKind::RiskReducingExit {
@@ -3839,11 +3820,7 @@ fn evaluate_capital_admission_submit(
         product_kind,
         side: evidence.side.to_capital_admission(),
         quantity: evidence.quantity,
-        limit_price: evidence.effective_price,
         full_reservation_liability: request.economics_admission.full_reservation_liability(),
-        order_kind: evidence.order_kind.to_capital_admission(),
-        liquidity: evidence.liquidity.to_capital_admission(),
-        quote_set_id: evidence.quote_set_id.clone(),
         now_ns,
     };
     let decision = capital_admission
@@ -3875,7 +3852,7 @@ fn evaluate_capital_admission_submit(
         .expect("accepted capital admission decision should carry liability");
     let additive_liability = request.economics_admission.guaranteed_debit().amount();
     let liability_factor = match evidence.side.to_capital_admission() {
-        IntentSide::Buy => evidence.effective_price,
+        IntentSide::Buy => evidence.reservation_basis_factor,
         IntentSide::Sell => Decimal::ZERO,
     };
     let reservation_metadata = BoltV3SubmitReservationMetadataEvidence {

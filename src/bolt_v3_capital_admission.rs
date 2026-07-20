@@ -27,11 +27,7 @@ pub struct CapitalAdmissionRequest {
     pub product_kind: ProductKind,
     pub side: IntentSide,
     pub quantity: Decimal,
-    pub limit_price: Decimal,
     pub full_reservation_liability: FullReservationLiability,
-    pub order_kind: IntentOrderKind,
-    pub liquidity: IntentLiquidity,
-    pub quote_set_id: Option<String>,
     pub now_ns: u64,
 }
 
@@ -39,17 +35,6 @@ pub struct CapitalAdmissionRequest {
 pub enum IntentSide {
     Buy,
     Sell,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntentOrderKind {
-    Limit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntentLiquidity {
-    Taker,
-    RestingMaker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,9 +72,7 @@ pub struct LiabilityQuote {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiabilityError {
     MissingMarketState,
-    InvalidIntentPrice,
     InvalidIntentQuantity,
-    MissingQuoteSetId,
     InsufficientAllowance,
     InsufficientInventory,
     ArithmeticOverflow,
@@ -660,7 +643,6 @@ impl PredictionMarketBinaryLiabilityCalculator {
     ) -> Result<LiabilityQuote, LiabilityError> {
         let ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) = state;
         validate_request(request)?;
-        validate_liquidity(request)?;
         let liability = request.full_reservation_liability.amount();
 
         match request.side {
@@ -700,18 +682,6 @@ fn validate_request(request: &CapitalAdmissionRequest) -> Result<(), LiabilityEr
     if request.quantity <= Decimal::ZERO {
         return Err(LiabilityError::InvalidIntentQuantity);
     }
-    if request.limit_price < Decimal::ZERO || request.limit_price > Decimal::ONE {
-        return Err(LiabilityError::InvalidIntentPrice);
-    }
-    Ok(())
-}
-
-fn validate_liquidity(request: &CapitalAdmissionRequest) -> Result<(), LiabilityError> {
-    if request.liquidity == IntentLiquidity::RestingMaker
-        && request.quote_set_id.as_deref().is_none_or(str::is_empty)
-    {
-        return Err(LiabilityError::MissingQuoteSetId);
-    }
     Ok(())
 }
 
@@ -738,10 +708,9 @@ mod tests {
         CapitalAdmissionEvidenceKind, CapitalAdmissionGate, CapitalAdmissionGateInputs,
         CapitalAdmissionInputs, CapitalAdmissionLifecycleAction, CapitalAdmissionLifecycleKind,
         CapitalAdmissionLifecycleUpdate, CapitalAdmissionPolicy, CapitalAdmissionReason,
-        CapitalAdmissionRequest, FullReservationLiability, IntentLiquidity, IntentOrderKind,
-        IntentSide, LiabilityError, PredictionMarketAdmissionSnapshot,
-        PredictionMarketBinaryLiabilityCalculator, ProductAdmissionSnapshot, ProductKind,
-        evaluate_capital_admission,
+        CapitalAdmissionRequest, FullReservationLiability, IntentSide, LiabilityError,
+        PredictionMarketAdmissionSnapshot, PredictionMarketBinaryLiabilityCalculator,
+        ProductAdmissionSnapshot, ProductKind, evaluate_capital_admission,
     };
 
     fn policy() -> CapitalAdmissionPolicy {
@@ -750,7 +719,7 @@ mod tests {
         }
     }
 
-    fn request(side: IntentSide, liquidity: IntentLiquidity) -> CapitalAdmissionRequest {
+    fn request(side: IntentSide) -> CapitalAdmissionRequest {
         CapitalAdmissionRequest {
             intent_id: "intent-1".to_string(),
             strategy_id: "strategy-1".to_string(),
@@ -759,7 +728,6 @@ mod tests {
             product_kind: ProductKind::PredictionMarketBinary,
             side,
             quantity: Decimal::new(10, 0),
-            limit_price: Decimal::new(40, 2),
             full_reservation_liability: FullReservationLiability::from_parts(
                 ReservationBasis::new(match side {
                     IntentSide::Buy => Decimal::new(430, 2),
@@ -769,9 +737,6 @@ mod tests {
                 GuaranteedDebit::new(Decimal::ZERO).expect("zero debit should be valid"),
             )
             .expect("test liability should be valid"),
-            order_kind: IntentOrderKind::Limit,
-            liquidity,
-            quote_set_id: None,
             now_ns: 1_000,
         }
     }
@@ -859,7 +824,7 @@ mod tests {
     fn request_with_intent(intent_id: &str) -> CapitalAdmissionRequest {
         CapitalAdmissionRequest {
             intent_id: intent_id.to_string(),
-            ..request(IntentSide::Buy, IntentLiquidity::Taker)
+            ..request(IntentSide::Buy)
         }
     }
 
@@ -949,26 +914,16 @@ mod tests {
         let calculator = PredictionMarketBinaryLiabilityCalculator;
 
         let buy = calculator
-            .worst_case_liability(&request(IntentSide::Buy, IntentLiquidity::Taker), &state())
+            .worst_case_liability(&request(IntentSide::Buy), &state())
             .expect("fresh buy state should price liability");
         assert_eq!(buy.calculated_liability, Decimal::new(430, 2));
         assert_eq!(buy.reserved_liability, Decimal::new(430, 2));
 
         let sell = calculator
-            .worst_case_liability(&request(IntentSide::Sell, IntentLiquidity::Taker), &state())
+            .worst_case_liability(&request(IntentSide::Sell), &state())
             .expect("fresh sell state should price liability");
         assert_eq!(sell.calculated_liability, Decimal::new(30, 2));
         assert_eq!(sell.reserved_liability, Decimal::new(30, 2));
-
-        assert_eq!(
-            calculator
-                .worst_case_liability(
-                    &request(IntentSide::Buy, IntentLiquidity::RestingMaker),
-                    &state(),
-                )
-                .expect_err("resting maker intent must identify its quote set"),
-            LiabilityError::MissingQuoteSetId
-        );
     }
 
     #[test]
@@ -987,7 +942,7 @@ mod tests {
         let mut ledger = ReservationLedger::reconciled();
 
         let decision = evaluate_capital_admission(CapitalAdmissionInputs {
-            request: &request(IntentSide::Buy, IntentLiquidity::Taker),
+            request: &request(IntentSide::Buy),
             state: Some(&state),
             policy: &policy(),
             loss_policy: Some(&loss_policy()),
@@ -1022,7 +977,7 @@ mod tests {
         let mut ledger = ReservationLedger::reconciled();
 
         let decision = evaluate_capital_admission(CapitalAdmissionInputs {
-            request: &request(IntentSide::Buy, IntentLiquidity::Taker),
+            request: &request(IntentSide::Buy),
             state: Some(&state),
             policy: &policy(),
             loss_policy: Some(&loss_policy()),
@@ -1058,7 +1013,7 @@ mod tests {
         let mut ledger = ReservationLedger::reconciled();
 
         let decision = evaluate_capital_admission(CapitalAdmissionInputs {
-            request: &request(IntentSide::Buy, IntentLiquidity::Taker),
+            request: &request(IntentSide::Buy),
             state: Some(&state),
             policy: &policy(),
             loss_policy: Some(&loss_policy()),
@@ -1102,7 +1057,7 @@ mod tests {
         let mut ledger = ReservationLedger::reconciled();
 
         let decision = evaluate_capital_admission(CapitalAdmissionInputs {
-            request: &request(IntentSide::Buy, IntentLiquidity::Taker),
+            request: &request(IntentSide::Buy),
             state: Some(&state),
             policy: &policy(),
             loss_policy: None,
@@ -1138,7 +1093,7 @@ mod tests {
         let mut ledger = ReservationLedger::reconciled();
 
         let decision = evaluate_capital_admission(CapitalAdmissionInputs {
-            request: &request(IntentSide::Buy, IntentLiquidity::Taker),
+            request: &request(IntentSide::Buy),
             state: Some(&state),
             policy: &floor_policy,
             loss_policy: Some(&loss_policy()),
@@ -1159,7 +1114,7 @@ mod tests {
 
     #[test]
     fn admission_rejects_pool_mismatch_before_nt_state_validation() {
-        let mut foreign_pool_request = request(IntentSide::Buy, IntentLiquidity::Taker);
+        let mut foreign_pool_request = request(IntentSide::Buy);
         foreign_pool_request.pool_id = "pool-2".to_string();
         let mut ledger = ReservationLedger::reconciled();
 
@@ -1199,7 +1154,7 @@ mod tests {
         let mut unreconciled_ledger = ReservationLedger::unreconciled();
 
         let decision = evaluate_capital_admission(CapitalAdmissionInputs {
-            request: &request(IntentSide::Buy, IntentLiquidity::Taker),
+            request: &request(IntentSide::Buy),
             state: Some(&state),
             policy: &policy(),
             loss_policy: Some(&loss_policy()),

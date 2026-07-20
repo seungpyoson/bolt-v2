@@ -24,13 +24,12 @@ use bolt_v2::bolt_v3_providers::polymarket::{
 };
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CapitalAdmissionRejectReason, BoltV3CompiledOrderAdmissionEvidence,
-    BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
-    BoltV3CompiledProductKind, BoltV3KillSwitchForcedReductionClaim,
+    BoltV3CompiledOrderSide, BoltV3CompiledProductKind, BoltV3KillSwitchForcedReductionClaim,
     BoltV3KillSwitchForcedReductionPolicy, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
     BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
     BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
     BoltV3SubmitCapitalAdmissionOpenOrderReservation, BoltV3SubmitIntentKind,
-    BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
+    BoltV3SubmitLifecyclePolicy,
 };
 use bolt_v2::bolt_v3_venue_truth::{
     VenueTruthCaptureFailureEvidence, VenueTruthSettlementExplanation, VenueTruthSnapshot,
@@ -3055,11 +3054,7 @@ fn capital_admission_submit_request(client_order_id: &str) -> BoltV3SubmitAdmiss
             product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
             side: BoltV3CompiledOrderSide::Buy,
             quantity: Decimal::new(10, 0),
-            effective_price: Decimal::new(40, 2),
-            order_kind: BoltV3CompiledOrderKind::Limit,
-            liquidity: BoltV3CompiledOrderLiquidity::Taker,
-            quote_set_id: None,
-            prediction_market_outcome: Some(PredictionMarketOutcomeSide::Yes),
+            reservation_basis_factor: Decimal::new(40, 2),
         }),
     }
 }

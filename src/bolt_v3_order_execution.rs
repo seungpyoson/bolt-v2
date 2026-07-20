@@ -1994,13 +1994,12 @@ mod tests {
         bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
         bolt_v3_quote_lifecycle::Leg,
         bolt_v3_submit_admission::{
-            BoltV3CompiledOrderAdmissionEvidence, BoltV3CompiledOrderKind,
-            BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide, BoltV3CompiledProductKind,
-            BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
-            BoltV3LiveSubmitApprovalLimits, BoltV3RiskReducingExitProof,
-            BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+            BoltV3CompiledOrderAdmissionEvidence, BoltV3CompiledOrderSide,
+            BoltV3CompiledProductKind, BoltV3KillSwitchForcedReductionClaim,
+            BoltV3KillSwitchForcedReductionPolicy, BoltV3LiveSubmitApprovalLimits,
+            BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
             BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitCapitalAdmissionNtComponents,
-            BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
+            BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
         },
     };
 
@@ -3524,11 +3523,7 @@ mod tests {
             product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
             side: BoltV3CompiledOrderSide::Buy,
             quantity: Decimal::new(1, 0),
-            effective_price: Decimal::new(40, 2),
-            order_kind: BoltV3CompiledOrderKind::Limit,
-            liquidity: BoltV3CompiledOrderLiquidity::Taker,
-            quote_set_id: None,
-            prediction_market_outcome: Some(PredictionMarketOutcomeSide::Yes),
+            reservation_basis_factor: Decimal::new(40, 2),
         });
         request.instrument_id = "instrument-yes.VENUE-A".to_string();
         request.execution_client_id = "execution-client-a".to_string();
@@ -3568,11 +3563,7 @@ mod tests {
                 product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
                 side: BoltV3CompiledOrderSide::Sell,
                 quantity: order_quantity,
-                effective_price: Decimal::new(50, 2),
-                order_kind: BoltV3CompiledOrderKind::Limit,
-                liquidity: BoltV3CompiledOrderLiquidity::Taker,
-                quote_set_id: None,
-                prediction_market_outcome: Some(PredictionMarketOutcomeSide::Yes),
+                reservation_basis_factor: Decimal::new(50, 2),
             }),
         }
     }

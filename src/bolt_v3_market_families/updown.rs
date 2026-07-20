@@ -1021,8 +1021,8 @@ pub fn select_market_from_instruments(
     // The cadence is config-validated positive and `now_milliseconds` comes from the
     // runtime clock, so neither step below can fail in practice. If one ever does, fail
     // LOUD (operator-visible `error!`) instead of a silent `None` that masks a clock /
-    // overflow fault (P5-8). The signature stays `Option` for the same reason as
-    // `select_binary_option_market_from_target_with_bindings` (P5-3): no `Result` refactor
+    // overflow fault. The signature stays `Option` for the same reason as
+    // `select_binary_option_market_from_target_with_bindings`: no `Result` refactor
     // of the live-money selection chain for a branch that cannot be reached.
     let Ok(now_unix_secs) = i64::try_from(Duration::from_millis(now_milliseconds).as_secs()) else {
         log::error!(

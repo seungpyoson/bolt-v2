@@ -427,10 +427,8 @@ allow_metadata_target_sampling = true
 venue = "BITMEX"
 
 [clients.bitmex_data.data]
-# Data-only readiness uses BitMEX production (mainnet) public data: pinned NT's
-# strict BitmexInstrumentType enum cannot deserialize the testnet-only `FFMCSX`
-# typ, and active_only=true avoids the historical `/instrument` dump whose
-# settled instruments break NT's whole-array deserialize.
+# Data-only readiness uses BitMEX production public data and requests only
+# active instruments.
 environment = "mainnet"
 active_only = true
 transport_backend = "sockudo"

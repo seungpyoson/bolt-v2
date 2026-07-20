@@ -7,8 +7,8 @@ use std::{
     process::Command,
 };
 
-/// Repo-root manifest that is the single owner of the gated source-root list,
-/// shared with `scripts/bolt_v3_source_roots.py`.
+/// Repo-root manifest that is the single owner of the gated source-root list;
+/// this build script is its sole enforcing parser.
 const GATED_SOURCE_ROOTS_MANIFEST: &str = "gated_source_roots.manifest";
 const NAUTILUS_SOURCE_CAPABILITIES_MANIFEST: &str = "ci/nautilus-source-capabilities.toml";
 const OFFICIAL_NAUTILUS_REPOSITORY: &str = "https://github.com/nautechsystems/nautilus_trader.git";
@@ -352,14 +352,10 @@ fn emit_gated_source_roots(manifest_dir: &Path) {
 /// components) and structural errors fail the build with a file:line message.
 /// The manifest must declare exactly the four registry sections (`[strategy]`,
 /// `[submit_admission]`, `[outcome_group]`, `[maker]`): a missing or unexpected
-/// section fails the build. `scripts/bolt_v3_source_roots.py` enforces the same
-/// set and mirrors the two Unicode-sensitive primitives used here: line
-/// splitting on
-/// `str::lines()` terminators (`\n`/`\r\n`, via Python `split("\n")` not
-/// `splitlines()`) and whitespace trimming on the `str::trim()` `White_Space`
-/// set (not bare `str.strip()`, which also strips U+001C–U+001F). Every other
-/// step is an ASCII-literal check, so the two parsers are equivalent for all
-/// inputs and a malformed manifest fails loudly on both.
+/// section fails the build. Parsing primitives are deliberately narrow: line
+/// splitting on `str::lines()` terminators (`\n`/`\r\n`) and whitespace
+/// trimming on the `str::trim()` `White_Space` set. Every other step is an
+/// ASCII-literal check, so a malformed manifest fails loudly at build time.
 fn parse_gated_source_roots(text: &str, manifest_path: &Path) -> Vec<(String, Vec<String>)> {
     let mut entries: Vec<(String, Vec<String>)> = Vec::new();
     for (index, raw_line) in text.lines().enumerate() {
@@ -410,8 +406,7 @@ fn parse_gated_source_roots(text: &str, manifest_path: &Path) -> Vec<(String, Ve
     // The manifest must declare EXACTLY the four registry keys the crate consumes
     // (STRATEGY_KEY / SUBMIT_ADMISSION_KEY / OUTCOME_GROUP_KEY / MAKER_KEY in
     // `src/source_canonicalization.rs`). build.rs cannot import those crate consts,
-    // so they are mirrored here; `scripts/bolt_v3_source_roots.py` enforces the
-    // same set. Rejecting both missing AND unexpected sections means a typo'd
+    // so they are mirrored here. Rejecting both missing AND unexpected sections means a typo'd
     // header (e.g. `[strategies]`) fails the build instead of silently dropping
     // roots from the gated set or panicking later at `registry_entry`.
     const REQUIRED_KEYS: [&str; 4] = ["strategy", "submit_admission", "outcome_group", "maker"];

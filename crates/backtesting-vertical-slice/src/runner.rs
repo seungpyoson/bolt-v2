@@ -3464,29 +3464,18 @@ mod tests {
         up_projection: &crate::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
         down_projection: &crate::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
     ) -> Result<crate::execution_contract::ExecutionContractReport> {
-        let settlement_ts = UnixNanos::from(ISSUE_789_END_NS as u64);
-        let entry_orders: Vec<_> = output
-            .order_terminals
+        let positions: Vec<_> = output
+            .positions
             .iter()
-            .filter(|order| order.fills.iter().any(|fill| fill.ts_event < settlement_ts))
+            .filter(|position| !position.events.is_empty())
             .collect();
         ensure!(
-            entry_orders.len() == 1,
-            "issue #789 requires exactly one pre-settlement entry order, got {}",
-            entry_orders.len()
+            positions.len() == 1,
+            "issue #789 requires exactly one filled position lifecycle, got {}",
+            positions.len()
         );
-        let entry_order = entry_orders[0];
-        let entry_fills: Vec<_> = entry_order
-            .fills
-            .iter()
-            .filter(|fill| fill.ts_event < settlement_ts)
-            .cloned()
-            .collect();
-        ensure!(
-            !entry_fills.is_empty(),
-            "issue #789 entry order has no executable-book fills"
-        );
-        let instrument_id = entry_fills[0].instrument_id;
+        let position = positions[0];
+        let instrument_id = position.instrument_id;
         let projection = if up_projection.instrument.id() == instrument_id {
             up_projection
         } else if down_projection.instrument.id() == instrument_id {
@@ -3494,25 +3483,65 @@ mod tests {
         } else {
             anyhow::bail!("issue #789 fill instrument {instrument_id} has no PMXT projection")
         };
-        let submission_timestamp = entry_order
-            .submission_timestamp
-            .context("issue #789 entry order has no submission timestamp")?;
-        let executable_book = replay_executable_book_at_submission(
-            instrument_id,
-            &projection.order_book_deltas,
-            submission_timestamp,
-        )?;
-        let positions: Vec<_> = output
-            .positions
-            .iter()
-            .filter(|position| position.instrument_id == instrument_id)
-            .collect();
-        ensure!(
-            positions.len() == 1,
-            "issue #789 requires exactly one position for {instrument_id}, got {}",
-            positions.len()
-        );
-        let position = positions[0];
+
+        let mut client_order_ids = Vec::new();
+        for fill in &position.events {
+            ensure!(
+                fill.instrument_id == instrument_id && fill.position_id == Some(position.id),
+                "issue #789 position event does not share the selected instrument and position identity"
+            );
+            if client_order_ids.last() == Some(&fill.client_order_id) {
+                continue;
+            }
+            ensure!(
+                !client_order_ids.contains(&fill.client_order_id),
+                "issue #789 position events contain a non-contiguous order fill sequence"
+            );
+            client_order_ids.push(fill.client_order_id);
+        }
+
+        let mut orders = Vec::with_capacity(client_order_ids.len());
+        for client_order_id in client_order_ids {
+            let matching_orders: Vec<_> = output
+                .order_terminals
+                .iter()
+                .filter(|order| order.client_order_id == client_order_id.to_string())
+                .collect();
+            ensure!(
+                matching_orders.len() == 1,
+                "issue #789 position order {client_order_id} resolves to {} terminal records",
+                matching_orders.len()
+            );
+            let order = matching_orders[0];
+            ensure!(
+                !order.fills.is_empty()
+                    && order.fills.iter().all(|fill| {
+                        fill.instrument_id == instrument_id
+                            && fill.position_id == Some(position.id)
+                            && fill.client_order_id == client_order_id
+                    }),
+                "issue #789 terminal order {client_order_id} has fills outside the selected position lifecycle"
+            );
+            let executable_book = order
+                .submission_timestamp
+                .map(|submission_timestamp| {
+                    replay_executable_book_at_submission(
+                        instrument_id,
+                        &projection.order_book_deltas,
+                        submission_timestamp,
+                    )
+                })
+                .transpose()?;
+            orders.push(crate::execution_contract::ExecutionOrderTrace {
+                submission_timestamp: order.submission_timestamp,
+                executable_book,
+                submitted_quantity: order.initialized_quantity,
+                quote_quantity: order.initialized_quote_quantity,
+                effective_base_quantity: order.effective_quantity,
+                fills: order.fills.clone(),
+            });
+        }
+
         let realized_pnl = position
             .realized_pnl
             .context("issue #789 position has no realized PnL")?;
@@ -3567,15 +3596,10 @@ mod tests {
             .as_deref()
             .context("issue #789 runner omitted resolved config bytes")?;
 
-        crate::execution_contract::validate_execution_contract(
+        let report = crate::execution_contract::validate_execution_contract(
             &crate::execution_contract::ExecutionContractTrace {
                 instrument: &projection.instrument,
-                executable_book: &executable_book,
-                order_side: entry_fills[0].order_side,
-                submitted_quantity: entry_order.initialized_quantity,
-                quote_quantity: entry_order.initialized_quote_quantity,
-                effective_base_quantity: entry_order.effective_quantity,
-                fills: &entry_fills,
+                orders: &orders,
                 position_fills: &position.events,
                 settlement_price,
                 initial_cash,
@@ -3586,7 +3610,12 @@ mod tests {
                 canonical_resolved_config_bytes: resolved_config_bytes,
                 canonical_resolved_config_sha256: &manifest.strategy_config_hash,
             },
-        )
+        )?;
+        ensure!(
+            report.normal_exit_fill_count > 0,
+            "issue #789 lifecycle did not contain a validated normal exit before settlement"
+        );
+        Ok(report)
     }
 
     fn write_issue_789_result_artifact(

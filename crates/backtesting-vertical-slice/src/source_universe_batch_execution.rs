@@ -35,10 +35,11 @@ use crate::conversion_boundary::{
 };
 use crate::io_safety::{ByteLimit, ensure_within_limit, read_to_vec_with_limit};
 use crate::path_resolution::resolve_existing_path;
+use crate::source_proof::{SourceBindingRegistry, resolve_source_bindings_path};
 use crate::{
     operator::{
         CATALOG_DIR, RunSpec, ValidatedRunSpecExecution, run_from_validated_run_spec,
-        validate_run_spec_execution,
+        validate_run_spec_execution_with_registry,
     },
     source_universe_execution_pack::{
         SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
@@ -99,31 +100,40 @@ impl SourceUniverseAdmittedControls {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct SourceUniverseControlAdmissionPolicy {
     max_run_spec_bytes: ByteLimit,
     max_accepted_tranche_bytes: ByteLimit,
     max_execution_plan_bytes: ByteLimit,
+    max_source_bindings_bytes: ByteLimit,
     max_total_control_bytes: ByteLimit,
+    source_bindings_path: PathBuf,
+    source_bindings: Arc<SourceBindingRegistry>,
+    source_bindings_bytes: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceUniverseControlAdmissionPolicySpec {
     max_run_spec_bytes: u64,
     max_accepted_tranche_bytes: u64,
     max_execution_plan_bytes: u64,
+    max_source_bindings_bytes: u64,
     max_total_control_bytes: u64,
+    source_bindings_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceUniverseControlAdmissionPolicyFile {
     control_admission: SourceUniverseControlAdmissionPolicySpec,
 }
 
 impl SourceUniverseControlAdmissionPolicy {
-    fn from_spec(spec: SourceUniverseControlAdmissionPolicySpec) -> Result<Self> {
+    fn from_spec(
+        spec: SourceUniverseControlAdmissionPolicySpec,
+        policy_path: &Path,
+    ) -> Result<Self> {
         for (name, value) in [
             ("max_run_spec_bytes", spec.max_run_spec_bytes),
             (
@@ -131,6 +141,7 @@ impl SourceUniverseControlAdmissionPolicy {
                 spec.max_accepted_tranche_bytes,
             ),
             ("max_execution_plan_bytes", spec.max_execution_plan_bytes),
+            ("max_source_bindings_bytes", spec.max_source_bindings_bytes),
             ("max_total_control_bytes", spec.max_total_control_bytes),
         ] {
             usize::try_from(value).with_context(|| {
@@ -138,32 +149,86 @@ impl SourceUniverseControlAdmissionPolicy {
             })?;
         }
 
-        let policy = Self {
-            max_run_spec_bytes: ByteLimit::new(spec.max_run_spec_bytes)
-                .context("control admission max_run_spec_bytes")?,
-            max_accepted_tranche_bytes: ByteLimit::new(spec.max_accepted_tranche_bytes)
-                .context("control admission max_accepted_tranche_bytes")?,
-            max_execution_plan_bytes: ByteLimit::new(spec.max_execution_plan_bytes)
-                .context("control admission max_execution_plan_bytes")?,
-            max_total_control_bytes: ByteLimit::new(spec.max_total_control_bytes)
-                .context("control admission max_total_control_bytes")?,
-        };
+        let max_run_spec_bytes = ByteLimit::new(spec.max_run_spec_bytes)
+            .context("control admission max_run_spec_bytes")?;
+        let max_accepted_tranche_bytes = ByteLimit::new(spec.max_accepted_tranche_bytes)
+            .context("control admission max_accepted_tranche_bytes")?;
+        let max_execution_plan_bytes = ByteLimit::new(spec.max_execution_plan_bytes)
+            .context("control admission max_execution_plan_bytes")?;
+        let max_source_bindings_bytes = ByteLimit::new(spec.max_source_bindings_bytes)
+            .context("control admission max_source_bindings_bytes")?;
+        let max_total_control_bytes = ByteLimit::new(spec.max_total_control_bytes)
+            .context("control admission max_total_control_bytes")?;
         for (name, individual) in [
-            ("max_run_spec_bytes", policy.max_run_spec_bytes),
-            (
-                "max_accepted_tranche_bytes",
-                policy.max_accepted_tranche_bytes,
-            ),
-            ("max_execution_plan_bytes", policy.max_execution_plan_bytes),
+            ("max_run_spec_bytes", max_run_spec_bytes),
+            ("max_accepted_tranche_bytes", max_accepted_tranche_bytes),
+            ("max_execution_plan_bytes", max_execution_plan_bytes),
+            ("max_source_bindings_bytes", max_source_bindings_bytes),
         ] {
             ensure!(
-                policy.max_total_control_bytes.max_bytes() >= individual.max_bytes(),
+                max_total_control_bytes.max_bytes() >= individual.max_bytes(),
                 "control admission max_total_control_bytes {} is less than {name} {}; \
                  the individual ceiling would be unreachable",
-                policy.max_total_control_bytes.max_bytes(),
+                max_total_control_bytes.max_bytes(),
                 individual.max_bytes()
             );
         }
+        let policy_dir = policy_path.parent().unwrap_or_else(|| Path::new("."));
+        let declared_source_bindings_path = if spec.source_bindings_path.is_absolute() {
+            spec.source_bindings_path
+        } else {
+            policy_dir.join(spec.source_bindings_path)
+        };
+        let source_bindings_path = resolve_source_bindings_path(&declared_source_bindings_path)
+            .canonicalize()
+            .with_context(|| {
+                format!(
+                    "resolve trusted source-bindings registry {}",
+                    declared_source_bindings_path.display()
+                )
+            })?;
+        let source_bindings_file = File::open(&source_bindings_path).with_context(|| {
+            format!(
+                "open trusted source-bindings registry {}",
+                source_bindings_path.display()
+            )
+        })?;
+        ensure!(
+            source_bindings_file
+                .metadata()
+                .with_context(|| format!("inspect {}", source_bindings_path.display()))?
+                .is_file(),
+            "trusted source-bindings registry {} is not a regular file",
+            source_bindings_path.display()
+        );
+        let source_bindings_bytes = read_to_vec_with_limit(
+            source_bindings_file,
+            max_source_bindings_bytes,
+            "source_bindings",
+        )
+        .with_context(|| {
+            format!(
+                "read trusted source-bindings registry {}",
+                source_bindings_path.display()
+            )
+        })?;
+        let source_bindings_text = std::str::from_utf8(&source_bindings_bytes)
+            .context("decode trusted source-bindings registry as UTF-8")?;
+        let source_bindings = SourceBindingRegistry::from_toml_str(source_bindings_text)
+            .context("parse trusted source-bindings registry TOML")?;
+        let source_bindings_bytes = u64::try_from(source_bindings_bytes.len())
+            .context("trusted source-bindings registry byte length does not fit u64")?;
+
+        let policy = Self {
+            max_run_spec_bytes,
+            max_accepted_tranche_bytes,
+            max_execution_plan_bytes,
+            max_source_bindings_bytes,
+            max_total_control_bytes,
+            source_bindings_path,
+            source_bindings: Arc::new(source_bindings),
+            source_bindings_bytes,
+        };
         Ok(policy)
     }
 }
@@ -184,12 +249,13 @@ pub fn load_source_universe_control_admission_policy(
                 policy_path.display()
             )
         })?;
-    SourceUniverseControlAdmissionPolicy::from_spec(file.control_admission).with_context(|| {
-        format!(
-            "validate source-universe control admission policy {}",
-            policy_path.display()
-        )
-    })
+    SourceUniverseControlAdmissionPolicy::from_spec(file.control_admission, policy_path)
+        .with_context(|| {
+            format!(
+                "validate source-universe control admission policy {}",
+                policy_path.display()
+            )
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +263,7 @@ pub struct SourceUniverseBatchExecutionRunOutput {
     pub canonical_rows: u64,
     pub nt_catalog_rows: u64,
     pub catalog_hash: String,
+    pub catalog_metadata_sha256: String,
 }
 
 /// Tuning for a source-universe batch execution run.
@@ -252,6 +319,8 @@ pub struct SourceUniverseBatchExecutionRecord {
     /// Pins the admitted control identity used to produce this output. The
     /// plan transitively binds the admitted run-spec and accepted tranche.
     pub execution_plan_sha256: String,
+    /// Pins the exact metadata bytes whose row counts are carried on resume.
+    pub catalog_metadata_sha256: String,
     pub canonical_rows: u64,
     pub nt_catalog_rows: u64,
     pub catalog_hash: String,
@@ -465,10 +534,38 @@ impl SourceUniverseOperatorRunner for LocalSourceUniverseOperatorRunner {
     ) -> Result<SourceUniverseBatchExecutionRunOutput> {
         let artifacts =
             run_from_validated_run_spec(&controls.run_spec_execution, object_bytes, output_dir)?;
+        let catalog_metadata_bytes =
+            fs::read(&artifacts.catalog_metadata_path).with_context(|| {
+                format!(
+                    "read completed catalog metadata {}",
+                    artifacts.catalog_metadata_path.display()
+                )
+            })?;
+        let catalog_metadata: ConversionCatalogMetadata =
+            serde_json::from_slice(&catalog_metadata_bytes)
+                .context("parse completed catalog metadata")?;
+        let canonical_rows = u64::try_from(artifacts.output.canonical_table.rows.len())
+            .context("completed canonical row count does not fit u64")?;
+        let nt_catalog_rows = u64::try_from(artifacts.output.read_back_count)
+            .context("completed NT catalog row count does not fit u64")?;
+        ensure!(
+            catalog_metadata.metadata_version == CATALOG_METADATA_VERSION
+                && u64::try_from(catalog_metadata.canonical_rows).ok() == Some(canonical_rows)
+                && catalog_metadata.catalog_hash == artifacts.output.projection.catalog_hash
+                && catalog_metadata
+                    .effective_catalog_rows_by_nt_data_type()
+                    .into_values()
+                    .try_fold(0_u64, |total, rows| {
+                        total.checked_add(u64::try_from(rows).ok()?)
+                    })
+                    == Some(nt_catalog_rows),
+            "completed catalog metadata does not match operator output"
+        );
         Ok(SourceUniverseBatchExecutionRunOutput {
-            canonical_rows: artifacts.output.canonical_table.rows.len() as u64,
-            nt_catalog_rows: artifacts.output.read_back_count as u64,
+            canonical_rows,
+            nt_catalog_rows,
             catalog_hash: artifacts.output.projection.catalog_hash,
+            catalog_metadata_sha256: hex::encode(Sha256::digest(&catalog_metadata_bytes)),
         })
     }
 }
@@ -742,7 +839,10 @@ fn prepare_batch(
         .unwrap_or(usize::MAX);
 
     let mut admitted_controls = BTreeMap::new();
-    let mut total_control_bytes = 0_u64;
+    // The operator-owned source-binding registry is admitted once per batch
+    // and retained for every record, so it consumes the same aggregate budget
+    // as the three per-record control blobs.
+    let mut total_control_bytes = config.control_admission.source_bindings_bytes;
     for record in pack
         .records
         .iter()
@@ -907,11 +1007,27 @@ fn admit_record_controls(
         &run_spec_bytes,
         &accepted_tranche_bytes,
     )?;
+    let declared_source_bindings_path =
+        resolve_source_bindings_path(&run_spec.source_bindings_path)
+            .canonicalize()
+            .with_context(|| {
+                format!(
+                    "resolve admitted run_spec source_bindings_path {}",
+                    run_spec.source_bindings_path.display()
+                )
+            })?;
+    ensure!(
+        declared_source_bindings_path == policy.source_bindings_path,
+        "run_spec source_bindings_path {} does not match trusted control policy registry {}",
+        declared_source_bindings_path.display(),
+        policy.source_bindings_path.display()
+    );
     let record_output_dir = batch_output_dir.join(&record.operator_run_id);
-    let run_spec_execution = validate_run_spec_execution(
+    let run_spec_execution = validate_run_spec_execution_with_registry(
         Arc::new(run_spec),
         &record_output_dir,
         &record.selected_object_sha256,
+        &policy.source_bindings,
     )
     .context("validate admitted run_spec execution inputs")?;
 
@@ -1338,6 +1454,7 @@ struct VerifiedCarriedOutput {
     catalog_hash: String,
     canonical_rows: u64,
     nt_catalog_rows: u64,
+    catalog_metadata_sha256: String,
 }
 
 fn verified_carried_output(
@@ -1355,9 +1472,12 @@ fn verified_carried_output(
     if actual_catalog_hash != prior.catalog_hash {
         return None;
     }
-    let metadata: ConversionCatalogMetadata =
-        serde_json::from_slice(&fs::read(prior.output_dir.join(CATALOG_METADATA_FILE)).ok()?)
-            .ok()?;
+    let metadata_bytes = fs::read(prior.output_dir.join(CATALOG_METADATA_FILE)).ok()?;
+    let catalog_metadata_sha256 = hex::encode(Sha256::digest(&metadata_bytes));
+    if catalog_metadata_sha256 != prior.catalog_metadata_sha256 {
+        return None;
+    }
+    let metadata: ConversionCatalogMetadata = serde_json::from_slice(&metadata_bytes).ok()?;
     if metadata.metadata_version != CATALOG_METADATA_VERSION
         || metadata.catalog_hash != actual_catalog_hash
     {
@@ -1375,6 +1495,7 @@ fn verified_carried_output(
         catalog_hash: actual_catalog_hash,
         canonical_rows,
         nt_catalog_rows,
+        catalog_metadata_sha256,
     })
 }
 
@@ -1442,6 +1563,7 @@ where
                 selected_object_sha256: record.selected_object_sha256.clone(),
                 selected_object_bytes: record.selected_object_bytes,
                 execution_plan_sha256: record.execution_plan_sha256.clone(),
+                catalog_metadata_sha256: output.catalog_metadata_sha256.clone(),
                 canonical_rows: output.canonical_rows,
                 nt_catalog_rows: output.nt_catalog_rows,
                 catalog_hash: output.catalog_hash.clone(),
@@ -1483,6 +1605,7 @@ where
         selected_object_sha256: record.selected_object_sha256.clone(),
         selected_object_bytes: record.selected_object_bytes,
         execution_plan_sha256: record.execution_plan_sha256.clone(),
+        catalog_metadata_sha256: run_output.catalog_metadata_sha256,
         canonical_rows: run_output.canonical_rows,
         nt_catalog_rows: run_output.nt_catalog_rows,
         catalog_hash: run_output.catalog_hash,
@@ -1732,6 +1855,13 @@ mod tests {
             .to_string()
     }
 
+    fn committed_reference_catalog_metadata_sha256() -> String {
+        hex::encode(Sha256::digest(
+            fs::read(committed_reference_run_dir().join(CATALOG_METADATA_FILE))
+                .expect("read committed catalog metadata"),
+        ))
+    }
+
     fn committed_run_spec() -> Arc<RunSpec> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
@@ -1789,6 +1919,7 @@ mod tests {
             selected_object_sha256: "a".repeat(64),
             selected_object_bytes: 0,
             execution_plan_sha256: "a".repeat(64),
+            catalog_metadata_sha256: committed_reference_catalog_metadata_sha256(),
             canonical_rows: 7,
             nt_catalog_rows: 7,
             catalog_hash,
@@ -1852,9 +1983,12 @@ mod tests {
         resume_records.insert(prior.sequence, prior.clone());
         let run_spec = committed_run_spec();
         let accepted_object_sha256 = run_spec.accepted_object.sha256.clone();
-        let run_spec_execution =
-            validate_run_spec_execution(run_spec, &prior.output_dir, &accepted_object_sha256)
-                .expect("validate committed run spec for owned plan fixture");
+        let run_spec_execution = crate::operator::validate_run_spec_execution(
+            run_spec,
+            &prior.output_dir,
+            &accepted_object_sha256,
+        )
+        .expect("validate committed run spec for owned plan fixture");
         let admitted_controls = BTreeMap::from([(
             prior.sequence,
             SourceUniverseAdmittedControls {
@@ -1915,6 +2049,31 @@ mod tests {
         assert!(
             !carried_output_still_verifies(&record),
             "a prior catalog whose recomputed hash differs from the carried hash must not verify"
+        );
+    }
+
+    #[test]
+    fn carried_output_does_not_verify_when_catalog_metadata_changes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        copy_reference_output(&output_dir);
+        let record =
+            carried_record_with_output(output_dir.clone(), committed_reference_catalog_hash());
+        let metadata_path = output_dir.join(CATALOG_METADATA_FILE);
+        let mut metadata: serde_json::Value = serde_json::from_slice(
+            &fs::read(&metadata_path).expect("read copied catalog metadata"),
+        )
+        .expect("parse copied catalog metadata");
+        metadata["canonical_rows"] = serde_json::json!(u64::MAX);
+        fs::write(
+            &metadata_path,
+            serde_json::to_vec_pretty(&metadata).expect("serialize changed catalog metadata"),
+        )
+        .expect("write changed catalog metadata");
+
+        assert!(
+            !carried_output_still_verifies(&record),
+            "changed catalog metadata bytes must force re-execution"
         );
     }
 

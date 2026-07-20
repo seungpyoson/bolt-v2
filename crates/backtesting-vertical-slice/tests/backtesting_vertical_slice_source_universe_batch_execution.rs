@@ -220,7 +220,7 @@ fn duplicate_selected_sequence_rejects_before_fetch_or_output_creation() {
 }
 
 #[test]
-fn runner_consumes_admitted_control_bytes_after_source_path_changes() {
+fn runner_consumes_admitted_control_and_registry_snapshot_after_source_path_changes() {
     struct MutatingFetcher {
         control_replacements: Vec<(PathBuf, Vec<u8>)>,
         object_bytes: Vec<u8>,
@@ -261,6 +261,10 @@ fn runner_consumes_admitted_control_bytes_after_source_path_changes() {
             (run_spec_path, changed_run_spec_bytes),
             (accepted_tranche_path, b"changed-after-admission".to_vec()),
             (execution_plan_path, b"changed-after-admission".to_vec()),
+            (
+                temp_dir.path().join("source-bindings.toml"),
+                b"changed-after-admission".to_vec(),
+            ),
         ],
         object_bytes: object_bytes.to_vec(),
     };
@@ -1041,8 +1045,12 @@ fn control_and_batch_byte_ceilings_enforce_exact_boundaries() {
         .expect("tranche length fits u64");
     let plan_bytes = u64::try_from(fs::read(&plan_path).expect("read plan").len())
         .expect("plan length fits u64");
-    let total_bytes = run_bytes
-        .checked_add(tranche_bytes)
+    let registry_bytes = fs::metadata(temp_dir.path().join("source-bindings.toml"))
+        .expect("source-bindings metadata")
+        .len();
+    let total_bytes = registry_bytes
+        .checked_add(run_bytes)
+        .and_then(|total| total.checked_add(tranche_bytes))
         .and_then(|total| total.checked_add(plan_bytes))
         .expect("control total fits u64");
     let exact_policy = test_control_admission_policy_with_limits(
@@ -1107,7 +1115,9 @@ fn control_and_batch_byte_ceilings_enforce_exact_boundaries() {
         serde_json::from_slice(&fs::read(&aggregate_pack_path).expect("read aggregate pack"))
             .expect("parse aggregate pack");
     let mut role_max = [0_u64; 3];
-    let mut aggregate_total = 0_u64;
+    let mut aggregate_total = fs::metadata(aggregate_temp.path().join("source-bindings.toml"))
+        .expect("aggregate source-bindings metadata")
+        .len();
     for record in &pack.records {
         for (index, path) in record.artifact_paths().into_iter().enumerate() {
             let length = fs::metadata(path).expect("control metadata").len();
@@ -1159,8 +1169,11 @@ fn control_and_batch_byte_ceilings_enforce_exact_boundaries() {
     let second_run_spec_bytes = fs::metadata(&pack.records[1].run_spec_path)
         .expect("second run-spec metadata")
         .len();
-    let during_read_limit = first_record_total
-        .checked_add(second_run_spec_bytes)
+    let during_read_limit = fs::metadata(aggregate_temp.path().join("source-bindings.toml"))
+        .expect("aggregate source-bindings metadata")
+        .len()
+        .checked_add(first_record_total)
+        .and_then(|total| total.checked_add(second_run_spec_bytes))
         .and_then(|total| total.checked_sub(1))
         .expect("during-read aggregate limit fits u64");
     assert!(
@@ -1191,31 +1204,39 @@ fn malformed_control_policies_fail_closed() {
     let cases = [
         (
             "missing-key",
-            "[control_admission]\nmax_run_spec_bytes = 1\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\n",
+            "[control_admission]\nmax_run_spec_bytes = 1\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_source_bindings_bytes = 1\nsource_bindings_path = \"source-bindings.toml\"\n",
+        ),
+        (
+            "missing-source-bindings-path",
+            "[control_admission]\nmax_run_spec_bytes = 1\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_source_bindings_bytes = 1\nmax_total_control_bytes = 1\n",
         ),
         (
             "unknown-key",
-            "[control_admission]\nmax_run_spec_bytes = 1\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\nextra = 1\n",
+            "[control_admission]\nmax_run_spec_bytes = 1\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_source_bindings_bytes = 1\nmax_total_control_bytes = 1\nsource_bindings_path = \"source-bindings.toml\"\nextra = 1\n",
         ),
         (
             "zero",
-            "[control_admission]\nmax_run_spec_bytes = 0\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\n",
+            "[control_admission]\nmax_run_spec_bytes = 0\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_source_bindings_bytes = 1\nmax_total_control_bytes = 1\nsource_bindings_path = \"source-bindings.toml\"\n",
+        ),
+        (
+            "zero-source-bindings-limit",
+            "[control_admission]\nmax_run_spec_bytes = 1\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_source_bindings_bytes = 0\nmax_total_control_bytes = 1\nsource_bindings_path = \"source-bindings.toml\"\n",
         ),
         (
             "malformed",
-            "[control_admission]\nmax_run_spec_bytes = \"large\"\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\n",
+            "[control_admission]\nmax_run_spec_bytes = \"large\"\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_source_bindings_bytes = 1\nmax_total_control_bytes = 1\nsource_bindings_path = \"source-bindings.toml\"\n",
         ),
         (
             "negative",
-            "[control_admission]\nmax_run_spec_bytes = -1\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\n",
+            "[control_admission]\nmax_run_spec_bytes = -1\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_source_bindings_bytes = 1\nmax_total_control_bytes = 1\nsource_bindings_path = \"source-bindings.toml\"\n",
         ),
         (
             "out-of-range",
-            "[control_admission]\nmax_run_spec_bytes = 999999999999999999999999\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\n",
+            "[control_admission]\nmax_run_spec_bytes = 999999999999999999999999\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_source_bindings_bytes = 1\nmax_total_control_bytes = 1\nsource_bindings_path = \"source-bindings.toml\"\n",
         ),
         (
             "contradictory",
-            "[control_admission]\nmax_run_spec_bytes = 2\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_total_control_bytes = 1\n",
+            "[control_admission]\nmax_run_spec_bytes = 2\nmax_accepted_tranche_bytes = 1\nmax_execution_plan_bytes = 1\nmax_source_bindings_bytes = 1\nmax_total_control_bytes = 1\nsource_bindings_path = \"source-bindings.toml\"\n",
         ),
     ];
     for (name, toml) in cases {
@@ -1225,6 +1246,83 @@ fn malformed_control_policies_fail_closed() {
         load_source_universe_control_admission_policy(&policy_path)
             .expect_err("malformed policy must reject");
     }
+}
+
+#[test]
+fn oversized_source_bindings_registry_fails_policy_load() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    let registry_bytes = fs::metadata(temp_dir.path().join("source-bindings.toml"))
+        .expect("source-bindings metadata")
+        .len();
+    let policy_path = temp_dir.path().join("oversized-registry-policy.toml");
+    fs::write(
+        &policy_path,
+        format!(
+            "[control_admission]\n\
+             max_run_spec_bytes = 1000000\n\
+             max_accepted_tranche_bytes = 1000000\n\
+             max_execution_plan_bytes = 1000000\n\
+             max_source_bindings_bytes = {}\n\
+             max_total_control_bytes = 10000000\n\
+             source_bindings_path = \"source-bindings.toml\"\n",
+            registry_bytes - 1
+        ),
+    )
+    .expect("write oversized-registry policy");
+
+    let error = load_source_universe_control_admission_policy(&policy_path)
+        .expect_err("registry over its trusted ceiling must reject");
+    assert!(
+        format!("{error:#}").contains("source_bindings exceeds configured byte limit"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn run_spec_cannot_select_a_different_source_bindings_registry() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, run_spec_path, _, plan_path) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    let alternate_registry_path = temp_dir.path().join("alternate-source-bindings.toml");
+    fs::copy(
+        temp_dir.path().join("source-bindings.toml"),
+        &alternate_registry_path,
+    )
+    .expect("copy alternate source-bindings registry");
+    let mut run_spec: RunSpec =
+        toml::from_slice(&fs::read(&run_spec_path).expect("read run spec for registry mutation"))
+            .expect("parse run spec for registry mutation");
+    run_spec.source_bindings_path = alternate_registry_path;
+    let run_spec_bytes = toml::to_string_pretty(&run_spec)
+        .expect("serialize registry-mutated run spec")
+        .into_bytes();
+    let run_spec_sha256 = sha256_hex(&run_spec_bytes);
+    fs::write(&run_spec_path, &run_spec_bytes).expect("write registry-mutated run spec");
+    let mut plan: BackfillExecutionPlan = serde_json::from_slice(
+        &fs::read(&plan_path).expect("read execution plan for registry mutation"),
+    )
+    .expect("parse execution plan for registry mutation");
+    plan.run_spec_hash.clone_from(&run_spec_sha256);
+    let plan_bytes = serde_json::to_vec_pretty(&plan).expect("serialize registry-mutated plan");
+    fs::write(&plan_path, &plan_bytes).expect("write registry-mutated plan");
+    let mut pack: SourceUniverseExecutionPack = serde_json::from_slice(
+        &fs::read(&pack_path).expect("read execution pack for registry mutation"),
+    )
+    .expect("parse execution pack for registry mutation");
+    pack.records[0].run_spec_sha256 = run_spec_sha256;
+    pack.records[0].execution_plan_sha256 = sha256_hex(&plan_bytes);
+    fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&pack).expect("serialize registry-mutated pack"),
+    )
+    .expect("write registry-mutated pack");
+
+    assert_control_admission_rejects_before_side_effects(
+        &pack_path,
+        &temp_dir.path().join("registry-mismatch-output"),
+        "does not match trusted control policy registry",
+    );
 }
 
 #[test]
@@ -1565,6 +1663,10 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
         prior_output_dir.join("catalog-metadata.json"),
     )
     .expect("copy committed catalog metadata");
+    first_report.records[0].catalog_metadata_sha256 = sha256_hex(
+        &fs::read(prior_output_dir.join("catalog-metadata.json"))
+            .expect("read copied catalog metadata"),
+    );
     first_report.records[0].operator_run_id = "forged-prior-run".to_string();
     first_report.records[0].source_binding = "forged-prior-binding".to_string();
     first_report.records[0].symbol = "FORGED".to_string();
@@ -2519,6 +2621,7 @@ impl SourceUniverseOperatorRunner for RecordingRunner {
             canonical_rows: 7,
             nt_catalog_rows: 7,
             catalog_hash: "catalog-hash".to_string(),
+            catalog_metadata_sha256: "b".repeat(64),
         })
     }
 }
@@ -2892,6 +2995,9 @@ fn test_control_admission_policy_with_limits(
     max_execution_plan_bytes: u64,
     max_total_control_bytes: u64,
 ) -> SourceUniverseControlAdmissionPolicy {
+    let max_source_bindings_bytes = fs::metadata(root.join("source-bindings.toml"))
+        .expect("source-bindings registry exists before policy construction")
+        .len();
     let path = root.join(format!(
         "control-admission-{max_run_spec_bytes}-{max_accepted_tranche_bytes}-{max_execution_plan_bytes}-{max_total_control_bytes}.toml"
     ));
@@ -2902,7 +3008,9 @@ fn test_control_admission_policy_with_limits(
              max_run_spec_bytes = {max_run_spec_bytes}\n\
              max_accepted_tranche_bytes = {max_accepted_tranche_bytes}\n\
              max_execution_plan_bytes = {max_execution_plan_bytes}\n\
-             max_total_control_bytes = {max_total_control_bytes}\n"
+             max_source_bindings_bytes = {max_source_bindings_bytes}\n\
+             max_total_control_bytes = {max_total_control_bytes}\n\
+             source_bindings_path = \"source-bindings.toml\"\n"
         ),
     )
     .expect("write test control-admission policy");
@@ -2962,6 +3070,7 @@ fn carried_record_fixture(
         selected_object_sha256: selected_object_sha256.to_string(),
         selected_object_bytes: 0,
         execution_plan_sha256: "a".repeat(64),
+        catalog_metadata_sha256: "b".repeat(64),
         canonical_rows: 7,
         nt_catalog_rows: 7,
         catalog_hash: "carried-catalog-hash".to_string(),
@@ -3057,6 +3166,9 @@ impl SourceUniverseOperatorRunner for ConcurrencyRunner {
             canonical_rows: 100 + record.sequence,
             nt_catalog_rows: 200 + record.sequence,
             catalog_hash: format!("catalog-hash-{}", record.sequence),
+            catalog_metadata_sha256: sha256_hex(
+                format!("metadata-hash-{}", record.sequence).as_bytes(),
+            ),
         })
     }
 }
@@ -3087,6 +3199,7 @@ impl SourceUniverseOperatorRunner for FailingRunner {
             canonical_rows: 7,
             nt_catalog_rows: 7,
             catalog_hash: "catalog-hash".to_string(),
+            catalog_metadata_sha256: "b".repeat(64),
         })
     }
 }

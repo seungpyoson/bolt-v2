@@ -791,6 +791,14 @@ fn accepted_dataset_for_run_spec_hash(
     object_sha256: &str,
 ) -> Result<(SourceProofReport, AcceptedDataset)> {
     let registry = read_source_binding_registry(&spec.source_bindings_path)?;
+    accepted_dataset_for_run_spec_hash_with_registry(spec, object_sha256, &registry)
+}
+
+fn accepted_dataset_for_run_spec_hash_with_registry(
+    spec: &RunSpec,
+    object_sha256: &str,
+    registry: &SourceBindingRegistry,
+) -> Result<(SourceProofReport, AcceptedDataset)> {
     ensure!(
         spec.source_proof.is_accepted(),
         "source proof is not accepted: status {:?}",
@@ -808,7 +816,7 @@ fn accepted_dataset_for_run_spec_hash(
         &spec.source_proof,
         &spec.accepted_object,
         object_sha256,
-        &registry,
+        registry,
     )
     .map_err(|error| anyhow::anyhow!("accepted-data ledger rejected object: {error}"))?;
     Ok((spec.source_proof.clone(), accepted))
@@ -873,6 +881,20 @@ pub fn validate_run_spec_execution(
     output_dir: &Path,
     object_sha256: &str,
 ) -> Result<ValidatedRunSpecExecution> {
+    let registry = read_source_binding_registry(&spec.source_bindings_path)?;
+    validate_run_spec_execution_with_registry(spec, output_dir, object_sha256, &registry)
+}
+
+/// Certify a RunSpec against an already-loaded, operator-owned registry.
+///
+/// Batch admission uses this entry point so an admitted RunSpec cannot select
+/// or reopen the policy authority that validates it.
+pub fn validate_run_spec_execution_with_registry(
+    spec: Arc<RunSpec>,
+    output_dir: &Path,
+    object_sha256: &str,
+    registry: &SourceBindingRegistry,
+) -> Result<ValidatedRunSpecExecution> {
     validate_converter_config(&spec.converter)?;
     let adapter =
         require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
@@ -888,7 +910,8 @@ pub fn validate_run_spec_execution(
     );
     spec.identity.single()?;
     spec.instrument_spec.single()?;
-    let (accepted_proof, accepted) = accepted_dataset_for_run_spec_hash(&spec, object_sha256)?;
+    let (accepted_proof, accepted) =
+        accepted_dataset_for_run_spec_hash_with_registry(&spec, object_sha256, registry)?;
     validate_converter_table_family(&spec.converter, &accepted.table_family)?;
     if spec.manifest.catalog_inputs.len() == 1 {
         let manifest = local_run_manifest_for_output(&spec, output_dir)?;

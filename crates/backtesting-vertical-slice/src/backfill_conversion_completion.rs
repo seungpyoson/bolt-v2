@@ -101,7 +101,6 @@ pub enum BackfillConversionCompletionBlockingIssue {
     BatchPlanNotReady,
     MissingBatchRecord,
     UncoveredBatchRecord,
-    BatchExecutionReportSchemaMismatch,
     BatchExecutionReportNotCompleted,
     BatchExecutionReportFailedRecords,
     BatchExecutionReportCompletedCountMismatch,
@@ -358,12 +357,11 @@ pub fn evaluate_backfill_conversion_completion_ledger(
     // Without this, a CompletedWithFailures/Failed run (or a partial-scope run)
     // could still yield a Ready completion ledger.
     if let Some(report) = batch_execution_report {
-        if report.schema_version != SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION {
-            blocking_issues.push(
-                BackfillConversionCompletionBlockingIssue::BatchExecutionReportSchemaMismatch,
-            );
-        }
-        if report.status != SourceUniverseBatchExecutionReportStatus::Completed {
+        if report.schema_version != SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION
+            || report.status != SourceUniverseBatchExecutionReportStatus::Completed
+        {
+            // Preserve the v1 ledger wire vocabulary: an unsupported report
+            // schema is not acceptable completed evidence.
             blocking_issues
                 .push(BackfillConversionCompletionBlockingIssue::BatchExecutionReportNotCompleted);
         }
@@ -1091,7 +1089,7 @@ mod tests {
 
             assert!(
                 ledger.blocking_issues.contains(
-                    &BackfillConversionCompletionBlockingIssue::BatchExecutionReportSchemaMismatch
+                    &BackfillConversionCompletionBlockingIssue::BatchExecutionReportNotCompleted
                 ),
                 "schema {schema_version:?} must block completion: {:?}",
                 ledger.blocking_issues

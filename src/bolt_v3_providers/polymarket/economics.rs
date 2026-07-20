@@ -357,6 +357,7 @@ impl PolymarketEconomicsAuthority {
         Ok(authority)
     }
 
+    #[cfg(test)]
     pub(crate) fn redemption_semantics_source_commit(&self) -> &str {
         &self.on_chain_collateral.redemption_semantics_source_commit
     }
@@ -556,7 +557,7 @@ impl PolymarketEconomicsAuthority {
             .context("could not encode Polymarket collateral redemption proof")?;
         Ok(AuthoritativeValuationObservation::ProviderExactConversion {
             source_id: self.collateral_source_id.clone(),
-            from_unit: self.adapter_config.collateral_unit.clone(),
+            from_unit: self.adapter_config.collateral_unit,
             to_unit: currency_from_code(&self.on_chain_collateral.redemption_asset_unit)?,
             snapshot_id: SnapshotId::new(format!(
                 "sha256:{}",
@@ -934,9 +935,8 @@ impl PolymarketEconomicsAdapter {
     ) -> Result<EstimatedEconomicComponent, PolymarketEconomicsError> {
         let snapshot_id = SnapshotId::new(self.snapshot.snapshot_id.clone())
             .map_err(|_| PolymarketEconomicsError::InvalidIdentity)?;
-        let point_effect =
-            SignedNativeEffect::currency(amount, self.config.collateral_unit.clone())
-                .map_err(|_| PolymarketEconomicsError::InvalidEffect)?;
+        let point_effect = SignedNativeEffect::currency(amount, self.config.collateral_unit)
+            .map_err(|_| PolymarketEconomicsError::InvalidEffect)?;
         Ok(EstimatedEconomicComponent {
             component_id,
             class: EconomicClass::Charge,

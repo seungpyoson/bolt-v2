@@ -220,7 +220,7 @@ impl ConfiguredValuationProvider {
     pub fn from_routes(routes: Vec<ValuationRoute>) -> Result<Self, EconomicsUnavailable> {
         let mut indexed = HashMap::new();
         for route in routes {
-            let key = (route.from_unit.clone(), route.to_currency.clone());
+            let key = (route.from_unit, route.to_currency);
             if indexed.insert(key, route).is_some() {
                 return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
             }
@@ -1038,7 +1038,7 @@ impl BoltV3EconomicsRuntime {
             .map(|source| source.snapshot_id.clone())
             .collect::<Vec<_>>();
         let valuation_request = ValuationRequest {
-            reporting_unit: intent.request.reporting_unit.clone(),
+            reporting_unit: intent.request.reporting_unit,
             reporting_policy_id: intent.request.reporting_policy_id.clone(),
             requested_at_ns: intent.request.requested_at_ns,
         };

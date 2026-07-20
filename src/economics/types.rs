@@ -317,9 +317,18 @@ pub struct PlannedFillLeg {
 }
 
 macro_rules! economic_amount {
-    ($name:ident, $constructor_visibility:vis, $is_valid:expr) => {
+    ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct $name(Decimal);
+
+        impl $name {
+            pub const fn amount(self) -> Decimal {
+                self.0
+            }
+        }
+    };
+    ($name:ident, $constructor_visibility:vis, $is_valid:expr) => {
+        economic_amount!($name);
 
         impl $name {
             $constructor_visibility fn new(
@@ -331,19 +340,15 @@ macro_rules! economic_amount {
                 Ok(Self(amount))
             }
 
-            pub const fn amount(self) -> Decimal {
-                self.0
-            }
         }
     };
 }
 
-economic_amount!(PlannedFillNotional, pub(crate), |amount: Decimal| amount
-    > Decimal::ZERO);
+economic_amount!(PlannedFillNotional);
 economic_amount!(ReservationBasis, pub, |amount: Decimal| amount
     >= Decimal::ZERO);
 economic_amount!(GuaranteedDebit, pub(crate), |amount: Decimal| amount >= Decimal::ZERO);
-economic_amount!(FullReservationLiability, pub(crate), |amount: Decimal| amount >= Decimal::ZERO);
+economic_amount!(FullReservationLiability);
 economic_amount!(EdgeBasisAmount, pub, |amount: Decimal| amount
     > Decimal::ZERO);
 

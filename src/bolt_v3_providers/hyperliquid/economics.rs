@@ -1154,7 +1154,7 @@ impl HyperliquidEconomicsAdapter {
         };
         let notional = planned_fill_notional.amount();
         let (protocol_basis, protocol_unit) = match self.product.product_kind {
-            HyperliquidProductKind::Perp => (notional, self.config.settlement_unit.clone()),
+            HyperliquidProductKind::Perp => (notional, self.config.settlement_unit),
             HyperliquidProductKind::Spot => {
                 return Err(HyperliquidEconomicsError::InvalidFeeSurface);
             }
@@ -1173,7 +1173,7 @@ impl HyperliquidEconomicsAdapter {
                 rate,
                 signed_protocol_amount,
                 ExecutionKind::ProtocolTrading,
-                protocol_unit.clone(),
+                protocol_unit,
             )?);
         }
 
@@ -1200,23 +1200,6 @@ impl HyperliquidEconomicsAdapter {
             return Err(HyperliquidEconomicsError::StaleSnapshot);
         }
         Ok(())
-    }
-
-    fn quantity(
-        &self,
-        request: &EconomicQuoteRequest,
-    ) -> Result<Decimal, HyperliquidEconomicsError> {
-        request
-            .planned_fill_legs
-            .iter()
-            .try_fold(Decimal::ZERO, |total, leg| {
-                if leg.quantity <= Decimal::ZERO {
-                    return Err(HyperliquidEconomicsError::InvalidFillLeg);
-                }
-                total
-                    .checked_add(leg.quantity)
-                    .ok_or(HyperliquidEconomicsError::InvalidFillLeg)
-            })
     }
 
     fn carry_component(
@@ -1313,15 +1296,12 @@ impl HyperliquidEconomicsAdapter {
                 }
             } else {
                 PointEstimate::NonZero(
-                    SignedNativeEffect::currency(
-                        point_projection,
-                        self.config.settlement_unit.clone(),
-                    )
-                    .map_err(|_| HyperliquidEconomicsError::InvalidEffect)?,
+                    SignedNativeEffect::currency(point_projection, self.config.settlement_unit)
+                        .map_err(|_| HyperliquidEconomicsError::InvalidEffect)?,
                 )
             },
             debit_risk_bound: Some(
-                SignedNativeEffect::currency(debit_bound, self.config.settlement_unit.clone())
+                SignedNativeEffect::currency(debit_bound, self.config.settlement_unit)
                     .map_err(|_| HyperliquidEconomicsError::InvalidEffect)?,
             ),
             admission_treatment: AdmissionTreatment::RiskBound {

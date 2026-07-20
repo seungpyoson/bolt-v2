@@ -449,7 +449,7 @@ impl BoltV3OrderRoutingHandle {
             account_id: EconomicsAccountId::new(config.account_id)?,
             product_surface_routes,
             reporting_policy_id: ReportingPolicyId::new(config.reporting_policy_id)?,
-            reporting_unit: currency_from_code(&config.reporting_unit)?,
+            reporting_unit: currency_from_code(config.reporting_unit)?,
             routing_attachment_policy: config.routing_attachment_policy,
             resting_economics: Arc::new(RwLock::new(BTreeMap::new())),
         })

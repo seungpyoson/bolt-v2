@@ -16,7 +16,7 @@ pub fn value_with_route(
         return Ok(ValuationEvidence {
             native_effect: effect.clone(),
             normalized_amount: effect.amount(),
-            reporting_unit: reporting_unit.clone(),
+            reporting_unit: *reporting_unit,
             route_id: None,
             legs: Vec::new(),
             source_snapshot_ids: Vec::new(),
@@ -27,7 +27,7 @@ pub fn value_with_route(
 
     let route = route.ok_or_else(|| EconomicsUnavailable::MissingValuationRoute {
         from: effect.currency_id(),
-        to: reporting_unit.clone(),
+        to: *reporting_unit,
     })?;
     if route.from_unit != effect.currency_id() || route.to_currency != *reporting_unit {
         return Err(EconomicsUnavailable::DisconnectedValuationRoute {
@@ -40,8 +40,8 @@ pub fn value_with_route(
         });
     }
 
-    let mut current = route.from_unit.clone();
-    let mut visited = HashSet::from([current.clone()]);
+    let mut current = route.from_unit;
+    let mut visited = HashSet::from([current]);
     let mut rate = Decimal::ONE;
     let mut valid_until_ns = route.valid_until_ns;
     let mut source_snapshot_ids = Vec::with_capacity(route.legs.len());
@@ -51,7 +51,7 @@ pub fn value_with_route(
                 route_id: route.route_id.clone(),
             });
         }
-        if !visited.insert(leg.to_unit.clone()) {
+        if !visited.insert(leg.to_unit) {
             return Err(EconomicsUnavailable::CyclicValuationRoute {
                 route_id: route.route_id.clone(),
             });
@@ -77,7 +77,7 @@ pub fn value_with_route(
         }
         valid_until_ns = valid_until_ns.min(leg.valid_until_ns);
         source_snapshot_ids.push(leg.source_snapshot_id.clone());
-        current = leg.to_unit.clone();
+        current = leg.to_unit;
     }
     if route.legs.is_empty() || current != route.to_currency {
         return Err(EconomicsUnavailable::DisconnectedValuationRoute {
@@ -91,7 +91,7 @@ pub fn value_with_route(
             .amount()
             .checked_mul(rate)
             .ok_or(EconomicsUnavailable::InvalidDecimal)?,
-        reporting_unit: reporting_unit.clone(),
+        reporting_unit: *reporting_unit,
         route_id: Some(route.route_id.clone()),
         legs: route.legs.clone(),
         source_snapshot_ids,

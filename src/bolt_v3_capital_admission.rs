@@ -719,6 +719,8 @@ fn validate_liquidity(request: &CapitalAdmissionRequest) -> Result<(), Liability
 mod tests {
     use rust_decimal::Decimal;
 
+    use crate::economics::{GuaranteedDebit, ReservationBasis};
+
     use crate::bolt_v3_capital_admission_state::{
         CapitalAdmissionStateEvidenceKind, NtDerivedCapitalAdmissionState,
         OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
@@ -758,10 +760,14 @@ mod tests {
             side,
             quantity: Decimal::new(10, 0),
             limit_price: Decimal::new(40, 2),
-            full_reservation_liability: FullReservationLiability::new(match side {
-                IntentSide::Buy => Decimal::new(430, 2),
-                IntentSide::Sell => Decimal::new(30, 2),
-            })
+            full_reservation_liability: FullReservationLiability::from_parts(
+                ReservationBasis::new(match side {
+                    IntentSide::Buy => Decimal::new(430, 2),
+                    IntentSide::Sell => Decimal::new(30, 2),
+                })
+                .expect("test basis should be valid"),
+                GuaranteedDebit::new(Decimal::ZERO).expect("zero debit should be valid"),
+            )
             .expect("test liability should be valid"),
             order_kind: IntentOrderKind::Limit,
             liquidity,
@@ -953,8 +959,6 @@ mod tests {
             .expect("fresh sell state should price liability");
         assert_eq!(sell.calculated_liability, Decimal::new(30, 2));
         assert_eq!(sell.reserved_liability, Decimal::new(30, 2));
-
-        assert!(FullReservationLiability::new(Decimal::NEGATIVE_ONE).is_err());
 
         assert_eq!(
             calculator

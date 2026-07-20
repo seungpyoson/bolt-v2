@@ -185,7 +185,7 @@ pub fn validate_and_aggregate_quote(
         forecast_total,
         forecast_complete,
         missing_forecast_component_ids,
-        reporting_unit: request.reporting_unit.clone(),
+        reporting_unit: request.reporting_unit,
         valid_until_ns: required_valid_until_ns,
     })
 }

@@ -69,12 +69,37 @@ def main() -> int:
         expected_digest=arm64_digest,
     )
     assert_case(
+        "main push without writer compiles cold",
+        event_name="push",
+        github_ref="refs/heads/main",
+        write_role_arn="",
+        expected_eligible=False,
+        expected_role="",
+        expected_mode="none",
+    )
+    assert_case(
         "main dispatch may write",
         event_name="workflow_dispatch",
         github_ref="refs/heads/main",
         expected_eligible=True,
         expected_role=write_role,
         expected_mode="read_write",
+    )
+    assert_case(
+        "feature push cannot write",
+        event_name="push",
+        github_ref="refs/heads/feature",
+        expected_eligible=False,
+        expected_role="",
+        expected_mode="none",
+    )
+    assert_case(
+        "feature dispatch reads only",
+        event_name="workflow_dispatch",
+        github_ref="refs/heads/feature",
+        expected_eligible=True,
+        expected_role=read_role,
+        expected_mode="read_only",
     )
     assert_case(
         "pull request reads only",

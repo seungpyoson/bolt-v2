@@ -9,7 +9,8 @@ use bolt_v2::bolt_v3_economics_runtime::{
 };
 use bolt_v2::economics::{
     EconomicsUnavailable, ReportingPolicyId, SignedNativeEffect, SnapshotId, ValuationLegEvidence,
-    ValuationProvider, ValuationRequest, ValuationRoute, ValuationRouteId, value_with_route,
+    ValuationProvider, ValuationRequest, ValuationRoute, ValuationRouteId, ValuationTransform,
+    value_with_route,
 };
 
 use super::economics_support::{decimal, native_unit};
@@ -19,7 +20,7 @@ fn leg(from: &str, to: &str, rate: &str) -> ValuationLegEvidence {
         from_unit: native_unit(from),
         source_currency: native_unit(from),
         to_unit: native_unit(to),
-        rate: decimal(rate),
+        transform: ValuationTransform::MultiplicativeRate(decimal(rate)),
         source_snapshot_id: SnapshotId::new(format!("{from}-{to}")).unwrap(),
         observed_at_ns: 90,
         fetched_at_ns: 95,
@@ -43,7 +44,7 @@ fn configured_provider_values_usdc_e_from_the_nt_usdc_market_by_exact_identity()
                 from_unit: "pUSD".to_string(),
                 to_currency: "USD".to_string(),
                 legs: vec![
-                    ValuationLegConfig::ProviderConversion {
+                    ValuationLegConfig::ProviderExactConversion {
                         from_unit: "pUSD".to_string(),
                         to_unit: "USDC.e".to_string(),
                         source_id: "pusd-usdc-e-redemption".to_string(),
@@ -66,11 +67,10 @@ fn configured_provider_values_usdc_e_from_the_nt_usdc_market_by_exact_identity()
     let provider = ConfiguredValuationProvider::from_config(
         &config,
         &[
-            AuthoritativeValuationObservation::ProviderConversion {
+            AuthoritativeValuationObservation::ProviderExactConversion {
                 source_id: "pusd-usdc-e-redemption".to_string(),
                 from_unit: native_unit("pUSD"),
                 to_unit: native_unit("USDC.e"),
-                rate: decimal("1"),
                 snapshot_id: SnapshotId::new("pusd-usdc-e-contract-100").unwrap(),
                 observed_at_ns: 100,
                 fetched_at_ns: 100,

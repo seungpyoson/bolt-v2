@@ -229,11 +229,17 @@ pub struct ValuationEvidence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ValuationTransform {
+    ExactAmount,
+    MultiplicativeRate(Decimal),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValuationLegEvidence {
     pub from_unit: Currency,
     pub source_currency: Currency,
     pub to_unit: Currency,
-    pub rate: Decimal,
+    pub transform: ValuationTransform,
     pub source_snapshot_id: SnapshotId,
     pub observed_at_ns: u64,
     pub fetched_at_ns: u64,

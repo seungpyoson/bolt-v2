@@ -169,7 +169,7 @@ fn valuation_age_covers_refresh_cadence_and_quote_validity() {
 from_unit = "USDC"
 to_currency = "pUSD"
 legs = [
-  { authority = "provider_conversion", from_unit = "USDC", to_unit = "pUSD", source_id = "account_fees", max_age_ms = 8999 },
+  { authority = "provider_exact_conversion", from_unit = "USDC", to_unit = "pUSD", source_id = "account_fees", max_age_ms = 8999 },
 ]
 "#;
     let source = valid_config().replace("[valuation]\nroutes = {}", route);
@@ -197,13 +197,13 @@ legs = [
 }
 
 #[test]
-fn provider_conversion_route_rejects_an_undeclared_source_id() {
+fn provider_exact_conversion_route_rejects_an_undeclared_source_id() {
     let route = r#"
 [valuation.routes.usdc]
 from_unit = "USDC"
 to_currency = "pUSD"
 legs = [
-  { authority = "provider_conversion", from_unit = "USDC", to_unit = "pUSD", source_id = "misspelled-source", max_age_ms = 9000 },
+  { authority = "provider_exact_conversion", from_unit = "USDC", to_unit = "pUSD", source_id = "misspelled-source", max_age_ms = 9000 },
 ]
 "#;
     let source = valid_config().replace("[valuation]\nroutes = {}", route);
@@ -215,7 +215,7 @@ legs = [
             .iter()
             .any(|error| matches!(
                 error,
-                EconomicsConfigError::UnknownProviderConversionSource { source_id, .. }
+                EconomicsConfigError::UnknownProviderExactConversionSource { source_id, .. }
                     if source_id == "misspelled-source"
             ))
     );

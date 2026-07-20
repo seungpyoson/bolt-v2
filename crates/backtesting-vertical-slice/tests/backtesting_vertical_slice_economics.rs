@@ -62,9 +62,9 @@ fn snapshot() -> HistoricalEconomicsSnapshot {
             .to_string(),
         }],
         valuation_observations: vec![
-            backtesting_vertical_slice::economics::HistoricalValuationObservation::ProviderConversion {
+            backtesting_vertical_slice::economics::HistoricalValuationObservation::ProviderExactConversion {
                 source_id: "collateral".to_string(), from_unit: "pUSD".to_string(),
-                to_unit: "USDC".to_string(), rate: "1".to_string(),
+                to_unit: "USDC".to_string(),
                 snapshot_id: "pusd-usdc".to_string(), observed_at_ns: 90,
                 fetched_at_ns: 95, valid_until_ns: 110,
             },
@@ -276,7 +276,7 @@ fn product_surface_resolution_deduplicates_successive_snapshot_epochs() {
                 valid_until_ns,
                 ..
             }
-            | backtesting_vertical_slice::economics::HistoricalValuationObservation::ProviderConversion {
+            | backtesting_vertical_slice::economics::HistoricalValuationObservation::ProviderExactConversion {
                 valid_until_ns,
                 ..
             } => *valid_until_ns = first.valid_until_ns,
@@ -299,7 +299,7 @@ fn product_surface_resolution_deduplicates_successive_snapshot_epochs() {
                 valid_until_ns,
                 ..
             }
-            | backtesting_vertical_slice::economics::HistoricalValuationObservation::ProviderConversion {
+            | backtesting_vertical_slice::economics::HistoricalValuationObservation::ProviderExactConversion {
                 valid_until_ns,
                 ..
             } => *valid_until_ns = second.valid_until_ns,

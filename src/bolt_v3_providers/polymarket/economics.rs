@@ -357,6 +357,10 @@ impl PolymarketEconomicsAuthority {
         Ok(authority)
     }
 
+    pub(crate) fn redemption_semantics_source_commit(&self) -> &str {
+        &self.on_chain_collateral.redemption_semantics_source_commit
+    }
+
     fn market_info_url(&self, instrument_id: &InstrumentId) -> anyhow::Result<Url> {
         let condition_id = extract_condition_id(instrument_id)
             .context("Polymarket instrument has no condition identifier")?;
@@ -515,8 +519,6 @@ impl PolymarketEconomicsAuthority {
             offramp_code_sha256 == self.on_chain_collateral.collateral_offramp_code_sha256,
             "Polymarket collateral offramp bytecode is not the governed authority"
         );
-        let rate = Decimal::from_str(&self.on_chain_collateral.redemption_rate)
-            .context("invalid configured Polymarket collateral redemption rate")?;
         let observed_at_ns = block
             .timestamp_secs
             .checked_mul(NANOS_PER_SECOND_U64)
@@ -546,18 +548,16 @@ impl PolymarketEconomicsAuthority {
                 .on_chain_collateral
                 .redemption_semantics_source_commit
                 .clone(),
-            redemption_rate: rate.to_string(),
             observed_at_ns,
             fetched_at_ns,
             valid_until_ns,
         };
         let encoded = serde_json::to_vec(&proof)
             .context("could not encode Polymarket collateral redemption proof")?;
-        Ok(AuthoritativeValuationObservation::ProviderConversion {
+        Ok(AuthoritativeValuationObservation::ProviderExactConversion {
             source_id: self.collateral_source_id.clone(),
             from_unit: self.adapter_config.collateral_unit.clone(),
             to_unit: currency_from_code(&self.on_chain_collateral.redemption_asset_unit)?,
-            rate,
             snapshot_id: SnapshotId::new(format!(
                 "sha256:{}",
                 hex::encode(Sha256::digest(encoded))
@@ -667,7 +667,6 @@ struct CollateralRedemptionProof {
     implementation_code_sha256: String,
     offramp_code_sha256: String,
     redemption_semantics_source_commit: String,
-    redemption_rate: String,
     observed_at_ns: u64,
     fetched_at_ns: u64,
     valid_until_ns: u64,
@@ -678,7 +677,7 @@ fn normalized_address(value: &str) -> anyhow::Result<String> {
         .map_err(|error| anyhow::anyhow!(error))
 }
 
-fn function_calldata(signature: &str, address: Option<&str>) -> String {
+pub(crate) fn function_calldata(signature: &str, address: Option<&str>) -> String {
     let selector = keccak256(signature.as_bytes());
     let mut calldata = hex::encode(&selector[..4]);
     if let Some(address) = address {

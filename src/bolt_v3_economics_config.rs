@@ -127,7 +127,7 @@ pub enum ValuationLegConfig {
         orientation: ValuationOrientation,
         max_age_ms: u64,
     },
-    ProviderConversion {
+    ProviderExactConversion {
         from_unit: String,
         to_unit: String,
         source_id: String,
@@ -138,23 +138,23 @@ pub enum ValuationLegConfig {
 impl ValuationLegConfig {
     pub fn from_unit(&self) -> &str {
         match self {
-            Self::MarketQuote { from_unit, .. } | Self::ProviderConversion { from_unit, .. } => {
-                from_unit
-            }
+            Self::MarketQuote { from_unit, .. }
+            | Self::ProviderExactConversion { from_unit, .. } => from_unit,
         }
     }
 
     pub fn to_unit(&self) -> &str {
         match self {
-            Self::MarketQuote { to_unit, .. } | Self::ProviderConversion { to_unit, .. } => to_unit,
+            Self::MarketQuote { to_unit, .. } | Self::ProviderExactConversion { to_unit, .. } => {
+                to_unit
+            }
         }
     }
 
     pub const fn max_age_ms(&self) -> u64 {
         match self {
-            Self::MarketQuote { max_age_ms, .. } | Self::ProviderConversion { max_age_ms, .. } => {
-                *max_age_ms
-            }
+            Self::MarketQuote { max_age_ms, .. }
+            | Self::ProviderExactConversion { max_age_ms, .. } => *max_age_ms,
         }
     }
 }
@@ -260,7 +260,7 @@ pub enum EconomicsConfigError {
         route_id: String,
         client_id: String,
     },
-    UnknownProviderConversionSource {
+    UnknownProviderExactConversionSource {
         route_id: String,
         source_id: String,
     },
@@ -750,7 +750,7 @@ fn validate_valuation_legs(
                     });
                 }
             }
-            ValuationLegConfig::ProviderConversion {
+            ValuationLegConfig::ProviderExactConversion {
                 from_unit,
                 to_unit,
                 source_id,
@@ -758,7 +758,7 @@ fn validate_valuation_legs(
             } => {
                 require_text(source_id, EconomicsConfigField::SourcePolicy, &mut errors);
                 if !configured_sources.contains(source_id) {
-                    errors.push(EconomicsConfigError::UnknownProviderConversionSource {
+                    errors.push(EconomicsConfigError::UnknownProviderExactConversionSource {
                         route_id: route_id.to_string(),
                         source_id: source_id.clone(),
                     });

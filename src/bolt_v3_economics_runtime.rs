@@ -196,11 +196,10 @@ pub enum AuthoritativeValuationObservation {
         fetched_at_ns: u64,
         valid_until_ns: u64,
     },
-    ProviderConversion {
+    ProviderExactConversion {
         source_id: String,
         from_unit: Currency,
         to_unit: Currency,
-        rate: Decimal,
         snapshot_id: SnapshotId,
         observed_at_ns: u64,
         fetched_at_ns: u64,
@@ -212,7 +211,7 @@ impl AuthoritativeValuationObservation {
     pub const fn fetched_at_ns(&self) -> u64 {
         match self {
             Self::MarketQuote { fetched_at_ns, .. }
-            | Self::ProviderConversion { fetched_at_ns, .. } => *fetched_at_ns,
+            | Self::ProviderExactConversion { fetched_at_ns, .. } => *fetched_at_ns,
         }
     }
 }
@@ -242,7 +241,7 @@ impl ConfiguredValuationProvider {
                     from_unit,
                     source_currency,
                     to_unit,
-                    rate,
+                    transform,
                     snapshot_id,
                     observed_at_ns,
                     fetched_at_ns,
@@ -260,7 +259,7 @@ impl ConfiguredValuationProvider {
                     from_unit,
                     source_currency,
                     to_unit,
-                    rate,
+                    transform,
                     source_snapshot_id: snapshot_id,
                     observed_at_ns,
                     fetched_at_ns,
@@ -283,7 +282,7 @@ type ResolvedValuationLeg = (
     Currency,
     Currency,
     Currency,
-    Decimal,
+    crate::economics::ValuationTransform,
     SnapshotId,
     u64,
     u64,
@@ -300,7 +299,7 @@ fn resolve_valuation_leg(
         from_unit,
         source_currency,
         to_unit,
-        rate,
+        transform,
         snapshot_id,
         observed_at_ns,
         fetched_at_ns,
@@ -377,7 +376,7 @@ fn resolve_valuation_leg(
                 currency_from_code(from_unit)?,
                 expected_source_currency,
                 currency_from_code(to_unit)?,
-                market_rate,
+                crate::economics::ValuationTransform::MultiplicativeRate(market_rate),
                 snapshot_id,
                 observed_at_ns,
                 fetched_at_ns,
@@ -385,7 +384,7 @@ fn resolve_valuation_leg(
                 *max_age_ms,
             )
         }
-        ValuationLegConfig::ProviderConversion {
+        ValuationLegConfig::ProviderExactConversion {
             from_unit,
             to_unit,
             source_id,
@@ -396,11 +395,10 @@ fn resolve_valuation_leg(
             let mut matching = observations
                 .iter()
                 .filter_map(|observation| match observation {
-                    AuthoritativeValuationObservation::ProviderConversion {
+                    AuthoritativeValuationObservation::ProviderExactConversion {
                         source_id: observed_source,
                         from_unit,
                         to_unit,
-                        rate,
                         snapshot_id,
                         observed_at_ns,
                         fetched_at_ns,
@@ -410,7 +408,6 @@ fn resolve_valuation_leg(
                         && to_unit == &expected_to =>
                     {
                         Some((
-                            *rate,
                             snapshot_id.clone(),
                             *observed_at_ns,
                             *fetched_at_ns,
@@ -419,17 +416,17 @@ fn resolve_valuation_leg(
                     }
                     _ => None,
                 });
-            let (rate, snapshot_id, observed_at_ns, fetched_at_ns, valid_until_ns) = matching
+            let (snapshot_id, observed_at_ns, fetched_at_ns, valid_until_ns) = matching
                 .next()
                 .ok_or(EconomicsUnavailable::MissingQuoteAuthority)?;
-            if matching.next().is_some() || rate <= Decimal::ZERO {
+            if matching.next().is_some() {
                 return Err(EconomicsUnavailable::AmbiguousQuoteAuthority);
             }
             (
                 expected_from,
                 expected_from,
                 expected_to,
-                rate,
+                crate::economics::ValuationTransform::ExactAmount,
                 snapshot_id,
                 observed_at_ns,
                 fetched_at_ns,
@@ -445,7 +442,7 @@ fn resolve_valuation_leg(
         from_unit,
         source_currency,
         to_unit,
-        rate,
+        transform,
         snapshot_id,
         observed_at_ns,
         fetched_at_ns,

@@ -4844,11 +4844,10 @@ mod tests {
                 .to_string(),
             }],
             valuation_observations: vec![
-                crate::economics::HistoricalValuationObservation::ProviderConversion {
+                crate::economics::HistoricalValuationObservation::ProviderExactConversion {
                     source_id: "collateral".to_string(),
                     from_unit: "pUSD".to_string(),
                     to_unit: "USDC".to_string(),
-                    rate: "1".to_string(),
                     snapshot_id: "test-pusd-usdc".to_string(),
                     observed_at_ns,
                     fetched_at_ns: observed_at_ns,

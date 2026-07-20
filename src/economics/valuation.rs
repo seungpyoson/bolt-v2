@@ -56,11 +56,6 @@ pub fn value_with_route(
                 route_id: route.route_id.clone(),
             });
         }
-        if leg.rate <= Decimal::ZERO {
-            return Err(EconomicsUnavailable::InvalidValuationRate {
-                route_id: route.route_id.clone(),
-            });
-        }
         if leg.observed_at_ns > leg.fetched_at_ns
             || leg.fetched_at_ns > leg.valid_until_ns
             || leg.fetched_at_ns > valued_at_ns
@@ -70,9 +65,16 @@ pub fn value_with_route(
                 route_id: route.route_id.clone(),
             });
         }
-        rate = rate
-            .checked_mul(leg.rate)
-            .ok_or(EconomicsUnavailable::InvalidDecimal)?;
+        if let crate::economics::ValuationTransform::MultiplicativeRate(leg_rate) = &leg.transform {
+            if *leg_rate <= Decimal::ZERO {
+                return Err(EconomicsUnavailable::InvalidValuationRate {
+                    route_id: route.route_id.clone(),
+                });
+            }
+            rate = rate
+                .checked_mul(*leg_rate)
+                .ok_or(EconomicsUnavailable::InvalidDecimal)?;
+        }
         valid_until_ns = valid_until_ns.min(leg.valid_until_ns);
         source_snapshot_ids.push(leg.source_snapshot_id.clone());
         current = leg.to_unit.clone();

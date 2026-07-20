@@ -342,7 +342,6 @@ pub struct PolymarketOnChainCollateralConfig {
     pub collateral_token_implementation_code_sha256: String,
     pub collateral_offramp_code_sha256: String,
     pub redemption_semantics_source_commit: String,
-    pub redemption_rate: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -765,12 +764,6 @@ fn validate_on_chain_collateral(key: &str, execution: &PolymarketExecutionConfig
     ) {
         errors.push(format!(
             "clients.{key}.execution.on_chain_collateral.redemption_semantics_source_commit must be a full Git commit"
-        ));
-    }
-    let redemption_rate = on_chain.redemption_rate.parse::<Decimal>();
-    if !matches!(redemption_rate, Ok(rate) if rate > Decimal::ZERO) {
-        errors.push(format!(
-            "clients.{key}.execution.on_chain_collateral.redemption_rate must be positive"
         ));
     }
     errors

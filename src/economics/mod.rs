@@ -21,7 +21,7 @@ pub use types::{
     PositionId, PositionSide, ProductSurfaceId, ReportingPolicyId, ReservationBasis,
     ResolvedEdgeBasis, RiskBoundAuthority, RoutingAttachment, RoutingAttachmentId, RoutingContext,
     SignedNativeEffect, SnapshotId, SourceId, SourceValidity, TransferKind, ValuationEvidence,
-    ValuationLegEvidence, ValuationRequest, ValuationRoute, ValuationRouteId, VenueQuoteEstimate,
-    basis_points_to_fraction, currency_from_code,
+    ValuationLegEvidence, ValuationRequest, ValuationRoute, ValuationRouteId, ValuationTransform,
+    VenueQuoteEstimate, basis_points_to_fraction, currency_from_code,
 };
 pub use valuation::value_with_route;

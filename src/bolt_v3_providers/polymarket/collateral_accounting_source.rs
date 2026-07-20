@@ -436,7 +436,7 @@ impl<'a> OnChainCollateralRpcClient<'a> {
         })?;
         Ok(OnChainBlockHeader {
             number: quantity_from_hex(&wire.number)?,
-            hash: wire.hash,
+            hash: normalized_block_hash(&wire.hash)?,
             timestamp_secs: quantity_from_hex(&wire.timestamp)?,
         })
     }
@@ -611,6 +611,24 @@ struct OnChainBlockHeaderWire {
     number: String,
     hash: String,
     timestamp: String,
+}
+
+fn normalized_block_hash(value: &str) -> Result<String, BoltV3OperatorArtifactError> {
+    let encoded = value.strip_prefix(ON_CHAIN_COLLATERAL_HEX_PREFIX).ok_or(
+        BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "on_chain_collateral.rpc_result",
+        },
+    )?;
+    if encoded.len() != ON_CHAIN_COLLATERAL_EVM_WORD_HEX_LEN
+        || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "on_chain_collateral.rpc_result",
+        });
+    }
+    let mut normalized = String::from(ON_CHAIN_COLLATERAL_HEX_PREFIX);
+    normalized.push_str(&encoded.to_ascii_lowercase());
+    Ok(normalized)
 }
 
 fn quantity_from_hex(value: &str) -> Result<u64, BoltV3OperatorArtifactError> {
@@ -848,6 +866,24 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn block_hash_requires_an_exact_32_byte_hex_value() {
+        let capture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/bolt_v3/boundary_evidence/polymarket-collateral-finalized-block.json"
+        ))
+        .expect("governed block fixture should parse");
+        let governed_hash = capture["finalized_block_hash"]
+            .as_str()
+            .expect("governed block hash should exist");
+
+        assert_eq!(
+            normalized_block_hash(governed_hash).expect("governed block hash should validate"),
+            governed_hash
+        );
+        assert!(normalized_block_hash("0x01").is_err());
+        assert!(normalized_block_hash(&format!("0x{}", "z".repeat(64))).is_err());
     }
 
     #[test]

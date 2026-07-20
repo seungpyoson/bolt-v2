@@ -551,7 +551,6 @@ fn shipped_roots_use_polymarket_safe_profile_with_complete_collateral_authority(
             "collateral_token_implementation_code_sha256",
             "collateral_offramp_code_sha256",
             "redemption_semantics_source_commit",
-            "redemption_rate",
         ] {
             assert!(
                 collateral

@@ -77,11 +77,10 @@ pub enum HistoricalValuationObservation {
         fetched_at_ns: u64,
         valid_until_ns: u64,
     },
-    ProviderConversion {
+    ProviderExactConversion {
         source_id: String,
         from_unit: String,
         to_unit: String,
-        rate: String,
         snapshot_id: String,
         observed_at_ns: u64,
         fetched_at_ns: u64,
@@ -95,7 +94,7 @@ enum HistoricalValuationAuthorityKey {
         client_id: String,
         instrument_id: String,
     },
-    ProviderConversion {
+    ProviderExactConversion {
         source_id: String,
         from_unit: String,
         to_unit: String,
@@ -551,7 +550,7 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
                         *valid_until_ns,
                     )
                 }
-                HistoricalValuationObservation::ProviderConversion {
+                HistoricalValuationObservation::ProviderExactConversion {
                     source_id,
                     from_unit,
                     to_unit,
@@ -561,7 +560,7 @@ fn validate_snapshot(snapshot: &HistoricalEconomicsSnapshot) -> Result<(), Econo
                     valid_until_ns,
                     ..
                 } => (
-                    HistoricalValuationAuthorityKey::ProviderConversion {
+                    HistoricalValuationAuthorityKey::ProviderExactConversion {
                         source_id: source_id.clone(),
                         from_unit: from_unit.clone(),
                         to_unit: to_unit.clone(),
@@ -639,20 +638,18 @@ fn canonical_valuation_observations(
                 fetched_at_ns: *fetched_at_ns,
                 valid_until_ns: *valid_until_ns,
             }),
-            HistoricalValuationObservation::ProviderConversion {
+            HistoricalValuationObservation::ProviderExactConversion {
                 source_id,
                 from_unit,
                 to_unit,
-                rate,
                 snapshot_id,
                 observed_at_ns,
                 fetched_at_ns,
                 valid_until_ns,
-            } => Ok(AuthoritativeValuationObservation::ProviderConversion {
+            } => Ok(AuthoritativeValuationObservation::ProviderExactConversion {
                 source_id: source_id.clone(),
                 from_unit: currency_from_code(from_unit)?,
                 to_unit: currency_from_code(to_unit)?,
-                rate: decimal(rate)?,
                 snapshot_id: SnapshotId::new(snapshot_id.clone())?,
                 observed_at_ns: *observed_at_ns,
                 fetched_at_ns: *fetched_at_ns,

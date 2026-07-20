@@ -288,7 +288,6 @@ collateral_token_implementation_address = "0x6bBCef9f7ef3B6C592c99e0f206a0DE94Ad
 collateral_token_implementation_code_sha256 = "298755c7d79fe93cede550cc844be094d62f7c778c86a3871e5c2fe6622f1b01"
 collateral_offramp_code_sha256 = "197eb07130154dee64ff7e780ae7597476569e05c1b54b5dfbc886e6ec425fcd"
 redemption_semantics_source_commit = "ccc0596074f4dfd62c944fbca4de252893b82b4b"
-redemption_rate = "1"
 
 [clients.polymarket_main.execution.economics]
 economics_slice = "quote_only"
@@ -334,7 +333,7 @@ source_currency = "USDC"
 from_unit = "pUSD"
 to_currency = "USD"
 legs = [
-  { authority = "provider_conversion", from_unit = "pUSD", to_unit = "USDC.e", source_id = "collateral", max_age_ms = 300000 },
+  { authority = "provider_exact_conversion", from_unit = "pUSD", to_unit = "USDC.e", source_id = "collateral", max_age_ms = 300000 },
   { authority = "market_quote", from_unit = "USDC.e", source_currency = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
 ]
 

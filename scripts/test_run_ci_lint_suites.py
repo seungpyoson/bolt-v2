@@ -351,7 +351,7 @@ def test_active_ci_lint_does_not_inspect_dormant_review_workflows() -> None:
     if "ci/ai-review.toml" in active_setup:
         raise AssertionError("active setup still depends on dormant review configuration")
     workflow_lint = justfile.split("\nci-lint-workflow-inner ", 1)[1].split("\nworktree ", 1)[0]
-    if "repo_workflow_paths" not in workflow_lint or "actionlint \"${workflow_files[@]}\"" not in workflow_lint:
+    if "repo_workflow_paths" not in workflow_lint or "active workflow discovery returned no workflows" not in workflow_lint or "actionlint \"${workflow_files[@]}\"" not in workflow_lint:
         raise AssertionError("active workflow lint does not exclude dormant review workflows")
 
 

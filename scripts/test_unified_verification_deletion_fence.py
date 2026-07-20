@@ -51,13 +51,9 @@ AUTHORITY_PATHS = (
     "justfile",
     ".no-mistakes.yaml",
     "ci/rust-verification.toml",
-    "ci/ai-review.toml",
     "ci/github-actions-runners.toml",
     ".mergify.yml",
     "crates/backtesting-vertical-slice/ci/rust-verification.toml",
-    ".github/workflows/claude-code-review.yml",
-    ".github/workflows/ai-review-kimi-cli.yml",
-    ".github/workflows/ai-review-glm.yml",
     "scripts/rust_verification.py",
     "scripts/verify_ci_workflow_hygiene.py",
 )

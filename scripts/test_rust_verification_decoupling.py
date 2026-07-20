@@ -8,6 +8,7 @@ import pathlib
 import subprocess
 import sys
 from ci_workflow_hygiene_test_helpers import repo_git_command
+from verify_ci_workflow_hygiene import repo_workflow_paths
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -62,11 +63,14 @@ def tracked_runtime_surfaces() -> tuple[pathlib.Path, ...]:
     if result.returncode != 0:
         raise AssertionError(result.stderr)
 
+    active_workflows = set(repo_workflow_paths())
     surfaces: list[pathlib.Path] = []
     for relative in result.stdout.split("\0"):
         if not relative:
             continue
         if any(fnmatch.fnmatch(relative, pattern) for pattern in RUNTIME_SURFACE_EXCLUDES):
+            continue
+        if relative.startswith(".github/workflows/") and relative not in active_workflows:
             continue
         if any(fnmatch.fnmatch(relative, pattern) for pattern in RUNTIME_SURFACE_PATTERNS):
             path = REPO_ROOT / relative

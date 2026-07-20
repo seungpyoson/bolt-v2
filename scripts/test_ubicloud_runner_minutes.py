@@ -75,6 +75,13 @@ def load_test_config(module, config_text: str | None = None):
         return module.load_runner_config(config_path)
 
 
+def assert_repo_meter_excludes_dormant_review() -> None:
+    module = load_script()
+    config = module.load_runner_config(REPO_ROOT / "ci" / "github-actions-runners.toml")
+    if "final_review" in config.workflow_keys:
+        raise AssertionError("active runner-minute meter includes dormant Final Review")
+
+
 def run_payload(run_id: int, **overrides):
     payload = {
         "id": run_id,
@@ -984,6 +991,7 @@ def assert_unknown_labels_are_reported_without_crashing() -> None:
 
 
 def main() -> int:
+    assert_repo_meter_excludes_dormant_review()
     assert_meter_api_limits_come_from_config()
     assert_configured_workflow_paths_paginates_workflow_list()
     assert_gh_client_flattens_paginated_list_pages()

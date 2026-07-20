@@ -221,10 +221,15 @@ ci-lint-workflow-inner subject=repo_root: require-local-verification-gate check-
     set -euo pipefail
     cd "{{subject}}"
     shopt -s nullglob
+    workflow_list="$(PYTHONPATH=scripts python3 -c 'from verify_ci_workflow_hygiene import repo_workflow_paths; print(*repo_workflow_paths(), sep="\n")')"
+    if [ -z "$workflow_list" ]; then
+        echo "ERROR: active workflow discovery returned no workflows"
+        exit 2
+    fi
     workflow_files=()
     while IFS= read -r workflow_file; do
         workflow_files+=("$workflow_file")
-    done < <(PYTHONPATH=scripts python3 -c 'from verify_ci_workflow_hygiene import repo_workflow_paths; print(*repo_workflow_paths(), sep="\n")')
+    done <<< "$workflow_list"
     action_files=(.github/actions/*/action.yml .github/actions/*/action.yaml)
     github_script_files=()
     github_script_files=(.github/scripts/*.sh)

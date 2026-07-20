@@ -40,8 +40,8 @@ from typing import Any, Callable, Optional, Tuple
 
 
 SCHEMA_VERSION = 2
-# INTENTIONAL standalone-fallback constant (AGENTS.md line 37 NO HARDCODES vs
-# line 87 intentional-hardcoded-constant convention). This is a self-contained
+# INTENTIONAL standalone-fallback constant: the AGENTS.md No-hardcodes invariant
+# normally requires TOML authority. This is a self-contained
 # stdlib-only diagnostic script that must run on a bare host WITHOUT the repo or
 # its TOML config (e.g. a stripped EC2 box that has only the binary). The default
 # systemd unit name is therefore an intentional last-resort literal, not a config
@@ -56,8 +56,8 @@ DEFAULT_SERVICE = "bolt-v2"
 # bare EC2 host that has the binary but not the repo checkout). The literal here
 # must mirror config/root.toml:catalog_directory.
 #
-# INTENTIONAL standalone-fallback constant (AGENTS.md line 37 NO HARDCODES vs
-# line 87 intentional-hardcoded-constant convention). The disk path is config-
+# INTENTIONAL standalone-fallback constant: the AGENTS.md No-hardcodes invariant
+# normally requires TOML authority. The disk path is config-
 # DERIVED via discover_catalog_directory() whenever the repo is present; this
 # literal is only the last-resort value for a bare host without the repo, and is
 # overridable at runtime via ``--disk-path``. It is deliberately NOT wired to the

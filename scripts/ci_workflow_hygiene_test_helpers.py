@@ -10,6 +10,7 @@ import sys
 import tempfile
 from ci_test_manifest import CiTestManifest
 from git_maintenance import GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG
+from verify_ci_workflow_hygiene import repo_workflow_paths
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / 'scripts' / 'verify_ci_workflow_hygiene.py'
 GIT_AUTO_MAINTENANCE_SUPPRESSION_ARGS = tuple((arg for key, value in GIT_AUTO_MAINTENANCE_SUPPRESSION_CONFIG for arg in ('-c', f'{key}={value}')))
@@ -228,7 +229,8 @@ def repo_source_text(path: str | pathlib.Path) -> str:
 
 def write_repo_workflows(workflow_dir: pathlib.Path) -> None:
     workflow_dir.mkdir(parents=True)
-    for path in sorted((REPO_ROOT / '.github' / 'workflows').glob('*.y*ml')):
+    for relative in repo_workflow_paths():
+        path = REPO_ROOT / relative
         (workflow_dir / path.name).write_text(path.read_text(encoding='utf-8'), encoding='utf-8')
 
 def write_storage_tripwire_policy_fixture(root: pathlib.Path) -> pathlib.Path:

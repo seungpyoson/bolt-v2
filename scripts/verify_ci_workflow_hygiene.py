@@ -29,7 +29,6 @@ COMMAND_UNDERSTANDING_PARITY_EXPORTS = (
 )
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_WORKFLOW_DIR = REPO_ROOT / '.github' / 'workflows'
-DEFAULT_WORKFLOW = DEFAULT_WORKFLOW_DIR / 'final-review.yml'
 DEFAULT_WORKFLOW_GLOBS = ('*.yml', '*.yaml')
 DEFAULT_NO_MISTAKES_CONFIG = REPO_ROOT / '.no-mistakes.yaml'
 DEFAULT_MERGIFY_CONFIG = REPO_ROOT / '.mergify.yml'
@@ -949,10 +948,9 @@ def test_manifest_referenced_by(manifest: CiTestManifest) -> dict[str, list[str]
             referenced_by.setdefault(member, []).append(harness)
     return referenced_by
 
-def verify_test_harness_manifest(*, cargo_manifest_path: pathlib.Path | str | None=None, tests_root: pathlib.Path | str | None=None, workflow_path: pathlib.Path | str | None=None, justfile_path: pathlib.Path | str | None=None) -> list[str]:
+def verify_test_harness_manifest(*, cargo_manifest_path: pathlib.Path | str | None=None, tests_root: pathlib.Path | str | None=None, justfile_path: pathlib.Path | str | None=None) -> list[str]:
     cargo_manifest = pathlib.Path(cargo_manifest_path) if cargo_manifest_path is not None else REPO_ROOT / 'Cargo.toml'
     root = pathlib.Path(tests_root) if tests_root is not None else REPO_ROOT / 'tests'
-    workflow = pathlib.Path(workflow_path) if workflow_path is not None else DEFAULT_WORKFLOW
     justfile = pathlib.Path(justfile_path) if justfile_path is not None else REPO_ROOT / 'justfile'
     errors: list[str] = []
     try:
@@ -1559,50 +1557,6 @@ def repo_workflow_texts() -> dict[str, str]:
         path: (REPO_ROOT / path).read_text()
         for path in repo_workflow_paths()
     }
-
-def verify_fixed_final_review_topology(workflows: dict[str, str]) -> list[str]:
-    errors: list[str] = []
-    final_path = '.github/workflows/final-review.yml'
-    worker_paths = ('.github/workflows/claude-code-review.yml', '.github/workflows/ai-review-kimi-cli.yml', '.github/workflows/ai-review-glm.yml')
-    forbidden_paths = ('.github/workflows/ci.yml', '.github/workflows/backtester-ci.yml', '.github/workflows/actionlint.yml', '.github/workflows/coverage-enforcer.yml', '.github/workflows/merge-readiness-finalizer.yml')
-    fixed_jobs = ('capture-head', 'evidence', 'claude-review', 'kimi-review', 'glm-review')
-    for path in forbidden_paths:
-        if path in workflows:
-            errors.append(f'superseded verification workflow remains: {path}')
-    final_text = workflows.get(final_path)
-    if final_text is None:
-        errors.append(f'fixed final-review workflow missing: {final_path}')
-        return errors
-    on_block = final_text.split('concurrency:', 1)[0]
-    if 'workflow_dispatch:' not in on_block:
-        errors.append('final-review.yml must be workflow_dispatch-only')
-    for trigger in ('pull_request:', 'pull_request_review:', 'workflow_call:'):
-        if trigger in on_block:
-            errors.append(f'final-review.yml exposes alternate trigger {trigger}')
-    for job in fixed_jobs:
-        if re.search(f'^  {re.escape(job)}:\\s*$', final_text, flags=re.MULTILINE) is None:
-            errors.append(f'final-review.yml missing fixed job {job}')
-    for forbidden in ('paths-ignore', 'changed-path', 'full_ci_required', 'cache-hit =='):
-        if forbidden in final_text:
-            errors.append(f'final-review.yml contains conditional verification selector {forbidden}')
-    if re.search(r'^\s*if:\s*', final_text, flags=re.MULTILINE):
-        errors.append('final-review.yml must not contain conditional job or step paths')
-    if 'scripts/final_review_runner.py' not in final_text:
-        errors.append('final-review.yml must execute the fixed evidence runner')
-    for path in worker_paths:
-        text = workflows.get(path)
-        if text is None:
-            errors.append(f'review worker missing: {path}')
-            continue
-        if f'uses: ./{path}' not in final_text:
-            errors.append(f'final-review.yml does not invoke {path}')
-        worker_on = text.split('concurrency:', 1)[0]
-        if 'workflow_call:' not in worker_on:
-            errors.append(f'{path} must expose workflow_call')
-        for trigger in ('pull_request:', 'pull_request_review:', 'workflow_dispatch:'):
-            if trigger in worker_on:
-                errors.append(f'{path} exposes alternate trigger {trigger}')
-    return errors
 
 def main() -> int:
     workflow_texts = repo_workflow_texts()

@@ -118,7 +118,6 @@ require_plan_approval = true
 [meter]
 debug_workflow = "ci_runner_debug"
 included_workflows = [
-  "final_review",
   "reference_boundary_capture",
   "flaky_test_detection",
   "flaky_test_smoke",

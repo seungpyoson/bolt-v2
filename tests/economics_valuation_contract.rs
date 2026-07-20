@@ -128,7 +128,13 @@ fn configured_provider_values_usdc_e_from_the_nt_usdc_market_by_exact_identity()
 #[test]
 fn configured_provider_rejects_market_quote_with_mismatched_nt_currencies() {
     let config = ValuationConfig {
-        exact_currency_identities: BTreeMap::new(),
+        exact_currency_identities: BTreeMap::from([(
+            "usdc-e-usdc".to_string(),
+            ExactCurrencyIdentityConfig {
+                from_unit: "USDC.e".to_string(),
+                source_currency: "USDC".to_string(),
+            },
+        )]),
         routes: BTreeMap::from([(
             "usdc-usd".to_string(),
             ValuationRouteConfig {

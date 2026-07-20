@@ -2658,7 +2658,7 @@ fn pending_entry_short_position_event_stays_fail_closed_without_materializing_po
 
 #[test]
 fn live_position_event_quarantines_foreign_venue_position() {
-    // P5-5 / Codex P5 — LIVE-PATH regression lock (mirror of
+    // Live-path regression lock (mirror of
     // `recovery_bootstrap_quarantines_foreign_venue_position`). The recovery path already
     // quarantines a foreign-venue cached position before its contract check; the LIVE
     // position-event path (`materialize_position_from_event`, driven by `on_position_opened`)
@@ -2711,7 +2711,7 @@ fn live_position_event_quarantines_foreign_venue_position() {
 
 #[test]
 fn order_fill_entry_quarantines_foreign_venue_position() {
-    // P5-5 / Codex P5 — LIVE ORDER-FILL regression lock (sibling of
+    // Live order-fill regression lock (sibling of
     // `live_position_event_quarantines_foreign_venue_position`). The entry-fill branch of
     // `on_order_filled` matches a fill to our pending entry by client_order_id ALONE, then
     // adopts the fill's instrument_id into Managed (origin StrategyEntry). A foreign-venue fill
@@ -2860,7 +2860,7 @@ fn position_opened_after_rotation_preserves_existing_position_context() {
 
 #[test]
 fn recovery_bootstrap_quarantines_foreign_venue_position() {
-    // P5-5 / Codex P5 — RECOVERY-PATH regression lock. The entry path is venue-scoped, but
+    // Recovery-path regression lock. The entry path is venue-scoped, but
     // recovery bootstrap previously adopted any-venue cached positions, and the exit path would
     // then build/submit a real order on the foreign-venue instrument. `bootstrapped_exposure_for`
     // is the single fail-closed adoption decision and must quarantine a foreign-venue position
@@ -2907,7 +2907,7 @@ fn recovery_bootstrap_quarantines_foreign_venue_position() {
 
 #[test]
 fn bootstrap_recovery_from_cache_ignores_foreign_venue_position() {
-    // P5-5 / Codex P5 — RECOVERY-PATH regression lock. The entry path scopes selection to the
+    // Recovery-path regression lock. The entry path scopes selection to the
     // execution venue; the recovery path must do the same. A foreign-venue cached position with
     // a supported contract shape must NOT be accepted into Managed state, because the exit
     // submission path uses the position's instrument_id directly with no additional venue gate.

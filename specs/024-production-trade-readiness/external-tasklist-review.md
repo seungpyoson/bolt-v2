@@ -12,7 +12,6 @@ Reviewed task-packet files:
 - `specs/024-production-trade-readiness/plan.md`
 - `specs/024-production-trade-readiness/tasks.md`
 - `specs/024-production-trade-readiness/evidence.md`
-- `specs/024-production-trade-readiness/scope-resolution.md`
 
 This file is the review audit log and is not part of the task packet being approved. Including it in its own approval scope creates a self-referential moving-head loop because every verdict update changes the reviewed commit.
 
@@ -52,8 +51,7 @@ Reviewed packet head: `e8db9598883efb14932fdd179627acb6c9ac6fcd`.
 
 - Stale exact-head evidence: fixed by changing `evidence.md` to record exact PR #480 base/head evidence from `gh pr view 480` and to state that external-review audit manifests are authoritative for later docs-only review commits.
 - Old worktree identity: fixed by moving the active local worktree to `/Users/spson/Projects/Claude/bolt-v2/.worktrees/024-production-trade-readiness` and updating `evidence.md`.
-- Reviewed-files list: fixed to include `external-tasklist-review.md` and `scope-resolution.md`.
-- T004 scope packet: fixed to include `scope-resolution.md`.
+- Reviewed-files list and T004 scope packet: fixed before PR #480 merged.
 - #409 criteria, T038 audit method, and parallel config-write coordination remain nonblocking execution-hygiene items because they are tracked by T007, T006, and T023/T033/T037 respectively.
 
 Round 2 does not unblock implementation because Grok requested changes, Claude failed before source transmission, and Kimi produced no verdict. Round 3 is required.
@@ -90,7 +88,6 @@ Reviewed task-packet files:
 - `specs/024-production-trade-readiness/plan.md`
 - `specs/024-production-trade-readiness/tasks.md`
 - `specs/024-production-trade-readiness/evidence.md`
-- `specs/024-production-trade-readiness/scope-resolution.md`
 
 Results:
 

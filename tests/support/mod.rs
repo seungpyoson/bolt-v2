@@ -169,6 +169,7 @@ impl bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionSource
 pub fn sample_order_routing_handle(
     execution_client_id: &str,
 ) -> bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle {
+    let reporting_unit = nautilus_model::types::Currency::USD();
     bolt_v2::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new(
         Arc::new(SampleEconomicsAdmissionSource(
             execution_client_id.to_string(),
@@ -178,7 +179,7 @@ pub fn sample_order_routing_handle(
             account_id: "test-account",
             product_surface_id: "test-product-surface",
             reporting_policy_id: "test-reporting-policy",
-            reporting_unit: "test-reporting-unit",
+            reporting_unit: reporting_unit.code.as_str(),
             edge_basis_policy_id: "test-edge-policy",
             carry_plan: bolt_v2::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
             routing_attachment_policy:

@@ -15,6 +15,7 @@ use std::{
     fs,
     io::{Cursor, Read},
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, ensure};
@@ -145,6 +146,23 @@ pub struct RunSpec {
     /// Only valid on run-specs whose accepted data is `L2_REPLAY`.
     #[serde(default)]
     pub selector_provenance: Option<RunSpecSelectorProvenance>,
+}
+
+/// Opaque, non-serializable execution inputs certified from one RunSpec and
+/// one source-binding registry snapshot before any source-object fetch.
+#[derive(Debug, Clone)]
+pub struct ValidatedRunSpecExecution {
+    spec: Arc<RunSpec>,
+    accepted_proof: SourceProofReport,
+    accepted: AcceptedDataset,
+    output_dir: PathBuf,
+}
+
+impl ValidatedRunSpecExecution {
+    #[must_use]
+    pub fn run_spec(&self) -> &RunSpec {
+        &self.spec
+    }
 }
 
 impl RunSpec {
@@ -844,11 +862,49 @@ pub fn validate_run_spec_manifest_for_object_hash(
         let manifest = local_run_manifest_for_output(spec, output_dir)?;
         validate_local_run_manifest(&manifest, &accepted)
     } else {
+        validate_local_run_manifest(&spec.manifest, &accepted)
+    }
+}
+
+/// Certify every execution-affecting RunSpec input that does not require the
+/// source-object bytes, including the source-binding registry snapshot.
+pub fn validate_run_spec_execution(
+    spec: Arc<RunSpec>,
+    output_dir: &Path,
+    object_sha256: &str,
+) -> Result<ValidatedRunSpecExecution> {
+    validate_converter_config(&spec.converter)?;
+    let adapter =
+        require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::CsvNativeTrades,
+        "run_from_run_spec is the single-table trade entry; adapter kind {:?} dispatches \
+         through run_operator_from_run_spec",
+        adapter.kind
+    );
+    ensure!(
+        spec.selector_provenance.is_none(),
+        "selector_provenance is only valid for L2 replay run-specs"
+    );
+    spec.identity.single()?;
+    spec.instrument_spec.single()?;
+    let (accepted_proof, accepted) = accepted_dataset_for_run_spec_hash(&spec, object_sha256)?;
+    validate_converter_table_family(&spec.converter, &accepted.table_family)?;
+    if spec.manifest.catalog_inputs.len() == 1 {
+        let manifest = local_run_manifest_for_output(&spec, output_dir)?;
+        validate_local_run_manifest(&manifest, &accepted)?;
+    } else {
         // Multi-input manifests bind each input's catalog_path to its projected
         // per-table subroot only after normalization; preflight validates every
         // other gate-4 surface against the declared (placeholder-path) inputs.
-        validate_local_run_manifest(&spec.manifest, &accepted)
+        validate_local_run_manifest(&spec.manifest, &accepted)?;
     }
+    Ok(ValidatedRunSpecExecution {
+        spec,
+        accepted_proof,
+        accepted,
+        output_dir: output_dir.to_path_buf(),
+    })
 }
 
 fn read_limited_csv_text<R: Read>(
@@ -1212,23 +1268,36 @@ fn run_from_run_spec_inner(
     output_dir: &Path,
     reuse_completed_output: bool,
 ) -> Result<RunArtifacts> {
-    validate_converter_config(&spec.converter)?;
-    let adapter =
-        require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
-    ensure!(
-        adapter.kind == SourceAdapterKind::CsvNativeTrades,
-        "run_from_run_spec is the single-table trade entry; adapter kind {:?} dispatches \
-         through run_operator_from_run_spec",
-        adapter.kind
-    );
-    ensure!(
-        spec.selector_provenance.is_none(),
-        "selector_provenance is only valid for L2 replay run-specs"
-    );
-    let identity = spec.identity.single()?;
-    let instrument_spec = spec.instrument_spec.single()?;
+    let verified_sha256 = verify_run_spec_object(spec, object_bytes)?;
+    let validated =
+        validate_run_spec_execution(Arc::new(spec.clone()), output_dir, &verified_sha256)?;
+    run_from_validated_run_spec_inner(
+        &validated,
+        object_bytes,
+        output_dir,
+        reuse_completed_output,
+        verified_sha256,
+    )
+}
 
-    let object_byte_len = object_bytes.len() as u64;
+/// Execute from a pre-fetch certificate without reopening the RunSpec's
+/// source-binding registry path.
+pub fn run_from_validated_run_spec(
+    validated: &ValidatedRunSpecExecution,
+    object_bytes: &[u8],
+    output_dir: &Path,
+) -> Result<RunArtifacts> {
+    ensure!(
+        validated.output_dir.as_path() == output_dir,
+        "validated RunSpec output directory does not match execution output directory"
+    );
+    let verified_sha256 = verify_run_spec_object(validated.run_spec(), object_bytes)?;
+    run_from_validated_run_spec_inner(validated, object_bytes, output_dir, true, verified_sha256)
+}
+
+fn verify_run_spec_object(spec: &RunSpec, object_bytes: &[u8]) -> Result<String> {
+    let object_byte_len =
+        u64::try_from(object_bytes.len()).context("accepted object byte count exceeds u64")?;
     ensure!(
         object_byte_len == spec.accepted_object.bytes,
         "object byte length {object_byte_len} does not match run-spec {}",
@@ -1247,10 +1316,21 @@ fn run_from_run_spec_inner(
         "object SHA-256 {verified_sha256} does not match run-spec {}",
         spec.accepted_object.sha256
     );
+    Ok(verified_sha256)
+}
 
-    // Gate 1: accept the source proof and bind the object via the ledger.
-    let (accepted_proof, accepted) = accepted_dataset_for_run_spec_hash(spec, &verified_sha256)?;
-    validate_converter_table_family(&spec.converter, &accepted.table_family)?;
+fn run_from_validated_run_spec_inner(
+    validated: &ValidatedRunSpecExecution,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    reuse_completed_output: bool,
+    verified_sha256: String,
+) -> Result<RunArtifacts> {
+    let spec = validated.run_spec();
+    let accepted_proof = validated.accepted_proof.clone();
+    let accepted = validated.accepted.clone();
+    let identity = spec.identity.single()?;
+    let instrument_spec = spec.instrument_spec.single()?;
 
     let conversion_fingerprint = conversion_fingerprint_for(spec, &accepted)?;
     let canonical_path = output_dir.join(CANONICAL_ARTIFACT_FILE);
@@ -4060,6 +4140,39 @@ mod tests {
                 .map(|input| input.data_type.clone())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn validated_run_spec_execution_does_not_reopen_mutated_source_bindings() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let registry_path = temp_dir.path().join("source-bindings.toml");
+        fs::write(&registry_path, COMMITTED_SOURCE_BINDINGS).expect("write registry snapshot");
+        spec.source_bindings_path = registry_path.clone();
+        let output_dir = temp_dir.path().join("admitted-output");
+        let validated = validate_run_spec_execution(
+            Arc::new(spec.clone()),
+            &output_dir,
+            &spec.accepted_object.sha256,
+        )
+        .expect("validate run spec against initial registry snapshot");
+
+        fs::write(&registry_path, "not valid TOML = [").expect("mutate registry after admission");
+
+        let artifacts = run_from_validated_run_spec(&validated, &gz, &output_dir)
+            .expect("admitted execution must not reopen the mutated registry");
+        assert_eq!(artifacts.output.read_back_count, 3);
+        let fresh_output_dir = temp_dir.path().join("fresh-output");
+        let error = match run_from_run_spec(&spec, &gz, &fresh_output_dir) {
+            Ok(_) => panic!("a fresh validation must observe the mutated registry"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:#}").contains("source-bindings registry"),
+            "{error:#}"
+        );
+        assert!(!fresh_output_dir.exists());
     }
 
     #[test]

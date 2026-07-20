@@ -48,17 +48,27 @@ pub fn read_file_with_limit(path: &Path, limit: ByteLimit) -> Result<Vec<u8>> {
 }
 
 pub fn read_to_vec_with_limit<R: Read>(
-    reader: R,
+    mut reader: R,
     limit: ByteLimit,
     context: impl Display,
 ) -> Result<Vec<u8>> {
-    let mut limited = reader.take(limit.max_bytes().saturating_add(1));
+    let mut limited = reader.by_ref().take(limit.max_bytes());
     let mut bytes = Vec::new();
-    let read = limited
+    limited
         .read_to_end(&mut bytes)
         .with_context(|| context.to_string())?;
-    let read = u64::try_from(read).context("read byte count exceeds u64")?;
-    ensure_within_limit(context, read, limit)?;
+    let mut excess = [0_u8; 1];
+    let excess_bytes = loop {
+        match reader.read(&mut excess) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => break result.with_context(|| context.to_string())?,
+        }
+    };
+    ensure!(
+        excess_bytes == 0,
+        "{context} exceeds configured byte limit {}",
+        limit.max_bytes()
+    );
     Ok(bytes)
 }
 
@@ -74,8 +84,26 @@ pub fn read_to_string_with_limit<R: Read>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ByteLimit, read_file_with_limit, read_to_string_with_limit};
-    use std::io::Cursor;
+    use super::{
+        ByteLimit, read_file_with_limit, read_to_string_with_limit, read_to_vec_with_limit,
+    };
+    use std::{
+        cell::RefCell,
+        io::{Cursor, Read},
+        rc::Rc,
+    };
+
+    struct RecordingReader {
+        bytes: Cursor<Vec<u8>>,
+        requested_reads: Rc<RefCell<Vec<usize>>>,
+    }
+
+    impl Read for RecordingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.requested_reads.borrow_mut().push(buffer.len());
+            self.bytes.read(buffer)
+        }
+    }
 
     #[test]
     fn read_file_with_limit_rejects_metadata_larger_than_limit() {
@@ -104,6 +132,32 @@ mod tests {
         assert!(
             format!("{err:#}").contains("exceeds configured byte limit"),
             "{err:#}"
+        );
+    }
+
+    #[test]
+    fn oversized_stream_is_probed_without_retaining_a_limit_plus_one_buffer() {
+        let requested_reads = Rc::new(RefCell::new(Vec::new()));
+        let reader = RecordingReader {
+            bytes: Cursor::new(b"abcdef".to_vec()),
+            requested_reads: Rc::clone(&requested_reads),
+        };
+
+        let err =
+            read_to_vec_with_limit(reader, ByteLimit::new(5).expect("limit"), "bounded fixture")
+                .expect_err("one byte over the limit must reject");
+
+        assert!(
+            format!("{err:#}").contains("exceeds configured byte limit"),
+            "{err:#}"
+        );
+        assert!(
+            requested_reads
+                .borrow()
+                .iter()
+                .all(|requested| *requested <= 5),
+            "the retained read must never request a limit-plus-one buffer: {:?}",
+            requested_reads.borrow()
         );
     }
 }

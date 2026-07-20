@@ -8,7 +8,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -30,13 +30,19 @@ use crate::backfill_execution_plan::{
     BackfillExecutionRunBinding, BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
 };
 use crate::catalog_projection::logical_catalog_hash;
-use crate::io_safety::{ByteLimit, read_to_vec_with_limit};
+use crate::conversion_boundary::{
+    CATALOG_METADATA_FILE, CATALOG_METADATA_VERSION, ConversionCatalogMetadata,
+};
+use crate::io_safety::{ByteLimit, ensure_within_limit, read_to_vec_with_limit};
 use crate::path_resolution::resolve_existing_path;
 use crate::{
-    operator::{CATALOG_DIR, RunSpec, run_from_run_spec},
+    operator::{
+        CATALOG_DIR, RunSpec, ValidatedRunSpecExecution, run_from_validated_run_spec,
+        validate_run_spec_execution,
+    },
     source_universe_execution_pack::{
         SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
-        SourceUniverseExecutionPackStatus,
+        SourceUniverseExecutionPackStatus, validate_source_universe_execution_pack,
     },
 };
 
@@ -68,7 +74,7 @@ pub struct SourceUniverseAdmittedControls {
     run_spec_bytes: Arc<[u8]>,
     accepted_tranche_bytes: Arc<[u8]>,
     execution_plan_bytes: Arc<[u8]>,
-    run_spec: Arc<RunSpec>,
+    run_spec_execution: ValidatedRunSpecExecution,
 }
 
 impl SourceUniverseAdmittedControls {
@@ -89,7 +95,7 @@ impl SourceUniverseAdmittedControls {
 
     #[must_use]
     pub fn run_spec(&self) -> &RunSpec {
-        &self.run_spec
+        self.run_spec_execution.run_spec()
     }
 }
 
@@ -457,7 +463,8 @@ impl SourceUniverseOperatorRunner for LocalSourceUniverseOperatorRunner {
         controls: &SourceUniverseAdmittedControls,
         output_dir: &Path,
     ) -> Result<SourceUniverseBatchExecutionRunOutput> {
-        let artifacts = run_from_run_spec(controls.run_spec(), object_bytes, output_dir)?;
+        let artifacts =
+            run_from_validated_run_spec(&controls.run_spec_execution, object_bytes, output_dir)?;
         Ok(SourceUniverseBatchExecutionRunOutput {
             canonical_rows: artifacts.output.canonical_table.rows.len() as u64,
             nt_catalog_rows: artifacts.output.read_back_count as u64,
@@ -623,12 +630,13 @@ where
 
 /// A single unit of batch work after selection and resume filtering: either a
 /// record carried forward from a prior report (only after its input sha matches
-/// AND its prior output catalog re-verifies — see
-/// [`carried_output_still_verifies`]), or a pack record that still needs
-/// fetch + verify + run. The carried record is boxed to keep the two variants
-/// similarly sized.
+/// and its prior output catalog and metadata re-verify), or a pack record that
+/// still needs fetch + verify + run.
 enum BatchWorkItem<'pack> {
-    Carried(Box<SourceUniverseBatchExecutionRecord>),
+    Carried {
+        record: &'pack SourceUniverseExecutionPackRecord,
+        output: VerifiedCarriedOutput,
+    },
     NeedsWork {
         record: &'pack SourceUniverseExecutionPackRecord,
         controls: &'pack SourceUniverseAdmittedControls,
@@ -673,6 +681,8 @@ fn prepare_batch(
         .with_context(|| format!("read execution pack {}", execution_pack_path.display()))?;
     let pack: SourceUniverseExecutionPack = serde_json::from_slice(&pack_bytes)
         .with_context(|| format!("parse execution pack {}", execution_pack_path.display()))?;
+    validate_source_universe_execution_pack(&pack)
+        .with_context(|| format!("validate execution pack {}", execution_pack_path.display()))?;
     ensure!(
         matches!(
             pack.status,
@@ -747,6 +757,7 @@ fn prepare_batch(
             &pack,
             &pack_base_dir,
             record,
+            output_dir,
             &config.control_admission,
             total_control_bytes,
         )
@@ -801,7 +812,7 @@ impl OwnedBatchPlan {
                     .is_none_or(|start_sequence| record.sequence >= start_sequence)
             })
             .take(self.record_limit)
-            .map(|record| match self.resume_records.get(&record.sequence) {
+            .map(|record| {
                 // Pack-regeneration guard: carry forward only when the prior
                 // record's pinned object AND admitted execution-plan sha still
                 // match the current pack record, and the prior output catalog
@@ -817,20 +828,20 @@ impl OwnedBatchPlan {
                 // corrupted prior catalog re-executes the record (downgraded to
                 // `NeedsWork`) instead of being marked completed off a stale
                 // marker — fail safe, never carry a phantom output forward.
-                Some(prior)
-                    if prior.selected_object_sha256 == record.selected_object_sha256
-                        && prior.execution_plan_sha256 == record.execution_plan_sha256
-                        && carried_output_still_verifies(prior) =>
+                if let Some(prior) = self.resume_records.get(&record.sequence)
+                    && prior.selected_object_sha256 == record.selected_object_sha256
+                    && prior.execution_plan_sha256 == record.execution_plan_sha256
+                    && let Some(output) = verified_carried_output(prior)
                 {
-                    BatchWorkItem::Carried(Box::new(prior.clone()))
+                    return BatchWorkItem::Carried { record, output };
                 }
-                _ => BatchWorkItem::NeedsWork {
+                BatchWorkItem::NeedsWork {
                     record,
                     controls: self
                         .admitted_controls
                         .get(&record.sequence)
                         .expect("selected record controls admitted before plan construction"),
-                },
+                }
             })
             .collect();
         BatchPlan { work_items }
@@ -841,6 +852,7 @@ fn admit_record_controls(
     pack: &SourceUniverseExecutionPack,
     pack_base_dir: &Path,
     record: &SourceUniverseExecutionPackRecord,
+    batch_output_dir: &Path,
     policy: &SourceUniverseControlAdmissionPolicy,
     admitted_control_bytes: u64,
 ) -> Result<(SourceUniverseAdmittedControls, u64)> {
@@ -895,13 +907,20 @@ fn admit_record_controls(
         &run_spec_bytes,
         &accepted_tranche_bytes,
     )?;
+    let record_output_dir = batch_output_dir.join(&record.operator_run_id);
+    let run_spec_execution = validate_run_spec_execution(
+        Arc::new(run_spec),
+        &record_output_dir,
+        &record.selected_object_sha256,
+    )
+    .context("validate admitted run_spec execution inputs")?;
 
     Ok((
         SourceUniverseAdmittedControls {
             run_spec_bytes,
             accepted_tranche_bytes,
             execution_plan_bytes,
-            run_spec: Arc::new(run_spec),
+            run_spec_execution,
         },
         next_total_control_bytes,
     ))
@@ -941,6 +960,11 @@ fn read_pinned_control(
         "pinned {role} {} is not a regular file",
         resolved_path.display()
     );
+    ensure_within_limit(
+        format!("read pinned {role} {}", resolved_path.display()),
+        metadata.len(),
+        effective_limit,
+    )?;
     let read_result = read_to_vec_with_limit(
         file,
         effective_limit,
@@ -1122,6 +1146,14 @@ fn validate_admitted_control_self_validity(
     ] {
         ensure!(!value.trim().is_empty(), "{name} must not be empty");
     }
+    let mut operator_run_id_components = Path::new(&record.operator_run_id).components();
+    ensure!(
+        matches!(
+            operator_run_id_components.next(),
+            Some(Component::Normal(_))
+        ) && operator_run_id_components.next().is_none(),
+        "operator_run_id must be a single normal path component"
+    );
     ensure!(
         !record.source_proof_id.trim().is_empty() && record.source_proof_version > 0,
         "source proof identity must be complete"
@@ -1300,19 +1332,55 @@ fn validate_control_selection_metadata(
 /// `false` so the caller downgrades the record to fresh work instead of
 /// trusting the stale resume marker — output corruption can never survive a
 /// resume.
-fn carried_output_still_verifies(prior: &SourceUniverseBatchExecutionRecord) -> bool {
+#[derive(Debug)]
+struct VerifiedCarriedOutput {
+    output_dir: PathBuf,
+    catalog_hash: String,
+    canonical_rows: u64,
+    nt_catalog_rows: u64,
+}
+
+fn verified_carried_output(
+    prior: &SourceUniverseBatchExecutionRecord,
+) -> Option<VerifiedCarriedOutput> {
     let catalog_root = prior.output_dir.join(CATALOG_DIR);
     // A missing prior output is "not verified" (re-execute), not a panic: NT's
     // catalog open expects an existing path and panics otherwise, so guard the
     // deleted/missing case here before re-hashing. A present-but-corrupt catalog
     // still surfaces as Err below.
     if !catalog_root.is_dir() {
-        return false;
+        return None;
     }
-    match logical_catalog_hash(&catalog_root) {
-        Ok(actual_catalog_hash) => actual_catalog_hash == prior.catalog_hash,
-        Err(_) => false,
+    let actual_catalog_hash = logical_catalog_hash(&catalog_root).ok()?;
+    if actual_catalog_hash != prior.catalog_hash {
+        return None;
     }
+    let metadata: ConversionCatalogMetadata =
+        serde_json::from_slice(&fs::read(prior.output_dir.join(CATALOG_METADATA_FILE)).ok()?)
+            .ok()?;
+    if metadata.metadata_version != CATALOG_METADATA_VERSION
+        || metadata.catalog_hash != actual_catalog_hash
+    {
+        return None;
+    }
+    let canonical_rows = u64::try_from(metadata.canonical_rows).ok()?;
+    let nt_catalog_rows = metadata
+        .effective_catalog_rows_by_nt_data_type()
+        .into_values()
+        .try_fold(0_u64, |total, rows| {
+            total.checked_add(u64::try_from(rows).ok()?)
+        })?;
+    Some(VerifiedCarriedOutput {
+        output_dir: prior.output_dir.clone(),
+        catalog_hash: actual_catalog_hash,
+        canonical_rows,
+        nt_catalog_rows,
+    })
+}
+
+#[cfg(test)]
+fn carried_output_still_verifies(prior: &SourceUniverseBatchExecutionRecord) -> bool {
+    verified_carried_output(prior).is_some()
 }
 
 fn load_resume_records(
@@ -1361,12 +1429,24 @@ where
     R: SourceUniverseOperatorRunner,
 {
     let (record, controls) = match work_item {
-        // Carried records are pushed verbatim, skipping fetch + verify + run.
-        // Verbatim includes the prior run's output_dir (provenance is kept,
-        // not rewritten), so a resumed report can reference artifacts outside
-        // this run's output root — consumers must follow records[].output_dir.
-        BatchWorkItem::Carried(record) => {
-            return RecordSlot::Completed((**record).clone());
+        // Current identity always comes from the admitted pack. Only output
+        // facts re-derived from verified prior catalog metadata carry forward.
+        BatchWorkItem::Carried { record, output } => {
+            return RecordSlot::Completed(SourceUniverseBatchExecutionRecord {
+                sequence: record.sequence,
+                operator_run_id: record.operator_run_id.clone(),
+                source_binding: record.source_binding.clone(),
+                category: record.category.clone(),
+                symbol: record.symbol.clone(),
+                archive_date: record.archive_date.clone(),
+                selected_object_sha256: record.selected_object_sha256.clone(),
+                selected_object_bytes: record.selected_object_bytes,
+                execution_plan_sha256: record.execution_plan_sha256.clone(),
+                canonical_rows: output.canonical_rows,
+                nt_catalog_rows: output.nt_catalog_rows,
+                catalog_hash: output.catalog_hash.clone(),
+                output_dir: output.output_dir.clone(),
+            });
         }
         BatchWorkItem::NeedsWork { record, controls } => (*record, *controls),
     };
@@ -1683,6 +1763,18 @@ mod tests {
         }
     }
 
+    fn copy_reference_output(output_dir: &Path) {
+        copy_dir_all(
+            &committed_reference_run_dir().join(CATALOG_DIR),
+            &output_dir.join(CATALOG_DIR),
+        );
+        fs::copy(
+            committed_reference_run_dir().join(CATALOG_METADATA_FILE),
+            output_dir.join(CATALOG_METADATA_FILE),
+        )
+        .expect("copy committed catalog metadata");
+    }
+
     fn carried_record_with_output(
         output_dir: PathBuf,
         catalog_hash: String,
@@ -1758,13 +1850,18 @@ mod tests {
         };
         let mut resume_records = BTreeMap::new();
         resume_records.insert(prior.sequence, prior.clone());
+        let run_spec = committed_run_spec();
+        let accepted_object_sha256 = run_spec.accepted_object.sha256.clone();
+        let run_spec_execution =
+            validate_run_spec_execution(run_spec, &prior.output_dir, &accepted_object_sha256)
+                .expect("validate committed run spec for owned plan fixture");
         let admitted_controls = BTreeMap::from([(
             prior.sequence,
             SourceUniverseAdmittedControls {
                 run_spec_bytes: Arc::from([]),
                 accepted_tranche_bytes: Arc::from([]),
                 execution_plan_bytes: Arc::from([]),
-                run_spec: committed_run_spec(),
+                run_spec_execution,
             },
         )]);
         OwnedBatchPlan {
@@ -1783,10 +1880,7 @@ mod tests {
         // not vacuously rejecting every record.
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        copy_dir_all(
-            &committed_reference_run_dir().join(CATALOG_DIR),
-            &output_dir.join(CATALOG_DIR),
-        );
+        copy_reference_output(&output_dir);
         let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
         assert!(
             carried_output_still_verifies(&record),
@@ -1814,11 +1908,7 @@ mod tests {
         // recomputed logical hash no longer matches the carried hash.
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        let catalog_root = output_dir.join(CATALOG_DIR);
-        copy_dir_all(
-            &committed_reference_run_dir().join(CATALOG_DIR),
-            &catalog_root,
-        );
+        copy_reference_output(&output_dir);
         // Carry a hash that does not describe the planted catalog: a drifted
         // output must read as "not a match" rather than be reused verbatim.
         let record = carried_record_with_output(output_dir, "f".repeat(64));
@@ -1855,15 +1945,12 @@ mod tests {
         // prior catalog the record is still carried forward (no needless re-run).
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        copy_dir_all(
-            &committed_reference_run_dir().join(CATALOG_DIR),
-            &output_dir.join(CATALOG_DIR),
-        );
+        copy_reference_output(&output_dir);
         let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
         let owned_plan = owned_plan_with_carry(&record);
         let plan = owned_plan.plan();
         assert!(
-            matches!(plan.work_items.as_slice(), [BatchWorkItem::Carried(_)]),
+            matches!(plan.work_items.as_slice(), [BatchWorkItem::Carried { .. }]),
             "an intact, hash-matching prior catalog must still carry forward"
         );
     }
@@ -1872,10 +1959,7 @@ mod tests {
     fn plan_reexecutes_carried_record_when_execution_plan_changes() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        copy_dir_all(
-            &committed_reference_run_dir().join(CATALOG_DIR),
-            &output_dir.join(CATALOG_DIR),
-        );
+        copy_reference_output(&output_dir);
         let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
         let mut owned_plan = owned_plan_with_carry(&record);
         owned_plan.pack.records[0].execution_plan_sha256 = "b".repeat(64);
@@ -1888,6 +1972,26 @@ mod tests {
                 [BatchWorkItem::NeedsWork { .. }]
             ),
             "a changed admitted execution plan must force re-execution even when the object and prior output still verify"
+        );
+    }
+
+    #[test]
+    fn plan_reexecutes_carried_record_when_selected_object_changes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        copy_reference_output(&output_dir);
+        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        let mut owned_plan = owned_plan_with_carry(&record);
+        owned_plan.pack.records[0].selected_object_sha256 = "b".repeat(64);
+
+        let plan = owned_plan.plan();
+
+        assert!(
+            matches!(
+                plan.work_items.as_slice(),
+                [BatchWorkItem::NeedsWork { .. }]
+            ),
+            "a changed selected object must force re-execution even when the plan and prior output still verify"
         );
     }
 }

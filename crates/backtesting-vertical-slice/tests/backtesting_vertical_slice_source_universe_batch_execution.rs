@@ -539,6 +539,12 @@ fn malformed_bytes_in_each_control_reject_before_side_effects() {
 fn coherent_but_malformed_control_values_reject_before_side_effects() {
     #[derive(Clone, Copy)]
     enum Case {
+        ParentPathOperatorRunId,
+        AbsolutePathOperatorRunId,
+        PendingSourceProof,
+        InvalidSourceUrl,
+        InvalidArchiveDate,
+        InvalidConverterPayload,
         EmptySourceProofId,
         ZeroSourceProofVersion,
         RunSpecSourceProofIdentityMismatch,
@@ -563,6 +569,15 @@ fn coherent_but_malformed_control_values_reject_before_side_effects() {
     }
 
     let cases = [
+        (Case::ParentPathOperatorRunId, "parent-path-operator-run-id"),
+        (
+            Case::AbsolutePathOperatorRunId,
+            "absolute-path-operator-run-id",
+        ),
+        (Case::PendingSourceProof, "pending-source-proof"),
+        (Case::InvalidSourceUrl, "invalid-source-url"),
+        (Case::InvalidArchiveDate, "invalid-archive-date"),
+        (Case::InvalidConverterPayload, "invalid-converter-payload"),
         (Case::EmptySourceProofId, "empty-source-proof-id"),
         (Case::ZeroSourceProofVersion, "zero-source-proof-version"),
         (
@@ -625,6 +640,44 @@ fn coherent_but_malformed_control_values_reject_before_side_effects() {
         .expect("parse plan for coherent malformed control");
 
         let expected_error = match case {
+            Case::ParentPathOperatorRunId => {
+                let operator_run_id = "../escaped-output".to_string();
+                pack.records[0].operator_run_id.clone_from(&operator_run_id);
+                run_spec.manifest.run_id.clone_from(&operator_run_id);
+                "operator_run_id must be a single normal path component"
+            }
+            Case::AbsolutePathOperatorRunId => {
+                let operator_run_id = "/tmp/escaped-output".to_string();
+                pack.records[0].operator_run_id.clone_from(&operator_run_id);
+                run_spec.manifest.run_id.clone_from(&operator_run_id);
+                "operator_run_id must be a single normal path component"
+            }
+            Case::PendingSourceProof => {
+                run_spec.source_proof.status =
+                    backtesting_vertical_slice::source_proof::SourceProofStatus::Pending;
+                "source proof is not accepted"
+            }
+            Case::InvalidSourceUrl => {
+                let source_url = "http://public.synthetic.example/object-0.csv.gz".to_string();
+                pack.records[0].source_url.clone_from(&source_url);
+                run_spec.accepted_object.source_url.clone_from(&source_url);
+                tranche.objects[0].source_url.clone_from(&source_url);
+                "does not reference proof venue"
+            }
+            Case::InvalidArchiveDate => {
+                let archive_date = "not-a-date".to_string();
+                pack.records[0].archive_date.clone_from(&archive_date);
+                run_spec
+                    .accepted_object
+                    .archive_date
+                    .clone_from(&archive_date);
+                tranche.objects[0].archive_date.clone_from(&archive_date);
+                "object archive_date"
+            }
+            Case::InvalidConverterPayload => {
+                run_spec.converter.raw_payload.zip_member = None;
+                "zip_member"
+            }
             Case::EmptySourceProofId => {
                 pack.records[0].source_proof_id.clear();
                 run_spec.manifest.source_proof_id.clear();
@@ -788,6 +841,68 @@ fn coherent_but_malformed_control_values_reject_before_side_effects() {
         assert_control_admission_rejects_before_side_effects(
             &pack_path,
             &temp_dir.path().join(format!("{name}-output")),
+            expected_error,
+        );
+    }
+}
+
+#[test]
+fn malformed_execution_pack_declarations_reject_before_side_effects() {
+    enum Case {
+        SchemaVersion,
+        EmptyUniverse,
+        EmptyFamily,
+        MaterializedCount,
+        MaterializedBytes,
+        DuplicateSequence,
+        DuplicateOperatorRunId,
+    }
+
+    for (case, expected_error) in [
+        (
+            Case::SchemaVersion,
+            "execution pack schema_version mismatch",
+        ),
+        (
+            Case::EmptyUniverse,
+            "execution pack universe_id must not be empty",
+        ),
+        (Case::EmptyFamily, "execution pack family must not be empty"),
+        (Case::MaterializedCount, "materialized_record_count"),
+        (Case::MaterializedBytes, "materialized_source_bytes"),
+        (Case::DuplicateSequence, "duplicate record sequence"),
+        (Case::DuplicateOperatorRunId, "duplicate operator_run_id"),
+    ] {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let objects = vec![
+            (0, b"accepted object zero".to_vec()),
+            (1, b"accepted object one".to_vec()),
+        ];
+        let (pack_path, _, _, _) = write_control_admission_fixture(temp_dir.path(), &objects);
+        let mut pack: SourceUniverseExecutionPack = serde_json::from_slice(
+            &fs::read(&pack_path).expect("read pack for declaration mutation"),
+        )
+        .expect("parse pack for declaration mutation");
+        match case {
+            Case::SchemaVersion => pack.schema_version = "unknown-pack-schema".to_string(),
+            Case::EmptyUniverse => pack.universe_id.clear(),
+            Case::EmptyFamily => pack.family.clear(),
+            Case::MaterializedCount => pack.materialized_record_count = 1,
+            Case::MaterializedBytes => pack.materialized_source_bytes += 1,
+            Case::DuplicateSequence => pack.records[1].sequence = pack.records[0].sequence,
+            Case::DuplicateOperatorRunId => {
+                pack.records[1].operator_run_id = pack.records[0].operator_run_id.clone();
+            }
+        }
+        fs::write(
+            &pack_path,
+            serde_json::to_vec_pretty(&pack).expect("serialize mutated pack"),
+        )
+        .expect("write mutated pack");
+
+        assert_control_admission_rejects_before_side_effects(
+            &pack_path,
+            &temp_dir.path().join("batch-output"),
             expected_error,
         );
     }
@@ -1445,6 +1560,18 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
     // hash so the gate verifies. Never mutate the committed reference; only the
     // temp copy and the in-memory prior report are touched.
     first_report.records[0].catalog_hash = committed_reference_catalog_hash();
+    fs::copy(
+        committed_reference_run_dir().join("catalog-metadata.json"),
+        prior_output_dir.join("catalog-metadata.json"),
+    )
+    .expect("copy committed catalog metadata");
+    first_report.records[0].operator_run_id = "forged-prior-run".to_string();
+    first_report.records[0].source_binding = "forged-prior-binding".to_string();
+    first_report.records[0].symbol = "FORGED".to_string();
+    first_report.records[0].archive_date = "1900-01-01".to_string();
+    first_report.records[0].selected_object_bytes = u64::MAX;
+    first_report.records[0].canonical_rows = u64::MAX;
+    first_report.records[0].nt_catalog_rows = u64::MAX;
 
     let resume_report_path = first_output.join("prior-report.json");
     fs::write(
@@ -1480,15 +1607,31 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
         "carried + reprocessed both succeed"
     );
     assert_eq!(
-        resume_report.total_canonical_rows, 14,
-        "totals include carried rows"
+        resume_report.total_canonical_rows, 110,
+        "totals derive carried rows from verified catalog metadata"
     );
-    assert_eq!(resume_report.total_nt_catalog_rows, 14);
+    assert_eq!(resume_report.total_nt_catalog_rows, 111);
     assert_eq!(
         resume_report.records[0].sequence, 0,
         "carried record stays in order"
     );
     assert_eq!(resume_report.records[1].sequence, 1);
+    assert_eq!(
+        resume_report.records[0].operator_run_id,
+        "source-universe-operator-run-synthetic-00000"
+    );
+    assert_eq!(
+        resume_report.records[0].source_binding,
+        "synthetic-spot-tick-trades"
+    );
+    assert_eq!(resume_report.records[0].symbol, "SYNTHETIC-AAA");
+    assert_eq!(resume_report.records[0].archive_date, "2026-03-01");
+    assert_eq!(
+        resume_report.records[0].selected_object_bytes,
+        u64::try_from(objects[0].1.len()).expect("object length")
+    );
+    assert_eq!(resume_report.records[0].canonical_rows, 103);
+    assert_eq!(resume_report.records[0].nt_catalog_rows, 104);
     assert_eq!(
         resume_report.records[0].output_dir, first_report.records[0].output_dir,
         "carried record keeps prior provenance verbatim"
@@ -2506,6 +2649,21 @@ fn synthetic_symbol(sequence: u64) -> String {
 
 fn write_n_record_pack(pack_path: &Path, objects: &[(u64, Vec<u8>)]) {
     let root = pack_path.parent().expect("pack parent");
+    let source_bindings_path = root.join("source-bindings.toml");
+    fs::write(
+        &source_bindings_path,
+        r#"
+[[source_binding]]
+key = "synthetic-spot-tick-trades"
+venue = "synthetic-venue"
+product_family = "spot"
+market_structure_fixture = "perps-spot"
+source_uri = "https://public.synthetic.example/object-{sequence}.csv.gz"
+evidence_state = "directly_backfillable"
+table_families = ["trades"]
+"#,
+    )
+    .expect("write synthetic source-binding registry");
     let record_count = u64::try_from(objects.len()).expect("record count fits u64");
     let total_object_bytes_len = objects
         .iter()
@@ -2515,7 +2673,9 @@ fn write_n_record_pack(pack_path: &Path, objects: &[(u64, Vec<u8>)]) {
         .expect("total object bytes fit u64");
     let records = objects
         .iter()
-        .map(|(sequence, bytes)| write_synthetic_controls(root, *sequence, bytes))
+        .map(|(sequence, bytes)| {
+            write_synthetic_controls(root, &source_bindings_path, *sequence, bytes)
+        })
         .collect::<Vec<_>>();
 
     let mut pack = committed_execution_pack_template();
@@ -2599,6 +2759,7 @@ fn committed_control_templates() -> (
 
 fn write_synthetic_controls(
     root: &Path,
+    source_bindings_path: &Path,
     sequence: u64,
     object_bytes: &[u8],
 ) -> SourceUniverseExecutionPackRecord {
@@ -2614,6 +2775,7 @@ fn write_synthetic_controls(
         format!("s3://synthetic-bucket/nt-research-analytics/backtests/synthetic-{sequence}");
 
     run_spec.manifest.run_id.clone_from(&operator_run_id);
+    run_spec.source_bindings_path = source_bindings_path.to_path_buf();
     run_spec.manifest.output_prefix.clone_from(&output_prefix);
     run_spec.manifest.source_proof_id = "source-proof-synthetic".to_string();
     run_spec.manifest.source_proof_version = 1;

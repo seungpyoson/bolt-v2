@@ -23,7 +23,8 @@ use crate::{
     source_catalog_mapping_readiness::SourceCatalogMappingStatusEntry,
     source_proof::SourceProofUsageScope,
     source_universe_batch_execution::{
-        SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
+        SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION, SourceUniverseBatchExecutionReport,
+        SourceUniverseBatchExecutionReportStatus,
     },
 };
 
@@ -100,6 +101,7 @@ pub enum BackfillConversionCompletionBlockingIssue {
     BatchPlanNotReady,
     MissingBatchRecord,
     UncoveredBatchRecord,
+    BatchExecutionReportSchemaMismatch,
     BatchExecutionReportNotCompleted,
     BatchExecutionReportFailedRecords,
     BatchExecutionReportCompletedCountMismatch,
@@ -356,6 +358,11 @@ pub fn evaluate_backfill_conversion_completion_ledger(
     // Without this, a CompletedWithFailures/Failed run (or a partial-scope run)
     // could still yield a Ready completion ledger.
     if let Some(report) = batch_execution_report {
+        if report.schema_version != SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION {
+            blocking_issues.push(
+                BackfillConversionCompletionBlockingIssue::BatchExecutionReportSchemaMismatch,
+            );
+        }
         if report.status != SourceUniverseBatchExecutionReportStatus::Completed {
             blocking_issues
                 .push(BackfillConversionCompletionBlockingIssue::BatchExecutionReportNotCompleted);
@@ -924,8 +931,7 @@ mod tests {
         BACKFILL_CONVERSION_BATCH_PLAN_SCHEMA_VERSION, BackfillConversionBatchSelection,
     };
     use crate::source_universe_batch_execution::{
-        SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION, SourceUniverseBatchExecutionReport,
-        SourceUniverseBatchExecutionReportStatus,
+        SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
     };
 
     fn batch_record(record_id: &str) -> BackfillConversionBatchRecord {
@@ -1062,6 +1068,36 @@ mod tests {
             ledger.blocking_issues
         );
         assert_eq!(ledger.status, BackfillConversionCompletionStatus::Blocked);
+    }
+
+    #[test]
+    fn non_current_batch_execution_report_schema_blocks_completion_ledger() {
+        let batch = ready_batch_plan(&["record-a"]);
+        for schema_version in [
+            "source-universe-batch-execution-report.v1",
+            "source-universe-batch-execution-report.v999",
+        ] {
+            let mut report =
+                batch_execution_report(SourceUniverseBatchExecutionReportStatus::Completed, 1, 0);
+            report.schema_version = schema_version.to_string();
+
+            let ledger = evaluate_backfill_conversion_completion_ledger(
+                "test-ledger",
+                &batch,
+                &requirements(),
+                Vec::new(),
+                Some(&report),
+            );
+
+            assert!(
+                ledger.blocking_issues.contains(
+                    &BackfillConversionCompletionBlockingIssue::BatchExecutionReportSchemaMismatch
+                ),
+                "schema {schema_version:?} must block completion: {:?}",
+                ledger.blocking_issues
+            );
+            assert_eq!(ledger.status, BackfillConversionCompletionStatus::Blocked);
+        }
     }
 
     // F18 negative control: a clean Completed report covering every planned

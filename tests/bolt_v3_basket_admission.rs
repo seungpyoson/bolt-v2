@@ -745,6 +745,67 @@ fn basket_rejection_preserves_later_leg_error_when_evidence_write_fails() {
 }
 
 #[test]
+fn risk_reducing_basket_is_not_blocked_when_evidence_write_fails() {
+    let writer = Arc::new(RecordingBasketDecisionWriter {
+        fail_basket_admission_decision: AtomicBool::new(true),
+        ..Default::default()
+    });
+    let submit_gate = submit_state(writer.clone(), 2, dec!(10));
+    let group = fixture_group();
+    let claims = group
+        .tradable_legs
+        .values()
+        .take(2)
+        .map(|leg| risk_reducing_claim(leg, valid_exit_proof(leg)))
+        .collect::<Vec<_>>();
+
+    let permit = submit_gate
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &claims,
+            &basket_slot_evidence("risk-reducing-evidence-failure", &group),
+        )
+        .expect("evidence failure must not block a purely risk-reducing basket");
+
+    assert_eq!(submit_gate.admitted_order_count(), 2);
+    assert_eq!(writer.basket_admission_decision_attempts(), 1);
+    drop(permit);
+    assert_eq!(submit_gate.admitted_order_count(), 0);
+}
+
+#[test]
+fn mixed_risk_basket_fails_closed_when_evidence_write_fails() {
+    let writer = Arc::new(RecordingBasketDecisionWriter {
+        fail_basket_admission_decision: AtomicBool::new(true),
+        ..Default::default()
+    });
+    let submit_gate = submit_state(writer.clone(), 2, dec!(10));
+    let group = fixture_group();
+    let first_leg = group
+        .tradable_legs
+        .values()
+        .next()
+        .expect("fixture should have at least one leg");
+    let mut claims = entry_claims(&group, dec!(0.9));
+    claims[0] = risk_reducing_claim(first_leg, valid_exit_proof(first_leg));
+
+    let error = submit_gate
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &claims,
+            &basket_slot_evidence("mixed-risk-evidence-failure", &group),
+        )
+        .expect_err("any new-risk leg must make the basket fail closed on evidence failure");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::EvidenceWriteFailed { .. }
+    ));
+    assert_eq!(submit_gate.admitted_order_count(), 0);
+    assert_eq!(writer.basket_admission_decision_attempts(), 1);
+}
+
+#[test]
 fn dropped_capital_admission_basket_submit_permit_rolls_back_all_leg_reservations() {
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
     let submit_gate = capital_admission_submit_state(writer.clone());

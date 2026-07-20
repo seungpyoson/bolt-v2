@@ -3504,6 +3504,45 @@ fn admitted_shadow_admission_fails_closed_when_evidence_write_fails() {
 }
 
 #[test]
+fn risk_reducing_exit_is_not_blocked_when_evidence_write_fails() {
+    let writer = Arc::new(FailingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
+
+    let permit = admission
+        .admit(&submit_request_with_kind_and_exit_proof(
+            Decimal::new(264, 2),
+            BoltV3SubmitIntentKind::RiskReducingExit,
+            Some(valid_risk_reducing_exit_proof()),
+        ))
+        .expect("evidence failure must not block a verified risk-reducing exit");
+
+    assert_eq!(admission.admitted_order_count(), 1);
+    assert_eq!(writer.admission_decision_attempts(), 1);
+    drop(permit);
+    assert_eq!(admission.admitted_order_count(), 0);
+}
+
+#[test]
+fn forced_reduction_is_not_blocked_when_evidence_write_fails() {
+    let writer = Arc::new(FailingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
+    admission.replace_kill_switch_state(halted_kill_switch_state());
+    admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
+
+    let permit = admission
+        .admit(&forced_reduction_request(
+            Decimal::new(10, 0),
+            forced_reduction_claim("halt-1"),
+        ))
+        .expect("evidence failure must not block an emergency forced reduction");
+
+    assert_eq!(admission.admitted_order_count(), 1);
+    assert_eq!(writer.admission_decision_attempts(), 1);
+    drop(permit);
+    assert_eq!(admission.admitted_order_count(), 0);
+}
+
+#[test]
 fn admit_serializes_while_admission_evidence_is_in_flight() {
     let writer = Arc::new(BlockingFirstAdmissionDecisionWriter::default());
     let admission = Arc::new(limited_admission_with_writer(

@@ -1599,7 +1599,7 @@ impl BoltV3SubmitAdmissionState {
         }
         if evaluation.outcome == BoltV3AdmissionOutcome::Admitted
             && let Some(metadata) = evaluation.reservation_metadata.as_ref()
-            && let Err(err) = record_decision(RiskDirection::NewRisk, || {
+            && let Err(err) = record_decision(request.intent_kind.evidence_risk_direction(), || {
                 self.decision_evidence
                     .record_submit_reservation_metadata(metadata)
             })
@@ -1612,7 +1612,7 @@ impl BoltV3SubmitAdmissionState {
             });
         }
         let record_result = if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
-            record_decision(RiskDirection::NewRisk, || {
+            record_decision(request.intent_kind.evidence_risk_direction(), || {
                 self.record_admission_decision(request, &evaluation, now_ns)
             })
         } else {
@@ -2202,9 +2202,10 @@ impl BoltV3SubmitAdmissionState {
             forced_reduction_count,
             forced_reduction_client_order_id: None,
         };
+        let evidence_risk_direction = basket_evidence_risk_direction(claims);
 
         for metadata in &reservation_metadata {
-            if let Err(err) = record_decision(RiskDirection::NewRisk, || {
+            if let Err(err) = record_decision(evidence_risk_direction, || {
                 self.decision_evidence
                     .record_submit_reservation_metadata(metadata)
             }) {
@@ -2215,7 +2216,7 @@ impl BoltV3SubmitAdmissionState {
             }
         }
 
-        if let Err(err) = record_decision(RiskDirection::NewRisk, || {
+        if let Err(err) = record_decision(evidence_risk_direction, || {
             self.decision_evidence
                 .record_basket_admission_decision(&evidence)
         }) {
@@ -2893,12 +2894,30 @@ impl BoltV3SubmitLifecyclePolicy {
 }
 
 impl BoltV3SubmitIntentKind {
+    const fn evidence_risk_direction(self) -> RiskDirection {
+        match self {
+            Self::Entry | Self::ReplaceSubmit => RiskDirection::NewRisk,
+            Self::RiskReducingExit | Self::KillSwitchForcedReduction => RiskDirection::RiskReducing,
+        }
+    }
+
     pub fn is_venue_position_exit_clamp_eligible(self) -> bool {
         matches!(
             self,
             BoltV3SubmitIntentKind::RiskReducingExit
                 | BoltV3SubmitIntentKind::KillSwitchForcedReduction
         )
+    }
+}
+
+fn basket_evidence_risk_direction(claims: &[BoltV3BasketSubmitSlotClaim]) -> RiskDirection {
+    if claims
+        .iter()
+        .any(|claim| claim.intent_kind.evidence_risk_direction() == RiskDirection::NewRisk)
+    {
+        RiskDirection::NewRisk
+    } else {
+        RiskDirection::RiskReducing
     }
 }
 

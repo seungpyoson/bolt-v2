@@ -549,6 +549,8 @@ def validate_remote_probe_policy(data: dict[str, Any]) -> None:
     policy = data.get("remote_probe")
     if not isinstance(policy, dict):
         raise PolicyError("remote_probe table must be a table")
+    remote = require_non_empty_string(policy, "remote", "remote_probe")
+    validate_git_remote_name(remote, "remote_probe.remote")
     workflow_name = require_non_empty_string(policy, "workflow_name", "remote_probe")
     if workflow_name != "Rust Probe":
         raise PolicyError("remote_probe.workflow_name must be 'Rust Probe'")
@@ -2901,7 +2903,7 @@ def local_compile_refusal_payload(
             "for targeted Rust debugging after cheap local checks: run: just rust-probe suggest",
             "then commit and push the branch before running the smallest suggested just rust-probe command",
             "for complete remote evidence: commit local changes",
-            "for complete remote evidence: publish the exact branch head with just sandbox-safe-push",
+            "for complete remote evidence: publish the exact branch head with git push",
             "inspect advisory CI for the pushed head; it is evidence, not merge authority",
         ],
         "reclaimability_measured": False,
@@ -3192,23 +3194,23 @@ def validate_git_remote_name(remote: str, key: str) -> None:
         raise PolicyError(f"{key} must be a safe git remote name")
 
 
-def sandbox_safe_push_remote(repo: pathlib.Path) -> tuple[str | None, str | None]:
+def remote_probe_remote(repo: pathlib.Path) -> tuple[str | None, str | None]:
     try:
         policy = load_policy(repo)
     except FileNotFoundError:
         return None, None
     except PolicyError as exc:
         return None, str(exc)
-    push_config = policy.get("sandbox_safe_push")
-    if push_config is None:
+    probe_config = policy.get("remote_probe")
+    if probe_config is None:
         return None, None
-    if not isinstance(push_config, dict):
-        return None, "sandbox_safe_push table must be a table"
-    remote = push_config.get("remote")
+    if not isinstance(probe_config, dict):
+        return None, "remote_probe table must be a table"
+    remote = probe_config.get("remote")
     if not isinstance(remote, str) or not remote:
-        return None, "sandbox_safe_push.remote must be a non-empty string"
+        return None, "remote_probe.remote must be a non-empty string"
     try:
-        validate_git_remote_name(remote, "sandbox_safe_push.remote")
+        validate_git_remote_name(remote, "remote_probe.remote")
     except PolicyError as exc:
         return None, str(exc)
     return remote, None
@@ -3261,12 +3263,6 @@ def live_remote_branch_head(
     return None, None
 
 
-def sandbox_safe_push_hint(current_branch_name: str, target_branch: str | None) -> str:
-    if target_branch and target_branch != current_branch_name:
-        return f"just sandbox-safe-push --branch {shlex.quote(target_branch)}"
-    return "just sandbox-safe-push"
-
-
 def ensure_clean_pushed_head_preconditions(
     repo: pathlib.Path,
     *,
@@ -3285,11 +3281,11 @@ def ensure_clean_pushed_head_preconditions(
         return None, None, error
     if not branch:
         return None, None, f"{command_name} requires a named branch"
-    remote, error = sandbox_safe_push_remote(repo)
+    remote, error = remote_probe_remote(repo)
     if error is not None:
         return None, None, error
     if remote is None:
-        return None, None, f"{command_name} requires sandbox_safe_push.remote"
+        return None, None, f"{command_name} requires remote_probe.remote"
     push_url, error = single_push_url(repo, remote, command_name=command_name)
     if error is not None or push_url is None:
         return None, None, error
@@ -3297,8 +3293,7 @@ def ensure_clean_pushed_head_preconditions(
     if error is not None:
         return None, None, error
     if upstream is None:
-        hint = sandbox_safe_push_hint(branch, branch)
-        return None, None, f"{command_name} requires HEAD to be pushed to a remote branch; run: {hint}"
+        return None, None, f"{command_name} requires HEAD to be pushed to a remote branch; run: git push"
     if upstream != head:
         return None, None, f"{command_name} requires HEAD to be pushed to {remote}/{branch}"
     return head, branch, None

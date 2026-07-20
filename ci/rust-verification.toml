@@ -45,10 +45,8 @@ heartbeat_seconds = 15
 poll_interval_seconds = 1
 cheap_lane_max_concurrent = 0
 
-[sandbox_safe_push]
-remote = "origin"
-
 [remote_probe]
+remote = "origin"
 workflow_name = "Rust Probe"
 workflow_path = ".github/workflows/rust-probe.yml"
 poll_interval_seconds = 15

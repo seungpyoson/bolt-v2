@@ -1,7 +1,8 @@
 use std::{fs, path::Path};
 
 use crate::backtesting_vertical_slice_test_support::{
-    generate_evicted_bybit_operator_inputs, rewrite_assignment, tempdir_in_repo_target,
+    generate_evicted_binance_operator_inputs, generate_evicted_bybit_operator_inputs,
+    rewrite_assignment, tempdir_in_repo_target,
 };
 
 use backtesting_vertical_slice::source_universe_conversion_work_order::{
@@ -277,6 +278,8 @@ fn committed_bybit_and_binance_source_universe_work_orders_track_executable_scop
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
     let temp_dir = tempdir_in_repo_target();
+    let binance_operator_inputs_path =
+        generate_evicted_binance_operator_inputs(&reference_root, temp_dir.path());
     let (bybit_operator_inputs_path, _) =
         generate_evicted_bybit_operator_inputs(&reference_root, temp_dir.path());
 
@@ -325,6 +328,17 @@ fn committed_bybit_and_binance_source_universe_work_orders_track_executable_scop
         &binance_spec,
         &temp_dir.path().join("binance-work-order"),
     );
+    let binance_spec_text =
+        fs::read_to_string(&binance_spec).expect("read temp Binance work-order spec");
+    fs::write(
+        &binance_spec,
+        rewrite_assignment(
+            &binance_spec_text,
+            "source_universe_operator_inputs_path",
+            &binance_operator_inputs_path,
+        ),
+    )
+    .expect("write temp Binance work-order spec with regenerated operator inputs");
     let binance_artifact =
         write_source_universe_conversion_work_order_from_spec_file(&binance_spec)
             .expect("Binance work order is reproducible");

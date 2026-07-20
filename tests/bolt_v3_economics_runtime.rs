@@ -11,8 +11,9 @@ use bolt_v2::{
     },
     economics::{
         EconomicQuoteRequest, EconomicScope, EconomicsUnavailable, EdgeBasisEvidence, FormulaId,
-        PointEstimate, ProductSurfaceId, ReservationBasis, ResolvedEdgeBasis, SignedNativeEffect,
-        SnapshotId, SourceId, VenueEconomicsAdapter, VenueQuoteEstimate, currency_from_code,
+        PlannedFillNotional, PointEstimate, ProductSurfaceId, ReservationBasis, ResolvedEdgeBasis,
+        SignedNativeEffect, SnapshotId, SourceId, VenueEconomicsAdapter, VenueQuoteEstimate,
+        currency_from_code,
     },
 };
 

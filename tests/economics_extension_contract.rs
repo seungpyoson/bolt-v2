@@ -1,8 +1,9 @@
 use bolt_v2::economics::{
     AdmissionTreatment, EconomicClass, EconomicComponentId, EconomicKind, EconomicQuoteRequest,
     EconomicScope, EconomicsUnavailable, EstimatedEconomicComponent, ExecutionKind, FormulaId,
-    PointEstimate, ResolvedEdgeBasis, SignedNativeEffect, SnapshotId, SourceId, SourceValidity,
-    VenueEconomicsAdapter, VenueQuoteEstimate, validate_and_aggregate_quote,
+    PlannedFillNotional, PointEstimate, ResolvedEdgeBasis, SignedNativeEffect, SnapshotId,
+    SourceId, SourceValidity, VenueEconomicsAdapter, VenueQuoteEstimate,
+    validate_and_aggregate_quote,
 };
 
 use super::economics_support::{canonical_fixture_request, decimal, native_unit};

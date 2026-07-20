@@ -140,7 +140,7 @@ fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_ex
 fn dropped_basket_admission_permit_releases_open_reservation() {
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
     let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
-    let submit_state = submit_state(writer, 4, dec!(10));
+    let submit_state = submit_state(writer.clone(), 4, dec!(10));
     let group = fixture_group();
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
     let claims = entry_claims(&group, dec!(0.9));

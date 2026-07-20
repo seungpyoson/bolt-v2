@@ -130,11 +130,11 @@ merge-queue *pr_numbers:
         echo "ERROR: could not resolve the origin remote" >&2
         exit 2
     fi
-    if ! queue_repository="$(gh repo view "$origin_url" --json nameWithOwner --jq .nameWithOwner)"; then
+    if ! queue_repository="$(gh repo view "$origin_url" --json url --jq '.url | sub("^https://"; "")')"; then
         echo "ERROR: could not resolve the queue repository from origin" >&2
         exit 2
     fi
-    if [[ ! "$queue_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    if [[ ! "$queue_repository" =~ ^[A-Za-z0-9.-]*[A-Za-z0-9][A-Za-z0-9.-]*/[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9_.-]*[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
         echo "ERROR: origin did not resolve to a valid GitHub repository" >&2
         exit 2
     fi

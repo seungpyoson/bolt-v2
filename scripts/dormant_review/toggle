@@ -13,4 +13,33 @@ esac
 gh variable set AI_REVIEWS_ENABLED --body "$value"
 actual="$(gh variable get AI_REVIEWS_ENABLED --json value --jq .value)"
 test "$actual" = "$value"
+
+if [ "$value" = false ]; then
+  script_dir="$(cd "$(dirname "$0")" && pwd)"
+  config="$script_dir/review-config"
+  read_config() {
+    python3 -c 'import sys,tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["review"]["control"][sys.argv[2]])' "$config" "$1"
+  }
+  workflow_file="$(read_config workflow_file)"
+  run_list_limit="$(read_config run_list_limit)"
+  cancel_timeout_seconds="$(read_config cancel_timeout_seconds)"
+  poll_interval_seconds="$(read_config poll_interval_seconds)"
+  deadline=$((SECONDS + cancel_timeout_seconds))
+  while :; do
+    active_runs="$(gh run list --workflow "$workflow_file" --limit "$run_list_limit" --json databaseId,status --jq '.[] | select(.status != "completed") | .databaseId')"
+    if [ -z "$active_runs" ]; then
+      break
+    fi
+    while IFS= read -r run_id; do
+      if [ -n "$run_id" ] && ! gh run cancel "$run_id"; then
+        printf 'Waiting to verify review run %s is no longer active\n' "$run_id" >&2
+      fi
+    done <<< "$active_runs"
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "AI review runs did not stop before the configured deadline" >&2
+      exit 1
+    fi
+    sleep "$poll_interval_seconds"
+  done
+fi
 printf 'AI reviews: %s\n' "${1}"

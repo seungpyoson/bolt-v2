@@ -42,35 +42,41 @@ Repo governance for agents; higher-level standing instructions apply.
 
 ## Approved Lean-CI End State And Cutover Boundary
 
-- The selected end state has zero required CI status contexts. CI is visible evidence, not merge authority. Native code-owner approval, stale-review dismissal, last-push approval, and human review-thread resolution remain mandatory.
-- `root-artifact` is an explicit, target-specific `workflow_dispatch` producer for exact-current-`main`: it performs one locked ARM64 release build through mandatory checksum-verified, action-installed sccache, then runs positive and fail-closed checks using only staged executable bytes. It runs no Cargo tests and grants no merge, install, launch, readiness, or trading authority; root and Backtester seed/test operations remain separately selected.
+- The selected end state has zero required CI status contexts. CI is visible evidence, not merge authority; merge authority is native code-owner approval, enforced by the `main` branch ruleset.
+- `root-artifact` is a manual `workflow_dispatch` producer for exact-current-`main`. It runs no Cargo tests and grants no merge, install, launch, readiness, or trading authority; its build and verification steps live in the workflow, not here.
 - The repository accepts that an approved merge may temporarily leave `main` red or broken. That accepted repository risk is never deploy or trading permission.
 - Live arming belongs to one manifest-bound content-addressed immutable executable running its own finite `ops launch` pre-arm phase. Only complete success constructs the opaque, non-serializable, non-cloneable, one-use Rust `LiveReadinessPermit` that the sole Start entrypoint consumes by value. Installation and audit receipts are inert; every systemd start or restart obtains a fresh in-process permit.
 - The trusted-App/protected-base verifier, precursor/activation/freeze ceremony, replay/tombstone control plane, and App-qualified merge authority previously proposed for #1016 are superseded and must not merge. #1016 owns architecture only; deletion and implementation slices require their own owning GitHub issue.
 - No fallback, compatibility adapter, inherited result, alternate installer, mutable-copy route, tag/same-SHA/prior-artifact substitution, cache-as-proof, persisted authority, external readiness publisher, or dual path is allowed. Rollback is a pause or forward fix, never restoration of retired authority.
-- Repository admission is limited to identity, pull-request state and mergeability, required-reviewer approval, Mergify routing, and single-PR queue mechanics. CI workflows remain visible advisory evidence. The live ruleset mutation is a separate operator action and must be verified directly after any governance change.
+- Repository admission is limited to identity, pull-request state and mergeability, required-reviewer approval, and Mergify queue routing. CI workflows remain visible advisory evidence; `.mergify.yml` and the `main` ruleset own queue and branch-protection behavior. The live ruleset mutation is a separate operator action, verified directly after any governance change.
 
-## Remote-First Rust Verification
+## Verification Flow
 
-- Do not run local compile-heavy Rust verification by default: no managed `just` Rust test/build/clippy recipes and no raw Cargo refused by `[local_compile_policy]`. `just fmt` is the sole repository-wide formatting mutation command.
-- Publish with a plain `git push` of the exact branch head. Do not embed credentials in Git push URLs.
-- Remote Rust evidence for a pushed head comes from the advisory CI workflow (`advisory.yml`: fmt, clippy, test, build through the managed wrapper), which runs automatically on pull requests, plus targeted `just rust-probe` dispatches for focused diagnostics. Advisory results are evidence to adjudicate, never merge authority. Agents do not wait on CI: push, report the head SHA, and detach.
-- Cooperative paths are gated through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`. Lanes self-serialize via `[local_lane_policy]`; CI bypasses the lock. Known bypasses remain mistake-prevention limitations: absolute-path Cargo, `rustup run ... cargo`, cross-repo Cargo, old daemons, startup-skipping shells, and direct `rustc`.
+- Push the exact branch head with a plain `git push` (no credentials in push URLs) and open a PR. Advisory CI runs automatically; results are evidence to adjudicate, never merge authority. Do not wait on CI — push, report the head SHA, and detach; verifying at head is the reviewer's job.
+- The CI jobs and their commands live in `.github/workflows/` and the justfile; the merge queue lives in `.mergify.yml`; branch protection lives in the `main` ruleset. Those files are the single source of truth — this document does not restate them, and nothing in the repo may mirror, parse, or validate `.mergify.yml`.
+- Rust verification is remote-first as an economic default, not a fence: prefer advisory CI evidence over local compile-heavy runs; the commands are plain cargo and run anywhere.
+
+## Evidence Fallback
+
+- If GitHub Actions is unavailable, run the justfile's `fmt`, `clippy`, `test`, and `build` recipes on the designated EC2 host and post the raw command and output to the PR. No other fallback path.
+
+## Test Rule (owner-ratified)
+
+- Tests verify what Bolt does, never what source code looks like — no new source-scanning/structure tests; prefer compiler-enforced designs, then behavior tests.
 
 ## Rust Probe Policy
 
-- Rust Probe is diagnostic only: use it when cheap local checks cannot answer a focused question. It never replaces advisory CI evidence and never authorizes or vetoes merge.
-- Run `just rust-probe suggest` first; dispatch `just rust-probe ...` only from a clean named branch whose pushed `HEAD` SHA is used (dispatch refuses unsafe local state). Before dispatch, state changed files, suspected failure class, mode, target, and smallest-sufficient rationale. Limits: max 2 probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; do not run full CI just to discover ordinary compiler errors.
-- Suggested integration-test probes use the Cargo `[[test]]` harness as `test_target`; when a changed file is a harness member module, the suggested `test_name` is `<member_stem>::` so nextest stays scoped to that module.
+- Rust Probe (`rust-probe.yml`) is diagnostic only: use it when cheap local checks cannot answer a focused question. It never replaces advisory CI evidence and never authorizes or vetoes merge. Its dispatch inputs are defined in the workflow — this document does not restate them.
+- Before dispatch, state changed files, suspected failure class, mode, target, and smallest-sufficient rationale. Limits: max 2 probe runs before stopping to explain root cause; Rust Probe success is not merge readiness; do not run full CI just to discover ordinary compiler errors.
 
 ## Review Bar & Merge Mechanics
 
 - Every unique substantive issue is a finding regardless of severity; do not downgrade real issues into notes or treat tracked as resolved unless fixed or explicitly waived.
 - Keep PR bodies stable: use them for lasting scope/behavior disclosures and timeless merge requirements, not the current head SHA, transient CI/check status, or head-specific review/verification receipts. Put exact-head evidence in review requests, comments/records, or check runs; do not rewrite the body as heads move. This PR-body status rule does not restrict immutable release artifacts or spec anchors.
 - Before completing or merging coding work, open a PR and request review from the GitHub account with node ID `U_kgDOEZMFhA` (login-based — resolve the node ID to its current login and keep `.github/CODEOWNERS` aligned). This required-reviewer node ID is an intentional hardcoded policy constant for native merge governance: PR-editable config must not select the required reviewer.
-- The `main` ruleset must require native code-owner review, stale-review dismissal, last-push approval, and review-thread resolution; if those are missing, stop and report the blocker instead of treating CI checks as merge controls. Agents must not merge, squash, rebase-merge, or otherwise land code until the PR has approval from node ID `U_kgDOEZMFhA`; if review cannot be requested, stop and report.
+- Do not merge, squash, or rebase-merge until the PR has approval from node ID `U_kgDOEZMFhA`; if review cannot be requested, stop and report. Branch protection is enforced by the `main` ruleset — the source of truth; verify it live rather than restating its settings here, and if a required control is missing, stop and report instead of treating CI checks as merge controls.
 - Do not request review with uncommitted changes, unpushed commits, unresolved findings, or unanswered comments. Reply to and resolve every applicable review thread; commit and push any fix before further review discussion. Advisory failures are evidence to adjudicate rather than automatic review vetoes.
-- Verify each active `main` rule before merge with `gh api repos/{owner}/{repo}/rules/branches/main`. Confirm the live required-status list is empty and adjudicate advisory evidence without requiring a green rollup. Confirm code-owner approval by the required reviewer, stale-review dismissal, last-push approval, and review-thread resolution. On a stale native-control block, force recompute by push, review, close/reopen, or waiting; never bypass it with `gh pr merge --admin`.
+- Never bypass native merge controls with `gh pr merge --admin`. On a stale native-control block, force recompute by push, review, close/reopen, or waiting.
 
 ## Response Format
 

@@ -897,7 +897,7 @@ mod tests {
             .expect("governed proxy response should contain a word");
         assert_eq!(
             parse_u256_word_hex(encoded).expect("governed proxy word should decode"),
-            word("0x0000000000000000000000006bbcef9f7ef3b6c592c99e0f206a0de94ad0925")
+            word("0x0000000000000000000000006bbcef9f7ef3b6c592c99e0f206a0de94ad0925f")
         );
     }
 

@@ -2,24 +2,19 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
-rust_verification_owner="$(just -f "$repo_root/justfile" --evaluate rust_verification_owner)"
-python3 "$rust_verification_owner" validate-policy --repo "$repo_root" >/dev/null
-
-managed_cargo() {
-    python3 "$rust_verification_owner" cargo --repo "$repo_root" -- "$@"
-}
+cd "$repo_root"
 
 echo "=== Checking compilation ==="
-managed_cargo check >/dev/null
+cargo check --locked >/dev/null
 
 echo "=== Verifying CLI subcommands ==="
-managed_cargo run --release --bin bolt-v2 -- --help | grep -E "^  (run|secrets|help)"
+cargo run --locked --release --bin bolt-v2 -- --help | grep -E "^  (run|secrets|help)"
 
 tmpdir="$(mktemp -d)"
 trap 'chmod -R u+w "$tmpdir" 2>/dev/null || true; rm -rf "$tmpdir"' EXIT
 
 echo "=== Verifying bolt-v3 root secret config completeness ==="
-managed_cargo run --release --bin bolt-v2 -- secrets check --config tests/fixtures/bolt_v3/root.toml \
+cargo run --locked --release --bin bolt-v2 -- secrets check --config tests/fixtures/bolt_v3/root.toml \
   | grep "clients.polymarket_main: required secret fields present"
 
 echo "=== Verifying exec_tester purge gate ==="

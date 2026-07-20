@@ -45,7 +45,7 @@ row for the instrument and fails on ambiguity instead of choosing by file order.
 Run:
 
 ```bash
-python3 scripts/rust_verification.py cargo --repo . -- run --locked --bin shadow_pnl_report -- \
+cargo run --locked --bin shadow_pnl_report -- \
   --evidence-jsonl /var/lib/bolt/catalog/bolt-v3/decision-evidence/order-intents.jsonl \
   --settlements-jsonl /var/lib/bolt/catalog/shadow-settlements.jsonl
 ```

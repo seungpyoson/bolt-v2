@@ -14,6 +14,7 @@ workspace="${GITHUB_WORKSPACE:-}"
 mode="${RUST_PROBE_MODE:-}"
 test_target="${RUST_PROBE_TEST_TARGET:-}"
 test_name="${RUST_PROBE_TEST_NAME:-}"
+manifest_path="${RUST_PROBE_MANIFEST_PATH:-}"
 expected_sha="${RUST_PROBE_EXPECTED_SHA:-}"
 probe_id="${RUST_PROBE_ID:-}"
 
@@ -22,6 +23,8 @@ probe_id="${RUST_PROBE_ID:-}"
 # - RUST_PROBE_TEST_NAME is an optional nextest filter. Suggestions pass
 #   "<member_stem>::" for consolidated harness members so nextest stays scoped
 #   to that module instead of matching same-named tests in sibling modules.
+# - RUST_PROBE_MANIFEST_PATH is an optional repo-relative Cargo.toml path so
+#   nested workspaces (crates/backtesting-vertical-slice) are targetable.
 # - check-test-target and nextest-no-run-test-target compile the whole harness.
 # - nextest-lib-name runs a single nextest filter against lib tests.
 
@@ -36,6 +39,7 @@ fi
 # become a leading cargo or nextest option such as --help.
 target_regex='^[A-Za-z0-9_][A-Za-z0-9_.-]*$'
 name_regex='^[A-Za-z0-9_][A-Za-z0-9_:.@/-]*$'
+manifest_regex='^[A-Za-z0-9_][A-Za-z0-9_./-]*Cargo\.toml$'
 sha_regex='^[0-9a-fA-F]{40}$'
 probe_id_regex='^[A-Za-z0-9][A-Za-z0-9_.-]*$'
 
@@ -50,6 +54,20 @@ if [ -z "$probe_id" ]; then
 fi
 if [[ ! "$probe_id" =~ $probe_id_regex ]]; then
   reject "RUST_PROBE_ID must match $probe_id_regex"
+fi
+
+manifest_args=()
+if [ -n "$manifest_path" ]; then
+  if [[ ! "$manifest_path" =~ $manifest_regex ]]; then
+    reject "manifest_path must be a repo-relative path ending in Cargo.toml"
+  fi
+  if [[ "$manifest_path" == *".."* ]]; then
+    reject "manifest_path must not contain .."
+  fi
+  if [ ! -f "$workspace/$manifest_path" ]; then
+    reject "manifest_path does not exist: $manifest_path"
+  fi
+  manifest_args=(--manifest-path "$manifest_path")
 fi
 
 require_target() {
@@ -86,32 +104,32 @@ case "$mode" in
   check-lib)
     forbid_target
     forbid_name
-    probe_args=(check --locked --lib)
+    probe_args=(check --locked "${manifest_args[@]}" --lib)
     ;;
   check-test-target)
     require_target
     forbid_name
-    probe_args=(check --locked --test "$test_target")
+    probe_args=(check --locked "${manifest_args[@]}" --test "$test_target")
     ;;
   nextest-no-run-test-target)
     require_target
     forbid_name
-    probe_args=(nextest run --locked --no-run --test "$test_target")
+    probe_args=(nextest run --locked "${manifest_args[@]}" --no-run --test "$test_target")
     ;;
   nextest-lib-name)
     forbid_target
     require_name
-    probe_args=(nextest run --locked --lib "$test_name")
+    probe_args=(nextest run --locked "${manifest_args[@]}" --lib "$test_name")
     ;;
   nextest-test-target)
     require_target
     forbid_name
-    probe_args=(nextest run --locked --test "$test_target")
+    probe_args=(nextest run --locked "${manifest_args[@]}" --test "$test_target")
     ;;
   nextest-test-target-name)
     require_target
     require_name
-    probe_args=(nextest run --locked --test "$test_target" "$test_name")
+    probe_args=(nextest run --locked "${manifest_args[@]}" --test "$test_target" "$test_name")
     ;;
   *)
     reject "unsupported mode: $mode"
@@ -131,5 +149,7 @@ echo "Rust Probe checkout SHA: $actual_sha_lower"
 echo "Rust Probe mode: $mode"
 echo "Rust Probe test_target: ${test_target:-<empty>}"
 echo "Rust Probe test_name: ${test_name:-<empty>}"
+echo "Rust Probe manifest_path: ${manifest_path:-<empty>}"
 
-python3 "$workspace/scripts/rust_verification.py" cargo --repo "$workspace" -- "${probe_args[@]}"
+set -x
+cargo "${probe_args[@]}"

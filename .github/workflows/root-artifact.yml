@@ -18,7 +18,6 @@ concurrency:
 
 env:
   JUST_VERSION: "1.49.0"
-  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
 
 jobs:
   preflight:
@@ -27,10 +26,8 @@ jobs:
     permissions:
       contents: read
     outputs:
-      build_profile: ${{ steps.source.outputs.build_profile }}
       build_target: ${{ steps.source.outputs.build_target }}
       runner_label: ${{ steps.source.outputs.runner_label }}
-      wrapper_program: ${{ steps.source.outputs.wrapper_program }}
       workflow_start_epoch: ${{ steps.remote.outputs.workflow_start_epoch }}
     steps:
       - name: Require exact current main
@@ -81,6 +78,12 @@ jobs:
           ref: ${{ inputs.sha }}
           persist-credentials: false
 
+      - name: Install just
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: just@${{ env.JUST_VERSION }}
+          fallback: none
+
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
@@ -96,14 +99,8 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$DISPATCH_SHA" ]]
           [[ -z "$(git status --porcelain --untracked-files=all)" ]]
 
-          policy_json="$(python3 scripts/rust_verification.py validate-policy --repo "$GITHUB_WORKSPACE")"
-          build_target="$(jq -er '.build_target' <<< "$policy_json")"
-          build_profile="$(jq -er '.build_profile' <<< "$policy_json")"
-          wrapper_program="$(python3 -c '
-          import pathlib, tomllib
-          data = tomllib.loads(pathlib.Path("ci/rust-verification.toml").read_text())
-          print(data["remote_compile_cache"]["wrapper_program"])
-          ')"
+          # The justfile is the single source of truth for the pinned build target.
+          build_target="$(just --evaluate target)"
           read -r runner_role runner_label < <(python3 -c '
           import pathlib, tomllib
           data = tomllib.loads(pathlib.Path("ci/github-actions-runners.toml").read_text())
@@ -115,14 +112,6 @@ jobs:
             echo "configured root build target is not ARM64" >&2
             exit 1
           }
-          [[ "$build_profile" == "release" ]] || {
-            echo "configured root build profile is not release" >&2
-            exit 1
-          }
-          [[ "$wrapper_program" == "sccache" ]] || {
-            echo "configured compiler wrapper is not sccache" >&2
-            exit 1
-          }
           [[ "$runner_role" == "managed_heavy" && "$runner_label" == *-arm ]] || {
             echo "configured root build runner is not the governed ARM pool" >&2
             exit 1
@@ -132,8 +121,6 @@ jobs:
             exit 1
           }
           [[ "$build_target" =~ ^[A-Za-z0-9._-]+$ ]]
-          [[ "$build_profile" =~ ^[A-Za-z0-9._-]+$ ]]
-          [[ "$wrapper_program" =~ ^[A-Za-z0-9._-]+$ ]]
           [[ "$runner_label" =~ ^[A-Za-z0-9._-]+$ ]]
 
           python3 -c '
@@ -157,10 +144,8 @@ jobs:
           }
 
           {
-            echo "build_profile=$build_profile"
             echo "build_target=$build_target"
             echo "runner_label=$runner_label"
-            echo "wrapper_program=$wrapper_program"
           } >> "$GITHUB_OUTPUT"
 
   produce:
@@ -186,32 +171,20 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-build-values: "true"
           use-default-target: "true"
-          include-managed-target-dir: "true"
-          install-rust-linker: "true"
 
       - name: Validate producer before cache access
         env:
-          BUILD_PROFILE: ${{ needs.preflight.outputs.build_profile }}
           BUILD_TARGET: ${{ needs.preflight.outputs.build_target }}
           DISPATCH_SHA: ${{ inputs.sha }}
-          MANAGED_TARGET_DIR: ${{ steps.setup.outputs.managed_target_dir }}
           SETUP_TARGET: ${{ steps.setup.outputs.target }}
-          WRAPPER_PROGRAM: ${{ needs.preflight.outputs.wrapper_program }}
         run: |
           set -euo pipefail
           [[ "$(git rev-parse --show-toplevel)" == "$GITHUB_WORKSPACE" ]]
           [[ "$(git rev-parse HEAD)" == "$DISPATCH_SHA" ]]
           [[ -z "$(git status --porcelain --untracked-files=all)" ]]
-          [[ "$(realpath "$MANAGED_TARGET_DIR")" == "$GITHUB_WORKSPACE"/* ]]
-          [[ -z "$(find "$MANAGED_TARGET_DIR" -mindepth 1 -print -quit)" ]]
           [[ "$SETUP_TARGET" == "$BUILD_TARGET" ]]
           [[ "$(uname -m)" == "${BUILD_TARGET%%-*}" ]]
-          [[ "$BUILD_PROFILE" == "release" ]]
-          [[ "$WRAPPER_PROGRAM" == "sccache" ]]
-          policy_json="$(python3 scripts/rust_verification.py validate-policy --repo "$GITHUB_WORKSPACE")"
-          [[ "$(jq -er '.build_target' <<< "$policy_json")" == "$BUILD_TARGET" ]]
-          [[ "$(jq -er '.build_profile' <<< "$policy_json")" == "$BUILD_PROFILE" ]]
-          binary_path="$(python3 scripts/rust_verification.py binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2)"
+          binary_path="$GITHUB_WORKSPACE/target/$BUILD_TARGET/release/bolt-v2"
           [[ ! -e "$binary_path" && ! -L "$binary_path" ]]
 
       - name: Setup mandatory governed sccache writer
@@ -229,14 +202,13 @@ jobs:
           ENABLED: ${{ steps.sccache.outputs.enabled }}
           EXPECTED_SCCACHE_VERSION: ${{ steps.sccache.outputs.version }}
           EXPECTED_SCCACHE_SHA256: ${{ steps.sccache.outputs.executable-sha256 }}
-          WRAPPER_PROGRAM: ${{ needs.preflight.outputs.wrapper_program }}
         run: |
           set -euo pipefail
           [[ "$ELIGIBLE" == "true" ]]
           [[ "$ENABLED" == "true" ]]
           [[ "$CACHE_MODE" == "read_write" ]]
           [[ -n "${SCCACHE_PATH:-}" && -x "$SCCACHE_PATH" ]]
-          [[ "$(basename "$SCCACHE_PATH")" == "$WRAPPER_PROGRAM" ]]
+          [[ "$(basename "$SCCACHE_PATH")" == "sccache" ]]
           python3.12 scripts/sccache_eligibility.py verify-executable \
             "$SCCACHE_PATH" "$EXPECTED_SCCACHE_VERSION" "$EXPECTED_SCCACHE_SHA256"
 
@@ -252,21 +224,21 @@ jobs:
 
       - name: Build once through mandatory sccache
         env:
-          BOLT_RUST_VERIFICATION_SCCACHE: "1"
-          BUILD_PROFILE: ${{ needs.preflight.outputs.build_profile }}
           BUILD_TARGET: ${{ needs.preflight.outputs.build_target }}
         run: |
           set -euo pipefail
-          [[ "$BOLT_RUST_VERIFICATION_SCCACHE" == "1" ]]
           [[ -n "${SCCACHE_PATH:-}" && -x "$SCCACHE_PATH" ]]
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- \
-            build --locked --profile "$BUILD_PROFILE" --target "$BUILD_TARGET" --bin bolt-v2
+          export RUSTC_WRAPPER="$SCCACHE_PATH"
+          set -x
+          cargo build --locked --release --target "$BUILD_TARGET" --bin bolt-v2
 
       - name: Stage exactly one executable
         id: stage
+        env:
+          BUILD_TARGET: ${{ needs.preflight.outputs.build_target }}
         run: |
           set -euo pipefail
-          binary_path="$(python3 scripts/rust_verification.py binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2)"
+          binary_path="$GITHUB_WORKSPACE/target/$BUILD_TARGET/release/bolt-v2"
           [[ -f "$binary_path" && ! -L "$binary_path" && -x "$binary_path" ]]
           stage_dir="$RUNNER_TEMP/root-artifact"
           [[ ! -e "$stage_dir" && ! -L "$stage_dir" ]]
@@ -396,7 +368,6 @@ jobs:
       - name: Record inert run evidence
         env:
           ARTIFACT_BYTES: ${{ steps.stage.outputs.artifact_bytes }}
-          BUILD_PROFILE: ${{ needs.preflight.outputs.build_profile }}
           BUILD_TARGET: ${{ needs.preflight.outputs.build_target }}
           DISPATCH_SHA: ${{ inputs.sha }}
           INITIAL_SHA256: ${{ steps.stage.outputs.initial_sha256 }}
@@ -423,7 +394,7 @@ jobs:
           jq -n \
             --arg operation "root-artifact" \
             --arg sha "$DISPATCH_SHA" \
-            --arg build_profile "$BUILD_PROFILE" \
+            --arg build_profile "release" \
             --arg build_target "$BUILD_TARGET" \
             --arg runner_label "$RUNNER_LABEL" \
             --arg initial_sha256 "$INITIAL_SHA256" \

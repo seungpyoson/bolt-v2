@@ -1,23 +1,16 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Native build target = the local dev/research host (the stated run environment). Pinned to match
-# ci/rust-verification.toml [commands.build].target. Changes in one place if a research box is chosen.
+# Native build target = the local dev/research host (the stated run environment).
+# `build` is a NATIVE release build — the backtester runs on a dev/research
+# machine and never cross-compiles to the EC2 trading target. Changes in one
+# place if a research box is chosen.
 target := "aarch64-apple-darwin"
 
-# Managed leaf recipes for the backtesting-vertical-slice crate.
-#
-# These are invoked ONLY by the shared wrapper (scripts/rust_verification.py run --repo
-# crates/backtesting-vertical-slice <command>), which sets BOLT_MANAGED_JUST=1 and points
-# CARGO_TARGET_DIR at this crate's own cache namespace. They mirror bolt-v2's root managed-*
-# recipes, except `managed-build` is a NATIVE release build — the backtester runs on a
-# dev/research machine and never cross-compiles to the EC2 trading target.
-
-[private]
-managed-clippy:
-    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-clippy must run through scripts/rust_verification.py run"; exit 2; fi
+clippy:
     cargo clippy --locked -- -D warnings
 
-[private]
-managed-build:
-    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-build must run through scripts/rust_verification.py run"; exit 2; fi
+test *args:
+    cargo nextest run --locked {{args}}
+
+build:
     cargo build --release --target {{target}} --locked

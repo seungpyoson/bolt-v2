@@ -3196,35 +3196,39 @@ def validate_git_remote_name(remote: str, key: str) -> None:
 
 
 def github_repository_from_remote_url(url: str) -> tuple[str | None, str | None]:
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme:
-        if parsed.scheme not in {"git", "http", "https", "ssh"}:
-            return None, "remote_probe.remote must use a network Git URL"
+    url_error = validate_push_url(url)
+    if url_error is not None:
+        return None, url_error
+    scp_match = None
+    if "://" not in url:
+        scp_match = re.fullmatch(r"(?:[^@/:]+@)?(?P<host>[^/:]+):(?P<path>.+)", url)
+    if scp_match is not None:
+        host = scp_match.group("host")
+        path = scp_match.group("path")
+    else:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in {"https", "ssh"}:
+            return None, "remote_probe.remote must use HTTPS, SSH, or SCP syntax"
         host = parsed.hostname or ""
         path = parsed.path
-    else:
-        match = re.fullmatch(r"(?:[^@/:]+@)?(?P<host>[^/:]+):(?P<path>.+)", url)
-        if match is None:
-            return None, "remote_probe.remote must resolve to a GitHub repository URL"
-        host = match.group("host")
-        path = match.group("path")
     parts = [part for part in path.strip("/").split("/") if part]
     if len(parts) != 2 or not host:
         return None, "remote_probe.remote must resolve to a GitHub owner/repository URL"
     owner, repository = parts
-    if repository.endswith(".git"):
+    if repository.lower().endswith(".git"):
         repository = repository[:-4]
     safe_component = re.compile(r"^[A-Za-z0-9_.-]+$")
     if (
         not repository
+        or host in {".", ".."}
+        or owner in {".", ".."}
+        or repository in {".", ".."}
         or safe_component.fullmatch(host) is None
         or safe_component.fullmatch(owner) is None
         or safe_component.fullmatch(repository) is None
     ):
         return None, "remote_probe.remote resolved to an unsafe GitHub repository identity"
-    if host.lower() == "github.com":
-        return f"{owner}/{repository}", None
-    return f"{host}/{owner}/{repository}", None
+    return f"{host.lower()}/{owner}/{repository}", None
 
 
 def single_push_url(repo: pathlib.Path, remote: str, *, command_name: str) -> tuple[str | None, str | None]:
@@ -3247,7 +3251,11 @@ def single_push_url(repo: pathlib.Path, remote: str, *, command_name: str) -> tu
 
 def validate_push_url(url: str) -> str | None:
     parsed = urllib.parse.urlsplit(url)
-    has_http_userinfo = parsed.scheme in ("http", "https") and parsed.username is not None
+    if parsed.query or parsed.fragment:
+        return "Git push URLs must not contain query strings or fragments"
+    if "://" in url and parsed.scheme not in {"https", "ssh"}:
+        return "Git push URLs must use HTTPS or SSH"
+    has_http_userinfo = parsed.scheme == "https" and parsed.username is not None
     if parsed.password is not None or has_http_userinfo:
         return "Git push URLs must not contain embedded credentials; use a credential helper or SSH agent auth"
     return None
@@ -3688,11 +3696,6 @@ def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
         print(f"- {suggestion}")
     print("Rust Probe is diagnostic only. Advisory CI is pushed-head evidence, not merge authority.")
     return 0
-
-
-def run_display_title(run: dict[str, Any]) -> str:
-    title = run.get("displayTitle")
-    return title if isinstance(title, str) else ""
 
 
 def matching_rust_probe_runs(runs: list[dict[str, Any]], *, head: str, probe_id: str) -> list[dict[str, Any]]:

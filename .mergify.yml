@@ -1,5 +1,7 @@
 # Single serial queue for main: approval queues; the four advisory checks must
-# pass on the branch after Mergify updates it with latest main; squash merge.
+# pass on the combined result before squash merge. Batching (carried from the
+# proven prior config): several queued PRs validate together with one combined
+# check run and merge as a batch — one CI bill instead of one per PR.
 merge_queue:
   max_parallel_checks: 1
 
@@ -14,6 +16,11 @@ queue_rules:
       - check-success = build
     merge_method: squash
     update_method: rebase
+    batch_size:
+      min: 2
+      max: 6
+    batch_max_wait_time: 5 minutes
+    batch_max_failure_resolution_attempts: 3
     checks_timeout: 150 minutes
     # Carried from the proven prior config: checks are advisory (no required
     # status contexts) and merges use the owner's identity.

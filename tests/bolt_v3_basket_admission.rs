@@ -417,7 +417,7 @@ fn basket_validation_rejection_preserves_primary_error_when_evidence_write_fails
         ..Default::default()
     });
     let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
-    let submit_state = submit_state(writer, 4, dec!(10));
+    let submit_state = submit_state(Arc::clone(&writer), 4, dec!(10));
     let group = fixture_group();
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
 

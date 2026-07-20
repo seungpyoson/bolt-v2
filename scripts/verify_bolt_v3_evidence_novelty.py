@@ -52,6 +52,7 @@ FROZEN_READER_CENSUS_ROOTS = (
     "src/shadow_pnl.rs",
     "scripts/migrate_bolt_v3_decision_evidence_to_v15.py",
 )
+FROZEN_LEGACY_READ_ONLY_RECORD_KINDS = ("settlement_booking_error",)
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,7 @@ class Registry:
     producer_census_roots: tuple[str, ...]
     producer_census_exclusions: tuple[str, ...]
     reader_census_roots: tuple[str, ...]
+    legacy_read_only_record_kinds: tuple[str, ...]
     non_evidence_per_tick_appenders: tuple[str, ...]
 
     @property
@@ -154,6 +156,7 @@ def load_registry(path: pathlib.Path) -> Registry:
             "producer_census_roots",
             "producer_census_exclusions",
             "reader_census_roots",
+            "legacy_read_only_record_kinds",
             "non_evidence_per_tick_appenders",
             "family",
             "state",
@@ -162,8 +165,8 @@ def load_registry(path: pathlib.Path) -> Registry:
         },
         "registry",
     )
-    if document["schema_version"] != 2:
-        raise ValueError("registry schema_version must be 2")
+    if document["schema_version"] != 3:
+        raise ValueError("registry schema_version must be 3")
 
     raw_families = document["family"]
     if not isinstance(raw_families, list) or not raw_families:
@@ -303,6 +306,7 @@ def load_registry(path: pathlib.Path) -> Registry:
         "monotone-migration-required",
         "deferred-to-1385",
         "owner-decision-required",
+        "owner-approved-retention",
     ]:
         raise ValueError("allowed_runtime_status must remain the frozen closed set")
     raw_producers = document["producer"]
@@ -381,8 +385,15 @@ def load_registry(path: pathlib.Path) -> Registry:
             raise ValueError(f"producer[{index}] recovery-bearing updates must remain unsuppressed")
         if required_suppression == "finite-monotone-mask" and recovery_bearing:
             raise ValueError(f"producer[{index}] finite suppression cannot carry recovery")
-        if classification == "no-named-reader" and not owner_decision_required:
-            raise ValueError(f"producer[{index}] without a domain reader requires an owner decision")
+        if (
+            classification == "no-named-reader"
+            and not owner_decision_required
+            and runtime_status not in {"owner-approved-retention", "deferred-to-1385"}
+        ):
+            raise ValueError(
+                f"producer[{index}] without a domain reader requires an owner decision, "
+                "approved retention, or an explicit #1385 deferral"
+            )
         if runtime_status == "monotone-migration-required" and required_suppression != "finite-monotone-mask":
             raise ValueError(f"producer[{index}] monotone migration requires finite suppression")
         if runtime_status == "deferred-to-1385" and required_suppression != "finite-monotone-mask":
@@ -391,6 +402,15 @@ def load_registry(path: pathlib.Path) -> Registry:
             raise ValueError(f"producer[{index}] owner-decision runtime status requires its decision flag")
         if owner_decision_required and runtime_status != "owner-decision-required":
             raise ValueError(f"producer[{index}] owner decision must remain visibly pending")
+        if runtime_status == "owner-approved-retention" and (
+            classification != "no-named-reader"
+            or owner_decision_required
+            or required_suppression != "unsuppressed"
+        ):
+            raise ValueError(
+                f"producer[{index}] owner-approved retention must be a resolved, "
+                "unsuppressed no-named-reader disposition"
+            )
         producers.append(Producer(
             name=raw_producer["name"], method=raw_producer["method"],
             record_kind=raw_producer["record_kind"], family=raw_producer["family"],
@@ -425,9 +445,25 @@ def load_registry(path: pathlib.Path) -> Registry:
     if len(set(all_call_sites)) != len(all_call_sites):
         raise ValueError("producer call sites must be classified exactly once")
     producer_record_kinds = {producer.record_kind for producer in producers}
+    raw_legacy_read_only_record_kinds = document["legacy_read_only_record_kinds"]
+    if not isinstance(raw_legacy_read_only_record_kinds, list) or not all(
+        isinstance(kind, str) and re.fullmatch(r"[a-z][a-z0-9_]*", kind)
+        for kind in raw_legacy_read_only_record_kinds
+    ):
+        raise ValueError("legacy_read_only_record_kinds must be a record-kind list")
+    legacy_read_only_record_kinds = tuple(raw_legacy_read_only_record_kinds)
+    if legacy_read_only_record_kinds != FROZEN_LEGACY_READ_ONLY_RECORD_KINDS:
+        raise ValueError("legacy_read_only_record_kinds must remain the frozen compatibility set")
+    if producer_record_kinds.intersection(legacy_read_only_record_kinds):
+        raise ValueError("legacy read-only record kinds must not retain a producer")
     readers_by_name = {reader.name: reader for reader in readers}
     for reader in readers:
-        unknown_kinds = set(reader.record_kinds) - producer_record_kinds - {"all"}
+        unknown_kinds = (
+            set(reader.record_kinds)
+            - producer_record_kinds
+            - set(legacy_read_only_record_kinds)
+            - {"all"}
+        )
         if unknown_kinds:
             raise ValueError(f"reader {reader.name} references unknown record kinds {sorted(unknown_kinds)}")
     for producer in producers:
@@ -460,6 +496,7 @@ def load_registry(path: pathlib.Path) -> Registry:
         producer_census_roots=producer_census_roots,
         producer_census_exclusions=string_tuple("producer_census_exclusions"),
         reader_census_roots=reader_census_roots,
+        legacy_read_only_record_kinds=legacy_read_only_record_kinds,
         non_evidence_per_tick_appenders=string_tuple("non_evidence_per_tick_appenders"),
     )
 
@@ -704,11 +741,14 @@ def repository_errors(root: pathlib.Path) -> list[str]:
             )
         )
         registered_record_kinds = {producer.record_kind for producer in registry.producers}
-        if source_record_kinds != registered_record_kinds:
+        classified_record_kinds = registered_record_kinds.union(
+            registry.legacy_read_only_record_kinds
+        )
+        if source_record_kinds != classified_record_kinds:
             errors.append(
-                "producer record kinds must exactly cover source constants: "
-                f"missing={sorted(source_record_kinds - registered_record_kinds)} "
-                f"unknown={sorted(registered_record_kinds - source_record_kinds)}"
+                "producer and legacy read-only record kinds must exactly cover source constants: "
+                f"missing={sorted(source_record_kinds - classified_record_kinds)} "
+                f"unknown={sorted(classified_record_kinds - source_record_kinds)}"
             )
 
         discovered_call_sites = _producer_call_sites(root, registry)

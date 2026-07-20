@@ -1,14 +1,15 @@
-schema_version = 2
+schema_version = 3
 canonical_state_family = "market"
 allowed_classifications = ["event-keyed", "state-observation", "already-deduped", "no-named-reader"]
 allowed_suppression = ["unsuppressed", "finite-monotone-mask"]
-allowed_runtime_status = ["implemented", "monotone-migration-required", "deferred-to-1385", "owner-decision-required"]
+allowed_runtime_status = ["implemented", "monotone-migration-required", "deferred-to-1385", "owner-decision-required", "owner-approved-retention"]
 producer_census_roots = ["src"]
 producer_census_exclusions = [
   "src/bolt_v3_capital_admission_runtime_feed.rs::record_venue_truth_settlement::record_settlement::1",
   "src/bolt_v3_venue_truth.rs::record_settlement::record_settlement::1",
 ]
 reader_census_roots = ["src/bolt_v3_decision_evidence.rs", "src/shadow_pnl.rs", "scripts/migrate_bolt_v3_decision_evidence_to_v15.py"]
+legacy_read_only_record_kinds = ["settlement_booking_error"]
 non_evidence_per_tick_appenders = []
 
 [[family]]
@@ -560,12 +561,12 @@ call_sites = [
   "src/bolt_v3_submit_admission.rs::reserve_basket_submit_slots::record_basket_admission_decision::5",
 ]
 named_readers = ["read_latest_entry_decision_evidence_chain", "read_submit_reservation_recovery_evidence", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "each basket admission result remains append-complete until its owner approves a finite diagnostic domain"
+repeat_semantics = "owner approved retaining every basket admission result as append-complete event evidence"
 dedupe_key_evidence = "basket_id event identity; no suppression"
 recovery_bearing = false
-runtime_status = "owner-decision-required"
+runtime_status = "owner-approved-retention"
 required_suppression = "unsuppressed"
-owner_decision_required = true
+owner_decision_required = false
 
 [[producer]]
 name = "capital_admission_rebuild_audit"
@@ -581,9 +582,9 @@ named_readers = ["read_latest_entry_decision_evidence_chain", "read_submit_reser
 repeat_semantics = "every rebuild observation remains append-complete"
 dedupe_key_evidence = "none; recovery-bearing updates are unsuppressed"
 recovery_bearing = true
-runtime_status = "owner-decision-required"
+runtime_status = "owner-approved-retention"
 required_suppression = "unsuppressed"
-owner_decision_required = true
+owner_decision_required = false
 
 [[producer]]
 name = "submit_reservation_metadata"
@@ -843,9 +844,9 @@ named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migration
 repeat_semantics = "every evolving lifecycle update remains append-complete"
 dedupe_key_evidence = "none; recovery-bearing updates are unsuppressed"
 recovery_bearing = true
-runtime_status = "owner-decision-required"
+runtime_status = "owner-approved-retention"
 required_suppression = "unsuppressed"
-owner_decision_required = true
+owner_decision_required = false
 
 [[producer]]
 name = "requote_throttle"
@@ -884,24 +885,6 @@ required_suppression = "unsuppressed"
 owner_decision_required = false
 
 [[producer]]
-name = "settlement_booking_error_legacy_append"
-method = "record_settlement_booking_error"
-record_kind = "settlement_booking_error"
-family = "risk"
-state_id = 49
-allocation = "settlement_redemption"
-classification = "event-keyed"
-handler_reachability = ["unreachable"]
-call_sites = []
-named_readers = ["read_settlement_booking_error_evidence", "read_settlement_booking_error_keys_for_recovery_scope", "v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "the append capability remains for legacy evidence compatibility but has no production caller after canonical terminal settlement"
-dedupe_key_evidence = "settlement_key recovery identity; no suppression"
-recovery_bearing = true
-runtime_status = "owner-decision-required"
-required_suppression = "unsuppressed"
-owner_decision_required = true
-
-[[producer]]
 name = "terminal_settlement"
 method = "record_terminal_settlement"
 record_kind = "terminal_settlement"
@@ -930,12 +913,12 @@ classification = "no-named-reader"
 handler_reachability = ["timer"]
 call_sites = ["src/bolt_v3_submit_admission.rs::suspend_capital_admission_for_venue_truth_capture_failure::record_venue_truth_capture_failure::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "the writer currently appends on every call; the owner must approve retention or a closed diagnostic domain"
-dedupe_key_evidence = "no approved monotone key; source and diagnostics remain payload candidates only"
+repeat_semantics = "owner approved retaining each diagnostic append until #1385 atomically introduces the closed system domain"
+dedupe_key_evidence = "no early monotone key; source and diagnostics remain payload-only until #1385"
 recovery_bearing = false
-runtime_status = "owner-decision-required"
+runtime_status = "deferred-to-1385"
 required_suppression = "finite-monotone-mask"
-owner_decision_required = true
+owner_decision_required = false
 
 [[producer]]
 name = "venue_truth_divergence"
@@ -948,9 +931,9 @@ classification = "no-named-reader"
 handler_reachability = ["timer"]
 call_sites = ["src/bolt_v3_submit_admission.rs::record_venue_truth_divergence_evidence::record_venue_truth_divergence::1"]
 named_readers = ["v15_migrator_migrate_file_bytes", "v15_migrator_plan_migrations"]
-repeat_semantics = "the writer currently appends on every call; the owner must approve retention or the three-alarm-class domain"
-dedupe_key_evidence = "no approved monotone key; account, field, values, explanation, and time must remain outside any approved state"
+repeat_semantics = "owner approved retaining each diagnostic append until #1385 atomically introduces the three-alarm-class domain"
+dedupe_key_evidence = "no early monotone key; account, field, values, explanation, and time remain payload-only until #1385"
 recovery_bearing = false
-runtime_status = "owner-decision-required"
+runtime_status = "deferred-to-1385"
 required_suppression = "finite-monotone-mask"
-owner_decision_required = true
+owner_decision_required = false

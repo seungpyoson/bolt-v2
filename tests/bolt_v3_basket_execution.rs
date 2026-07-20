@@ -1596,13 +1596,6 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
         anyhow::bail!("basket execution noop writer received settlement evidence")
     }
 
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("basket execution noop writer received settlement booking-error evidence")
-    }
-
     fn drain_shutdown(&self) -> anyhow::Result<()> {
         // Deliberate no-op: this basket execution fixture never owns durable evidence.
         Ok(())

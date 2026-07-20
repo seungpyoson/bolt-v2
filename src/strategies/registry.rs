@@ -278,13 +278,6 @@ mod tests {
             anyhow::bail!("registry noop writer received settlement evidence")
         }
 
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("registry noop writer received settlement booking-error evidence")
-        }
-
         fn drain_shutdown(&self) -> Result<()> {
             // Deliberate no-op: this registry fixture never owns durable evidence.
             Ok(())

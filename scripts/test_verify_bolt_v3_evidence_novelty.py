@@ -49,7 +49,6 @@ def test_closed_family_and_evidence_census_are_complete() -> None:
         "record_order_lifecycle",
         "record_requote_throttle",
         "record_settlement",
-        "record_settlement_booking_error",
         "record_terminal_settlement",
         "record_venue_truth_capture_failure",
         "record_venue_truth_divergence",
@@ -204,6 +203,8 @@ def test_recovery_bearing_producer_cannot_enable_suppression() -> None:
 def test_runtime_status_distinguishes_implemented_and_remaining_work() -> None:
     registry = verifier.load_registry(verifier.REPO_ROOT / verifier.REGISTRY_PATH)
     statuses = {producer.name: producer.runtime_status for producer in registry.producers}
+    assert "owner-decision-required" not in statuses.values()
+    assert not any(producer.owner_decision_required for producer in registry.producers)
     assert statuses["strategy_input_snapshot_blocked_rv"] == "implemented"
     assert statuses["entry_skip"] == "implemented"
     assert statuses["exit_decision"] == "deferred-to-1385"
@@ -211,8 +212,67 @@ def test_runtime_status_distinguishes_implemented_and_remaining_work() -> None:
     assert statuses["loss_governor_halt"] == "deferred-to-1385"
     assert statuses["order_reject"] == "deferred-to-1385"
     assert statuses["requote_throttle"] == "implemented"
-    assert statuses["venue_truth_capture_failure"] == "owner-decision-required"
-    assert statuses["venue_truth_divergence"] == "owner-decision-required"
+    assert statuses["basket_admission_decision"] == "owner-approved-retention"
+    assert statuses["capital_admission_rebuild_audit"] == "owner-approved-retention"
+    assert statuses["order_lifecycle"] == "owner-approved-retention"
+    assert "settlement_booking_error_legacy_append" not in statuses
+    assert statuses["venue_truth_capture_failure"] == "deferred-to-1385"
+    assert statuses["venue_truth_divergence"] == "deferred-to-1385"
+
+
+def test_legacy_booking_error_is_readable_but_not_writable() -> None:
+    registry = verifier.load_registry(verifier.REPO_ROOT / verifier.REGISTRY_PATH)
+    assert registry.legacy_read_only_record_kinds == ("settlement_booking_error",)
+    assert "record_settlement_booking_error" not in {
+        producer.method for producer in registry.producers
+    }
+    assert "read_settlement_booking_error_evidence" in {
+        reader.name for reader in registry.readers
+    }
+    assert "read_settlement_booking_error_keys_for_recovery_scope" in {
+        reader.name for reader in registry.readers
+    }
+
+
+def test_legacy_read_only_compatibility_set_cannot_drift() -> None:
+    text = _registry_text()
+    for invalid in (
+        text.replace(
+            'legacy_read_only_record_kinds = ["settlement_booking_error"]',
+            "legacy_read_only_record_kinds = []",
+            1,
+        ),
+        text.replace(
+            'legacy_read_only_record_kinds = ["settlement_booking_error"]',
+            'legacy_read_only_record_kinds = ["settlement_booking_error", "settlement"]',
+            1,
+        ),
+        text.replace(
+            'legacy_read_only_record_kinds = ["settlement_booking_error"]',
+            'legacy_read_only_record_kinds = "settlement_booking_error"',
+            1,
+        ),
+    ):
+        try:
+            _load(invalid)
+        except ValueError:
+            continue
+        raise AssertionError("legacy read-only compatibility set drifted")
+
+
+def test_owner_approved_retention_is_only_for_unsuppressed_no_reader_rows() -> None:
+    text = _registry_text()
+    invalid = text.replace(
+        'classification = "no-named-reader"\nhandler_reachability = ["timer"]',
+        'classification = "event-keyed"\nhandler_reachability = ["timer"]',
+        1,
+    )
+    try:
+        _load(invalid)
+    except ValueError as error:
+        assert "owner-approved retention" in str(error)
+    else:
+        raise AssertionError("owner-approved retention escaped its no-reader disposition")
 
 
 def test_requote_throttle_has_closed_market_state_domain() -> None:

@@ -367,13 +367,6 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
     fn drain_shutdown(&self) -> Result<()> {
         Ok(())
     }
@@ -481,13 +474,6 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
     ) -> Result<()> {
         anyhow::bail!("settlement write failed")
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("settlement booking-error write failed")
     }
 
     fn drain_shutdown(&self) -> Result<()> {
@@ -614,13 +600,6 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     fn record_settlement(
         &self,
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
     ) -> Result<()> {
         Ok(())
     }
@@ -883,21 +862,6 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             product_id: evidence.product_id.clone(),
             market_id: evidence.market_id.clone(),
         });
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::SettlementBookingError(
-                RecordedSettlementBookingErrorEvidenceEvent {
-                    reason: evidence.reason,
-                },
-            ));
         Ok(())
     }
 

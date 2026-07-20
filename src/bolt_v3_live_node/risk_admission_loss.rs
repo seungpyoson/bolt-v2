@@ -2518,13 +2518,6 @@ mod tests {
             Ok(())
         }
 
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
         fn record_venue_truth_divergence(
             &self,
             evidence: &VenueTruthDivergenceEvidence,
@@ -2854,13 +2847,6 @@ mod tests {
         }
 
         fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
             Ok(())
         }
 

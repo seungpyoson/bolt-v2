@@ -4345,13 +4345,6 @@ mod loss_governor_halt_evidence_tests {
             Ok(())
         }
 
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
         fn drain_shutdown(&self) -> anyhow::Result<()> {
             Ok(())
         }

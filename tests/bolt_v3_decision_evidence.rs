@@ -1841,17 +1841,18 @@ fn order_reject_evidence_round_trips_populated_and_sparse_records() {
 }
 
 #[test]
-fn settlement_and_booking_error_evidence_round_trip_from_jsonl_writer() {
-    let (_temp, evidence_path, writer) = temp_decision_evidence_writer("settlement-evidence");
+fn settlement_and_legacy_booking_error_evidence_remain_readable() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
     let settlement = sample_settlement_evidence("MKT-1:P-1");
     let booking_error = sample_settlement_booking_error("MKT-1:P-2");
-
-    writer
-        .record_settlement(&settlement)
-        .expect("settlement evidence should write");
-    writer
-        .record_settlement_booking_error(&booking_error)
-        .expect("settlement booking-error evidence should write");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[
+            settlement_evidence_line(&settlement),
+            settlement_booking_error_evidence_line(&booking_error),
+        ],
+    );
 
     let lines = read_decision_evidence_json_lines(&evidence_path);
     assert_eq!(lines.len(), 2);
@@ -1923,12 +1924,14 @@ fn live_and_restart_terminal_settlement_share_one_canonical_schema() {
 
 #[test]
 fn legacy_nested_terminal_booking_error_remains_readable() {
-    let (_temp, evidence_path, writer) = temp_decision_evidence_writer("legacy-terminal-evidence");
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
     let mut booking_error = sample_settlement_booking_error("MKT-1:P-LEGACY");
     booking_error.terminal_lifecycle = Some(sample_terminal_settlement_lifecycle());
-    writer
-        .record_settlement_booking_error(&booking_error)
-        .expect("legacy terminal booking-error evidence should write");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[settlement_booking_error_evidence_line(&booking_error)],
+    );
     assert_eq!(
         read_settlement_booking_error_evidence(&evidence_path, 100_000)
             .expect("legacy nested terminal evidence should read back"),
@@ -2193,13 +2196,6 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     }
 
     fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
         Ok(())
     }
 

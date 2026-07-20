@@ -151,10 +151,6 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
     }
     fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()>;
     fn record_settlement(&self, evidence: &BoltV3SettlementEvidence) -> Result<()>;
-    fn record_settlement_booking_error(
-        &self,
-        evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()>;
     fn record_terminal_settlement(
         &self,
         _evidence: &BoltV3TerminalSettlementEvidence,
@@ -2170,14 +2166,6 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         self.append_line(&line)
     }
 
-    fn record_settlement_booking_error(
-        &self,
-        evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        let line = encode_settlement_booking_error_line(evidence)?;
-        self.append_line(&line)
-    }
-
     fn record_terminal_settlement(
         &self,
         evidence: &BoltV3TerminalSettlementEvidence,
@@ -4030,16 +4018,6 @@ fn encode_settlement_line(evidence: &BoltV3SettlementEvidence) -> Result<Vec<u8>
     Ok(line)
 }
 
-#[derive(Serialize)]
-struct SettlementBookingErrorLine<'a> {
-    schema_version: u32,
-    recorded_at_utc_ns: i64,
-    gate_id: &'static str,
-    gate_version: &'static str,
-    kind: &'static str,
-    booking_error: &'a BoltV3SettlementBookingErrorEvidence,
-}
-
 #[derive(Deserialize)]
 struct SettlementBookingErrorLineOwned {
     #[serde(flatten)]
@@ -4057,23 +4035,6 @@ impl SettlementBookingErrorLineOwned {
         let _ = &self.booking_error;
         self.header.validate(expected_kind, expected_gate_id, index)
     }
-}
-
-fn encode_settlement_booking_error_line(
-    evidence: &BoltV3SettlementBookingErrorEvidence,
-) -> Result<Vec<u8>> {
-    let envelope = SettlementBookingErrorLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_SETTLEMENT_GATE_ID,
-        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
-        booking_error: evidence,
-    };
-    let mut line = serde_json::to_vec(&envelope)
-        .context("failed to serialize settlement booking-error evidence")?;
-    line.extend_from_slice(b"\n");
-    Ok(line)
 }
 
 #[derive(Serialize)]

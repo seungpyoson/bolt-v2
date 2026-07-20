@@ -169,11 +169,10 @@ use crate::{
         BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
         BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
         BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-        BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence,
-        BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
-        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
-        read_submit_reservation_recovery_evidence,
+        BoltV3RequoteThrottleEvidence, BoltV3SettlementEvidence,
+        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
+        BoltV3SubmitReservationMetadataEvidence, JsonlBoltV3DecisionEvidenceWriter,
+        decision_evidence_path, read_submit_reservation_recovery_evidence,
     },
     bolt_v3_iv::{
         config::IvRootConfig,
@@ -474,13 +473,6 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
     }
 
     fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
         Ok(())
     }
 

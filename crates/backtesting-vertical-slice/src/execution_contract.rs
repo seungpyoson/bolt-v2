@@ -351,6 +351,10 @@ pub fn validate_execution_contract(
                             && exposure.abs() < before.abs())) =>
             {
                 ensure!(
+                    normal_exit_fill_count == 0,
+                    "#789 lifecycle is restricted to a single normal reduction order"
+                );
+                ensure!(
                     !exposure.is_zero(),
                     "normal exit closed the position before required settlement"
                 );
@@ -814,6 +818,83 @@ mod tests {
         fixture.account_cash_after_fills[1] = Money::from("999998.00180000 USDC");
         let error = validate_execution_contract(&fixture.trace()).expect_err("second entry");
         assert!(error.to_string().contains("entry or reducing"));
+    }
+
+    #[test]
+    fn rejects_multiple_normal_reduction_orders() {
+        let mut fixture = fixture();
+        let instrument_id = fixture.instrument.id();
+        let position_id = fixture.position_effects[0].position_id;
+
+        fixture.orders[1] = ExecutionOrderTrace {
+            cause: ExecutionOrderCause::Submitted {
+                executable_book: Box::new(one_level_book(
+                    instrument_id,
+                    OrderSide::Buy,
+                    "0.430",
+                    "0.50",
+                    2,
+                )),
+                submitted_quantity: Quantity::from("0.50"),
+                quote_quantity: false,
+            },
+            fills: vec![test_fill(
+                instrument_id,
+                position_id,
+                OrderSide::Sell,
+                "normal-exit-one",
+                "0.430",
+                "0.50",
+                2,
+            )],
+        };
+        fixture.orders.insert(
+            2,
+            ExecutionOrderTrace {
+                cause: ExecutionOrderCause::Submitted {
+                    executable_book: Box::new(one_level_book(
+                        instrument_id,
+                        OrderSide::Buy,
+                        "0.430",
+                        "1.50",
+                        3,
+                    )),
+                    submitted_quantity: Quantity::from("1.50"),
+                    quote_quantity: false,
+                },
+                fills: vec![test_fill(
+                    instrument_id,
+                    position_id,
+                    OrderSide::Sell,
+                    "normal-exit-two",
+                    "0.430",
+                    "1.50",
+                    3,
+                )],
+            },
+        );
+        fixture.position_effects.insert(
+            1,
+            PositionEffectTrace {
+                kind: PositionEffectKind::Changed,
+                position_id,
+                instrument_id,
+                account_id: AccountId::from("POLYMARKET-001"),
+                side: PositionSide::Long,
+                quantity: Quantity::from("2.21"),
+                last_quantity: Quantity::from("0.50"),
+                last_price: Price::from("0.430"),
+                realized_pnl: Some(Money::from("0.00500000 USDC")),
+            },
+        );
+        fixture.position_effects[2].last_quantity = Quantity::from("1.50");
+        fixture
+            .account_cash_after_fills
+            .insert(1, Money::from("999999.07680000 USDC"));
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("#789 must reject a second normal reduction order");
+        assert!(error.to_string().contains("single normal reduction"));
     }
 
     #[test]

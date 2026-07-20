@@ -46,7 +46,7 @@ the full market-data corpus and can overflow without improving this synchronous 
 
 This slice covers the existing #789 fixture only:
 
-- one Polymarket binary instrument and one cash account;
+- one Polymarket binary instrument and one single-currency cash account;
 - NETTING OMS;
 - immediate market-taker entry and normal reduction;
 - L2 MBP with liquidity consumption;
@@ -101,8 +101,10 @@ the lifecycle source of truth.
    fill's causal interval, exact settlement remainder, complete commission maps, realized P&L, and
    per-fill cash.
 5. Bind each normal fill to the catalog rows selected by its submit cursor and independently sweep
-   price levels while accounting for earlier consumed liquidity. Evidence: later same-boundary,
-   ambiguous-boundary, missing-cursor, tampered-hash, and book-drift negative controls.
+   price levels. Enforce exactly one entry and one normal reduction, on opposing book sides, so the
+   declared #789 slice cannot reuse earlier consumed liquidity without adding a second matching
+   model. Evidence: multiple-reduction, later same-boundary, ambiguous-boundary, missing-cursor,
+   tampered-hash, and book-drift negative controls.
 6. Validate the real entry -> normal exit -> residual settlement run and compare terminal NT
    projections only after the fold succeeds. Evidence: focused #789 test and result artifact.
 7. Run formatting, Clippy, focused tests, the complete BTE test battery, and internal adversarial

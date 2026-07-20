@@ -859,7 +859,7 @@ fn builder_rejects_wrong_type_config_at_the_field() {
 
 #[test]
 fn builder_rejects_unknown_rotating_market_family() {
-    // P5-10: a market family not bound by the registry must be rejected at
+    // A market family not bound by the registry must be rejected at
     // parse, converging with the registry single source of truth.
     let mut raw = valid_raw_config();
     raw.as_table_mut()

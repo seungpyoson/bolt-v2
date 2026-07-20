@@ -126,9 +126,22 @@ merge-queue *pr_numbers:
         pr_numbers+=("$candidate")
     done
 
+    if ! origin_url="$(git remote get-url origin)"; then
+        echo "ERROR: could not resolve the origin remote" >&2
+        exit 2
+    fi
+    if ! queue_repository="$(gh repo view "$origin_url" --json nameWithOwner --jq .nameWithOwner)"; then
+        echo "ERROR: could not resolve the queue repository from origin" >&2
+        exit 2
+    fi
+    if [[ ! "$queue_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+        echo "ERROR: origin did not resolve to a valid GitHub repository" >&2
+        exit 2
+    fi
+
     validation_failed=0
     for pr_number in "${pr_numbers[@]}"; do
-        if ! metadata="$(gh pr view "$pr_number" --json number,state,baseRefName --jq '[.number, .state, .baseRefName] | @tsv')"; then
+        if ! metadata="$(gh pr view "$pr_number" --repo "$queue_repository" --json number,state,baseRefName --jq '[.number, .state, .baseRefName] | @tsv')"; then
             echo "ERROR: could not confirm pull request #$pr_number" >&2
             validation_failed=1
             continue
@@ -155,7 +168,7 @@ merge-queue *pr_numbers:
     submitted=()
     for (( index=0; index<${#pr_numbers[@]}; index++ )); do
         pr_number="${pr_numbers[$index]}"
-        if gh pr comment "$pr_number" --body '@mergifyio queue'; then
+        if gh pr comment "$pr_number" --repo "$queue_repository" --body '@mergifyio queue'; then
             submitted+=("$pr_number")
             continue
         fi

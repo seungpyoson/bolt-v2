@@ -200,7 +200,6 @@ def main() -> int:
         _write_line(env_path, f"SCCACHE_REGION={eligibility.region}")
         _write_line(env_path, f"SCCACHE_S3_KEY_PREFIX={eligibility.key_prefix}")
         _write_line(env_path, "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true")
-        _write_line(env_path, "SCCACHE_IGNORE_SERVER_IO_ERROR=1")
 
     print(
         "sccache cache "

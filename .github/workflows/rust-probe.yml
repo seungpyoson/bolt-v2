@@ -3,16 +3,23 @@ run-name: Rust Probe ${{ inputs.probe_id }} ${{ inputs.mode }} @ ${{ inputs.ref 
 
 # Manual-only: run one constrained Rust compile/test probe on an ephemeral runner.
 # This workflow is debugging feedback only and is not merge proof.
+#
+# Dispatch with gh from the pushed branch head, e.g.:
+#   gh workflow run rust-probe.yml --ref <branch> \
+#     -f runner_tier=heavy -f job_timeout_minutes=60 \
+#     -f ref=<sha> -f expected_sha=<sha> -f probe_id=<id> -f mode=check-lib
+# Optional: -f manifest_path=crates/backtesting-vertical-slice/Cargo.toml to
+# target a nested workspace.
 
 on:
   workflow_dispatch:
     inputs:
       runner_tier:
-        description: Wrapper-selected Ubicloud runner tier from policy
+        description: Ubicloud runner tier (heavy or light)
         required: true
         type: string
       job_timeout_minutes:
-        description: Wrapper-selected job timeout from policy
+        description: Job timeout in minutes (must be 60)
         required: true
         type: string
       ref:
@@ -24,7 +31,7 @@ on:
         required: true
         type: string
       probe_id:
-        description: Wrapper-generated probe correlation id
+        description: Probe correlation id
         required: true
         type: string
       mode:
@@ -49,6 +56,11 @@ on:
         required: false
         type: string
         default: ""
+      manifest_path:
+        description: Optional repo-relative Cargo.toml path for nested workspaces
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -57,7 +69,6 @@ concurrency:
 env:
   JUST_VERSION: "1.49.0"
   CARGO_TERM_COLOR: always
-  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
 
 permissions:
   contents: read
@@ -110,11 +121,7 @@ jobs:
         uses: ./.github/actions/setup-environment
         with:
           just-version: ${{ env.JUST_VERSION }}
-          include-build-values: "true"
-          include-deny-version: "true"
           include-nextest-version: "true"
-          include-managed-target-dir: "true"
-          install-rust-linker: "true"
           build-jobs-key: rust_probe.probe-heavy
 
       - name: Install cargo-nextest
@@ -136,11 +143,12 @@ jobs:
           RUST_PROBE_MODE: ${{ inputs.mode }}
           RUST_PROBE_TEST_TARGET: ${{ inputs.test_target }}
           RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
+          RUST_PROBE_MANIFEST_PATH: ${{ inputs.manifest_path }}
           RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
           RUST_PROBE_ID: ${{ inputs.probe_id }}
           CARGO_PROFILE_TEST_DEBUG: "0"
           CARGO_PROFILE_DEV_DEBUG: "0"
-          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
+          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled }}
         run: |
           bash .github/scripts/run-rust-probe.sh
 
@@ -169,11 +177,7 @@ jobs:
         uses: ./.github/actions/setup-environment
         with:
           just-version: ${{ env.JUST_VERSION }}
-          include-build-values: "true"
-          include-deny-version: "true"
           include-nextest-version: "true"
-          include-managed-target-dir: "true"
-          install-rust-linker: "true"
           build-jobs-key: rust_probe.probe-light
 
       - name: Install cargo-nextest
@@ -195,11 +199,12 @@ jobs:
           RUST_PROBE_MODE: ${{ inputs.mode }}
           RUST_PROBE_TEST_TARGET: ${{ inputs.test_target }}
           RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
+          RUST_PROBE_MANIFEST_PATH: ${{ inputs.manifest_path }}
           RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
           RUST_PROBE_ID: ${{ inputs.probe_id }}
           CARGO_PROFILE_TEST_DEBUG: "0"
           CARGO_PROFILE_DEV_DEBUG: "0"
-          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
+          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled }}
         run: |
           bash .github/scripts/run-rust-probe.sh
 

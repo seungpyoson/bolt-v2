@@ -25,14 +25,6 @@ inputs:
     description: Whether to install the repo's default Rust target from `just target`.
     required: false
     default: "false"
-  include-managed-target-dir:
-    description: Whether to resolve the managed target dir.
-    required: false
-    default: "false"
-  install-rust-linker:
-    description: Whether to install the configured Rust fast linker.
-    required: false
-    default: "false"
   build-jobs-key:
     description: Optional ci/github-actions-runners.toml cargo_build_jobs key to export as CARGO_BUILD_JOBS.
     required: false
@@ -57,15 +49,6 @@ outputs:
   zigbuild_version:
     description: Pinned cargo-zigbuild version from the justfile.
     value: ${{ steps.shared.outputs.zigbuild_version }}
-  rust_verification_owner:
-    description: Repo-local managed Rust owner path.
-    value: ${{ steps.shared.outputs.rust_verification_owner }}
-  managed_target_dir:
-    description: Canonical managed cargo target directory when include-managed-target-dir is true.
-    value: ${{ steps.target_dir.outputs.managed_target_dir }}
-  managed_target_dir_relative:
-    description: Managed cargo target directory relative to the repository root when include-managed-target-dir is true.
-    value: ${{ steps.target_dir.outputs.managed_target_dir_relative }}
   cargo_build_jobs:
     description: Cargo build job cap resolved from ci/github-actions-runners.toml when build-jobs-key is set.
     value: ${{ steps.shared.outputs.cargo_build_jobs }}
@@ -85,8 +68,7 @@ runs:
       env:
         BUILD_JOBS_KEY: ${{ inputs.build-jobs-key }}
       run: |
-        echo "rust_toolchain=$(awk -F'\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-        echo "rust_verification_owner=$(just --evaluate rust_verification_owner)" >> "$GITHUB_OUTPUT"
+        echo "rust_toolchain=$(awk -F'"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
         if [ "${{ inputs.include-deny-version }}" = "true" ]; then
           echo "deny_version=$(just --evaluate deny_version)" >> "$GITHUB_OUTPUT"
         fi
@@ -119,34 +101,6 @@ runs:
           echo "cargo_build_jobs=$cargo_build_jobs" >> "$GITHUB_OUTPUT"
           echo "CARGO_BUILD_JOBS=$cargo_build_jobs" >> "$GITHUB_ENV"
         fi
-
-    - name: Install Rust linker
-      if: ${{ inputs.install-rust-linker == 'true' }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        mapfile -t rust_linker_programs < <(python3.12 "${{ steps.shared.outputs.rust_verification_owner }}" fast-linker-programs --repo "$GITHUB_WORKSPACE")
-        if [ "${#rust_linker_programs[@]}" -ne 1 ]; then
-          echo "::error::remote_fast_linker must configure exactly one program"
-          exit 1
-        fi
-        rust_linker_program="${rust_linker_programs[0]}"
-        if ! command -v "$rust_linker_program" >/dev/null; then
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends "$rust_linker_program"
-        fi
-        command -v "$rust_linker_program" >/dev/null
-        echo "BOLT_RUST_FAST_LINKER=$rust_linker_program" >> "$GITHUB_ENV"
-
-    - name: Resolve managed target dir
-      if: ${{ inputs.include-managed-target-dir == 'true' }}
-      id: target_dir
-      shell: bash
-      run: |
-        managed_target_dir="$(python3 "${{ steps.shared.outputs.rust_verification_owner }}" target-dir --repo "$GITHUB_WORKSPACE")"
-        managed_target_dir_relative="$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[2], sys.argv[1]))' "$GITHUB_WORKSPACE" "$managed_target_dir")"
-        echo "managed_target_dir=$managed_target_dir" >> "$GITHUB_OUTPUT"
-        echo "managed_target_dir_relative=$managed_target_dir_relative" >> "$GITHUB_OUTPUT"
 
     - name: Setup Rust toolchain
       if: ${{ inputs.toolchain-components == '' && inputs.use-default-target != 'true' }}

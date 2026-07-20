@@ -50,18 +50,31 @@ Repo governance for agents; higher-level standing instructions apply.
 - No fallback, compatibility adapter, inherited result, alternate installer, mutable-copy route, tag/same-SHA/prior-artifact substitution, cache-as-proof, persisted authority, external readiness publisher, or dual path is allowed. Rollback is a pause or forward fix, never restoration of retired authority.
 - Repository admission is limited to identity, pull-request state and mergeability, required-reviewer approval, Mergify routing, and single-PR queue mechanics. CI workflows remain visible advisory evidence. The live ruleset mutation is a separate operator action and must be verified directly after any governance change.
 
-## Remote-First Rust Verification
+## Verification Flow: Push → Evidence → Approval → Mergify
 
-- Do not run local compile-heavy Rust verification by default: no managed `just` Rust test/build/clippy recipes and no raw Cargo refused by `[local_compile_policy]`. `just fmt` is the sole repository-wide formatting mutation command.
-- Publish with a plain `git push` of the exact branch head. Do not embed credentials in Git push URLs.
-- Remote Rust evidence for a pushed head comes from the advisory CI workflow (`advisory.yml`: fmt, clippy, test, build through the managed wrapper), which runs automatically on pull requests, plus targeted `just rust-probe` dispatches for focused diagnostics. Advisory results are evidence to adjudicate, never merge authority. Agents do not wait on CI: push, report the head SHA, and detach.
-- Cooperative paths are gated through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`. Lanes self-serialize via `[local_lane_policy]`; CI bypasses the lock. Known bypasses remain mistake-prevention limitations: absolute-path Cargo, `rustup run ... cargo`, cross-repo Cargo, old daemons, startup-skipping shells, and direct `rustc`.
+- Agents push the exact branch head with a plain `git push` (no credentials in push URLs) and open a PR. Advisory CI (`advisory.yml`) runs four parallel raw-cargo jobs — `fmt`, `clippy`, `test`, `build` — on every pull request and every push to `main`. Each job is one ✓/✗ line on the PR; a red check shows the raw cargo command and its raw output, and is reproduced locally by running the same command from the repo root.
+- Advisory results are evidence to adjudicate, never merge authority. Agents do not wait on CI: push, report the head SHA, and detach.
+- The owner (code owner, node ID `U_kgDOEZMFhA`) reviews and approves. On approval, Mergify (`.mergify.yml`) queues the PR serially, updates the branch with latest `main`, requires all four checks to pass on the combined result, then squash-merges. `.mergify.yml` is the single source of truth for queue behavior — nothing in the repo may mirror, parse, or validate it.
+- Rust verification is remote-first as an economic default, not a fence: prefer advisory CI evidence over local compile-heavy runs. The commands are plain cargo and run anywhere.
+
+## Evidence Fallback
+
+- If GitHub Actions is unavailable, run the SAME four cargo commands on the designated EC2 host and post the full raw command and output to the PR:
+  - `cargo fmt --check` (root and `crates/backtesting-vertical-slice`)
+  - `cargo clippy --locked -- -D warnings`
+  - `cargo nextest run --locked`
+  - `cargo zigbuild --release --target aarch64-unknown-linux-gnu --locked`
+- No other fallback paths.
+
+## Test Rule (owner-ratified)
+
+- Tests verify what Bolt does, never what source code looks like — no new source-scanning/structure tests; prefer compiler-enforced designs, then behavior tests.
 
 ## Rust Probe Policy
 
 - Rust Probe is diagnostic only: use it when cheap local checks cannot answer a focused question. It never replaces advisory CI evidence and never authorizes or vetoes merge.
-- Run `just rust-probe suggest` first; dispatch `just rust-probe ...` only from a clean named branch whose pushed `HEAD` SHA is used (dispatch refuses unsafe local state). Before dispatch, state changed files, suspected failure class, mode, target, and smallest-sufficient rationale. Limits: max 2 probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; do not run full CI just to discover ordinary compiler errors.
-- Suggested integration-test probes use the Cargo `[[test]]` harness as `test_target`; when a changed file is a harness member module, the suggested `test_name` is `<member_stem>::` so nextest stays scoped to that module.
+- Dispatch with `gh workflow run rust-probe.yml --ref <branch>` from a pushed clean branch head, passing the exact head SHA as both `ref` and `expected_sha`. The optional `manifest_path` input (repo-relative `Cargo.toml` path) targets nested workspaces such as `crates/backtesting-vertical-slice`. Before dispatch, state changed files, suspected failure class, mode, target, and smallest-sufficient rationale. Limits: max 2 probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; do not run full CI just to discover ordinary compiler errors.
+- Integration-test probes use the Cargo `[[test]]` harness as `test_target`; when a changed file is a harness member module, pass `test_name` as `<member_stem>::` so nextest stays scoped to that module.
 
 ## Review Bar & Merge Mechanics
 

@@ -1,7 +1,8 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# bolt-v2 build commands — single source of truth.
-# CI and local both call these recipes. No raw cargo build/check commands in workflow YAML.
+# bolt-v2 build commands — single source of truth for pinned tool versions and
+# the build target. CI runs the same raw cargo commands these recipes run; a
+# red CI check is reproduced locally by running the identical cargo command.
 
 nextest_version := "0.9.132"
 deny_version := "0.19.0"
@@ -16,7 +17,7 @@ live_profile := env_var_or_default('BOLT_LIVE_PROFILE', '')
 # Generated, gitignored runtime config the binary actually runs.
 live_runtime := "config/live.toml"
 repo_root := justfile_directory()
-rust_verification_owner := repo_root + "/scripts/rust_verification.py"
+bte_root := repo_root + "/crates/backtesting-vertical-slice"
 
 [private]
 check-workspace:
@@ -45,10 +46,6 @@ check-workspace:
     done
 
 [private]
-require-rust-verification-owner:
-    python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}" >/dev/null
-
-[private]
 require-live-profile:
     #!/usr/bin/env bash
     if [ -z "${BOLT_LIVE_PROFILE:-}" ]; then
@@ -56,64 +53,50 @@ require-live-profile:
         exit 2
     fi
 
-# Repository-wide formatting through the managed Rust wrapper (root + BTE workspaces).
-fmt: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- fmt
+# Repository-wide formatting (root + BTE workspaces).
+fmt: check-workspace
+    cargo fmt
+    cargo fmt --manifest-path "{{bte_root}}/Cargo.toml"
 
-[private]
-managed-clippy: check-workspace
-    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-clippy must run through scripts/rust_verification.py run"; exit 2; fi
+clippy: check-workspace
     cargo clippy --locked -- -D warnings
 
-[private]
-managed-build: check-workspace
-    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-build must run through scripts/rust_verification.py run"; exit 2; fi
+test *args: check-workspace
+    cargo nextest run --locked {{args}}
+
+test-archive archive *args: check-workspace
+    cargo nextest archive --locked --archive-file "{{archive}}" {{args}}
+
+test-archive-run archive extract_root *args: check-workspace
+    cargo nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}" {{args}}
+
+build: check-workspace
     cargo zigbuild --release --target {{target}} --locked
 
-clippy: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" clippy
-
-test *args: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test {{args}}
-
-test-archive archive *args: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
-
-test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}" {{args}}
-
-build: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build
-
 # backtesting-vertical-slice crate (separate workspace at crates/backtesting-vertical-slice/).
-# Routed through the same managed wrapper as bolt-v2; --repo selects the crate's policy,
-# Justfile, and cache namespace.
-bte-clippy: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" clippy
+# Its build target pin lives in that crate's own justfile.
+bte-clippy: check-workspace
+    cd "{{bte_root}}" && cargo clippy --locked -- -D warnings
 
-bte-test *args: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" test {{args}}
+bte-test *args: check-workspace
+    cd "{{bte_root}}" && cargo nextest run --locked {{args}}
 
-bte-test-archive archive *args: check-workspace require-rust-verification-owner
+bte-test-archive archive *args: check-workspace
     archive_path="{{archive}}"; \
       case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac; \
       mkdir -p "$(dirname "$archive_path")"; \
-      python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest archive --locked --archive-file "$archive_path" {{args}}
+      cd "{{bte_root}}" && cargo nextest archive --locked --archive-file "$archive_path" {{args}}
 
-bte-test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+bte-test-archive-run archive extract_root *args: check-workspace
     archive_path="{{archive}}"; \
       case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac; \
-      python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --archive-file "$archive_path" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}/crates/backtesting-vertical-slice" {{args}}
+      cd "{{bte_root}}" && cargo nextest run --archive-file "$archive_path" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{bte_root}}" {{args}}
 
-bte-build: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" build
+bte-build: check-workspace
+    cd "{{bte_root}}" && just build
 
-check-aarch64: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- check --target {{target}} --locked
-
-rust-probe *args: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" rust-probe --repo "{{repo_root}}" {{args}}
+check-aarch64: check-workspace
+    cargo check --target {{target}} --locked
 
 # Render the systemd unit from deploy/install-layout.env + the .in template. The
 # committed deploy/systemd/bolt-v2.service is a GENERATED artifact — edit the template
@@ -126,17 +109,17 @@ generate-unit:
 # overlay onto config/root.toml. The single, fail-closed path from a reviewed
 # profile ID to a deployable runtime config; operators never hand-edit the
 # runtime config (issue #768).
-live-generate: check-workspace require-live-profile require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops generate-live-config --profile "{{live_profile}}" --config-root config
+live-generate: check-workspace require-live-profile
+    cargo run --locked --release --bin bolt-v2 -- ops generate-live-config --profile "{{live_profile}}" --config-root config
 
 # Prove a deployed runtime config regenerates from the tracked profile and still
 # loads against this exact binary (byte parity + independent schema load).
-live-verify: check-workspace require-live-profile require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops verify-live-config --profile "{{live_profile}}" --config-root config
+live-verify: check-workspace require-live-profile
+    cargo run --locked --release --bin bolt-v2 -- ops verify-live-config --profile "{{live_profile}}" --config-root config
 
 # Canonical repo-local operator lane for bolt-v2 from this checkout.
 live: live-generate
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops launch --profile "{{live_profile}}" --config-root config
+    cargo run --locked --release --bin bolt-v2 -- ops launch --profile "{{live_profile}}" --config-root config
 
 worktree branch:
     #!/usr/bin/env bash
@@ -164,18 +147,11 @@ worktree-remove branch:
     git worktree prune
     echo "Removed worktree at $dest"
 
-# cache-prune: age-only managed Rust target sweep across root + BTE caches. Default = dry-run; pass --apply to execute.
-cache-prune *args:
-    python3 "{{rust_verification_owner}}" cache-prune --repo "{{repo_root}}" --repo "{{repo_root}}/crates/backtesting-vertical-slice" --age-only --json {{args}}
-
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "Setting git hooks path..."
     git config core.hooksPath .githooks
-
-    echo "Asserting machine-global Cargo target dir..."
-    python3 "{{rust_verification_owner}}" assert-global-cargo-target-dir --repo "{{repo_root}}"
 
     echo "Enabling remote.origin.prune (auto-prune deleted upstreams on fetch)..."
     git config remote.origin.prune true

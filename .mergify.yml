@@ -1,42 +1,22 @@
+# Single serial merge queue for main. Approval queues; the four advisory
+# checks must pass on the branch after Mergify updates it with latest main.
 merge_queue:
   max_parallel_checks: 1
-  reset_on_external_merge: always
-  queue_controls_comment: false
 
 queue_rules:
-  # Exceptional path only. Normal merge sessions use the default queue below.
-  - name: hotfix
-    queue_conditions:
-      - label = hotfix
-    merge_conditions:
-      - approved-reviews-by = sp-reviewer
-    # CI ruleset checks are advisory; native review rules remain enforced by GitHub.
-    branch_protection_injection_mode: none
-    merge_bot_account: seungpyoson
-    batch_size: 1
-    batch_max_wait_time: 30 seconds
-    batch_max_failure_resolution_attempts: 0
-    checks_timeout: 150 minutes
-    draft_bot_account: null
-    merge_method: squash
-
   - name: default
-    queue_conditions: []
-    merge_conditions:
+    queue_conditions:
       - approved-reviews-by = sp-reviewer
-    # CI ruleset checks are advisory; native review rules remain enforced by GitHub.
+    merge_conditions:
+      - check-success = fmt
+      - check-success = clippy
+      - check-success = test
+      - check-success = build
+    batch_size: 1
+    merge_method: squash
+    # CI checks are advisory (no required status contexts); native review rules
+    # remain enforced by GitHub. Proven merge identity from the prior config.
     branch_protection_injection_mode: none
     merge_bot_account: seungpyoson
-    batch_size: 1
-    batch_max_wait_time: 5 minutes
-    batch_max_failure_resolution_attempts: 0
-    checks_timeout: 150 minutes
-    draft_bot_account: null
-    merge_method: squash
-
-priority_rules:
-  - name: hotfix
-    conditions:
-      - label = hotfix
-    priority: 10000
-    allow_checks_interruption: true
+    update_method: rebase
+    update_bot_account: seungpyoson

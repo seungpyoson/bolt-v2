@@ -56,7 +56,7 @@ active_run_limit = 4
 workflow_runs_per_page = 20
 guard_timeout_minutes = 1
 allowed_runner_tiers = ["heavy", "light"]
-suggest_base_ref = "origin/main"
+suggest_base_branch = "main"
 
 [remote_probe.mode_runner_tiers]
 check-lib = "heavy"

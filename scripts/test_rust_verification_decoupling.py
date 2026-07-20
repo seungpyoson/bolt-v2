@@ -32,6 +32,7 @@ RUNTIME_SURFACE_PATTERNS = (
 )
 RUNTIME_SURFACE_EXCLUDES = (
     "scripts/test_rust_verification_decoupling.py",
+    "scripts/dormant_review/*",
 )
 REQUIRED_RUNTIME_SURFACES = (
     ".github/workflows/stale.yml",
@@ -86,6 +87,14 @@ def assert_runtime_surface_discovery_covers_current_repo() -> None:
         raise AssertionError(f"runtime surface discovery missed: {missing}")
 
 
+def assert_dormant_directory_is_not_a_runtime_surface() -> None:
+    relative = "scripts/dormant_review/broken.py"
+    included = any(fnmatch.fnmatch(relative, pattern) for pattern in RUNTIME_SURFACE_PATTERNS)
+    excluded = any(fnmatch.fnmatch(relative, pattern) for pattern in RUNTIME_SURFACE_EXCLUDES)
+    if included and not excluded:
+        raise AssertionError(f"dormant runtime surface remains active: {relative}")
+
+
 def assert_owner_cli_contract() -> None:
     if not OWNER.exists():
         raise AssertionError(f"missing repo-local Rust verification owner: {OWNER.relative_to(REPO_ROOT)}")
@@ -119,6 +128,7 @@ def assert_no_external_owner_install_path() -> None:
 
 def main() -> int:
     assert_runtime_surface_discovery_covers_current_repo()
+    assert_dormant_directory_is_not_a_runtime_surface()
     assert_owner_cli_contract()
     assert_no_external_owner_install_path()
     print("OK: Rust verification decoupling self-tests passed.")

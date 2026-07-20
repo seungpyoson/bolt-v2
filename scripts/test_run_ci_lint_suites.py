@@ -8,6 +8,7 @@ import importlib.util
 import io
 import pathlib
 import sys
+import tomllib
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -316,10 +317,6 @@ def test_every_test_module_is_claimed_by_one_execution_surface() -> None:
     runner = load_runner_module()
     discovered = runner.discover_governed_test_files(REPO_ROOT)
     dormant = {
-        "test_direct_ai_review.py",
-        "test_final_review_evidence.py",
-        "test_final_review_runner.py",
-        "test_final_review_workflow.py",
         "test_host_health_sampler.py",
         "test_host_health_viewer.mjs",
     }
@@ -335,14 +332,13 @@ def test_active_ci_lint_does_not_inspect_dormant_review_workflows() -> None:
     if active_workflows.keys() & dormant_paths:
         raise AssertionError(f"dormant review workflows remain in active workflow hygiene: {active_workflows.keys() & dormant_paths}")
     runner_config = verifier.load_github_actions_runners_config()
-    dormant_config = verifier.DORMANT_REVIEW_CONFIG_KEYS
-    active_config_keys = (
-        runner_config["workflows"].keys()
-        | runner_config["cargo_build_jobs"].keys()
-        | set(runner_config["meter_included_workflows"])
+    raw_runner_config = tomllib.loads(
+        (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
     )
-    if active_config_keys & dormant_config:
-        raise AssertionError(f"dormant review config remains in active workflow hygiene: {active_config_keys & dormant_config}")
+    raw_config_keys = raw_runner_config["workflows"].keys() | raw_runner_config["cargo_build_jobs"].keys()
+    loaded_config_keys = runner_config["workflows"].keys() | runner_config["cargo_build_jobs"].keys()
+    if raw_config_keys != loaded_config_keys:
+        raise AssertionError("active runner configuration still contains filtered dormant tables")
     rust_probe_test = (REPO_ROOT / "scripts" / "test_rust_probe_wrapper.py").read_text(encoding="utf-8")
     if "final-review.yml" in rust_probe_test:
         raise AssertionError("active Rust Probe tests still inspect the dormant Final Review workflow")

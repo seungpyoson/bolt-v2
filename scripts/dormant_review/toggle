@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  on)
+    gh workflow enable final-review.yml
+    ;;
+  off)
+    gh workflow disable final-review.yml
+    ;;
+  *)
+    echo "usage: $0 on|off" >&2
+    exit 2
+    ;;
+esac

@@ -19,11 +19,6 @@ label = "ubicloud-standard-4-arm"
 variable = "CI_RUNNER_MANAGED_LIGHT"
 label = "ubicloud-standard-2"
 
-[workflows.final_review]
-capture-head = "github_hosted"
-evidence-phase = "managed_heavy"
-evidence = "github_hosted"
-
 [workflows.reference_boundary_capture]
 capture = "managed_heavy"
 
@@ -51,9 +46,6 @@ probe-unsupported-job-timeout = "managed_light"
 probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
-[cargo_build_jobs.final_review]
-evidence-phase = 6
-
 [cargo_build_jobs.rust_probe]
 probe-heavy = 3
 probe-light = 3
@@ -67,16 +59,6 @@ flaky-detection-rust-backtester-issue-789 = 3
 flaky-smoke-rust-root = 3
 flaky-smoke-rust-backtester = 3
 flaky-smoke-rust-backtester-issue-789 = 3
-
-[workflows.ai_review_glm]
-review = "github_hosted"
-
-[workflows.ai_review_kimi_cli]
-review = "github_hosted"
-
-[workflows.claude_code_review]
-analysis = "github_hosted"
-publish = "github_hosted"
 
 [workflows.ci_storage_tripwire]
 storage-tripwire = "github_hosted"

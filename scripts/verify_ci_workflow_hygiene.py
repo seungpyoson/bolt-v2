@@ -38,18 +38,9 @@ DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / 'ci' / 'rust-verification.toml'
 DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / 'crates' / 'backtesting-vertical-slice' / 'ci' / 'rust-verification.toml'
 RUNNERS_CONFIG_LABEL = 'ci/github-actions-runners.toml'
 JOB_RUNS_ON_VAR_RE = re.compile('^    runs-on:\\s*\\$\\{\\{\\s*vars\\.([A-Z0-9_]+)\\s*\\}\\}\\s*$')
-WORKFLOW_RUNNER_CONFIG_KEYS = {'final-review.yml': 'final_review', '.github/workflows/final-review.yml': 'final_review', 'flaky-test-detection.yml': 'flaky_test_detection', '.github/workflows/flaky-test-detection.yml': 'flaky_test_detection', 'flaky-test-smoke.yml': 'flaky_test_smoke', '.github/workflows/flaky-test-smoke.yml': 'flaky_test_smoke', 'ci-storage-tripwire.yml': 'ci_storage_tripwire', '.github/workflows/ci-storage-tripwire.yml': 'ci_storage_tripwire', 'ci-storage-cleanup-alert.yml': 'ci_storage_cleanup_alert', '.github/workflows/ci-storage-cleanup-alert.yml': 'ci_storage_cleanup_alert', 'ci-runner-debug.yml': 'ci_runner_debug', '.github/workflows/ci-runner-debug.yml': 'ci_runner_debug', 'rust-probe.yml': 'rust_probe', '.github/workflows/rust-probe.yml': 'rust_probe', 'root-artifact.yml': 'root_artifact', '.github/workflows/root-artifact.yml': 'root_artifact', 'ai-review-glm.yml': 'ai_review_glm', '.github/workflows/ai-review-glm.yml': 'ai_review_glm', 'ai-review-kimi-cli.yml': 'ai_review_kimi_cli', '.github/workflows/ai-review-kimi-cli.yml': 'ai_review_kimi_cli', 'claude-code-review.yml': 'claude_code_review', '.github/workflows/claude-code-review.yml': 'claude_code_review', 'reference-boundary-capture.yml': 'reference_boundary_capture', '.github/workflows/reference-boundary-capture.yml': 'reference_boundary_capture', 'advisory.yml': 'advisory', '.github/workflows/advisory.yml': 'advisory', 'summary.yml': 'summary', '.github/workflows/summary.yml': 'summary', 'stale.yml': 'stale', '.github/workflows/stale.yml': 'stale', 'weekly-cleanup.yml': 'weekly_cleanup', '.github/workflows/weekly-cleanup.yml': 'weekly_cleanup', 'performance-improver.yml': 'performance_improver', '.github/workflows/performance-improver.yml': 'performance_improver', 'tech-debt-review.yml': 'tech_debt_review', '.github/workflows/tech-debt-review.yml': 'tech_debt_review'}
+WORKFLOW_RUNNER_CONFIG_KEYS = {'flaky-test-detection.yml': 'flaky_test_detection', '.github/workflows/flaky-test-detection.yml': 'flaky_test_detection', 'flaky-test-smoke.yml': 'flaky_test_smoke', '.github/workflows/flaky-test-smoke.yml': 'flaky_test_smoke', 'ci-storage-tripwire.yml': 'ci_storage_tripwire', '.github/workflows/ci-storage-tripwire.yml': 'ci_storage_tripwire', 'ci-storage-cleanup-alert.yml': 'ci_storage_cleanup_alert', '.github/workflows/ci-storage-cleanup-alert.yml': 'ci_storage_cleanup_alert', 'ci-runner-debug.yml': 'ci_runner_debug', '.github/workflows/ci-runner-debug.yml': 'ci_runner_debug', 'rust-probe.yml': 'rust_probe', '.github/workflows/rust-probe.yml': 'rust_probe', 'root-artifact.yml': 'root_artifact', '.github/workflows/root-artifact.yml': 'root_artifact', 'reference-boundary-capture.yml': 'reference_boundary_capture', '.github/workflows/reference-boundary-capture.yml': 'reference_boundary_capture', 'advisory.yml': 'advisory', '.github/workflows/advisory.yml': 'advisory', 'summary.yml': 'summary', '.github/workflows/summary.yml': 'summary', 'stale.yml': 'stale', '.github/workflows/stale.yml': 'stale', 'weekly-cleanup.yml': 'weekly_cleanup', '.github/workflows/weekly-cleanup.yml': 'weekly_cleanup', 'performance-improver.yml': 'performance_improver', '.github/workflows/performance-improver.yml': 'performance_improver', 'tech-debt-review.yml': 'tech_debt_review', '.github/workflows/tech-debt-review.yml': 'tech_debt_review'}
 DORMANT_REVIEW_WORKFLOW_PATHS = frozenset({
     '.github/workflows/final-review.yml',
-    '.github/workflows/ai-review-glm.yml',
-    '.github/workflows/ai-review-kimi-cli.yml',
-    '.github/workflows/claude-code-review.yml',
-})
-DORMANT_REVIEW_CONFIG_KEYS = frozenset({
-    'final_review',
-    'ai_review_glm',
-    'ai_review_kimi_cli',
-    'claude_code_review',
 })
 DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / 'justfile',)
 DEFAULT_REPO_AUTOMATION_GLOBS = ((REPO_ROOT / 'scripts', '*.sh'), (REPO_ROOT / 'tests', '*.sh'), (REPO_ROOT / '.github' / 'scripts', '*.sh'), (REPO_ROOT / '.github' / 'actions', '**/action.yml'), (REPO_ROOT / '.github' / 'actions', '**/action.yaml'))
@@ -1181,26 +1172,12 @@ def load_github_actions_runners_config(path: pathlib.Path | None=None) -> dict[s
         raise ValueError('ci/github-actions-runners.toml must define [runners] and [workflows]')
     if not isinstance(meter, dict):
         raise ValueError('ci/github-actions-runners.toml must define [meter]')
-    workflows = {
-        key: value for key, value in workflows.items()
-        if key not in DORMANT_REVIEW_CONFIG_KEYS
-    }
     active_data = dict(data)
-    cargo_build_jobs_section = data.get('cargo_build_jobs')
-    if isinstance(cargo_build_jobs_section, dict):
-        active_data['cargo_build_jobs'] = {
-            key: value for key, value in cargo_build_jobs_section.items()
-            if key not in DORMANT_REVIEW_CONFIG_KEYS
-        }
     jules_advisory = validate_jules_advisory_config(active_data)
     cargo_build_jobs = validate_cargo_build_jobs_config(active_data)
     meter_workflows = meter.get('included_workflows')
     if not isinstance(meter_workflows, list) or not all((isinstance(workflow, str) and workflow for workflow in meter_workflows)):
         raise ValueError('meter.included_workflows must be a non-empty string list')
-    meter_workflows = [
-        workflow for workflow in meter_workflows
-        if workflow not in DORMANT_REVIEW_CONFIG_KEYS
-    ]
     meter_api_limits = meter.get('api_limits')
     if not isinstance(meter_api_limits, dict):
         raise ValueError('meter.api_limits must be a table')
@@ -1423,7 +1400,7 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
     workflow_tables = config['workflows']
     cargo_build_jobs = config['cargo_build_jobs']
     errors: list[str] = []
-    known_workflow_keys = set(WORKFLOW_RUNNER_CONFIG_KEYS.values()) - DORMANT_REVIEW_CONFIG_KEYS
+    known_workflow_keys = set(WORKFLOW_RUNNER_CONFIG_KEYS.values())
     for workflow_key in sorted(workflow_tables):
         if workflow_key not in known_workflow_keys:
             errors.append(f'workflows.{workflow_key} in ci/github-actions-runners.toml has no workflow contract')

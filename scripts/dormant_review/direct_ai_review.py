@@ -8,9 +8,7 @@ import json
 import os
 import pathlib
 import re
-import subprocess
 import sys
-import tempfile
 import tomllib
 import urllib.error
 import urllib.request
@@ -22,7 +20,6 @@ class EvidenceError(RuntimeError):
 
 
 Publisher = Callable[[str, str, str, str, str, int], None]
-PUBLISHER_CREDENTIAL_ENV = frozenset({"GITHUB_TOKEN", "GH_TOKEN"})
 
 
 def required_env(name: str) -> str:
@@ -88,13 +85,6 @@ def config_int(config: Mapping[str, object], key: str) -> int:
     value = config.get(key)
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise EvidenceError(f"{key} must be a positive integer")
-    return value
-
-
-def config_bool(config: Mapping[str, object], key: str) -> bool:
-    value = config.get(key)
-    if not isinstance(value, bool):
-        raise EvidenceError(f"{key} must be a boolean")
     return value
 
 
@@ -236,51 +226,15 @@ def openai_chat_review(prompt: str, config: Mapping[str, object], api_key: str) 
             response_payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         exc.read()
-        raise EvidenceError(f"GLM API failed with HTTP {exc.code}") from exc
+        raise EvidenceError(f"review API failed with HTTP {exc.code}") from exc
     choices = response_payload.get("choices")
     if not isinstance(choices, list) or not choices:
-        raise EvidenceError("GLM response has no choices")
+        raise EvidenceError("review API response has no choices")
     message = choices[0].get("message")
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str) or not content.strip():
-        raise EvidenceError("GLM response content is empty")
+        raise EvidenceError("review API response content is empty")
     return content.strip()
-
-
-def kimi_review(prompt: str, config: Mapping[str, object], api_key: str) -> str:
-    telemetry_disabled = config_bool(config, "telemetry_disabled")
-    with tempfile.TemporaryDirectory(prefix="kimi-code-") as tmp:
-        home = pathlib.Path(tmp)
-        (home / "config.toml").write_text(
-            f"telemetry = {'false' if telemetry_disabled else 'true'}\n",
-            encoding="utf-8",
-        )
-        env = {key: value for key, value in os.environ.items() if key not in PUBLISHER_CREDENTIAL_ENV}
-        env.update(
-            {
-                "KIMI_CODE_HOME": str(home),
-                "KIMI_DISABLE_TELEMETRY": "1" if telemetry_disabled else "0",
-                "KIMI_MODEL_NAME": config_text(config, "model"),
-                "KIMI_MODEL_API_KEY": api_key,
-                "KIMI_MODEL_BASE_URL": config_text(config, "api_base"),
-                "KIMI_MODEL_PROVIDER_TYPE": config_text(config, "provider_type"),
-                "KIMI_MODEL_MAX_CONTEXT_SIZE": str(config_int(config, "model_max_context_size")),
-                "KIMI_MODEL_DEFAULT_THINKING": str(config_bool(config, "default_thinking")).lower(),
-            }
-        )
-        completed = subprocess.run(
-            [config_text(config, "cli_binary"), "-p", prompt],
-            capture_output=True,
-            text=True,
-            timeout=config_int(config, "cli_timeout_seconds"),
-            env=env,
-            check=False,
-        )
-    if completed.returncode != 0:
-        raise EvidenceError(f"Kimi CLI failed with exit {completed.returncode}")
-    if not completed.stdout.strip():
-        raise EvidenceError("Kimi CLI response is empty")
-    return completed.stdout.strip()
 
 
 def review_prompt(instructions: str, diff: str, index: int, count: int) -> str:
@@ -342,7 +296,6 @@ def run(
     api_timeout_seconds = config_int(github_config, "comment_timeout_seconds")
     adapters = {
         "openai_chat": lambda prompt: openai_chat_review(prompt, provider_config, api_key),
-        "kimi_cli": lambda prompt: kimi_review(prompt, provider_config, api_key),
     }
     adapter_name = config_text(provider_config, "adapter")
     try:

@@ -106,7 +106,7 @@ def assert_output_contract_is_consumed() -> None:
 
 
 def assert_every_provider_uses_one_deliverable_marker_schema() -> None:
-    config = tomllib.loads((pathlib.Path(__file__).resolve().parents[1] / "ci/ai-review.toml").read_text(encoding="utf-8"))
+    config = tomllib.loads(pathlib.Path(__file__).with_name("review-config").read_text(encoding="utf-8"))
     for provider in ("claude", "kimi", "glm"):
         if not config[provider].get("deliverable_marker"):
             raise AssertionError(f"{provider} does not use the shared deliverable_marker schema")
@@ -132,49 +132,6 @@ def assert_large_diff_produces_one_synthesized_review() -> None:
     )
     if review != "one final review" or len(calls) != 3:
         raise AssertionError((review, calls))
-
-
-def assert_kimi_analysis_has_no_github_publisher_credentials() -> None:
-    observed: dict[str, str] = {}
-    original_run = owner.subprocess.run
-    original_env = {key: os.environ.get(key) for key in ("GITHUB_TOKEN", "GH_TOKEN")}
-
-    def fake_run(*args: object, **kwargs: object) -> object:
-        environment = kwargs["env"]
-        if not isinstance(environment, dict):
-            raise AssertionError(environment)
-        for key in ("GITHUB_TOKEN", "GH_TOKEN"):
-            if key in environment:
-                observed[key] = str(environment[key])
-        return owner.subprocess.CompletedProcess(args[0], 0, stdout="review result", stderr="")
-
-    try:
-        os.environ["GITHUB_TOKEN"] = "github-publisher-token"
-        os.environ["GH_TOKEN"] = "gh-publisher-token"
-        owner.subprocess.run = fake_run
-        result = owner.kimi_review(
-            "review prompt",
-            {
-                "telemetry_disabled": True,
-                "model": "configured-model",
-                "api_base": "https://example.invalid",
-                "provider_type": "configured-provider",
-                "model_max_context_size": 1024,
-                "default_thinking": True,
-                "cli_binary": "kimi",
-                "cli_timeout_seconds": 30,
-            },
-            "provider-api-key",
-        )
-    finally:
-        owner.subprocess.run = original_run
-        for key, value in original_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-    if result != "review result" or observed:
-        raise AssertionError((result, observed))
 
 
 def assert_claude_execution_publishes_once_or_not_at_all() -> None:
@@ -237,7 +194,7 @@ def assert_claude_execution_publishes_once_or_not_at_all() -> None:
 
 def assert_configured_adapter_transaction_publishes_once_after_success_and_never_after_failure() -> None:
     calls: list[tuple[str, str, str, str, str, int]] = []
-    original_review = owner.kimi_review
+    original_review = owner.openai_chat_review
     required_environment = {
         "GITHUB_REPOSITORY": "owner/repo",
         "PR_NUMBER": "1457",
@@ -273,15 +230,17 @@ model = "configured-model"
 deliverable_marker = "<!-- kimi-marker -->"
 source_label_template = "Kimi (`{model}`)"
 review_max_chunk_chars = 60000
-adapter = "kimi_cli"
+adapter = "openai_chat"
 secret_env = "REVIEW_PROVIDER_TOKEN"
+api_base = "https://example.invalid"
+api_timeout_seconds = 30
 """.strip(),
             encoding="utf-8",
         )
         required_environment["PR_DIFF_PATH"] = str(diff)
         try:
             os.environ.update(required_environment)
-            owner.kimi_review = lambda prompt, provider_config, api_key: "final review"
+            owner.openai_chat_review = lambda prompt, provider_config, api_key: "final review"
             owner.run("reviewer", instructions, config, publisher=publisher)
             if len(calls) != 1 or "final review" not in calls[0][3]:
                 raise AssertionError(calls)
@@ -290,7 +249,7 @@ secret_env = "REVIEW_PROVIDER_TOKEN"
             def fail_review(prompt: str, provider_config: object, api_key: str) -> str:
                 raise EvidenceError("analysis failed")
 
-            owner.kimi_review = fail_review
+            owner.openai_chat_review = fail_review
             try:
                 owner.run("reviewer", instructions, config, publisher=publisher)
             except EvidenceError:
@@ -300,7 +259,7 @@ secret_env = "REVIEW_PROVIDER_TOKEN"
             if calls:
                 raise AssertionError(calls)
         finally:
-            owner.kimi_review = original_review
+            owner.openai_chat_review = original_review
             for key, value in saved_environment.items():
                 if value is None:
                     os.environ.pop(key, None)
@@ -318,7 +277,6 @@ def main() -> int:
     assert_output_contract_is_consumed()
     assert_every_provider_uses_one_deliverable_marker_schema()
     assert_large_diff_produces_one_synthesized_review()
-    assert_kimi_analysis_has_no_github_publisher_credentials()
     assert_claude_execution_publishes_once_or_not_at_all()
     assert_configured_adapter_transaction_publishes_once_after_success_and_never_after_failure()
     print("OK: direct AI review tests passed.")
@@ -326,7 +284,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    import lane_governor
-
-    lane_governor.acquire()
     raise SystemExit(main())

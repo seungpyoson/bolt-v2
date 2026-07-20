@@ -1,28 +1,18 @@
-name: Final Review
+name: AI Reviews
 
 on:
-  workflow_dispatch:
-    inputs:
-      pr:
-        description: Pull request number
-        required: true
-        type: string
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
 
 concurrency:
-  group: final-review-${{ inputs.pr }}
-  cancel-in-progress: false
+  group: ai-reviews-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
-  pull-requests: read
-
-env:
-  JUST_VERSION: "1.49.0"
-  CARGO_TERM_COLOR: always
-  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
 
 jobs:
-  capture-head:
+  prepare:
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     outputs:
       head_sha: ${{ steps.capture.outputs.head_sha }}
@@ -31,218 +21,229 @@ jobs:
       claude_timeout: ${{ steps.capture.outputs.claude_timeout }}
       kimi_timeout: ${{ steps.capture.outputs.kimi_timeout }}
       glm_timeout: ${{ steps.capture.outputs.glm_timeout }}
-      evidence_timeout: ${{ steps.capture.outputs.evidence_timeout }}
-      obligation_timeout: ${{ steps.capture.outputs.obligation_timeout }}
-      phase_matrix: ${{ steps.capture.outputs.phase_matrix }}
-      python_version: ${{ steps.capture.outputs.python_version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Capture immutable pull-request identity
+      - name: Capture immutable review input
         id: capture
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ inputs.pr }}
+          PR: ${{ github.event.pull_request.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           payload="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}")"
           test "$(jq -r '.state' <<<"$payload")" = "open"
           head_sha="$(jq -r '.head.sha' <<<"$payload")"
           base_sha="$(jq -r '.base.sha' <<<"$payload")"
+          test "$head_sha" = "$EVENT_HEAD_SHA"
+          test "$base_sha" = "$EVENT_BASE_SHA"
           [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]
           [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
-          read -r claude_timeout kimi_timeout glm_timeout obligation_timeout evidence_timeout python_version phase_matrix < <(PYTHONPATH=scripts python3 -c 'import pathlib; from final_review_runner import workflow_configuration; print(*workflow_configuration(pathlib.Path("ci/ai-review.toml")))')
+          mkdir -p .ai-review/input
+          gh api "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${head_sha}" \
+            -H "Accept: application/vnd.github.diff" > .ai-review/input/review.diff
+          test -s .ai-review/input/review.diff
+          {
+            printf '# Immutable review input\n\n'
+            printf -- '- Pull request: %s\n' "$PR"
+            printf -- '- Base SHA: %s\n' "$base_sha"
+            printf -- '- Head SHA: %s\n' "$head_sha"
+            printf -- '- Source: GitHub compare API\n'
+          } > .ai-review/input/review-context.md
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path("scripts/dormant_review/review-config").read_text(encoding="utf-8"))
+          print(f"claude_timeout={config['claude']['workflow']['job_timeout_minutes']}")
+          print(f"kimi_timeout={config['kimi']['workflow']['job_timeout_minutes']}")
+          print(f"glm_timeout={config['glm']['workflow']['job_timeout_minutes']}")
+          PY
           {
             echo "head_sha=$head_sha"
             echo "base_sha=$base_sha"
             echo "pr_number=$PR"
-            echo "claude_timeout=$claude_timeout"
-            echo "kimi_timeout=$kimi_timeout"
-            echo "glm_timeout=$glm_timeout"
-            echo "obligation_timeout=$obligation_timeout"
-            echo "evidence_timeout=$evidence_timeout"
-            echo "phase_matrix=$phase_matrix"
-            echo "python_version=$python_version"
           } >> "$GITHUB_OUTPUT"
-
-  evidence-phase:
-    needs: capture-head
-    timeout-minutes: ${{ fromJSON(needs.capture-head.outputs.evidence_timeout) }}
-    permissions:
-      contents: read
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.capture-head.outputs.phase_matrix) }}
-    steps:
-      - name: Checkout protected governance
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Checkout immutable subject
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.capture-head.outputs.head_sha }}
-          path: subject
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Setup fixed evidence environment
-        id: setup
-        uses: ./.github/actions/setup-environment
-        with:
-          just-version: ${{ env.JUST_VERSION }}
-          toolchain-components: rustfmt,clippy
-          include-deny-version: "true"
-          include-nextest-version: "true"
-          include-build-values: "true"
-          use-default-target: "true"
-          include-managed-target-dir: "true"
-          install-rust-linker: "true"
-          build-jobs-key: final_review.evidence-phase
-      - uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
-        with:
-          tool: cargo-deny@${{ steps.setup.outputs.deny_version }},cargo-nextest@${{ steps.setup.outputs.nextest_version }},cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
-          fallback: none
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: ${{ needs.capture-head.outputs.python_version }}
-      - name: Install and bind configured Zig
-        run: |
-          python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
-          configured_python="$(command -v python)"
-          configured_zig_version="$("$configured_python" -m ziglang version)"
-          test "$configured_zig_version" = "${{ steps.setup.outputs.zig_version }}"
-          {
-            echo "CARGO_ZIGBUILD_PYTHON_PATH=$configured_python"
-            echo "CARGO_ZIGBUILD_ZIG_PATH=/dev/null"
-          } >> "$GITHUB_ENV"
-      - name: Install configured actionlint
-        run: |
-          version="$(just --evaluate actionlint_version)"
-          GOBIN="$RUNNER_TEMP/bin" go install "github.com/rhysd/actionlint/cmd/actionlint@v${version}"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - uses: ./.github/actions/setup-bvs-minio-s3-smoke
-      - name: Execute fixed evidence phase
-        env:
-          BVS_MINIO_S3_SMOKE_ENV_VAR: ${{ env.BVS_MINIO_S3_SMOKE_ENV_VAR }}
-          BVS_MINIO_S3_SMOKE_ENV_VALUE: ${{ env.BVS_MINIO_S3_SMOKE_ENV_VALUE }}
-        run: |
-          python3 scripts/final_review_runner.py \
-            --governance . \
-            --subject subject \
-            --head-sha "${{ needs.capture-head.outputs.head_sha }}" \
-            --run-id "$GITHUB_RUN_ID" \
-            --run-attempt "$GITHUB_RUN_ATTEMPT" \
-            --phase "${{ matrix.phase }}" \
-            --obligation-timeout-seconds "${{ needs.capture-head.outputs.obligation_timeout }}" \
-            --output "final-review-output/${{ matrix.phase }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: final-review-phase-${{ matrix.phase }}
-          path: final-review-output/${{ matrix.phase }}
+          name: ai-review-input
+          path: .ai-review/input
           if-no-files-found: error
 
-  evidence:
-    needs: [capture-head, evidence-phase]
+  claude-analysis:
+    needs: prepare
     permissions:
       contents: read
+      id-token: write
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    timeout-minutes: ${{ fromJSON(needs.prepare.outputs.claude_timeout) }}
     steps:
-      - name: Checkout protected governance
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: final-review-phase-*
-          path: final-review-output
-          merge-multiple: false
-      - name: Capture exact review diff
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ needs.capture-head.outputs.base_sha }}
-          HEAD_SHA: ${{ needs.capture-head.outputs.head_sha }}
+          name: ai-review-input
+          path: .ai-review/input
+      - name: Load configured Claude runtime
+        id: config
         run: |
-          gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_SHA}...${HEAD_SHA}" \
-            -H "Accept: application/vnd.github.diff" > final-review-output/review.diff
-          test -s final-review-output/review.diff
-      - name: Assemble fixed evidence
-        run: |
-          python3 scripts/final_review_evidence.py \
-            --parts-root final-review-output \
-            --json-output final-review-output/final-review-evidence.json \
-            --markdown-output final-review-output/final-review-evidence.md
-          cat final-review-output/final-review-evidence.md >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path("scripts/dormant_review/review-config").read_text(encoding="utf-8"))
+          claude = config["claude"]
+          workflow = claude["workflow"]
+          print(f"model={claude['model']}")
+          print(f"marker={claude['deliverable_marker']}")
+          print(f"source={claude['source_label_template'].replace('{model}', claude['model'])}")
+          print(f"track_progress={str(claude['track_progress']).lower()}")
+          print(f"max_turns={workflow['max_turns']}")
+          print(f"allowed_tools={','.join(claude['allowed_tools'])}")
+          PY
+      - name: Run Claude review
+        id: analysis
+        uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            contents: read
+          track_progress: ${{ steps.config.outputs.track_progress }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ needs.prepare.outputs.pr_number }}
+            EXACT HEAD: ${{ needs.prepare.outputs.head_sha }}
+            DELIVERABLE MARKER: ${{ steps.config.outputs.marker }}
+            SOURCE LABEL: ${{ steps.config.outputs.source }}
+
+            Review the complete base-to-head diff at EXACT HEAD. AGENTS.md is the
+            policy authority. Read .ai-review/input/review-context.md first. The
+            immutable diff is .ai-review/input/review.diff. Use only that file for
+            diff contents; do not query the moving pull-request diff or execute code
+            from the pull request. Follow [review.output_contract] from
+            scripts/dormant_review/review-config exactly. Return every hard-evidence substantive finding
+            in one final response. Do not edit files, commit, push, merge, display
+            credentials, or choose another model or reviewer. Return only the review
+            body; the publisher adds the marker, source label, and exact head.
+          claude_args: >-
+            --max-turns ${{ steps.config.outputs.max_turns }}
+            --model ${{ steps.config.outputs.model }}
+            --allowedTools "${{ steps.config.outputs.allowed_tools }}"
+      - name: Stage completed Claude execution
+        run: cp "${{ steps.analysis.outputs.execution_file }}" claude-execution.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: final-review-evidence
-          path: final-review-output
+          name: claude-review-execution
+          path: claude-execution.json
           if-no-files-found: error
-      - name: Assert every evidence obligation passed
-        run: |
-          python3 - <<'PY'
-          import json
-          import pathlib
-          manifest = json.loads(pathlib.Path("final-review-output/final-review-evidence.json").read_text())
-          failures = [job for job in manifest["jobs"] if job["conclusion"] != "success"]
-          if failures:
-              for job in failures:
-                  print(f"{job['obligation_id']}: {job['conclusion']}")
-              raise SystemExit(1)
-          PY
 
-  claude-review:
-    needs: [capture-head, evidence]
+  claude-publish:
+    needs: [prepare, claude-analysis]
     permissions:
       contents: read
       pull-requests: write
       issues: write
-      id-token: write
-    uses: ./.github/workflows/claude-code-review.yml
-    with:
-      pr_number: ${{ needs.capture-head.outputs.pr_number }}
-      head_sha: ${{ needs.capture-head.outputs.head_sha }}
-      base_sha: ${{ needs.capture-head.outputs.base_sha }}
-      governance_sha: ${{ github.sha }}
-      evidence_run_id: ${{ github.run_id }}
-      evidence_artifact: final-review-evidence
-      job_timeout_minutes: ${{ fromJSON(needs.capture-head.outputs.claude_timeout) }}
-    secrets: inherit
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    timeout-minutes: ${{ fromJSON(needs.prepare.outputs.claude_timeout) }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: claude-review-execution
+          path: .ai-review/claude-execution
+      - name: Publish Claude review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+        run: >-
+          python3 scripts/dormant_review/publish_claude_review.py
+          --execution-file .ai-review/claude-execution/claude-execution.json
+          --config-file scripts/dormant_review/review-config
 
   kimi-review:
-    needs: [capture-head, evidence]
+    needs: prepare
     permissions:
       contents: read
       pull-requests: write
       issues: write
-    uses: ./.github/workflows/ai-review-kimi-cli.yml
-    with:
-      pr_number: ${{ needs.capture-head.outputs.pr_number }}
-      head_sha: ${{ needs.capture-head.outputs.head_sha }}
-      base_sha: ${{ needs.capture-head.outputs.base_sha }}
-      governance_sha: ${{ github.sha }}
-      evidence_run_id: ${{ github.run_id }}
-      evidence_artifact: final-review-evidence
-      job_timeout_minutes: ${{ fromJSON(needs.capture-head.outputs.kimi_timeout) }}
-    secrets: inherit
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    timeout-minutes: ${{ fromJSON(needs.prepare.outputs.kimi_timeout) }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ai-review-input
+          path: .ai-review/input
+      - name: Prepare review instructions
+        run: |
+          mkdir -p .ai-review/standards
+          {
+            cat AGENTS.md
+            printf '\n# Immutable review input\n\n'
+            cat .ai-review/input/review-context.md
+            printf '\nReview PR %s at exact head %s. Review the complete diff and report every hard-evidence substantive finding. Do not execute pull-request code, edit, push, merge, expose credentials, or choose another model or provider.\n' "${{ needs.prepare.outputs.pr_number }}" "${{ needs.prepare.outputs.head_sha }}"
+          } > .ai-review/standards/kimi-review-standards.md
+      - name: Run Kimi review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          PR_BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          PR_DIFF_PATH: .ai-review/input/review.diff
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+        run: >-
+          python3 scripts/dormant_review/direct_ai_review.py kimi
+          --instructions-file .ai-review/standards/kimi-review-standards.md
+          --config-file scripts/dormant_review/review-config
 
   glm-review:
-    needs: [capture-head, evidence]
+    needs: prepare
     permissions:
       contents: read
       pull-requests: write
       issues: write
-    uses: ./.github/workflows/ai-review-glm.yml
-    with:
-      pr_number: ${{ needs.capture-head.outputs.pr_number }}
-      head_sha: ${{ needs.capture-head.outputs.head_sha }}
-      base_sha: ${{ needs.capture-head.outputs.base_sha }}
-      governance_sha: ${{ github.sha }}
-      evidence_run_id: ${{ github.run_id }}
-      evidence_artifact: final-review-evidence
-      job_timeout_minutes: ${{ fromJSON(needs.capture-head.outputs.glm_timeout) }}
-    secrets: inherit
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    timeout-minutes: ${{ fromJSON(needs.prepare.outputs.glm_timeout) }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ai-review-input
+          path: .ai-review/input
+      - name: Prepare review instructions
+        run: |
+          mkdir -p .ai-review/standards
+          {
+            cat AGENTS.md
+            printf '\n# Immutable review input\n\n'
+            cat .ai-review/input/review-context.md
+            printf '\nReview PR %s at exact head %s. Review the complete diff and report every hard-evidence substantive finding. Do not execute pull-request code, edit, push, merge, expose credentials, or choose another model or provider.\n' "${{ needs.prepare.outputs.pr_number }}" "${{ needs.prepare.outputs.head_sha }}"
+          } > .ai-review/standards/glm-review-standards.md
+      - name: Run GLM review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          PR_BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          PR_DIFF_PATH: .ai-review/input/review.diff
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+        run: >-
+          python3 scripts/dormant_review/direct_ai_review.py glm
+          --instructions-file .ai-review/standards/glm-review-standards.md
+          --config-file scripts/dormant_review/review-config

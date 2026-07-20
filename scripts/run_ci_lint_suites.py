@@ -70,10 +70,6 @@ CI_LINT_SUITES = (
 GOVERNED_TEST_SUFFIXES = frozenset({".py", ".mjs"})
 INACTIVE_TEST_FILENAMES = frozenset(
     {
-        "test_direct_ai_review.py",
-        "test_final_review_evidence.py",
-        "test_final_review_runner.py",
-        "test_final_review_workflow.py",
         "test_host_health_sampler.py",
         "test_host_health_viewer.mjs",
     }

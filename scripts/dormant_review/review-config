@@ -2,12 +2,6 @@
 api_url = "https://api.github.com"
 comment_timeout_seconds = 30
 
-[final_review]
-evidence_timeout_minutes = 240
-obligation_timeout_seconds = 1800
-python_version = "3.12"
-phases = ["static", "root-analysis", "root-tests", "bvs-analysis", "bvs-tests"]
-
 [review]
 max_comment_chars = 60000
 
@@ -51,23 +45,17 @@ source_label_template = "GLM Direct (`{model}`)"
 job_timeout_minutes = 35
 
 [kimi]
-adapter = "kimi_cli"
+adapter = "openai_chat"
 secret_env = "KIMI_API_KEY"
 api_base = "https://api.kimi.com/coding/v1"
 model = "kimi-k2.7-code"
-provider_type = "kimi"
-model_max_context_size = 262144
-default_thinking = true
-telemetry_disabled = true
-cli_timeout_seconds = 180
+temperature = 0.2
+api_timeout_seconds = 180
 review_max_chunk_chars = 60000
 deliverable_marker = "<!-- ai-pr-reviewer-kimi -->"
-source_label_template = "Kimi Code CLI (`{model}`)"
-cli_package = "@moonshot-ai/kimi-code@0.19.0"
-cli_binary = "kimi"
+source_label_template = "Kimi (`{model}`)"
 
 [kimi.workflow]
-node_version = "24"
 job_timeout_minutes = 45
 
 [claude]

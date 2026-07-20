@@ -113,7 +113,7 @@ a committed fail-closed deploy-trust property:
 ### Levers examined — 0 recommended, 7 user-decision, 13 rejected
 - **Build on tags only / relax push-force-build** (~85% fewer builds, ~1200 billed-min/mo) — **release-breaking** without a tag-time rebuild, and tag-time rebuild is the exact thing specs/008 rejected. Reversing it weakens the "only deploy a main-validated binary" guarantee.
 - **Merge queue** — adding `merge_group` alone saves zero and adds ~80 builds/mo; the version that saves (~5–6 builds/mo from collapsing bursts) is blocked because the deploy reuse path requires `event=="push" && head_branch=="main"` provenance (`find_same_sha_main_evidence.py:59-60`). Not worth it.
-- **Skip tests on draft PRs** — blocked by design: `specs/014` makes the draft/open PR the *designated* broad-verification path (local broad testing is disk-governed), and the gate requires `test==success`.
+- **Skip tests on draft PRs** — was blocked by the then-current disk-pressure policy, which made the draft/open PR the *designated* broad-verification path while local broad testing was disk-governed; the gate required `test==success`.
 - **Dependabot weekly→monthly** — not a CI change (a separate bot that merely triggers builds); ~4 fewer builds/mo, security still covered by the weekly advisory cron. Trivial.
 
 ## Part C — Tier-2 paid infrastructure (faster runners / warm caches): 0 viable
@@ -136,7 +136,7 @@ These warm cargo's native target dir transparently (no wrapper), so they survive
 the scrub and the archive lint — mechanically the only way to get the warm-cache
 win. But:
 - The managed target dir is rooted at `${{ github.workspace }}/.rust-verification` (`ci.yml:45`), which is **per-run ephemeral** — a sticky disk caches nothing useful unless you re-root the governed target dir (which itself touches the design).
-- A persistent target dir directly conflicts with disk-pressure governance (`specs/014`), which exists precisely because an uncontrolled persistent `target/` caused an 18 GB blowup.
+- A persistent target dir conflicted with the then-current disk-pressure policy, which responded to an uncontrolled persistent `target/` causing an 18 GB blowup.
 - **$0 benefit while the repo is public** (standard GitHub runners are free); real spend only once private.
 - Self-hosted adds the GitHub-documented public-repo fork-PR code-execution risk + ~$260–300/mo AWS + maintenance.
 

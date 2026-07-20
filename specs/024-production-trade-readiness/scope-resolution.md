@@ -8,7 +8,7 @@ The following non-readiness verifier/decomposition/disk-governance paths were re
 - `scripts/rust_verification.py`
 - `scripts/test_command_understanding.py`
 - `scripts/test_rust_verification_cache_retention.py`
-- `specs/014-disk-pressure-governance/tasks.md`
+- the then-current disk-pressure-governance task list (now retired)
 - `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - `specs/466-decompose-disk-governance-verifiers/tasks.md`
 

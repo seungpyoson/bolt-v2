@@ -33,6 +33,7 @@ def assert_case(
     expected_role: str,
     expected_mode: str,
     expected_digest: str | None = None,
+    expected_idle_timeout: int | None = 0,
 ) -> None:
     result = resolve_sccache_eligibility(
         active=active,
@@ -49,6 +50,10 @@ def assert_case(
         raise AssertionError(f"{label}: expected {expected!r}, got {actual!r}")
     if expected_digest is not None and result.executable_sha256 != expected_digest:
         raise AssertionError(f"{label}: expected digest {expected_digest!r}, got {result.executable_sha256!r}")
+    if result.idle_timeout_seconds != expected_idle_timeout:
+        raise AssertionError(
+            f"{label}: expected idle timeout {expected_idle_timeout!r}, got {result.idle_timeout_seconds!r}"
+        )
 
 
 def main() -> int:
@@ -161,6 +166,16 @@ def main() -> int:
         expected_eligible=False,
         expected_role=read_role,
         expected_mode="read_only",
+    )
+    assert_case(
+        "missing idle timeout fails closed",
+        event_name="pull_request",
+        github_ref="refs/pull/1302/merge",
+        location={key: value for key, value in LOCATION.items() if key != "idle_timeout_seconds"},
+        expected_eligible=False,
+        expected_role=read_role,
+        expected_mode="read_only",
+        expected_idle_timeout=None,
     )
     assert_case(
         "location newlines are rejected",

@@ -189,7 +189,6 @@ jobs:
       - name: build
         env:
           BUILD_TARGET: ${{ steps.setup.outputs.target }}
-          CARGO_TERM_VERBOSE: "true"
         run: |
           set -x
           cargo zigbuild --release --target "$BUILD_TARGET" --locked

@@ -5,6 +5,9 @@ bucket = "bolt-v2-ci-cache-675819144420-us-east-2"
 region = "us-east-2"
 key_prefix = "sccache/bolt-v2/arm64/root-nextest/"
 version = "v0.16.0"
+# Disable the daemon's idle shutdown so long release/LTO compiler requests do
+# not discard job-level statistics before the evidence step reads them.
+idle_timeout_seconds = 0
 
 [location.executable_sha256]
 # SHA-256 of the extracted aarch64-unknown-linux-musl executable from the governed release.

@@ -24,6 +24,7 @@ class SccacheEligibility:
     bucket: str
     key_prefix: str
     version: str
+    idle_timeout_seconds: int | None
     executable_sha256: str
     active: bool
     vars_present: bool
@@ -84,6 +85,14 @@ def resolve_sccache_eligibility(
     region = _location_value(location, "region")
     key_prefix = _location_value(location, "key_prefix")
     version = _location_value(location, "version")
+    raw_idle_timeout = location.get("idle_timeout_seconds")
+    idle_timeout_seconds = (
+        raw_idle_timeout
+        if isinstance(raw_idle_timeout, int)
+        and not isinstance(raw_idle_timeout, bool)
+        and raw_idle_timeout >= 0
+        else None
+    )
     executable_sha256, architecture_digests_valid = _architecture_digest(location, runner_arch)
     vars_present = all((role_arn, bucket, region, key_prefix, version, executable_sha256))
     location_valid = bool(
@@ -91,6 +100,7 @@ def resolve_sccache_eligibility(
         and region
         and key_prefix.endswith("/")
         and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version)
+        and idle_timeout_seconds is not None
         and architecture_digests_valid
         and re.fullmatch(r"[A-Z0-9_]+", runner_arch)
         and executable_sha256
@@ -104,6 +114,7 @@ def resolve_sccache_eligibility(
         bucket=bucket,
         key_prefix=key_prefix,
         version=version,
+        idle_timeout_seconds=idle_timeout_seconds,
         executable_sha256=executable_sha256,
         active=active,
         vars_present=vars_present,
@@ -200,6 +211,8 @@ def main() -> int:
         _write_line(env_path, f"SCCACHE_REGION={eligibility.region}")
         _write_line(env_path, f"SCCACHE_S3_KEY_PREFIX={eligibility.key_prefix}")
         _write_line(env_path, "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true")
+        _write_line(env_path, f"SCCACHE_IDLE_TIMEOUT={eligibility.idle_timeout_seconds}")
+        _write_line(env_path, "SCCACHE_IGNORE_SERVER_IO_ERROR=1")
 
     print(
         "sccache cache "

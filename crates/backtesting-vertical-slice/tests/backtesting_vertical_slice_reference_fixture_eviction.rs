@@ -18,16 +18,16 @@ use std::process::Command;
 
 use crate::backtesting_vertical_slice_test_support::{
     BACKFILL_CONVERSION_COMPLETION_LEDGER_EVICTED_REFERENCE_PATHS,
-    BINANCE_OPERATOR_INPUTS_EVICTED_REFERENCE_PATHS, PHASE3_EVICTED_REFERENCE_PATHS,
-    PMXT_OBJECT_MANIFEST_EVICTED_REFERENCE_PATHS,
+    BINANCE_OPERATOR_INPUTS_EVICTED_REFERENCE_PATHS, BYBIT_OPERATOR_INPUTS_EVICTED_REFERENCE_PATHS,
+    PHASE3_EVICTED_REFERENCE_PATHS, PMXT_OBJECT_MANIFEST_EVICTED_REFERENCE_PATHS,
 };
 use backtesting_vertical_slice::reference_fixture_index::{
     EvictedFixtureIndex, GOLDEN_RECORD_DIR_PREFIX, TIER1_EVICTED_SUBTREE_PREFIXES,
     TIER1_KEPT_REFERENCE_PATHS, is_backfill_conversion_completion_ledger_path,
-    is_binance_source_universe_operator_inputs_path, is_evicted_execution_pack_record_path,
-    is_evicted_reference_fixture_path, is_phase3_conversion_batch_plan_path,
-    is_pmxt_source_universe_object_manifest_path, is_tier1_evicted_reference_fixture_path,
-    repo_root_from_manifest_dir,
+    is_binance_source_universe_operator_inputs_path, is_bybit_source_universe_operator_inputs_path,
+    is_evicted_execution_pack_record_path, is_evicted_reference_fixture_path,
+    is_phase3_conversion_batch_plan_path, is_pmxt_source_universe_object_manifest_path,
+    is_tier1_evicted_reference_fixture_path, repo_root_from_manifest_dir,
 };
 use backtesting_vertical_slice::source_universe_execution_pack::SourceUniverseExecutionPack;
 
@@ -829,9 +829,10 @@ fn binance_operator_inputs_gitignore_pattern_matches_eviction_predicate() {
     ));
     assert!(git_check_ignore(&repo_root, hypothetical));
 
-    let bybit = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-hypothetical/operator-inputs/source-universe-operator-inputs.json";
-    assert!(!is_binance_source_universe_operator_inputs_path(bybit));
-    assert!(!git_check_ignore(&repo_root, bybit));
+    let unrelated = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/kraken-hypothetical/operator-inputs/source-universe-operator-inputs.json";
+    assert!(!is_binance_source_universe_operator_inputs_path(unrelated));
+    assert!(!is_bybit_source_universe_operator_inputs_path(unrelated));
+    assert!(!git_check_ignore(&repo_root, unrelated));
 
     let empty_scope = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-/operator-inputs/source-universe-operator-inputs.json";
     assert!(!is_binance_source_universe_operator_inputs_path(
@@ -845,6 +846,90 @@ fn binance_operator_inputs_gitignore_pattern_matches_eviction_predicate() {
 
     let non_inputs_json = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-hypothetical/operator-inputs/metadata.json";
     assert!(!is_binance_source_universe_operator_inputs_path(
+        non_inputs_json
+    ));
+    assert!(!git_check_ignore(&repo_root, non_inputs_json));
+}
+
+#[test]
+fn bybit_operator_inputs_index_entries_match_declared_exact_scope() {
+    let repo_root = repo_root_from_manifest_dir();
+    let index = EvictedFixtureIndex::load(&repo_root).expect("load evicted-fixtures index");
+    let indexed: BTreeSet<String> = index
+        .entries
+        .iter()
+        .map(|entry| entry.path.clone())
+        .filter(|path| is_bybit_source_universe_operator_inputs_path(path))
+        .collect();
+    let declared: BTreeSet<String> = BYBIT_OPERATOR_INPUTS_EVICTED_REFERENCE_PATHS
+        .iter()
+        .map(|path| (*path).to_string())
+        .collect();
+
+    assert_eq!(
+        indexed,
+        declared,
+        "Bybit operator-inputs index entries must exactly match the declared generated-reference eviction scope; \
+         indexed but undeclared: {:?}; declared but unindexed: {:?}",
+        indexed.difference(&declared).collect::<Vec<_>>(),
+        declared.difference(&indexed).collect::<Vec<_>>(),
+    );
+
+    for path in &declared {
+        assert!(
+            !repo_root.join(path).exists(),
+            "Bybit operator-inputs artifact {path:?} must be absent from the working tree"
+        );
+    }
+}
+
+#[test]
+fn bybit_operator_inputs_scope_has_no_regrown_working_tree_artifacts() {
+    let repo_root = repo_root_from_manifest_dir();
+    let operator_inputs_root = repo_root
+        .join("specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs");
+    for path in files_under(&operator_inputs_root) {
+        let repo_relative = repo_relative_path(&repo_root, &path);
+        assert!(
+            !is_bybit_source_universe_operator_inputs_path(&repo_relative),
+            "Bybit operator-inputs artifact {repo_relative:?} must remain evicted from the working tree"
+        );
+    }
+}
+
+#[test]
+fn bybit_operator_inputs_gitignore_pattern_matches_eviction_predicate() {
+    let repo_root = repo_root_from_manifest_dir();
+    for &path in BYBIT_OPERATOR_INPUTS_EVICTED_REFERENCE_PATHS {
+        assert!(
+            is_bybit_source_universe_operator_inputs_path(path),
+            "Bybit operator-inputs path {path:?} must be in the eviction predicate"
+        );
+        assert!(
+            git_check_ignore(&repo_root, path),
+            "Bybit operator-inputs path {path:?} must be ignored by .gitignore"
+        );
+    }
+
+    let hypothetical = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-hypothetical/operator-inputs/source-universe-operator-inputs.json";
+    assert!(is_bybit_source_universe_operator_inputs_path(hypothetical));
+    assert!(git_check_ignore(&repo_root, hypothetical));
+
+    let unrelated = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/kraken-hypothetical/operator-inputs/source-universe-operator-inputs.json";
+    assert!(!is_binance_source_universe_operator_inputs_path(unrelated));
+    assert!(!is_bybit_source_universe_operator_inputs_path(unrelated));
+    assert!(!git_check_ignore(&repo_root, unrelated));
+
+    let empty_scope = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-/operator-inputs/source-universe-operator-inputs.json";
+    assert!(!is_bybit_source_universe_operator_inputs_path(empty_scope));
+    assert!(!git_check_ignore(&repo_root, empty_scope));
+
+    let nested = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-hypothetical/nested/operator-inputs/source-universe-operator-inputs.json";
+    assert!(!is_bybit_source_universe_operator_inputs_path(nested));
+    assert!(!git_check_ignore(&repo_root, nested));
+
+    let non_inputs_json = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-hypothetical/operator-inputs/metadata.json";
+    assert!(!is_bybit_source_universe_operator_inputs_path(
         non_inputs_json
     ));
     assert!(!git_check_ignore(&repo_root, non_inputs_json));

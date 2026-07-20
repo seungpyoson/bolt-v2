@@ -12,9 +12,14 @@ use backtesting_vertical_slice::{
         write_backfill_conversion_completion_ledger_from_spec_file,
     },
     hashing::sha256_hex,
-    reference_fixture_index::{EvictedFixtureIndex, repo_root_from_manifest_dir},
+    reference_fixture_index::{
+        EvictedFixtureIndex, TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH, repo_root_from_manifest_dir,
+    },
     source_archive_index_source_universe::write_source_archive_index_source_universe_manifest_from_spec_file,
-    source_universe_operator_inputs::write_source_universe_operator_inputs_from_spec_file,
+    source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file,
+    source_universe_operator_inputs::{
+        SourceUniverseOperatorInputs, write_source_universe_operator_inputs_from_spec_file,
+    },
 };
 
 pub const PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH: &str = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/plan/backfill-conversion-batch-plan.json";
@@ -44,6 +49,9 @@ pub const PMXT_OBJECT_MANIFEST_EVICTED_REFERENCE_PATHS: &[&str] = &[
 pub const BINANCE_SOURCE_UNIVERSE_OPERATOR_INPUTS_PATH: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/operator-inputs/source-universe-operator-inputs.json";
 pub const BINANCE_OPERATOR_INPUTS_EVICTED_REFERENCE_PATHS: &[&str] =
     &[BINANCE_SOURCE_UNIVERSE_OPERATOR_INPUTS_PATH];
+pub const BYBIT_SOURCE_UNIVERSE_OPERATOR_INPUTS_PATH: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/operator-inputs/source-universe-operator-inputs.json";
+pub const BYBIT_OPERATOR_INPUTS_EVICTED_REFERENCE_PATHS: &[&str] =
+    &[BYBIT_SOURCE_UNIVERSE_OPERATOR_INPUTS_PATH];
 
 pub fn tempdir_in_repo_target() -> tempfile::TempDir {
     let target_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
@@ -283,4 +291,91 @@ pub fn generate_evicted_binance_operator_inputs(reference_root: &Path, temp_dir:
         &artifact.path,
     );
     artifact.path
+}
+
+/// Regenerates the evicted Bybit operator inputs and its already-evicted run-plan input.
+///
+/// The generated operator-input bytes are normalized to the run plan's stable
+/// evicted repo identity before the index assertion and before downstream tests
+/// consume them.
+pub fn generate_evicted_bybit_operator_inputs(
+    reference_root: &Path,
+    temp_dir: &Path,
+) -> (PathBuf, PathBuf) {
+    let run_plan_spec_path = reference_root.join(
+        "source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/source-universe-conversion-run-plan.toml",
+    );
+    let temp_run_plan_spec_path = temp_dir.join("bybit-source-universe-conversion-run-plan.toml");
+    let run_plan_spec = fs::read_to_string(&run_plan_spec_path).unwrap_or_else(|error| {
+        panic!(
+            "read Bybit run-plan spec {}: {error}",
+            run_plan_spec_path.display()
+        )
+    });
+    let run_plan_spec = rewrite_assignment(
+        &run_plan_spec,
+        "output_dir",
+        &temp_dir.join("bybit-source-universe-conversion-run-plan"),
+    );
+    fs::write(&temp_run_plan_spec_path, run_plan_spec).expect("write temp Bybit run-plan spec");
+    let run_plan_artifact =
+        write_source_universe_conversion_run_plan_from_spec_file(&temp_run_plan_spec_path)
+            .expect("Bybit run plan is reproducible");
+    assert_generated_fixture_matches_index(
+        TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH,
+        &run_plan_artifact.path,
+    );
+
+    let operator_inputs_spec_path = reference_root.join(
+        "source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/source-universe-operator-inputs.toml",
+    );
+    let temp_operator_inputs_spec_path =
+        temp_dir.join("bybit-source-universe-operator-inputs.toml");
+    let operator_inputs_spec =
+        fs::read_to_string(&operator_inputs_spec_path).unwrap_or_else(|error| {
+            panic!(
+                "read Bybit operator-inputs spec {}: {error}",
+                operator_inputs_spec_path.display()
+            )
+        });
+    let operator_inputs_spec = rewrite_assignment(
+        &operator_inputs_spec,
+        "source_universe_conversion_run_plan_path",
+        &run_plan_artifact.path,
+    );
+    let operator_inputs_spec = rewrite_assignment(
+        &operator_inputs_spec,
+        "output_dir",
+        &temp_dir.join("bybit-source-universe-operator-inputs"),
+    );
+    fs::write(&temp_operator_inputs_spec_path, operator_inputs_spec)
+        .expect("write temp Bybit operator-inputs spec");
+    let operator_inputs_artifact =
+        write_source_universe_operator_inputs_from_spec_file(&temp_operator_inputs_spec_path)
+            .expect("Bybit operator inputs are reproducible");
+
+    let bytes = fs::read(&operator_inputs_artifact.path).unwrap_or_else(|error| {
+        panic!(
+            "read generated Bybit operator inputs {}: {error}",
+            operator_inputs_artifact.path.display()
+        )
+    });
+    let mut operator_inputs: SourceUniverseOperatorInputs =
+        serde_json::from_slice(&bytes).expect("generated Bybit operator inputs parse");
+    let run_plan_ref = operator_inputs
+        .artifact_refs
+        .iter_mut()
+        .find(|artifact_ref| artifact_ref.role == "source_universe_conversion_run_plan")
+        .expect("Bybit operator inputs contain the run-plan artifact ref");
+    run_plan_ref.path = Path::new(TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH).to_path_buf();
+    let normalized =
+        serde_json::to_vec_pretty(&operator_inputs).expect("serialize normalized operator inputs");
+    assert_generated_fixture_bytes_match_index(
+        BYBIT_SOURCE_UNIVERSE_OPERATOR_INPUTS_PATH,
+        &normalized,
+    );
+    fs::write(&operator_inputs_artifact.path, normalized)
+        .expect("write normalized Bybit operator inputs");
+
+    (operator_inputs_artifact.path, run_plan_artifact.path)
 }

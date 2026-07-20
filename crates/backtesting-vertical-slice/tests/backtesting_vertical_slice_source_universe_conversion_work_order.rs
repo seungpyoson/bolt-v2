@@ -1,7 +1,8 @@
 use std::{fs, path::Path};
 
 use crate::backtesting_vertical_slice_test_support::{
-    generate_evicted_binance_operator_inputs, rewrite_assignment, tempdir_in_repo_target,
+    generate_evicted_binance_operator_inputs, generate_evicted_bybit_operator_inputs,
+    rewrite_assignment, tempdir_in_repo_target,
 };
 
 use backtesting_vertical_slice::source_universe_conversion_work_order::{
@@ -279,6 +280,8 @@ fn committed_bybit_and_binance_source_universe_work_orders_track_executable_scop
     let temp_dir = tempdir_in_repo_target();
     let binance_operator_inputs_path =
         generate_evicted_binance_operator_inputs(&reference_root, temp_dir.path());
+    let (bybit_operator_inputs_path, _) =
+        generate_evicted_bybit_operator_inputs(&reference_root, temp_dir.path());
 
     let committed_bybit_spec = reference_root
         .join("source-universe-conversion-work-orders/bybit-public-archive-tick-trades-2025-06-01-2026-06-01")
@@ -291,6 +294,16 @@ fn committed_bybit_and_binance_source_universe_work_orders_track_executable_scop
         &bybit_spec,
         &temp_dir.path().join("bybit-work-order"),
     );
+    let bybit_spec_text = fs::read_to_string(&bybit_spec).expect("read temp Bybit work-order spec");
+    fs::write(
+        &bybit_spec,
+        rewrite_assignment(
+            &bybit_spec_text,
+            "source_universe_operator_inputs_path",
+            &bybit_operator_inputs_path,
+        ),
+    )
+    .expect("write temp Bybit work-order spec with regenerated operator inputs");
     let bybit_artifact = write_source_universe_conversion_work_order_from_spec_file(&bybit_spec)
         .expect("Bybit work order is reproducible");
     let bybit: SourceUniverseConversionWorkOrder =

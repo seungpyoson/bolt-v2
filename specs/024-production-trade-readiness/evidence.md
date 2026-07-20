@@ -4,10 +4,10 @@ Date: 2026-05-25
 Worktree: `/Users/spson/Projects/Claude/bolt-v2/.worktrees/024-production-trade-readiness`
 Branch: `goal/024-production-trade-readiness`
 
-This file is a source-inspection baseline, not a self-validating exact-head proof. A commit that refreshes this file necessarily changes `HEAD`, so external-review audit manifests and `gh pr view 480` output are authoritative for the current review head. Do not treat any historical commit hash in this file as proof that the current head is approved.
+This file is a source-inspection baseline, not a self-validating exact-head proof. A commit that refreshes this file necessarily changes `HEAD`, so `gh pr view 480 --json headRefOid,statusCheckRollup` is authoritative for the recorded PR head and CI result. Do not treat any historical commit hash in this file as proof for the current head.
 
 - PR base: `main` at `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9`
-- PR head: read from `gh pr view 480 --json headRefOid` or the external-review audit manifest for the exact review run.
+- PR head: read from `gh pr view 480 --json headRefOid`.
 - Active branch: `goal/024-production-trade-readiness`
 
 ## Git And PR State
@@ -1366,7 +1366,7 @@ T041 is complete for PR #480 reviewed code head `8b95eca9c2f410ff462954cff90c473
   - Successful checks: `detector`, `Analyze (actions)`, `actionlint`, `Analyze (rust)`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, `nextest archive`, `build`, `nextest shard 1 of 4`, `nextest shard 2 of 4`, `nextest shard 3 of 4`, `nextest shard 4 of 4`, `test`, `gate`, and `CodeQL`.
   - Skipped checks: `same-sha-main-evidence` and `deploy`.
 
-This evidence update is a docs-only audit-log change after the reviewed code head. Per the existing self-referential review-loop convention, the review manifests and `gh pr view` output are the authoritative proof for the reviewed head; CI will be checked again once the remaining live canary, hygiene, and ledger work is complete rather than after every docs-only update.
+This evidence update is a docs-only audit-log change after the recorded code head. The `gh pr view` output is the authoritative record for that head and its CI result; CI will be checked again once the remaining live canary, hygiene, and ledger work is complete rather than after every docs-only update.
 
 ## T043B Selected Trade-Path Readiness
 

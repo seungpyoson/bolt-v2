@@ -1,6 +1,6 @@
 # Binary-Maker Slice 1 — Inert Maker Skeleton + Injectable Registration + MAKER_KEY Source Integrity — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax. Rust verification is **CI-only** (local cargo refused by `ci/rust-verification.toml [local_compile_policy]`); "run the test" steps for Rust mean *push and let CI run* (`just verify-remote` / PR CI). Python fences run locally.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax. Rust verification is **CI-only** (local cargo refused by `ci/rust-verification.toml [local_compile_policy]`); "run the test" steps for Rust mean *use `git push` and let advisory CI evaluate the exact head*. Python fences run locally.
 
 **Goal:** Land a registered-but-**inert** `BinaryOracleMaker` strategy that compiles, is selectable by config archetype key, and carries its own `MAKER_KEY` source-integrity digest — proving the registration + source-integrity path end-to-end **before any maker behavior**. Closes §16#1 (injectable binding) + §16#2 (`MAKER_KEY` golden digest, `STRATEGY_KEY` untouched).
 

@@ -205,7 +205,7 @@ Expected: the diff contains only static Polymarket binary-event selection/filter
 Run after commit and push:
 
 ```bash
-just verify-remote
+git push
 ```
 
-Expected: exact-head PR CI is green.
+Expected: advisory CI evaluates the exact pushed head; adjudicate its result as evidence.

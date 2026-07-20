@@ -1,5 +1,8 @@
 # External Task-List Review
 
+> **Historical record only.** This file records retired task-list review activity and does not
+> define a current implementation, readiness, or merge gate.
+
 Scope: task-list packet only; no production code was approved by this review round.
 
 Reviewed task-packet files:
@@ -118,4 +121,4 @@ Round 5 closes the task-list gate by recorded skip, not by six approvals:
 - Claude produced no useful review result after repeated attempts and failed before source transmission with `oauth_inference_rejected` / HTTP 401. It is skipped under the goal prompt's reviewer rule: "If a reviewer gives no useful result after 15 min, skip and record exact state."
 - Kimi produced no useful review result after repeated attempts. The latest attempt sent source, session `1351b5ee-2d46-4f7f-8c79-5bb6ae919dc0`, then failed with `step_limit_exceeded` at max step budget `50`. It is skipped under the same reviewer rule and the operator's instruction not to keep using Kimi if it is failing.
 
-This is not a Claude or Kimi approval. It is a recorded skip/waiver for the task-list gate only. Final exact-head review in T042 still requires fresh reviewer attempts or explicit waivers against the final implementation head. T004/T005 are complete because every blocking task-list finding has a disposition and the missing reviewer states are explicitly resolved by the documented skip rule.
+This was not a Claude or Kimi approval. It recorded the task-list disposition used at the time. T004/T005 were completed because every blocking task-list finding had a disposition and the missing reviewer states were resolved by the then-current skip rule. The later T042 gate is retired.

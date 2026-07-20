@@ -39,9 +39,8 @@ pipeline source branch `codex/reference-price-architecture` @ `d4159c0a9`.
 - **NT-first strip mandate:** if NT provides it, use NT's and strip ours. Build only
   genuine residue NT lacks; each port re-verified at file:line, hardcodes→TOML,
   panics→Result.
-- **Local cargo is REFUSED** — verification is CI-only via `just verify-remote` /
-  `just source-fence`. Fast local gates only (fmt/clippy/source-fence/targeted);
-  push and let CI run the full suite. Never wait on a local full run.
+- **Local cargo is REFUSED** — use the current local gates from `AGENTS.md`, then
+  `git push` and let advisory CI evaluate the exact head. Never wait on a local full run.
 - **ONE BRANCH / PR FOR THE WHOLE PROGRAM** (user directive, 2026-06-15). All slices
   ship on a single branch (`feat/488-generic-maker`) and a single draft PR (#716);
   the declared scope is the #488 binary-oracle maker program. Slices are

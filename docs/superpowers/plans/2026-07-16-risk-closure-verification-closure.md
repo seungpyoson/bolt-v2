@@ -1,6 +1,7 @@
 # Risk-Closure Verification Closure Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
 
 **Goal:** Replace brittle compiler-message tests and open-ended arithmetic prediction with compiler-coded evidence, recursive TOML authority enumeration, and a structural workspace-owner fence.
 
@@ -207,11 +208,10 @@ Remove any claim that the Python fence evaluates common or equivalent Rust expre
 - [ ] **Step 4: Publish and dispatch exact-head evidence**
 
 ```bash
-just sandbox-safe-push
-just verify-remote
+git push
 ```
 
-Confirm remote branch HEAD exactly matches local HEAD. Per repository policy, detach after dispatch rather than waiting.
+Confirm remote branch HEAD exactly matches local HEAD. Advisory CI starts automatically for the pushed head. Per repository policy, detach after publication rather than waiting.
 
 - [ ] **Step 5: Enforce the review stop**
 

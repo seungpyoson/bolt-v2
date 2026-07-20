@@ -32,7 +32,11 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # On pull_request, check out the exact pushed head, not GitHub's synthetic
+      # merge commit: this evidence is adjudicated against the reported head SHA.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         id: setup

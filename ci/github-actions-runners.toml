@@ -20,13 +20,14 @@ preflight = "github_hosted"
 produce = "managed_heavy"
 
 [workflows.rust_probe]
-probe-unsupported-runner-tier = "managed_light"
-probe-unsupported-job-timeout = "managed_light"
 probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
 [workflows.advisory]
-evidence = "managed_heavy"
+fmt = "github_hosted"
+clippy = "managed_heavy"
+test = "managed_heavy"
+build = "managed_heavy"
 advisories = "github_hosted"
 
 [cargo_build_jobs.rust_probe]

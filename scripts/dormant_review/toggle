@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  on) value=true ;;
+  off) value=false ;;
+  *)
+    echo "usage: $0 on|off" >&2
+    exit 2
+    ;;
+esac
+
+gh variable set AI_REVIEWS_ENABLED --body "$value"
+actual="$(gh variable get AI_REVIEWS_ENABLED --json value --jq .value)"
+test "$actual" = "$value"
+printf 'AI reviews: %s\n' "${1}"

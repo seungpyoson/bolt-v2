@@ -1,0 +1,51 @@
+[github]
+api_url = "https://api.github.com"
+comment_timeout_seconds = 30
+
+[review]
+max_comment_chars = 60000
+max_chunk_chars = 60000
+providers = [
+  { name = "claude", secret = "OPENROUTER_API_KEY" },
+  { name = "glm", secret = "GLM_API_KEY" },
+  { name = "kimi", secret = "KIMI_API_KEY" },
+]
+
+[review.workflow]
+review_timeout_minutes = 45
+
+[review.output_contract]
+finding_required_labels = [
+  "Severity:",
+  "Evidence:",
+  "Issue:",
+  "Fix / verification:",
+]
+no_findings_indicator = "No hard-evidence findings"
+
+[claude]
+adapter = "openai_chat"
+api_base = "https://openrouter.ai/api/v1"
+model = "anthropic/claude-opus-4.8"
+temperature = 0.2
+api_timeout_seconds = 180
+deliverable_marker = "<!-- ai-pr-reviewer-claude -->"
+source_label_template = "Claude via OpenRouter (`{model}`)"
+
+[glm]
+adapter = "openai_chat"
+api_base = "https://api.z.ai/api/coding/paas/v4"
+model = "glm-5.2"
+temperature = 0.2
+api_timeout_seconds = 180
+deliverable_marker = "<!-- ai-pr-reviewer-glm -->"
+source_label_template = "GLM (`{model}`)"
+
+[kimi]
+adapter = "openai_chat"
+api_base = "https://api.kimi.com/coding/v1"
+model = "kimi-k2.7-code"
+temperature = 0.2
+api_timeout_seconds = 180
+deliverable_marker = "<!-- ai-pr-reviewer-kimi -->"
+source_label_template = "Kimi (`{model}`)"

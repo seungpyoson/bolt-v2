@@ -555,7 +555,7 @@ def validate_remote_probe_policy(data: dict[str, Any]) -> None:
     if workflow_name != "Rust Probe":
         raise PolicyError("remote_probe.workflow_name must be 'Rust Probe'")
     validate_workflow_path(require_non_empty_string(policy, "workflow_path", "remote_probe"), "workflow_path")
-    validate_git_ref(require_non_empty_string(policy, "suggest_base_branch", "remote_probe"), "suggest_base_branch")
+    validate_git_ref(require_non_empty_string(policy, "suggest_base_ref", "remote_probe"), "suggest_base_ref")
     values: dict[str, int] = {}
     for key in (
         "poll_interval_seconds",
@@ -3136,7 +3136,6 @@ def remote_probe_policy(policy: dict[str, Any]) -> dict[str, Any]:
         raise PolicyError("remote_probe table is required for rust-probe")
     validate_remote_probe_policy(policy)
     return {
-        "remote": str(raw["remote"]),
         "workflow_name": str(raw["workflow_name"]),
         "workflow_path": str(raw["workflow_path"]),
         "poll_interval_seconds": int(raw["poll_interval_seconds"]),
@@ -3148,7 +3147,7 @@ def remote_probe_policy(policy: dict[str, Any]) -> dict[str, Any]:
         "allowed_runner_tiers": list(raw["allowed_runner_tiers"]),
         "mode_runner_tiers": dict(raw["mode_runner_tiers"]),
         "workflow_timeouts": dict(raw["workflow_timeouts"]),
-        "suggest_base_branch": str(raw["suggest_base_branch"]),
+        "suggest_base_ref": str(raw["suggest_base_ref"]),
     }
 
 
@@ -3195,62 +3194,26 @@ def validate_git_remote_name(remote: str, key: str) -> None:
         raise PolicyError(f"{key} must be a safe git remote name")
 
 
-def github_repository_from_remote_url(url: str) -> tuple[str | None, str | None]:
-    url_error = validate_push_url(url)
-    if url_error is not None:
-        return None, url_error
-    scp_match = None
-    if "://" not in url:
-        scp_match = re.fullmatch(
-            r"(?:(?P<user>[A-Za-z0-9_.-]+)@)?(?P<host>[^@/:\s]+):(?P<path>.+)",
-            url,
-        )
-    if scp_match is not None:
-        host = scp_match.group("host")
-        path = scp_match.group("path")
-        parts = path.split("/")
-    else:
-        parsed = urllib.parse.urlsplit(url)
-        if parsed.scheme not in {"https", "ssh"}:
-            return None, "remote_probe.remote must use HTTPS, SSH, or SCP syntax"
-        try:
-            port = parsed.port
-        except ValueError:
-            return None, "remote_probe.remote must contain a valid network port"
-        authority = parsed.netloc.rsplit("@", 1)[-1]
-        if authority.startswith("["):
-            return None, "remote_probe.remote resolved to an unsafe GitHub repository identity"
-        if ":" in authority:
-            port_text = authority.rsplit(":", 1)[1]
-            if not port_text or not port_text.isascii() or not port_text.isdigit() or port == 0:
-                return None, "remote_probe.remote must contain a valid network port"
-        if parsed.username is not None and re.fullmatch(r"[A-Za-z0-9_.-]+", parsed.username) is None:
-            return None, "remote_probe.remote must contain a safe SSH username"
-        host = parsed.hostname or ""
-        path = parsed.path
-        if not path.startswith("/"):
-            return None, "remote_probe.remote must resolve to a GitHub owner/repository URL"
-        parts = path[1:].split("/")
-    if len(parts) != 2 or not host:
-        return None, "remote_probe.remote must resolve to a GitHub owner/repository URL"
-    owner, repository = parts
-    if repository.lower().endswith(".git"):
-        repository = repository[:-4]
-    safe_component = re.compile(r"^[A-Za-z0-9_.-]+$")
-    safe_host_label = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
-    host_labels = host.split(".")
-    if (
-        not repository
-        or len(host) > 253
-        or host in {".", ".."}
-        or owner in {".", ".."}
-        or repository in {".", ".."}
-        or any(safe_host_label.fullmatch(label) is None for label in host_labels)
-        or safe_component.fullmatch(owner) is None
-        or safe_component.fullmatch(repository) is None
-    ):
-        return None, "remote_probe.remote resolved to an unsafe GitHub repository identity"
-    return f"{host.lower()}/{owner}/{repository}", None
+def remote_probe_remote(repo: pathlib.Path) -> tuple[str | None, str | None]:
+    try:
+        policy = load_policy(repo)
+    except FileNotFoundError:
+        return None, None
+    except PolicyError as exc:
+        return None, str(exc)
+    probe_config = policy.get("remote_probe")
+    if probe_config is None:
+        return None, None
+    if not isinstance(probe_config, dict):
+        return None, "remote_probe table must be a table"
+    remote = probe_config.get("remote")
+    if not isinstance(remote, str) or not remote:
+        return None, "remote_probe.remote must be a non-empty string"
+    try:
+        validate_git_remote_name(remote, "remote_probe.remote")
+    except PolicyError as exc:
+        return None, str(exc)
+    return remote, None
 
 
 def single_push_url(repo: pathlib.Path, remote: str, *, command_name: str) -> tuple[str | None, str | None]:
@@ -3273,11 +3236,7 @@ def single_push_url(repo: pathlib.Path, remote: str, *, command_name: str) -> tu
 
 def validate_push_url(url: str) -> str | None:
     parsed = urllib.parse.urlsplit(url)
-    if parsed.query or parsed.fragment:
-        return "Git push URLs must not contain query strings or fragments"
-    if "://" in url and parsed.scheme not in {"https", "ssh"}:
-        return "Git push URLs must use HTTPS or SSH"
-    has_http_userinfo = parsed.scheme == "https" and parsed.username is not None
+    has_http_userinfo = parsed.scheme in ("http", "https") and parsed.username is not None
     if parsed.password is not None or has_http_userinfo:
         return "Git push URLs must not contain embedded credentials; use a credential helper or SSH agent auth"
     return None
@@ -3308,43 +3267,40 @@ def ensure_clean_pushed_head_preconditions(
     repo: pathlib.Path,
     *,
     command_name: str,
-    remote: str,
-) -> tuple[str | None, str | None, str | None, str | None]:
+) -> tuple[str | None, str | None, str | None]:
     status, error = git_output(repo, "status", "--porcelain", "--untracked-files=normal")
     if error is not None:
-        return None, None, None, error
+        return None, None, error
     if status:
-        return None, None, None, f"{command_name} requires a clean worktree, including untracked files"
+        return None, None, f"{command_name} requires a clean worktree, including untracked files"
     head, error = git_output(repo, "rev-parse", "HEAD")
     if error is not None:
-        return None, None, None, error
+        return None, None, error
     branch, error = current_branch(repo)
     if error is not None:
-        return None, None, None, error
+        return None, None, error
     if not branch:
-        return None, None, None, f"{command_name} requires a named branch"
+        return None, None, f"{command_name} requires a named branch"
+    remote, error = remote_probe_remote(repo)
+    if error is not None:
+        return None, None, error
+    if remote is None:
+        return None, None, f"{command_name} requires remote_probe.remote"
     push_url, error = single_push_url(repo, remote, command_name=command_name)
     if error is not None or push_url is None:
-        return None, None, None, error
-    repository, error = github_repository_from_remote_url(push_url)
-    if error is not None or repository is None:
-        return None, None, None, error
+        return None, None, error
     upstream, error = live_remote_branch_head(repo, remote=push_url, branch=branch, redact_value=push_url)
     if error is not None:
-        return None, None, None, error
+        return None, None, error
     if upstream is None:
-        return None, None, None, f"{command_name} requires HEAD to be pushed to a remote branch; run: git push"
+        return None, None, f"{command_name} requires HEAD to be pushed to a remote branch; run: git push"
     if upstream != head:
-        return None, None, None, f"{command_name} requires HEAD to be pushed to {remote}/{branch}"
-    return head, branch, repository, None
+        return None, None, f"{command_name} requires HEAD to be pushed to {remote}/{branch}"
+    return head, branch, None
 
 
-def ensure_rust_probe_preconditions(
-    repo: pathlib.Path,
-    *,
-    remote: str,
-) -> tuple[str | None, str | None, str | None, str | None]:
-    return ensure_clean_pushed_head_preconditions(repo, command_name="rust-probe", remote=remote)
+def ensure_rust_probe_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
+    return ensure_clean_pushed_head_preconditions(repo, command_name="rust-probe")
 
 
 WORKFLOW_RUN_FIELDS = "attempt,databaseId,event,headSha,status,conclusion,createdAt,url,displayTitle"
@@ -3366,11 +3322,10 @@ def workflow_run_view(
     repo: pathlib.Path,
     run_id: int,
     *,
-    repository: str,
     command_name: str = "rust-probe",
 ) -> tuple[dict[str, Any] | None, str | None]:
     payload, error = load_json_command(
-        ["gh", "run", "view", str(run_id), "--repo", repository, "--json", WORKFLOW_RUN_FIELDS],
+        ["gh", "run", "view", str(run_id), "--json", WORKFLOW_RUN_FIELDS],
         repo=repo,
     )
     if error is not None:
@@ -3435,15 +3390,12 @@ def rust_probe_run_list(
     repo: pathlib.Path,
     remote_policy: dict[str, Any],
     *,
-    repository: str,
     branch: str | None = None,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     argv = [
         "gh",
         "run",
         "list",
-        "--repo",
-        repository,
         "--workflow",
         str(remote_policy["workflow_name"]),
         "--json",
@@ -3461,13 +3413,8 @@ def rust_probe_run_list(
     return payload, None
 
 
-def rust_probe_active_run_count(
-    repo: pathlib.Path,
-    remote_policy: dict[str, Any],
-    *,
-    repository: str,
-) -> tuple[int | None, str | None]:
-    runs, error = rust_probe_run_list(repo, remote_policy, repository=repository)
+def rust_probe_active_run_count(repo: pathlib.Path, remote_policy: dict[str, Any]) -> tuple[int | None, str | None]:
+    runs, error = rust_probe_run_list(repo, remote_policy)
     if error is not None or runs is None:
         return None, error or "unable to inspect Rust Probe workflow runs"
     return sum(1 for run in runs if str(run.get("status") or "") != "completed"), None
@@ -3477,7 +3424,6 @@ def dispatch_rust_probe(
     repo: pathlib.Path,
     remote_policy: dict[str, Any],
     *,
-    repository: str,
     branch: str,
     head: str,
     mode: str,
@@ -3502,8 +3448,6 @@ def dispatch_rust_probe(
         "workflow",
         "run",
         str(remote_policy["workflow_path"]),
-        "--repo",
-        repository,
         "--ref",
         branch,
     ]
@@ -3682,10 +3626,6 @@ def rust_probe_changed_files(repo: pathlib.Path, suggest_base_ref: str) -> tuple
     return sorted(changed), None, notes
 
 
-def remote_tracking_base_ref(remote: str, base_branch: str) -> str:
-    return f"refs/remotes/{remote}/{base_branch}"
-
-
 def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
     if args.runner_tier is not None:
@@ -3694,15 +3634,11 @@ def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
         probe_policy = remote_probe_policy(load_policy(repo))
     except (OSError, PolicyError, FileNotFoundError) as exc:
         return verify_remote_fail(str(exc))
-    suggest_base_ref = remote_tracking_base_ref(
-        probe_policy["remote"],
-        probe_policy["suggest_base_branch"],
-    )
-    changed_files, error, notes = rust_probe_changed_files(repo, suggest_base_ref)
+    changed_files, error, notes = rust_probe_changed_files(repo, probe_policy["suggest_base_ref"])
     if error is not None or changed_files is None:
         return verify_remote_fail(error or "unable to inspect changed files")
     print("Rust Probe suggestions for targeted remote debugging:")
-    print(f"base ref: {suggest_base_ref} (ensure this ref is fetched and current)")
+    print(f"base ref: {probe_policy['suggest_base_ref']} (ensure this ref is fetched and current)")
     for note in notes:
         print(f"note: {note}")
     if changed_files:
@@ -3718,6 +3654,11 @@ def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
         print(f"- {suggestion}")
     print("Rust Probe is diagnostic only. Advisory CI is pushed-head evidence, not merge authority.")
     return 0
+
+
+def run_display_title(run: dict[str, Any]) -> str:
+    title = run.get("displayTitle")
+    return title if isinstance(title, str) else ""
 
 
 def matching_rust_probe_runs(runs: list[dict[str, Any]], *, head: str, probe_id: str) -> list[dict[str, Any]]:
@@ -3765,7 +3706,6 @@ def wait_for_rust_probe_run(
     *,
     repo: pathlib.Path,
     remote_policy: dict[str, Any],
-    repository: str,
     branch: str,
     head: str,
     probe_id: str,
@@ -3780,21 +3720,11 @@ def wait_for_rust_probe_run(
             return verify_remote_fail(f"timed out waiting for Rust Probe {probe_id} on {branch}")
         run: dict[str, Any] | None = None
         if tracked_run_id is not None:
-            run, error = workflow_run_view(
-                repo,
-                tracked_run_id,
-                repository=repository,
-                command_name="rust-probe",
-            )
+            run, error = workflow_run_view(repo, tracked_run_id, command_name="rust-probe")
             if error is not None or run is None:
                 return verify_remote_fail(error or f"unable to inspect Rust Probe run {tracked_run_id}")
         else:
-            runs, error = rust_probe_run_list(
-                repo,
-                remote_policy,
-                repository=repository,
-                branch=branch,
-            )
+            runs, error = rust_probe_run_list(repo, remote_policy, branch=branch)
             if error is not None or runs is None:
                 return verify_remote_fail(error or "unable to inspect Rust Probe workflow runs")
             matching = matching_rust_probe_runs(runs, head=head, probe_id=probe_id)
@@ -3829,17 +3759,10 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
         probe_policy = remote_probe_policy(policy)
     except (OSError, PolicyError, FileNotFoundError) as exc:
         return verify_remote_fail(str(exc))
-    head, branch, repository, error = ensure_rust_probe_preconditions(
-        repo,
-        remote=probe_policy["remote"],
-    )
-    if error is not None or head is None or branch is None or repository is None:
+    head, branch, error = ensure_rust_probe_preconditions(repo)
+    if error is not None or head is None or branch is None:
         return verify_remote_fail(error or "unable to inspect git state")
-    active_count, error = rust_probe_active_run_count(
-        repo,
-        probe_policy,
-        repository=repository,
-    )
+    active_count, error = rust_probe_active_run_count(repo, probe_policy)
     if error is not None or active_count is None:
         return verify_remote_fail(error or "unable to inspect active Rust Probe runs")
     if active_count >= probe_policy["active_run_limit"]:
@@ -3858,7 +3781,6 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
     error = dispatch_rust_probe(
         repo,
         probe_policy,
-        repository=repository,
         branch=branch,
         head=head,
         mode=args.mode,
@@ -3884,7 +3806,6 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
     return wait_for_rust_probe_run(
         repo=repo,
         remote_policy=probe_policy,
-        repository=repository,
         branch=branch,
         head=head,
         probe_id=probe_id,

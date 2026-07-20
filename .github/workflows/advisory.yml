@@ -32,6 +32,8 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     timeout-minutes: 15
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      contents: read
     steps:
       # On pull_request, check out the exact pushed head, not GitHub's synthetic
       # merge commit: this evidence is adjudicated against the reported head SHA.

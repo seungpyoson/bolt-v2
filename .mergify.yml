@@ -7,8 +7,11 @@ merge_queue:
   reset_on_external_merge: always
 
 queue_rules:
-  # Exceptional path only (queue order = priority: listed first, checked
-  # first). Normal merge sessions use the default queue below.
+  # Exceptional path only. NOTE: since Mergify's 2025-06-30 change, queue-rule
+  # listing order no longer implies priority; without a top-level
+  # priority_rules block, hotfix entries have no express priority over
+  # already-queued default entries (owner decision pending). Normal merge
+  # sessions use the default queue below.
   - name: hotfix
     queue_conditions:
       - label = hotfix

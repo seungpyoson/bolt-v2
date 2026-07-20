@@ -14,6 +14,7 @@ use backtesting_vertical_slice::{
     hashing::sha256_hex,
     reference_fixture_index::{EvictedFixtureIndex, repo_root_from_manifest_dir},
     source_archive_index_source_universe::write_source_archive_index_source_universe_manifest_from_spec_file,
+    source_universe_operator_inputs::write_source_universe_operator_inputs_from_spec_file,
 };
 
 pub const PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH: &str = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31/plan/backfill-conversion-batch-plan.json";
@@ -39,6 +40,10 @@ pub const PMXT_OBJECT_MANIFEST_EVICTED_REFERENCE_PATHS: &[&str] = &[
     PMXT_CATEGORY_OBJECT_MANIFEST_PATH,
     PMXT_SOURCE_UNIVERSE_OBJECT_MANIFEST_PATH,
 ];
+
+pub const BINANCE_SOURCE_UNIVERSE_OPERATOR_INPUTS_PATH: &str = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/operator-inputs/source-universe-operator-inputs.json";
+pub const BINANCE_OPERATOR_INPUTS_EVICTED_REFERENCE_PATHS: &[&str] =
+    &[BINANCE_SOURCE_UNIVERSE_OPERATOR_INPUTS_PATH];
 
 pub fn tempdir_in_repo_target() -> tempfile::TempDir {
     let target_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
@@ -253,4 +258,29 @@ pub fn materialize_evicted_pmxt_object_manifests(reference_root: &Path) -> (Path
     );
     assert_generated_fixture_matches_index(PMXT_CATEGORY_OBJECT_MANIFEST_PATH, &category_path);
     (artifact.path, category_path)
+}
+
+/// Regenerates the evicted Binance operator inputs into caller-owned scratch space.
+pub fn generate_evicted_binance_operator_inputs(reference_root: &Path, temp_dir: &Path) -> PathBuf {
+    let source_spec_path = reference_root.join(
+        "source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/source-universe-operator-inputs.toml",
+    );
+    let temp_spec_path = temp_dir.join("binance-source-universe-operator-inputs.toml");
+    let output_dir = temp_dir.join("binance-source-universe-operator-inputs");
+    let spec = fs::read_to_string(&source_spec_path).unwrap_or_else(|error| {
+        panic!(
+            "read Binance operator-inputs spec {}: {error}",
+            source_spec_path.display()
+        )
+    });
+    let spec = rewrite_assignment(&spec, "output_dir", &output_dir);
+    fs::write(&temp_spec_path, spec).expect("write temp Binance operator-inputs spec");
+
+    let artifact = write_source_universe_operator_inputs_from_spec_file(&temp_spec_path)
+        .expect("Binance operator inputs are reproducible");
+    assert_generated_fixture_matches_index(
+        BINANCE_SOURCE_UNIVERSE_OPERATOR_INPUTS_PATH,
+        &artifact.path,
+    );
+    artifact.path
 }

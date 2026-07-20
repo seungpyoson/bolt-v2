@@ -110,3 +110,8 @@ specs/023-nt-research-analytics-platform/reference/backfill-conversion-completio
 # fingerprinted in the eviction index.
 specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-*/manifest/source-universe-object-manifest.json
 specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-*/category-manifests/*-object-manifest-*.json
+
+# Issue #704 Phase 2: generated Binance source-universe operator inputs are
+# regenerated from the committed TOML spec in tests and fingerprinted in the
+# eviction index.
+specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-?*/operator-inputs/source-universe-operator-inputs.json

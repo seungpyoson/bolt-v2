@@ -1690,6 +1690,7 @@ mod resting_order_refresh_tests {
 pub(crate) fn test_order_routing_handle(
     execution_client_id: &str,
 ) -> crate::bolt_v3_order_execution::BoltV3OrderRoutingHandle {
+    let reporting_unit = crate::economics::Currency::USD();
     crate::bolt_v3_order_execution::BoltV3OrderRoutingHandle::new(
         Arc::new(TestEconomicsAdmissionSource(
             execution_client_id.to_string(),
@@ -1699,7 +1700,7 @@ pub(crate) fn test_order_routing_handle(
             account_id: "test-account",
             product_surface_id: "test-product-surface",
             reporting_policy_id: "test-reporting-policy",
-            reporting_unit: "test-reporting-unit",
+            reporting_unit: reporting_unit.code.as_str(),
             edge_basis_policy_id: "test-edge-policy",
             carry_plan: crate::bolt_v3_order_execution::BoltV3CarryPlan::NoCarry,
             routing_attachment_policy:

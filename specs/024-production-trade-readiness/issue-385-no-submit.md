@@ -29,7 +29,7 @@ That proof resolved the earlier #385 no-order connectivity blocker for T038. The
 
 Final-packet T131/T122 no-submit is not proven.
 
-The historical T038 proof does not prove production trade readiness and does not satisfy final-packet T131/T122. The remaining proof must run after T128 final-packet verification and T130 exact-head review/CI:
+The historical T038 proof does not prove production trade readiness and does not satisfy final-packet T131/T122. The remaining proof must run after T128 final-packet verification and T130 exact-head verification/CI:
 
 - execute final-packet EC2/EIP no-submit with the verified root TOML and final operator packet
 - record exact head, command, artifact hashes, no-submit report, and satisfied stages in `specs/024-production-trade-readiness/final-no-submit.md`
@@ -45,7 +45,7 @@ Use this wording when updating #385:
 
 The May 22 EC2/EIP run at head `1245264f294ae096155bffc3236fb692cc46b46f` proves T038 no-submit connectivity only: EC2 EIP `34.248.143.2`, approved config SHA `85fe8e...`, report SHA `53b945...`, schema `bolt-v3.no-submit-readiness.v2`, and all seven no-submit stages satisfied.
 
-That evidence does not prove production trade readiness and does not satisfy final-packet T131/T122. The remaining proof must run after T128 final packet verification and T130 exact-head review/CI: execute final-packet EC2/EIP no-submit with the verified root TOML and final operator packet, then record the exact head, command, artifact hashes, no-submit report, and satisfied stages in `specs/024-production-trade-readiness/final-no-submit.md`.
+That evidence does not prove production trade readiness and does not satisfy final-packet T131/T122. The remaining proof must run after T128 final packet verification and T130 exact-head verification/CI: execute final-packet EC2/EIP no-submit with the verified root TOML and final operator packet, then record the exact head, command, artifact hashes, no-submit report, and satisfied stages in `specs/024-production-trade-readiness/final-no-submit.md`.
 
 No live order submit/cancel/replace/transfer, tiny-capital canary, deploy, or production operation is claimed by the historical T038 proof.
 ```

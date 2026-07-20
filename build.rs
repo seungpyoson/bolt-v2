@@ -328,8 +328,8 @@ pub const NAUTILUS_SOURCE_CAPABILITIES: NautilusSourceCapabilityRegistry =\n\
 
 /// Generate the `GATED_SOURCE_ROOTS` constant from the repo-root manifest into
 /// `$OUT_DIR/gated_source_roots.rs`, which `src/source_canonicalization.rs`
-/// includes. The manifest is the single source of the gated root list; Python
-/// reads the same file. Build fails loud if the manifest is missing or malformed.
+/// includes. The manifest is the single source of the gated root list. Build
+/// fails loud if the manifest is missing or malformed.
 fn emit_gated_source_roots(manifest_dir: &Path) {
     let manifest_path = manifest_dir.join(GATED_SOURCE_ROOTS_MANIFEST);
     println!("cargo:rerun-if-changed={}", manifest_path.display());

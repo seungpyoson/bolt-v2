@@ -1158,15 +1158,9 @@ pub fn selected_market_requirement(
             "selected-market instrument_ids must include distinct up/down outcomes",
         ));
     }
-    // DEFERRED FAIL-CLOSED INVARIANT (P5-5, multi-venue): this guards only that
-    // the selected up/down outcomes share ONE venue (self-consistency). It does
-    // NOT yet assert that venue equals the strategy's configured EXECUTION venue
-    // (`root.clients[execution_client_id].venue`). Under the current single-venue
-    // (Polymarket-only) config a cross-venue collision cannot occur, so this is
-    // unreachable today. When a second venue's instruments can coexist in the NT
-    // cache, selection must be scoped to the execution venue AND this must assert
-    // the selected venue equals it (fail closed). Tracked for the multi-venue
-    // workstream; see specs/024-production-trade-readiness/external-review/P5-adjudication.md (P5-5).
+    // This requirement guarantees pair-level venue consistency. Strategy selection
+    // independently scopes cache reads to its configured execution venue and rejects
+    // any selected market whose outcome venue differs from that execution venue.
     let up_venue = selected.up_instrument_id.venue.as_str();
     let down_venue = selected.down_instrument_id.venue.as_str();
     if up_venue != down_venue {

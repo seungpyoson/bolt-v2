@@ -1378,9 +1378,9 @@ fn strategy_validation_rejects_unknown_settlement_currency_without_unwinding() {
     let errors = result.expect("unknown settlement currency validation must not unwind");
 
     assert!(
-        errors
-            .iter()
-            .any(|error| error.contains("collateral_currency must be a registered currency code")),
+        errors.iter().any(
+            |error| error.contains("collateral_currency must be a registered NT currency code")
+        ),
         "unknown settlement currency must fail config validation; errors={errors:?}"
     );
 }

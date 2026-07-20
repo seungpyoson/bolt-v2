@@ -49,9 +49,7 @@ outputs:
   zigbuild_version:
     description: Pinned cargo-zigbuild version from the justfile.
     value: ${{ steps.shared.outputs.zigbuild_version }}
-  cargo_build_jobs:
-    description: Cargo build job cap resolved from ci/github-actions-runners.toml when build-jobs-key is set.
-    value: ${{ steps.shared.outputs.cargo_build_jobs }}
+
 
 runs:
   using: composite
@@ -98,34 +96,12 @@ runs:
         print(value)
         PY
           )"
-          echo "cargo_build_jobs=$cargo_build_jobs" >> "$GITHUB_OUTPUT"
           echo "CARGO_BUILD_JOBS=$cargo_build_jobs" >> "$GITHUB_ENV"
         fi
 
     - name: Setup Rust toolchain
-      if: ${{ inputs.toolchain-components == '' && inputs.use-default-target != 'true' }}
-      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
-      with:
-        toolchain: ${{ steps.shared.outputs.rust_toolchain }}
-
-    - name: Setup Rust toolchain with components
-      if: ${{ inputs.toolchain-components != '' && inputs.use-default-target != 'true' }}
       uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
       with:
         toolchain: ${{ steps.shared.outputs.rust_toolchain }}
         components: ${{ inputs.toolchain-components }}
-
-    - name: Setup Rust toolchain with default target
-      if: ${{ inputs.toolchain-components == '' && inputs.use-default-target == 'true' }}
-      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
-      with:
-        toolchain: ${{ steps.shared.outputs.rust_toolchain }}
-        targets: ${{ steps.shared.outputs.target }}
-
-    - name: Setup Rust toolchain with components and default target
-      if: ${{ inputs.toolchain-components != '' && inputs.use-default-target == 'true' }}
-      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
-      with:
-        toolchain: ${{ steps.shared.outputs.rust_toolchain }}
-        components: ${{ inputs.toolchain-components }}
-        targets: ${{ steps.shared.outputs.target }}
+        targets: ${{ inputs.use-default-target == 'true' && steps.shared.outputs.target || '' }}

@@ -29,7 +29,6 @@ concurrency:
 
 jobs:
   fmt:
-    name: fmt
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     timeout-minutes: 15
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
@@ -53,7 +52,6 @@ jobs:
           cargo fmt --check --manifest-path crates/backtesting-vertical-slice/Cargo.toml
 
   clippy:
-    name: clippy
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     timeout-minutes: 60
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
@@ -78,12 +76,7 @@ jobs:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
 
       - name: clippy
-        env:
-          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled }}
         run: |
-          if [[ "$SCCACHE_ENABLED" == "true" ]]; then
-            export RUSTC_WRAPPER="$SCCACHE_PATH"
-          fi
           set -x
           cargo clippy --locked -- -D warnings
 
@@ -94,7 +87,6 @@ jobs:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
   test:
-    name: test
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     timeout-minutes: 60
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
@@ -139,11 +131,7 @@ jobs:
         env:
           CARGO_PROFILE_TEST_DEBUG: "0"
           CARGO_PROFILE_DEV_DEBUG: "0"
-          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled }}
         run: |
-          if [[ "$SCCACHE_ENABLED" == "true" ]]; then
-            export RUSTC_WRAPPER="$SCCACHE_PATH"
-          fi
           set -x
           mold -run cargo nextest run --locked
 
@@ -154,7 +142,6 @@ jobs:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
   build:
-    name: build
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     timeout-minutes: 60
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
@@ -196,12 +183,8 @@ jobs:
 
       - name: build
         env:
-          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled }}
           BUILD_TARGET: ${{ steps.setup.outputs.target }}
         run: |
-          if [[ "$SCCACHE_ENABLED" == "true" ]]; then
-            export RUSTC_WRAPPER="$SCCACHE_PATH"
-          fi
           set -x
           cargo zigbuild --release --target "$BUILD_TARGET" --locked
 
@@ -212,7 +195,6 @@ jobs:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
   advisories:
-    name: advisories
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:

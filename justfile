@@ -76,10 +76,10 @@ build: check-workspace
 # backtesting-vertical-slice crate (separate workspace at crates/backtesting-vertical-slice/).
 # Its build target pin lives in that crate's own justfile.
 bte-clippy: check-workspace
-    cd "{{bte_root}}" && cargo clippy --locked -- -D warnings
+    cd "{{bte_root}}" && just clippy
 
 bte-test *args: check-workspace
-    cd "{{bte_root}}" && cargo nextest run --locked {{args}}
+    cd "{{bte_root}}" && just test {{args}}
 
 bte-test-archive archive *args: check-workspace
     archive_path="{{archive}}"; \

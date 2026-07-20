@@ -26,7 +26,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      build_profile: ${{ steps.source.outputs.build_profile }}
       build_target: ${{ steps.source.outputs.build_target }}
       runner_label: ${{ steps.source.outputs.runner_label }}
       workflow_start_epoch: ${{ steps.remote.outputs.workflow_start_epoch }}
@@ -102,7 +101,6 @@ jobs:
 
           # The justfile is the single source of truth for the pinned build target.
           build_target="$(just --evaluate target)"
-          build_profile="release"
           read -r runner_role runner_label < <(python3 -c '
           import pathlib, tomllib
           data = tomllib.loads(pathlib.Path("ci/github-actions-runners.toml").read_text())
@@ -146,7 +144,6 @@ jobs:
           }
 
           {
-            echo "build_profile=$build_profile"
             echo "build_target=$build_target"
             echo "runner_label=$runner_label"
           } >> "$GITHUB_OUTPUT"
@@ -177,7 +174,6 @@ jobs:
 
       - name: Validate producer before cache access
         env:
-          BUILD_PROFILE: ${{ needs.preflight.outputs.build_profile }}
           BUILD_TARGET: ${{ needs.preflight.outputs.build_target }}
           DISPATCH_SHA: ${{ inputs.sha }}
           SETUP_TARGET: ${{ steps.setup.outputs.target }}
@@ -188,8 +184,7 @@ jobs:
           [[ -z "$(git status --porcelain --untracked-files=all)" ]]
           [[ "$SETUP_TARGET" == "$BUILD_TARGET" ]]
           [[ "$(uname -m)" == "${BUILD_TARGET%%-*}" ]]
-          [[ "$BUILD_PROFILE" == "release" ]]
-          binary_path="$GITHUB_WORKSPACE/target/$BUILD_TARGET/$BUILD_PROFILE/bolt-v2"
+          binary_path="$GITHUB_WORKSPACE/target/$BUILD_TARGET/release/bolt-v2"
           [[ ! -e "$binary_path" && ! -L "$binary_path" ]]
 
       - name: Setup mandatory governed sccache writer
@@ -229,23 +224,21 @@ jobs:
 
       - name: Build once through mandatory sccache
         env:
-          BUILD_PROFILE: ${{ needs.preflight.outputs.build_profile }}
           BUILD_TARGET: ${{ needs.preflight.outputs.build_target }}
         run: |
           set -euo pipefail
           [[ -n "${SCCACHE_PATH:-}" && -x "$SCCACHE_PATH" ]]
           export RUSTC_WRAPPER="$SCCACHE_PATH"
           set -x
-          cargo build --locked --profile "$BUILD_PROFILE" --target "$BUILD_TARGET" --bin bolt-v2
+          cargo build --locked --release --target "$BUILD_TARGET" --bin bolt-v2
 
       - name: Stage exactly one executable
         id: stage
         env:
-          BUILD_PROFILE: ${{ needs.preflight.outputs.build_profile }}
           BUILD_TARGET: ${{ needs.preflight.outputs.build_target }}
         run: |
           set -euo pipefail
-          binary_path="$GITHUB_WORKSPACE/target/$BUILD_TARGET/$BUILD_PROFILE/bolt-v2"
+          binary_path="$GITHUB_WORKSPACE/target/$BUILD_TARGET/release/bolt-v2"
           [[ -f "$binary_path" && ! -L "$binary_path" && -x "$binary_path" ]]
           stage_dir="$RUNNER_TEMP/root-artifact"
           [[ ! -e "$stage_dir" && ! -L "$stage_dir" ]]
@@ -375,7 +368,6 @@ jobs:
       - name: Record inert run evidence
         env:
           ARTIFACT_BYTES: ${{ steps.stage.outputs.artifact_bytes }}
-          BUILD_PROFILE: ${{ needs.preflight.outputs.build_profile }}
           BUILD_TARGET: ${{ needs.preflight.outputs.build_target }}
           DISPATCH_SHA: ${{ inputs.sha }}
           INITIAL_SHA256: ${{ steps.stage.outputs.initial_sha256 }}
@@ -402,7 +394,7 @@ jobs:
           jq -n \
             --arg operation "root-artifact" \
             --arg sha "$DISPATCH_SHA" \
-            --arg build_profile "$BUILD_PROFILE" \
+            --arg build_profile "release" \
             --arg build_target "$BUILD_TARGET" \
             --arg runner_label "$RUNNER_LABEL" \
             --arg initial_sha256 "$INITIAL_SHA256" \

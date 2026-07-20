@@ -6,8 +6,8 @@ run-name: Rust Probe ${{ inputs.probe_id }} ${{ inputs.mode }} @ ${{ inputs.ref 
 #
 # Dispatch with gh from the pushed branch head, e.g.:
 #   gh workflow run rust-probe.yml --ref <branch> \
-#     -f runner_tier=heavy -f job_timeout_minutes=60 \
-#     -f ref=<sha> -f expected_sha=<sha> -f probe_id=<id> -f mode=check-lib
+#     -f runner_tier=heavy -f ref=<sha> -f expected_sha=<sha> \
+#     -f probe_id=<id> -f mode=check-lib
 # Optional: -f manifest_path=crates/backtesting-vertical-slice/Cargo.toml to
 # target a nested workspace.
 
@@ -15,13 +15,12 @@ on:
   workflow_dispatch:
     inputs:
       runner_tier:
-        description: Ubicloud runner tier (heavy or light)
+        description: Ubicloud runner tier
         required: true
-        type: string
-      job_timeout_minutes:
-        description: Job timeout in minutes (must be 60)
-        required: true
-        type: string
+        type: choice
+        options:
+          - heavy
+          - light
       ref:
         description: Exact pushed Git SHA to checkout
         required: true
@@ -74,39 +73,10 @@ permissions:
   contents: read
 
 jobs:
-  probe-unsupported-runner-tier:
-    name: probe-unsupported-runner-tier
-    if: ${{ inputs.runner_tier != 'heavy' && inputs.runner_tier != 'light' }}
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
-    timeout-minutes: 1
-    steps:
-      - name: Reject unsupported runner tier
-        shell: bash
-        env:
-          RUST_PROBE_RUNNER_TIER: ${{ inputs.runner_tier }}
-        run: |
-          printf "Unsupported Rust Probe runner_tier: %s\n" "$RUST_PROBE_RUNNER_TIER" >&2
-          exit 1
-
-  probe-unsupported-job-timeout:
-    name: probe-unsupported-job-timeout
-    if: ${{ (inputs.runner_tier == 'heavy' && inputs.job_timeout_minutes != '60') || (inputs.runner_tier == 'light' && inputs.job_timeout_minutes != '60') }}
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
-    timeout-minutes: 1
-    steps:
-      - name: Reject unsupported job timeout
-        shell: bash
-        env:
-          RUST_PROBE_JOB_TIMEOUT_MINUTES: ${{ inputs.job_timeout_minutes }}
-        run: |
-          printf "Unsupported Rust Probe job_timeout_minutes: %s\n" "$RUST_PROBE_JOB_TIMEOUT_MINUTES" >&2
-          exit 1
-
-  probe-heavy:
-    name: probe-heavy
-    if: ${{ inputs.runner_tier == 'heavy' && inputs.job_timeout_minutes == '60' }}
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
-    timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
+  probe:
+    name: probe-${{ inputs.runner_tier }}
+    runs-on: ${{ inputs.runner_tier == 'heavy' && vars.CI_RUNNER_MANAGED_HEAVY || vars.CI_RUNNER_MANAGED_LIGHT }}
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
@@ -122,7 +92,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
-          build-jobs-key: rust_probe.probe-heavy
+          build-jobs-key: rust_probe.probe-${{ inputs.runner_tier }}
 
       - name: Install cargo-nextest
         if: ${{ startsWith(inputs.mode, 'nextest-') }}
@@ -148,63 +118,6 @@ jobs:
           RUST_PROBE_ID: ${{ inputs.probe_id }}
           CARGO_PROFILE_TEST_DEBUG: "0"
           CARGO_PROFILE_DEV_DEBUG: "0"
-          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled }}
-        run: |
-          bash .github/scripts/run-rust-probe.sh
-
-      - name: Print sccache stats
-        if: always()
-        uses: ./.github/actions/sccache-stats
-        with:
-          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
-
-  probe-light:
-    name: probe-light
-    if: ${{ inputs.runner_tier == 'light' && inputs.job_timeout_minutes == '60' }}
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
-    timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ inputs.ref }}
-          fetch-depth: 1
-
-      - name: Setup environment
-        id: setup
-        uses: ./.github/actions/setup-environment
-        with:
-          just-version: ${{ env.JUST_VERSION }}
-          include-nextest-version: "true"
-          build-jobs-key: rust_probe.probe-light
-
-      - name: Install cargo-nextest
-        if: ${{ startsWith(inputs.mode, 'nextest-') }}
-        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
-        with:
-          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
-          fallback: none
-
-      - name: Setup read-only sccache
-        id: sccache
-        uses: ./.github/actions/sccache-setup
-        with:
-          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
-
-      - name: Run Rust Probe
-        shell: bash
-        env:
-          RUST_PROBE_MODE: ${{ inputs.mode }}
-          RUST_PROBE_TEST_TARGET: ${{ inputs.test_target }}
-          RUST_PROBE_TEST_NAME: ${{ inputs.test_name }}
-          RUST_PROBE_MANIFEST_PATH: ${{ inputs.manifest_path }}
-          RUST_PROBE_EXPECTED_SHA: ${{ inputs.expected_sha }}
-          RUST_PROBE_ID: ${{ inputs.probe_id }}
-          CARGO_PROFILE_TEST_DEBUG: "0"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled }}
         run: |
           bash .github/scripts/run-rust-probe.sh
 

@@ -1,5 +1,5 @@
-# Single serial merge queue for main. Approval queues; the four advisory
-# checks must pass on the branch after Mergify updates it with latest main.
+# Single serial queue for main: approval queues; the four advisory checks must
+# pass on the branch after Mergify updates it with latest main; squash merge.
 merge_queue:
   max_parallel_checks: 1
 
@@ -12,11 +12,11 @@ queue_rules:
       - check-success = clippy
       - check-success = test
       - check-success = build
-    batch_size: 1
     merge_method: squash
-    # CI checks are advisory (no required status contexts); native review rules
-    # remain enforced by GitHub. Proven merge identity from the prior config.
+    update_method: rebase
+    checks_timeout: 150 minutes
+    # Carried from the proven prior config: checks are advisory (no required
+    # status contexts) and merges use the owner's identity.
     branch_protection_injection_mode: none
     merge_bot_account: seungpyoson
-    update_method: rebase
     update_bot_account: seungpyoson

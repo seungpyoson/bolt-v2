@@ -24,7 +24,7 @@ Rust binary for automated trading on Polymarket via NautilusTrader.
 
 ## Commands
 
-All via `just` (must be installed). The justfile is the single source of truth. `just build`, `just test`, and `just clippy` are workflow/operator lanes. The local agent path is `just fmt` plus a plain `git push` of the exact branch head; remote evidence for a pushed head comes from the advisory CI workflow and targeted `just rust-probe` dispatches.
+All via `just` (must be installed). The justfile is the single source of truth. `just build`, `just test`, and `just clippy` are workflow/operator lanes. The local agent path is `just fmt` plus a plain `git push` of the exact branch head; remote evidence for a pushed head comes from the advisory CI workflow and targeted `gh workflow run rust-probe.yml` dispatches.
 
 | Command | What it does |
 |---------|-------------|

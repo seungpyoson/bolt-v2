@@ -151,9 +151,5 @@ echo "Rust Probe test_target: ${test_target:-<empty>}"
 echo "Rust Probe test_name: ${test_name:-<empty>}"
 echo "Rust Probe manifest_path: ${manifest_path:-<empty>}"
 
-if [[ "${SCCACHE_ENABLED:-}" == "true" && -n "${SCCACHE_PATH:-}" ]]; then
-  export RUSTC_WRAPPER="$SCCACHE_PATH"
-fi
-
 set -x
 cargo "${probe_args[@]}"

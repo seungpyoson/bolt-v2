@@ -411,7 +411,7 @@ fn strategy_selects_configured_static_binary_event_from_nt_binary_option_metadat
 
 #[test]
 fn strategy_refuses_foreign_venue_market_even_when_slug_matches_the_target() {
-    // P5-5 / Codex P5: the shared NT cache can hold instruments from venues OTHER than the
+    // The shared NT cache can hold instruments from venues other than the
     // execution venue. A foreign-venue binary option that happens to carry the SAME updown slug
     // as the configured target must never be tradeable — a real order only ever routes to the
     // execution client's venue. The market matcher is venue-agnostic (it matches on slug +
@@ -511,7 +511,7 @@ fn strategy_refuses_foreign_venue_market_even_when_slug_matches_the_target() {
 
 #[test]
 fn refresh_selection_from_cache_filters_foreign_venue_in_production_path() {
-    // P5-5 / Codex P5 — PRODUCTION-PATH regression lock. The sibling test
+    // Production-path regression lock. The sibling test
     // `strategy_refuses_foreign_venue_market_even_when_slug_matches_the_target` proves the
     // selection HELPERS refuse a foreign-venue market, but it REPLICATES the venue filter
     // inside the test, so deleting the production filter would not fail it. This test drives

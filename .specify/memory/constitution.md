@@ -1,16 +1,16 @@
 <!--
 Sync Impact Report
-Version change: 2.1.1 -> 2.2.0
-Modified principles: V. Evidence Before Claims records the single fixed final-review evidence transaction
+Version change: 2.2.0 -> 2.3.0
+Modified principles: V. Evidence Before Claims drops the retired fixed final-review workflow; evidence for a pushed head is advisory CI plus targeted probes
 Additional Constraints: unchanged
-Added sections: v2.2.0 migration note
+Added sections: v2.3.0 migration note
 Removed sections: none
 Templates reviewed: .specify/templates/plan-template.md - no update needed;
 .specify/templates/spec-template.md - no update needed;
 .specify/templates/tasks-template.md - no update needed;
 .specify/templates/constitution-template.md - no update needed;
 .specify/templates/commands - absent in this repo
-Runtime guidance updated: AGENTS.md establishes the fixed preflight, publication, and final-review path while preserving single-PR queue mechanics
+Runtime guidance updated: AGENTS.md establishes plain-push publication with advisory CI and rust-probe as remote evidence
 Follow-up items: none
 -->
 
@@ -54,7 +54,7 @@ exact SHAs, exact PR/check state, or live run artifacts. Passing tests, static
 checks, reviews, or local mocks are not readiness evidence unless the checked
 behavior covers the stated requirement.
 
-External review is requested only after the branch is clean, pushed, and all local findings are resolved. The single fixed final-review workflow always executes the same root, Backtester, repository-static, and host workload. It invokes every configured reviewer against one captured head only after the complete workload passes. Its results are evidence for claims, but advisory automation cannot authorize or veto review or merge. no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
+External review is requested only after the branch is clean, pushed, and all local findings are resolved. Remote Rust evidence for a pushed head comes from the advisory CI workflow plus targeted rust-probe dispatches; advisory automation cannot authorize or veto review or merge. no-mistakes may be used for task triage and branch gating, but its output is advisory until mapped to concrete repo evidence.
 
 ### VI. Minimal Slice Discipline
 
@@ -89,7 +89,7 @@ External data providers are allowed when they avoid rebuilding commodity data in
 2. Contract: update this constitution or feature contracts before runtime code when the boundary changes.
 3. Plan: decompose into independently reviewable slices with a named verification approach.
 4. Implementation: collect current evidence before claiming completion.
-5. Review: no external review request until the local branch is clean, pushed, known findings are resolved, and the fixed final-review workflow can evaluate the exact head.
+5. Review: no external review request until the local branch is clean, pushed, and known findings are resolved; advisory CI evaluates the exact pushed head.
 6. Merge: no merge without explicit user approval.
 
 ## Governance
@@ -99,6 +99,13 @@ repo governance and agent workflow source. Any PR that violates a MUST rule in
 this artifact requires redesign, not waiver-by-documentation. Amendments require
 an explicit user-approved diff, a migration note for affected specs/plans, and a
 version bump.
+
+Migration note for v2.3.0: the CI teardown removes the fixed final-review
+workflow, the non-compile preflight gate, the sandbox-safe-push publisher, and
+the merge-queue operator recipe. Publication is a plain exact-head git push;
+remote evidence is the advisory CI workflow (fmt, clippy, test, build through
+the managed wrapper) plus targeted rust-probe dispatches. Merge governance is
+unchanged: native code-owner review with zero required CI statuses.
 
 Migration note for v2.2.0: repository verification uses one workspace registry,
 one non-compile preflight, exact-SHA publication, and one fixed final-review
@@ -139,4 +146,4 @@ and `specs/023-nt-research-analytics-platform/tasks.md`. Runtime code is not
 changed by this amendment; implementation remains gated by feature-branch
 SpecKit checks and exact-head verification.
 
-**Version**: 2.2.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-07-19
+**Version**: 2.3.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-07-19

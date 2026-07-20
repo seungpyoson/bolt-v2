@@ -16,7 +16,7 @@ Rust binary for automated trading on Polymarket via NautilusTrader.
 - `src/` — library crate (`lib.rs`) + two binaries (`bolt-v2`, `stream_to_lake`). The legacy `render_live_config` and `raw_capture` binaries were retired in Phase 9 (see `specs/003-phase9-current-main-audit/tasks.md` T068).
 - `tests/` — integration tests (`.rs` files in root, not `*_test.rs`); unit tests live in-source under `#[cfg(test)]`.
 - `config/` — live TOML runtime config (secrets excluded per `.gitignore`).
-- `scripts/` — Python verification scripts for Bolt-v3 source fences (runtime literals, provider leaks, core boundary, naming conventions, status-map currency, pure Rust runtime), CI workflow hygiene, and developer-tool storage hygiene policy checks.
+- `scripts/` — the managed Rust verification wrapper (`rust_verification.py` and its imports) plus product/deploy tooling (config generators, migration helpers, systemd unit rendering).
 - `deploy/` — systemd unit + install script for production deployment.
 - `contracts/` — Polymarket CLOB contract addresses / ABI.
 - `docs/` — postmortems, bolt-v3 specs, superpowers documentation.
@@ -24,18 +24,15 @@ Rust binary for automated trading on Polymarket via NautilusTrader.
 
 ## Commands
 
-All via `just` (must be installed). The justfile is the single source of truth. `just build`, `just test`, and `just clippy` are workflow/operator lanes. The local agent path is `just fmt`, `just preflight`, and `just sandbox-safe-push`; one coherent pushed head is reviewed through `just final-review <PR>`.
+All via `just` (must be installed). The justfile is the single source of truth. `just build`, `just test`, and `just clippy` are workflow/operator lanes. The local agent path is `just fmt` plus a plain `git push` of the exact branch head; remote evidence for a pushed head comes from the advisory CI workflow and targeted `just rust-probe` dispatches.
 
 | Command | What it does |
 |---------|-------------|
 | `just build` | Release cross-compile via `cargo zigbuild` (target: `aarch64-unknown-linux-gnu`). |
 | `just test` | `cargo nextest run --locked`; pass nextest args after `--`, e.g. `just test -- --partition count:1/4`; LiveNode-heavy integration binaries are serialized by `.config/nextest.toml`. |
-| `just fmt` | Format every registered Cargo workspace. |
-| `just preflight` | Run every registered local non-compile check and report the complete inventory. |
-| `just sandbox-safe-push` | Rerun preflight, push the captured commit SHA, and verify the remote SHA. |
-| `just final-review <PR>` | Dispatch the single fixed root+BVS+static+host evidence and reviewer transaction. |
+| `just fmt` | Format the root and backtesting-vertical-slice workspaces through the managed wrapper. |
+| `just rust-probe` | Dispatch a targeted remote compile/test probe for the pushed branch head. |
 | `just clippy` | `cargo clippy` (gated by rust-verification wrapper, `-D warnings`). |
-| `just deny-advisories` | `cargo deny check advisories`. |
 | `just check-aarch64` | `cargo check --target aarch64-unknown-linux-gnu`. |
 | `just setup` | Install pinned `cargo-nextest`, `cargo-deny`, `cargo-zigbuild`; verify Zig 0.15.2 is installed. |
 | `just live` | Require `BOLT_LIVE_PROFILE=<profile-id>`, derive `config/profiles/<profile-id>.overlay.toml`, compose it with `config/root.toml` → `config/live.toml`, then run. |
@@ -43,7 +40,7 @@ All via `just` (must be installed). The justfile is the single source of truth. 
 
 ## Conventions
 
-- **No hardcoded runtime values** — all IDs, quantities, timeouts come from TOML config. Verified by `scripts/verify_bolt_v3_runtime_literals.py`.
+- **No hardcoded runtime values** — all IDs, quantities, timeouts come from TOML config.
 - **Secrets via SSM only** — AWS SSM is the sole credential source; no env vars, no local files, no CLI subprocesses.
 - **Snake_case** for module names, identifiers, and file names.
 - **`bolt_v3_` prefix** on most library modules reflecting an incremental v3 migration within the v2 crate.
@@ -53,8 +50,8 @@ All via `just` (must be installed). The justfile is the single source of truth. 
 ## Watch out for
 
 - **`just` is the entry point** — never call `cargo build` / `cargo test` directly in CI or recipes; the justfile validates workspace boundaries and runs verification checks.
-- **Remote-first Rust verification** — agent sessions use the workflow in `AGENTS.md`; standard PATH `cargo ...` is guarded by the machine-level cargo shim, whose source and installer are tracked at `scripts/cargo-shim` and `scripts/install-cargo-shim`; `ci/rust-verification.toml` remains the policy source.
+- **Remote-first Rust verification** — agent sessions use the workflow in `AGENTS.md`; compile-heavy verification routes through `scripts/rust_verification.py`; `ci/rust-verification.toml` remains the policy source.
 - **Release builds require Zig** — `cargo-zigbuild` + Zig 0.15.2 are needed for cross-compilation to `aarch64-unknown-linux-gnu`.
-- **Python verification layer** — several lint/check commands go through `rust_verification.py` which wraps cargo; absolute-path cargo, cross-repo `--manifest-path` / `-C` invocations, daemon-managed PATHs without the shim directory, and toolchain-manager bypasses remain outside the accidental-use guard.
+- **Python verification layer** — several lint/check commands go through `rust_verification.py` which wraps cargo; absolute-path cargo, cross-repo `--manifest-path` / `-C` invocations, and toolchain-manager bypasses remain outside the accidental-use guard.
 - **`config/live.toml` is a generated, gitignored runtime artifact** — set `BOLT_LIVE_PROFILE=<profile-id>`, derive `config/profiles/<profile-id>.overlay.toml`, compose that tracked overlay over the base template `config/root.toml` via `just live` / `bolt-v2 ops generate-live-config`, and never hand-edit it (#768). The legacy gitignored `config/live.local.toml` is no longer a source of truth.
 - **Reasonix context** — `REASONIX.md` is repo-shared agent context at the same level as `AGENTS.md` / `CLAUDE.md`; local AI tool config dirs (`.claude/`, `.gemini/`, `.opencode/`, `.codex/`, `.pi/`, `.agents/`, `.factory/`, etc.) are local state, not project docs.

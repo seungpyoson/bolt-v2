@@ -21,10 +21,6 @@ inputs:
     description: Whether to resolve build-only values like target and zig pins.
     required: false
     default: "false"
-  lint-workflow-contract:
-    description: Whether to run `just ci-lint-workflow` before the rest of setup.
-    required: false
-    default: "false"
   use-default-target:
     description: Whether to install the repo's default Rust target from `just target`.
     required: false
@@ -82,12 +78,6 @@ runs:
       with:
         tool: just@${{ inputs.just-version }}
         fallback: none
-
-    - name: Lint workflow contract
-      if: ${{ inputs.lint-workflow-contract == 'true' }}
-      shell: bash
-      run: |
-        just ci-lint-workflow
 
     - name: Read shared values
       id: shared

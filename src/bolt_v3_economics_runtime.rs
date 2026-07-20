@@ -1227,12 +1227,12 @@ fn test_economics_admission_with_binding_and_purpose(
     purpose: EconomicsAdmissionPurpose,
 ) -> EconomicsAdmission {
     use crate::economics::{
-        AccountId, AdmissionTreatment, CalculationFactor, Currency, DecisionCorrelationId,
-        EconomicClass, EconomicComponentId, EconomicKind, EconomicQuoteRequest, EconomicScope,
-        EdgeBasisAmount, EdgeBasisPolicyId, EstimatedEconomicComponent, ExecutionClientId,
-        ExecutionKind, FormulaId, InstrumentId, LifecyclePath, LiquidityRoleAssumption, OrderSide,
-        PlannedFillLeg, PointEstimate, ProductSurfaceId, ReportingPolicyId, RoutingContext,
-        SignedNativeEffect, SourceId, SourceValidity, VenueQuoteEstimate,
+        AccountId, AdmissionTreatment, CalculationFactor, DecisionCorrelationId, EconomicClass,
+        EconomicComponentId, EconomicKind, EconomicQuoteRequest, EconomicScope, EdgeBasisAmount,
+        EdgeBasisPolicyId, EstimatedEconomicComponent, ExecutionClientId, ExecutionKind, FormulaId,
+        InstrumentId, LifecyclePath, LiquidityRoleAssumption, OrderSide, PlannedFillLeg,
+        PointEstimate, ProductSurfaceId, ReportingPolicyId, RoutingContext, SignedNativeEffect,
+        SourceId, SourceValidity, VenueQuoteEstimate,
     };
 
     #[derive(Clone)]
@@ -1395,8 +1395,8 @@ mod test_economics_admission_source_support {
     use super::*;
     use crate::economics::{
         AdmissionTreatment, CalculationFactor, EconomicClass, EconomicComponentId, EconomicKind,
-        EconomicScope, EstimatedEconomicComponent, ExecutionKind, FormulaId, PointEstimate,
-        SignedNativeEffect, SourceId, SourceValidity, VenueQuoteEstimate,
+        EconomicScope, EdgeBasisAmount, EstimatedEconomicComponent, ExecutionKind, FormulaId,
+        PointEstimate, SignedNativeEffect, SourceId, SourceValidity, VenueQuoteEstimate,
     };
 
     #[derive(Clone)]

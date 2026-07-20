@@ -26,9 +26,7 @@ use crate::bolt_v3_providers::hyperliquid_artifacts::{
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
-use nautilus_model::enums::{
-    AccountType, BookAction, CurrencyType, OrderSide, TimeInForce, TradingState,
-};
+use nautilus_model::enums::{AccountType, BookAction, OrderSide, TimeInForce, TradingState};
 use nautilus_model::events::{AccountState, OrderAccepted, OrderEventAny, OrderSubmitted};
 use nautilus_model::identifiers::{
     AccountId, ClientId, ClientOrderId, TraderId, Venue, VenueOrderId,

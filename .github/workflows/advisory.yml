@@ -1,6 +1,11 @@
 name: Advisory Check
 
+# Advisory Rust evidence only. Zero merge authority: no required status
+# contexts exist, and GitHub code-owner review is the only merge gate.
 on:
+  pull_request:
+  push:
+    branches: [main]
   schedule:
     - cron: "0 8 * * 1"
   workflow_dispatch: {}
@@ -12,14 +17,101 @@ permissions:
 env:
   JUST_VERSION: "1.49.0"
   CARGO_TERM_COLOR: always
+  RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
 
 concurrency:
-  group: advisory-check
-  cancel-in-progress: false
+  group: advisory-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  evidence:
+    name: fmt + clippy + test + build
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # On pull_request, check out the exact pushed head, not GitHub's synthetic
+      # merge commit: this evidence is adjudicated against the reported head SHA.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-build-values: "true"
+          include-nextest-version: "true"
+          use-default-target: "true"
+          include-managed-target-dir: "true"
+          install-rust-linker: "true"
+          toolchain-components: "rustfmt, clippy"
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install zig
+        run: |
+          python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
+
+      - name: Setup read-only sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+
+      # backtesting-vertical-slice gets fmt coverage only: its managed build
+      # targets aarch64-apple-darwin, which cannot compile on this Linux runner.
+      - name: fmt
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- fmt --check
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE/crates/backtesting-vertical-slice" -- fmt --check
+
+      - name: clippy
+        env:
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" run --repo "$GITHUB_WORKSPACE" clippy
+
+      - name: test
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" run --repo "$GITHUB_WORKSPACE" test
+
+      - name: build
+        env:
+          BOLT_RUST_VERIFICATION_SCCACHE: ${{ steps.sccache.outputs.enabled == 'true' && '1' || '0' }}
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" run --repo "$GITHUB_WORKSPACE" build
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
+
   advisories:
     name: advisories
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -37,13 +129,20 @@ jobs:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
 
-      - name: Check advisories
-        id: advisories
+      - name: Check advisories (root workspace)
+        id: advisories_root
         continue-on-error: true
-        run: just deny-advisories
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- deny check advisories
+
+      - name: Check advisories (backtesting-vertical-slice)
+        id: advisories_bte
+        continue-on-error: true
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE/crates/backtesting-vertical-slice" -- deny check advisories
 
       - name: Create issue on failure
-        if: steps.advisories.outcome == 'failure'
+        if: steps.advisories_root.outcome == 'failure' || steps.advisories_bte.outcome == 'failure'
         run: |
           gh label create "advisory-auto" --description "Auto-created by advisory workflow" --color "D93F0B" 2>/dev/null || true
           EXISTING=$(gh issue list --label "advisory-auto" --state open --limit 1 --json number --jq '.[0].number // empty')
@@ -54,7 +153,7 @@ jobs:
           BODY="$(cat <<'EOF'
           ## Advisory Check Failed
 
-          Run `just deny-advisories` locally to see details.
+          Run cargo-deny advisories locally through scripts/rust_verification.py to see details.
 
           Automated issue from the weekly advisory check.
           EOF

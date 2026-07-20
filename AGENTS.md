@@ -12,8 +12,6 @@ Repo governance for agents; higher-level standing instructions apply.
 ## Agent & Plugin Discipline
 
 - Do not create per-agent policy docs unless the tool loads them and the policy cannot live in `AGENTS.md`. For tools that do not load it, pass `AGENTS.md` as read-only context; add `.specify/memory/constitution.md` only when SpecKit principles or gates matter.
-- `.pr_agent.toml` inlines the critical `AGENTS.md` review rules because PR-Agent cannot load arbitrary repo files in GitHub Actions; `AGENTS.md` stays authoritative, and that block is updated when the rules it mirrors change.
-- AI review deliverables must identify the reviewer source and exact configured model. Runtime source/model labels and comment markers come from `ci/ai-review.toml`; workflow and prompt text must not embed those runtime values.
 - Do not patch plugin caches as durable fixes; use repo governance, SpecKit templates, verified extension/override surfaces, or regenerated adapters. Generated prompts may recommend strict TDD — use Evidence-Driven Verification unless the user, active spec, or risk requires TDD.
 
 ## Scope Discipline
@@ -40,7 +38,7 @@ Repo governance for agents; higher-level standing instructions apply.
 - TDD is allowed but not mandatory unless the user, active spec, or risk requires it; `.specify/memory/constitution.md` mirrors this principle.
 - Agents do not wait on CI: push, report the head SHA, detach — verifying results at head belongs to the reviewer.
 - Every claim must map to evidence: tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit user-approved risk acceptance that does not violate a MUST rule. Every plan or task list must name the evidence for each changed requirement or risk: production behavior needs behavior/integration/remote-CI/live artifacts (or user-approved risk acceptance that does not violate a MUST rule); trading, admission, secrets, and config also need fail-closed evidence for invalid or missing inputs plus exact-head proof before any live operation; refactors need existing tests/static checks/source-fence or documented structural-equivalence review proving behavior is unchanged; documentation, prompt, template, and policy changes require targeted text/static checks plus internal adversarial review before completion claims.
-- External review follows resolved local findings and the complete repository preflight. Remote results are evidence to adjudicate, never merge authority.
+- External review follows resolved local findings. Remote results are evidence to adjudicate, never merge authority.
 
 ## Approved Lean-CI End State And Cutover Boundary
 
@@ -54,15 +52,14 @@ Repo governance for agents; higher-level standing instructions apply.
 
 ## Remote-First Rust Verification
 
-- Do not run local compile-heavy Rust verification by default: no managed `just` Rust test/build/clippy recipes and no raw Cargo refused by `[local_compile_policy]`. `just fmt` is the sole repository-wide formatting mutation command. `just preflight` is the sole local evidence command and runs every registered non-compile check for every workspace.
-- Publish only with `just sandbox-safe-push`, which reruns the complete preflight, binds it to the captured commit, pushes that exact SHA, and verifies the remote head. Do not embed credentials in Git push URLs or use raw remote-name pushes from a managed sandbox.
-- Once a pushed PR head is coherent and local findings are resolved, invoke `just final-review <PR>` exactly once. The fixed workflow runs the full root, Backtester, repository-static, and host workload and records every result. Reviewers run only when that complete exact-head workload passes, and every reviewer receives the same captured diff and evidence. It has no path selection, readiness verdict, inherited result, retry substitution, or provider fallback. Agents do not wait on it: report the head SHA and detach.
-- Queue one PR per `just merge-queue <pr>` invocation from a clean worktree at current `origin/main`, not from a candidate branch and not by commenting the Mergify command directly. This is a team rule; Mergify's queue checkbox is disabled to remove the accidental UI path. The recipe resolves the exact remote SHAs, checks identity and existing native-review mechanics, and posts the configured Mergify command only for that PR's `queue_as_one_wave` verdict.
-- Cooperative paths are gated through `just`, `scripts/rust_verification.py`, `.no-mistakes.yaml`, and the PATH Cargo shim. Lanes self-serialize via `[local_lane_policy]`; CI bypasses the lock, and registry drift fails `just preflight`. Known bypasses remain mistake-prevention limitations: absolute-path Cargo, `rustup run ... cargo`, cross-repo Cargo, old daemons, non-shim PATHs, startup-skipping shells, and direct `rustc`.
+- Do not run local compile-heavy Rust verification by default: no managed `just` Rust test/build/clippy recipes and no raw Cargo refused by `[local_compile_policy]`. `just fmt` is the sole repository-wide formatting mutation command.
+- Publish with a plain `git push` of the exact branch head. Do not embed credentials in Git push URLs.
+- Remote Rust evidence for a pushed head comes from the advisory CI workflow (`advisory.yml`: fmt, clippy, test, build through the managed wrapper), which runs automatically on pull requests, plus targeted `just rust-probe` dispatches for focused diagnostics. Advisory results are evidence to adjudicate, never merge authority. Agents do not wait on CI: push, report the head SHA, and detach.
+- Cooperative paths are gated through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`. Lanes self-serialize via `[local_lane_policy]`; CI bypasses the lock. Known bypasses remain mistake-prevention limitations: absolute-path Cargo, `rustup run ... cargo`, cross-repo Cargo, old daemons, startup-skipping shells, and direct `rustc`.
 
 ## Rust Probe Policy
 
-- Rust Probe is diagnostic only: use it when the local preflight cannot answer a focused question. It never replaces the fixed final-review workload and never authorizes or vetoes merge.
+- Rust Probe is diagnostic only: use it when cheap local checks cannot answer a focused question. It never replaces advisory CI evidence and never authorizes or vetoes merge.
 - Run `just rust-probe suggest` first; dispatch `just rust-probe ...` only from a clean named branch whose pushed `HEAD` SHA is used (dispatch refuses unsafe local state). Before dispatch, state changed files, suspected failure class, mode, target, and smallest-sufficient rationale. Limits: max 2 probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; do not run full CI just to discover ordinary compiler errors.
 - Suggested integration-test probes use the Cargo `[[test]]` harness as `test_target`; when a changed file is a harness member module, the suggested `test_name` is `<member_stem>::` so nextest stays scoped to that module.
 
@@ -72,7 +69,7 @@ Repo governance for agents; higher-level standing instructions apply.
 - Keep PR bodies stable: use them for lasting scope/behavior disclosures and timeless merge requirements, not the current head SHA, transient CI/check status, or head-specific review/verification receipts. Put exact-head evidence in review requests, comments/records, or check runs; do not rewrite the body as heads move. This PR-body status rule does not restrict immutable release artifacts or spec anchors.
 - Before completing or merging coding work, open a PR and request review from the GitHub account with node ID `U_kgDOEZMFhA` (login-based — resolve the node ID to its current login and keep `.github/CODEOWNERS` aligned). This required-reviewer node ID is an intentional hardcoded policy constant for native merge governance: PR-editable config must not select the required reviewer.
 - The `main` ruleset must require native code-owner review, stale-review dismissal, last-push approval, and review-thread resolution; if those are missing, stop and report the blocker instead of treating CI checks as merge controls. Agents must not merge, squash, rebase-merge, or otherwise land code until the PR has approval from node ID `U_kgDOEZMFhA`; if review cannot be requested, stop and report.
-- Do not invoke final review with uncommitted changes, unpushed commits, unresolved findings, or unanswered comments. Reply to and resolve every applicable review thread; commit and push any fix before further review discussion. Advisory failures are evidence to adjudicate rather than automatic review vetoes.
+- Do not request review with uncommitted changes, unpushed commits, unresolved findings, or unanswered comments. Reply to and resolve every applicable review thread; commit and push any fix before further review discussion. Advisory failures are evidence to adjudicate rather than automatic review vetoes.
 - Verify each active `main` rule before merge with `gh api repos/{owner}/{repo}/rules/branches/main`. Confirm the live required-status list is empty and adjudicate advisory evidence without requiring a green rollup. Confirm code-owner approval by the required reviewer, stale-review dismissal, last-push approval, and review-thread resolution. On a stale native-control block, force recompute by push, review, close/reopen, or waiting; never bypass it with `gh pr merge --admin`.
 
 ## Response Format

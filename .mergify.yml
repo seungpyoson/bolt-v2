@@ -4,8 +4,30 @@
 # check run and merge as a batch — one CI bill instead of one per PR.
 merge_queue:
   max_parallel_checks: 1
+  reset_on_external_merge: always
 
 queue_rules:
+  # Exceptional path only (queue order = priority: listed first, checked
+  # first). Normal merge sessions use the default queue below.
+  - name: hotfix
+    queue_conditions:
+      - label = hotfix
+    merge_conditions:
+      - approved-reviews-by = sp-reviewer
+      - check-success = fmt
+      - check-success = clippy
+      - check-success = test
+      - check-success = build
+    merge_method: squash
+    update_method: rebase
+    batch_size: 1
+    batch_max_wait_time: 30 seconds
+    batch_max_failure_resolution_attempts: 0
+    checks_timeout: 150 minutes
+    branch_protection_injection_mode: none
+    merge_bot_account: seungpyoson
+    update_bot_account: seungpyoson
+
   - name: default
     queue_conditions:
       - approved-reviews-by = sp-reviewer

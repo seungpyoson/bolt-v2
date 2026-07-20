@@ -10,8 +10,8 @@
 
 - [x] T001 Record current git, PR, issue, Speckit, readiness-ledger, code, and T038-branch evidence in `specs/024-production-trade-readiness/evidence.md`.
 - [x] T002 Update PR #480 body to reference `specs/024-production-trade-readiness/` as the active readiness task list, branch `goal/024-production-trade-readiness`, and to keep PR #479/#466 out of scope.
-- [x] T003 Remove #466 verifier-characterization/decomposition files from PR #480; the merged PR history records the removed paths.
-- [x] T004 Send `specs/024-production-trade-readiness/{spec.md,plan.md,tasks.md,evidence.md}` plus `AGENTS.md` policy context for task-list review only; record verdicts in `specs/024-production-trade-readiness/external-tasklist-review.md`.
+- [x] T003 Remove #466 verifier-characterization/decomposition files from PR #480 and record the exact removed paths in `specs/024-production-trade-readiness/scope-resolution.md`.
+- [x] T004 Send `specs/024-production-trade-readiness/{spec.md,plan.md,tasks.md,evidence.md,scope-resolution.md}` plus `AGENTS.md` policy context to Claude, Gemini, DeepSeek, GLM, Kimi, and Grok for task-list review only; record verdicts in `specs/024-production-trade-readiness/external-tasklist-review.md`.
 - [x] T005 Resolve every blocking task-list review finding in `specs/024-production-trade-readiness/tasks.md` and record disposition in `specs/024-production-trade-readiness/external-tasklist-review.md`.
 
 ## Phase 2: T038 Branch And Existing Issue Hygiene

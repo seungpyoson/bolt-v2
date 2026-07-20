@@ -8,34 +8,68 @@
 //! resolved bytes and their recorded hash. It is not a frozen configuration
 //! golden; applied-override sensitivity is verified by the configuration owner.
 
-use anyhow::{Context, Result, ensure};
+use std::collections::{BTreeMap, BTreeSet};
+
+use anyhow::{Context, Result, bail, ensure};
 use nautilus_model::{
-    data::BookOrder,
-    enums::{OrderSide, OrderType},
+    enums::{LiquiditySide, OrderSide, OrderType, PositionSide},
     events::OrderFilled,
+    identifiers::{AccountId, InstrumentId, PositionId},
     instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
-    position::Position,
-    types::{Money, Price, Quantity, fixed::FIXED_PRECISION},
+    types::{Money, Price, Quantity},
 };
+use rust_decimal::{Decimal, RoundingStrategy, prelude::Signed};
 
 use crate::hashing::sha256_hex;
 
+#[derive(Clone)]
+pub enum ExecutionOrderCause {
+    Submitted {
+        executable_book: Box<OrderBook>,
+        submitted_quantity: Quantity,
+        quote_quantity: bool,
+    },
+    Settlement {
+        declared_price: Price,
+    },
+}
+
+#[derive(Clone)]
+pub struct ExecutionOrderTrace {
+    pub cause: ExecutionOrderCause,
+    pub fills: Vec<OrderFilled>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionEffectKind {
+    Opened,
+    Changed,
+    Closed,
+}
+
+#[derive(Clone)]
+pub struct PositionEffectTrace {
+    pub kind: PositionEffectKind,
+    pub position_id: PositionId,
+    pub instrument_id: InstrumentId,
+    pub account_id: AccountId,
+    pub side: PositionSide,
+    pub quantity: Quantity,
+    pub last_quantity: Quantity,
+    pub last_price: Price,
+    pub realized_pnl: Option<Money>,
+}
+
 pub struct ExecutionContractTrace<'a> {
     pub instrument: &'a InstrumentAny,
-    pub executable_book: &'a OrderBook,
-    pub order_side: OrderSide,
-    pub submitted_quantity: Quantity,
-    pub quote_quantity: bool,
-    pub effective_base_quantity: Quantity,
-    pub fills: &'a [OrderFilled],
-    pub position_fills: &'a [OrderFilled],
-    pub settlement_price: Price,
+    pub orders: Vec<ExecutionOrderTrace>,
+    pub position_effects: Vec<PositionEffectTrace>,
     pub initial_cash: Money,
+    pub account_cash_after_fills: Vec<Money>,
     pub terminal_cash: Money,
     pub realized_pnl: Money,
-    pub position_commission: Money,
-    pub expected_fill_commission: Money,
+    pub position_commissions: Vec<Money>,
     pub canonical_resolved_config_bytes: &'a [u8],
     pub canonical_resolved_config_sha256: &'a str,
 }
@@ -43,6 +77,9 @@ pub struct ExecutionContractTrace<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionContractReport {
     pub validated_fill_count: usize,
+    pub entry_fill_count: usize,
+    pub normal_exit_fill_count: usize,
+    pub settlement_fill_count: usize,
 }
 
 /// Validate an observed trace against shared NautilusTrader economics.
@@ -56,119 +93,318 @@ pub fn validate_execution_contract(
     );
 
     ensure!(
-        !trace.fills.is_empty(),
-        "execution contract requires at least one fill"
+        matches!(trace.instrument, InstrumentAny::BinaryOption(_)),
+        "#789 complete lifecycle is restricted to one binary-option instrument"
     );
     ensure!(
-        trace.fills.iter().all(|fill| {
-            fill.instrument_id == trace.instrument.id()
-                && fill.order_side == trace.order_side
-                && fill.order_type == OrderType::Market
-        }),
-        "execution contract supports only one-instrument market-order entry fills"
+        !trace.orders.is_empty(),
+        "execution contract requires orders"
     );
+    let size_precision = trace.instrument.size_precision();
+    let size_increment = trace.instrument.size_increment().as_decimal();
+    let price_precision = trace.instrument.price_precision();
+    let price_increment = trace.instrument.price_increment().as_decimal();
+    let multiplier = trace.instrument.multiplier().as_decimal();
+    ensure!(
+        trace.instrument.taker_fee().is_zero(),
+        "#789 lifecycle evidence is restricted to the instrument's zero taker-fee configuration"
+    );
+    ensure!(
+        trace.initial_cash.currency == trace.realized_pnl.currency
+            && trace.terminal_cash.currency == trace.realized_pnl.currency,
+        "#789 cash and realized PnL currencies must agree"
+    );
+    let mut trade_ids = BTreeSet::new();
+    let mut position_id = None;
+    let mut exposure = Decimal::ZERO;
+    let mut average_open = Decimal::ZERO;
+    let mut derived_pnl = Decimal::ZERO;
+    let mut entry_fill_count = 0;
+    let mut normal_exit_fill_count = 0;
+    let mut settlement_fill_count = 0;
+    let mut position_effect_index = 0usize;
+    let mut derived_cash = trace.initial_cash.as_decimal();
+    let mut derived_commissions = BTreeMap::<String, Decimal>::new();
 
-    let opposing_best_price = match trace.order_side {
-        OrderSide::Buy => trace.executable_book.best_ask_price(),
-        OrderSide::Sell => trace.executable_book.best_bid_price(),
-        OrderSide::NoOrderSide => None,
-    }
-    .context("executable book has no opposing price")?;
+    for (order_index, order) in trace.orders.iter().enumerate() {
+        let first_fill = order
+            .fills
+            .first()
+            .with_context(|| format!("execution order {order_index} has no fills"))?;
+        let side = first_fill.order_side;
+        ensure!(side != OrderSide::NoOrderSide, "fill has no specified side");
+        for fill in &order.fills {
+            ensure!(
+                fill.instrument_id == trace.instrument.id()
+                    && fill.order_type == OrderType::Market
+                    && fill.liquidity_side == LiquiditySide::Taker
+                    && fill.order_side == side
+                    && fill.client_order_id == first_fill.client_order_id,
+                "execution order fills must share one market-order identity"
+            );
+            ensure!(
+                fill.last_qty.precision == size_precision
+                    && (fill.last_qty.as_decimal() % size_increment).is_zero(),
+                "fill quantity {} does not use instrument size precision {} and increment {}",
+                fill.last_qty,
+                size_precision,
+                trace.instrument.size_increment()
+            );
+            ensure!(
+                fill.last_px.precision == price_precision
+                    && (fill.last_px.as_decimal() % price_increment).is_zero(),
+                "fill price {} does not use instrument price precision {} and increment {}",
+                fill.last_px,
+                price_precision,
+                trace.instrument.price_increment()
+            );
+            ensure!(
+                trade_ids.insert(fill.trade_id),
+                "duplicate trade ID {} in ordered lifecycle",
+                fill.trade_id
+            );
+        }
 
-    if trace.quote_quantity {
-        let expected_base_quantity = trace
-            .instrument
-            .get_base_quantity(trace.submitted_quantity, opposing_best_price);
-        ensure!(
-            trace.effective_base_quantity == expected_base_quantity,
-            "quote/base conversion mismatch: submitted {} at {} resolves to {}, observed {}",
-            trace.submitted_quantity,
-            opposing_best_price,
-            expected_base_quantity,
-            trace.effective_base_quantity,
-        );
-    } else {
-        ensure!(
-            trace.effective_base_quantity == trace.submitted_quantity,
-            "base-denominated order quantity changed before execution"
-        );
+        if let ExecutionOrderCause::Submitted {
+            executable_book,
+            submitted_quantity,
+            quote_quantity,
+        } = &order.cause
+        {
+            ensure!(
+                executable_book.instrument_id == trace.instrument.id(),
+                "executable book instrument does not match the lifecycle instrument"
+            );
+            ensure!(
+                settlement_fill_count == 0,
+                "submitted normal order appears after settlement"
+            );
+            let requested_base = normalized_base_quantity(
+                trace.instrument,
+                executable_book,
+                side,
+                *submitted_quantity,
+                *quote_quantity,
+            )?;
+            let expected = independent_market_sweep(executable_book, side, requested_base)?;
+            ensure!(
+                expected.len() == order.fills.len()
+                    && expected
+                        .iter()
+                        .zip(&order.fills)
+                        .all(|((price, quantity), fill)| {
+                            *price == fill.last_px.as_decimal()
+                                && *quantity == fill.last_qty.as_decimal()
+                        }),
+                "observed normal-order fills do not equal the executable book at submission"
+            );
+        }
+
+        let before = exposure;
+        for fill in &order.fills {
+            let before_fill = exposure;
+            let quantity = fill.last_qty.as_decimal();
+            let price = fill.last_px.as_decimal();
+            let signed_quantity = match side {
+                OrderSide::Buy => quantity,
+                OrderSide::Sell => -quantity,
+                OrderSide::NoOrderSide => unreachable!(),
+            };
+            if exposure.is_zero() || exposure.signum() == signed_quantity.signum() {
+                let old_abs = exposure.abs();
+                let new_abs = old_abs + quantity;
+                average_open = if old_abs.is_zero() {
+                    price
+                } else {
+                    ((average_open * old_abs) + (price * quantity)) / new_abs
+                };
+                exposure += signed_quantity;
+            } else {
+                ensure!(
+                    quantity <= exposure.abs(),
+                    "normal fill reverses or reopens the position"
+                );
+                let points = if exposure.is_sign_positive() {
+                    price - average_open
+                } else {
+                    average_open - price
+                };
+                derived_pnl += points * quantity * multiplier;
+                exposure += signed_quantity;
+            }
+
+            let commission = fill.commission.with_context(|| {
+                format!(
+                    "missing commission evidence for lifecycle fill {}",
+                    fill.trade_id
+                )
+            })?;
+            ensure!(
+                commission.as_decimal().is_zero(),
+                "fill commission does not match the instrument's zero taker fee"
+            );
+            ensure!(
+                commission.currency == trace.realized_pnl.currency,
+                "#789 commission currency differs from settlement currency"
+            );
+            *derived_commissions
+                .entry(commission.currency.to_string())
+                .or_default() += commission.as_decimal();
+            derived_pnl -= commission.as_decimal();
+            let notional = price * quantity * multiplier;
+            derived_cash += match side {
+                OrderSide::Buy => -notional,
+                OrderSide::Sell => notional,
+                OrderSide::NoOrderSide => unreachable!(),
+            };
+            derived_cash -= commission.as_decimal();
+            let expected_cash = Money::from_decimal(derived_cash, trace.realized_pnl.currency)
+                .map_err(anyhow::Error::msg)
+                .context("intermediate lifecycle cash is not representable")?;
+            let observed_cash = trace
+                .account_cash_after_fills
+                .get(position_effect_index)
+                .with_context(|| {
+                    format!(
+                        "missing AccountState after lifecycle fill {}",
+                        fill.trade_id
+                    )
+                })?;
+            ensure!(
+                *observed_cash == expected_cash,
+                "AccountState cash does not equal the independent per-fill cash fold"
+            );
+
+            let effect = trace
+                .position_effects
+                .get(position_effect_index)
+                .with_context(|| {
+                    format!(
+                        "missing position mutation for lifecycle fill {}",
+                        fill.trade_id
+                    )
+                })?;
+            position_effect_index += 1;
+            ensure!(
+                effect.quantity.precision == size_precision
+                    && effect.last_quantity.precision == size_precision
+                    && (effect.quantity.as_decimal() % size_increment).is_zero()
+                    && (effect.last_quantity.as_decimal() % size_increment).is_zero(),
+                "position mutation quantity does not use instrument size precision and increment"
+            );
+            ensure!(
+                effect.last_price.precision == price_precision
+                    && (effect.last_price.as_decimal() % price_increment).is_zero(),
+                "position mutation price does not use instrument price precision and increment"
+            );
+            ensure!(
+                effect.instrument_id == fill.instrument_id
+                    && effect.account_id == fill.account_id
+                    && effect.last_quantity == fill.last_qty
+                    && effect.last_price == fill.last_px,
+                "position mutation does not identify its causal fill"
+            );
+            match position_id {
+                Some(expected) => ensure!(
+                    expected == effect.position_id,
+                    "ordered lifecycle spans multiple position IDs"
+                ),
+                None => position_id = Some(effect.position_id),
+            }
+            let observed_exposure = signed_position_quantity(effect.side, effect.quantity)?;
+            ensure!(
+                observed_exposure == exposure,
+                "position mutation quantity does not equal independently folded exposure"
+            );
+            let expected_effect_kind = if before_fill.is_zero() && !exposure.is_zero() {
+                PositionEffectKind::Opened
+            } else if !before_fill.is_zero() && exposure.is_zero() {
+                PositionEffectKind::Closed
+            } else {
+                PositionEffectKind::Changed
+            };
+            ensure!(
+                effect.kind == expected_effect_kind,
+                "position mutation kind does not match its independently derived position effect"
+            );
+            let expected_effect_pnl = Money::from_decimal(derived_pnl, trace.realized_pnl.currency)
+                .map_err(anyhow::Error::msg)
+                .context("intermediate lifecycle PnL is not representable")?;
+            let observed_effect_pnl = effect
+                .realized_pnl
+                .unwrap_or_else(|| Money::zero(trace.realized_pnl.currency));
+            ensure!(
+                observed_effect_pnl == expected_effect_pnl,
+                "position mutation realized PnL does not equal the independent lifecycle fold"
+            );
+        }
+
+        match &order.cause {
+            ExecutionOrderCause::Submitted { .. } if before.is_zero() && !exposure.is_zero() => {
+                ensure!(entry_fill_count == 0, "lifecycle contains a second entry");
+                entry_fill_count = order.fills.len();
+            }
+            ExecutionOrderCause::Submitted { .. }
+                if !before.is_zero()
+                    && (exposure.is_zero()
+                        || (before.signum() == exposure.signum()
+                            && exposure.abs() < before.abs())) =>
+            {
+                ensure!(
+                    !exposure.is_zero(),
+                    "normal exit closed the position before required settlement"
+                );
+                normal_exit_fill_count += order.fills.len();
+            }
+            ExecutionOrderCause::Submitted { .. } => {
+                bail!("submitted order does not have entry or reducing position effect")
+            }
+            ExecutionOrderCause::Settlement { declared_price } => {
+                ensure!(
+                    declared_price.precision == price_precision
+                        && (declared_price.as_decimal() % price_increment).is_zero(),
+                    "declared settlement price does not use instrument price precision and increment"
+                );
+                ensure!(
+                    order_index + 1 == trace.orders.len()
+                        && settlement_fill_count == 0
+                        && !before.is_zero()
+                        && exposure.is_zero(),
+                    "settlement must be the single final order and exactly close the remainder"
+                );
+                ensure!(
+                    order
+                        .fills
+                        .iter()
+                        .all(|fill| fill.last_px == *declared_price),
+                    "settlement fill price does not equal the declared close price"
+                );
+                settlement_fill_count = order.fills.len();
+            }
+        }
     }
 
-    let market_price = match trace.order_side {
-        OrderSide::Buy => Some(Price::max(FIXED_PRECISION)),
-        OrderSide::Sell => Some(Price::min(FIXED_PRECISION)),
-        OrderSide::NoOrderSide => None,
-    }
-    .context("market-order entry has no specified side")?;
-    let expected_fills = trace.executable_book.simulate_fills(&BookOrder::new(
-        trace.order_side,
-        market_price,
-        trace.effective_base_quantity,
-        0,
-    ));
     ensure!(
-        expected_fills.len() == trace.fills.len()
-            && expected_fills.iter().zip(trace.fills).all(
-                |((expected_price, expected_quantity), observed)| {
-                    *expected_price == observed.last_px && *expected_quantity == observed.last_qty
-                }
-            ),
-        "observed fills do not equal deterministic fills from the executable book"
-    );
-    let (opening_fill, closing_fills) = trace
-        .position_fills
-        .split_first()
-        .context("execution contract requires position fills")?;
-    let position_id = opening_fill
-        .position_id
-        .context("opening fill has no position ID")?;
-    ensure!(
-        trace.position_fills.iter().all(|fill| {
-            fill.instrument_id == trace.instrument.id() && fill.position_id == Some(position_id)
-        }),
-        "position replay fills do not share one instrument and position ID"
-    );
-    let (terminal_fill, position_entry_fills) = trace
-        .position_fills
-        .split_last()
-        .context("position replay requires a terminal settlement fill")?;
-    ensure!(
-        position_entry_fills == trace.fills,
-        "order entry fills do not exactly equal all position entry fills"
+        entry_fill_count > 0
+            && normal_exit_fill_count > 0
+            && settlement_fill_count > 0
+            && exposure.is_zero(),
+        "complete lifecycle requires entry, normal exit, and exact settlement close"
     );
     ensure!(
-        terminal_fill.last_px == trace.settlement_price,
-        "terminal fill price does not equal the configured settlement price"
+        position_effect_index == trace.position_effects.len(),
+        "position evidence contains mutations without causal fills"
     );
-    let closing_side = match trace.order_side {
-        OrderSide::Buy => OrderSide::Sell,
-        OrderSide::Sell => OrderSide::Buy,
-        OrderSide::NoOrderSide => OrderSide::NoOrderSide,
-    };
-    let filled_quantity = trace.fills.iter().try_fold(
-        Quantity::zero(trace.instrument.size_precision()),
-        |total, fill| {
-            total
-                .checked_add(fill.last_qty)
-                .context("entry fill quantity addition overflow or scale mismatch")
-        },
-    )?;
     ensure!(
-        closing_side != OrderSide::NoOrderSide
-            && terminal_fill.order_side == closing_side
-            && terminal_fill.last_qty == filled_quantity,
-        "terminal settlement fill does not exactly close the validated entry quantity"
+        position_effect_index == trace.account_cash_after_fills.len(),
+        "account evidence contains transitions without causal fills"
     );
-    let mut replayed_position = Position::new(trace.instrument, opening_fill.clone());
-    for fill in closing_fills {
-        replayed_position.apply(fill);
-    }
-    let replayed_pnl = replayed_position
-        .realized_pnl
-        .context("replayed position did not realize PnL")?;
+    let replayed_pnl = Money::from_decimal(derived_pnl, trace.realized_pnl.currency)
+        .map_err(anyhow::Error::msg)
+        .context("derived lifecycle PnL is not representable")?;
     ensure!(
         replayed_pnl == trace.realized_pnl,
-        "cached realized PnL does not equal PnL replayed from typed fills"
+        "cached realized PnL does not equal independently folded lifecycle PnL"
     );
 
     let cash_change = trace
@@ -180,46 +416,127 @@ pub fn validate_execution_contract(
         "terminal cash change does not equal PnL replayed from typed fills"
     );
 
-    let total_fill_commission = trace.position_fills.iter().try_fold(
-        Money::zero(trace.position_commission.currency),
-        |total, fill| {
-            let commission = fill
-                .commission
-                .unwrap_or_else(|| Money::zero(trace.position_commission.currency));
-            ensure!(
-                commission == trace.expected_fill_commission,
-                "fill commission does not equal the explicit fixture assumption"
-            );
-            total
-                .checked_add(commission)
-                .context("fill commission addition overflow or scale mismatch")
-        },
-    )?;
+    let mut terminal_commissions = BTreeMap::<String, Decimal>::new();
+    for commission in &trace.position_commissions {
+        ensure!(
+            terminal_commissions
+                .insert(commission.currency.to_string(), commission.as_decimal())
+                .is_none(),
+            "terminal position commission map contains a duplicate currency"
+        );
+    }
     ensure!(
-        total_fill_commission == trace.position_commission,
-        "position commission does not equal the sum of fill commissions"
+        terminal_commissions == derived_commissions,
+        "terminal position commission map does not equal explicit per-fill commissions"
     );
 
     Ok(ExecutionContractReport {
-        validated_fill_count: trace.fills.len(),
+        validated_fill_count: trade_ids.len(),
+        entry_fill_count,
+        normal_exit_fill_count,
+        settlement_fill_count,
     })
+}
+
+fn signed_position_quantity(side: PositionSide, quantity: Quantity) -> Result<Decimal> {
+    match side {
+        PositionSide::Long => Ok(quantity.as_decimal()),
+        PositionSide::Short => Ok(-quantity.as_decimal()),
+        PositionSide::Flat => {
+            ensure!(
+                quantity.is_zero(),
+                "flat position mutation carries non-zero quantity"
+            );
+            Ok(Decimal::ZERO)
+        }
+        PositionSide::NoPositionSide => bail!("position mutation has no specified side"),
+    }
+}
+
+fn normalized_base_quantity(
+    instrument: &InstrumentAny,
+    book: &OrderBook,
+    side: OrderSide,
+    submitted_quantity: Quantity,
+    quote_quantity: bool,
+) -> Result<Quantity> {
+    let best_price = match side {
+        OrderSide::Buy => book.best_ask_price(),
+        OrderSide::Sell => book.best_bid_price(),
+        OrderSide::NoOrderSide => None,
+    }
+    .context("executable book has no opposing price")?;
+    if !quote_quantity {
+        ensure!(
+            submitted_quantity.precision == instrument.size_precision()
+                && (submitted_quantity.as_decimal() % instrument.size_increment().as_decimal())
+                    .is_zero(),
+            "base-denominated quantity does not use instrument precision and increment"
+        );
+        return Ok(submitted_quantity);
+    }
+
+    let increment = instrument.size_increment().as_decimal();
+    let increment_precision = increment.normalize().scale();
+    let normalized = (submitted_quantity.as_decimal() / best_price.as_decimal())
+        .round_dp_with_strategy(increment_precision, RoundingStrategy::MidpointNearestEven);
+    ensure!(
+        (normalized % increment).is_zero(),
+        "normalized quote quantity is not aligned to instrument size increment"
+    );
+    Quantity::from_decimal_dp(normalized, instrument.size_precision())
+        .map_err(anyhow::Error::msg)
+        .context("normalized quote quantity is not representable")
+}
+
+fn independent_market_sweep(
+    book: &OrderBook,
+    side: OrderSide,
+    requested: Quantity,
+) -> Result<Vec<(Decimal, Decimal)>> {
+    let levels = match side {
+        OrderSide::Buy => book.asks_as_map(None),
+        OrderSide::Sell => book.bids_as_map(None),
+        OrderSide::NoOrderSide => bail!("market sweep has no specified side"),
+    };
+    let mut remaining = requested.as_decimal();
+    let mut fills = Vec::new();
+    for (price, available) in levels {
+        if remaining.is_zero() {
+            break;
+        }
+        let quantity = remaining.min(available);
+        if !quantity.is_zero() {
+            fills.push((price, quantity));
+            remaining -= quantity;
+        }
+    }
+    Ok(fills)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use nautilus_core::UnixNanos;
-    use nautilus_model::{enums::BookType, instruments::stubs};
+    use nautilus_model::{
+        data::BookOrder,
+        enums::{BookType, LiquiditySide},
+        identifiers::{
+            AccountId, ClientOrderId, PositionId, StrategyId, TradeId, TraderId, VenueOrderId,
+        },
+        instruments::stubs,
+        types::Currency,
+    };
 
     struct Fixture {
         instrument: InstrumentAny,
-        book: OrderBook,
-        fills: Vec<OrderFilled>,
-        position_fills: Vec<OrderFilled>,
+        orders: Vec<ExecutionOrderTrace>,
+        position_effects: Vec<PositionEffectTrace>,
         initial_cash: Money,
+        account_cash_after_fills: Vec<Money>,
         terminal_cash: Money,
         realized_pnl: Money,
-        position_commission: Money,
+        position_commissions: Vec<Money>,
         config_bytes: Vec<u8>,
         config_hash: String,
     }
@@ -228,19 +545,13 @@ mod tests {
         fn trace(&self) -> ExecutionContractTrace<'_> {
             ExecutionContractTrace {
                 instrument: &self.instrument,
-                executable_book: &self.book,
-                order_side: OrderSide::Buy,
-                submitted_quantity: Quantity::from("1.14"),
-                quote_quantity: true,
-                effective_base_quantity: Quantity::from("2.71"),
-                fills: &self.fills,
-                position_fills: &self.position_fills,
-                settlement_price: Price::from("1.000"),
+                orders: self.orders.clone(),
+                position_effects: self.position_effects.clone(),
                 initial_cash: self.initial_cash,
+                account_cash_after_fills: self.account_cash_after_fills.clone(),
                 terminal_cash: self.terminal_cash,
                 realized_pnl: self.realized_pnl,
-                position_commission: self.position_commission,
-                expected_fill_commission: Money::from("0.00 USDC"),
+                position_commissions: self.position_commissions.clone(),
                 canonical_resolved_config_bytes: &self.config_bytes,
                 canonical_resolved_config_sha256: &self.config_hash,
             }
@@ -249,85 +560,138 @@ mod tests {
 
     fn fixture() -> Fixture {
         let instrument = InstrumentAny::BinaryOption(stubs::binary_option());
-        let mut book = OrderBook::new(instrument.id(), BookType::L2_MBP);
-        book.add(
-            BookOrder::new(
-                OrderSide::Sell,
-                Price::from("0.420"),
-                Quantity::from("21.52"),
-                1,
-            ),
-            0,
-            1,
-            UnixNanos::from(1),
-        );
+        let instrument_id = instrument.id();
         let config_bytes = br#"{"order_type":"MARKET","quote_quantity":true}"#.to_vec();
         let config_hash = sha256_hex(&config_bytes);
-        let position_id = nautilus_model::identifiers::PositionId::from("P-001");
+        let position_id = PositionId::from("P-001");
         let entry_fill = test_fill(
-            instrument.id(),
+            instrument_id,
             position_id,
             OrderSide::Buy,
             "entry",
             "0.420",
+            "2.71",
+            1,
         );
-        let exit_fill = test_fill(
-            instrument.id(),
+        let normal_exit = test_fill(
+            instrument_id,
             position_id,
             OrderSide::Sell,
-            "exit",
-            "1.000",
+            "normal-exit",
+            "0.430",
+            "2.00",
+            2,
         );
-        let mut position = Position::new(&instrument, entry_fill.clone());
-        position.apply(&exit_fill);
-        let realized_pnl = position
-            .realized_pnl
-            .expect("fixture position should realize PnL");
-        let initial_cash = Money::from("1000000.00 USDC");
+        let settlement = test_fill(
+            instrument_id,
+            position_id,
+            OrderSide::Sell,
+            "settlement",
+            "1.000",
+            "0.71",
+            3,
+        );
+        let realized_pnl = Money::from("0.43180000 USDC");
+        let initial_cash = Money::from("1000000.00000000 USDC");
         let terminal_cash = initial_cash
             .checked_add(realized_pnl)
             .expect("fixture cash addition should be exact");
         Fixture {
             instrument,
-            book,
-            fills: vec![entry_fill.clone()],
-            position_fills: vec![entry_fill, exit_fill],
+            orders: vec![
+                ExecutionOrderTrace {
+                    cause: ExecutionOrderCause::Submitted {
+                        executable_book: Box::new(one_level_book(
+                            instrument_id,
+                            OrderSide::Sell,
+                            "0.420",
+                            "21.52",
+                            1,
+                        )),
+                        submitted_quantity: Quantity::from("1.14"),
+                        quote_quantity: true,
+                    },
+                    fills: vec![entry_fill],
+                },
+                ExecutionOrderTrace {
+                    cause: ExecutionOrderCause::Submitted {
+                        executable_book: Box::new(one_level_book(
+                            instrument_id,
+                            OrderSide::Buy,
+                            "0.430",
+                            "2.00",
+                            2,
+                        )),
+                        submitted_quantity: Quantity::from("2.00"),
+                        quote_quantity: false,
+                    },
+                    fills: vec![normal_exit],
+                },
+                ExecutionOrderTrace {
+                    cause: ExecutionOrderCause::Settlement {
+                        declared_price: Price::from("1.000"),
+                    },
+                    fills: vec![settlement],
+                },
+            ],
+            position_effects: vec![
+                PositionEffectTrace {
+                    kind: PositionEffectKind::Opened,
+                    position_id,
+                    instrument_id,
+                    account_id: AccountId::from("POLYMARKET-001"),
+                    side: PositionSide::Long,
+                    quantity: Quantity::from("2.71"),
+                    last_quantity: Quantity::from("2.71"),
+                    last_price: Price::from("0.420"),
+                    realized_pnl: None,
+                },
+                PositionEffectTrace {
+                    kind: PositionEffectKind::Changed,
+                    position_id,
+                    instrument_id,
+                    account_id: AccountId::from("POLYMARKET-001"),
+                    side: PositionSide::Long,
+                    quantity: Quantity::from("0.71"),
+                    last_quantity: Quantity::from("2.00"),
+                    last_price: Price::from("0.430"),
+                    realized_pnl: Some(Money::from("0.02000000 USDC")),
+                },
+                PositionEffectTrace {
+                    kind: PositionEffectKind::Closed,
+                    position_id,
+                    instrument_id,
+                    account_id: AccountId::from("POLYMARKET-001"),
+                    side: PositionSide::Flat,
+                    quantity: Quantity::from("0.00"),
+                    last_quantity: Quantity::from("0.71"),
+                    last_price: Price::from("1.000"),
+                    realized_pnl: Some(realized_pnl),
+                },
+            ],
+            account_cash_after_fills: vec![
+                Money::from("999998.86180000 USDC"),
+                Money::from("999999.72180000 USDC"),
+                terminal_cash,
+            ],
             initial_cash,
             terminal_cash,
             realized_pnl,
-            position_commission: Money::from("0.00 USDC"),
+            position_commissions: vec![Money::from("0.00000000 USDC")],
             config_bytes,
             config_hash,
         }
     }
 
-    fn reconcile_position_accounting(fixture: &mut Fixture) {
-        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
-        for fill in &fixture.position_fills[1..] {
-            position.apply(fill);
-        }
-        fixture.realized_pnl = position
-            .realized_pnl
-            .expect("mutated fixture position should realize PnL");
-        fixture.terminal_cash = fixture
-            .initial_cash
-            .checked_add(fixture.realized_pnl)
-            .expect("mutated fixture cash should reconcile exactly");
-    }
-
     fn test_fill(
         instrument_id: nautilus_model::identifiers::InstrumentId,
-        position_id: nautilus_model::identifiers::PositionId,
+        position_id: PositionId,
         side: OrderSide,
         trade_id: &str,
         price: &str,
+        quantity: &str,
+        timestamp: u64,
     ) -> OrderFilled {
-        use nautilus_model::{
-            enums::{LiquiditySide, OrderType},
-            identifiers::{AccountId, ClientOrderId, StrategyId, TradeId, TraderId, VenueOrderId},
-            types::Currency,
-        };
-
         OrderFilled::new(
             TraderId::from("TRADER-001"),
             StrategyId::from("STRATEGY-001"),
@@ -338,84 +702,136 @@ mod tests {
             TradeId::from(trade_id),
             side,
             OrderType::Market,
-            Quantity::from("2.71"),
+            Quantity::from(quantity),
             Price::from(price),
             Currency::USDC(),
             LiquiditySide::Taker,
             nautilus_core::UUID4::new(),
-            UnixNanos::from(if side == OrderSide::Buy { 1 } else { 2 }),
-            UnixNanos::from(if side == OrderSide::Buy { 1 } else { 2 }),
+            UnixNanos::from(timestamp),
+            UnixNanos::from(timestamp),
             false,
             Some(position_id),
-            None,
+            Some(Money::from("0.00000000 USDC")),
             None,
         )
     }
 
-    #[test]
-    fn accepts_exact_shared_primitive_trace() {
-        validate_execution_contract(&fixture().trace()).expect("valid trace should pass");
+    fn one_level_book(
+        instrument_id: nautilus_model::identifiers::InstrumentId,
+        side: OrderSide,
+        price: &str,
+        quantity: &str,
+        timestamp: u64,
+    ) -> OrderBook {
+        let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
+        book.add(
+            BookOrder::new(
+                side,
+                Price::from(price),
+                Quantity::from(quantity),
+                timestamp,
+            ),
+            0,
+            timestamp,
+            UnixNanos::from(timestamp),
+        );
+        book
     }
 
     #[test]
-    fn rejects_fill_price_improvement() {
+    fn accepts_exact_shared_primitive_trace() {
+        let report = validate_execution_contract(&fixture().trace()).expect("valid trace");
+        assert_eq!(report.validated_fill_count, 3);
+        assert_eq!(report.entry_fill_count, 1);
+        assert_eq!(report.normal_exit_fill_count, 1);
+        assert_eq!(report.settlement_fill_count, 1);
+    }
+
+    #[test]
+    fn rejects_normal_fill_divergent_from_submission_book() {
         let mut fixture = fixture();
-        fixture.fills[0].last_px = Price::from("0.410");
-        assert!(validate_execution_contract(&fixture.trace()).is_err());
+        fixture.orders[1].fills[0].last_px = Price::from("0.420");
+        let error = validate_execution_contract(&fixture.trace()).expect_err("book drift");
+        assert!(error.to_string().contains("executable book at submission"));
+    }
+
+    #[test]
+    fn rejects_executable_book_for_another_instrument() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            executable_book, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("entry cause changed")
+        };
+        **executable_book = one_level_book(
+            nautilus_model::identifiers::InstrumentId::from("OTHER.POLYMARKET"),
+            OrderSide::Sell,
+            "0.420",
+            "21.52",
+            1,
+        );
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("wrong executable-book instrument must fail closed");
+        assert!(error.to_string().contains("book instrument"));
     }
 
     #[test]
     fn rejects_depth_over_consumption() {
         let mut fixture = fixture();
-        fixture.fills[0].last_qty = Quantity::from("21.53");
+        fixture.orders[0].fills[0].last_qty = Quantity::from("21.53");
         assert!(validate_execution_contract(&fixture.trace()).is_err());
-    }
-
-    #[test]
-    fn rejects_broken_quote_base_conversion() {
-        let fixture = fixture();
-        let mut trace = fixture.trace();
-        trace.effective_base_quantity = Quantity::from("2.72");
-        assert!(validate_execution_contract(&trace).is_err());
     }
 
     #[test]
     fn rejects_non_market_entry_at_market_only_guard() {
         let mut fixture = fixture();
-        fixture.fills[0].order_type = OrderType::Limit;
-        fixture.position_fills[0] = fixture.fills[0].clone();
+        fixture.orders[0].fills[0].order_type = OrderType::Limit;
         let error = validate_execution_contract(&fixture.trace())
             .expect_err("non-market entry must fail the market-only contract");
-        assert!(error.to_string().contains("market-order entry fills"));
+        assert!(error.to_string().contains("market-order identity"));
     }
 
     #[test]
-    fn rejects_observed_last_fill_as_artificial_market_limit() {
+    fn rejects_second_opening_effect() {
         let mut fixture = fixture();
-        fixture.book = OrderBook::new(fixture.instrument.id(), BookType::L2_MBP);
-        for (order_id, price, quantity) in [(1, "0.420", "1.00"), (2, "0.500", "1.71")] {
-            fixture.book.add(
-                BookOrder::new(
-                    OrderSide::Sell,
-                    Price::from(price),
-                    Quantity::from(quantity),
-                    order_id,
-                ),
-                0,
-                order_id,
-                UnixNanos::from(1),
-            );
+        fixture.orders[1].fills[0].order_side = OrderSide::Buy;
+        fixture.orders[1].cause = ExecutionOrderCause::Submitted {
+            executable_book: Box::new(one_level_book(
+                fixture.instrument.id(),
+                OrderSide::Sell,
+                "0.430",
+                "2.00",
+                2,
+            )),
+            submitted_quantity: Quantity::from("2.00"),
+            quote_quantity: false,
+        };
+        fixture.position_effects[1].side = PositionSide::Long;
+        fixture.position_effects[1].quantity = Quantity::from("4.71");
+        fixture.position_effects[1].last_quantity = Quantity::from("2.00");
+        fixture.position_effects[1].realized_pnl = None;
+        fixture.account_cash_after_fills[1] = Money::from("999998.00180000 USDC");
+        let error = validate_execution_contract(&fixture.trace()).expect_err("second entry");
+        assert!(error.to_string().contains("entry or reducing"));
+    }
+
+    #[test]
+    fn rejects_normal_exit_reversal() {
+        let mut fixture = fixture();
+        if let ExecutionOrderCause::Submitted {
+            executable_book,
+            submitted_quantity,
+            ..
+        } = &mut fixture.orders[1].cause
+        {
+            **executable_book =
+                one_level_book(fixture.instrument.id(), OrderSide::Buy, "0.430", "3.00", 2);
+            *submitted_quantity = Quantity::from("3.00");
         }
-        fixture.fills[0].last_qty = Quantity::from("1.00");
-        fixture.position_fills[0] = fixture.fills[0].clone();
-        reconcile_position_accounting(&mut fixture);
-        let error = validate_execution_contract(&fixture.trace())
-            .expect_err("market simulation must not stop at the observed last fill price");
-        assert!(
-            error
-                .to_string()
-                .contains("deterministic fills from the executable book")
-        );
+        fixture.orders[1].fills[0].last_qty = Quantity::from("3.00");
+        let error = validate_execution_contract(&fixture.trace()).expect_err("reversal");
+        assert!(error.to_string().contains("reverses or reopens"));
     }
 
     #[test]
@@ -430,6 +846,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_intermediate_account_cash_drift() {
+        let mut fixture = fixture();
+        fixture.account_cash_after_fills[1] = Money::from("999999.73180000 USDC");
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("intermediate AccountState drift must fail closed");
+        assert!(error.to_string().contains("per-fill cash fold"));
+    }
+
+    #[test]
     fn rejects_correlated_dropped_cash_and_pnl_legs() {
         let fixture = fixture();
         let mut trace = fixture.trace();
@@ -439,135 +864,180 @@ mod tests {
     }
 
     #[test]
-    fn rejects_order_position_fill_divergence() {
-        let mut fixture = fixture();
-        fixture.position_fills[0].last_qty = Quantity::from("1.71");
-        fixture.position_fills[1].last_qty = Quantity::from("1.71");
-        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
-        position.apply(&fixture.position_fills[1]);
-        fixture.realized_pnl = position
-            .realized_pnl
-            .expect("divergent fixture position should realize PnL");
-        fixture.terminal_cash = fixture
-            .initial_cash
-            .checked_add(fixture.realized_pnl)
-            .expect("divergent fixture cash should reconcile exactly");
-        assert!(validate_execution_contract(&fixture.trace()).is_err());
-    }
-
-    #[test]
-    fn rejects_extra_position_entry_leg_with_consistent_cash_and_pnl() {
-        let mut fixture = fixture();
-        let mut extra_entry = fixture.position_fills[0].clone();
-        extra_entry.trade_id = nautilus_model::identifiers::TradeId::from("extra-entry");
-        fixture.position_fills.insert(1, extra_entry);
-        fixture.position_fills[2].last_qty = Quantity::from("5.42");
-        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
-        for fill in &fixture.position_fills[1..] {
-            position.apply(fill);
-        }
-        fixture.realized_pnl = position
-            .realized_pnl
-            .expect("duplicated-entry fixture should realize PnL");
-        fixture.terminal_cash = fixture
-            .initial_cash
-            .checked_add(fixture.realized_pnl)
-            .expect("duplicated-entry fixture cash should reconcile exactly");
-        assert!(validate_execution_contract(&fixture.trace()).is_err());
-    }
-
-    #[test]
     fn rejects_terminal_fill_price_divergent_from_settlement() {
         let mut fixture = fixture();
-        fixture.position_fills[1].last_px = Price::from("0.500");
-        reconcile_position_accounting(&mut fixture);
+        fixture.orders[2].fills[0].last_px = Price::from("0.500");
+        fixture.position_effects[2].last_price = Price::from("0.500");
+        fixture.position_effects[2].realized_pnl = Some(Money::from("0.07680000 USDC"));
+        fixture.account_cash_after_fills[2] = Money::from("1000000.07680000 USDC");
         let error = validate_execution_contract(&fixture.trace())
             .expect_err("terminal fill price must be bound to configured settlement");
-        assert!(error.to_string().contains("configured settlement price"));
+        assert!(error.to_string().contains("declared close price"));
     }
 
     #[test]
     fn rejects_incomplete_terminal_close_at_terminal_quantity_guard() {
         let mut fixture = fixture();
-        fixture.position_fills[1].last_qty = Quantity::from("1.71");
-        reconcile_position_accounting(&mut fixture);
+        fixture.orders[2].fills[0].last_qty = Quantity::from("0.70");
+        fixture.position_effects[2].kind = PositionEffectKind::Changed;
+        fixture.position_effects[2].side = PositionSide::Long;
+        fixture.position_effects[2].quantity = Quantity::from("0.01");
+        fixture.position_effects[2].last_quantity = Quantity::from("0.70");
+        fixture.position_effects[2].realized_pnl = Some(Money::from("0.42600000 USDC"));
+        fixture.account_cash_after_fills[2] = Money::from("1000000.42180000 USDC");
         let error = validate_execution_contract(&fixture.trace())
             .expect_err("incomplete terminal close must fail closed");
-        assert!(
-            error
-                .to_string()
-                .contains("does not exactly close the validated entry quantity")
-        );
+        assert!(error.to_string().contains("exactly close the remainder"));
     }
 
     #[test]
-    fn rejects_oversized_terminal_close_at_terminal_quantity_guard() {
+    fn rejects_missing_settlement() {
         let mut fixture = fixture();
-        fixture.position_fills[1].last_qty = Quantity::from("5.42");
-        reconcile_position_accounting(&mut fixture);
-        let error = validate_execution_contract(&fixture.trace())
-            .expect_err("oversized terminal close must fail closed");
-        assert!(
-            error
-                .to_string()
-                .contains("does not exactly close the validated entry quantity")
-        );
+        fixture.orders.pop();
+        let error = validate_execution_contract(&fixture.trace()).expect_err("missing settlement");
+        assert!(error.to_string().contains("entry, normal exit"));
     }
 
     #[test]
-    fn accepts_partial_market_fill_closed_at_observed_fill_quantity() {
+    fn rejects_duplicate_trade_id() {
         let mut fixture = fixture();
-        fixture.book = OrderBook::new(fixture.instrument.id(), BookType::L2_MBP);
-        fixture.book.add(
-            BookOrder::new(
-                OrderSide::Sell,
-                Price::from("0.420"),
-                Quantity::from("2.00"),
-                1,
-            ),
-            0,
-            1,
-            UnixNanos::from(1),
-        );
-        fixture.fills[0].last_qty = Quantity::from("2.00");
-        fixture.position_fills[0] = fixture.fills[0].clone();
-        fixture.position_fills[1].last_qty = Quantity::from("2.00");
-        reconcile_position_accounting(&mut fixture);
-        validate_execution_contract(&fixture.trace())
-            .expect("deterministic partial fill closed at its filled quantity must pass");
+        fixture.orders[1].fills[0].trade_id = fixture.orders[0].fills[0].trade_id;
+        let error = validate_execution_contract(&fixture.trace()).expect_err("duplicate trade id");
+        assert!(error.to_string().contains("duplicate trade ID"));
     }
 
     #[test]
     fn rejects_wrong_commission() {
         let fixture = fixture();
         let mut trace = fixture.trace();
-        trace.position_commission = Money::from("0.01 USDC");
+        trace.position_commissions = vec![Money::from("0.01 USDC")];
         assert!(validate_execution_contract(&trace).is_err());
+    }
+
+    #[test]
+    fn rejects_terminal_commission_in_another_currency() {
+        let mut fixture = fixture();
+        fixture.position_commissions = vec![Money::from("0.01000000 BTC")];
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("non-zero terminal commission in another currency must fail closed");
+        assert!(error.to_string().contains("commission map"));
     }
 
     #[test]
     fn rejects_correlated_wrong_fill_and_position_commission() {
         let mut fixture = fixture();
-        let commission = Money::from("0.01 USDC");
-        fixture.fills[0].commission = Some(commission);
-        fixture.position_fills[0] = fixture.fills[0].clone();
-        let mut position = Position::new(&fixture.instrument, fixture.position_fills[0].clone());
-        position.apply(&fixture.position_fills[1]);
-        fixture.realized_pnl = position
-            .realized_pnl
-            .expect("commission fixture should realize PnL");
+        let commission = Money::from("0.01000000 USDC");
+        fixture.orders[0].fills[0].commission = Some(commission);
+        fixture.position_commissions = vec![commission];
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("correlated non-zero commission must violate the zero-fee assumption");
+        assert!(error.to_string().contains("zero taker fee"));
+    }
+
+    #[test]
+    fn rejects_missing_fill_commission_evidence() {
+        let mut fixture = fixture();
+        fixture.orders[0].fills[0].commission = None;
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("missing per-fill commission must fail closed");
+        assert!(error.to_string().contains("commission evidence"));
+    }
+
+    #[test]
+    fn rejects_missing_terminal_commission_currency() {
+        let mut fixture = fixture();
+        fixture.position_commissions.clear();
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("missing terminal commission currency must fail closed");
+        assert!(error.to_string().contains("commission map"));
+    }
+
+    #[test]
+    fn rejects_extra_zero_terminal_commission_currency() {
+        let mut fixture = fixture();
+        fixture
+            .position_commissions
+            .push(Money::from("0.00000000 BTC"));
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("extra zero-valued terminal currency must fail closed");
+        assert!(error.to_string().contains("commission map"));
+    }
+
+    #[test]
+    fn rejects_fill_price_with_wrong_raw_precision() {
+        let mut fixture = fixture();
+        fixture.orders[0].fills[0].last_px = Price::from("0.4200");
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("fill price precision must be instrument-derived");
+        assert!(error.to_string().contains("price precision"));
+    }
+
+    #[test]
+    fn rejects_position_effect_price_with_wrong_raw_precision() {
+        let mut fixture = fixture();
+        fixture.position_effects[0].last_price = Price::from("0.4200");
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("position price precision must be instrument-derived");
+        assert!(error.to_string().contains("position mutation price"));
+    }
+
+    #[test]
+    fn rejects_position_effect_quantity_with_wrong_raw_precision() {
+        let mut fixture = fixture();
+        fixture.position_effects[0].quantity = Quantity::from("2.710");
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("position quantity precision must be instrument-derived");
+        assert!(error.to_string().contains("position mutation quantity"));
+    }
+
+    #[test]
+    fn accepts_instrument_size_precision_above_two_decimals() {
+        let mut fixture = fixture();
+        let InstrumentAny::BinaryOption(instrument) = &mut fixture.instrument else {
+            panic!("fixture instrument changed")
+        };
+        instrument.size_precision = 3;
+        instrument.size_increment = Quantity::from("0.001");
+        if let ExecutionOrderCause::Submitted {
+            submitted_quantity,
+            quote_quantity,
+            ..
+        } = &mut fixture.orders[0].cause
+        {
+            *submitted_quantity = Quantity::from("2.714");
+            *quote_quantity = false;
+        }
+        fixture.orders[0].fills[0].last_qty = Quantity::from("2.714");
+        fixture.position_effects[0].quantity = Quantity::from("2.714");
+        fixture.position_effects[0].last_quantity = Quantity::from("2.714");
+        if let ExecutionOrderCause::Submitted {
+            executable_book,
+            submitted_quantity,
+            ..
+        } = &mut fixture.orders[1].cause
+        {
+            **executable_book =
+                one_level_book(fixture.instrument.id(), OrderSide::Buy, "0.430", "2.000", 2);
+            *submitted_quantity = Quantity::from("2.000");
+        }
+        fixture.orders[1].fills[0].last_qty = Quantity::from("2.000");
+        fixture.position_effects[1].quantity = Quantity::from("0.714");
+        fixture.position_effects[1].last_quantity = Quantity::from("2.000");
+        fixture.orders[2].fills[0].last_qty = Quantity::from("0.714");
+        fixture.position_effects[2].quantity = Quantity::from("0.000");
+        fixture.position_effects[2].last_quantity = Quantity::from("0.714");
+        fixture.realized_pnl = Money::from("0.43412000 USDC");
+        fixture.position_effects[2].realized_pnl = Some(fixture.realized_pnl);
         fixture.terminal_cash = fixture
             .initial_cash
             .checked_add(fixture.realized_pnl)
-            .expect("fixture terminal cash should be exact");
-        fixture.position_commission = position
-            .commissions
-            .get(&commission.currency)
-            .copied()
-            .expect("commission fixture should accumulate commission");
-        let error = validate_execution_contract(&fixture.trace())
-            .expect_err("correlated non-zero commission must violate the zero-fee assumption");
-        assert!(error.to_string().contains("explicit fixture assumption"));
+            .expect("precision fixture cash");
+        fixture.account_cash_after_fills = vec![
+            Money::from("999998.86012000 USDC"),
+            Money::from("999999.72012000 USDC"),
+            fixture.terminal_cash,
+        ];
+        validate_execution_contract(&fixture.trace()).expect("instrument-derived precision");
     }
 
     #[test]
@@ -575,5 +1045,14 @@ mod tests {
         let mut fixture = fixture();
         fixture.config_bytes.push(b' ');
         assert!(validate_execution_contract(&fixture.trace()).is_err());
+    }
+
+    #[test]
+    fn rejects_position_mutation_quantity_drift() {
+        let mut fixture = fixture();
+        fixture.position_effects[1].quantity = Quantity::from("0.72");
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("position mutation drift must fail closed");
+        assert!(error.to_string().contains("independently folded exposure"));
     }
 }

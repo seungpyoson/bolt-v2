@@ -1188,6 +1188,18 @@ fn ensure_settlement_currency_funded(
 }
 
 pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<NtBacktestNodeRun> {
+    run_nt_backtest_node_with_hooks(manifest, |_| Ok(()), |_| Ok(())).map(|(output, ())| output)
+}
+
+fn run_nt_backtest_node_with_hooks<C, E, B, A>(
+    manifest: &BacktestingRunManifest,
+    before_run: B,
+    after_run: A,
+) -> Result<(NtBacktestNodeRun, E)>
+where
+    B: FnOnce(&BacktestEngine) -> Result<C>,
+    A: FnOnce(C) -> Result<E>,
+{
     let run_config = manifest
         .to_nt_run_config()
         .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
@@ -1228,7 +1240,16 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
             .add_data(instrument_settlement_data, None, false, true)
             .context("add instrument settlement close events")?;
     }
-    let mut results = node.run().context("run BacktestNode")?;
+    let capture = {
+        let engine = node
+            .get_engine(&manifest.run_id)
+            .with_context(|| format!("no engine for run id {} before run", manifest.run_id))?;
+        before_run(engine)?
+    };
+    let run_result = node.run();
+    let evidence_result = after_run(capture);
+    let mut results = run_result.context("run BacktestNode")?;
+    let evidence = evidence_result.context("finalize BacktestNode execution evidence")?;
     ensure!(
         results.len() == 1,
         "expected exactly one backtest result, got {}",
@@ -1272,17 +1293,34 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
         .as_ref()
         .map(|writer| writer.run_guard_report(&nt_result))
         .transpose()?;
-    Ok(NtBacktestNodeRun {
-        result: nt_result,
-        order_terminals,
-        config_override_report: added_strategy.config_override_report,
-        run_guard_report,
-        positions,
-        account_balances,
-        resolved_config_hash: added_strategy.resolved_config_hash,
-        resolved_config_bytes: added_strategy.resolved_config_bytes,
-        execution_contract_report: None,
-    })
+    Ok((
+        NtBacktestNodeRun {
+            result: nt_result,
+            order_terminals,
+            config_override_report: added_strategy.config_override_report,
+            run_guard_report,
+            positions,
+            account_balances,
+            resolved_config_hash: added_strategy.resolved_config_hash,
+            resolved_config_bytes: added_strategy.resolved_config_bytes,
+            execution_contract_report: None,
+        },
+        evidence,
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn run_nt_backtest_node_capturing_evidence(
+    manifest: &BacktestingRunManifest,
+) -> Result<(
+    NtBacktestNodeRun,
+    crate::execution_evidence::ExecutionEvidence,
+)> {
+    run_nt_backtest_node_with_hooks(
+        manifest,
+        |engine| crate::execution_evidence::ExecutionEvidenceCapture::start(engine, manifest),
+        crate::execution_evidence::ExecutionEvidenceCapture::finish,
+    )
 }
 
 /// Capture the terminal state of every order in the engine's post-run cache.
@@ -1338,10 +1376,14 @@ fn run_nt_backtest_node_with_execution_contract<F>(
     validator: F,
 ) -> Result<NtBacktestNodeRun>
 where
-    F: FnOnce(&NtBacktestNodeRun) -> Result<crate::execution_contract::ExecutionContractReport>,
+    F: FnOnce(
+        &NtBacktestNodeRun,
+        &crate::execution_evidence::ExecutionEvidence,
+    ) -> Result<crate::execution_contract::ExecutionContractReport>,
 {
-    let mut output = run_nt_backtest_node(manifest)?;
-    output.execution_contract_report = Some(validator(&output)?);
+    let (mut output, evidence) =
+        crate::execution_evidence::run_nt_backtest_node_with_evidence(manifest)?;
+    output.execution_contract_report = Some(validator(&output, &evidence)?);
     Ok(output)
 }
 
@@ -1359,6 +1401,26 @@ fn replay_executable_book_at_submission(
         book.apply_delta(delta)
             .map_err(|error| anyhow::anyhow!(error))
             .context("replay executable book with NautilusTrader")?;
+    }
+    Ok(book)
+}
+
+#[cfg(test)]
+fn replay_executable_book_at_cursor(
+    instrument_id: InstrumentId,
+    deltas: &[OrderBookDelta],
+    delta_count: usize,
+) -> Result<OrderBook> {
+    ensure!(
+        delta_count <= deltas.len(),
+        "event-store book cursor {delta_count} exceeds hash-bound catalog length {}",
+        deltas.len()
+    );
+    let mut book = OrderBook::new(instrument_id, nautilus_model::enums::BookType::L2_MBP);
+    for delta in deltas.iter().take(delta_count) {
+        book.apply_delta(delta)
+            .map_err(|error| anyhow::anyhow!(error))
+            .context("replay executable book to event-store cursor")?;
     }
     Ok(book)
 }
@@ -2327,7 +2389,7 @@ pub(crate) fn time_window_excludes_all_data(
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, BTreeSet},
         fs,
         path::{Path, PathBuf},
         str::FromStr,
@@ -2353,8 +2415,8 @@ mod tests {
         StrategyPreparationConfig, apply_backtest_config_override, assert_read_back_matches,
         canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
         expected_iterations, iterations_mismatch, load_bolt_v3_config,
-        prepare_strategy_client_routes, raw_taker_config, replay_executable_book_at_submission,
-        resolve_existing_input_path, run_nt_backtest_node,
+        prepare_strategy_client_routes, raw_taker_config, replay_executable_book_at_cursor,
+        replay_executable_book_at_submission, resolve_existing_input_path, run_nt_backtest_node,
         run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
         time_window_excludes_all_data,
     };
@@ -3060,7 +3122,7 @@ mod tests {
             ("side".to_string(), "buy".to_string()),
         ]);
         manifest.catalog_inputs.truncate(1);
-        let result = run_nt_backtest_node_with_execution_contract(&manifest, |_| {
+        let result = run_nt_backtest_node_with_execution_contract(&manifest, |_, _| {
             anyhow::bail!("execution-contract-validator-sentinel")
         });
         let error = match result {
@@ -3117,6 +3179,30 @@ mod tests {
             "late-arriving delta leaked into the executable book"
         );
         Ok(())
+    }
+
+    #[test]
+    fn execution_contract_rejects_followup_delayed_past_next_fill() {
+        let error = ensure_one_causal_followup_per_fill(
+            "position mutation",
+            &[10, 20, 30],
+            &[21, 22, 31],
+            40,
+        )
+        .expect_err("first mutation after the next fill must fail closed");
+        assert!(error.to_string().contains("outside its causal interval"));
+    }
+
+    #[test]
+    fn execution_contract_rejects_terminal_followup_after_settlement_receipt() {
+        let error = ensure_one_causal_followup_per_fill(
+            "AccountState transition",
+            &[10, 20, 30],
+            &[11, 21, 41],
+            40,
+        )
+        .expect_err("terminal account transition after close receipt must fail closed");
+        assert!(error.to_string().contains("outside its causal interval"));
     }
 
     #[test]
@@ -3379,9 +3465,11 @@ mod tests {
             instrument_settlements,
         })?;
 
-        let output = run_nt_backtest_node_with_execution_contract(&manifest, |output| {
+        let output = run_nt_backtest_node_with_execution_contract(&manifest, |output, evidence| {
+            evidence.ensure_issue_789_causal_surface(&manifest)?;
             validate_issue_789_execution_contract(
                 output,
+                evidence,
                 &manifest,
                 &up_projection,
                 &down_projection,
@@ -3458,35 +3546,178 @@ mod tests {
         Ok(())
     }
 
+    fn fills_equal_before_position_attribution(
+        terminal: &nautilus_model::events::OrderFilled,
+        stored: &nautilus_model::events::OrderFilled,
+    ) -> bool {
+        let mut terminal = terminal.clone();
+        let mut stored = stored.clone();
+        terminal.position_id = None;
+        stored.position_id = None;
+        terminal == stored
+    }
+
+    fn ensure_one_causal_followup_per_fill(
+        label: &str,
+        fill_sequences: &[u64],
+        followup_sequences: &[u64],
+        terminal_bound: u64,
+    ) -> Result<()> {
+        ensure!(
+            fill_sequences.len() == followup_sequences.len(),
+            "#789 recorded {} {label} events for {} fills",
+            followup_sequences.len(),
+            fill_sequences.len()
+        );
+        for (index, (&fill_seq, &followup_seq)) in
+            fill_sequences.iter().zip(followup_sequences).enumerate()
+        {
+            let upper_bound = fill_sequences
+                .get(index + 1)
+                .copied()
+                .unwrap_or(terminal_bound);
+            ensure!(
+                fill_seq < followup_seq && followup_seq < upper_bound,
+                "#789 {label} event for fill sequence {fill_seq} is outside its causal interval ({fill_seq}, {upper_bound})"
+            );
+        }
+        Ok(())
+    }
+
     fn validate_issue_789_execution_contract(
         output: &super::NtBacktestNodeRun,
+        evidence: &crate::execution_evidence::ExecutionEvidence,
         manifest: &BacktestingRunManifest,
         up_projection: &crate::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
         down_projection: &crate::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
     ) -> Result<crate::execution_contract::ExecutionContractReport> {
-        let settlement_ts = UnixNanos::from(ISSUE_789_END_NS as u64);
-        let entry_orders: Vec<_> = output
-            .order_terminals
-            .iter()
-            .filter(|order| order.fills.iter().any(|fill| fill.ts_event < settlement_ts))
-            .collect();
         ensure!(
-            entry_orders.len() == 1,
-            "issue #789 requires exactly one pre-settlement entry order, got {}",
-            entry_orders.len()
+            manifest.venue.oms_type == "NETTING"
+                && manifest.venue.account_type == "CASH"
+                && manifest.venue.book_type == "L2_MBP"
+                && manifest.venue.liquidity_consumption
+                && manifest.venue.fill_model.is_none()
+                && manifest.venue.latency_model.is_none()
+                && manifest.venue.fee_model.is_none(),
+            "#789 lifecycle evidence is restricted to NETTING/CASH, L2 liquidity consumption, and deterministic default fill/latency/fee models"
         );
-        let entry_order = entry_orders[0];
-        let entry_fills: Vec<_> = entry_order
-            .fills
-            .iter()
-            .filter(|fill| fill.ts_event < settlement_ts)
-            .cloned()
-            .collect();
+        let mut submit_orders = BTreeMap::new();
+        let mut closes = Vec::new();
+        let mut sequenced_fills = Vec::new();
+        let mut position_effects = Vec::new();
+        let mut account_states = Vec::new();
+        for entry in &evidence.entries {
+            match entry.payload_type.as_str() {
+                "SubmitOrder" => {
+                    let command: nautilus_common::messages::execution::SubmitOrder =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 SubmitOrder evidence")?;
+                    ensure!(
+                        submit_orders
+                            .insert(
+                                command.client_order_id.to_string(),
+                                (entry.seq, entry.ts_init, command),
+                            )
+                            .is_none(),
+                        "duplicate SubmitOrder identity in #789 event store"
+                    );
+                }
+                "OrderFilled" => {
+                    let fill: nautilus_model::events::OrderFilled =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 OrderFilled evidence")?;
+                    sequenced_fills.push((entry.seq, fill));
+                }
+                "InstrumentClose" => {
+                    let close: nautilus_model::data::InstrumentClose =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 InstrumentClose evidence")?;
+                    closes.push((entry.seq, close));
+                }
+                "AccountState" => {
+                    let state: nautilus_model::events::AccountState =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 AccountState evidence")?;
+                    account_states.push((entry.seq, state));
+                }
+                "PositionOpened" => {
+                    let effect: nautilus_model::events::PositionOpened =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 PositionOpened evidence")?;
+                    position_effects.push((
+                        entry.seq,
+                        crate::execution_contract::PositionEffectTrace {
+                            kind: crate::execution_contract::PositionEffectKind::Opened,
+                            position_id: effect.position_id,
+                            instrument_id: effect.instrument_id,
+                            account_id: effect.account_id,
+                            side: effect.side,
+                            quantity: effect.quantity,
+                            last_quantity: effect.last_qty,
+                            last_price: effect.last_px,
+                            realized_pnl: None,
+                        },
+                    ));
+                }
+                "PositionChanged" => {
+                    let effect: nautilus_model::events::PositionChanged =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 PositionChanged evidence")?;
+                    position_effects.push((
+                        entry.seq,
+                        crate::execution_contract::PositionEffectTrace {
+                            kind: crate::execution_contract::PositionEffectKind::Changed,
+                            position_id: effect.position_id,
+                            instrument_id: effect.instrument_id,
+                            account_id: effect.account_id,
+                            side: effect.side,
+                            quantity: effect.quantity,
+                            last_quantity: effect.last_qty,
+                            last_price: effect.last_px,
+                            realized_pnl: effect.realized_pnl,
+                        },
+                    ));
+                }
+                "PositionClosed" => {
+                    let effect: nautilus_model::events::PositionClosed =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 PositionClosed evidence")?;
+                    position_effects.push((
+                        entry.seq,
+                        crate::execution_contract::PositionEffectTrace {
+                            kind: crate::execution_contract::PositionEffectKind::Closed,
+                            position_id: effect.position_id,
+                            instrument_id: effect.instrument_id,
+                            account_id: effect.account_id,
+                            side: effect.side,
+                            quantity: effect.quantity,
+                            last_quantity: effect.last_qty,
+                            last_price: effect.last_px,
+                            realized_pnl: effect.realized_pnl,
+                        },
+                    ));
+                }
+                "PositionAdjusted" => {
+                    anyhow::bail!("#789 does not admit position-adjustment evidence")
+                }
+                _ => {}
+            }
+        }
         ensure!(
-            !entry_fills.is_empty(),
-            "issue #789 entry order has no executable-book fills"
+            !sequenced_fills.is_empty(),
+            "issue #789 event store contains no fills"
         );
-        let instrument_id = entry_fills[0].instrument_id;
+        let instrument_id = sequenced_fills[0].1.instrument_id;
+        ensure!(
+            sequenced_fills
+                .iter()
+                .all(|(_, fill)| fill.instrument_id == instrument_id),
+            "issue #789 event-store fills span multiple instruments"
+        );
+        let fill_sequences = sequenced_fills
+            .iter()
+            .map(|(seq, _)| *seq)
+            .collect::<Vec<_>>();
         let projection = if up_projection.instrument.id() == instrument_id {
             up_projection
         } else if down_projection.instrument.id() == instrument_id {
@@ -3494,14 +3725,128 @@ mod tests {
         } else {
             anyhow::bail!("issue #789 fill instrument {instrument_id} has no PMXT projection")
         };
-        let submission_timestamp = entry_order
-            .submission_timestamp
-            .context("issue #789 entry order has no submission timestamp")?;
-        let executable_book = replay_executable_book_at_submission(
-            instrument_id,
-            &projection.order_book_deltas,
-            submission_timestamp,
+
+        let mut grouped_fills =
+            Vec::<(String, u64, Vec<nautilus_model::events::OrderFilled>)>::new();
+        for (seq, fill) in sequenced_fills {
+            let client_order_id = fill.client_order_id.to_string();
+            match grouped_fills.last_mut() {
+                Some((current_id, _, fills)) if *current_id == client_order_id => fills.push(fill),
+                Some((_, _, _)) => {
+                    ensure!(
+                        !grouped_fills
+                            .iter()
+                            .any(|(existing, _, _)| *existing == client_order_id),
+                        "#789 event store contains a non-contiguous order fill sequence"
+                    );
+                    grouped_fills.push((client_order_id, seq, vec![fill]));
+                }
+                None => grouped_fills.push((client_order_id, seq, vec![fill])),
+            }
+        }
+
+        let mut orders = Vec::with_capacity(grouped_fills.len());
+        let mut ordered_fills = Vec::new();
+        let mut settlement_receipt_seq = None;
+        for (client_order_id, first_fill_seq, fills) in grouped_fills {
+            let cause = if let Some((submit_seq, submit_ts_init, submit)) =
+                submit_orders.get(&client_order_id)
+            {
+                ensure!(
+                    *submit_seq < first_fill_seq
+                        && submit.instrument_id == instrument_id
+                        && submit.order_init.client_order_id.to_string() == client_order_id,
+                    "#789 normal fill is not causally preceded by its matching SubmitOrder"
+                );
+                let delta_count = evidence.book_delta_count_at(
+                    *submit_seq,
+                    *submit_ts_init,
+                    &instrument_id.to_string(),
+                    &projection.order_book_deltas,
+                )?;
+                let executable_book = replay_executable_book_at_cursor(
+                    instrument_id,
+                    &projection.order_book_deltas,
+                    delta_count,
+                )?;
+                crate::execution_contract::ExecutionOrderCause::Submitted {
+                    executable_book: Box::new(executable_book),
+                    submitted_quantity: submit.order_init.quantity,
+                    quote_quantity: submit.order_init.quote_quantity,
+                }
+            } else {
+                let matching_closes = closes
+                    .iter()
+                    .filter(|(_, close)| close.instrument_id == instrument_id)
+                    .collect::<Vec<_>>();
+                ensure!(
+                    matching_closes.len() == 1,
+                    "#789 fill {client_order_id} has neither SubmitOrder nor exactly one matching InstrumentClose receipt"
+                );
+                let close = matching_closes[0];
+                // BacktestEngine routes InstrumentClose into the exchange before
+                // publishing the same data through DataEngine. Settlement is
+                // therefore generated before the BusTap can record the close.
+                // Pin that observed boundary explicitly so an upstream ordering
+                // change fails closed instead of silently changing the evidence
+                // interpretation. Position effect, not this sequence relation,
+                // classifies the fill as the terminal settlement below.
+                ensure!(
+                    close.0 > first_fill_seq,
+                    "#789 InstrumentClose receipt must follow its settlement fill at the pinned NT boundary"
+                );
+                ensure!(
+                    settlement_receipt_seq.replace(close.0).is_none(),
+                    "#789 lifecycle contains multiple settlement receipts"
+                );
+                crate::execution_contract::ExecutionOrderCause::Settlement {
+                    declared_price: close.1.close_price,
+                }
+            };
+            ordered_fills.extend(fills.iter().cloned());
+            orders.push(crate::execution_contract::ExecutionOrderTrace { cause, fills });
+        }
+        let settlement_receipt_seq = settlement_receipt_seq
+            .context("#789 lifecycle has no terminal InstrumentClose receipt")?;
+        let position_effect_sequences = position_effects
+            .iter()
+            .map(|(seq, _)| *seq)
+            .collect::<Vec<_>>();
+        ensure_one_causal_followup_per_fill(
+            "position mutation",
+            &fill_sequences,
+            &position_effect_sequences,
+            settlement_receipt_seq,
         )?;
+        let normal_order_ids = orders
+            .iter()
+            .filter(|order| {
+                matches!(
+                    &order.cause,
+                    crate::execution_contract::ExecutionOrderCause::Submitted { .. }
+                )
+            })
+            .map(|order| order.fills[0].client_order_id.to_string())
+            .collect::<BTreeSet<_>>();
+        let submitted_ids = submit_orders
+            .values()
+            .filter(|(_, _, submit)| submit.instrument_id == instrument_id)
+            .map(|(_, _, submit)| submit.client_order_id.to_string())
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            normal_order_ids == submitted_ids,
+            "#789 normal fills and submitted orders are not complete in both directions"
+        );
+        ensure!(
+            output.result.total_orders == orders.len()
+                && output.order_terminals.len() == orders.len(),
+            "#789 terminal order projections are incomplete for the captured lifecycle"
+        );
+        ensure!(
+            output.result.total_positions == 1,
+            "#789 lifecycle evidence is restricted to exactly one position"
+        );
+
         let positions: Vec<_> = output
             .positions
             .iter()
@@ -3513,6 +3858,46 @@ mod tests {
             positions.len()
         );
         let position = positions[0];
+        ensure!(
+            position_effects
+                .iter()
+                .all(|(_, effect)| effect.position_id == position.id),
+            "terminal position identity diverges from event-store position mutations"
+        );
+        ensure!(
+            position.events.len() == ordered_fills.len()
+                && position
+                    .events
+                    .iter()
+                    .zip(&ordered_fills)
+                    .all(
+                        |(terminal, stored)| fills_equal_before_position_attribution(
+                            terminal, stored
+                        )
+                    ),
+            "terminal position projection diverges from ordered event-store fills"
+        );
+        for order in &orders {
+            let client_order_id = order.fills[0].client_order_id.to_string();
+            let terminal = output
+                .order_terminals
+                .iter()
+                .find(|terminal| terminal.client_order_id == client_order_id)
+                .with_context(|| format!("missing terminal order projection {client_order_id}"))?;
+            ensure!(
+                terminal.fills.len() == order.fills.len()
+                    && terminal
+                        .fills
+                        .iter()
+                        .zip(&order.fills)
+                        .all(
+                            |(terminal, stored)| fills_equal_before_position_attribution(
+                                terminal, stored
+                            )
+                        ),
+                "terminal order {client_order_id} diverges from event-store fills"
+            );
+        }
         let realized_pnl = position
             .realized_pnl
             .context("issue #789 position has no realized PnL")?;
@@ -3548,45 +3933,120 @@ mod tests {
             realized_pnl.currency,
             matching_initial_balances.len()
         );
-        let initial_cash = *matching_initial_balances[0];
-        let position_commission = position
-            .commissions
-            .get(&realized_pnl.currency)
-            .copied()
-            .unwrap_or_else(|| Money::zero(realized_pnl.currency));
+        let manifest_initial_cash = *matching_initial_balances[0];
+        let raw_lifecycle_account_states = account_states
+            .iter()
+            .filter(|(_, state)| state.account_id == position.account_id)
+            .collect::<Vec<_>>();
+        let mut lifecycle_account_states: Vec<&(u64, nautilus_model::events::AccountState)> =
+            Vec::new();
+        for state in raw_lifecycle_account_states {
+            if let Some((_, previous)) = lifecycle_account_states.last()
+                && previous.has_same_balances_and_margins(&state.1)
+            {
+                continue;
+            }
+            lifecycle_account_states.push(state);
+        }
+        ensure!(
+            !lifecycle_account_states.is_empty(),
+            "issue #789 event store contains no lifecycle AccountState evidence"
+        );
+        ensure!(
+            lifecycle_account_states.len() == ordered_fills.len() + 1,
+            "#789 requires one initial AccountState and one transition after every fill: got {} states for {} fills",
+            lifecycle_account_states.len(),
+            ordered_fills.len()
+        );
+        let account_transition_sequences = lifecycle_account_states
+            .iter()
+            .skip(1)
+            .map(|(seq, _)| *seq)
+            .collect::<Vec<_>>();
+        ensure_one_causal_followup_per_fill(
+            "AccountState transition",
+            &fill_sequences,
+            &account_transition_sequences,
+            settlement_receipt_seq,
+        )?;
+        let account_cash = |state: &nautilus_model::events::AccountState| -> Result<Money> {
+            let matches = state
+                .balances
+                .iter()
+                .filter(|balance| balance.currency == realized_pnl.currency)
+                .collect::<Vec<_>>();
+            ensure!(
+                matches.len() == 1,
+                "#789 AccountState requires exactly one {} balance, got {}",
+                realized_pnl.currency,
+                matches.len()
+            );
+            Ok(matches[0].total)
+        };
+        let initial_cash = account_cash(&lifecycle_account_states[0].1)?;
+        let stored_terminal_cash = account_cash(
+            &lifecycle_account_states
+                .last()
+                .context("issue #789 AccountState sequence unexpectedly empty")?
+                .1,
+        )?;
+        ensure!(
+            initial_cash == manifest_initial_cash,
+            "initial AccountState does not equal the manifest starting balance"
+        );
+        ensure!(
+            stored_terminal_cash == terminal_cash,
+            "terminal account projection diverges from the final AccountState"
+        );
+        let account_cash_after_fills = lifecycle_account_states
+            .iter()
+            .skip(1)
+            .map(|(_, state)| account_cash(state))
+            .collect::<Result<Vec<_>>>()?;
+        let position_commissions = position.commissions.values().copied().collect();
         let settlement = manifest
             .instrument_settlements
             .iter()
             .find(|settlement| settlement.nt_instrument_id == instrument_id.to_string())
             .context("issue #789 fill instrument has no settlement")?;
-        let settlement_price = Price::from_str(&settlement.close_price)
+        let declared_settlement_price = Price::from_str(&settlement.close_price)
             .map_err(|error| anyhow::anyhow!(error))
             .context("parse issue #789 exact settlement price")?;
+        ensure!(
+            orders.iter().any(|order| matches!(
+                &order.cause,
+                crate::execution_contract::ExecutionOrderCause::Settlement { declared_price }
+                    if *declared_price == declared_settlement_price
+            )),
+            "captured InstrumentClose does not equal the manifest settlement"
+        );
         let resolved_config_bytes = output
             .resolved_config_bytes
             .as_deref()
             .context("issue #789 runner omitted resolved config bytes")?;
 
-        crate::execution_contract::validate_execution_contract(
+        let report = crate::execution_contract::validate_execution_contract(
             &crate::execution_contract::ExecutionContractTrace {
                 instrument: &projection.instrument,
-                executable_book: &executable_book,
-                order_side: entry_fills[0].order_side,
-                submitted_quantity: entry_order.initialized_quantity,
-                quote_quantity: entry_order.initialized_quote_quantity,
-                effective_base_quantity: entry_order.effective_quantity,
-                fills: &entry_fills,
-                position_fills: &position.events,
-                settlement_price,
+                orders,
+                position_effects: position_effects
+                    .into_iter()
+                    .map(|(_, effect)| effect)
+                    .collect(),
                 initial_cash,
-                terminal_cash,
+                account_cash_after_fills,
+                terminal_cash: stored_terminal_cash,
                 realized_pnl,
-                position_commission,
-                expected_fill_commission: Money::zero(realized_pnl.currency),
+                position_commissions,
                 canonical_resolved_config_bytes: resolved_config_bytes,
                 canonical_resolved_config_sha256: &manifest.strategy_config_hash,
             },
-        )
+        )?;
+        ensure!(
+            report.normal_exit_fill_count > 0,
+            "issue #789 lifecycle did not contain a validated normal exit before settlement"
+        );
+        Ok(report)
     }
 
     fn write_issue_789_result_artifact(

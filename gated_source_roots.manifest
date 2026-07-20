@@ -1,10 +1,7 @@
 # Gated source roots — THE single owner of the Bolt-v3 abort-plan source-fence
-# and strategy-policy file set. Read by BOTH languages so the list lives in one
-# place:
-#   - Rust:   build.rs generates the GATED_SOURCE_ROOTS constant from this file;
-#             src/source_canonicalization.rs includes the generated constant.
-#   - Python: scripts/bolt_v3_source_roots.py reads this file (the Python CI
-#             fences import their root lists from there).
+# and strategy-policy file set. build.rs generates the GATED_SOURCE_ROOTS
+# constant from this file; src/source_canonicalization.rs includes the
+# generated constant. The manifest and build.rs are the enforcing pair.
 #
 # Format: lines starting with '#' are comments; blank lines are ignored;
 # '[key]' starts a source set whose key must match the STRATEGY_KEY /

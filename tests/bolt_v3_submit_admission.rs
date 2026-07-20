@@ -3506,7 +3506,7 @@ fn admitted_shadow_admission_fails_closed_when_evidence_write_fails() {
 #[test]
 fn risk_reducing_exit_is_not_blocked_when_evidence_write_fails() {
     let writer = Arc::new(FailingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
 
     let permit = admission
         .admit(&submit_request_with_kind_and_exit_proof(

@@ -831,6 +831,10 @@ fn bybit_operator_inputs_gitignore_pattern_matches_eviction_predicate() {
     assert!(!is_bybit_source_universe_operator_inputs_path(binance));
     assert!(!git_check_ignore(&repo_root, binance));
 
+    let empty_scope = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-/operator-inputs/source-universe-operator-inputs.json";
+    assert!(!is_bybit_source_universe_operator_inputs_path(empty_scope));
+    assert!(!git_check_ignore(&repo_root, empty_scope));
+
     let nested = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-hypothetical/nested/operator-inputs/source-universe-operator-inputs.json";
     assert!(!is_bybit_source_universe_operator_inputs_path(nested));
     assert!(!git_check_ignore(&repo_root, nested));

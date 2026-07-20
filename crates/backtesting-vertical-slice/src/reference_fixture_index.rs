@@ -606,6 +606,7 @@ mod tests {
             "{BYBIT_OPERATOR_INPUTS_PREFIX}example/operator-inputs/source-universe-operator-inputs.json"
         );
         let rejected_binance = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-example/operator-inputs/source-universe-operator-inputs.json";
+        let rejected_empty_scope = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-/operator-inputs/source-universe-operator-inputs.json";
         let rejected_nested = format!(
             "{BYBIT_OPERATOR_INPUTS_PREFIX}example/nested/operator-inputs/source-universe-operator-inputs.json"
         );
@@ -617,6 +618,9 @@ mod tests {
         assert!(is_bybit_source_universe_operator_inputs_path(&accepted));
         assert!(!is_bybit_source_universe_operator_inputs_path(
             rejected_binance
+        ));
+        assert!(!is_bybit_source_universe_operator_inputs_path(
+            rejected_empty_scope
         ));
         assert!(!is_bybit_source_universe_operator_inputs_path(
             &rejected_nested

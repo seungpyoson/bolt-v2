@@ -189,13 +189,7 @@ jobs:
       - name: build
         env:
           BUILD_TARGET: ${{ steps.setup.outputs.target }}
-          SCCACHE_ENABLED: ${{ steps.sccache.outputs.enabled || 'false' }}
         run: |
-          set -euo pipefail
-          if [[ "$SCCACHE_ENABLED" == "true" ]]; then
-            [[ -n "${SCCACHE_PATH:-}" && -x "$SCCACHE_PATH" ]]
-            export RUSTC_WRAPPER="$SCCACHE_PATH"
-          fi
           set -x
           cargo zigbuild --release --target "$BUILD_TARGET" --locked
 

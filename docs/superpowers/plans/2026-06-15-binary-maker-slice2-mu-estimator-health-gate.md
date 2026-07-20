@@ -1,5 +1,8 @@
 # Binary-Maker Slice 2 — μ Estimator + Health Gate Implementation Plan
 
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give the binary-oracle maker a net-new informed-fraction (μ) estimator over the existing signed trade-flow buffer, plus a fail-closed μ-health gate that blocks quoting (future) AND go-live (now) when μ is absent, stale, non-finite, or degenerate (constant-0).

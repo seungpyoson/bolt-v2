@@ -1,5 +1,8 @@
 # Implementation Plan: Rename `position_sizer` → `capital_admission` gate
 
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
+
 **Branch**: `docs/711-capital-admission-rename` | **Date**: 2026-06-25 | **Spec**: `specs/711-capital-admission-rename/spec.md`
 **Input**: GitHub issue #711 | **Revised** after external review (GPT/Kimi/GLM), adjudicated vs code at HEAD `07db9cb04`.
 

@@ -1,5 +1,8 @@
 # Binary-Maker Slice 0 — Drift Fences & Shared Feed-Health Seam — Implementation Plan
 
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land the two structural enablers the binary-maker build needs before any maker code: (1) the FR-080 CI fence forbidding venue-name string-literal branches outside provider modules, and (2) the stale-feed forced-flat predicates hoisted from the taker into a shared `bolt_v3_feed_health` module so the maker can reuse them (Rule #6, no dual-state) — plus the §16#9 stale `spec.md` assumption fix.

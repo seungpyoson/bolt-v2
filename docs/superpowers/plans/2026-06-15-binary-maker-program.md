@@ -1,5 +1,8 @@
 # Binary-Oracle Maker — Implementation Program (Slice Index)
 
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
+
 > **For agentic workers:** This is the **program backbone**, not a task-level plan.
 > The binary maker is ~11 independently-shippable slices; each slice gets its own
 > bite-sized TDD plan under `docs/superpowers/plans/` and is executed via

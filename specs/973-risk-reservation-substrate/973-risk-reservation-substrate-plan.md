@@ -1,5 +1,8 @@
 # Implementation Plan: Risk-Reservation Substrate (gate-owned safety ledger)
 
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
+
 **Branch**: `712-positional-sizing-engine` (design authoring; substrate implementation branches from its own tracking issue) | **Date**: 2026-06-25 | **Spec**: `specs/973-risk-reservation-substrate/973-risk-reservation-substrate-spec.md`
 **Input**: Feature specification from `specs/973-risk-reservation-substrate/973-risk-reservation-substrate-spec.md`. Tracking: #973. Depends on #711; consumed by #712; armed live by #688.
 

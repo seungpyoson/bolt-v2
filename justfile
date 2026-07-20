@@ -160,13 +160,18 @@ merge-queue *pr_numbers:
             continue
         fi
 
-        not_submitted=("${pr_numbers[@]:$index}")
+        not_attempted=("${pr_numbers[@]:$((index + 1))}")
         if (( ${#submitted[@]} == 0 )); then
-            echo "Submitted: none" >&2
+            echo "Confirmed submitted: none" >&2
         else
-            echo "Submitted: ${submitted[*]}" >&2
+            echo "Confirmed submitted: ${submitted[*]}" >&2
         fi
-        echo "Not submitted: ${not_submitted[*]}" >&2
+        echo "Submission outcome unknown: $pr_number" >&2
+        if (( ${#not_attempted[@]} == 0 )); then
+            echo "Not attempted: none" >&2
+        else
+            echo "Not attempted: ${not_attempted[*]}" >&2
+        fi
         exit 1
     done
 

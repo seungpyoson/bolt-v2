@@ -86,7 +86,7 @@ Examples:
   just rust-probe nextest-test-target-name <harness_target> <member_stem>::
 
 Rust Probe is targeted remote debugging feedback only. It is not merge proof.
-The fixed final-review workflow is the complete remote evidence path.
+Advisory CI is pushed-head evidence, not merge authority.
 """
 RUST_PROBE_INPUT_KEYS = (
     "runner_tier",
@@ -2902,7 +2902,7 @@ def local_compile_refusal_payload(
             "then commit and push the branch before running the smallest suggested just rust-probe command",
             "for complete remote evidence: commit local changes",
             "for complete remote evidence: publish the exact branch head with just sandbox-safe-push",
-            "after resolving local findings: invoke just final-review <PR> exactly once",
+            "inspect advisory CI for the pushed head; it is evidence, not merge authority",
         ],
         "reclaimability_measured": False,
         "reclaimable_bytes": None,
@@ -3595,7 +3595,7 @@ def rust_probe_suggestions(
     if any(path.startswith("crates/") for path in normalized):
         return [
             "No root Rust Probe suggestion was inferred for changed crates/ paths.",
-            "The fixed final-review workflow always covers every registered workspace.",
+            "Use advisory CI for complete pushed-head Rust evidence.",
         ]
     return [
         "No Rust source or top-level integration-test target was inferred from changed files.",
@@ -3657,7 +3657,7 @@ def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
     print("commands:")
     for suggestion in rust_probe_suggestions(changed_files):
         print(f"- {suggestion}")
-    print("Rust Probe is diagnostic only. The fixed final-review workflow is the complete remote evidence path.")
+    print("Rust Probe is diagnostic only. Advisory CI is pushed-head evidence, not merge authority.")
     return 0
 
 
@@ -3692,7 +3692,7 @@ def evaluate_rust_probe_run(
         return None
     if state == "pass":
         print(f"OK: Rust Probe {probe_id} passed for {head}: {summary}")
-        print("DIAGNOSTIC ONLY -- the fixed final-review workflow is the complete remote evidence path")
+        print("DIAGNOSTIC ONLY -- Rust Probe is debugging feedback, not merge authority")
         return 0
     conclusion = str(run.get("conclusion") or "")
     if conclusion == "cancelled":
@@ -3703,7 +3703,7 @@ def evaluate_rust_probe_run(
         return 2
     print(f"Rust Probe {probe_id} failed for {head}; this is debugging feedback only:", file=sys.stderr)
     print(f"- {summary}", file=sys.stderr)
-    print("DIAGNOSTIC ONLY -- the fixed final-review workflow is the complete remote evidence path", file=sys.stderr)
+    print("DIAGNOSTIC ONLY -- Rust Probe is debugging feedback, not merge authority", file=sys.stderr)
     return 1
 
 
@@ -3807,7 +3807,7 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
     print(f"sha: {head}")
     print(f"scope: {scope}")
     print(f"runner_tier: {runner_tier}")
-    print("DIAGNOSTIC ONLY -- the fixed final-review workflow is the complete remote evidence path")
+    print("DIAGNOSTIC ONLY -- Rust Probe is debugging feedback, not merge authority")
     return wait_for_rust_probe_run(
         repo=repo,
         remote_policy=probe_policy,

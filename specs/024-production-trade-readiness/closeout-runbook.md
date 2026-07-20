@@ -10,8 +10,8 @@ below against recorded evidence, not by this document.
 
 ## Scope of this lane
 
-- **Owns:** the closeout sequence: final local verification, final CI, final external review,
-  the T044 canary approval gate, T045 post-run hygiene, and the T046 readiness-ledger update.
+- **Owns:** the closeout sequence: final local verification, final CI, the T044 canary approval
+  gate, T045 post-run hygiene, and the T046 readiness-ledger update.
 - **Does not own:** T043B itself, the T043A multi-venue data-client matrix, or any hardcode
   cleanup. Those are tracked in [`tasks.md`](tasks.md) and worked in their own lanes.
 - **Constraints (carried from [`plan.md`](plan.md) and project rules):** one readiness PR; SSM is
@@ -33,9 +33,9 @@ below against recorded evidence, not by this document.
   See [`tiny-canary.md`](tiny-canary.md). If any later commit changes code, config, or bound
   evidence, rerun the Step 2/Step 3 pre-run proofs instead of treating older artifacts as current.
 - T044 / T045 / T046: **open**, gated as in [`tasks.md`](tasks.md) Phase 8.
-- Last exact-head verification baseline (now superseded by T043B head movement): local +
-  CI + external review were green at PR #480 head `8b95eca9c2f410ff462954cff90c4734d01593cb`
-  ([`evidence.md`](evidence.md) T041, [`external-final-review.md`](external-final-review.md)).
+- Last exact-head verification baseline (now superseded by T043B head movement): local and
+  CI evidence were green at PR #480 head `8b95eca9c2f410ff462954cff90c4734d01593cb`
+  ([`evidence.md`](evidence.md) T041).
 
 ---
 
@@ -183,29 +183,7 @@ the run/PR view in [`evidence.md`](evidence.md).
 
 ---
 
-## Step 5 - Final external review (only if `FINAL_HEAD` differs from the T042-reviewed head)
-
-T042 last approved head `8b95eca9c2f410ff462954cff90c4734d01593cb`
-([`external-final-review.md`](external-final-review.md)). Because T043B adds code commits,
-`FINAL_HEAD` will differ, so **a fresh exact-head review is required** (FR-008) unless the
-operator explicitly waives it with the head delta recorded.
-
-- **Reviewer set:** Claude, Gemini, DeepSeek, GLM, Grok; all must return counted approvals over
-  the exact-head bounded source packet. **Kimi remains an operator waiver, not an approval.**
-- **Packet form:** bounded source shards/diffs with recorded sha256s (the all-in-one packet
-  exceeds reviewer source budgets; see [`external-final-review.md`](external-final-review.md)).
-- Review-packet convention: embed head-to-base diff bytes + CI URLs directly in the reviewer prompt;
-  do not ask reviewers to fetch, checkout, or build.
-
-**Pass criteria:** every required non-waived reviewer approves with no blocking findings at
-`FINAL_HEAD`. Record verdicts + job ids in [`external-final-review.md`](external-final-review.md).
-
-> If the operator waives a fresh review, that waiver and the exact T042-reviewed head -> `FINAL_HEAD`
-> delta must be recorded before T044.
-
----
-
-## Step 6 - T044 tiny-capital canary - REQUIRES FRESH EXPLICIT OPERATOR APPROVAL
+## Step 5 - T044 tiny-capital canary - REQUIRES FRESH EXPLICIT OPERATOR APPROVAL
 
 > **HARD STOP. This is the only live-capital step.** It may submit at most **one** live order.
 > Do not run it on a standing/previous approval. The preflight approval window is **not reusable**
@@ -245,7 +223,7 @@ Record the attempt (head, artifact root, outcome, exact side-effects statement) 
 
 ---
 
-## Step 7 - T045 post-run hygiene + evidence retention (requires T044 complete)
+## Step 6 - T045 post-run hygiene + evidence retention (requires T044 complete)
 
 Run an artifact/log secret scan over the T044 output directory and configured post-run report
 paths, write the hygiene proof, and record the retention/purge decision in
@@ -272,7 +250,7 @@ non-redacted artifacts into the repo; commit only redacted evidence files (paths
 
 ---
 
-## Step 8 - T046 readiness ledger (requires T044 + T045)
+## Step 7 - T046 readiness ledger (requires T044 + T045)
 
 Update the targets below with the exact final readiness status, then record the links in
 [`readiness-ledger.md`](readiness-ledger.md). **Do not** post final-readiness claims before T044
@@ -306,8 +284,8 @@ plainly; do not let it silently close.
 - **Re-running `verify-final` / no-submit / canary to chase a docs-only head bump.** Prove once at
   `FINAL_HEAD`; do not re-open a proven gate for a documentation commit.
 
-Steps 1-5 are non-live verification and may run without trade approval, but Step 4 should still be
-held until the final local pre-canary evidence head is selected. Step 6 is the approval boundary.
+Steps 1-4 are non-live verification and may run without trade approval, but Step 4 should still be
+held until the final local pre-canary evidence head is selected. Step 5 is the approval boundary.
 
 ---
 
@@ -319,7 +297,6 @@ held until the final local pre-canary evidence head is selected. Step 6 is the a
 - [ ] Step 2: `operator-artifacts verify-final --verification-stage pre-run` PASS at `FINAL_HEAD`.
 - [ ] Step 3: `no-submit-readiness` re-run at `FINAL_HEAD`; 7 stages satisfied, report sha256 recorded.
 - [ ] Step 4: single final CI; `gh pr view 480 ... statusCheckRollup` green; `headRefOid == FINAL_HEAD`.
-- [ ] Step 5: fresh exact-head external review (Claude/Gemini/DeepSeek/GLM/Grok; Kimi waived) or recorded operator waiver.
-- [ ] Step 6: **fresh operator approval** -> refresh approval window -> re-verify -> `bolt-v2 run` canary; record outcome.
-- [ ] Step 7: post-run hygiene scan + proof + retention/purge decision recorded.
-- [ ] Step 8: #369 / #385 / #409 / #360 / PR #480 updated; links recorded; T043A residual scope stated.
+- [ ] Step 5: **fresh operator approval** -> refresh approval window -> re-verify -> `bolt-v2 run` canary; record outcome.
+- [ ] Step 6: post-run hygiene scan + proof + retention/purge decision recorded.
+- [ ] Step 7: #369 / #385 / #409 / #360 / PR #480 updated; links recorded; T043A residual scope stated.

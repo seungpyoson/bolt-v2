@@ -51,7 +51,7 @@ As operator, I need T127 to prove every required abort path before a tiny-capita
 
 ### User Story 5 - Final Packet And Live Readiness Chain Complete (Priority: P1)
 
-As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real artifacts exist, exact-head verification is green, and external reviewers approve.
+As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real artifacts exist and exact-head verification is green.
 
 **Independent Test**: `operator-artifacts verify-final` passes on the final root TOML and packet; then final-packet EC2/EIP no-submit passes; then tiny-capital canary passes.
 
@@ -60,11 +60,11 @@ As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real art
 - **FR-001**: Use `specs/024-production-trade-readiness/` as the explicit PR #480 trade-readiness task packet; do not implement order-intent work from `specs/023-nt-order-intent-layer/`.
 - **FR-002**: Keep #466 verifier decomposition outside this feature unless the operator explicitly changes scope.
 - **FR-003**: Use one readiness PR; do not create PR-per-slice churn.
-- **FR-004**: Do not implement production code until the task list receives task-list approvals from Claude, Gemini, DeepSeek, GLM, Kimi, and Grok, or until the operator explicitly waives an unavailable reviewer with exact failure evidence.
+- **FR-004**: Do not implement production code until the operator approves the task-list scope.
 - **FR-005**: Use TDD for each code slice: RED evidence first, minimal implementation, then verification.
 - **FR-006**: Runtime values must remain config-owned through TOML or operator evidence files.
 - **FR-007**: Do not claim production trade readiness from unit tests, fixture artifacts, static manifests, or historical no-submit reports.
-- **FR-008**: Run final exact-head CI and external review before approved live/no-submit/canary operations.
+- **FR-008**: Run final exact-head CI before approved live/no-submit/canary operations.
 - **FR-009**: Resolution/reference readiness gates must be market, venue, account, value-kind, and provider agnostic: Chainlink, Pyth, exchange-index, HIP-4/venue-native, Deribit/index, outcome-oracle, sports, politics, entertainment, and no-resolution markets are selected by config and selected-market metadata, not by hardcoded archetype assumptions.
 - **FR-010**: Strategy archetypes may declare required gate roles/classes/value-kinds only; provider-specific feed ids, schema versions, decimal scales, freshness windows, endpoints, venue metadata scopes, and credentials belong to TOML-owned gate provider/subscription config and provider validators.
 - **FR-011**: Dynamic market rotation must fail closed unless the selected market requirement, configured target subscription, provider capability, and evidence all match for the same selected market identity and gate role.
@@ -82,7 +82,7 @@ As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real art
 - **SC-001**: T124/T125 bind real current-head runtime decision evidence into the final packet.
 - **SC-002**: T126/T127 source-owned collectors exist for all required pre-run and abort fields.
 - **SC-003**: T128 final packet is blocker-free and verified against root TOML operator evidence.
-- **SC-004**: T130 exact-head local verification, GitHub CI, and external review pass.
+- **SC-004**: T130 exact-head local verification and GitHub CI pass.
 - **SC-005**: T131/T122 final-packet EC2/EIP no-submit passes.
 - **SC-006**: T116/T046 tiny-capital canary passes after no-submit.
 - **SC-007**: T036H RED/GREEN coverage proves no provider or venue is globally required and proves mismatched, stale, wrong-role, or wrong-value-kind resolution/reference evidence cannot satisfy a rotated selected market.

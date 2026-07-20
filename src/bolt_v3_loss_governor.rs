@@ -227,27 +227,10 @@ fn loss_snapshot_diagnostics(
             stale_reason: Some(LossSnapshotStaleReason::MissingSnapshot),
         };
     };
-    let source_empty = snapshot.source.trim().is_empty();
     let future_dated = snapshot.observed_at_ns > now_ns;
     let snapshot_age_ns = (!future_dated).then(|| now_ns - snapshot.observed_at_ns);
-    let age_exceeded = snapshot_age_ns.is_some_and(|age| age > policy.max_snapshot_age_ns);
-    let missing_required_field = (policy.max_per_trade_loss.is_some()
-        && snapshot.per_trade_pnl.is_none())
-        || (policy.max_daily_loss.is_some() && snapshot.daily_pnl.is_none())
-        || (policy.max_rolling_loss.is_some() && snapshot.rolling_pnl.is_none())
-        || (policy.max_drawdown.is_some()
-            && (snapshot.current_equity.is_none() || snapshot.peak_equity.is_none()));
-    let stale_reason = if source_empty {
-        Some(LossSnapshotStaleReason::SourceEmpty)
-    } else if future_dated {
-        Some(LossSnapshotStaleReason::FutureDated)
-    } else if age_exceeded {
-        Some(LossSnapshotStaleReason::AgeExceeded)
-    } else if missing_required_field {
-        Some(LossSnapshotStaleReason::MissingRequiredField)
-    } else {
-        None
-    };
+    let stale_reason = loss_snapshot_stale_reason(policy, snapshot, now_ns)
+        .map(loss_snapshot_diagnostics_stale_reason);
     LossSnapshotDiagnostics {
         snapshot_present: true,
         snapshot_observed_at_ns: Some(snapshot.observed_at_ns),
@@ -265,6 +248,20 @@ fn loss_snapshot_diagnostics(
             .last_portfolio_snapshot_observed_at_ns,
         last_position_event_observed_at_ns: source_observations.last_position_event_observed_at_ns,
         stale_reason,
+    }
+}
+
+const fn loss_snapshot_diagnostics_stale_reason(
+    reason: BoltV3StaleLossReason,
+) -> LossSnapshotStaleReason {
+    match reason {
+        BoltV3StaleLossReason::MissingSnapshot => LossSnapshotStaleReason::MissingSnapshot,
+        BoltV3StaleLossReason::SourceEmpty => LossSnapshotStaleReason::SourceEmpty,
+        BoltV3StaleLossReason::FutureDated => LossSnapshotStaleReason::FutureDated,
+        BoltV3StaleLossReason::AgeExceeded => LossSnapshotStaleReason::AgeExceeded,
+        BoltV3StaleLossReason::MissingRequiredField => {
+            LossSnapshotStaleReason::MissingRequiredField
+        }
     }
 }
 
@@ -452,6 +449,21 @@ mod tests {
         for (label, snapshot, expected_reason) in cases {
             let legacy_stale = legacy_snapshot_is_stale(&policy, &snapshot, now_ns);
             let reason = loss_snapshot_stale_reason(&policy, &snapshot, now_ns);
+            let diagnostics = loss_snapshot_diagnostics(
+                &policy,
+                Some(&snapshot),
+                now_ns,
+                LossSourceObservationTimestamps::unobserved(),
+            );
+            let expected_diagnostic_reason = expected_reason.map(|reason| match reason {
+                BoltV3StaleLossReason::MissingSnapshot => LossSnapshotStaleReason::MissingSnapshot,
+                BoltV3StaleLossReason::SourceEmpty => LossSnapshotStaleReason::SourceEmpty,
+                BoltV3StaleLossReason::FutureDated => LossSnapshotStaleReason::FutureDated,
+                BoltV3StaleLossReason::AgeExceeded => LossSnapshotStaleReason::AgeExceeded,
+                BoltV3StaleLossReason::MissingRequiredField => {
+                    LossSnapshotStaleReason::MissingRequiredField
+                }
+            });
 
             assert_eq!(
                 reason.is_some(),
@@ -466,6 +478,10 @@ mod tests {
             assert_eq!(
                 reason, expected_reason,
                 "{label} should classify the requested stale reason"
+            );
+            assert_eq!(
+                diagnostics.stale_reason, expected_diagnostic_reason,
+                "{label} diagnostics and halt evidence must use one stale classification"
             );
         }
     }

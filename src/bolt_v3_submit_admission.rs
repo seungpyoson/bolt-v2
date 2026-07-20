@@ -1599,9 +1599,10 @@ impl BoltV3SubmitAdmissionState {
         }
         if evaluation.outcome == BoltV3AdmissionOutcome::Admitted
             && let Some(metadata) = evaluation.reservation_metadata.as_ref()
-            && let Err(err) = self
-                .decision_evidence
-                .record_submit_reservation_metadata(metadata)
+            && let Err(err) = record_decision(RiskDirection::NewRisk, || {
+                self.decision_evidence
+                    .record_submit_reservation_metadata(metadata)
+            })
         {
             if let Some(rollback) = evaluation.rollback.as_ref() {
                 rollback_capital_admission_reservation(&mut inner, rollback);
@@ -1611,7 +1612,9 @@ impl BoltV3SubmitAdmissionState {
             });
         }
         let record_result = if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
-            self.record_admission_decision(request, &evaluation, now_ns)
+            record_decision(RiskDirection::NewRisk, || {
+                self.record_admission_decision(request, &evaluation, now_ns)
+            })
         } else {
             record_decision(RiskDirection::Neutral, || {
                 self.record_admission_decision(request, &evaluation, now_ns)
@@ -1714,11 +1717,12 @@ impl BoltV3SubmitAdmissionState {
             rollback_capital_admission_reservation(&mut inner, rollback);
         }
         match admission_result {
-            Ok(()) => self
-                .record_admission_decision(request, &evaluation, now_ns)
-                .map_err(|err| BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                    reason: format!("{err:#}"),
-                }),
+            Ok(()) => record_decision(RiskDirection::NewRisk, || {
+                self.record_admission_decision(request, &evaluation, now_ns)
+            })
+            .map_err(|err| BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                reason: format!("{err:#}"),
+            }),
             Err(error) => {
                 let _ = record_decision(RiskDirection::Neutral, || {
                     self.record_admission_decision(request, &evaluation, now_ns)
@@ -2200,10 +2204,10 @@ impl BoltV3SubmitAdmissionState {
         };
 
         for metadata in &reservation_metadata {
-            if let Err(err) = self
-                .decision_evidence
-                .record_submit_reservation_metadata(metadata)
-            {
+            if let Err(err) = record_decision(RiskDirection::NewRisk, || {
+                self.decision_evidence
+                    .record_submit_reservation_metadata(metadata)
+            }) {
                 rollback_capital_admission_reservations(&mut inner, &rollbacks);
                 return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                     reason: format!("{err:#}"),
@@ -2211,10 +2215,10 @@ impl BoltV3SubmitAdmissionState {
             }
         }
 
-        if let Err(err) = self
-            .decision_evidence
-            .record_basket_admission_decision(&evidence)
-        {
+        if let Err(err) = record_decision(RiskDirection::NewRisk, || {
+            self.decision_evidence
+                .record_basket_admission_decision(&evidence)
+        }) {
             rollback_capital_admission_reservations(&mut inner, &rollbacks);
             return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                 reason: format!("{err:#}"),

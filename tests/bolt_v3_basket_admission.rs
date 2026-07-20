@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -436,6 +436,7 @@ fn basket_validation_rejection_preserves_primary_error_when_evidence_write_fails
 
     assert_eq!(error, BoltV3BasketAdmissionError::StaleScannerEvidence);
     assert_eq!(submit_state.admitted_order_count(), 0);
+    assert_eq!(writer.basket_admission_decision_attempts(), 1);
 }
 
 #[test]
@@ -470,6 +471,43 @@ fn basket_reservation_rejection_preserves_primary_error_when_evidence_write_fail
         2,
         "the rejected duplicate basket must not consume submit capacity"
     );
+    assert_eq!(writer.basket_admission_decision_attempts(), 2);
+    drop(permit);
+}
+
+#[test]
+fn basket_open_cap_rejection_preserves_primary_error_when_evidence_write_fails() {
+    let writer = Arc::new(RecordingBasketDecisionWriter::default());
+    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
+    let submit_state = submit_state(writer.clone(), 4, dec!(10));
+    let group = fixture_group();
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
+    let claims = entry_claims(&group, dec!(0.9));
+
+    let permit = basket_state
+        .admit(
+            &basket_request("basket-open", &group, &scan, claims.clone()),
+            &submit_state,
+        )
+        .expect("fixture basket should consume the open-basket slot");
+    writer
+        .fail_basket_admission_decision
+        .store(true, Ordering::SeqCst);
+
+    let error = basket_state
+        .admit(
+            &basket_request("basket-capped", &group, &scan, claims),
+            &submit_state,
+        )
+        .expect_err("open-basket cap rejection must preserve its typed error");
+
+    assert_eq!(error, BoltV3BasketAdmissionError::MaxOpenBasketCapExceeded);
+    assert_eq!(
+        submit_state.admitted_order_count(),
+        2,
+        "the rejected basket must not consume submit capacity"
+    );
+    assert_eq!(writer.basket_admission_decision_attempts(), 2);
     drop(permit);
 }
 
@@ -666,7 +704,7 @@ fn basket_rejection_preserves_later_leg_error_when_evidence_write_fails() {
         fail_basket_admission_decision: AtomicBool::new(true),
         ..Default::default()
     });
-    let submit_gate = capital_admission_submit_state(writer);
+    let submit_gate = capital_admission_submit_state(writer.clone());
     let group = fixture_group();
     let mut claims = entry_claims(&group, dec!(0.9));
     attach_capital_admission(&mut claims);
@@ -696,6 +734,7 @@ fn basket_rejection_preserves_later_leg_error_when_evidence_write_fails() {
         submit_gate.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
+    assert_eq!(writer.basket_admission_decision_attempts(), 1);
     for claim in &claims {
         assert!(
             !submit_gate.capital_admission_has_live_reservation(&claim.client_order_id),
@@ -850,12 +889,18 @@ fn assert_basket_rejects(
 struct RecordingBasketDecisionWriter {
     admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
     basket_admission_decisions: Mutex<Vec<BoltV3BasketAdmissionDecisionEvidence>>,
+    basket_admission_decision_attempts: AtomicUsize,
     submit_reservation_metadata: Mutex<Vec<BoltV3SubmitReservationMetadataEvidence>>,
     fail_basket_admission_decision: AtomicBool,
     fail_submit_reservation_metadata: AtomicBool,
 }
 
 impl RecordingBasketDecisionWriter {
+    fn basket_admission_decision_attempts(&self) -> usize {
+        self.basket_admission_decision_attempts
+            .load(Ordering::SeqCst)
+    }
+
     fn basket_admission_decisions(&self) -> Vec<BoltV3BasketAdmissionDecisionEvidence> {
         self.basket_admission_decisions
             .lock()
@@ -898,6 +943,8 @@ impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
         &self,
         decision: &BoltV3BasketAdmissionDecisionEvidence,
     ) -> anyhow::Result<()> {
+        self.basket_admission_decision_attempts
+            .fetch_add(1, Ordering::SeqCst);
         if self.fail_basket_admission_decision.load(Ordering::SeqCst) {
             anyhow::bail!("basket admission decision write failed");
         }

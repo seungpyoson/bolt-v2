@@ -43,7 +43,11 @@ use nautilus_model::types::{Currency, Price, Quantity};
 use rust_decimal::Decimal;
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Condvar, Mutex, mpsc},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
     thread,
     time::Duration,
 };
@@ -1682,8 +1686,16 @@ fn forced_reduction_policy_and_claim_expose_proof_metadata() {
     );
 }
 
-#[derive(Debug)]
-struct FailingDecisionEvidenceWriter;
+#[derive(Debug, Default)]
+struct FailingDecisionEvidenceWriter {
+    admission_decision_attempts: AtomicUsize,
+}
+
+impl FailingDecisionEvidenceWriter {
+    fn admission_decision_attempts(&self) -> usize {
+        self.admission_decision_attempts.load(Ordering::SeqCst)
+    }
+}
 
 impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
     fn record_strategy_input_snapshot(
@@ -1701,6 +1713,8 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
         &self,
         _decision: &BoltV3AdmissionDecisionEvidence,
     ) -> anyhow::Result<()> {
+        self.admission_decision_attempts
+            .fetch_add(1, Ordering::SeqCst);
         Err(anyhow::anyhow!(
             "synthetic admission-decision write failure"
         ))
@@ -3403,11 +3417,8 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
 
 #[test]
 fn admit_surfaces_evidence_write_failure_as_typed_error_and_does_not_consume_count() {
-    let admission = limited_admission_with_writer(
-        Arc::new(FailingDecisionEvidenceWriter),
-        1,
-        Decimal::new(1, 0),
-    );
+    let writer = Arc::new(FailingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
 
     let error = admission
         .admit(&submit_request(Decimal::new(1, 0)))
@@ -3427,15 +3438,13 @@ fn admit_surfaces_evidence_write_failure_as_typed_error_and_does_not_consume_cou
         0,
         "evidence-write failure must not consume an admission slot — the decision is not finalized until audit is durable"
     );
+    assert_eq!(writer.admission_decision_attempts(), 1);
 }
 
 #[test]
 fn rejected_admission_preserves_primary_error_when_evidence_write_fails() {
-    let admission = limited_admission_with_writer(
-        Arc::new(FailingDecisionEvidenceWriter),
-        1,
-        Decimal::new(1, 0),
-    );
+    let writer = Arc::new(FailingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
 
     let error = admission
         .admit(&submit_request(Decimal::ZERO))
@@ -3447,15 +3456,13 @@ fn rejected_admission_preserves_primary_error_when_evidence_write_fails() {
         0,
         "the evidence failure must not change rejected-admission capacity"
     );
+    assert_eq!(writer.admission_decision_attempts(), 1);
 }
 
 #[test]
 fn rejected_shadow_admission_preserves_primary_error_when_evidence_write_fails() {
-    let admission = limited_admission_with_writer(
-        Arc::new(FailingDecisionEvidenceWriter),
-        1,
-        Decimal::new(1, 0),
-    );
+    let writer = Arc::new(FailingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
 
     let error = admission
         .evaluate_and_record_without_consuming_capacity(&submit_request(Decimal::ZERO))
@@ -3467,6 +3474,33 @@ fn rejected_shadow_admission_preserves_primary_error_when_evidence_write_fails()
         0,
         "a shadow evaluation must not consume admission capacity"
     );
+    assert_eq!(writer.admission_decision_attempts(), 1);
+}
+
+#[test]
+fn admitted_shadow_admission_fails_closed_when_evidence_write_fails() {
+    let writer = Arc::new(FailingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
+
+    let error = admission
+        .evaluate_and_record_without_consuming_capacity(&submit_request(Decimal::new(1, 0)))
+        .expect_err(
+            "an admitted shadow evaluation must fail closed when evidence cannot be written",
+        );
+
+    assert!(
+        matches!(
+            error,
+            BoltV3SubmitAdmissionError::EvidenceWriteFailed { .. }
+        ),
+        "expected EvidenceWriteFailed, got {error:?}"
+    );
+    assert_eq!(
+        admission.admitted_order_count(),
+        0,
+        "a shadow evaluation must not consume admission capacity"
+    );
+    assert_eq!(writer.admission_decision_attempts(), 1);
 }
 
 #[test]

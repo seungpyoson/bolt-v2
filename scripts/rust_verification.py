@@ -3201,29 +3201,51 @@ def github_repository_from_remote_url(url: str) -> tuple[str | None, str | None]
         return None, url_error
     scp_match = None
     if "://" not in url:
-        scp_match = re.fullmatch(r"(?:[^@/:]+@)?(?P<host>[^/:]+):(?P<path>.+)", url)
+        scp_match = re.fullmatch(
+            r"(?:(?P<user>[A-Za-z0-9_.-]+)@)?(?P<host>[^@/:\s]+):(?P<path>.+)",
+            url,
+        )
     if scp_match is not None:
         host = scp_match.group("host")
         path = scp_match.group("path")
+        parts = path.split("/")
     else:
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme not in {"https", "ssh"}:
             return None, "remote_probe.remote must use HTTPS, SSH, or SCP syntax"
+        try:
+            port = parsed.port
+        except ValueError:
+            return None, "remote_probe.remote must contain a valid network port"
+        authority = parsed.netloc.rsplit("@", 1)[-1]
+        if authority.startswith("["):
+            return None, "remote_probe.remote resolved to an unsafe GitHub repository identity"
+        if ":" in authority:
+            port_text = authority.rsplit(":", 1)[1]
+            if not port_text or not port_text.isascii() or not port_text.isdigit() or port == 0:
+                return None, "remote_probe.remote must contain a valid network port"
+        if parsed.username is not None and re.fullmatch(r"[A-Za-z0-9_.-]+", parsed.username) is None:
+            return None, "remote_probe.remote must contain a safe SSH username"
         host = parsed.hostname or ""
         path = parsed.path
-    parts = [part for part in path.strip("/").split("/") if part]
+        if not path.startswith("/"):
+            return None, "remote_probe.remote must resolve to a GitHub owner/repository URL"
+        parts = path[1:].split("/")
     if len(parts) != 2 or not host:
         return None, "remote_probe.remote must resolve to a GitHub owner/repository URL"
     owner, repository = parts
     if repository.lower().endswith(".git"):
         repository = repository[:-4]
     safe_component = re.compile(r"^[A-Za-z0-9_.-]+$")
+    safe_host_label = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+    host_labels = host.split(".")
     if (
         not repository
+        or len(host) > 253
         or host in {".", ".."}
         or owner in {".", ".."}
         or repository in {".", ".."}
-        or safe_component.fullmatch(host) is None
+        or any(safe_host_label.fullmatch(label) is None for label in host_labels)
         or safe_component.fullmatch(owner) is None
         or safe_component.fullmatch(repository) is None
     ):

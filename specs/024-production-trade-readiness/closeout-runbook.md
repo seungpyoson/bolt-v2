@@ -277,7 +277,7 @@ plainly; do not let it silently close.
   approval each time; one order, within the configured notional cap. A previous/preflight approval
   is never reusable.
 - **Any order submit, cancel, transfer, CLOB allowance/cache mutation, or on-chain state mutation.**
-  None of these happen in Steps 1-5; the canary is the only path that can, and only within bounds.
+  None of these happen in Steps 1-4; the canary is the only path that can, and only within bounds.
 - **Marking T044 complete from a blocked attempt**, or marking T045/T046 done before T044 succeeds.
 - **Printing or committing secrets**: API keys, private keys, passphrases, approval ids,
   non-redacted balances. Evidence is recorded by hash/path-hash only.

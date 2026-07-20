@@ -1,6 +1,7 @@
 # Issue #1340 Optional Hardening Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
 
 **Goal:** Remove remaining BVS provenance hardcodes and make the execution validator reproduce unrestricted NT market-book walking with discriminating guards.
 
@@ -66,5 +67,5 @@
 - [ ] Update the validator/module documentation and relevant test name/message to describe canonical-byte/hash agreement and applied-override sensitivity accurately.
 - [ ] Run `just fmt-check`, `just bte-fmt-check`, and `just source-fence-static`; require exit 0.
 - [ ] Run `git diff --check` and static searches for stale revision literals, `exit_price`, and historical-test skip collisions.
-- [ ] Commit and publish one coherent draft head with `just sandbox-safe-push`.
+- [ ] Commit and publish one coherent draft head with `git push`.
 - [ ] Report explicitly that Rust tests remain unexecuted unless exact-head remote evidence is obtained; do not request review, mark ready, run full CI, merge, queue, or close #1340.

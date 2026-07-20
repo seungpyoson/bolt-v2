@@ -4,10 +4,10 @@ Date: 2026-05-25
 Worktree: `/Users/spson/Projects/Claude/bolt-v2/.worktrees/024-production-trade-readiness`
 Branch: `goal/024-production-trade-readiness`
 
-This file is a source-inspection baseline, not a self-validating exact-head proof. A commit that refreshes this file necessarily changes `HEAD`, so external-review audit manifests and `gh pr view 480` output are authoritative for the current review head. Do not treat any historical commit hash in this file as proof that the current head is approved.
+This file is a source-inspection baseline, not a self-validating exact-head proof. A commit that refreshes this file necessarily changes `HEAD`, so `gh pr view 480 --json headRefOid,statusCheckRollup` is authoritative for the recorded PR head and CI result. Do not treat any historical commit hash in this file as proof for the current head.
 
 - PR base: `main` at `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9`
-- PR head: read from `gh pr view 480 --json headRefOid` or the external-review audit manifest for the exact review run.
+- PR head: read from `gh pr view 480 --json headRefOid`.
 - Active branch: `goal/024-production-trade-readiness`
 
 ## Git And PR State
@@ -27,7 +27,7 @@ This file is a source-inspection baseline, not a self-validating exact-head proo
   - #480 `Production trade-readiness consolidation`, draft, active readiness PR, base `main`.
   - #478 is historical/closed after the branch rename.
   - #479 `Finalize #466 verifier decomposition ledger`, draft, head `8efef5863a6bd4a0f1a9276852fd63a37305bd2f`, base `main`.
-- Historical #478 status check rollup showed successful build/test/gate/check jobs, with deploy and same-sha-main-evidence skipped. #480 requires fresh exact-head CI before final review.
+- Historical #478 status check rollup showed successful build/test/gate/check jobs, with deploy and same-sha-main-evidence skipped. #480 requires fresh exact-head CI before completion.
 
 ## Issue State
 
@@ -561,7 +561,6 @@ This is non-live local validation only. No AWS, SSM, no-submit, venue connection
 
 ## T036E Current T036 Rerun And Egress Sequencing Repair
 
-- Kimi final-review slot is waived by operator instruction; remaining final exact-head review slots are Claude, Gemini, DeepSeek, GLM, and Grok.
 - Official feed-id source check used Chainlink's Crypto Streams docs at `https://docs.chain.link/data-streams/crypto-streams`; the BTC/USD Data Streams feed id copied into the ignored local strategy config is `0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8`.
 - Local ignored config hygiene: `.gitignore` now ignores `config/strategies/*.local.toml`; `config/live.local.toml` points at an ignored `config/strategies/binary_oracle.local.toml` for this worktree rerun. The tracked example strategy remains fail-closed with the placeholder feed id.
 - Base-static rerun from current PR worktree head `1ed268f603c1bf73683c1c89d60aa80bdc68d821` plus ignored local strategy config: `cargo run --bin bolt-v2 -- operator-artifacts generate-base-static --config config/live.local.toml --output-dir /private/tmp/bolt-v2-t036-audit-feed-1ed268f6 --strategy-instance-id bitcoin_updown_main` passed and wrote `ssm-manifest.json` (`f6d757a72d876a2a32e5fd047c5903e26d61a7f4abcf834c4b5b137e284a66bc`), `financial-envelope.json` (`0fe8aef150af7156ece1db2c2b8b0c738a51352dd4837ba4eb7d13e0469cd253`), and `approval-nonce.json` (`28e8fdd0c7e440ba45a89042755bc77357c0611b58a0f51883ee661298f4afcf`).
@@ -1329,9 +1328,9 @@ T043 passed for build head `b993299e5aa234c199c5b97cc3a2393fcf9e2c03` after the 
 
 Scope and side effects: this was a no-submit readiness run. It connected the configured Polymarket data and execution clients, reconciled account state, observed zero orders/fills/positions, stopped the NT runner, and wrote the readiness report. It did not submit, cancel, transfer, mutate on-chain state, mutate CLOB allowance/cache state, or execute a trade. T044 remains open and requires renewed explicit operator approval because it is a tiny-capital live canary.
 
-## Pre-T042 Final Review Repair Batch
+## Readiness Repair Batch
 
-The first pre-T042 source-shard review at head `2947546c2b5ef8c88e67ec4e3b2dcbfb323fba5d` was not a final exact-head approval. It found real issues that are now repaired locally before the next push.
+A source-shard review at head `2947546c2b5ef8c88e67ec4e3b2dcbfb323fba5d` found real issues that were repaired locally before the next push.
 
 - Review findings fixed:
   - Market-selection source evidence now rejects decision evidence whose `price_to_beat_source` does not match the TOML financial envelope.
@@ -1350,7 +1349,7 @@ The first pre-T042 source-shard review at head `2947546c2b5ef8c88e67ec4e3b2dcbfb
   - `git diff --check`: passed.
   - `just source-fence`: passed.
 
-Scope and side effects: this was local source/test/audit work only. No no-submit, tiny-capital canary, submit, cancel, transfer, on-chain mutation, secret display, GitHub CI run, or trade operation was performed. This batch remained pre-T042 at the time; the later T041/T042 sections below record the exact pushed head CI and final external-review evidence. T044 remains gated on renewed explicit operator approval.
+Scope and side effects: this was local source/test/audit work only. No no-submit, tiny-capital canary, submit, cancel, transfer, on-chain mutation, secret display, GitHub CI run, or trade operation was performed. The later T041 section records the exact pushed-head CI evidence. T044 remains gated on renewed explicit operator approval.
 
 ## T041 Exact-Head GitHub CI
 
@@ -1367,29 +1366,7 @@ T041 is complete for PR #480 reviewed code head `8b95eca9c2f410ff462954cff90c473
   - Successful checks: `detector`, `Analyze (actions)`, `actionlint`, `Analyze (rust)`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, `nextest archive`, `build`, `nextest shard 1 of 4`, `nextest shard 2 of 4`, `nextest shard 3 of 4`, `nextest shard 4 of 4`, `test`, `gate`, and `CodeQL`.
   - Skipped checks: `same-sha-main-evidence` and `deploy`.
 
-This evidence update is a docs-only audit-log change after the reviewed code head. Per the existing self-referential review-loop convention, the review manifests and `gh pr view` output are the authoritative proof for the reviewed head; CI will be checked again once the remaining live canary, hygiene, and ledger work is complete rather than after every docs-only update.
-
-## T042 Exact-Head Final External Review
-
-T042 is complete for PR #480 reviewed code head `8b95eca9c2f410ff462954cff90c4734d01593cb`.
-
-- Review bundle: `/private/tmp/bolt-v2-t042-review-8b95eca9`
-- Packet hashes:
-  - `01-operator-artifacts.diff`: `5259c8333995a063df2ad2e4069c40e871bff0a063ae2810499ea1fff659d47c`
-  - `02-operator-artifacts-tests.diff`: `5fe0c9fc3d2043fa85af3c85980fde51f02cd30494438ed94bb1f91974a8184e`
-  - `03-runtime-gates.diff`: `2db7dcb94f28a150a314e4eca2f194f7c42006a5dcdc0b1c73b544cc7a65ee30`
-  - `04-providers-market-config.diff`: `7fd180358aabe2eca9d3b76896ae1ce78a6befb9ac5a9eb4cd492cd644f480f4`
-  - `05-specs-docs-config.diff`: `d6a58042fb1488ddc95c0252ee2d08325106971c141ba40556d2cfba40efac92`
-- Counted approval coverage:
-  - Claude: 6 approved shards.
-  - Gemini: 6 approved shards.
-  - DeepSeek: 6 approved shards.
-  - GLM: 6 approved shards.
-  - Grok: 15 approved bounded chunks.
-  - Kimi: explicit operator waiver; not counted as approval.
-- Failed/superseded review attempts are recorded in `specs/024-production-trade-readiness/external-final-review.md` and are not counted as approvals.
-
-Scope and side effects: final review transmitted selected source packets to the configured reviewer routes only. No no-submit, tiny-capital canary, submit, cancel, transfer, on-chain mutation, secret display, GitHub CI rerun, or trade operation was performed while closing T042.
+This evidence update is a docs-only audit-log change after the recorded code head. The `gh pr view` output is the authoritative record for that head and its CI result; CI will be checked again once the remaining live canary, hygiene, and ledger work is complete rather than after every docs-only update.
 
 ## T043B Selected Trade-Path Readiness
 

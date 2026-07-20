@@ -66,5 +66,5 @@ The authoritative T036H dataflow contract is `specs/024-production-trade-readine
 5. Replace the hardcoded Chainlink price-to-beat assumption with a provider-neutral, value-kind-aware resolution/reference gate model.
 6. Produce real current-head runtime artifacts.
 7. Assemble and verify final packet.
-8. Run final exact-head verification and external review.
+8. Run final exact-head verification.
 9. Run approved final-packet no-submit, then tiny-capital canary.

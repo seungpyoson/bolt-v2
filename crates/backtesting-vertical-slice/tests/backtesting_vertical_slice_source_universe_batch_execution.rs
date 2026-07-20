@@ -545,6 +545,9 @@ fn coherent_but_malformed_control_values_reject_before_side_effects() {
     enum Case {
         ParentPathOperatorRunId,
         AbsolutePathOperatorRunId,
+        NulOperatorRunId,
+        RegistryVenueCaseMismatch,
+        RegistrySourceBindingWhitespaceMismatch,
         PendingSourceProof,
         InvalidSourceUrl,
         InvalidArchiveDate,
@@ -577,6 +580,15 @@ fn coherent_but_malformed_control_values_reject_before_side_effects() {
         (
             Case::AbsolutePathOperatorRunId,
             "absolute-path-operator-run-id",
+        ),
+        (Case::NulOperatorRunId, "nul-operator-run-id"),
+        (
+            Case::RegistryVenueCaseMismatch,
+            "registry-venue-case-mismatch",
+        ),
+        (
+            Case::RegistrySourceBindingWhitespaceMismatch,
+            "registry-source-binding-whitespace-mismatch",
         ),
         (Case::PendingSourceProof, "pending-source-proof"),
         (Case::InvalidSourceUrl, "invalid-source-url"),
@@ -656,6 +668,32 @@ fn coherent_but_malformed_control_values_reject_before_side_effects() {
                 run_spec.manifest.run_id.clone_from(&operator_run_id);
                 "operator_run_id must be a single normal path component"
             }
+            Case::NulOperatorRunId => {
+                let operator_run_id = "escaped\0output".to_string();
+                pack.records[0].operator_run_id.clone_from(&operator_run_id);
+                run_spec.manifest.run_id.clone_from(&operator_run_id);
+                "operator_run_id must be a single normal path component"
+            }
+            Case::RegistryVenueCaseMismatch => {
+                let venue = "SYNTHETIC-VENUE".to_string();
+                pack.venue.clone_from(&venue);
+                run_spec.source_proof.venue.clone_from(&venue);
+                "is not configured in registry"
+            }
+            Case::RegistrySourceBindingWhitespaceMismatch => {
+                let source_binding = "synthetic-spot-tick-trades ".to_string();
+                pack.records[0].source_binding.clone_from(&source_binding);
+                run_spec
+                    .manifest
+                    .venue_binding_key
+                    .clone_from(&source_binding);
+                run_spec
+                    .source_proof
+                    .source_binding
+                    .clone_from(&source_binding);
+                tranche.source_binding.clone_from(&source_binding);
+                "is not configured in registry"
+            }
             Case::PendingSourceProof => {
                 run_spec.source_proof.status =
                     backtesting_vertical_slice::source_proof::SourceProofStatus::Pending;
@@ -687,14 +725,14 @@ fn coherent_but_malformed_control_values_reject_before_side_effects() {
                 run_spec.manifest.source_proof_id.clear();
                 run_spec.source_proof.source_proof_id.clear();
                 tranche.source_proof_id.clear();
-                "source proof identity must be complete"
+                "execution pack record source_proof_id must not be empty"
             }
             Case::ZeroSourceProofVersion => {
                 pack.records[0].source_proof_version = 0;
                 run_spec.manifest.source_proof_version = 0;
                 run_spec.source_proof.source_proof_version = 0;
                 tranche.source_proof_version = 0;
-                "source proof identity must be complete"
+                "execution pack record source_proof_version must be positive"
             }
             Case::RunSpecSourceProofIdentityMismatch => {
                 run_spec.source_proof.source_proof_id = "different-source-proof".to_string();
@@ -856,6 +894,7 @@ fn malformed_execution_pack_declarations_reject_before_side_effects() {
         SchemaVersion,
         EmptyUniverse,
         EmptyFamily,
+        EmptyWorkItemId,
         MaterializedCount,
         MaterializedBytes,
         DuplicateSequence,
@@ -872,6 +911,10 @@ fn malformed_execution_pack_declarations_reject_before_side_effects() {
             "execution pack universe_id must not be empty",
         ),
         (Case::EmptyFamily, "execution pack family must not be empty"),
+        (
+            Case::EmptyWorkItemId,
+            "execution pack record work_item_id must not be empty",
+        ),
         (Case::MaterializedCount, "materialized_record_count"),
         (Case::MaterializedBytes, "materialized_source_bytes"),
         (Case::DuplicateSequence, "duplicate record sequence"),
@@ -891,6 +934,7 @@ fn malformed_execution_pack_declarations_reject_before_side_effects() {
             Case::SchemaVersion => pack.schema_version = "unknown-pack-schema".to_string(),
             Case::EmptyUniverse => pack.universe_id.clear(),
             Case::EmptyFamily => pack.family.clear(),
+            Case::EmptyWorkItemId => pack.records[0].work_item_id.clear(),
             Case::MaterializedCount => pack.materialized_record_count = 1,
             Case::MaterializedBytes => pack.materialized_source_bytes += 1,
             Case::DuplicateSequence => pack.records[1].sequence = pack.records[0].sequence,
@@ -977,6 +1021,10 @@ fn venue_identity_is_bound_opaquely_without_venue_enumeration() {
         serde_json::to_vec_pretty(&pack).expect("serialize venue-repinned pack"),
     )
     .expect("write venue-repinned pack");
+    write_source_binding_registry(
+        &temp_dir.path().join("source-bindings.toml"),
+        "second-neutral-venue",
+    );
 
     let mut fetcher = SequencedFetcher::from_objects(&objects);
     execute_source_universe_batch(
@@ -2753,20 +2801,7 @@ fn synthetic_symbol(sequence: u64) -> String {
 fn write_n_record_pack(pack_path: &Path, objects: &[(u64, Vec<u8>)]) {
     let root = pack_path.parent().expect("pack parent");
     let source_bindings_path = root.join("source-bindings.toml");
-    fs::write(
-        &source_bindings_path,
-        r#"
-[[source_binding]]
-key = "synthetic-spot-tick-trades"
-venue = "synthetic-venue"
-product_family = "spot"
-market_structure_fixture = "perps-spot"
-source_uri = "https://public.synthetic.example/object-{sequence}.csv.gz"
-evidence_state = "directly_backfillable"
-table_families = ["trades"]
-"#,
-    )
-    .expect("write synthetic source-binding registry");
+    write_source_binding_registry(&source_bindings_path, "synthetic-venue");
     let record_count = u64::try_from(objects.len()).expect("record count fits u64");
     let total_object_bytes_len = objects
         .iter()
@@ -2809,6 +2844,22 @@ table_families = ["trades"]
         serde_json::to_vec_pretty(&pack).expect("serialize pack"),
     )
     .expect("write n-record pack");
+}
+
+fn write_source_binding_registry(path: &Path, venue: &str) {
+    let registry = format!(
+        r#"
+[[source_binding]]
+key = "synthetic-spot-tick-trades"
+venue = "{venue}"
+product_family = "spot"
+market_structure_fixture = "perps-spot"
+source_uri = "https://public.synthetic.example/object-{{sequence}}.csv.gz"
+evidence_state = "directly_backfillable"
+table_families = ["trades"]
+"#
+    );
+    fs::write(path, registry).expect("write synthetic source-binding registry");
 }
 
 fn synthetic_control_paths(root: &Path, sequence: u64) -> (PathBuf, PathBuf, PathBuf) {

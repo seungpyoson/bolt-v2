@@ -8,7 +8,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -274,7 +274,7 @@ pub struct SourceUniverseBatchExecutionRunOutput {
 /// fetcher in [`CachingSourceUniverseObjectFetcher`] (the CLI does this for
 /// `--object-cache-dir`), so a cache can never be requested without taking
 /// effect.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct SourceUniverseBatchExecutionConfig {
     /// Trusted TOML policy governing control reads and retained control bytes.
     pub control_admission: SourceUniverseControlAdmissionPolicy,
@@ -1076,25 +1076,18 @@ fn read_pinned_control(
         "pinned {role} {} is not a regular file",
         resolved_path.display()
     );
-    ensure_within_limit(
+    let metadata_limit_result = ensure_within_limit(
         format!("read pinned {role} {}", resolved_path.display()),
         metadata.len(),
         effective_limit,
-    )?;
+    );
+    contextualize_control_limit(metadata_limit_result, constrained_by_total, role)?;
     let read_result = read_to_vec_with_limit(
         file,
         effective_limit,
         format!("read pinned {role} {}", resolved_path.display()),
     );
-    let bytes = if constrained_by_total {
-        read_result.with_context(|| {
-            format!(
-                "batch admitted control bytes would exceed configured max_total_control_bytes while reading {role}"
-            )
-        })?
-    } else {
-        read_result?
-    };
+    let bytes = contextualize_control_limit(read_result, constrained_by_total, role)?;
     let byte_count = u64::try_from(bytes.len()).context("control byte length exceeds u64")?;
     *admitted_control_bytes = (*admitted_control_bytes)
         .checked_add(byte_count)
@@ -1116,6 +1109,22 @@ fn read_pinned_control(
     Ok(Arc::from(bytes))
 }
 
+fn contextualize_control_limit<T>(
+    result: Result<T>,
+    constrained_by_total: bool,
+    role: &str,
+) -> Result<T> {
+    if constrained_by_total {
+        result.with_context(|| {
+            format!(
+                "batch admitted control bytes would exceed configured max_total_control_bytes while reading {role}"
+            )
+        })
+    } else {
+        result
+    }
+}
+
 fn validate_admitted_control_binding(
     pack: &SourceUniverseExecutionPack,
     record: &SourceUniverseExecutionPackRecord,
@@ -1125,13 +1134,7 @@ fn validate_admitted_control_binding(
     run_spec_bytes: &[u8],
     accepted_tranche_bytes: &[u8],
 ) -> Result<()> {
-    validate_admitted_control_self_validity(
-        pack,
-        record,
-        run_spec,
-        accepted_tranche,
-        execution_plan,
-    )?;
+    validate_admitted_control_self_validity(run_spec, accepted_tranche, execution_plan)?;
 
     let run_spec_sha256 = hex::encode(Sha256::digest(run_spec_bytes));
     let accepted_tranche_sha256 = hex::encode(Sha256::digest(accepted_tranche_bytes));
@@ -1241,44 +1244,10 @@ fn validate_admitted_control_binding(
 }
 
 fn validate_admitted_control_self_validity(
-    pack: &SourceUniverseExecutionPack,
-    record: &SourceUniverseExecutionPackRecord,
     run_spec: &RunSpec,
     accepted_tranche: &BackfillAcceptedTrancheManifest,
     execution_plan: &BackfillExecutionPlan,
 ) -> Result<()> {
-    for (name, value) in [
-        ("venue", pack.venue.as_str()),
-        ("table_family", pack.table_family.as_str()),
-        ("operator_run_id", record.operator_run_id.as_str()),
-        ("accepted_tranche_id", record.accepted_tranche_id.as_str()),
-        ("source_binding", record.source_binding.as_str()),
-        ("category", record.category.as_str()),
-        ("symbol", record.symbol.as_str()),
-        ("archive_date", record.archive_date.as_str()),
-        ("source_uri", record.source_uri.as_str()),
-        ("source_url", record.source_url.as_str()),
-        ("output_prefix", record.output_prefix.as_str()),
-    ] {
-        ensure!(!value.trim().is_empty(), "{name} must not be empty");
-    }
-    let mut operator_run_id_components = Path::new(&record.operator_run_id).components();
-    ensure!(
-        matches!(
-            operator_run_id_components.next(),
-            Some(Component::Normal(_))
-        ) && operator_run_id_components.next().is_none(),
-        "operator_run_id must be a single normal path component"
-    );
-    ensure!(
-        !record.source_proof_id.trim().is_empty() && record.source_proof_version > 0,
-        "source proof identity must be complete"
-    );
-    ensure!(
-        record.selected_object_bytes > 0,
-        "selected_object_bytes must be positive"
-    );
-
     ensure!(
         accepted_tranche.schema_version == BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION,
         "accepted_tranche schema_version mismatch: expected {}, got {}",

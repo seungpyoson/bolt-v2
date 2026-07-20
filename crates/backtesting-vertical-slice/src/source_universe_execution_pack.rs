@@ -8,7 +8,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -255,6 +255,46 @@ pub fn validate_source_universe_execution_pack(pack: &SourceUniverseExecutionPac
     let mut operator_run_ids = BTreeSet::new();
     let mut accepted_tranche_ids = BTreeSet::new();
     for record in &pack.records {
+        for (name, value) in [
+            ("work_item_id", record.work_item_id.as_str()),
+            ("operator_run_id", record.operator_run_id.as_str()),
+            ("source_binding", record.source_binding.as_str()),
+            ("category", record.category.as_str()),
+            ("symbol", record.symbol.as_str()),
+            ("archive_date", record.archive_date.as_str()),
+            ("source_uri", record.source_uri.as_str()),
+            ("source_url", record.source_url.as_str()),
+            ("source_proof_id", record.source_proof_id.as_str()),
+            ("accepted_tranche_id", record.accepted_tranche_id.as_str()),
+            ("output_prefix", record.output_prefix.as_str()),
+        ] {
+            ensure!(
+                !value.trim().is_empty(),
+                "execution pack record {name} must not be empty"
+            );
+        }
+        for (name, path) in [
+            ("run_spec_path", record.run_spec_path.as_path()),
+            (
+                "accepted_tranche_path",
+                record.accepted_tranche_path.as_path(),
+            ),
+            ("execution_plan_path", record.execution_plan_path.as_path()),
+        ] {
+            ensure!(
+                !path.as_os_str().is_empty(),
+                "execution pack record {name} must not be empty"
+            );
+        }
+        ensure!(
+            record.source_proof_version > 0,
+            "execution pack record source_proof_version must be positive"
+        );
+        ensure!(
+            record.selected_object_bytes > 0,
+            "execution pack record selected_object_bytes must be positive"
+        );
+        validate_single_path_component("operator_run_id", &record.operator_run_id)?;
         ensure!(
             sequences.insert(record.sequence),
             "execution pack contains duplicate record sequence {}",
@@ -317,6 +357,19 @@ pub fn validate_source_universe_execution_pack(pack: &SourceUniverseExecutionPac
             );
         }
     }
+    Ok(())
+}
+
+fn validate_single_path_component(name: &str, value: &str) -> Result<()> {
+    let mut components = Path::new(value).components();
+    ensure!(
+        !value.as_bytes().contains(&0)
+            && !value.contains('/')
+            && !value.contains('\\')
+            && matches!(components.next(), Some(Component::Normal(_)))
+            && components.next().is_none(),
+        "{name} must be a single normal path component"
+    );
     Ok(())
 }
 

@@ -26,7 +26,7 @@ use crate::{
     bolt_v3_decision_evidence::{
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentClampNotEvaluatedReason,
         BoltV3OrderIntentClampOutcome, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields,
+        BoltV3OrderIntentOrderFields, RiskDirection, record_decision,
     },
     bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
     bolt_v3_maker_order_dispatch::{
@@ -144,11 +144,19 @@ impl BoltV3OrderExecutionPolicy {
         ) {
             Ok(clamped) => clamped,
             Err(error) => {
-                decision_evidence.record_order_intent(error.intent())?;
+                let _ = record_decision(RiskDirection::Neutral, || {
+                    decision_evidence.record_order_intent(error.intent())
+                });
                 return Err(error.into_error());
             }
         };
-        decision_evidence.record_order_intent(&intent)?;
+        let evidence_risk_direction = match self.mode {
+            BoltV3OrderExecutionMode::Live => request.intent_kind.evidence_risk_direction(),
+            BoltV3OrderExecutionMode::Shadow => RiskDirection::NewRisk,
+        };
+        record_decision(evidence_risk_direction, || {
+            decision_evidence.record_order_intent(&intent)
+        })?;
         match self.mode {
             BoltV3OrderExecutionMode::Live => {
                 let permit = submit_admission.admit(&request)?;
@@ -1066,7 +1074,10 @@ mod tests {
         cell::{RefCell, RefMut},
         collections::BTreeMap,
         rc::Rc,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
     };
 
     use anyhow::Result;
@@ -1183,6 +1194,8 @@ mod tests {
     struct RecordingDecisionEvidenceWriter {
         records: Mutex<Vec<BoltV3OrderIntentEvidence>>,
         admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
+        fail_order_intent: AtomicBool,
+        order_intent_attempts: AtomicUsize,
     }
 
     impl RecordingDecisionEvidenceWriter {
@@ -1198,6 +1211,14 @@ mod tests {
                 .lock()
                 .expect("recording admission mutex should not be poisoned")
                 .clone()
+        }
+
+        fn fail_order_intent_writes(&self) {
+            self.fail_order_intent.store(true, Ordering::SeqCst);
+        }
+
+        fn order_intent_attempts(&self) -> usize {
+            self.order_intent_attempts.load(Ordering::SeqCst)
         }
     }
 
@@ -1416,6 +1437,10 @@ mod tests {
         }
 
         fn record_order_intent(&self, intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+            self.order_intent_attempts.fetch_add(1, Ordering::SeqCst);
+            if self.fail_order_intent.load(Ordering::SeqCst) {
+                anyhow::bail!("synthetic order-intent evidence write failure");
+            }
             self.records
                 .lock()
                 .expect("recording evidence mutex should not be poisoned")
@@ -1607,6 +1632,131 @@ mod tests {
             BoltV3AdmissionOutcome::Admitted
         );
         assert_eq!(admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn live_entry_and_replace_stop_when_intent_evidence_fails() {
+        for intent_kind in [
+            BoltV3SubmitIntentKind::Entry,
+            BoltV3SubmitIntentKind::ReplaceSubmit,
+        ] {
+            let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+            writer.fail_order_intent_writes();
+            let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+                writer.clone(),
+                live_submit_cap(),
+            ));
+            let mut sink = RecordingVenueMutationSink::default();
+            let order = limit_order("O-19700101-000000-001-INTENT-FAIL-1");
+            let intent = intent_for_order(&order);
+            let mut request = submit_request_for_order(&order, Decimal::new(50, 0));
+            request.intent_kind = intent_kind;
+            request.lifecycle_policy = BoltV3SubmitLifecyclePolicy::new(true);
+
+            let error = BoltV3OrderExecutionPolicy::live()
+                .route_submit_with_sink(
+                    BoltV3SubmitRoutingRequest::new(
+                        writer.as_ref(),
+                        admission.as_ref(),
+                        intent,
+                        request,
+                    ),
+                    &mut sink,
+                    order,
+                    BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+                )
+                .expect_err("new-risk intent evidence failure must block submission");
+            let error_text = format!("{error:#}");
+
+            assert!(
+                error_text.contains("synthetic order-intent evidence write failure"),
+                "unexpected new-risk evidence error: {error:#}"
+            );
+            assert_eq!(writer.order_intent_attempts(), 1);
+            assert!(writer.records().is_empty());
+            assert_eq!(sink.submit_calls, 0);
+            assert_eq!(admission.admitted_order_count(), 0);
+        }
+    }
+
+    #[test]
+    fn live_risk_reducing_exit_continues_when_intent_evidence_fails() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        writer.fail_order_intent_writes();
+        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        let mut sink = RecordingVenueMutationSink::default();
+        let order = limit_exit_order(
+            "O-19700101-000000-001-EXIT-INTENT-FAIL-1",
+            Quantity::new(3.0, 2),
+        );
+        let intent = exit_intent_for_order(&order);
+        let request = risk_reducing_exit_submit_request_for_order(
+            &order,
+            Decimal::new(3, 0),
+            Decimal::new(3, 0),
+        );
+
+        let outcome = BoltV3OrderExecutionPolicy::live()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::new(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect("risk-reducing intent evidence failure must not block submission");
+
+        assert_eq!(outcome, BoltV3SubmitRoutingOutcome::Submitted);
+        assert_eq!(writer.order_intent_attempts(), 1);
+        assert!(writer.records().is_empty());
+        assert_eq!(sink.submit_calls, 1);
+        assert_eq!(admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn shadow_risk_reducing_exit_stays_strict_when_intent_evidence_fails() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        writer.fail_order_intent_writes();
+        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        let mut sink = RecordingVenueMutationSink::default();
+        let order = limit_exit_order(
+            "O-19700101-000000-001-SHADOW-INTENT-FAIL-1",
+            Quantity::new(3.0, 2),
+        );
+        let intent = exit_intent_for_order(&order);
+        let request = risk_reducing_exit_submit_request_for_order(
+            &order,
+            Decimal::new(3, 0),
+            Decimal::new(3, 0),
+        );
+
+        let error = BoltV3OrderExecutionPolicy::shadow()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::new(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect_err("shadow intent evidence failure must remain fail-closed");
+        let error_text = format!("{error:#}");
+
+        assert!(
+            error_text.contains("synthetic order-intent evidence write failure"),
+            "unexpected shadow evidence error: {error:#}"
+        );
+        assert_eq!(writer.order_intent_attempts(), 1);
+        assert!(writer.records().is_empty());
+        assert_eq!(sink.submit_calls, 0);
+        assert_eq!(admission.admitted_order_count(), 0);
     }
 
     #[test]
@@ -1893,6 +2043,55 @@ mod tests {
     }
 
     #[test]
+    fn clamp_rejection_preserves_primary_error_when_intent_evidence_fails() {
+        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        writer.fail_order_intent_writes();
+        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::ZERO);
+        let mut sink = RecordingVenueMutationSink::default();
+        let order = limit_exit_order(
+            "O-19700101-000000-001-CLAMP-EVIDENCE-FAIL-1",
+            Quantity::new(5.0, 2),
+        );
+        let intent = exit_intent_for_order(&order);
+        let request = risk_reducing_exit_submit_request_for_order(
+            &order,
+            Decimal::new(5, 0),
+            Decimal::new(5, 0),
+        );
+
+        let error = BoltV3OrderExecutionPolicy::live()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::new(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect_err("clamp rejection must remain the primary error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("no venue-held position to submit"),
+            "unexpected clamp rejection: {error:#}"
+        );
+        assert!(
+            !error
+                .to_string()
+                .contains("synthetic order-intent evidence write failure"),
+            "secondary evidence failure replaced clamp rejection: {error:#}"
+        );
+        assert_eq!(writer.order_intent_attempts(), 1);
+        assert!(writer.records().is_empty());
+        assert_eq!(sink.submit_calls, 0);
+        assert_eq!(admission.admitted_order_count(), 0);
+    }
+
+    #[test]
     fn kill_switch_forced_reduction_clamps_to_venue_position() {
         let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
         let admission = venue_truth_admission_with_yes_position(writer, Decimal::new(3, 0));
@@ -1970,8 +2169,9 @@ mod tests {
     }
 
     #[test]
-    fn kill_switch_flatten_command_routes_forced_reduction_through_clamped_submit() {
+    fn forced_reduction_continues_when_intent_evidence_fails() {
         let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        writer.fail_order_intent_writes();
         let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
         admission.replace_kill_switch_state(KillSwitchState::Flattening {
             halt_id: "halt-001".to_string(),
@@ -2043,19 +2243,14 @@ mod tests {
             },
             command,
         )
-        .expect("flatten command should route through submit policy");
+        .expect("forced reduction intent evidence failure must not block submission");
 
         assert_eq!(outcome, BoltV3SubmitRoutingOutcome::Submitted);
         assert_eq!(sink.submit_calls, 1);
         assert_eq!(sink.submitted_order_quantities, vec![Quantity::new(3.0, 2)]);
         assert_eq!(admission.admitted_order_count(), 1);
-        assert_eq!(writer.records().len(), 1);
-        assert_eq!(
-            writer.records()[0].clamp_outcome,
-            Some(BoltV3OrderIntentClampOutcome::Clamped {
-                original_quantity: Quantity::new(5.0, 2).as_decimal().to_string(),
-            })
-        );
+        assert_eq!(writer.order_intent_attempts(), 1);
+        assert!(writer.records().is_empty());
         assert_eq!(writer.admission_decisions().len(), 1);
         assert_eq!(
             writer.admission_decisions()[0].intent_kind,

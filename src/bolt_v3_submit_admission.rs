@@ -2894,7 +2894,7 @@ impl BoltV3SubmitLifecyclePolicy {
 }
 
 impl BoltV3SubmitIntentKind {
-    const fn evidence_risk_direction(self) -> RiskDirection {
+    pub(crate) const fn evidence_risk_direction(self) -> RiskDirection {
         match self {
             Self::Entry | Self::ReplaceSubmit => RiskDirection::NewRisk,
             Self::RiskReducingExit | Self::KillSwitchForcedReduction => RiskDirection::RiskReducing,

@@ -58,16 +58,12 @@ fn nonlinear_fee_is_rounded_and_summed_per_planned_fill_level() {
 fn multi_level_fee_sum_overflow_fails_closed() {
     let adapter = PolymarketEconomicsAdapter::try_new(config(), snapshot(true, 1)).unwrap();
     let mut request = canonical_fixture_request();
-    request.planned_fill_legs = vec![
-        PlannedFillLeg {
+    request.planned_fill_legs = (0..64)
+        .map(|_| PlannedFillLeg {
             price: decimal("0.5"),
             quantity: rust_decimal::Decimal::MAX,
-        },
-        PlannedFillLeg {
-            price: decimal("0.5"),
-            quantity: rust_decimal::Decimal::MAX,
-        },
-    ];
+        })
+        .collect();
 
     assert_eq!(
         adapter.quote_components(&request),

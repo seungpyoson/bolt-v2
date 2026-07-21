@@ -263,9 +263,28 @@ def main() -> int:
             "GITHUB_OUTPUT": str(output_path),
             "GITHUB_ENV": str(env_path),
         }
-        for label, event_name, github_ref, expected_mode in (
-            ("pull request", "pull_request", "refs/pull/1488/merge", "READ_ONLY"),
-            ("main push", "push", "refs/heads/main", "READ_WRITE"),
+        common_cache_environment = {
+            f"SCCACHE_BUCKET={LOCATION['bucket']}",
+            f"SCCACHE_REGION={LOCATION['region']}",
+            f"SCCACHE_S3_KEY_PREFIX={LOCATION['key_prefix']}",
+            "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true",
+            f"SCCACHE_IDLE_TIMEOUT={LOCATION['idle_timeout_seconds']}",
+            "SCCACHE_IGNORE_SERVER_IO_ERROR=1",
+        }
+        for label, event_name, github_ref, expected_environment in (
+            (
+                "pull request",
+                "pull_request",
+                "refs/pull/1488/merge",
+                common_cache_environment | {"SCCACHE_S3_RW_MODE=READ_ONLY"},
+            ),
+            (
+                "main push",
+                "push",
+                "refs/heads/main",
+                common_cache_environment | {"SCCACHE_S3_RW_MODE=READ_WRITE"},
+            ),
+            ("feature push", "push", "refs/heads/feature", set()),
         ):
             output_path.write_text("", encoding="utf-8")
             env_path.write_text("", encoding="utf-8")
@@ -276,9 +295,11 @@ def main() -> int:
             ), contextlib.redirect_stdout(io.StringIO()):
                 if sccache_eligibility.main() != 0:
                     raise AssertionError(f"{label}: environment export failed")
-            environment = env_path.read_text(encoding="utf-8").splitlines()
-            if f"SCCACHE_S3_RW_MODE={expected_mode}" not in environment:
-                raise AssertionError(f"{label}: expected SCCACHE_S3_RW_MODE={expected_mode}")
+            environment = set(env_path.read_text(encoding="utf-8").splitlines())
+            if environment != expected_environment:
+                raise AssertionError(
+                    f"{label}: expected environment {expected_environment!r}, got {environment!r}"
+                )
 
     verify = getattr(sccache_eligibility, "verify_sccache_executable", None)
     if not callable(verify):

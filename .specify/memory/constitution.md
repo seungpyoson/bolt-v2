@@ -1,7 +1,7 @@
 <!--
 Sync Impact Report
 Version change: 2.2.0 -> 2.3.0
-Modified principles: V. Evidence Before Claims drops the retired fixed final-review workflow; evidence for a pushed head is advisory CI plus targeted probes
+Modified principles: V. Evidence Before Claims uses advisory CI plus targeted probes for a pushed head
 Additional Constraints: unchanged
 Added sections: v2.3.0 migration note
 Removed sections: none
@@ -100,15 +100,15 @@ this artifact requires redesign, not waiver-by-documentation. Amendments require
 an explicit user-approved diff, a migration note for affected specs/plans, and a
 version bump.
 
-Migration note for v2.3.0: the CI teardown removes the fixed final-review
-workflow, the non-compile preflight gate, the sandbox-safe-push publisher, and
+Migration note for v2.3.0: the CI teardown removes the non-compile preflight
+gate, the sandbox-safe-push publisher, and
 the merge-queue operator recipe. Publication is a plain exact-head git push;
 remote evidence is the advisory CI workflow (fmt, clippy, test, build through
 the managed wrapper) plus targeted rust-probe dispatches. Merge governance is
 unchanged: native code-owner review with zero required CI statuses.
 
 Migration note for v2.2.0: repository verification uses one workspace registry,
-one non-compile preflight, exact-SHA publication, and one fixed final-review
+one non-compile preflight, exact-SHA publication, and one governed evidence
 transaction. Single-PR queue preflight remains the team-controlled Mergify
 entrypoint and does not interpret advisory evidence as merge authority.
 

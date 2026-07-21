@@ -98,6 +98,93 @@ bte-build: check-workspace
 check-aarch64: check-workspace
     cargo check --target {{target}} --locked
 
+# Submit explicit pull requests to Mergify after validating the complete list.
+[positional-arguments]
+merge-queue *pr_numbers:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if (( $# == 0 )); then
+        echo "ERROR: provide one or more pull request numbers" >&2
+        exit 2
+    fi
+
+    pr_numbers=()
+    for candidate in "$@"; do
+        if [[ ! "$candidate" =~ ^[1-9][0-9]*$ ]]; then
+            echo "ERROR: invalid pull request number: $candidate" >&2
+            exit 2
+        fi
+        if (( ${#pr_numbers[@]} > 0 )); then
+            for existing in "${pr_numbers[@]}"; do
+                if [[ "$candidate" == "$existing" ]]; then
+                    echo "ERROR: duplicate pull request number: $candidate" >&2
+                    exit 2
+                fi
+            done
+        fi
+        pr_numbers+=("$candidate")
+    done
+
+    if ! origin_url="$(git remote get-url origin)"; then
+        echo "ERROR: could not resolve the origin remote" >&2
+        exit 2
+    fi
+    if ! queue_repository="$(gh repo view "$origin_url" --json url --jq '.url | ltrimstr("https://")')"; then
+        echo "ERROR: could not resolve the queue repository from origin" >&2
+        exit 2
+    fi
+    validation_failed=0
+    for pr_number in "${pr_numbers[@]}"; do
+        if ! metadata="$(gh pr view "$pr_number" --repo "$queue_repository" --json number,state,baseRefName --jq '[.number, .state, .baseRefName] | @tsv')"; then
+            echo "ERROR: could not confirm pull request #$pr_number" >&2
+            validation_failed=1
+            continue
+        fi
+
+        IFS=$'\t' read -r returned_number state base_ref <<< "$metadata"
+        if [[ "$returned_number" != "$pr_number" ]]; then
+            echo "ERROR: pull request lookup mismatch for #$pr_number" >&2
+            validation_failed=1
+        elif [[ "$state" != "OPEN" ]]; then
+            echo "ERROR: pull request #$pr_number is not open" >&2
+            validation_failed=1
+        elif [[ "$base_ref" != "main" ]]; then
+            echo "ERROR: pull request #$pr_number targets $base_ref, not main" >&2
+            validation_failed=1
+        fi
+    done
+
+    if (( validation_failed != 0 )); then
+        echo "No queue requests were submitted." >&2
+        exit 2
+    fi
+
+    submitted=()
+    for (( index=0; index<${#pr_numbers[@]}; index++ )); do
+        pr_number="${pr_numbers[$index]}"
+        if gh pr comment "$pr_number" --repo "$queue_repository" --body '@mergifyio queue'; then
+            submitted+=("$pr_number")
+            continue
+        fi
+
+        not_attempted=("${pr_numbers[@]:$((index + 1))}")
+        if (( ${#submitted[@]} == 0 )); then
+            echo "Confirmed submitted: none" >&2
+        else
+            echo "Confirmed submitted: ${submitted[*]}" >&2
+        fi
+        echo "Submission outcome unknown: $pr_number" >&2
+        if (( ${#not_attempted[@]} == 0 )); then
+            echo "Not attempted: none" >&2
+        else
+            echo "Not attempted: ${not_attempted[*]}" >&2
+        fi
+        exit 1
+    done
+
+    echo "Submitted queue requests: ${submitted[*]}"
+
 # Render the systemd unit from deploy/install-layout.env + the .in template. The
 # committed deploy/systemd/bolt-v2.service is a GENERATED artifact — edit the template
 # or layout and regenerate; never hand-edit the unit. Drift is caught by the

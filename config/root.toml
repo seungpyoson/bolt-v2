@@ -431,10 +431,8 @@ allow_metadata_target_sampling = true
 venue = "BITMEX"
 
 [clients.bitmex_data.data]
-# Data-only readiness uses BitMEX production (mainnet) public data: pinned NT's
-# strict BitmexInstrumentType enum cannot deserialize the testnet-only `FFMCSX`
-# typ, and active_only=true avoids the historical `/instrument` dump whose
-# settled instruments break NT's whole-array deserialize. See T043A docs.
+# Data-only readiness uses BitMEX production public data and requests only
+# active instruments.
 environment = "mainnet"
 active_only = true
 transport_backend = "sockudo"
@@ -447,7 +445,7 @@ max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
 # Pass once >= this many sampled targets stream fresh book deltas. Proves the
 # adapter data path without requiring every illiquid sampled instrument to tick
-# within the wait. Unset = strict (all sampled targets). See T043A docs.
+# within the wait. Unset = strict (all sampled targets).
 min_observed_targets = 10
 
 [clients.bybit_data]
@@ -540,7 +538,7 @@ contract_types = ["linear", "inverse"]
 load_spreads = false
 # Data-only readiness uses OKX production (live) public data: the demo
 # paper-trading websocket serves empty/thin books for production instruments,
-# producing `deltas cannot be empty` parse errors. See T043A docs.
+# producing `deltas cannot be empty` parse errors.
 environment = "live"
 # Keep both NT 0.61 book-health disable controls at zero; timeout remains the
 # warn-only upstream default while stale-book monitoring is disabled.

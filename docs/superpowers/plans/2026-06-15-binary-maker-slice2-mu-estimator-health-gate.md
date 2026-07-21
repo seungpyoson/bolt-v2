@@ -1,5 +1,8 @@
 # Binary-Maker Slice 2 — μ Estimator + Health Gate Implementation Plan
 
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give the binary-oracle maker a net-new informed-fraction (μ) estimator over the existing signed trade-flow buffer, plus a fail-closed μ-health gate that blocks quoting (future) AND go-live (now) when μ is absent, stale, non-finite, or degenerate (constant-0).
@@ -85,7 +88,7 @@
   - all samples aged out of `now_ms` window → `None`.
   - result clamped into [0,1] and always finite when `Some`.
 
-- [ ] **Step 3: Run tests, verify they fail** (function not defined): `just verify-remote` is CI-only; locally use `cargo +1.95.0 build` is REFUSED — instead push to a scratch and rely on CI, OR (faster local signal) run only `cargo +1.95.0 fmt --check`. Per repo policy, the failing-test gate is observed via CI on push; mark this step satisfied by the red CI run for the new test commit. (Same for all "verify fails/passes" steps below — fast local gates are fmt + `just source-fence`; full test is CI.)
+- [ ] **Step 3: Run tests, verify they fail** (function not defined): local `cargo +1.95.0 build` is REFUSED — use `git push` and adjudicate advisory CI, OR (for faster local signal) run only `cargo +1.95.0 fmt --check`. Per repo policy, the failing-test gate is observed via CI on push; mark this step satisfied by the red CI run for the new test commit. (Same for all "verify fails/passes" steps below — fast local gates are fmt + `just source-fence`; full test is CI.)
 
 - [ ] **Step 4: Implement `estimate_informed_fraction`** per D1 — iterate `flow.samples_within(now_ms)`, match `s.aggressor` (`AggressorSide::Buyer` → `buy_vol += s.size; classified += 1`; `Seller` → `sell_vol += s.size; classified += 1`; `NoAggressor` → skip); guard `classified < cfg.min_classified_samples` → `None`; `total = buy_vol + sell_vol`; guard `!(total > 0.0)` → `None`; `mu = (buy_vol - sell_vol).abs() / total`; guard `!mu.is_finite()` → `None`; else `Some(mu.clamp(0.0, 1.0))`. Module doc comment: states this is the net-new VPIN-style informed-fraction estimator (NT lacks it), names `gm_binary_quote` as the consumer, and the fail-closed contract.
 

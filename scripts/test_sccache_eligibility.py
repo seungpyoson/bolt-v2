@@ -6,10 +6,12 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import os
 import pathlib
 import shlex
 import tempfile
 import tomllib
+from unittest import mock
 
 import sccache_eligibility
 from sccache_eligibility import resolve_sccache_eligibility
@@ -33,6 +35,7 @@ def assert_case(
     expected_role: str,
     expected_mode: str,
     expected_digest: str | None = None,
+    expected_idle_timeout: int | None = 0,
 ) -> None:
     result = resolve_sccache_eligibility(
         active=active,
@@ -49,6 +52,10 @@ def assert_case(
         raise AssertionError(f"{label}: expected {expected!r}, got {actual!r}")
     if expected_digest is not None and result.executable_sha256 != expected_digest:
         raise AssertionError(f"{label}: expected digest {expected_digest!r}, got {result.executable_sha256!r}")
+    if result.idle_timeout_seconds != expected_idle_timeout:
+        raise AssertionError(
+            f"{label}: expected idle timeout {expected_idle_timeout!r}, got {result.idle_timeout_seconds!r}"
+        )
 
 
 def main() -> int:
@@ -69,12 +76,37 @@ def main() -> int:
         expected_digest=arm64_digest,
     )
     assert_case(
+        "main push without writer compiles cold",
+        event_name="push",
+        github_ref="refs/heads/main",
+        write_role_arn="",
+        expected_eligible=False,
+        expected_role="",
+        expected_mode="none",
+    )
+    assert_case(
         "main dispatch may write",
         event_name="workflow_dispatch",
         github_ref="refs/heads/main",
         expected_eligible=True,
         expected_role=write_role,
         expected_mode="read_write",
+    )
+    assert_case(
+        "feature push cannot write",
+        event_name="push",
+        github_ref="refs/heads/feature",
+        expected_eligible=False,
+        expected_role="",
+        expected_mode="none",
+    )
+    assert_case(
+        "feature dispatch reads only",
+        event_name="workflow_dispatch",
+        github_ref="refs/heads/feature",
+        expected_eligible=True,
+        expected_role=read_role,
+        expected_mode="read_only",
     )
     assert_case(
         "pull request reads only",
@@ -136,6 +168,16 @@ def main() -> int:
         expected_eligible=False,
         expected_role=read_role,
         expected_mode="read_only",
+    )
+    assert_case(
+        "missing idle timeout fails closed",
+        event_name="pull_request",
+        github_ref="refs/pull/1302/merge",
+        location={key: value for key, value in LOCATION.items() if key != "idle_timeout_seconds"},
+        expected_eligible=False,
+        expected_role=read_role,
+        expected_mode="read_only",
+        expected_idle_timeout=None,
     )
     assert_case(
         "location newlines are rejected",
@@ -208,6 +250,56 @@ def main() -> int:
         expected_mode="read_only",
         expected_digest="",
     )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        output_path = pathlib.Path(tmp) / "output"
+        env_path = pathlib.Path(tmp) / "env"
+        common_environment = {
+            "CONFIG_PATH": str(REPO_ROOT / "ci" / "sccache-location.toml"),
+            "SCCACHE_ACTIVE": "true",
+            "READ_ROLE_ARN": read_role,
+            "WRITE_ROLE_ARN": write_role,
+            "RUNNER_ARCH": "ARM64",
+            "GITHUB_OUTPUT": str(output_path),
+            "GITHUB_ENV": str(env_path),
+        }
+        common_cache_environment = {
+            f"SCCACHE_BUCKET={LOCATION['bucket']}",
+            f"SCCACHE_REGION={LOCATION['region']}",
+            f"SCCACHE_S3_KEY_PREFIX={LOCATION['key_prefix']}",
+            "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true",
+            f"SCCACHE_IDLE_TIMEOUT={LOCATION['idle_timeout_seconds']}",
+            "SCCACHE_IGNORE_SERVER_IO_ERROR=1",
+        }
+        for label, event_name, github_ref, expected_environment in (
+            (
+                "pull request",
+                "pull_request",
+                "refs/pull/1488/merge",
+                common_cache_environment | {"SCCACHE_S3_RW_MODE=READ_ONLY"},
+            ),
+            (
+                "main push",
+                "push",
+                "refs/heads/main",
+                common_cache_environment | {"SCCACHE_S3_RW_MODE=READ_WRITE"},
+            ),
+            ("feature push", "push", "refs/heads/feature", set()),
+        ):
+            output_path.write_text("", encoding="utf-8")
+            env_path.write_text("", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ,
+                {**common_environment, "GITHUB_EVENT_NAME": event_name, "GITHUB_REF": github_ref},
+                clear=True,
+            ), contextlib.redirect_stdout(io.StringIO()):
+                if sccache_eligibility.main() != 0:
+                    raise AssertionError(f"{label}: environment export failed")
+            environment = set(env_path.read_text(encoding="utf-8").splitlines())
+            if environment != expected_environment:
+                raise AssertionError(
+                    f"{label}: expected environment {expected_environment!r}, got {environment!r}"
+                )
 
     verify = getattr(sccache_eligibility, "verify_sccache_executable", None)
     if not callable(verify):

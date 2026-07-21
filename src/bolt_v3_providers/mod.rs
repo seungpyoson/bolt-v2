@@ -301,14 +301,10 @@ type VenueTruthRuntimeSourceBuilder =
         ProviderVenueTruthSourceContext<'a>,
     ) -> Result<ProviderVenueTruthRuntimeSource, anyhow::Error>;
 
-// PROVIDER-SPECIFIC (Polymarket CLOB v2) — DEFER (P3-F3). Every `ClobV2*` type and
-// `*_clob_v2_*` fn below materializes Polymarket CLOB v2 signing / fee / collateral
-// evidence from NT `nautilus_polymarket` sources — they are NOT venue-agnostic despite
-// the neutral `ClobV2` prefix. The provider-leak fence intent is preserved here by this
-// explicit ownership note; a full rename to `PolymarketClobV2*` is deferred to a
-// dedicated PR because it touches ~7 files (src/main.rs, src/bolt_v3_operator_artifacts.rs
-// at ~85 refs, and the polymarket/* submodules) — out of scope for this readiness slice.
-// Recorded in specs/024-production-trade-readiness/external-review/P3-adjudication.md (F3).
+// PROVIDER-SPECIFIC (Polymarket CLOB v2). Every `ClobV2*` type and
+// `*_clob_v2_*` below materializes Polymarket CLOB v2 signing, fee, and collateral
+// evidence from NT `nautilus_polymarket` sources. Despite the neutral `ClobV2`
+// prefix, these declarations are provider-owned and are not venue-neutral extension points.
 #[derive(Clone, Copy)]
 pub struct ClobV2AdapterSigningSourceMaterializationRequest<'a> {
     pub schema_version: u32,

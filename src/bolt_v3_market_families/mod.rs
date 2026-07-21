@@ -543,11 +543,11 @@ pub fn select_binary_option_market_from_target_with_bindings(
     now_milliseconds: u64,
     bindings: &[MarketFamilyValidationBinding],
 ) -> Option<SelectedBinaryOptionMarket> {
-    // An unknown `family_key` must never reach here: startup validation (P5-10) rejects
+    // An unknown `family_key` must never reach here: startup validation rejects
     // an unregistered `rotating_market_family` at config load. If it somehow does, fail
     // LOUD — an `error!` an operator can see — rather than a silent `None` that is
-    // indistinguishable from "no market this cycle" and masks the broken invariant
-    // (P5-3). The signature stays `Option` so the live-money strategy/operator selection
+    // indistinguishable from "no market this cycle" and masks the broken invariant.
+    // The signature stays `Option` so the live-money strategy/operator selection
     // chain is not refactored to `Result` for a branch that cannot be reached.
     let Some(binding) = bindings
         .iter()

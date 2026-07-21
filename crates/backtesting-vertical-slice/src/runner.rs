@@ -1010,7 +1010,6 @@ pub struct OrderTerminalRecord {
     pub initialized_quantity: Quantity,
     pub initialized_quote_quantity: bool,
     pub effective_quantity: Quantity,
-    pub submission_timestamp: Option<UnixNanos>,
     pub fills: Vec<nautilus_model::events::OrderFilled>,
     pub events_debug: Vec<String>,
 }
@@ -1409,10 +1408,6 @@ fn capture_order_terminals(engine: &BacktestEngine) -> Result<Vec<OrderTerminalR
                 initialized_quantity: initialized.quantity,
                 initialized_quote_quantity: initialized.quote_quantity,
                 effective_quantity: order.quantity(),
-                submission_timestamp: order.events().iter().find_map(|event| match event {
-                    OrderEventAny::Submitted(submitted) => Some(submitted.ts_event),
-                    _ => None,
-                }),
                 fills: order
                     .events()
                     .iter()
@@ -2441,8 +2436,8 @@ mod tests {
     use anyhow::{Context, Result, ensure};
     use nautilus_core::{Params, UUID4, UnixNanos};
     use nautilus_model::{
-        data::TradeTick,
-        enums::{AccountType, AggressorSide, AssetClass},
+        data::{InstrumentClose, TradeTick},
+        enums::{AccountType, AggressorSide, AssetClass, InstrumentCloseType},
         events::AccountState,
         identifiers::{AccountId, InstrumentId, Symbol, TradeId},
         instruments::{BinaryOption, Instrument, InstrumentAny},
@@ -3583,6 +3578,150 @@ mod tests {
         Ok(())
     }
 
+    fn record_issue_789_semantic_identity(
+        seen: &mut Vec<(UUID4, &'static str)>,
+        identity: UUID4,
+        label: &'static str,
+    ) -> Result<()> {
+        if let Some((_, previous_label)) = seen.iter().find(|(seen, _)| *seen == identity) {
+            anyhow::bail!(
+                "duplicate {label} identity {identity} in #789 evidence; already used by {previous_label}"
+            );
+        }
+        seen.push((identity, label));
+        Ok(())
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    fn ensure_issue_789_settlement_witness(
+        client_order_id: &str,
+        first_fill_seq: u64,
+        fills: &[nautilus_model::events::OrderFilled],
+        close_seq: u64,
+        close: &nautilus_model::data::InstrumentClose,
+        initialized: Option<&(u64, nautilus_model::events::OrderInitialized)>,
+        submitted: Option<&(u64, nautilus_model::events::OrderSubmitted)>,
+        accepted: Option<&(u64, nautilus_model::events::OrderAccepted)>,
+    ) -> Result<()> {
+        let first_fill = fills
+            .first()
+            .with_context(|| format!("#789 settlement order {client_order_id} has no fills"))?;
+        ensure!(
+            close.close_type == InstrumentCloseType::ContractExpired
+                && close.instrument_id == first_fill.instrument_id
+                && close_seq > first_fill_seq,
+            "#789 settlement fill is not followed by its ContractExpired receipt"
+        );
+        let (initialized_seq, initialized) = initialized.with_context(|| {
+            format!(
+                "#789 fill {client_order_id} lacks synthetic expiration OrderInitialized evidence"
+            )
+        })?;
+        let (accepted_seq, accepted) = accepted.with_context(|| {
+            format!("#789 fill {client_order_id} lacks synthetic expiration OrderAccepted evidence")
+        })?;
+        ensure!(
+            submitted.is_none(),
+            "#789 synthetic expiration order {client_order_id} must not have a normal OrderSubmitted path"
+        );
+        ensure!(
+            *initialized_seq < *accepted_seq
+                && *accepted_seq < first_fill_seq
+                && first_fill_seq < close_seq,
+            "#789 synthetic expiration lifecycle is not ordered Initialized -> Accepted -> Filled -> ContractExpired receipt"
+        );
+        let expiration_prefix = format!("EXPIRATION-{}-", first_fill.instrument_id.venue);
+        let expiration_suffix = client_order_id
+            .strip_prefix(&expiration_prefix)
+            .with_context(|| {
+                format!(
+                    "#789 settlement client order ID {client_order_id} lacks prefix {expiration_prefix}"
+                )
+            })?;
+        UUID4::from_str(expiration_suffix)
+            .map_err(anyhow::Error::msg)
+            .context("#789 settlement client order ID suffix is not a UUID4")?;
+        let expected_tag = format!("EXPIRATION_{}_CLOSE", first_fill.instrument_id.venue);
+        let filled_quantity = fills
+            .iter()
+            .map(|fill| fill.last_qty.as_decimal())
+            .sum::<Decimal>();
+        ensure!(
+            initialized.client_order_id == first_fill.client_order_id
+                && initialized.instrument_id == first_fill.instrument_id
+                && initialized.trader_id == first_fill.trader_id
+                && initialized.strategy_id == first_fill.strategy_id
+                && initialized.order_side == first_fill.order_side
+                && initialized.order_type == nautilus_model::enums::OrderType::Market
+                && initialized.time_in_force == nautilus_model::enums::TimeInForce::Gtc
+                && initialized.quantity.as_decimal() == filled_quantity
+                && initialized.quantity.precision == first_fill.last_qty.precision
+                && initialized.reduce_only
+                && !initialized.post_only
+                && !initialized.quote_quantity
+                && !initialized.reconciliation
+                && initialized
+                    .tags
+                    .as_ref()
+                    .is_some_and(|tags| { tags.len() == 1 && tags[0].as_str() == expected_tag }),
+            "#789 fill {client_order_id} does not match the pinned synthetic expiration OrderInitialized shape"
+        );
+        ensure!(
+            accepted.client_order_id == first_fill.client_order_id
+                && accepted.instrument_id == first_fill.instrument_id
+                && accepted.trader_id == first_fill.trader_id
+                && accepted.strategy_id == first_fill.strategy_id
+                && accepted.account_id == first_fill.account_id
+                && accepted.venue_order_id == first_fill.venue_order_id
+                && !accepted.reconciliation,
+            "#789 fill {client_order_id} does not match its synthetic expiration OrderAccepted evidence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn issue_789_rejects_reused_position_event_identity() {
+        let identity = UUID4::new();
+        let mut seen = Vec::new();
+        record_issue_789_semantic_identity(&mut seen, identity, "PositionOpened")
+            .expect("first position event identity is unique");
+
+        let error = record_issue_789_semantic_identity(&mut seen, identity, "PositionChanged")
+            .expect_err("position event identities must be globally unique");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate PositionChanged identity")
+        );
+    }
+
+    #[test]
+    fn issue_789_rejects_orphan_normal_close_as_settlement() {
+        let fill = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
+        let close = InstrumentClose::new(
+            fill.instrument_id,
+            fill.last_px,
+            InstrumentCloseType::ContractExpired,
+            UnixNanos::from(20),
+            UnixNanos::from(20),
+        );
+
+        let error = ensure_issue_789_settlement_witness(
+            &fill.client_order_id.to_string(),
+            10,
+            &[fill],
+            20,
+            &close,
+            None,
+            None,
+            None,
+        )
+        .expect_err("a fill without synthetic expiration-order evidence is not settlement");
+
+        assert!(error.to_string().contains("synthetic expiration"));
+    }
+
     fn bind_issue_789_account_states<'a>(
         fill_sequences: &[u64],
         position_effect_sequences: &[u64],
@@ -3639,9 +3778,11 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        let mut bound = vec![*initial_states
-            .last()
-            .context("#789 initial AccountState sequence unexpectedly empty")?];
+        let mut bound = vec![
+            *initial_states
+                .last()
+                .context("#789 initial AccountState sequence unexpectedly empty")?,
+        ];
         let mut assigned_count = initial_states.len();
         let mut seen_event_ids = initial_states
             .iter()
@@ -3673,18 +3814,18 @@ mod tests {
             ensure!(
                 candidates
                     .iter()
-                    .any(|(_, state)| !seen_event_ids.contains(&state.event_id)),
-                "#789 fill sequence {fill_seq} has no distinct post-fill AccountState event identity"
+                    .all(|(_, state)| !seen_event_ids.contains(&state.event_id)),
+                "#789 fill sequence {fill_seq} contains a replayed AccountState event identity"
             );
             for (_, state) in &candidates {
-                if !seen_event_ids.contains(&state.event_id) {
-                    seen_event_ids.push(state.event_id);
-                }
+                seen_event_ids.push(state.event_id);
             }
             assigned_count += candidates.len();
-            bound.push(*candidates
-                .last()
-                .context("#789 AccountState causal interval unexpectedly empty")?);
+            bound.push(
+                *candidates
+                    .last()
+                    .context("#789 AccountState causal interval unexpectedly empty")?,
+            );
         }
         ensure!(
             assigned_count == account_states.len(),
@@ -3718,19 +3859,26 @@ mod tests {
     #[test]
     fn issue_789_account_binding_preserves_zero_cash_delta_settlement() {
         let states = vec![
-            (1, test_issue_789_account_state_with_cash("100.00000000 USDC")),
-            (12, test_issue_789_account_state_with_cash("90.00000000 USDC")),
-            (22, test_issue_789_account_state_with_cash("95.00000000 USDC")),
-            (32, test_issue_789_account_state_with_cash("95.00000000 USDC")),
+            (
+                1,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+            (
+                12,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+            (
+                22,
+                test_issue_789_account_state_with_cash("95.00000000 USDC"),
+            ),
+            (
+                32,
+                test_issue_789_account_state_with_cash("95.00000000 USDC"),
+            ),
         ];
 
-        let bound = bind_issue_789_account_states(
-            &[10, 20, 30],
-            &[11, 21, 31],
-            &states,
-            40,
-        )
-        .expect("zero-value settlement still has a distinct causal AccountState");
+        let bound = bind_issue_789_account_states(&[10, 20, 30], &[11, 21, 31], &states, 40)
+            .expect("zero-value settlement still has a distinct causal AccountState");
 
         assert_eq!(bound.len(), 4);
         assert_eq!(bound[3].0, 32);
@@ -3744,7 +3892,10 @@ mod tests {
         let states = vec![
             (1, reported),
             (2, calculated),
-            (12, test_issue_789_account_state_with_cash("90.00000000 USDC")),
+            (
+                12,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
         ];
 
         let bound = bind_issue_789_account_states(&[10], &[11], &states, 20)
@@ -3757,19 +3908,26 @@ mod tests {
     #[test]
     fn issue_789_account_binding_rejects_account_before_position_effect() {
         let states = vec![
-            (1, test_issue_789_account_state_with_cash("100.00000000 USDC")),
-            (11, test_issue_789_account_state_with_cash("90.00000000 USDC")),
-            (22, test_issue_789_account_state_with_cash("95.00000000 USDC")),
-            (32, test_issue_789_account_state_with_cash("96.00000000 USDC")),
+            (
+                1,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+            (
+                11,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+            (
+                22,
+                test_issue_789_account_state_with_cash("95.00000000 USDC"),
+            ),
+            (
+                32,
+                test_issue_789_account_state_with_cash("96.00000000 USDC"),
+            ),
         ];
 
-        let error = bind_issue_789_account_states(
-            &[10, 20, 30],
-            &[12, 21, 31],
-            &states,
-            40,
-        )
-        .expect_err("AccountState before its position effect must fail closed");
+        let error = bind_issue_789_account_states(&[10, 20, 30], &[12, 21, 31], &states, 40)
+            .expect_err("AccountState before its position effect must fail closed");
 
         assert!(error.to_string().contains("after its position mutation"));
     }
@@ -3782,7 +3940,123 @@ mod tests {
         let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
             .expect_err("a replayed pre-fill AccountState is not a post-fill event");
 
-        assert!(error.to_string().contains("distinct post-fill AccountState event identity"));
+        assert!(
+            error
+                .to_string()
+                .contains("replayed AccountState event identity")
+        );
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_replay_mixed_with_fresh_event() {
+        let initial = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let states = vec![
+            (1, initial.clone()),
+            (12, initial),
+            (
+                13,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+        ];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("every AccountState candidate must have a fresh identity");
+
+        assert!(
+            error
+                .to_string()
+                .contains("replayed AccountState event identity")
+        );
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_missing_transition() {
+        let states = vec![(
+            1,
+            test_issue_789_account_state_with_cash("100.00000000 USDC"),
+        )];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("a fill without AccountState evidence must fail closed");
+
+        assert!(error.to_string().contains("has no AccountState"));
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_conflicting_initial_evidence() {
+        let states = vec![
+            (
+                1,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+            (
+                2,
+                test_issue_789_account_state_with_cash("99.00000000 USDC"),
+            ),
+            (
+                12,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+        ];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("conflicting initial AccountState evidence must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting initial AccountState")
+        );
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_conflicting_interval_evidence() {
+        let states = vec![
+            (
+                1,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+            (
+                12,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+            (
+                13,
+                test_issue_789_account_state_with_cash("91.00000000 USDC"),
+            ),
+        ];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("conflicting AccountStates inside one fill interval must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting AccountState evidence")
+        );
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_unexplained_trailing_state() {
+        let states = vec![
+            (
+                1,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+            (
+                12,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+            (
+                21,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+        ];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("AccountState evidence after the terminal bound must fail closed");
+
+        assert!(error.to_string().contains("outside the ordered"));
     }
 
     #[test]
@@ -3856,8 +4130,9 @@ mod tests {
             margins: Vec::new(),
         };
 
-        let error = ensure_issue_789_terminal_account_matches(&stored, &terminal)
-            .expect_err("#789 must reject complete terminal account-map drift");
+        let error =
+            ensure_issue_789_terminal_account_matches(&stored, &terminal, stored.base_currency)
+                .expect_err("#789 must reject complete terminal account-map drift");
         assert!(error.to_string().contains("complete final AccountState"));
     }
 
@@ -3893,9 +4168,8 @@ mod tests {
             (InstrumentId::from("YES.POLYMARKET"), Currency::BTC()),
             Money::from("0.00000000 BTC"),
         );
-        let terminal = super::capture_account_terminal(
-            &nautilus_model::accounts::AccountAny::Cash(account),
-        );
+        let terminal =
+            super::capture_account_terminal(&nautilus_model::accounts::AccountAny::Cash(account));
 
         assert_eq!(terminal.cash_locks.len(), 1);
         let error = issue_789_terminal_account_cash(&terminal, Currency::USDC())
@@ -3939,9 +4213,27 @@ mod tests {
             margins: Vec::new(),
         };
 
-        let error = ensure_issue_789_terminal_account_matches(&stored, &terminal)
-            .expect_err("current account metadata drift must fail closed");
+        let error =
+            ensure_issue_789_terminal_account_matches(&stored, &terminal, stored.base_currency)
+                .expect_err("current account metadata drift must fail closed");
         assert!(error.to_string().contains("complete final AccountState"));
+    }
+
+    #[test]
+    fn issue_789_terminal_account_rejects_correlated_manifest_base_currency_drift() {
+        let stored = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let terminal = super::AccountTerminalRecord {
+            account_id: stored.account_id,
+            account_type: stored.account_type,
+            base_currency: stored.base_currency,
+            balances: stored.balances.clone(),
+            cash_locks: Vec::new(),
+            margins: Vec::new(),
+        };
+
+        let error = ensure_issue_789_terminal_account_matches(&stored, &terminal, None)
+            .expect_err("stored and terminal base currency must match the manifest NONE setting");
+        assert!(error.to_string().contains("manifest base currency"));
     }
 
     fn issue_789_account_cash(
@@ -3977,6 +4269,7 @@ mod tests {
     fn ensure_issue_789_terminal_account_matches(
         stored: &nautilus_model::events::AccountState,
         terminal: &super::AccountTerminalRecord,
+        expected_base_currency: Option<Currency>,
     ) -> Result<()> {
         let mut stored_balances = stored.balances.clone();
         stored_balances.sort_by_key(|balance| balance.currency.to_string());
@@ -3992,10 +4285,11 @@ mod tests {
         ensure!(
             terminal.account_id == stored.account_id
                 && terminal.account_type == stored.account_type
-                && terminal.base_currency == stored.base_currency
+                && stored.base_currency == expected_base_currency
+                && terminal.base_currency == expected_base_currency
                 && terminal.balances == stored_balances
                 && terminal.margins == stored_margins,
-            "terminal account projection diverges from the complete final AccountState"
+            "terminal account projection diverges from the complete final AccountState or manifest base currency"
         );
         Ok(())
     }
@@ -4050,16 +4344,25 @@ mod tests {
             "#789 lifecycle evidence is restricted to NETTING/CASH, L2 liquidity consumption, and deterministic default fill/latency/fee models"
         );
         let mut submit_orders = BTreeMap::new();
+        let mut order_initializations = BTreeMap::new();
+        let mut order_submissions = BTreeMap::new();
+        let mut order_acceptances = BTreeMap::new();
         let mut closes = Vec::new();
         let mut sequenced_fills = Vec::new();
         let mut position_effects = Vec::new();
         let mut account_states = Vec::new();
+        let mut semantic_identities = Vec::new();
         for entry in &evidence.entries {
             match entry.payload_type.as_str() {
                 "SubmitOrder" => {
                     let command: nautilus_common::messages::execution::SubmitOrder =
                         rmp_serde::from_slice(&entry.payload)
                             .context("decode #789 SubmitOrder evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        command.command_id,
+                        "SubmitOrder command",
+                    )?;
                     ensure!(
                         submit_orders
                             .insert(
@@ -4070,10 +4373,63 @@ mod tests {
                         "duplicate SubmitOrder identity in #789 event store"
                     );
                 }
+                "OrderInitialized" => {
+                    let event: nautilus_model::events::OrderInitialized =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 OrderInitialized evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        event.event_id,
+                        "OrderInitialized",
+                    )?;
+                    ensure!(
+                        order_initializations
+                            .insert(event.client_order_id.to_string(), (entry.seq, event))
+                            .is_none(),
+                        "duplicate OrderInitialized client-order identity in #789 event store"
+                    );
+                }
+                "OrderSubmitted" => {
+                    let event: nautilus_model::events::OrderSubmitted =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 OrderSubmitted evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        event.event_id,
+                        "OrderSubmitted",
+                    )?;
+                    ensure!(
+                        order_submissions
+                            .insert(event.client_order_id.to_string(), (entry.seq, event))
+                            .is_none(),
+                        "duplicate OrderSubmitted client-order identity in #789 event store"
+                    );
+                }
+                "OrderAccepted" => {
+                    let event: nautilus_model::events::OrderAccepted =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 OrderAccepted evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        event.event_id,
+                        "OrderAccepted",
+                    )?;
+                    ensure!(
+                        order_acceptances
+                            .insert(event.client_order_id.to_string(), (entry.seq, event))
+                            .is_none(),
+                        "duplicate OrderAccepted client-order identity in #789 event store"
+                    );
+                }
                 "OrderFilled" => {
                     let fill: nautilus_model::events::OrderFilled =
                         rmp_serde::from_slice(&entry.payload)
                             .context("decode #789 OrderFilled evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        fill.event_id,
+                        "OrderFilled",
+                    )?;
                     sequenced_fills.push((entry.seq, fill));
                 }
                 "InstrumentClose" => {
@@ -4086,12 +4442,22 @@ mod tests {
                     let state: nautilus_model::events::AccountState =
                         rmp_serde::from_slice(&entry.payload)
                             .context("decode #789 AccountState evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        state.event_id,
+                        "AccountState",
+                    )?;
                     account_states.push((entry.seq, state));
                 }
                 "PositionOpened" => {
                     let effect: nautilus_model::events::PositionOpened =
                         rmp_serde::from_slice(&entry.payload)
                             .context("decode #789 PositionOpened evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        effect.event_id,
+                        "PositionOpened",
+                    )?;
                     position_effects.push((
                         entry.seq,
                         crate::execution_contract::PositionEffectTrace {
@@ -4111,6 +4477,11 @@ mod tests {
                     let effect: nautilus_model::events::PositionChanged =
                         rmp_serde::from_slice(&entry.payload)
                             .context("decode #789 PositionChanged evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        effect.event_id,
+                        "PositionChanged",
+                    )?;
                     position_effects.push((
                         entry.seq,
                         crate::execution_contract::PositionEffectTrace {
@@ -4130,6 +4501,11 @@ mod tests {
                     let effect: nautilus_model::events::PositionClosed =
                         rmp_serde::from_slice(&entry.payload)
                             .context("decode #789 PositionClosed evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        effect.event_id,
+                        "PositionClosed",
+                    )?;
                     position_effects.push((
                         entry.seq,
                         crate::execution_contract::PositionEffectTrace {
@@ -4239,10 +4615,16 @@ mod tests {
                 // change fails closed instead of silently changing the evidence
                 // interpretation. Position effect, not this sequence relation,
                 // classifies the fill as the terminal settlement below.
-                ensure!(
-                    close.0 > first_fill_seq,
-                    "#789 InstrumentClose receipt must follow its settlement fill at the pinned NT boundary"
-                );
+                ensure_issue_789_settlement_witness(
+                    &client_order_id,
+                    first_fill_seq,
+                    &fills,
+                    close.0,
+                    &close.1,
+                    order_initializations.get(&client_order_id),
+                    order_submissions.get(&client_order_id),
+                    order_acceptances.get(&client_order_id),
+                )?;
                 ensure!(
                     settlement_receipt_seq.replace(close.0).is_none(),
                     "#789 lifecycle contains multiple settlement receipts"
@@ -4374,6 +4756,10 @@ mod tests {
             initial_balances
         );
         let manifest_initial_cash = initial_balances[0];
+        let expected_base_currency = manifest
+            .to_nt_venue_config()
+            .context("map issue #789 manifest venue configuration")?
+            .base_currency();
         let raw_lifecycle_account_states = account_states
             .iter()
             .filter(|(_, state)| state.account_id == position.account_id)
@@ -4382,6 +4768,12 @@ mod tests {
         ensure!(
             !raw_lifecycle_account_states.is_empty(),
             "issue #789 event store contains no lifecycle AccountState evidence"
+        );
+        ensure!(
+            raw_lifecycle_account_states
+                .iter()
+                .all(|(_, state)| state.base_currency == expected_base_currency),
+            "#789 lifecycle AccountState evidence diverges from the manifest base currency"
         );
         let lifecycle_account_states = bind_issue_789_account_states(
             &fill_sequences,
@@ -4401,7 +4793,11 @@ mod tests {
             initial_cash == manifest_initial_cash,
             "initial AccountState does not equal the manifest starting balance"
         );
-        ensure_issue_789_terminal_account_matches(stored_terminal_account, terminal_account)?;
+        ensure_issue_789_terminal_account_matches(
+            stored_terminal_account,
+            terminal_account,
+            expected_base_currency,
+        )?;
         ensure!(
             stored_terminal_cash == terminal_cash,
             "terminal account cash diverges from the final AccountState"

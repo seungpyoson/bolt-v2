@@ -22,17 +22,20 @@ the run, and reads the sealed evidence. It must not implement its own capture pr
 NT emits repeated AccountState snapshots across its bus paths. The validator first binds them to
 each fill's ordered causal interval: fill, then position mutation, then account state, then the next
 fill or terminal close receipt. It may collapse identical republishes only inside one such interval;
-it still requires an event identity not seen in earlier intervals for a zero-cash-delta fill. It
+every stored account event must have a globally fresh identity, including a zero-cash-delta fill. It
 independently derives the cash trajectory from fills and commissions and compares every transition
 plus the current terminal account cache, including the CashAccount's transient per-instrument lock
-map. It never synthesizes `CashPosted` evidence.
+map. Every lifecycle account base currency is also bound to the mapped manifest venue config. It
+never synthesizes `CashPosted` evidence.
 
 Two pinned ordering details are explicit. Raw `OrderFilled` evidence is captured before the
 execution engine assigns `position_id`, so position identity comes from the subsequent Position
 event and terminal fill comparisons ignore only that one post-capture field. Also, BacktestEngine
 routes `InstrumentClose` to the exchange before publishing it through DataEngine, so the settlement
-fill precedes the matching close receipt in the store. Position effect classifies settlement; the
-unique close receipt and configured price bind its cause.
+fill precedes the matching close receipt in the store. Position effect classifies settlement; its
+cause additionally requires NT's synthetic expiration `OrderInitialized -> OrderAccepted -> fill`
+shape, expiration ID/tag, reduce-only remainder, absence of `SubmitOrder` and `OrderSubmitted`, and
+the unique configured `ContractExpired` receipt. An orphan normal fill cannot become settlement.
 
 For the #789 fixture, venue latency and fill models are absent. The backtest applies each market-data
 record, processes strategy callbacks, and drains the venue command queue before the next record.
@@ -68,12 +71,15 @@ Observed NT evidence:
 - ordered `SubmitOrder` commands preserving submitted quantity and instrument identity;
 - ordered `OrderFilled` events preserving order/trade identity, price, quantity, side, and
   commission;
+- unique command/event identities across submits, order events, fills, position events, and account
+  events;
 - ordered position events binding position identity, exact exposure effects, and cumulative P&L;
 - the initial `AccountState` and at least one causally ordered `AccountState` after every fill,
   including fills whose balance map is unchanged;
 - integrity-verified order-book cursors bound to the synchronous SubmitOrder entry and the
   hash-verified catalog;
 - `InstrumentClose`, registered through NT's existing encoder-registry extension;
+- synthetic expiration initialization and acceptance events binding the settlement origin;
 - terminal orders and positions plus the account object's current balances, CashAccount transient
   per-instrument locks, and applicable margins, used only as completeness cross-checks rather than
   reconstructed from its last event;
@@ -103,8 +109,9 @@ the lifecycle source of truth.
 4. Replace #789 post-run evidence assembly with a pure ordered fold. Port only the valid arithmetic
    and behavioral cases from the closed #1489 branch. Evidence: focused unit tests for duplicate
    identities, instrument and book identity, raw precision/increment, strict fill -> position ->
-   account ordering within each causal interval, exact settlement remainder, complete commission
-   maps, realized P&L, zero-cash-delta fills, and per-fill cash.
+   account ordering within each causal interval, globally unique semantic identities, synthetic
+   expiration origin, exact settlement remainder, manifest-bound account metadata, complete
+   commission maps, realized P&L, zero-cash-delta fills, and per-fill cash.
 5. Bind each normal fill to the catalog rows selected by its submit cursor and independently sweep
    price levels. Enforce exactly one entry and one normal reduction, on opposing book sides, so the
    declared #789 slice cannot reuse earlier consumed liquidity without adding a second matching

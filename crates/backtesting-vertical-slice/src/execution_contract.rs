@@ -1054,6 +1054,32 @@ mod tests {
     }
 
     #[test]
+    fn rejects_fill_quantity_with_correct_precision_but_wrong_increment() {
+        let mut fixture = fixture();
+        let InstrumentAny::BinaryOption(instrument) = &mut fixture.instrument else {
+            panic!("fixture instrument changed")
+        };
+        instrument.size_increment = Quantity::from("0.02");
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("correct precision cannot bypass the size increment");
+        assert!(error.to_string().contains("size precision"));
+    }
+
+    #[test]
+    fn rejects_fill_price_with_correct_precision_but_wrong_increment() {
+        let mut fixture = fixture();
+        let InstrumentAny::BinaryOption(instrument) = &mut fixture.instrument else {
+            panic!("fixture instrument changed")
+        };
+        instrument.price_increment = Price::from("0.004");
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("correct precision cannot bypass the price increment");
+        assert!(error.to_string().contains("price precision"));
+    }
+
+    #[test]
     fn rejects_position_effect_price_with_wrong_raw_precision() {
         let mut fixture = fixture();
         fixture.position_effects[0].last_price = Price::from("0.4200");

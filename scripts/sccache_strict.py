@@ -31,12 +31,15 @@ class TargetConfig:
 @dataclasses.dataclass(frozen=True)
 class StrictBuildConfig:
     schema_version: int
+    repo_root: pathlib.Path
     source_version: str
     source_commit: str
     source_url: str
     source_sha256: str
     source_date_epoch: int
     patch_path: pathlib.Path
+    workflow_path: pathlib.Path
+    recipe_path: pathlib.Path
     container: str
     container_digest: str
     rustc_release: str
@@ -45,6 +48,10 @@ class StrictBuildConfig:
     default_features: bool
     profile: str
     verification_timeout_ms: int
+    verification_cache_mode: str
+    replicas: tuple[str, ...]
+    attestation_attempts: int
+    attestation_interval_seconds: int
     targets: Mapping[str, TargetConfig]
 
 
@@ -188,6 +195,8 @@ def load_document(
                 "features",
                 "default_features",
                 "profile",
+                "workflow",
+                "recipe",
             }
         ),
         "build",
@@ -213,9 +222,39 @@ def load_document(
     profile = _string(build["profile"], "build.profile")
     if profile != "release":
         raise ValueError("build.profile must be release")
+    workflow_relative = pathlib.PurePosixPath(
+        _string(build["workflow"], "build.workflow")
+    )
+    if (
+        workflow_relative.is_absolute()
+        or ".." in workflow_relative.parts
+        or workflow_relative.suffix not in {".yml", ".yaml"}
+    ):
+        raise ValueError("build.workflow must be a repository-relative workflow path")
+    workflow_path = repo_root.joinpath(*workflow_relative.parts)
+    recipe_relative = pathlib.PurePosixPath(_string(build["recipe"], "build.recipe"))
+    if (
+        recipe_relative.is_absolute()
+        or ".." in recipe_relative.parts
+        or recipe_relative.suffix != ".sh"
+    ):
+        raise ValueError("build.recipe must be a repository-relative shell recipe")
+    recipe_path = repo_root.joinpath(*recipe_relative.parts)
 
     verification = _mapping(top["verification"], "verification")
-    _exact_keys(verification, frozenset({"strict_timeout_ms"}), "verification")
+    _exact_keys(
+        verification,
+        frozenset(
+            {
+                "strict_timeout_ms",
+                "cache_mode",
+                "replicas",
+                "attestation_attempts",
+                "attestation_interval_seconds",
+            }
+        ),
+        "verification",
+    )
     verification_timeout_ms = verification["strict_timeout_ms"]
     if (
         isinstance(verification_timeout_ms, bool)
@@ -223,6 +262,36 @@ def load_document(
         or verification_timeout_ms <= 0
     ):
         raise ValueError("verification.strict_timeout_ms must be a positive integer")
+    verification_cache_mode = _string(
+        verification["cache_mode"], "verification.cache_mode"
+    )
+    if verification_cache_mode not in {"READ_ONLY", "READ_WRITE"}:
+        raise ValueError("verification.cache_mode must be READ_ONLY or READ_WRITE")
+    replicas_value = verification["replicas"]
+    if (
+        not isinstance(replicas_value, list)
+        or len(replicas_value) < 2
+        or any(
+            not isinstance(replica, str)
+            or re.fullmatch(r"[a-z][a-z0-9-]*", replica) is None
+            for replica in replicas_value
+        )
+        or len(set(replicas_value)) != len(replicas_value)
+    ):
+        raise ValueError(
+            "verification.replicas must contain at least two unique governed names"
+        )
+    attestation_attempts = verification["attestation_attempts"]
+    attestation_interval_seconds = verification["attestation_interval_seconds"]
+    for value, name in (
+        (attestation_attempts, "verification.attestation_attempts"),
+        (
+            attestation_interval_seconds,
+            "verification.attestation_interval_seconds",
+        ),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
 
     target_table = _mapping(top["targets"], "targets")
     if frozenset(target_table) != _TARGET_NAMES:
@@ -245,12 +314,15 @@ def load_document(
 
     return StrictBuildConfig(
         schema_version=1,
+        repo_root=repo_root.resolve(),
         source_version=source_version,
         source_commit=source_commit,
         source_url=source_url,
         source_sha256=source_sha256,
         source_date_epoch=source_date_epoch,
         patch_path=patch_path,
+        workflow_path=workflow_path,
+        recipe_path=recipe_path,
         container=container,
         container_digest=container_digest,
         rustc_release=rustc_release,
@@ -259,6 +331,10 @@ def load_document(
         default_features=False,
         profile=profile,
         verification_timeout_ms=verification_timeout_ms,
+        verification_cache_mode=verification_cache_mode,
+        replicas=tuple(replicas_value),
+        attestation_attempts=attestation_attempts,
+        attestation_interval_seconds=attestation_interval_seconds,
         targets=MappingProxyType(targets),
     )
 
@@ -289,6 +365,20 @@ def _canonical_json(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _write_exclusive(
+    path: pathlib.Path, value: bytes, *, repo_root: pathlib.Path
+) -> None:
+    resolved = path.resolve()
+    if resolved == repo_root or repo_root in resolved.parents:
+        raise ValueError("output path must be outside the repository")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("xb") as output:
+            output.write(value)
+    except OSError as error:
+        raise ValueError(f"unable to create output {path}: {error}") from error
+
+
 def _emit_json(value: object) -> None:
     print(_canonical_json(value).decode("utf-8"), end="")
 
@@ -302,7 +392,6 @@ def write_candidate_manifest(
     *,
     output_path: pathlib.Path,
     config: StrictBuildConfig,
-    patch_path: pathlib.Path,
     binary_path: pathlib.Path,
     repository: str,
     run_id: str,
@@ -320,8 +409,8 @@ def write_candidate_manifest(
     _full_sha(head_sha, "head_sha")
     if architecture not in config.targets:
         raise ValueError("architecture is not governed")
-    if replica not in {"a", "b"}:
-        raise ValueError("replica must be a or b")
+    if replica not in config.replicas:
+        raise ValueError("replica is not governed")
     try:
         binary_size = binary_path.stat().st_size
     except OSError as error:
@@ -340,7 +429,9 @@ def write_candidate_manifest(
         "source_commit": config.source_commit,
         "source_sha256": config.source_sha256,
         "source_date_epoch": config.source_date_epoch,
-        "patch_sha256": _file_sha256(patch_path),
+        "patch_sha256": _file_sha256(config.patch_path),
+        "workflow_sha256": _file_sha256(config.workflow_path),
+        "recipe_sha256": _file_sha256(config.recipe_path),
         "container": config.container,
         "rustc_release": config.rustc_release,
         "rustc_commit": config.rustc_commit,
@@ -348,12 +439,12 @@ def write_candidate_manifest(
         "default_features": config.default_features,
         "profile": config.profile,
         "verification_timeout_ms": config.verification_timeout_ms,
+        "verification_cache_mode": config.verification_cache_mode,
         "binary_name": _candidate_binary_name(config, architecture),
         "binary_sha256": _file_sha256(binary_path),
         "binary_size": binary_size,
     }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(_canonical_json(manifest))
+    _write_exclusive(output_path, _canonical_json(manifest), repo_root=config.repo_root)
     return manifest
 
 
@@ -371,6 +462,8 @@ _CANDIDATE_KEYS = frozenset(
         "source_sha256",
         "source_date_epoch",
         "patch_sha256",
+        "workflow_sha256",
+        "recipe_sha256",
         "container",
         "rustc_release",
         "rustc_commit",
@@ -378,6 +471,7 @@ _CANDIDATE_KEYS = frozenset(
         "default_features",
         "profile",
         "verification_timeout_ms",
+        "verification_cache_mode",
         "binary_name",
         "binary_sha256",
         "binary_size",
@@ -390,7 +484,6 @@ def verify_candidate_set(
     binary_paths: Mapping[tuple[str, str], pathlib.Path],
     *,
     config: StrictBuildConfig,
-    patch_path: pathlib.Path,
     repository: str,
     run_id: str,
     run_attempt: str,
@@ -399,13 +492,13 @@ def verify_candidate_set(
     expected_pairs = {
         (architecture, replica)
         for architecture in config.targets
-        for replica in ("a", "b")
+        for replica in config.replicas
     }
     if len(manifests) != len(expected_pairs) or set(binary_paths) != expected_pairs:
-        raise ValueError(
-            "candidate set must contain exactly two replicas per architecture"
-        )
-    patch_sha256 = _file_sha256(patch_path)
+        raise ValueError("candidate set must contain every configured replica")
+    patch_sha256 = _file_sha256(config.patch_path)
+    workflow_sha256 = _file_sha256(config.workflow_path)
+    recipe_sha256 = _file_sha256(config.recipe_path)
     by_pair: dict[tuple[str, str], Mapping[str, object]] = {}
     for raw_manifest in manifests:
         manifest = _mapping(raw_manifest, "candidate manifest")
@@ -437,6 +530,8 @@ def verify_candidate_set(
             "source_sha256": config.source_sha256,
             "source_date_epoch": config.source_date_epoch,
             "patch_sha256": patch_sha256,
+            "workflow_sha256": workflow_sha256,
+            "recipe_sha256": recipe_sha256,
             "container": config.container,
             "rustc_release": config.rustc_release,
             "rustc_commit": config.rustc_commit,
@@ -444,6 +539,7 @@ def verify_candidate_set(
             "default_features": config.default_features,
             "profile": config.profile,
             "verification_timeout_ms": config.verification_timeout_ms,
+            "verification_cache_mode": config.verification_cache_mode,
             "binary_name": _candidate_binary_name(config, architecture),
         }
         for key, expected_value in expected_common.items():
@@ -465,11 +561,12 @@ def verify_candidate_set(
 
     assets: dict[str, VerifiedAsset] = {}
     for architecture in sorted(config.targets):
-        first = by_pair[(architecture, "a")]
-        second = by_pair[(architecture, "b")]
-        if (
-            first["binary_sha256"] != second["binary_sha256"]
-            or first["binary_size"] != second["binary_size"]
+        first_replica = config.replicas[0]
+        first = by_pair[(architecture, first_replica)]
+        if any(
+            by_pair[(architecture, replica)]["binary_sha256"] != first["binary_sha256"]
+            or by_pair[(architecture, replica)]["binary_size"] != first["binary_size"]
+            for replica in config.replicas[1:]
         ):
             raise ValueError(f"{architecture} replicas are not byte-identical")
         assets[architecture] = VerifiedAsset(
@@ -478,7 +575,7 @@ def verify_candidate_set(
             name=str(first["binary_name"]),
             sha256=str(first["binary_sha256"]),
             size=int(first["binary_size"]),
-            path=binary_paths[(architecture, "a")],
+            path=binary_paths[(architecture, first_replica)],
         )
 
     build_identity_document = {
@@ -490,6 +587,8 @@ def verify_candidate_set(
             "archive_sha256": config.source_sha256,
             "source_date_epoch": config.source_date_epoch,
             "patch_sha256": patch_sha256,
+            "workflow_sha256": workflow_sha256,
+            "recipe_sha256": recipe_sha256,
         },
         "build": {
             "container": config.container,
@@ -499,6 +598,8 @@ def verify_candidate_set(
             "default_features": config.default_features,
             "profile": config.profile,
             "verification_timeout_ms": config.verification_timeout_ms,
+            "verification_cache_mode": config.verification_cache_mode,
+            "replicas": list(config.replicas),
         },
         "targets": [
             {
@@ -602,7 +703,6 @@ def verify_release_record(
     expected: VerifiedCandidateSet,
     release: Mapping[str, object],
     tag_ref: Mapping[str, object],
-    attestations: Mapping[str, object],
 ) -> None:
     if release.get("tag_name") != expected.release_tag:
         raise ValueError("release tag does not match")
@@ -640,10 +740,6 @@ def verify_release_record(
         asset = actual_assets[name]
         if asset.get("size") != size or asset.get("digest") != f"sha256:{digest}":
             raise ValueError(f"release asset {name} does not match expected bytes")
-    for asset in expected.assets.values():
-        records = attestations.get(asset.sha256)
-        if not isinstance(records, list) or not records:
-            raise ValueError(f"release attestation missing for {asset.name}")
 
 
 def _read_json(path: pathlib.Path, name: str) -> Any:
@@ -701,7 +797,6 @@ def _parser() -> argparse.ArgumentParser:
 
     candidate = subparsers.add_parser("candidate-manifest")
     candidate.add_argument("--config", required=True, type=pathlib.Path)
-    candidate.add_argument("--patch", required=True, type=pathlib.Path)
     candidate.add_argument("--binary", required=True, type=pathlib.Path)
     candidate.add_argument("--repository", required=True)
     candidate.add_argument("--run-id", required=True)
@@ -713,7 +808,6 @@ def _parser() -> argparse.ArgumentParser:
 
     verify = subparsers.add_parser("verify-candidates")
     verify.add_argument("--config", required=True, type=pathlib.Path)
-    verify.add_argument("--patch", required=True, type=pathlib.Path)
     verify.add_argument("--repository", required=True)
     verify.add_argument("--run-id", required=True)
     verify.add_argument("--run-attempt", required=True)
@@ -738,7 +832,6 @@ def _parser() -> argparse.ArgumentParser:
 
     release = subparsers.add_parser("verify-release-record")
     release.add_argument("--config", required=True, type=pathlib.Path)
-    release.add_argument("--patch", required=True, type=pathlib.Path)
     release.add_argument("--repository", required=True)
     release.add_argument("--run-id", required=True)
     release.add_argument("--run-attempt", required=True)
@@ -752,13 +845,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     release.add_argument("--release-json", required=True, type=pathlib.Path)
     release.add_argument("--tag-json", required=True, type=pathlib.Path)
-    release.add_argument(
-        "--attestation",
-        required=True,
-        action="append",
-        nargs=2,
-        metavar=("ARCH", "JSON"),
-    )
     return parser
 
 
@@ -779,6 +865,8 @@ def main(argv: list[str] | None = None) -> int:
                 "source_sha256": config.source_sha256,
                 "source_date_epoch": config.source_date_epoch,
                 "patch": str(config.patch_path),
+                "workflow": str(config.workflow_path),
+                "recipe": str(config.recipe_path),
                 "container": config.container,
                 "rustc_release": config.rustc_release,
                 "rustc_commit": config.rustc_commit,
@@ -786,6 +874,10 @@ def main(argv: list[str] | None = None) -> int:
                 "default_features": config.default_features,
                 "profile": config.profile,
                 "verification_timeout_ms": config.verification_timeout_ms,
+                "verification_cache_mode": config.verification_cache_mode,
+                "replicas": list(config.replicas),
+                "attestation_attempts": config.attestation_attempts,
+                "attestation_interval_seconds": config.attestation_interval_seconds,
             }
             _emit_json(output)
             return 0
@@ -794,7 +886,6 @@ def main(argv: list[str] | None = None) -> int:
             manifest = write_candidate_manifest(
                 output_path=args.output,
                 config=config,
-                patch_path=args.patch,
                 binary_path=args.binary,
                 repository=args.repository,
                 run_id=args.run_id,
@@ -812,14 +903,17 @@ def main(argv: list[str] | None = None) -> int:
                 manifests,
                 binaries,
                 config=config,
-                patch_path=args.patch,
                 repository=args.repository,
                 run_id=args.run_id,
                 run_attempt=args.run_attempt,
                 head_sha=args.head_sha,
             )
             if args.command == "verify-candidates":
-                args.provenance_output.write_bytes(verified.provenance_bytes)
+                _write_exclusive(
+                    args.provenance_output,
+                    verified.provenance_bytes,
+                    repo_root=config.repo_root,
+                )
                 _emit_json(_verified_summary(verified))
                 return 0
             release_document = _mapping(
@@ -828,17 +922,7 @@ def main(argv: list[str] | None = None) -> int:
             tag_document = _mapping(
                 _read_json(args.tag_json, "release tag record"), "release tag record"
             )
-            attestation_records: dict[str, object] = {}
-            for architecture, json_name in args.attestation:
-                if architecture not in verified.assets:
-                    raise ValueError("attestation architecture is not governed")
-                raw = _read_json(pathlib.Path(json_name), "attestation record")
-                if isinstance(raw, Mapping) and "attestations" in raw:
-                    raw = raw["attestations"]
-                attestation_records[verified.assets[architecture].sha256] = raw
-            verify_release_record(
-                verified, release_document, tag_document, attestation_records
-            )
+            verify_release_record(verified, release_document, tag_document)
             _emit_json({"release_verified": True})
             return 0
         if args.command == "validate-publish-context":

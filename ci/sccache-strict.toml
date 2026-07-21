@@ -15,9 +15,15 @@ rustc_commit = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
 features = ["s3", "vendored-openssl"]
 default_features = false
 profile = "release"
+workflow = ".github/workflows/sccache-strict-release.yml"
+recipe = "scripts/build_strict_sccache.sh"
 
 [verification]
 strict_timeout_ms = 1000
+cache_mode = "READ_WRITE"
+replicas = ["a", "b"]
+attestation_attempts = 12
+attestation_interval_seconds = 10
 
 [targets.ARM64]
 triple = "aarch64-unknown-linux-musl"

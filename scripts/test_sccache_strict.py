@@ -46,8 +46,16 @@ def valid_document() -> dict[str, object]:
             "features": ["s3", "vendored-openssl"],
             "default_features": False,
             "profile": "release",
+            "workflow": ".github/workflows/sccache-strict-release.yml",
+            "recipe": "scripts/build_strict_sccache.sh",
         },
-        "verification": {"strict_timeout_ms": 1_000},
+        "verification": {
+            "strict_timeout_ms": 1_000,
+            "cache_mode": "READ_WRITE",
+            "replicas": ["a", "b"],
+            "attestation_attempts": 12,
+            "attestation_interval_seconds": 10,
+        },
         "targets": {
             "ARM64": {
                 "triple": "aarch64-unknown-linux-musl",
@@ -69,10 +77,25 @@ class LoadConfigTests(unittest.TestCase):
 
     def test_rejects_non_positive_verification_timeout(self) -> None:
         document = valid_document()
-        document["verification"] = {"strict_timeout_ms": 0}
+        verification = copy.deepcopy(document["verification"])
+        assert isinstance(verification, dict)
+        verification["strict_timeout_ms"] = 0
+        document["verification"] = verification
 
         with self.assertRaisesRegex(
             ValueError, "verification.strict_timeout_ms must be a positive integer"
+        ):
+            sccache_strict.load_document(document, repo_root=REPO_ROOT)
+
+    def test_rejects_unknown_verification_cache_mode(self) -> None:
+        document = valid_document()
+        verification = copy.deepcopy(document["verification"])
+        assert isinstance(verification, dict)
+        verification["cache_mode"] = "read-write"
+        document["verification"] = verification
+
+        with self.assertRaisesRegex(
+            ValueError, "verification.cache_mode must be READ_ONLY or READ_WRITE"
         ):
             sccache_strict.load_document(document, repo_root=REPO_ROOT)
 
@@ -86,6 +109,10 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.rustc_commit, RUSTC_COMMIT)
         self.assertEqual(config.features, ("s3", "vendored-openssl"))
         self.assertFalse(config.default_features)
+        self.assertEqual(config.verification_cache_mode, "READ_WRITE")
+        self.assertEqual(config.replicas, ("a", "b"))
+        self.assertEqual(config.attestation_attempts, 12)
+        self.assertEqual(config.attestation_interval_seconds, 10)
         self.assertEqual(set(config.targets), {"ARM64", "X64"})
 
     def test_rejects_unknown_top_level_key(self) -> None:
@@ -149,16 +176,50 @@ class LoadConfigTests(unittest.TestCase):
         ):
             sccache_strict.load_document(document, repo_root=REPO_ROOT)
 
+    def test_rejects_duplicate_replica_names(self) -> None:
+        document = valid_document()
+        verification = copy.deepcopy(document["verification"])
+        assert isinstance(verification, dict)
+        verification["replicas"] = ["same", "same"]
+        document["verification"] = verification
+
+        with self.assertRaisesRegex(ValueError, "two unique governed names"):
+            sccache_strict.load_document(document, repo_root=REPO_ROOT)
+
+    def test_accepts_additional_governed_replica(self) -> None:
+        document = valid_document()
+        verification = copy.deepcopy(document["verification"])
+        assert isinstance(verification, dict)
+        verification["replicas"] = ["a", "b", "c"]
+        document["verification"] = verification
+
+        config = sccache_strict.load_document(document, repo_root=REPO_ROOT)
+
+        self.assertEqual(config.replicas, ("a", "b", "c"))
+
 
 class ManifestTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = pathlib.Path(self.temporary.name)
-        self.patch_path = self.root / "strict.patch"
+        self.repo_root = self.root / "repo"
+        self.repo_root.mkdir()
+        self.patch_path = (
+            self.repo_root / "ci/sccache-strict/sccache-v0.16.0-strict.patch"
+        )
+        self.patch_path.parent.mkdir(parents=True)
         self.patch_path.write_bytes(b"strict patch bytes\n")
+        self.workflow_path = (
+            self.repo_root / ".github/workflows/sccache-strict-release.yml"
+        )
+        self.workflow_path.parent.mkdir(parents=True)
+        self.workflow_path.write_bytes(b"strict workflow bytes\n")
+        self.recipe_path = self.repo_root / "scripts/build_strict_sccache.sh"
+        self.recipe_path.parent.mkdir(parents=True)
+        self.recipe_path.write_bytes(b"strict recipe bytes\n")
         self.config = sccache_strict.load_document(
-            valid_document(), repo_root=self.root
+            valid_document(), repo_root=self.repo_root
         )
         self.repository = "seungpyoson/bolt-v2"
         self.run_id = "29814080045"
@@ -177,7 +238,6 @@ class ManifestTests(unittest.TestCase):
                 manifest = sccache_strict.write_candidate_manifest(
                     output_path=manifest_path,
                     config=self.config,
-                    patch_path=self.patch_path,
                     binary_path=binary_path,
                     repository=self.repository,
                     run_id=self.run_id,
@@ -195,7 +255,6 @@ class ManifestTests(unittest.TestCase):
             self.manifests,
             self.binary_paths,
             config=self.config,
-            patch_path=self.patch_path,
             repository=self.repository,
             run_id=self.run_id,
             run_attempt=self.run_attempt,
@@ -218,7 +277,9 @@ class ManifestTests(unittest.TestCase):
         assert isinstance(build, dict)
         build["container"] = f"docker.io/clux/muslrust@sha256:{'1' * 64}"
         document["build"] = build
-        changed_config = sccache_strict.load_document(document, repo_root=self.root)
+        changed_config = sccache_strict.load_document(
+            document, repo_root=self.repo_root
+        )
         changed_manifests: list[dict[str, object]] = []
         for architecture in ("ARM64", "X64"):
             for replica in ("a", "b"):
@@ -227,7 +288,6 @@ class ManifestTests(unittest.TestCase):
                         output_path=self.root
                         / f"changed-{architecture}-{replica}.json",
                         config=changed_config,
-                        patch_path=self.patch_path,
                         binary_path=self.binary_paths[(architecture, replica)],
                         repository=self.repository,
                         run_id=self.run_id,
@@ -242,7 +302,6 @@ class ManifestTests(unittest.TestCase):
             changed_manifests,
             self.binary_paths,
             config=changed_config,
-            patch_path=self.patch_path,
             repository=self.repository,
             run_id=self.run_id,
             run_attempt=self.run_attempt,
@@ -250,6 +309,47 @@ class ManifestTests(unittest.TestCase):
         )
 
         self.assertNotEqual(original.release_tag, changed.release_tag)
+
+    def test_release_tag_binds_workflow_and_recipe_bytes(self) -> None:
+        original = self.verify()
+        original_workflow = self.workflow_path.read_bytes()
+        original_recipe = self.recipe_path.read_bytes()
+
+        for index, governed_path in enumerate(
+            (self.workflow_path, self.recipe_path), start=1
+        ):
+            self.workflow_path.write_bytes(original_workflow)
+            self.recipe_path.write_bytes(original_recipe)
+            governed_path.write_bytes(f"changed-{index}\n".encode())
+            manifests: list[dict[str, object]] = []
+            for architecture in ("ARM64", "X64"):
+                for replica in self.config.replicas:
+                    manifests.append(
+                        sccache_strict.write_candidate_manifest(
+                            output_path=self.root
+                            / f"identity-{index}-{architecture}-{replica}.json",
+                            config=self.config,
+                            binary_path=self.binary_paths[(architecture, replica)],
+                            repository=self.repository,
+                            run_id=self.run_id,
+                            run_attempt=self.run_attempt,
+                            head_sha=self.head_sha,
+                            architecture=architecture,
+                            replica=replica,
+                        )
+                    )
+            changed = sccache_strict.verify_candidate_set(
+                manifests,
+                self.binary_paths,
+                config=self.config,
+                repository=self.repository,
+                run_id=self.run_id,
+                run_attempt=self.run_attempt,
+                head_sha=self.head_sha,
+            )
+            self.assertNotEqual(original.release_tag, changed.release_tag)
+        self.workflow_path.write_bytes(original_workflow)
+        self.recipe_path.write_bytes(original_recipe)
 
     def test_provenance_build_identity_recomputes_release_identity(self) -> None:
         verified = self.verify()
@@ -290,6 +390,39 @@ class ManifestTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "binary digest"):
             self.verify()
+
+    def test_manifest_output_must_not_preexist(self) -> None:
+        output = self.root / "existing.json"
+        output.write_bytes(b"keep")
+
+        with self.assertRaisesRegex(ValueError, "unable to create output"):
+            sccache_strict.write_candidate_manifest(
+                output_path=output,
+                config=self.config,
+                binary_path=self.binary_paths[("ARM64", "a")],
+                repository=self.repository,
+                run_id=self.run_id,
+                run_attempt=self.run_attempt,
+                head_sha=self.head_sha,
+                architecture="ARM64",
+                replica="a",
+            )
+
+        self.assertEqual(output.read_bytes(), b"keep")
+
+    def test_manifest_output_must_be_outside_repository(self) -> None:
+        with self.assertRaisesRegex(ValueError, "outside the repository"):
+            sccache_strict.write_candidate_manifest(
+                output_path=self.repo_root / "candidate.json",
+                config=self.config,
+                binary_path=self.binary_paths[("ARM64", "a")],
+                repository=self.repository,
+                run_id=self.run_id,
+                run_attempt=self.run_attempt,
+                head_sha=self.head_sha,
+                architecture="ARM64",
+                replica="a",
+            )
 
     def test_rejects_boolean_candidate_schema(self) -> None:
         self.manifests[0] = copy.deepcopy(self.manifests[0])
@@ -337,9 +470,17 @@ class ReleaseRecordTests(unittest.TestCase):
     def test_requires_immutable_release_and_exact_assets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
-            patch_path = root / "strict.patch"
+            repo_root = root / "repo"
+            patch_path = repo_root / "ci/sccache-strict/sccache-v0.16.0-strict.patch"
+            patch_path.parent.mkdir(parents=True)
             patch_path.write_bytes(b"patch")
-            config = sccache_strict.load_document(valid_document(), repo_root=root)
+            workflow_path = repo_root / ".github/workflows/sccache-strict-release.yml"
+            workflow_path.parent.mkdir(parents=True)
+            workflow_path.write_bytes(b"workflow")
+            recipe_path = repo_root / "scripts/build_strict_sccache.sh"
+            recipe_path.parent.mkdir(parents=True)
+            recipe_path.write_bytes(b"recipe")
+            config = sccache_strict.load_document(valid_document(), repo_root=repo_root)
             manifests: list[dict[str, object]] = []
             binaries: dict[tuple[str, str], pathlib.Path] = {}
             for architecture in ("ARM64", "X64"):
@@ -351,7 +492,6 @@ class ReleaseRecordTests(unittest.TestCase):
                         sccache_strict.write_candidate_manifest(
                             output_path=root / f"{architecture}-{replica}.json",
                             config=config,
-                            patch_path=patch_path,
                             binary_path=binary_path,
                             repository="seungpyoson/bolt-v2",
                             run_id="123",
@@ -365,7 +505,6 @@ class ReleaseRecordTests(unittest.TestCase):
                 manifests,
                 binaries,
                 config=config,
-                patch_path=patch_path,
                 repository="seungpyoson/bolt-v2",
                 run_id="123",
                 run_attempt="1",
@@ -392,36 +531,20 @@ class ReleaseRecordTests(unittest.TestCase):
                     }
                 ],
             }
-            attestations = {
-                asset.sha256: [
-                    {
-                        "bundle": {
-                            "mediaType": "application/vnd.dev.sigstore.bundle+json;version=0.3"
-                        }
-                    }
-                ]
-                for asset in verified.assets.values()
-            }
             tag_ref = {
                 "ref": f"refs/tags/{verified.release_tag}",
                 "object": {"type": "commit", "sha": verified.head_sha},
             }
 
             with self.assertRaisesRegex(ValueError, "release is not immutable"):
-                sccache_strict.verify_release_record(
-                    verified, release, tag_ref, attestations
-                )
+                sccache_strict.verify_release_record(verified, release, tag_ref)
 
             release["immutable"] = True
-            sccache_strict.verify_release_record(
-                verified, release, tag_ref, attestations
-            )
+            sccache_strict.verify_release_record(verified, release, tag_ref)
 
             tag_ref["object"] = {"type": "commit", "sha": "4" * 40}
             with self.assertRaisesRegex(ValueError, "exact head commit"):
-                sccache_strict.verify_release_record(
-                    verified, release, tag_ref, attestations
-                )
+                sccache_strict.verify_release_record(verified, release, tag_ref)
 
 
 class CliTests(unittest.TestCase):

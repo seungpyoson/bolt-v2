@@ -128,6 +128,17 @@ pub fn validate_execution_contract(
     let price_precision = trace.instrument.price_precision();
     let price_increment = trace.instrument.price_increment().as_decimal();
     let multiplier = trace.instrument.multiplier().as_decimal();
+    let lifecycle_currency = trace.instrument.quote_currency();
+    ensure!(
+        trace.instrument.settlement_currency() == lifecycle_currency,
+        "#789 instrument quote and settlement currencies must agree"
+    );
+    ensure!(
+        trace.initial_cash.currency == lifecycle_currency
+            && trace.terminal_cash.currency == lifecycle_currency
+            && trace.realized_pnl.currency == lifecycle_currency,
+        "#789 lifecycle economics must use instrument currency {lifecycle_currency}"
+    );
     ensure!(
         trace.instrument.taker_fee().is_zero(),
         "#789 lifecycle evidence is restricted to the instrument's zero taker-fee configuration"
@@ -1790,6 +1801,19 @@ mod tests {
         let error = validate_execution_contract(&fixture.trace())
             .expect_err("correlated non-zero commission must violate the zero-fee assumption");
         assert!(error.to_string().contains("zero taker fee"));
+    }
+
+    #[test]
+    fn rejects_instrument_currency_drift_from_lifecycle_economics() {
+        let mut fixture = fixture();
+        let InstrumentAny::BinaryOption(instrument) = &mut fixture.instrument else {
+            panic!("fixture instrument changed")
+        };
+        instrument.currency = Currency::EUR();
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("engine claims must remain anchored to the instrument currency");
+        assert!(error.to_string().contains("instrument currency"));
     }
 
     #[test]

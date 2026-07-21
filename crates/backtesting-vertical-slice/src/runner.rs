@@ -3986,12 +3986,33 @@ mod tests {
                 && matches!(down_instrument, InstrumentAny::BinaryOption(_)),
             "#789 settlement projections must both be binary options"
         );
-        let expected_ids = [up_instrument.id(), down_instrument.id()]
-            .into_iter()
+        let expected_instruments = BTreeMap::from([
+            (up_instrument.id(), up_instrument),
+            (down_instrument.id(), down_instrument),
+        ]);
+        let expected_ids = expected_instruments
+            .keys()
+            .copied()
             .collect::<BTreeSet<_>>();
         ensure!(
             expected_ids.len() == 2,
             "#789 settlement projections must identify two distinct binary legs"
+        );
+        for instrument in expected_instruments.values() {
+            ensure!(
+                instrument.quote_currency() == instrument.settlement_currency(),
+                "#789 projected binary instrument {} has divergent quote and settlement currencies",
+                instrument.id()
+            );
+            ensure!(
+                instrument.taker_fee().is_zero(),
+                "#789 projected binary instrument {} must have zero taker fee before NT runs",
+                instrument.id()
+            );
+        }
+        ensure!(
+            up_instrument.settlement_currency() == down_instrument.settlement_currency(),
+            "#789 projected binary legs must share one lifecycle currency"
         );
         let mut bound = BTreeMap::new();
         let mut payoffs = BTreeSet::new();
@@ -4002,6 +4023,15 @@ mod tests {
             ensure!(
                 expected_ids.contains(&instrument_id),
                 "#789 settlement instrument {instrument_id} is not one of the two projected binary legs"
+            );
+            let instrument = expected_instruments
+                .get(&instrument_id)
+                .context("resolve #789 projected settlement instrument")?;
+            ensure!(
+                settlement.settlement_currency == instrument.settlement_currency().to_string(),
+                "#789 settlement instrument {instrument_id} currency {} differs from instrument currency {}",
+                settlement.settlement_currency,
+                instrument.settlement_currency()
             );
             let payoff = Decimal::from_str(&settlement.close_price)
                 .context("parse #789 binary settlement payoff")?;
@@ -4630,7 +4660,7 @@ mod tests {
             price_precision: 3,
             ts_event_ns: 1,
             ts_init_ns: 1,
-            settlement_currency: "pUSD".to_string(),
+            settlement_currency: "USDC".to_string(),
         };
 
         let mut yes = nautilus_model::instruments::stubs::binary_option();
@@ -4669,6 +4699,135 @@ mod tests {
         ] {
             ensure_issue_789_binary_settlement_domain(&invalid, &yes, &no)
                 .expect_err("missing, duplicate, unrelated, or non-complementary legs must fail");
+        }
+    }
+
+    #[test]
+    fn issue_789_binary_settlement_rejects_currency_drift_for_each_leg() {
+        let mut yes = nautilus_model::instruments::stubs::binary_option();
+        yes.id = InstrumentId::from("YES.POLYMARKET");
+        let mut no = yes.clone();
+        no.id = InstrumentId::from("NO.POLYMARKET");
+        let yes = InstrumentAny::BinaryOption(yes);
+        let no = InstrumentAny::BinaryOption(no);
+        let settlements = [
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: yes.id().to_string(),
+                close_price: "0.000".to_string(),
+                price_precision: 3,
+                ts_event_ns: 1,
+                ts_init_ns: 1,
+                settlement_currency: yes.settlement_currency().to_string(),
+            },
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: no.id().to_string(),
+                close_price: "1.000".to_string(),
+                price_precision: 3,
+                ts_event_ns: 1,
+                ts_init_ns: 1,
+                settlement_currency: no.settlement_currency().to_string(),
+            },
+        ];
+
+        for index in 0..settlements.len() {
+            let mut drifted = settlements.clone();
+            drifted[index].settlement_currency = "EUR".to_string();
+            let error = ensure_issue_789_binary_settlement_domain(&drifted, &yes, &no)
+                .expect_err("each settlement row must use its instrument currency");
+            assert!(error.to_string().contains("instrument currency"));
+        }
+    }
+
+    #[test]
+    fn issue_789_binary_settlement_rejects_correlated_instrument_currency_drift() {
+        let mut yes = nautilus_model::instruments::stubs::binary_option();
+        yes.id = InstrumentId::from("YES.POLYMARKET");
+        let mut no = yes.clone();
+        no.id = InstrumentId::from("NO.POLYMARKET");
+
+        for mutate_yes in [true, false] {
+            let mut drifted_yes = yes.clone();
+            let mut drifted_no = no.clone();
+            let drifted_id = if mutate_yes {
+                drifted_yes.currency = Currency::EUR();
+                drifted_yes.id
+            } else {
+                drifted_no.currency = Currency::EUR();
+                drifted_no.id
+            };
+            let settlements = [
+                ManifestInstrumentSettlementInput {
+                    nt_instrument_id: drifted_yes.id.to_string(),
+                    close_price: "0.000".to_string(),
+                    price_precision: 3,
+                    ts_event_ns: 1,
+                    ts_init_ns: 1,
+                    settlement_currency: drifted_yes.currency.to_string(),
+                },
+                ManifestInstrumentSettlementInput {
+                    nt_instrument_id: drifted_no.id.to_string(),
+                    close_price: "1.000".to_string(),
+                    price_precision: 3,
+                    ts_event_ns: 1,
+                    ts_init_ns: 1,
+                    settlement_currency: drifted_no.currency.to_string(),
+                },
+            ];
+
+            let error = ensure_issue_789_binary_settlement_domain(
+                &settlements,
+                &InstrumentAny::BinaryOption(drifted_yes),
+                &InstrumentAny::BinaryOption(drifted_no),
+            )
+            .expect_err("both projected legs must share one lifecycle currency");
+            assert!(error.to_string().contains("one lifecycle currency"));
+            assert!(settlements.iter().any(|row| {
+                row.nt_instrument_id == drifted_id.to_string()
+                    && row.settlement_currency == Currency::EUR().to_string()
+            }));
+        }
+    }
+
+    #[test]
+    fn issue_789_binary_settlement_rejects_nonzero_taker_fee_for_each_leg() {
+        let mut yes = nautilus_model::instruments::stubs::binary_option();
+        yes.id = InstrumentId::from("YES.POLYMARKET");
+        let mut no = yes.clone();
+        no.id = InstrumentId::from("NO.POLYMARKET");
+        let settlements = [
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: yes.id.to_string(),
+                close_price: "0.000".to_string(),
+                price_precision: 3,
+                ts_event_ns: 1,
+                ts_init_ns: 1,
+                settlement_currency: yes.currency.to_string(),
+            },
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: no.id.to_string(),
+                close_price: "1.000".to_string(),
+                price_precision: 3,
+                ts_event_ns: 1,
+                ts_init_ns: 1,
+                settlement_currency: no.currency.to_string(),
+            },
+        ];
+
+        for mutate_yes in [true, false] {
+            let mut drifted_yes = yes.clone();
+            let mut drifted_no = no.clone();
+            if mutate_yes {
+                drifted_yes.taker_fee = Decimal::new(1, 2);
+            } else {
+                drifted_no.taker_fee = Decimal::new(1, 2);
+            }
+            let error = ensure_issue_789_binary_settlement_domain(
+                &settlements,
+                &InstrumentAny::BinaryOption(drifted_yes),
+                &InstrumentAny::BinaryOption(drifted_no),
+            )
+            .expect_err("both projected legs must have zero taker fees before NT runs");
+            assert!(error.to_string().contains("zero taker fee"));
         }
     }
 

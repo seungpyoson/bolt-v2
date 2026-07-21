@@ -1883,7 +1883,7 @@ mod tests {
 
     #[test]
     fn validate_parameter_bounds_rejects_updown_noncanonical_cadence_slug_pair() {
-        // GLM F3 (PR #822): the #841 cadence->slug contract is wired into the maker
+        // The #841 cadence->slug contract is wired into the maker
         // LOAD gate (updown::validate_maker_market_target -> validate_cadence_slug_contract).
         // No existing maker-gate test exercised it: a VALID-charset but NON-canonical
         // slug on a VALID cadence clears every other check (underlying/cadence/charset/

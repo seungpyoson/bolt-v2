@@ -53,19 +53,20 @@ use nautilus_core::UnixNanos;
 #[cfg(test)]
 use nautilus_model::orderbook::OrderBook;
 use nautilus_model::{
+    accounts::AccountAny,
     data::{
         Bar, BarSpecification, Data, FundingRateUpdate, IndexPriceUpdate, InstrumentClose,
         MarkPriceUpdate, OrderBookDelta, QuoteTick, TradeTick,
     },
     enums::{
-        AggregationSource, AggressorSide, BookAction, InstrumentCloseType, OrderSide, OrderStatus,
-        PriceType,
+        AccountType, AggregationSource, AggressorSide, BookAction, InstrumentCloseType, OrderSide,
+        OrderStatus, PriceType,
     },
-    events::{AccountState, OrderEventAny},
-    identifiers::{ClientId, InstrumentId, Venue},
+    events::OrderEventAny,
+    identifiers::{AccountId, ClientId, InstrumentId, Venue},
     orders::Order,
     position::Position,
-    types::{Price, Quantity},
+    types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
 use rust_decimal::Decimal;
@@ -1014,6 +1015,20 @@ pub struct OrderTerminalRecord {
     pub events_debug: Vec<String>,
 }
 
+/// Current account state captured directly from the post-run cache.
+///
+/// This is deliberately not built from `AccountAny::last_event`: the final
+/// event-store entry and the live cache are independent completeness surfaces.
+#[derive(Debug, Clone)]
+pub struct AccountTerminalRecord {
+    pub account_id: AccountId,
+    pub account_type: AccountType,
+    pub base_currency: Option<Currency>,
+    pub balances: Vec<AccountBalance>,
+    pub cash_locks: Vec<(InstrumentId, Currency, Money)>,
+    pub margins: Vec<MarginBalance>,
+}
+
 /// Result of one `BacktestNode` run: the NautilusTrader summary plus the
 /// terminal state of every order in the post-run cache.
 pub struct NtBacktestNodeRun {
@@ -1022,7 +1037,7 @@ pub struct NtBacktestNodeRun {
     pub config_override_report: Option<BacktestConfigOverrideReport>,
     pub run_guard_report: Option<BacktestRunGuardReport>,
     pub positions: Vec<Position>,
-    pub account_terminals: Vec<AccountState>,
+    pub account_terminals: Vec<AccountTerminalRecord>,
     pub resolved_config_hash: Option<String>,
     pub resolved_config_bytes: Option<Vec<u8>>,
     pub execution_contract_report: Option<crate::execution_contract::ExecutionContractReport>,
@@ -1274,7 +1289,7 @@ where
             let account_terminals = std::iter::once(&manifest.venue)
                 .chain(manifest.additional_venues.iter())
                 .filter_map(|venue| cache.account_for_venue(&Venue::from(venue.nt_venue.as_str())))
-                .filter_map(|account| account.last_event())
+                .map(|account| capture_account_terminal(account.as_ref()))
                 .collect();
             (positions, account_terminals)
         };
@@ -1307,6 +1322,52 @@ where
         },
         evidence,
     ))
+}
+
+fn capture_account_terminal(account: &AccountAny) -> AccountTerminalRecord {
+    let (account_type, mut cash_locks, mut margins) = match account {
+        AccountAny::Cash(account) => (
+            AccountType::Cash,
+            account
+                .balances_locked
+                .iter()
+                .map(|((instrument_id, currency), money)| (*instrument_id, *currency, *money))
+                .collect(),
+            Vec::new(),
+        ),
+        AccountAny::Margin(account) => (
+            AccountType::Margin,
+            Vec::new(),
+            account
+                .margins
+                .values()
+                .chain(account.account_margins.values())
+                .copied()
+                .collect(),
+        ),
+        AccountAny::Betting(_) => (AccountType::Betting, Vec::new(), Vec::new()),
+    };
+    let mut balances = account.balances().into_values().collect::<Vec<_>>();
+    balances.sort_by_key(|balance| balance.currency.to_string());
+    cash_locks.sort_by_key(|(instrument_id, currency, _)| {
+        (instrument_id.to_string(), currency.to_string())
+    });
+    margins.sort_by_key(|margin| {
+        (
+            margin
+                .instrument_id
+                .map(|instrument_id| instrument_id.to_string()),
+            margin.currency.to_string(),
+        )
+    });
+    AccountTerminalRecord {
+        account_id: account.id(),
+        account_type,
+        base_currency: account.base_currency(),
+        balances,
+        cash_locks,
+        margins,
+    }
 }
 
 #[cfg(test)]
@@ -1385,24 +1446,6 @@ where
         crate::execution_evidence::run_nt_backtest_node_with_evidence(manifest)?;
     output.execution_contract_report = Some(validator(&output, &evidence)?);
     Ok(output)
-}
-
-#[cfg(test)]
-fn replay_executable_book_at_submission(
-    instrument_id: InstrumentId,
-    deltas: &[OrderBookDelta],
-    submission_timestamp: UnixNanos,
-) -> Result<OrderBook> {
-    let mut book = OrderBook::new(instrument_id, nautilus_model::enums::BookType::L2_MBP);
-    for delta in deltas
-        .iter()
-        .filter(|delta| delta.ts_init <= submission_timestamp)
-    {
-        book.apply_delta(delta)
-            .map_err(|error| anyhow::anyhow!(error))
-            .context("replay executable book with NautilusTrader")?;
-    }
-    Ok(book)
 }
 
 #[cfg(test)]
@@ -2398,8 +2441,8 @@ mod tests {
     use anyhow::{Context, Result, ensure};
     use nautilus_core::{Params, UUID4, UnixNanos};
     use nautilus_model::{
-        data::{OrderBookDelta, TradeTick},
-        enums::{AccountType, AggressorSide, AssetClass, BookAction, OrderSide},
+        data::TradeTick,
+        enums::{AccountType, AggressorSide, AssetClass},
         events::AccountState,
         identifiers::{AccountId, InstrumentId, Symbol, TradeId},
         instruments::{BinaryOption, Instrument, InstrumentAny},
@@ -2417,7 +2460,7 @@ mod tests {
         canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
         expected_iterations, iterations_mismatch, load_bolt_v3_config,
         prepare_strategy_client_routes, raw_taker_config, replay_executable_book_at_cursor,
-        replay_executable_book_at_submission, resolve_existing_input_path, run_nt_backtest_node,
+        resolve_existing_input_path, run_nt_backtest_node,
         run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
         time_window_excludes_all_data,
     };
@@ -3138,51 +3181,6 @@ mod tests {
     }
 
     #[test]
-    fn execution_contract_excludes_late_arriving_book_deltas() -> Result<()> {
-        let instrument_id = InstrumentId::from(MAKER_SMOKE_YES_INSTRUMENT);
-        let timely = OrderBookDelta::new(
-            instrument_id,
-            BookAction::Add,
-            nautilus_model::data::BookOrder::new(
-                OrderSide::Sell,
-                Price::from("0.420"),
-                Quantity::from("21.52"),
-                1,
-            ),
-            0,
-            1,
-            UnixNanos::from(10),
-            UnixNanos::from(100),
-        );
-        let late = OrderBookDelta::new(
-            instrument_id,
-            BookAction::Add,
-            nautilus_model::data::BookOrder::new(
-                OrderSide::Sell,
-                Price::from("0.410"),
-                Quantity::from("50.00"),
-                2,
-            ),
-            0,
-            2,
-            UnixNanos::from(9),
-            UnixNanos::from(101),
-        );
-
-        let book = replay_executable_book_at_submission(
-            instrument_id,
-            &[timely, late],
-            UnixNanos::from(100),
-        )?;
-
-        ensure!(
-            book.best_ask_price() == Some(Price::from("0.420")),
-            "late-arriving delta leaked into the executable book"
-        );
-        Ok(())
-    }
-
-    #[test]
     fn execution_contract_rejects_followup_delayed_past_next_fill() {
         let error = ensure_one_causal_followup_per_fill(
             "position mutation",
@@ -3585,6 +3583,116 @@ mod tests {
         Ok(())
     }
 
+    fn bind_issue_789_account_states<'a>(
+        fill_sequences: &[u64],
+        position_effect_sequences: &[u64],
+        account_states: &'a [(u64, AccountState)],
+        terminal_bound: u64,
+    ) -> Result<Vec<&'a (u64, AccountState)>> {
+        ensure!(
+            !fill_sequences.is_empty(),
+            "#789 cannot bind AccountState evidence without fills"
+        );
+        ensure_one_causal_followup_per_fill(
+            "position mutation",
+            fill_sequences,
+            position_effect_sequences,
+            terminal_bound,
+        )?;
+        ensure!(
+            account_states
+                .windows(2)
+                .all(|states| states[0].0 < states[1].0),
+            "#789 AccountState evidence is not strictly sequence ordered"
+        );
+
+        let same_projection = |left: &AccountState, right: &AccountState| {
+            left.account_id == right.account_id
+                && left.account_type == right.account_type
+                && left.base_currency == right.base_currency
+                && left.has_same_balances_and_margins(right)
+        };
+        let first_fill = fill_sequences[0];
+        let initial_states = account_states
+            .iter()
+            .take_while(|(seq, _)| *seq < first_fill)
+            .collect::<Vec<_>>();
+        ensure!(
+            !initial_states.is_empty(),
+            "#789 lifecycle has no AccountState before its first fill"
+        );
+        ensure!(
+            initial_states
+                .iter()
+                .all(|state| same_projection(&initial_states[0].1, &state.1)),
+            "#789 has conflicting initial AccountState evidence: {:?}",
+            initial_states
+                .iter()
+                .map(|(seq, state)| (
+                    seq,
+                    state.account_type,
+                    state.base_currency,
+                    state.is_reported,
+                    &state.balances,
+                    &state.margins,
+                ))
+                .collect::<Vec<_>>()
+        );
+
+        let mut bound = vec![*initial_states
+            .last()
+            .context("#789 initial AccountState sequence unexpectedly empty")?];
+        let mut assigned_count = initial_states.len();
+        let mut seen_event_ids = initial_states
+            .iter()
+            .map(|(_, state)| state.event_id)
+            .collect::<Vec<_>>();
+        for (index, (&fill_seq, &position_effect_seq)) in fill_sequences
+            .iter()
+            .zip(position_effect_sequences)
+            .enumerate()
+        {
+            let upper_bound = fill_sequences
+                .get(index + 1)
+                .copied()
+                .unwrap_or(terminal_bound);
+            let candidates = account_states
+                .iter()
+                .filter(|(seq, _)| position_effect_seq < *seq && *seq < upper_bound)
+                .collect::<Vec<_>>();
+            ensure!(
+                !candidates.is_empty(),
+                "#789 fill sequence {fill_seq} has no AccountState after its position mutation {position_effect_seq} before {upper_bound}"
+            );
+            ensure!(
+                candidates
+                    .iter()
+                    .all(|state| same_projection(&candidates[0].1, &state.1)),
+                "#789 fill sequence {fill_seq} has conflicting AccountState evidence in its causal interval"
+            );
+            ensure!(
+                candidates
+                    .iter()
+                    .any(|(_, state)| !seen_event_ids.contains(&state.event_id)),
+                "#789 fill sequence {fill_seq} has no distinct post-fill AccountState event identity"
+            );
+            for (_, state) in &candidates {
+                if !seen_event_ids.contains(&state.event_id) {
+                    seen_event_ids.push(state.event_id);
+                }
+            }
+            assigned_count += candidates.len();
+            bound.push(*candidates
+                .last()
+                .context("#789 AccountState causal interval unexpectedly empty")?);
+        }
+        ensure!(
+            assigned_count == account_states.len(),
+            "#789 contains AccountState evidence outside the ordered fill -> position mutation -> account transition lifecycle"
+        );
+        Ok(bound)
+    }
+
     fn test_issue_789_account_state(balances: Vec<AccountBalance>) -> AccountState {
         AccountState::new(
             AccountId::from("POLYMARKET-001"),
@@ -3597,6 +3705,84 @@ mod tests {
             UnixNanos::from(1),
             Some(Currency::USDC()),
         )
+    }
+
+    fn test_issue_789_account_state_with_cash(cash: &str) -> AccountState {
+        test_issue_789_account_state(vec![AccountBalance::new(
+            Money::from(cash),
+            Money::from("0.00000000 USDC"),
+            Money::from(cash),
+        )])
+    }
+
+    #[test]
+    fn issue_789_account_binding_preserves_zero_cash_delta_settlement() {
+        let states = vec![
+            (1, test_issue_789_account_state_with_cash("100.00000000 USDC")),
+            (12, test_issue_789_account_state_with_cash("90.00000000 USDC")),
+            (22, test_issue_789_account_state_with_cash("95.00000000 USDC")),
+            (32, test_issue_789_account_state_with_cash("95.00000000 USDC")),
+        ];
+
+        let bound = bind_issue_789_account_states(
+            &[10, 20, 30],
+            &[11, 21, 31],
+            &states,
+            40,
+        )
+        .expect("zero-value settlement still has a distinct causal AccountState");
+
+        assert_eq!(bound.len(), 4);
+        assert_eq!(bound[3].0, 32);
+    }
+
+    #[test]
+    fn issue_789_account_binding_accepts_reported_to_calculated_initial_republish() {
+        let reported = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let mut calculated = reported.clone();
+        calculated.is_reported = false;
+        let states = vec![
+            (1, reported),
+            (2, calculated),
+            (12, test_issue_789_account_state_with_cash("90.00000000 USDC")),
+        ];
+
+        let bound = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect("NT may republish the same initial map as calculated state");
+
+        assert_eq!(bound.len(), 2);
+        assert_eq!(bound[0].0, 2);
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_account_before_position_effect() {
+        let states = vec![
+            (1, test_issue_789_account_state_with_cash("100.00000000 USDC")),
+            (11, test_issue_789_account_state_with_cash("90.00000000 USDC")),
+            (22, test_issue_789_account_state_with_cash("95.00000000 USDC")),
+            (32, test_issue_789_account_state_with_cash("96.00000000 USDC")),
+        ];
+
+        let error = bind_issue_789_account_states(
+            &[10, 20, 30],
+            &[12, 21, 31],
+            &states,
+            40,
+        )
+        .expect_err("AccountState before its position effect must fail closed");
+
+        assert!(error.to_string().contains("after its position mutation"));
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_replayed_prior_event_identity() {
+        let initial = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let states = vec![(1, initial.clone()), (12, initial)];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("a replayed pre-fill AccountState is not a post-fill event");
+
+        assert!(error.to_string().contains("distinct post-fill AccountState event identity"));
     }
 
     #[test]
@@ -3657,14 +3843,104 @@ mod tests {
             Money::from("0.00000000 USDC"),
             Money::from("100.00000000 USDC"),
         )]);
-        let terminal = test_issue_789_account_state(vec![AccountBalance::new(
-            Money::from("99.00000000 USDC"),
-            Money::from("0.00000000 USDC"),
-            Money::from("99.00000000 USDC"),
-        )]);
+        let terminal = super::AccountTerminalRecord {
+            account_id: stored.account_id,
+            account_type: stored.account_type,
+            base_currency: stored.base_currency,
+            balances: vec![AccountBalance::new(
+                Money::from("99.00000000 USDC"),
+                Money::from("0.00000000 USDC"),
+                Money::from("99.00000000 USDC"),
+            )],
+            cash_locks: Vec::new(),
+            margins: Vec::new(),
+        };
 
         let error = ensure_issue_789_terminal_account_matches(&stored, &terminal)
             .expect_err("#789 must reject complete terminal account-map drift");
+        assert!(error.to_string().contains("complete final AccountState"));
+    }
+
+    #[test]
+    fn issue_789_terminal_account_rejects_hidden_locked_cash() {
+        let terminal = super::AccountTerminalRecord {
+            account_id: AccountId::from("POLYMARKET-001"),
+            account_type: AccountType::Cash,
+            base_currency: Some(Currency::USDC()),
+            balances: vec![AccountBalance::new(
+                Money::from("100.00000000 USDC"),
+                Money::from("0.00000000 USDC"),
+                Money::from("100.00000000 USDC"),
+            )],
+            cash_locks: vec![(
+                InstrumentId::from("YES.POLYMARKET"),
+                Currency::USDC(),
+                Money::from("1.00000000 USDC"),
+            )],
+            margins: Vec::new(),
+        };
+
+        let error = issue_789_terminal_account_cash(&terminal, Currency::USDC())
+            .expect_err("current account locks absent from its last event must fail closed");
+        assert!(error.to_string().contains("locked cash"));
+    }
+
+    #[test]
+    fn issue_789_terminal_capture_preserves_cash_account_transient_locks() {
+        let state = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let mut account = nautilus_model::accounts::CashAccount::new(state, true, false);
+        account.balances_locked.insert(
+            (InstrumentId::from("YES.POLYMARKET"), Currency::BTC()),
+            Money::from("0.00000000 BTC"),
+        );
+        let terminal = super::capture_account_terminal(
+            &nautilus_model::accounts::AccountAny::Cash(account),
+        );
+
+        assert_eq!(terminal.cash_locks.len(), 1);
+        let error = issue_789_terminal_account_cash(&terminal, Currency::USDC())
+            .expect_err("a stale transient CashAccount lock must fail closed");
+        assert!(error.to_string().contains("locked cash"));
+    }
+
+    #[test]
+    fn issue_789_terminal_account_rejects_extra_locked_currency() {
+        let terminal = super::AccountTerminalRecord {
+            account_id: AccountId::from("POLYMARKET-001"),
+            account_type: AccountType::Cash,
+            base_currency: Some(Currency::USDC()),
+            balances: vec![AccountBalance::new(
+                Money::from("100.00000000 USDC"),
+                Money::from("0.00000000 USDC"),
+                Money::from("100.00000000 USDC"),
+            )],
+            cash_locks: vec![(
+                InstrumentId::from("YES.POLYMARKET"),
+                Currency::BTC(),
+                Money::from("0.00000000 BTC"),
+            )],
+            margins: Vec::new(),
+        };
+
+        let error = issue_789_terminal_account_cash(&terminal, Currency::USDC())
+            .expect_err("an extra current locked-balance currency must fail closed");
+        assert!(error.to_string().contains("locked cash"));
+    }
+
+    #[test]
+    fn issue_789_terminal_account_rejects_base_currency_drift() {
+        let stored = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let terminal = super::AccountTerminalRecord {
+            account_id: stored.account_id,
+            account_type: stored.account_type,
+            base_currency: None,
+            balances: stored.balances.clone(),
+            cash_locks: Vec::new(),
+            margins: Vec::new(),
+        };
+
+        let error = ensure_issue_789_terminal_account_matches(&stored, &terminal)
+            .expect_err("current account metadata drift must fail closed");
         assert!(error.to_string().contains("complete final AccountState"));
     }
 
@@ -3700,16 +3976,60 @@ mod tests {
 
     fn ensure_issue_789_terminal_account_matches(
         stored: &nautilus_model::events::AccountState,
-        terminal: &nautilus_model::events::AccountState,
+        terminal: &super::AccountTerminalRecord,
     ) -> Result<()> {
+        let mut stored_balances = stored.balances.clone();
+        stored_balances.sort_by_key(|balance| balance.currency.to_string());
+        let mut stored_margins = stored.margins.clone();
+        stored_margins.sort_by_key(|margin| {
+            (
+                margin
+                    .instrument_id
+                    .map(|instrument_id| instrument_id.to_string()),
+                margin.currency.to_string(),
+            )
+        });
         ensure!(
             terminal.account_id == stored.account_id
                 && terminal.account_type == stored.account_type
-                && terminal.balances == stored.balances
-                && terminal.margins == stored.margins,
+                && terminal.base_currency == stored.base_currency
+                && terminal.balances == stored_balances
+                && terminal.margins == stored_margins,
             "terminal account projection diverges from the complete final AccountState"
         );
         Ok(())
+    }
+
+    fn issue_789_terminal_account_cash(
+        terminal: &super::AccountTerminalRecord,
+        currency: Currency,
+    ) -> Result<Money> {
+        ensure!(
+            terminal.account_type == AccountType::Cash,
+            "#789 terminal account must remain CASH"
+        );
+        ensure!(
+            terminal.margins.is_empty(),
+            "#789 terminal CASH account must not contain margin balances"
+        );
+        ensure!(
+            terminal.balances.len() == 1,
+            "#789 terminal account is restricted to one currency, got {} balances",
+            terminal.balances.len()
+        );
+        let balance = &terminal.balances[0];
+        ensure!(
+            balance.currency == currency,
+            "#789 terminal account balance currency {} differs from lifecycle currency {currency}",
+            balance.currency
+        );
+        ensure!(
+            balance.locked == Money::zero(currency)
+                && balance.free == balance.total
+                && terminal.cash_locks.is_empty(),
+            "#789 terminal immediate-market CASH account contains locked cash"
+        );
+        Ok(balance.total)
     }
 
     fn validate_issue_789_execution_contract(
@@ -3940,12 +4260,6 @@ mod tests {
             .iter()
             .map(|(seq, _)| *seq)
             .collect::<Vec<_>>();
-        ensure_one_causal_followup_per_fill(
-            "position mutation",
-            &fill_sequences,
-            &position_effect_sequences,
-            settlement_receipt_seq,
-        )?;
         let normal_order_ids = orders
             .iter()
             .filter(|order| {
@@ -4032,7 +4346,7 @@ mod tests {
         let matching_terminal_accounts: Vec<_> = output
             .account_terminals
             .iter()
-            .filter(|state| state.account_id == position.account_id)
+            .filter(|account| account.account_id == position.account_id)
             .collect();
         ensure!(
             matching_terminal_accounts.len() == 1,
@@ -4041,7 +4355,8 @@ mod tests {
             matching_terminal_accounts.len()
         );
         let terminal_account = matching_terminal_accounts[0];
-        let terminal_cash = issue_789_account_cash(terminal_account, realized_pnl.currency)?;
+        let terminal_cash =
+            issue_789_terminal_account_cash(terminal_account, realized_pnl.currency)?;
         let initial_balances: Vec<Money> = manifest
             .venue
             .starting_balances
@@ -4062,36 +4377,16 @@ mod tests {
         let raw_lifecycle_account_states = account_states
             .iter()
             .filter(|(_, state)| state.account_id == position.account_id)
+            .cloned()
             .collect::<Vec<_>>();
-        let mut lifecycle_account_states: Vec<&(u64, nautilus_model::events::AccountState)> =
-            Vec::new();
-        for state in raw_lifecycle_account_states {
-            if let Some((_, previous)) = lifecycle_account_states.last()
-                && previous.has_same_balances_and_margins(&state.1)
-            {
-                continue;
-            }
-            lifecycle_account_states.push(state);
-        }
         ensure!(
-            !lifecycle_account_states.is_empty(),
+            !raw_lifecycle_account_states.is_empty(),
             "issue #789 event store contains no lifecycle AccountState evidence"
         );
-        ensure!(
-            lifecycle_account_states.len() == ordered_fills.len() + 1,
-            "#789 requires one initial AccountState and one transition after every fill: got {} states for {} fills",
-            lifecycle_account_states.len(),
-            ordered_fills.len()
-        );
-        let account_transition_sequences = lifecycle_account_states
-            .iter()
-            .skip(1)
-            .map(|(seq, _)| *seq)
-            .collect::<Vec<_>>();
-        ensure_one_causal_followup_per_fill(
-            "AccountState transition",
+        let lifecycle_account_states = bind_issue_789_account_states(
             &fill_sequences,
-            &account_transition_sequences,
+            &position_effect_sequences,
+            &raw_lifecycle_account_states,
             settlement_receipt_seq,
         )?;
         let initial_cash =

@@ -19,11 +19,13 @@ integration is therefore a BTE-owned run wrapper that opens the existing NT even
 against the built engine clock immediately before `BacktestNode::run`, seals it immediately after
 the run, and reads the sealed evidence. It must not implement its own capture protocol.
 
-NT emits repeated no-change AccountState snapshots across its bus paths. The validator collapses
-only consecutive snapshots with identical complete balance and margin maps, then requires one
-initial state and one economic transition after every fill. It independently derives the cash
-trajectory from fills and commissions and compares every transition plus the terminal account
-cache. It never synthesizes `CashPosted` evidence.
+NT emits repeated AccountState snapshots across its bus paths. The validator first binds them to
+each fill's ordered causal interval: fill, then position mutation, then account state, then the next
+fill or terminal close receipt. It may collapse identical republishes only inside one such interval;
+it still requires an event identity not seen in earlier intervals for a zero-cash-delta fill. It
+independently derives the cash trajectory from fills and commissions and compares every transition
+plus the current terminal account cache, including the CashAccount's transient per-instrument lock
+map. It never synthesizes `CashPosted` evidence.
 
 Two pinned ordering details are explicit. Raw `OrderFilled` evidence is captured before the
 execution engine assigns `position_id`, so position identity comes from the subsequent Position
@@ -67,11 +69,14 @@ Observed NT evidence:
 - ordered `OrderFilled` events preserving order/trade identity, price, quantity, side, and
   commission;
 - ordered position events binding position identity, exact exposure effects, and cumulative P&L;
-- the initial `AccountState` and each distinct post-fill balance transition;
+- the initial `AccountState` and at least one causally ordered `AccountState` after every fill,
+  including fills whose balance map is unchanged;
 - integrity-verified order-book cursors bound to the synchronous SubmitOrder entry and the
   hash-verified catalog;
 - `InstrumentClose`, registered through NT's existing encoder-registry extension;
-- terminal orders, positions, and account balances used only as completeness cross-checks.
+- terminal orders and positions plus the account object's current balances, CashAccount transient
+  per-instrument locks, and applicable margins, used only as completeness cross-checks rather than
+  reconstructed from its last event;
 
 Derived by the independent validator:
 
@@ -97,9 +102,9 @@ the lifecycle source of truth.
    green and a missing marker/entry negative control fails loudly.
 4. Replace #789 post-run evidence assembly with a pure ordered fold. Port only the valid arithmetic
    and behavioral cases from the closed #1489 branch. Evidence: focused unit tests for duplicate
-   identities, instrument and book identity, raw precision/increment, position effects within each
-   fill's causal interval, exact settlement remainder, complete commission maps, realized P&L, and
-   per-fill cash.
+   identities, instrument and book identity, raw precision/increment, strict fill -> position ->
+   account ordering within each causal interval, exact settlement remainder, complete commission
+   maps, realized P&L, zero-cash-delta fills, and per-fill cash.
 5. Bind each normal fill to the catalog rows selected by its submit cursor and independently sweep
    price levels. Enforce exactly one entry and one normal reduction, on opposing book sides, so the
    declared #789 slice cannot reuse earlier consumed liquidity without adding a second matching

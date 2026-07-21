@@ -17,9 +17,12 @@ use nautilus_model::{
     identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId},
     instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
-    types::{Money, Price, Quantity},
+    types::{Currency, Money, Price, Quantity},
 };
-use rust_decimal::{Decimal, RoundingStrategy, prelude::Signed};
+use rust_decimal::{
+    Decimal, RoundingStrategy,
+    prelude::{Signed, ToPrimitive},
+};
 
 use crate::hashing::sha256_hex;
 
@@ -66,13 +69,20 @@ pub enum PositionEffectKind {
 #[derive(Clone)]
 pub struct PositionEffectTrace {
     pub kind: PositionEffectKind,
+    pub trader_id: TraderId,
+    pub strategy_id: StrategyId,
     pub position_id: PositionId,
     pub instrument_id: InstrumentId,
     pub account_id: AccountId,
+    pub opening_order_id: ClientOrderId,
+    pub closing_order_id: Option<ClientOrderId>,
+    pub entry: OrderSide,
     pub side: PositionSide,
+    pub signed_quantity: f64,
     pub quantity: Quantity,
     pub last_quantity: Quantity,
     pub last_price: Price,
+    pub currency: Currency,
     pub realized_pnl: Option<Money>,
 }
 
@@ -131,7 +141,11 @@ pub fn validate_execution_contract(
         "#789 cash and realized PnL currencies must agree"
     );
     let mut trade_ids = BTreeSet::new();
+    let mut client_order_ids = BTreeSet::new();
+    let mut venue_order_ids = BTreeSet::new();
     let mut position_id = None;
+    let mut opening_order_id = None;
+    let mut entry_side = None;
     let mut lifecycle_account_id = None;
     let mut exposure = Decimal::ZERO;
     let mut average_open = Decimal::ZERO;
@@ -148,6 +162,11 @@ pub fn validate_execution_contract(
             .fills
             .first()
             .with_context(|| format!("execution order {order_index} has no fills"))?;
+        ensure!(
+            client_order_ids.insert(first_fill.client_order_id)
+                && venue_order_ids.insert(first_fill.venue_order_id),
+            "lifecycle order identity partition is not unique across entry, reduction, and settlement"
+        );
         let side = match &order.cause {
             ExecutionOrderCause::Submitted {
                 submitted_order, ..
@@ -428,12 +447,33 @@ pub fn validate_execution_contract(
                     && (effect.last_price.as_decimal() % price_increment).is_zero(),
                 "position mutation price does not use instrument price precision and increment"
             );
+            let expected_effect_kind = if before_fill.is_zero() && !exposure.is_zero() {
+                PositionEffectKind::Opened
+            } else if !before_fill.is_zero() && exposure.is_zero() {
+                PositionEffectKind::Closed
+            } else {
+                PositionEffectKind::Changed
+            };
+            let expected_opening_order_id = *opening_order_id.get_or_insert(fill.client_order_id);
+            let expected_entry_side = *entry_side.get_or_insert(fill.order_side);
+            let expected_closing_order_id = (expected_effect_kind == PositionEffectKind::Closed)
+                .then_some(fill.client_order_id);
+            let expected_signed_quantity = exposure
+                .to_f64()
+                .context("folded position quantity is not representable as f64")?;
             ensure!(
-                effect.instrument_id == fill.instrument_id
+                effect.trader_id == fill.trader_id
+                    && effect.strategy_id == fill.strategy_id
+                    && effect.instrument_id == fill.instrument_id
                     && effect.account_id == fill.account_id
+                    && effect.opening_order_id == expected_opening_order_id
+                    && effect.closing_order_id == expected_closing_order_id
+                    && effect.entry == expected_entry_side
+                    && effect.signed_quantity == expected_signed_quantity
                     && effect.last_quantity == fill.last_qty
-                    && effect.last_price == fill.last_px,
-                "position mutation does not identify its causal fill"
+                    && effect.last_price == fill.last_px
+                    && effect.currency == fill.currency,
+                "position mutation does not identify its causal lifecycle"
             );
             match position_id {
                 Some(expected) => ensure!(
@@ -447,13 +487,6 @@ pub fn validate_execution_contract(
                 observed_exposure == exposure,
                 "position mutation quantity does not equal independently folded exposure"
             );
-            let expected_effect_kind = if before_fill.is_zero() && !exposure.is_zero() {
-                PositionEffectKind::Opened
-            } else if !before_fill.is_zero() && exposure.is_zero() {
-                PositionEffectKind::Closed
-            } else {
-                PositionEffectKind::Changed
-            };
             ensure!(
                 effect.kind == expected_effect_kind,
                 "position mutation kind does not match its independently derived position effect"
@@ -812,35 +845,56 @@ mod tests {
             position_effects: vec![
                 PositionEffectTrace {
                     kind: PositionEffectKind::Opened,
+                    trader_id: TraderId::from("TRADER-001"),
+                    strategy_id: StrategyId::from("STRATEGY-001"),
                     position_id,
                     instrument_id,
                     account_id: AccountId::from("POLYMARKET-001"),
+                    opening_order_id: ClientOrderId::from("O-entry"),
+                    closing_order_id: None,
+                    entry: OrderSide::Buy,
                     side: PositionSide::Long,
+                    signed_quantity: 2.71,
                     quantity: Quantity::from("2.71"),
                     last_quantity: Quantity::from("2.71"),
                     last_price: Price::from("0.420"),
+                    currency: Currency::USDC(),
                     realized_pnl: None,
                 },
                 PositionEffectTrace {
                     kind: PositionEffectKind::Changed,
+                    trader_id: TraderId::from("TRADER-001"),
+                    strategy_id: StrategyId::from("STRATEGY-001"),
                     position_id,
                     instrument_id,
                     account_id: AccountId::from("POLYMARKET-001"),
+                    opening_order_id: ClientOrderId::from("O-entry"),
+                    closing_order_id: None,
+                    entry: OrderSide::Buy,
                     side: PositionSide::Long,
+                    signed_quantity: 0.71,
                     quantity: Quantity::from("0.71"),
                     last_quantity: Quantity::from("2.00"),
                     last_price: Price::from("0.430"),
+                    currency: Currency::USDC(),
                     realized_pnl: Some(Money::from("0.02000000 USDC")),
                 },
                 PositionEffectTrace {
                     kind: PositionEffectKind::Closed,
+                    trader_id: TraderId::from("TRADER-001"),
+                    strategy_id: StrategyId::from("STRATEGY-001"),
                     position_id,
                     instrument_id,
                     account_id: AccountId::from("POLYMARKET-001"),
+                    opening_order_id: ClientOrderId::from("O-entry"),
+                    closing_order_id: Some(ClientOrderId::from("O-settlement")),
+                    entry: OrderSide::Buy,
                     side: PositionSide::Flat,
+                    signed_quantity: 0.0,
                     quantity: Quantity::from("0.00"),
                     last_quantity: Quantity::from("0.71"),
                     last_price: Price::from("1.000"),
+                    currency: Currency::USDC(),
                     realized_pnl: Some(realized_pnl),
                 },
             ],
@@ -1032,24 +1086,38 @@ mod tests {
         fixture.position_effects.extend([
             PositionEffectTrace {
                 kind: PositionEffectKind::Changed,
+                trader_id: TraderId::from("TRADER-001"),
+                strategy_id: StrategyId::from("STRATEGY-001"),
                 position_id: PositionId::from("P-001"),
                 instrument_id: fixture.instrument.id(),
                 account_id: AccountId::from("POLYMARKET-001"),
+                opening_order_id: ClientOrderId::from("O-entry"),
+                closing_order_id: None,
+                entry: OrderSide::Buy,
                 side: PositionSide::Long,
+                signed_quantity: 0.41,
                 quantity: Quantity::from("0.41"),
                 last_quantity: Quantity::from("0.30"),
                 last_price: Price::from("1.000"),
+                currency: Currency::USDC(),
                 realized_pnl: Some(Money::from("0.19400000 USDC")),
             },
             PositionEffectTrace {
                 kind: PositionEffectKind::Closed,
+                trader_id: TraderId::from("TRADER-001"),
+                strategy_id: StrategyId::from("STRATEGY-001"),
                 position_id: PositionId::from("P-001"),
                 instrument_id: fixture.instrument.id(),
                 account_id: AccountId::from("POLYMARKET-001"),
+                opening_order_id: ClientOrderId::from("O-entry"),
+                closing_order_id: Some(ClientOrderId::from("O-settlement")),
+                entry: OrderSide::Buy,
                 side: PositionSide::Flat,
+                signed_quantity: 0.0,
                 quantity: Quantity::from("0.00"),
                 last_quantity: Quantity::from("0.41"),
                 last_price: Price::from("1.000"),
+                currency: Currency::USDC(),
                 realized_pnl: Some(Money::from("0.43180000 USDC")),
             },
         ]);
@@ -1289,6 +1357,67 @@ mod tests {
     }
 
     #[test]
+    fn rejects_position_effect_causal_identity_drift() {
+        type Mutation = Box<dyn Fn(&mut Fixture)>;
+        let mutations: Vec<Mutation> = vec![
+            Box::new(|fixture| fixture.position_effects[0].trader_id = TraderId::from("OTHER-001")),
+            Box::new(|fixture| {
+                fixture.position_effects[0].strategy_id = StrategyId::from("OTHER-001")
+            }),
+            Box::new(|fixture| {
+                fixture.position_effects[0].opening_order_id = ClientOrderId::from("OTHER-001")
+            }),
+            Box::new(|fixture| fixture.position_effects[0].entry = OrderSide::Sell),
+            Box::new(|fixture| fixture.position_effects[0].signed_quantity = 9.99),
+            Box::new(|fixture| fixture.position_effects[0].currency = Currency::EUR()),
+            Box::new(|fixture| {
+                fixture.position_effects[2].closing_order_id =
+                    Some(ClientOrderId::from("OTHER-001"))
+            }),
+        ];
+
+        for mutate in mutations {
+            let mut fixture = fixture();
+            mutate(&mut fixture);
+            let error = validate_execution_contract(&fixture.trace())
+                .expect_err("position-effect causal identity drift must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("position mutation does not identify its causal lifecycle")
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_client_order_identity_reused_across_lifecycle_roles() {
+        let mut fixture = fixture();
+        let entry_client_order_id = fixture.orders[0].fills[0].client_order_id;
+        fixture.orders[1].fills[0].client_order_id = entry_client_order_id;
+        let ExecutionOrderCause::Submitted {
+            submitted_order, ..
+        } = &mut fixture.orders[1].cause
+        else {
+            panic!("reduction cause changed")
+        };
+        submitted_order.client_order_id = entry_client_order_id;
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("lifecycle roles must use distinct client order identities");
+        assert!(error.to_string().contains("identity partition"));
+    }
+
+    #[test]
+    fn rejects_venue_order_identity_reused_across_lifecycle_roles() {
+        let mut fixture = fixture();
+        fixture.orders[1].fills[0].venue_order_id = fixture.orders[0].fills[0].venue_order_id;
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("lifecycle roles must use distinct venue order identities");
+        assert!(error.to_string().contains("identity partition"));
+    }
+
+    #[test]
     fn rejects_fill_client_identity_divergent_from_submitted_order() {
         let mut fixture = fixture();
         let ExecutionOrderCause::Submitted {
@@ -1508,13 +1637,20 @@ mod tests {
             1,
             PositionEffectTrace {
                 kind: PositionEffectKind::Changed,
+                trader_id: TraderId::from("TRADER-001"),
+                strategy_id: StrategyId::from("STRATEGY-001"),
                 position_id,
                 instrument_id,
                 account_id: AccountId::from("POLYMARKET-001"),
+                opening_order_id: ClientOrderId::from("O-entry"),
+                closing_order_id: None,
+                entry: OrderSide::Buy,
                 side: PositionSide::Long,
+                signed_quantity: 2.21,
                 quantity: Quantity::from("2.21"),
                 last_quantity: Quantity::from("0.50"),
                 last_price: Price::from("0.430"),
+                currency: Currency::USDC(),
                 realized_pnl: Some(Money::from("0.00500000 USDC")),
             },
         );

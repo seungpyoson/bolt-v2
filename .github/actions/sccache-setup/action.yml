@@ -94,6 +94,12 @@ runs:
           fi
         fi
         echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+        if [[ "$enabled" == "true" ]]; then
+          # Route rustc through sccache for every later step in the job. The
+          # cargo command lines in workflow YAML stay raw and locally
+          # reproducible; without sccache the same commands simply compile cold.
+          echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
+        fi
         echo "sccache enabled=$enabled"
 
     - name: Summarize sccache state

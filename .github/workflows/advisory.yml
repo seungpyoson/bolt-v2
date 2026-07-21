@@ -1,6 +1,16 @@
 name: Advisory Check
 
+# Advisory Rust evidence only. Zero merge authority: no required status
+# contexts exist, and GitHub code-owner review is the only merge gate.
+#
+# Four parallel jobs (fmt / clippy / test / build) each surface one ✓/✗ line
+# per PR. Every job runs its cargo command directly: a red check shows the raw
+# cargo command and its raw output, reproducible locally by running the same
+# command from the repo root.
 on:
+  pull_request:
+  push:
+    branches: [main]
   schedule:
     - cron: "0 8 * * 1"
   workflow_dispatch: {}
@@ -14,12 +24,184 @@ env:
   CARGO_TERM_COLOR: always
 
 concurrency:
-  group: advisory-check
-  cancel-in-progress: false
+  group: advisory-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  fmt:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    timeout-minutes: 15
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      contents: read
+    steps:
+      # On pull_request, check out the exact pushed head, not GitHub's synthetic
+      # merge commit: this evidence is adjudicated against the reported head SHA.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          toolchain-components: "rustfmt"
+
+      - name: fmt
+        run: |
+          set -x
+          cargo fmt --check
+          cargo fmt --check --manifest-path crates/backtesting-vertical-slice/Cargo.toml
+
+  clippy:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    timeout-minutes: 60
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          toolchain-components: "clippy"
+
+      - name: Setup governed sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
+
+      - name: clippy
+        run: |
+          set -x
+          cargo clippy --locked -- -D warnings
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
+
+  test:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    timeout-minutes: 60
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      # mold measurably shortens the link-heavy nextest lane. It is one
+      # explicit install step, not an environment requirement: the cargo
+      # command below runs on any Linux host after `apt-get install mold`,
+      # and dropping the `mold -run` prefix reproduces the same tests with
+      # the stock linker.
+      - name: Install mold linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mold
+
+      - name: Setup governed sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
+
+      - name: test
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          set -x
+          mold -run cargo nextest run --locked
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
+
+  build:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    timeout-minutes: 60
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-build-values: "true"
+          use-default-target: "true"
+
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install zig
+        run: |
+          python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
+
+      - name: Setup governed sccache
+        id: sccache
+        uses: ./.github/actions/sccache-setup
+        with:
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
+
+      - name: build
+        env:
+          BUILD_TARGET: ${{ steps.setup.outputs.target }}
+        run: |
+          set -x
+          cargo zigbuild --release --target "$BUILD_TARGET" --locked
+
+      - name: Print sccache stats
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
+          require-compiler-requests: "true"
+
   advisories:
-    name: advisories
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -37,13 +219,23 @@ jobs:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
 
-      - name: Check advisories
-        id: advisories
+      - name: Check advisories (root workspace)
+        id: advisories_root
         continue-on-error: true
-        run: just deny-advisories
+        run: |
+          set -x
+          cargo deny check advisories
+
+      - name: Check advisories (backtesting-vertical-slice)
+        id: advisories_bte
+        continue-on-error: true
+        working-directory: crates/backtesting-vertical-slice
+        run: |
+          set -x
+          cargo deny check advisories
 
       - name: Create issue on failure
-        if: steps.advisories.outcome == 'failure'
+        if: steps.advisories_root.outcome == 'failure' || steps.advisories_bte.outcome == 'failure'
         run: |
           gh label create "advisory-auto" --description "Auto-created by advisory workflow" --color "D93F0B" 2>/dev/null || true
           EXISTING=$(gh issue list --label "advisory-auto" --state open --limit 1 --json number --jq '.[0].number // empty')
@@ -54,7 +246,8 @@ jobs:
           BODY="$(cat <<'EOF'
           ## Advisory Check Failed
 
-          Run `just deny-advisories` locally to see details.
+          Run `cargo deny check advisories` locally (repo root and
+          crates/backtesting-vertical-slice) to see details.
 
           Automated issue from the weekly advisory check.
           EOF

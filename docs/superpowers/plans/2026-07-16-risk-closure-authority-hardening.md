@@ -1,6 +1,7 @@
 # Risk-Closure Authority Hardening Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
 
 **Goal:** Close the confirmed PR #1430 authority, permit-generation, memory-bound, fence, and verification findings without activating production behavior.
 
@@ -224,8 +225,7 @@ Review the exact commit range for authority multiplicity, temporary double alloc
 - [ ] **Step 3: Publish and dispatch remote evidence**
 
 ```bash
-just sandbox-safe-push
-just verify-remote
+git push
 ```
 
-Confirm the pushed SHA equals remote branch HEAD. Update the stable PR body to remove storage-replacement claims and describe generation-bound permits. Per repository policy, detach after dispatch rather than waiting on CI; report exact-head pending checks without claiming Rust success.
+Confirm the pushed SHA equals remote branch HEAD. Advisory CI starts automatically for the pushed head. Update the stable PR body to remove storage-replacement claims and describe generation-bound permits. Per repository policy, detach after publication rather than waiting on CI; report exact-head pending checks without claiming Rust success.

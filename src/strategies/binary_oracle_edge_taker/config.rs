@@ -789,7 +789,7 @@ impl BinaryOracleEdgeTakerBuilder {
         }
     }
 
-    /// Reject an unknown `rotating_market_family` at config-parse time (P5-10).
+    /// Reject an unknown `rotating_market_family` at config-parse time.
     /// Startup market-identity construction already fails loud on an unknown
     /// family, so this is defense-in-depth that converges parse-time validation
     /// with the SINGLE registry source of truth

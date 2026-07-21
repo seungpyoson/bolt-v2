@@ -71,11 +71,12 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           toolchain-components: "clippy"
 
-      - name: Setup read-only sccache
+      - name: Setup governed sccache
         id: sccache
         uses: ./.github/actions/sccache-setup
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
 
       - name: clippy
         run: |
@@ -123,11 +124,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends mold
 
-      - name: Setup read-only sccache
+      - name: Setup governed sccache
         id: sccache
         uses: ./.github/actions/sccache-setup
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
 
       - name: test
         env:
@@ -177,11 +179,12 @@ jobs:
         run: |
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
 
-      - name: Setup read-only sccache
+      - name: Setup governed sccache
         id: sccache
         uses: ./.github/actions/sccache-setup
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
 
       - name: build
         env:
@@ -195,6 +198,7 @@ jobs:
         uses: ./.github/actions/sccache-stats
         with:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
+          require-compiler-requests: "true"
 
   advisories:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

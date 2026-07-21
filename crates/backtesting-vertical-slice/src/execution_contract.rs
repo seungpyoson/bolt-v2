@@ -19,10 +19,7 @@ use nautilus_model::{
     orderbook::OrderBook,
     types::{Currency, Money, Price, Quantity},
 };
-use rust_decimal::{
-    Decimal, RoundingStrategy,
-    prelude::{Signed, ToPrimitive},
-};
+use rust_decimal::{Decimal, RoundingStrategy, prelude::Signed};
 
 use crate::hashing::sha256_hex;
 
@@ -458,22 +455,36 @@ pub fn validate_execution_contract(
             let expected_entry_side = *entry_side.get_or_insert(fill.order_side);
             let expected_closing_order_id = (expected_effect_kind == PositionEffectKind::Closed)
                 .then_some(fill.client_order_id);
-            let expected_signed_quantity = exposure
-                .to_f64()
-                .context("folded position quantity is not representable as f64")?;
+            let observed_signed_quantity = Decimal::from_f64_retain(effect.signed_quantity)
+                .context("position mutation signed quantity is not finite")?
+                .round_dp_with_strategy(
+                    size_precision.into(),
+                    RoundingStrategy::MidpointNearestEven,
+                );
             ensure!(
                 effect.trader_id == fill.trader_id
                     && effect.strategy_id == fill.strategy_id
                     && effect.instrument_id == fill.instrument_id
-                    && effect.account_id == fill.account_id
-                    && effect.opening_order_id == expected_opening_order_id
+                    && effect.account_id == fill.account_id,
+                "position mutation actor/instrument/account does not identify its causal lifecycle"
+            );
+            ensure!(
+                effect.opening_order_id == expected_opening_order_id
                     && effect.closing_order_id == expected_closing_order_id
-                    && effect.entry == expected_entry_side
-                    && effect.signed_quantity == expected_signed_quantity
-                    && effect.last_quantity == fill.last_qty
+                    && effect.entry == expected_entry_side,
+                "position mutation order/entry identity does not identify its causal lifecycle"
+            );
+            ensure!(
+                observed_signed_quantity == exposure,
+                "position mutation signed quantity {} does not normalize to folded quantity {}",
+                effect.signed_quantity,
+                exposure
+            );
+            ensure!(
+                effect.last_quantity == fill.last_qty
                     && effect.last_price == fill.last_px
                     && effect.currency == fill.currency,
-                "position mutation does not identify its causal lifecycle"
+                "position mutation fill economics do not identify its causal lifecycle"
             );
             match position_id {
                 Some(expected) => ensure!(
@@ -1381,11 +1392,7 @@ mod tests {
             mutate(&mut fixture);
             let error = validate_execution_contract(&fixture.trace())
                 .expect_err("position-effect causal identity drift must fail closed");
-            assert!(
-                error
-                    .to_string()
-                    .contains("position mutation does not identify its causal lifecycle")
-            );
+            assert!(error.to_string().contains("position mutation"));
         }
     }
 
@@ -1562,6 +1569,7 @@ mod tests {
             quote_conversion: None,
         };
         fixture.position_effects[1].side = PositionSide::Long;
+        fixture.position_effects[1].signed_quantity = 4.71;
         fixture.position_effects[1].quantity = Quantity::from("4.71");
         fixture.position_effects[1].last_quantity = Quantity::from("2.00");
         fixture.position_effects[1].realized_pnl = None;
@@ -1729,8 +1737,10 @@ mod tests {
         fixture.orders[2].fills[0].last_qty = Quantity::from("0.70");
         fixture.position_effects[2].kind = PositionEffectKind::Changed;
         fixture.position_effects[2].side = PositionSide::Long;
+        fixture.position_effects[2].signed_quantity = 0.01;
         fixture.position_effects[2].quantity = Quantity::from("0.01");
         fixture.position_effects[2].last_quantity = Quantity::from("0.70");
+        fixture.position_effects[2].closing_order_id = None;
         fixture.position_effects[2].realized_pnl = Some(Money::from("0.42600000 USDC"));
         fixture.account_cash_after_fills[2] = Money::from("1000000.42180000 USDC");
         let error = validate_execution_contract(&fixture.trace())
@@ -1921,11 +1931,14 @@ mod tests {
             ..
         } = &mut fixture.orders[0].cause
         {
-            submitted_order.quantity = Quantity::from("2.714");
-            submitted_order.quote_quantity = false;
-            *quote_conversion = None;
+            submitted_order.quantity = Quantity::from("1.140");
+            quote_conversion
+                .as_mut()
+                .expect("quote entry conversion")
+                .quantity = Quantity::from("2.714");
         }
         fixture.orders[0].fills[0].last_qty = Quantity::from("2.714");
+        fixture.position_effects[0].signed_quantity = 2.714;
         fixture.position_effects[0].quantity = Quantity::from("2.714");
         fixture.position_effects[0].last_quantity = Quantity::from("2.714");
         if let ExecutionOrderCause::Submitted {
@@ -1939,9 +1952,11 @@ mod tests {
             submitted_order.quantity = Quantity::from("2.000");
         }
         fixture.orders[1].fills[0].last_qty = Quantity::from("2.000");
+        fixture.position_effects[1].signed_quantity = 0.714;
         fixture.position_effects[1].quantity = Quantity::from("0.714");
         fixture.position_effects[1].last_quantity = Quantity::from("2.000");
         fixture.orders[2].fills[0].last_qty = Quantity::from("0.714");
+        fixture.position_effects[2].signed_quantity = 0.0;
         fixture.position_effects[2].quantity = Quantity::from("0.000");
         fixture.position_effects[2].last_quantity = Quantity::from("0.714");
         fixture.realized_pnl = Money::from("0.43412000 USDC");

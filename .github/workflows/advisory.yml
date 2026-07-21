@@ -25,7 +25,7 @@ env:
 
 concurrency:
   group: advisory-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   fmt:

@@ -471,16 +471,26 @@ pub fn validate_execution_contract(
         }
 
         match &order.cause {
-            ExecutionOrderCause::Submitted { .. } if before.is_zero() && !exposure.is_zero() => {
+            ExecutionOrderCause::Submitted {
+                submitted_order, ..
+            } if before.is_zero() && !exposure.is_zero() => {
+                ensure!(
+                    submitted_order.quote_quantity,
+                    "#789 entry must be quote-denominated"
+                );
                 ensure!(entry_fill_count == 0, "lifecycle contains a second entry");
                 entry_fill_count = order.fills.len();
             }
-            ExecutionOrderCause::Submitted { .. }
-                if !before.is_zero()
-                    && (exposure.is_zero()
-                        || (before.signum() == exposure.signum()
-                            && exposure.abs() < before.abs())) =>
+            ExecutionOrderCause::Submitted {
+                submitted_order, ..
+            } if !before.is_zero()
+                && (exposure.is_zero()
+                    || (before.signum() == exposure.signum() && exposure.abs() < before.abs())) =>
             {
+                ensure!(
+                    !submitted_order.quote_quantity,
+                    "#789 reduction must be base-denominated"
+                );
                 ensure!(
                     normal_exit_fill_count == 0,
                     "#789 lifecycle is restricted to a single normal reduction order"
@@ -495,6 +505,10 @@ pub fn validate_execution_contract(
                 bail!("submitted order does not have entry or reducing position effect")
             }
             ExecutionOrderCause::Settlement { declared_price } => {
+                ensure!(
+                    order.fills.len() == 1,
+                    "#789 settlement must contain exactly one fill"
+                );
                 ensure!(
                     declared_price.precision == price_precision
                         && (declared_price.as_decimal() % price_increment).is_zero(),
@@ -946,6 +960,112 @@ mod tests {
         assert_eq!(report.entry_fill_count, 1);
         assert_eq!(report.normal_exit_fill_count, 1);
         assert_eq!(report.settlement_fill_count, 1);
+    }
+
+    #[test]
+    fn rejects_base_denominated_entry_role() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            submitted_order,
+            quote_conversion,
+            ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("fixture entry order changed")
+        };
+        submitted_order.quantity = Quantity::from("2.71");
+        submitted_order.quote_quantity = false;
+        *quote_conversion = None;
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("the entry role must remain quote-denominated");
+        assert!(
+            error
+                .to_string()
+                .contains("entry must be quote-denominated")
+        );
+    }
+
+    #[test]
+    fn rejects_quote_denominated_reduction_role() {
+        let mut fixture = fixture();
+        let reduction_fill = fixture.orders[1].fills[0].clone();
+        let ExecutionOrderCause::Submitted {
+            submitted_order,
+            quote_conversion: conversion,
+            ..
+        } = &mut fixture.orders[1].cause
+        else {
+            panic!("fixture reduction order changed")
+        };
+        submitted_order.quantity = Quantity::from("0.86");
+        submitted_order.quote_quantity = true;
+        *conversion = Some(Box::new(quote_conversion(
+            &reduction_fill,
+            Quantity::from("2.00"),
+        )));
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("the reduction role must remain base-denominated");
+        assert!(
+            error
+                .to_string()
+                .contains("reduction must be base-denominated")
+        );
+    }
+
+    #[test]
+    fn rejects_multiple_settlement_fills() {
+        let mut fixture = fixture();
+        let original = fixture.orders[2].fills[0].clone();
+        let mut first = original.clone();
+        first.last_qty = Quantity::from("0.30");
+        first.trade_id = TradeId::from("settlement-1");
+        first.event_id = nautilus_core::UUID4::new();
+        let mut second = original;
+        second.last_qty = Quantity::from("0.41");
+        second.trade_id = TradeId::from("settlement-2");
+        second.event_id = nautilus_core::UUID4::new();
+        fixture.orders[2].fills = vec![first, second];
+
+        fixture.position_effects.pop();
+        fixture.position_effects.extend([
+            PositionEffectTrace {
+                kind: PositionEffectKind::Changed,
+                position_id: PositionId::from("P-001"),
+                instrument_id: fixture.instrument.id(),
+                account_id: AccountId::from("POLYMARKET-001"),
+                side: PositionSide::Long,
+                quantity: Quantity::from("0.41"),
+                last_quantity: Quantity::from("0.30"),
+                last_price: Price::from("1.000"),
+                realized_pnl: Some(Money::from("0.19400000 USDC")),
+            },
+            PositionEffectTrace {
+                kind: PositionEffectKind::Closed,
+                position_id: PositionId::from("P-001"),
+                instrument_id: fixture.instrument.id(),
+                account_id: AccountId::from("POLYMARKET-001"),
+                side: PositionSide::Flat,
+                quantity: Quantity::from("0.00"),
+                last_quantity: Quantity::from("0.41"),
+                last_price: Price::from("1.000"),
+                realized_pnl: Some(Money::from("0.43180000 USDC")),
+            },
+        ]);
+        fixture.account_cash_after_fills.pop();
+        fixture.account_cash_after_fills.extend([
+            Money::from("1000000.02180000 USDC"),
+            Money::from("1000000.43180000 USDC"),
+        ]);
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("settlement must remain one synthetic fill");
+        assert!(
+            error
+                .to_string()
+                .contains("settlement must contain exactly one fill")
+        );
     }
 
     #[test]

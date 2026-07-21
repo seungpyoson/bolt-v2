@@ -3813,6 +3813,10 @@ mod tests {
             if delta.action == BookAction::Clear {
                 continue;
             }
+            ensure!(
+                matches!(delta.order.side, OrderSide::Buy | OrderSide::Sell),
+                "#789 non-Clear book delta {index} has no executable side"
+            );
 
             let price = delta.order.price;
             ensure!(
@@ -3856,10 +3860,11 @@ mod tests {
                 && venue.account_type == "CASH"
                 && venue.book_type == "L2_MBP"
                 && venue.liquidity_consumption
+                && !venue.use_market_order_acks
                 && venue.fill_model.is_none()
                 && venue.latency_model.is_none()
                 && venue.fee_model.is_none(),
-            "#789 lifecycle evidence is restricted to NETTING/CASH, L2 liquidity consumption, and deterministic default fill/latency/fee models"
+            "#789 lifecycle evidence is restricted to NETTING/CASH, L2 liquidity consumption, disabled market-order acknowledgements, and deterministic default fill/latency/fee models"
         );
         Ok(())
     }
@@ -4512,6 +4517,28 @@ mod tests {
         let error = ensure_issue_789_venue_shape(&venue)
             .expect_err("unsupported run shape must fail before NT runs");
         assert!(error.to_string().contains("restricted to NETTING/CASH"));
+    }
+
+    #[test]
+    fn issue_789_static_admission_rejects_market_order_acknowledgements() {
+        let mut venue = issue_789_venue("POLYMARKET", "pUSD", "L2_MBP", true, true);
+        venue.use_market_order_acks = true;
+
+        let error = ensure_issue_789_venue_shape(&venue)
+            .expect_err("market-order acknowledgements change the frozen normal-order grammar");
+        assert!(error.to_string().contains("market-order acknowledgements"));
+    }
+
+    #[test]
+    fn issue_789_static_admission_rejects_no_side_non_clear_delta() {
+        let instrument = issue_789_admission_instrument();
+        let mut delta =
+            issue_789_admission_delta(instrument.id(), BookAction::Update, "0.421", "1.00");
+        delta.order.side = OrderSide::NoOrderSide;
+
+        let error = validate_issue_789_book_domain(&instrument, &[delta])
+            .expect_err("non-Clear deltas without an executable side must fail before NT runs");
+        assert!(error.to_string().contains("executable side"));
     }
 
     #[test]

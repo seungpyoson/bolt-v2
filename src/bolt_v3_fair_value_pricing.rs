@@ -469,6 +469,7 @@ impl FairValuePricingState {
                 crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
             ready: true,
             sources_used: source_venue.into_iter().collect(),
+            registered_source_ids: Vec::new(),
             source_diagnostics: Vec::new(),
             horizon_estimates: Vec::new(),
             unknown_source_rejections: std::collections::BTreeMap::new(),

@@ -1795,7 +1795,10 @@ fn malformed_entry_reject_stops_same_instrument_entry_decisions() {
     ));
 
     let decision = strategy.entry_submission_decision_at(1_200);
-    assert_eq!(decision.blocked_reason, Some("entry_malformed_rejected"));
+    assert_eq!(
+        decision.blocked_reason,
+        Some(BoltV3EntrySkipReasonCategory::EntryMalformedRejected)
+    );
     assert!(strategy.pending_entry().is_none());
 }
 
@@ -1826,7 +1829,7 @@ fn order_denied_clears_matching_pending_entry_and_records_lifecycle_evidence() {
     assert!(strategy.pending_entry().is_none());
     assert_eq!(
         strategy.entry_submission_decision_at(1_200).blocked_reason,
-        Some("entry_unfillable_rejected_unchanged_book"),
+        Some(BoltV3EntrySkipReasonCategory::EntryUnfillableRejectedUnchangedBook),
         "a local denial must not fall through to immediate resubmit"
     );
     assert!(
@@ -1909,7 +1912,7 @@ fn unfillable_fok_entry_reject_waits_for_book_change_before_redeciding() {
     let unchanged_book_decision = strategy.entry_submission_decision_at(1_200);
     assert_eq!(
         unchanged_book_decision.blocked_reason,
-        Some("entry_unfillable_rejected_unchanged_book")
+        Some(BoltV3EntrySkipReasonCategory::EntryUnfillableRejectedUnchangedBook)
     );
 
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
@@ -1966,12 +1969,15 @@ fn balance_entry_reject_stops_same_instrument_entry_decisions() {
     ));
 
     let decision = strategy.entry_submission_decision_at(1_200);
-    assert_eq!(decision.blocked_reason, Some("entry_balance_rejected"));
+    assert_eq!(
+        decision.blocked_reason,
+        Some(BoltV3EntrySkipReasonCategory::EntryBalanceRejected)
+    );
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
     let changed_book_decision = strategy.entry_submission_decision_at(1_201);
     assert_eq!(
         changed_book_decision.blocked_reason,
-        Some("entry_balance_rejected")
+        Some(BoltV3EntrySkipReasonCategory::EntryBalanceRejected)
     );
 }
 
@@ -2000,7 +2006,7 @@ fn unknown_entry_reject_waits_for_book_change_before_redeciding() {
     let unchanged_book_decision = strategy.entry_submission_decision_at(1_200);
     assert_eq!(
         unchanged_book_decision.blocked_reason,
-        Some("entry_unfillable_rejected_unchanged_book")
+        Some(BoltV3EntrySkipReasonCategory::EntryUnfillableRejectedUnchangedBook)
     );
 
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);

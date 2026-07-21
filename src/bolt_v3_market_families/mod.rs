@@ -206,7 +206,7 @@ const SELECTED_MARKET_RESOLUTION_KIND_FIELD: &str = "resolution_kind";
 const SELECTED_MARKET_VALUE_KIND_FIELD: &str = "value_kind";
 const SELECTED_MARKET_VENUE_FIELD: &str = "venue";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MarketSelectionOutcome {
     Current,
     Next,

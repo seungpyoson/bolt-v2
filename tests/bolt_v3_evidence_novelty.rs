@@ -1,150 +1,367 @@
 use std::cell::Cell;
 
 use anyhow::Result;
-use bolt_v2::bolt_v3_evidence_novelty::{
-    EvidenceCanonicalState, EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceNoveltyGuard,
-    EvidenceOutcomeIdentity, EvidenceStateOwner, registered_evidence_state_by_id,
+use bolt_v2::{
+    bolt_v3_decision_evidence::{
+        BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason, BoltV3EntrySkipReasonCategory,
+        BoltV3OutcomeSide, BoltV3RvGateResult,
+    },
+    bolt_v3_evidence_novelty::{
+        BLOCKED_STRATEGY_INPUT_SNAPSHOT_PER_REGISTERED_SOURCE_STATE_UPPER_BOUND,
+        BLOCKED_STRATEGY_INPUT_SNAPSHOT_STATIC_STATE_UPPER_BOUND, CanonicalSet,
+        CanonicalSourceStates, ENTRY_SKIP_PER_EPISODE_STATE_UPPER_BOUND, EntrySkipProducer,
+        EntrySkipSemanticKey, EvidenceAttemptOutcome, EvidenceAvailability, EvidenceCoherence,
+        EvidenceConditionIdentity, EvidenceEpisodeId, EvidenceEpisodeRejection,
+        EvidenceMarketIdentity, EvidenceNoveltyGuard, EvidenceOutcomeIdentity,
+        EvidenceQuestionIdentity, EvidenceStrategyIdentity, EvidenceTargetIdentity,
+        EvidenceWatermark, RvSourceSemanticStateInput,
+        blocked_strategy_input_snapshot_per_episode_state_upper_bound, generator::parse_registry,
+        generator::render_registry, registered_evidence_dimension_by_id,
+    },
+    bolt_v3_realized_volatility::{
+        RealizedVolBlockReason, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
+    },
 };
+use nautilus_model::identifiers::{InstrumentId, Venue};
 
-fn outcome(index: u8, label: &str, instrument_id: &str) -> EvidenceOutcomeIdentity {
-    EvidenceOutcomeIdentity {
-        index,
-        normalized_outcome: label.to_string(),
-        instrument_id: instrument_id.to_string(),
-    }
-}
-
-fn episode_parts(market_id: &str) -> EvidenceEpisodeParts {
-    EvidenceEpisodeParts {
-        strategy_id: "binary-oracle-btc".to_string(),
-        target_id: "btc-updown-5m".to_string(),
-        venue_id: "POLYMARKET".to_string(),
-        market_id: market_id.to_string(),
-        condition_id: format!("condition-{market_id}"),
-        question_id: format!("question-{market_id}"),
-        outcomes: [
-            outcome(0, "up", &format!("up-{market_id}.POLYMARKET")),
-            outcome(1, "down", &format!("down-{market_id}.POLYMARKET")),
-        ],
-    }
-}
+const REGISTRY: &str = include_str!("../config/evidence-novelty.toml");
+const GENERATED: &str = include_str!("../src/bolt_v3_evidence_novelty/generated.rs");
 
 fn episode(market_id: &str) -> EvidenceEpisodeId {
-    EvidenceEpisodeId::try_from(episode_parts(market_id))
-        .expect("complete stable market identity should construct an episode")
+    EvidenceEpisodeId::try_binary_market(
+        EvidenceStrategyIdentity::try_new("binary-oracle-btc").unwrap(),
+        EvidenceTargetIdentity::try_new("btc-updown-5m").unwrap(),
+        Venue::from("POLYMARKET"),
+        EvidenceMarketIdentity::try_new(market_id).unwrap(),
+        EvidenceConditionIdentity::try_new(format!("condition-{market_id}")).unwrap(),
+        EvidenceQuestionIdentity::try_new(format!("question-{market_id}")).unwrap(),
+        [
+            EvidenceOutcomeIdentity::new(
+                BoltV3OutcomeSide::Up,
+                InstrumentId::from(format!("up-{market_id}.POLYMARKET").as_str()),
+            ),
+            EvidenceOutcomeIdentity::new(
+                BoltV3OutcomeSide::Down,
+                InstrumentId::from(format!("down-{market_id}.POLYMARKET").as_str()),
+            ),
+        ],
+    )
+    .unwrap()
+}
+
+fn entry_key(
+    reason: BoltV3EntrySkipReasonCategory,
+    gate_blockers: Vec<BoltV3EntryBlockReason>,
+    pricing_blockers: Vec<BoltV3EntryPricingBlockReason>,
+    fast_available: bool,
+    reference_available: bool,
+    incoherent: bool,
+    rv_gate: BoltV3RvGateResult,
+    watermark_present: bool,
+) -> Result<EntrySkipSemanticKey> {
+    EntrySkipSemanticKey::try_new(
+        reason,
+        CanonicalSet::try_from_iter(gate_blockers)?,
+        CanonicalSet::try_from_iter(pricing_blockers)?,
+        EvidenceAvailability::from(fast_available),
+        EvidenceAvailability::from(reference_available),
+        EvidenceCoherence::from(incoherent),
+        rv_gate,
+        EvidenceWatermark::from(watermark_present),
+    )
 }
 
 #[test]
-fn canonical_state_ids_match_the_closed_registry() {
-    assert_eq!(
-        EvidenceCanonicalState::BlockedStrategyInputAcceptedWatermarkAbsent as usize,
-        144
+fn registry_is_closed_and_generated_rust_is_byte_exact() -> Result<()> {
+    let registry = parse_registry(REGISTRY)?;
+    assert_eq!(render_registry(&registry)?, GENERATED);
+
+    let unknown_root = format!("{REGISTRY}\nunknown = true\n");
+    assert!(parse_registry(&unknown_root).is_err());
+
+    let old_schema = REGISTRY.replacen("schema_version = 2", "schema_version = 1", 1);
+    assert!(parse_registry(&old_schema).is_err());
+
+    let duplicate_id = REGISTRY.replacen("id = 145", "id = 144", 1);
+    assert!(parse_registry(&duplicate_id).is_err());
+
+    let unknown_domain = REGISTRY.replacen(
+        "domain = \"entry_skip_reason\"",
+        "domain = \"missing_domain\"",
+        1,
     );
-    assert_eq!(
-        EvidenceCanonicalState::BlockedStrategyInputRejectedNotReadyWatermarkPresent as usize,
-        155
+    assert!(parse_registry(&unknown_domain).is_err());
+
+    let unknown_optional_component = REGISTRY.replacen(
+        "optional_component_domains = [\"rv_blocker\", \"rv_source_rejection\"]",
+        "optional_component_domains = [\"missing_domain\"]",
+        1,
     );
-    assert_eq!(
-        EvidenceCanonicalState::EntrySkipStrategyCoreNotRegistered as usize,
-        156
+    assert!(parse_registry(&unknown_optional_component).is_err());
+
+    let repeated_component = REGISTRY.replacen(
+        "optional_component_domains = [\"rv_blocker\", \"rv_source_rejection\"]",
+        "optional_component_domains = [\"enablement\"]",
+        1,
     );
-    assert_eq!(
-        EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation as usize,
-        172
-    );
-    assert_eq!(
-        EvidenceCanonicalState::EntrySkipEntryUnfillableRejectedUnchangedBook as usize,
-        175
-    );
-    assert!(registered_evidence_state_by_id(143).is_err());
-    assert!(registered_evidence_state_by_id(176).is_err());
+    assert!(parse_registry(&repeated_component).is_err());
+    Ok(())
 }
 
 #[test]
-fn stable_episode_identity_has_no_volatile_constructor_inputs() {
-    let first_volatile_sample = (101_000.0, 1_u64, 2_u64, false, "missing_snapshot");
-    let second_volatile_sample = (99_000.0, 999_999_u64, 88_888_u64, true, "rejected_stale");
-
-    assert_ne!(first_volatile_sample, second_volatile_sample);
-    assert_eq!(episode("market-a"), episode("market-a"));
+fn generated_cardinality_formulas_are_checked_and_finite() {
+    assert!(ENTRY_SKIP_PER_EPISODE_STATE_UPPER_BOUND > 4_096);
+    assert_eq!(
+        blocked_strategy_input_snapshot_per_episode_state_upper_bound(0),
+        Some(BLOCKED_STRATEGY_INPUT_SNAPSHOT_STATIC_STATE_UPPER_BOUND)
+    );
+    assert_eq!(
+        blocked_strategy_input_snapshot_per_episode_state_upper_bound(1),
+        BLOCKED_STRATEGY_INPUT_SNAPSHOT_STATIC_STATE_UPPER_BOUND
+            .checked_mul(BLOCKED_STRATEGY_INPUT_SNAPSHOT_PER_REGISTERED_SOURCE_STATE_UPPER_BOUND,)
+    );
+    assert_eq!(
+        BLOCKED_STRATEGY_INPUT_SNAPSHOT_PER_REGISTERED_SOURCE_STATE_UPPER_BOUND,
+        2 * 2 * 4 * 11 * 10,
+        "source state includes enablement, quorum, status, optional blocker, and optional rejection"
+    );
 }
 
 #[test]
-fn every_stable_market_component_changes_episode_identity() {
-    let baseline = episode("market-a");
-    let mut mutations = Vec::new();
+fn registered_dimension_ids_cover_the_complete_key_schema() {
+    let first = registered_evidence_dimension_by_id(144).unwrap();
+    assert_eq!(first.producer, "entry_skip");
+    assert_eq!(first.name, "reason");
 
-    let mut parts = episode_parts("market-a");
-    parts.strategy_id.push_str("-changed");
-    mutations.push(parts);
-    let mut parts = episode_parts("market-a");
-    parts.target_id.push_str("-changed");
-    mutations.push(parts);
-    let mut parts = episode_parts("market-a");
-    parts.venue_id.push_str("-changed");
-    mutations.push(parts);
-    let mut parts = episode_parts("market-a");
-    parts.market_id.push_str("-changed");
-    mutations.push(parts);
-    let mut parts = episode_parts("market-a");
-    parts.condition_id.push_str("-changed");
-    mutations.push(parts);
-    let mut parts = episode_parts("market-a");
-    parts.question_id.push_str("-changed");
-    mutations.push(parts);
-    let mut parts = episode_parts("market-a");
-    parts.outcomes[0].normalized_outcome.push_str("-changed");
-    mutations.push(parts);
-    let mut parts = episode_parts("market-a");
-    parts.outcomes[0].instrument_id.push_str("-changed");
-    mutations.push(parts);
+    let last = registered_evidence_dimension_by_id(163).unwrap();
+    assert_eq!(last.producer, "blocked_strategy_input_snapshot");
+    assert_eq!(last.name, "rv_source_states");
 
-    for parts in mutations {
-        let changed = EvidenceEpisodeId::try_from(parts).expect("changed identity remains valid");
-        assert_ne!(baseline, changed);
-    }
+    assert!(registered_evidence_dimension_by_id(143).is_err());
+    assert!(registered_evidence_dimension_by_id(164).is_err());
 }
 
 #[test]
-fn incomplete_or_ambiguous_episode_identity_is_rejected() {
-    let mut blank_market = episode_parts("market-a");
-    blank_market.market_id = "   ".to_string();
-    assert!(EvidenceEpisodeId::try_from(blank_market).is_err());
+fn episode_identity_rejects_incomplete_ambiguous_or_wrong_venue_inputs() {
+    assert_eq!(
+        EvidenceMarketIdentity::try_new(""),
+        Err(EvidenceEpisodeRejection::MarketIdentityMissing)
+    );
+    assert_eq!(
+        EvidenceConditionIdentity::try_new(" padded"),
+        Err(EvidenceEpisodeRejection::ConditionIdentityNonCanonical)
+    );
 
-    let mut padded_condition = episode_parts("market-a");
-    padded_condition.condition_id = " condition-market-a".to_string();
-    assert!(EvidenceEpisodeId::try_from(padded_condition).is_err());
+    let strategy = EvidenceStrategyIdentity::try_new("strategy").unwrap();
+    let target = EvidenceTargetIdentity::try_new("target").unwrap();
+    let market = EvidenceMarketIdentity::try_new("market").unwrap();
+    let condition = EvidenceConditionIdentity::try_new("condition").unwrap();
+    let question = EvidenceQuestionIdentity::try_new("question").unwrap();
+    let up = InstrumentId::from("up.POLYMARKET");
+    let down = InstrumentId::from("down.POLYMARKET");
 
-    let mut reversed_indices = episode_parts("market-a");
-    reversed_indices.outcomes[0].index = 1;
-    reversed_indices.outcomes[1].index = 0;
-    assert!(EvidenceEpisodeId::try_from(reversed_indices).is_err());
+    assert_eq!(
+        EvidenceEpisodeId::try_binary_market(
+            strategy.clone(),
+            target.clone(),
+            Venue::from("POLYMARKET"),
+            market.clone(),
+            condition.clone(),
+            question.clone(),
+            [
+                EvidenceOutcomeIdentity::new(BoltV3OutcomeSide::Down, down),
+                EvidenceOutcomeIdentity::new(BoltV3OutcomeSide::Up, up),
+            ],
+        ),
+        Err(EvidenceEpisodeRejection::OutcomeOrderInvalid)
+    );
+    assert_eq!(
+        EvidenceEpisodeId::try_binary_market(
+            strategy.clone(),
+            target.clone(),
+            Venue::from("POLYMARKET"),
+            market.clone(),
+            condition.clone(),
+            question.clone(),
+            [
+                EvidenceOutcomeIdentity::new(BoltV3OutcomeSide::Up, up),
+                EvidenceOutcomeIdentity::new(BoltV3OutcomeSide::Down, up),
+            ],
+        ),
+        Err(EvidenceEpisodeRejection::OutcomeInstrumentDuplicate)
+    );
+    assert_eq!(
+        EvidenceEpisodeId::try_binary_market(
+            strategy,
+            target,
+            Venue::from("POLYMARKET"),
+            market,
+            condition,
+            question,
+            [
+                EvidenceOutcomeIdentity::new(BoltV3OutcomeSide::Up, up),
+                EvidenceOutcomeIdentity::new(
+                    BoltV3OutcomeSide::Down,
+                    InstrumentId::from("down.OTHER"),
+                ),
+            ],
+        ),
+        Err(EvidenceEpisodeRejection::OutcomeVenueMismatch)
+    );
+}
 
-    let mut duplicate_label = episode_parts("market-a");
-    duplicate_label.outcomes[1].normalized_outcome =
-        duplicate_label.outcomes[0].normalized_outcome.clone();
-    assert!(EvidenceEpisodeId::try_from(duplicate_label).is_err());
+#[test]
+fn canonical_sets_ignore_order_and_reject_duplicates() -> Result<()> {
+    let left = CanonicalSet::try_from_iter([
+        RealizedVolBlockReason::SourceStale,
+        RealizedVolBlockReason::QuorumNotReady,
+    ])?;
+    let right = CanonicalSet::try_from_iter([
+        RealizedVolBlockReason::QuorumNotReady,
+        RealizedVolBlockReason::SourceStale,
+    ])?;
+    assert_eq!(left, right);
+    assert!(
+        CanonicalSet::try_from_iter([
+            RealizedVolBlockReason::SourceStale,
+            RealizedVolBlockReason::SourceStale,
+        ])
+        .is_err()
+    );
+    Ok(())
+}
 
-    let mut duplicate_instrument = episode_parts("market-a");
-    duplicate_instrument.outcomes[1].instrument_id =
-        duplicate_instrument.outcomes[0].instrument_id.clone();
-    assert!(EvidenceEpisodeId::try_from(duplicate_instrument).is_err());
+#[test]
+fn structured_pricing_payloads_are_injective() -> Result<()> {
+    let left = entry_key(
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+        vec![],
+        vec![
+            BoltV3EntryPricingBlockReason::FeeUnavailable(BoltV3OutcomeSide::Up),
+            BoltV3EntryPricingBlockReason::ExecutableEntryCostUnavailable(BoltV3OutcomeSide::Down),
+        ],
+        true,
+        true,
+        false,
+        BoltV3RvGateResult::Accepted,
+        true,
+    )?;
+    let swapped = entry_key(
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+        vec![],
+        vec![
+            BoltV3EntryPricingBlockReason::FeeUnavailable(BoltV3OutcomeSide::Down),
+            BoltV3EntryPricingBlockReason::ExecutableEntryCostUnavailable(BoltV3OutcomeSide::Up),
+        ],
+        true,
+        true,
+        false,
+        BoltV3RvGateResult::Accepted,
+        true,
+    )?;
+    assert_ne!(left, swapped);
+    Ok(())
+}
+
+#[test]
+fn canonical_source_states_bind_status_to_registered_source_identity() -> Result<()> {
+    let source_a = RvSourceSemanticStateInput {
+        source_id: "source-a".to_string(),
+        enabled: true,
+        counts_toward_quorum: true,
+        status: RealizedVolSourceStatus::Blocked,
+        block_reason: Some(RealizedVolBlockReason::SourceStale),
+        last_rejected_reason: Some(RealizedVolSourceRejectReason::InvalidPrice),
+    };
+    let source_b = RvSourceSemanticStateInput {
+        source_id: "source-b".to_string(),
+        enabled: true,
+        counts_toward_quorum: false,
+        status: RealizedVolSourceStatus::DiagnosticOnly,
+        block_reason: None,
+        last_rejected_reason: None,
+    };
+    let left = CanonicalSourceStates::try_new(
+        ["source-a".to_string(), "source-b".to_string()],
+        [source_a.clone(), source_b.clone()],
+        [],
+    )?;
+    let reordered = CanonicalSourceStates::try_new(
+        ["source-b".to_string(), "source-a".to_string()],
+        [source_b, source_a],
+        [],
+    )?;
+    assert_eq!(left, reordered);
+    assert_eq!(left.len(), 2);
+
+    assert!(
+        CanonicalSourceStates::try_new(
+            ["source-a".to_string()],
+            [],
+            ["unknown-source".to_string()],
+        )
+        .is_err()
+    );
+    assert!(
+        CanonicalSourceStates::try_new(
+            ["source-a".to_string(), "source-b".to_string()],
+            [RvSourceSemanticStateInput {
+                source_id: "source-a".to_string(),
+                enabled: true,
+                counts_toward_quorum: true,
+                status: RealizedVolSourceStatus::Ready,
+                block_reason: None,
+                last_rejected_reason: None,
+            }],
+            [],
+        )
+        .is_err(),
+        "a registered source without one semantic row must fail closed"
+    );
+    assert!(
+        CanonicalSourceStates::try_new(["source-a".to_string(), "source-a".to_string()], [], [],)
+            .is_err(),
+        "a duplicate registered source identity must fail closed"
+    );
+    Ok(())
 }
 
 #[test]
 fn semantic_a_b_a_oscillation_reaches_a_fixed_ceiling() -> Result<()> {
     let episode = episode("market-a");
-    let mut guard = EvidenceNoveltyGuard::for_owner(EvidenceStateOwner::EntrySkip);
+    let state_a = entry_key(
+        BoltV3EntrySkipReasonCategory::EntryGateBlocked,
+        vec![BoltV3EntryBlockReason::BookCrossed],
+        vec![],
+        true,
+        true,
+        false,
+        BoltV3RvGateResult::Accepted,
+        true,
+    )?;
+    let state_b = entry_key(
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+        vec![],
+        vec![BoltV3EntryPricingBlockReason::SpotPriceMissing],
+        false,
+        true,
+        false,
+        BoltV3RvGateResult::MissingSnapshot,
+        false,
+    )?;
+    let mut guard = EvidenceNoveltyGuard::<EntrySkipProducer>::new();
     let appends = Cell::new(0_u64);
-    let state_a = EvidenceCanonicalState::EntrySkipEntryGateBlocked;
-    let state_b = EvidenceCanonicalState::EntrySkipEntryPricingBlocked;
 
     for _ in 0..100_000 {
-        for state in [state_a, state_b, state_a] {
-            guard.emit_once(&episode, state, || {
+        for key in [state_a.clone(), state_b.clone(), state_a.clone()] {
+            let outcome = guard.attempt_once(Ok(episode.clone()), Ok(key), || {
                 appends.set(appends.get() + 1);
                 Ok(())
-            })?;
+            });
+            assert!(matches!(
+                outcome,
+                EvidenceAttemptOutcome::Appended | EvidenceAttemptOutcome::PreviouslyAttempted
+            ));
         }
     }
 
@@ -155,59 +372,216 @@ fn semantic_a_b_a_oscillation_reaches_a_fixed_ceiling() -> Result<()> {
 }
 
 #[test]
-fn market_churn_never_evicts_seen_novelty() -> Result<()> {
-    let first = episode("market-0");
-    let state = EvidenceCanonicalState::EntrySkipEntryGateBlocked;
-    let mut guard = EvidenceNoveltyGuard::for_owner(EvidenceStateOwner::EntrySkip);
-    let appends = Cell::new(0_u64);
+fn volatile_observations_do_not_enter_the_complete_key() -> Result<()> {
+    let first_tick = (101_000.0, 1_u64, 2_u64, 3_u64);
+    let second_tick = (99_000.0, 999_999_u64, 88_888_u64, 77_777_u64);
+    assert_ne!(first_tick, second_tick);
 
-    for index in 0..=4_097 {
-        guard.emit_once(&episode(&format!("market-{index}")), state, || {
-            appends.set(appends.get() + 1);
-            Ok(())
-        })?;
-    }
-    guard.emit_once(&first, state, || {
-        appends.set(appends.get() + 1);
-        Ok(())
-    })?;
-
-    assert_eq!(appends.get(), 4_098);
-    assert_eq!(guard.seen_episode_count(), 4_098);
+    let first = entry_key(
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+        vec![],
+        vec![BoltV3EntryPricingBlockReason::SpotPriceMissing],
+        false,
+        false,
+        false,
+        BoltV3RvGateResult::MissingSnapshot,
+        false,
+    )?;
+    let second = entry_key(
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+        vec![],
+        vec![BoltV3EntryPricingBlockReason::SpotPriceMissing],
+        false,
+        false,
+        false,
+        BoltV3RvGateResult::MissingSnapshot,
+        false,
+    )?;
+    assert_eq!(first, second);
     Ok(())
 }
 
 #[test]
-fn writer_failure_stays_claimed_and_owner_mismatch_never_emits() -> Result<()> {
+fn unknown_runtime_state_fails_closed() -> Result<()> {
+    assert!(
+        entry_key(
+            BoltV3EntrySkipReasonCategory::Unclassified,
+            vec![],
+            vec![],
+            false,
+            false,
+            false,
+            BoltV3RvGateResult::MissingSnapshot,
+            false,
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn writer_failure_is_retained_without_claiming_append_success() -> Result<()> {
     let episode = episode("market-a");
-    let state = EvidenceCanonicalState::EntrySkipEntryGateBlocked;
-    let mut guard = EvidenceNoveltyGuard::for_owner(EvidenceStateOwner::EntrySkip);
+    let key = entry_key(
+        BoltV3EntrySkipReasonCategory::EntryGateBlocked,
+        vec![BoltV3EntryBlockReason::PhaseNotActive],
+        vec![],
+        false,
+        false,
+        false,
+        BoltV3RvGateResult::MissingSnapshot,
+        false,
+    )?;
+    let mut guard = EvidenceNoveltyGuard::<EntrySkipProducer>::new();
     let attempts = Cell::new(0_u64);
 
-    assert!(
-        guard
-            .emit_once(&episode, state, || {
-                attempts.set(attempts.get() + 1);
-                anyhow::bail!("writer unavailable")
-            })
-            .is_err()
-    );
-    assert!(!guard.emit_once(&episode, state, || Ok(()))?);
+    let first = guard.attempt_once(Ok(episode.clone()), Ok(key.clone()), || {
+        attempts.set(attempts.get() + 1);
+        anyhow::bail!("writer unavailable")
+    });
+    assert!(matches!(
+        first,
+        EvidenceAttemptOutcome::AttemptFailedAndRetained(_)
+    ));
+    let second = guard.attempt_once(Ok(episode), Ok(key), || {
+        attempts.set(attempts.get() + 1);
+        Ok(())
+    });
+    assert!(matches!(
+        second,
+        EvidenceAttemptOutcome::PreviouslyAttempted
+    ));
     assert_eq!(attempts.get(), 1);
+    Ok(())
+}
 
-    let payloads = Cell::new(0_u64);
-    assert!(
-        guard
-            .emit_once(
-                &episode,
-                EvidenceCanonicalState::BlockedStrategyInputRejectedStaleWatermarkPresent,
-                || {
-                    payloads.set(payloads.get() + 1);
-                    Ok(())
-                },
-            )
-            .is_err()
-    );
-    assert_eq!(payloads.get(), 0);
+#[test]
+fn identity_rejection_is_fail_closed_and_bounded() -> Result<()> {
+    let key = entry_key(
+        BoltV3EntrySkipReasonCategory::InstrumentIdMissing,
+        vec![],
+        vec![],
+        false,
+        false,
+        false,
+        BoltV3RvGateResult::MissingSnapshot,
+        false,
+    )?;
+    let mut guard = EvidenceNoveltyGuard::<EntrySkipProducer>::new();
+    let writes = Cell::new(0_u64);
+    let rejection = EvidenceEpisodeRejection::UpOutcomeInstrumentMissing;
+
+    assert!(matches!(
+        guard.attempt_once(Err(rejection), Ok(key.clone()), || {
+            writes.set(writes.get() + 1);
+            Ok(())
+        }),
+        EvidenceAttemptOutcome::IdentityRejectedFirst(
+            EvidenceEpisodeRejection::UpOutcomeInstrumentMissing
+        )
+    ));
+    assert!(matches!(
+        guard.attempt_once(Err(rejection), Ok(key), || {
+            writes.set(writes.get() + 1);
+            Ok(())
+        }),
+        EvidenceAttemptOutcome::IdentityRejectedPreviously(
+            EvidenceEpisodeRejection::UpOutcomeInstrumentMissing
+        )
+    ));
+    assert_eq!(writes.get(), 0);
+    assert_eq!(guard.rejected_identity_count(), 1);
+    Ok(())
+}
+
+#[test]
+fn semantic_key_rejection_is_fail_closed_and_bounded_per_episode() -> Result<()> {
+    let episode = episode("market-invalid-key");
+    let mut guard = EvidenceNoveltyGuard::<EntrySkipProducer>::new();
+    let writes = Cell::new(0_u64);
+
+    assert!(matches!(
+        guard.attempt_once(
+            Ok(episode.clone()),
+            Err(anyhow::anyhow!("unregistered semantic component")),
+            || {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+        ),
+        EvidenceAttemptOutcome::SemanticKeyRejectedFirst(_)
+    ));
+    assert!(matches!(
+        guard.attempt_once(
+            Ok(episode.clone()),
+            Err(anyhow::anyhow!("different invalid payload")),
+            || {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+        ),
+        EvidenceAttemptOutcome::SemanticKeyRejectedPreviously
+    ));
+    assert_eq!(writes.get(), 0);
+    assert_eq!(guard.rejected_semantic_key_episode_count(), 1);
+
+    let valid_key = entry_key(
+        BoltV3EntrySkipReasonCategory::EntryGateBlocked,
+        vec![BoltV3EntryBlockReason::PhaseNotActive],
+        vec![],
+        false,
+        false,
+        false,
+        BoltV3RvGateResult::MissingSnapshot,
+        false,
+    )?;
+    assert!(matches!(
+        guard.attempt_once(Ok(episode), Ok(valid_key), || {
+            writes.set(writes.get() + 1);
+            Ok(())
+        }),
+        EvidenceAttemptOutcome::Appended
+    ));
+    assert_eq!(writes.get(), 1);
+    Ok(())
+}
+
+#[test]
+fn market_churn_never_evicts_seen_novelty() -> Result<()> {
+    let first = episode("market-0");
+    let key = entry_key(
+        BoltV3EntrySkipReasonCategory::EntryGateBlocked,
+        vec![BoltV3EntryBlockReason::PhaseNotActive],
+        vec![],
+        false,
+        false,
+        false,
+        BoltV3RvGateResult::MissingSnapshot,
+        false,
+    )?;
+    let mut guard = EvidenceNoveltyGuard::<EntrySkipProducer>::new();
+    let appends = Cell::new(0_u64);
+
+    for index in 0..=4_097 {
+        let outcome = guard.attempt_once(
+            Ok(episode(&format!("market-{index}"))),
+            Ok(key.clone()),
+            || {
+                appends.set(appends.get() + 1);
+                Ok(())
+            },
+        );
+        assert!(matches!(outcome, EvidenceAttemptOutcome::Appended));
+    }
+    assert!(matches!(
+        guard.attempt_once(Ok(first), Ok(key), || {
+            appends.set(appends.get() + 1);
+            Ok(())
+        }),
+        EvidenceAttemptOutcome::PreviouslyAttempted
+    ));
+
+    assert_eq!(appends.get(), 4_098);
+    assert_eq!(guard.seen_episode_count(), 4_098);
     Ok(())
 }

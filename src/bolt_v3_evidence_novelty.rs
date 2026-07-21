@@ -1,155 +1,371 @@
 //! Stable market-episode identity and finite in-process semantic novelty.
 //!
-//! This is a pre-Capsule slice of #1354. It makes no restart exact-once claim.
-//! Within one fully identified market episode, a registered non-recovery
-//! producer's semantic state is emitted at most once. Seen state never evicts or
-//! resets on time, input churn, or a later market episode.
+//! This is the safe pre-Capsule slice of #1354. It makes no restart exact-once
+//! claim. Each approved non-recovery producer owns one complete typed key. A
+//! key is attempted at most once per fully identified market episode, and seen
+//! state never evicts or resets because of time, input churn, or later episodes.
+//! TOML-generated formulas report the finite per-episode state bound, including
+//! the registered RV source roster. Each retained key corresponds to at most one
+//! writer attempt, so novelty memory cannot grow faster than attempted evidence
+//! within an episode. Episode count remains monotone and process memory is not
+//! globally bounded; restart re-emits current states. Retirement, persistence,
+//! and restart exact-once remain owned by #1385.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    marker::PhantomData,
+};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
+use nautilus_model::identifiers::{InstrumentId, Venue};
+
+use crate::{
+    bolt_v3_decision_evidence::BoltV3OutcomeSide,
+    bolt_v3_realized_volatility::{
+        RealizedVolBlockReason, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
+    },
+};
+
+pub mod generator;
 
 #[rustfmt::skip]
 mod generated;
 
 pub use generated::*;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) mod private {
+    pub trait Sealed {}
+}
+
+pub trait NoveltyEligibleProducer: private::Sealed {
+    type Key: Clone + Ord;
+
+    const OWNER: EvidenceProducerOwner;
+    const PRODUCER_KIND: &'static str;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EvidenceEpisodeRejection {
+    StrategyIdentityMissing,
+    StrategyIdentityNonCanonical,
+    TargetIdentityMissing,
+    TargetIdentityNonCanonical,
+    MarketIdentityMissing,
+    MarketIdentityNonCanonical,
+    ConditionIdentityMissing,
+    ConditionIdentityNonCanonical,
+    QuestionIdentityMissing,
+    QuestionIdentityNonCanonical,
+    SelectedMarketSourceIdentityMissing,
+    UpOutcomeInstrumentMissing,
+    DownOutcomeInstrumentMissing,
+    OutcomeOrderInvalid,
+    OutcomeInstrumentDuplicate,
+    OutcomeVenueMismatch,
+}
+
+macro_rules! stable_identity {
+    ($name:ident, $missing:ident, $noncanonical:ident) => {
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        pub struct $name(String);
+
+        impl $name {
+            pub fn try_new(value: impl Into<String>) -> Result<Self, EvidenceEpisodeRejection> {
+                let value = value.into();
+                if value.is_empty() {
+                    return Err(EvidenceEpisodeRejection::$missing);
+                }
+                if value.trim() != value {
+                    return Err(EvidenceEpisodeRejection::$noncanonical);
+                }
+                Ok(Self(value))
+            }
+        }
+    };
+}
+
+stable_identity!(
+    EvidenceStrategyIdentity,
+    StrategyIdentityMissing,
+    StrategyIdentityNonCanonical
+);
+stable_identity!(
+    EvidenceTargetIdentity,
+    TargetIdentityMissing,
+    TargetIdentityNonCanonical
+);
+stable_identity!(
+    EvidenceMarketIdentity,
+    MarketIdentityMissing,
+    MarketIdentityNonCanonical
+);
+stable_identity!(
+    EvidenceConditionIdentity,
+    ConditionIdentityMissing,
+    ConditionIdentityNonCanonical
+);
+stable_identity!(
+    EvidenceQuestionIdentity,
+    QuestionIdentityMissing,
+    QuestionIdentityNonCanonical
+);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EvidenceOutcomeIdentity {
-    pub index: u8,
-    pub normalized_outcome: String,
-    pub instrument_id: String,
+    side: BoltV3OutcomeSide,
+    instrument_id: InstrumentId,
 }
 
-/// Complete stable input surface for a market evidence episode.
+impl EvidenceOutcomeIdentity {
+    #[must_use]
+    pub const fn new(side: BoltV3OutcomeSide, instrument_id: InstrumentId) -> Self {
+        Self {
+            side,
+            instrument_id,
+        }
+    }
+}
+
+/// Complete stable identity for one logical binary-market episode.
 ///
-/// Prices, timestamps, slugs, windows, diagnostics, transient flags, config or
-/// deploy revisions, and retries are structurally absent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvidenceEpisodeParts {
-    pub strategy_id: String,
-    pub target_id: String,
-    pub venue_id: String,
-    pub market_id: String,
-    pub condition_id: String,
-    pub question_id: String,
-    pub outcomes: [EvidenceOutcomeIdentity; 2],
-}
-
+/// No constructor parameter can carry a price, timestamp, slug, window,
+/// diagnostic, config/deploy revision, retry count, or capacity policy.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EvidenceEpisodeId {
-    strategy_id: String,
-    target_id: String,
-    venue_id: String,
-    market_id: String,
-    condition_id: String,
-    question_id: String,
+    strategy: EvidenceStrategyIdentity,
+    target: EvidenceTargetIdentity,
+    venue: Venue,
+    market: EvidenceMarketIdentity,
+    condition: EvidenceConditionIdentity,
+    question: EvidenceQuestionIdentity,
     outcomes: [EvidenceOutcomeIdentity; 2],
 }
 
-fn stable_field_is_canonical(value: &str) -> bool {
-    !value.is_empty() && value.trim() == value
-}
-
-impl TryFrom<EvidenceEpisodeParts> for EvidenceEpisodeId {
-    type Error = anyhow::Error;
-
-    fn try_from(parts: EvidenceEpisodeParts) -> Result<Self> {
-        let [first_outcome, second_outcome] = &parts.outcomes;
-        let required = [
-            parts.strategy_id.as_str(),
-            parts.target_id.as_str(),
-            parts.venue_id.as_str(),
-            parts.market_id.as_str(),
-            parts.condition_id.as_str(),
-            parts.question_id.as_str(),
-            first_outcome.normalized_outcome.as_str(),
-            first_outcome.instrument_id.as_str(),
-            second_outcome.normalized_outcome.as_str(),
-            second_outcome.instrument_id.as_str(),
-        ];
-        if required
-            .iter()
-            .any(|value| !stable_field_is_canonical(value))
+impl EvidenceEpisodeId {
+    pub fn try_binary_market(
+        strategy: EvidenceStrategyIdentity,
+        target: EvidenceTargetIdentity,
+        venue: Venue,
+        market: EvidenceMarketIdentity,
+        condition: EvidenceConditionIdentity,
+        question: EvidenceQuestionIdentity,
+        outcomes: [EvidenceOutcomeIdentity; 2],
+    ) -> Result<Self, EvidenceEpisodeRejection> {
+        if outcomes[0].side != BoltV3OutcomeSide::Up || outcomes[1].side != BoltV3OutcomeSide::Down
         {
-            bail!("evidence episode requires non-empty, unpadded stable fields");
+            return Err(EvidenceEpisodeRejection::OutcomeOrderInvalid);
         }
-        if parts.outcomes[0].index != 0 || parts.outcomes[1].index != 1 {
-            bail!("evidence episode requires canonical ordered outcome indices 0 and 1");
+        if outcomes[0].instrument_id == outcomes[1].instrument_id {
+            return Err(EvidenceEpisodeRejection::OutcomeInstrumentDuplicate);
         }
-        if parts.outcomes[0].normalized_outcome == parts.outcomes[1].normalized_outcome {
-            bail!("evidence episode requires distinct normalized outcomes");
-        }
-        if parts.outcomes[0].instrument_id == parts.outcomes[1].instrument_id {
-            bail!("evidence episode requires distinct outcome instruments");
+        if outcomes
+            .iter()
+            .any(|outcome| outcome.instrument_id.venue != venue)
+        {
+            return Err(EvidenceEpisodeRejection::OutcomeVenueMismatch);
         }
         Ok(Self {
-            strategy_id: parts.strategy_id,
-            target_id: parts.target_id,
-            venue_id: parts.venue_id,
-            market_id: parts.market_id,
-            condition_id: parts.condition_id,
-            question_id: parts.question_id,
-            outcomes: parts.outcomes,
+            strategy,
+            target,
+            venue,
+            market,
+            condition,
+            question,
+            outcomes,
         })
     }
 }
 
-pub struct EvidenceNoveltyGuard {
-    owner: EvidenceStateOwner,
-    seen_by_episode: BTreeMap<EvidenceEpisodeId, Vec<u64>>,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CanonicalSet<T>(BTreeSet<T>);
+
+impl<T: Ord> CanonicalSet<T> {
+    pub fn try_from_iter(values: impl IntoIterator<Item = T>) -> Result<Self> {
+        let mut canonical = BTreeSet::new();
+        for value in values {
+            ensure!(
+                canonical.insert(value),
+                "semantic state contains a duplicate set component"
+            );
+        }
+        Ok(Self(canonical))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.0.iter()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
-impl EvidenceNoveltyGuard {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RegisteredRvSourceId(String);
+
+impl RegisteredRvSourceId {
+    fn try_new(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        ensure!(
+            !value.is_empty() && value.trim() == value,
+            "RV source identity must be non-empty and unpadded"
+        );
+        Ok(Self(value))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RvSourceSemanticStateInput {
+    pub source_id: String,
+    pub enabled: bool,
+    pub counts_toward_quorum: bool,
+    pub status: RealizedVolSourceStatus,
+    pub block_reason: Option<RealizedVolBlockReason>,
+    pub last_rejected_reason: Option<RealizedVolSourceRejectReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RvSourceSemanticState {
+    enablement: EvidenceEnablement,
+    quorum_participation: EvidenceQuorumParticipation,
+    status: RealizedVolSourceStatus,
+    block_reason: Option<RealizedVolBlockReason>,
+    last_rejected_reason: Option<RealizedVolSourceRejectReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CanonicalSourceStates(BTreeMap<RegisteredRvSourceId, RvSourceSemanticState>);
+
+impl CanonicalSourceStates {
+    pub fn try_new(
+        registered_source_ids: impl IntoIterator<Item = String>,
+        states: impl IntoIterator<Item = RvSourceSemanticStateInput>,
+        unknown_source_ids: impl IntoIterator<Item = String>,
+    ) -> Result<Self> {
+        if unknown_source_ids.into_iter().next().is_some() {
+            bail!("RV semantic state contains an unregistered source identity");
+        }
+        let mut registered = BTreeSet::new();
+        for source_id in registered_source_ids {
+            let source_id = RegisteredRvSourceId::try_new(source_id)?;
+            ensure!(
+                registered.insert(source_id),
+                "RV source roster contains a duplicate identity"
+            );
+        }
+        let mut canonical = BTreeMap::new();
+        for state in states {
+            let source_id = RegisteredRvSourceId::try_new(state.source_id)?;
+            ensure!(
+                registered.contains(&source_id),
+                "RV semantic state contains a source outside the registered roster"
+            );
+            generated::validate_rv_source_status(&state.status)?;
+            if let Some(block_reason) = &state.block_reason {
+                generated::validate_rv_blocker(block_reason)?;
+            }
+            if let Some(last_rejected_reason) = &state.last_rejected_reason {
+                generated::validate_rv_source_rejection(last_rejected_reason)?;
+            }
+            let semantic_state = RvSourceSemanticState {
+                enablement: state.enabled.into(),
+                quorum_participation: state.counts_toward_quorum.into(),
+                status: state.status,
+                block_reason: state.block_reason,
+                last_rejected_reason: state.last_rejected_reason,
+            };
+            ensure!(
+                canonical.insert(source_id, semantic_state).is_none(),
+                "RV semantic state contains duplicate diagnostics for one source"
+            );
+        }
+        ensure!(
+            canonical.len() == registered.len(),
+            "RV semantic state must cover every registered source exactly once"
+        );
+        Ok(Self(canonical))
+    }
+
     #[must_use]
-    pub fn for_owner(owner: EvidenceStateOwner) -> Self {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+#[derive(Debug)]
+pub enum EvidenceAttemptOutcome {
+    Appended,
+    PreviouslyAttempted,
+    AttemptFailedAndRetained(anyhow::Error),
+    IdentityRejectedFirst(EvidenceEpisodeRejection),
+    IdentityRejectedPreviously(EvidenceEpisodeRejection),
+    SemanticKeyRejectedFirst(anyhow::Error),
+    SemanticKeyRejectedPreviously,
+}
+
+pub struct EvidenceNoveltyGuard<P: NoveltyEligibleProducer> {
+    seen_by_episode: BTreeMap<EvidenceEpisodeId, BTreeSet<P::Key>>,
+    rejected_identities: BTreeSet<EvidenceEpisodeRejection>,
+    rejected_semantic_key_episodes: BTreeSet<EvidenceEpisodeId>,
+    marker: PhantomData<P>,
+}
+
+impl<P: NoveltyEligibleProducer> EvidenceNoveltyGuard<P> {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
-            owner,
             seen_by_episode: BTreeMap::new(),
+            rejected_identities: BTreeSet::new(),
+            rejected_semantic_key_episodes: BTreeSet::new(),
+            marker: PhantomData,
         }
     }
 
-    /// Claims before invoking the writer. Writer failure therefore stays seen.
-    pub fn emit_once(
+    /// Marks the complete key before invoking the writer and bounds invalid
+    /// identity or semantic projections without retaining their free text.
+    ///
+    /// A failed writer therefore remains attempted and cannot cause a per-tick
+    /// retry flood. The returned outcome distinguishes failure from a durable
+    /// append and never describes the failed attempt as appended.
+    pub fn attempt_once(
         &mut self,
-        episode: &EvidenceEpisodeId,
-        state: EvidenceCanonicalState,
+        episode: Result<EvidenceEpisodeId, EvidenceEpisodeRejection>,
+        key: Result<P::Key>,
         emit: impl FnOnce() -> Result<()>,
-    ) -> Result<bool> {
-        if !self.claim_once(episode, state)? {
-            return Ok(false);
+    ) -> EvidenceAttemptOutcome {
+        let episode = match episode {
+            Ok(episode) => episode,
+            Err(rejection) => {
+                return if self.rejected_identities.insert(rejection) {
+                    EvidenceAttemptOutcome::IdentityRejectedFirst(rejection)
+                } else {
+                    EvidenceAttemptOutcome::IdentityRejectedPreviously(rejection)
+                };
+            }
+        };
+        let key = match key {
+            Ok(key) => key,
+            Err(error) => {
+                return if self.rejected_semantic_key_episodes.insert(episode) {
+                    EvidenceAttemptOutcome::SemanticKeyRejectedFirst(error)
+                } else {
+                    EvidenceAttemptOutcome::SemanticKeyRejectedPreviously
+                };
+            }
+        };
+        if !self.seen_by_episode.entry(episode).or_default().insert(key) {
+            return EvidenceAttemptOutcome::PreviouslyAttempted;
         }
-        emit()?;
-        Ok(true)
-    }
-
-    pub fn claim_once(
-        &mut self,
-        episode: &EvidenceEpisodeId,
-        state: EvidenceCanonicalState,
-    ) -> Result<bool> {
-        let (word, mask) = self.state_bit(state)?;
-        let words = self
-            .seen_by_episode
-            .entry(episode.clone())
-            .or_insert_with(|| vec![0; EVIDENCE_NOVELTY_WORD_COUNT]);
-        if words[word] & mask != 0 {
-            return Ok(false);
+        match emit() {
+            Ok(()) => EvidenceAttemptOutcome::Appended,
+            Err(error) => EvidenceAttemptOutcome::AttemptFailedAndRetained(error),
         }
-        words[word] |= mask;
-        Ok(true)
-    }
-
-    pub fn has_claimed(
-        &self,
-        episode: &EvidenceEpisodeId,
-        state: EvidenceCanonicalState,
-    ) -> Result<bool> {
-        let (word, mask) = self.state_bit(state)?;
-        Ok(self
-            .seen_by_episode
-            .get(episode)
-            .is_some_and(|words| words[word] & mask == mask))
     }
 
     #[must_use]
@@ -161,27 +377,30 @@ impl EvidenceNoveltyGuard {
     pub fn seen_state_count(&self, episode: &EvidenceEpisodeId) -> usize {
         self.seen_by_episode
             .get(episode)
-            .map(|words| words.iter().map(|word| word.count_ones() as usize).sum())
+            .map(BTreeSet::len)
             .unwrap_or_default()
     }
 
-    fn state_bit(&self, state: EvidenceCanonicalState) -> Result<(usize, u64)> {
-        let registration = canonical_state_registration(state);
-        if registration.owner != self.owner {
-            bail!(
-                "evidence novelty owner mismatch for registered state {}.{}",
-                registration.producer_kind,
-                registration.semantic_state
-            );
-        }
-        let word_bits = u64::BITS as usize;
-        let word = registration.id / word_bits;
-        let mask = 1_u64 << (registration.id % word_bits);
-        Ok((word, mask))
+    #[must_use]
+    pub fn rejected_identity_count(&self) -> usize {
+        self.rejected_identities.len()
+    }
+
+    #[must_use]
+    pub fn rejected_semantic_key_episode_count(&self) -> usize {
+        self.rejected_semantic_key_episodes.len()
     }
 }
 
-pub fn registered_evidence_state_by_id(id: usize) -> Result<&'static EvidenceStateRegistration> {
-    evidence_state_registration_by_id(id)
-        .ok_or_else(|| anyhow::anyhow!("unregistered evidence semantic state id {id}"))
+impl<P: NoveltyEligibleProducer> Default for EvidenceNoveltyGuard<P> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn registered_evidence_dimension_by_id(
+    id: usize,
+) -> Result<&'static EvidenceDimensionRegistration> {
+    evidence_dimension_registration_by_id(id)
+        .ok_or_else(|| anyhow::anyhow!("unregistered evidence semantic dimension id {id}"))
 }

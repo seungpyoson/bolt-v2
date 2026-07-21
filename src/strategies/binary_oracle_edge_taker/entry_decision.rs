@@ -13,29 +13,17 @@ use crate::{
         BoltV3EntrySkipReasonCategory, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
         BoltV3RvGateResult,
     },
+    bolt_v3_evidence_novelty::RvSourceSemanticStateInput,
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::Probability,
+    bolt_v3_realized_volatility::RealizedVolBlockReason,
     bolt_v3_taker_pricing::TakerPricingBlockReason,
     bolt_v3_timestamp_domain::LocalReceiveMs,
 };
 
 use super::{
-    ENTRY_BLOCK_REASON_ENTRY_BALANCE_REJECTED, ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED,
-    ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED,
-    ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED, ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING,
-    ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED,
-    ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM,
-    ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED,
-    ENTRY_BLOCK_REASON_ENTRY_UNFILLABLE_REJECTED_UNCHANGED_BOOK,
-    ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE, ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING,
-    ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE,
-    ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL, ENTRY_BLOCK_REASON_NO_SIDE_SELECTED,
-    ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION,
-    ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID, ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE,
-    ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED, ENTRY_BLOCK_REASON_SIZED_NOTIONAL_NOT_POSITIVE,
-    ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED, SelectionPhase, exposure::ExposureOccupancy,
-    exposure_occupancy_to_evidence, forced_flat_reason_to_evidence, option_evidence_number,
-    outcome_side_to_evidence,
+    SelectionPhase, exposure::ExposureOccupancy, exposure_occupancy_to_evidence,
+    forced_flat_reason_to_evidence, option_evidence_number, outcome_side_to_evidence,
 };
 use crate::bolt_v3_feed_health::ForcedFlatReason;
 
@@ -122,6 +110,10 @@ pub(super) struct RealizedVolatilityEvidenceFields {
     pub(super) unknown_source_rejections: BTreeMap<String, u64>,
     pub(super) blockers: Vec<String>,
     pub(super) config_fingerprint: String,
+    pub(super) registered_source_ids: Vec<String>,
+    pub(super) semantic_source_states: Vec<RvSourceSemanticStateInput>,
+    pub(super) unknown_semantic_source_ids: Vec<String>,
+    pub(super) semantic_blockers: Vec<RealizedVolBlockReason>,
 }
 
 impl RealizedVolatilityEvidenceFields {
@@ -235,7 +227,7 @@ pub(super) struct EntrySubmissionDecision {
     pub(super) price: Option<f64>,
     pub(super) quantity_value: Option<f64>,
     pub(super) client_order_id: Option<ClientOrderId>,
-    pub(super) blocked_reason: Option<&'static str>,
+    pub(super) blocked_reason: Option<BoltV3EntrySkipReasonCategory>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -315,7 +307,7 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) submission_price: Option<f64>,
     pub(super) submission_quantity_value: Option<f64>,
     pub(super) submission_client_order_id: Option<ClientOrderId>,
-    pub(super) submission_blocked_reason: Option<&'static str>,
+    pub(super) submission_blocked_reason: Option<BoltV3EntrySkipReasonCategory>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,7 +326,6 @@ impl BoltV3EntrySkipEvidence {
         strategy_id: String,
         now_ms: u64,
         reason_category: BoltV3EntrySkipReasonCategory,
-        unclassified_context: Option<String>,
         fields: &EntryEvaluationLogFields,
         forced_flat_inputs: ForcedFlatEvidenceInputs,
     ) -> Self {
@@ -342,7 +333,7 @@ impl BoltV3EntrySkipEvidence {
             strategy_id,
             now_ms,
             reason_category,
-            unclassified_context,
+            unclassified_context: None,
             gate_blocked_by: fields
                 .gate_blocked_by
                 .iter()
@@ -376,10 +367,7 @@ impl BoltV3EntrySkipEvidence {
             theta_scaled_min_edge_bps: option_evidence_number(fields.theta_scaled_min_edge_bps),
             up_fee_bps: option_evidence_number(fields.up_fee_bps),
             down_fee_bps: option_evidence_number(fields.down_fee_bps),
-            submission_blocked_reason: fields
-                .submission_blocked_reason
-                .and_then(entry_skip_reason_category_from_str)
-                .or(Some(reason_category)),
+            submission_blocked_reason: fields.submission_blocked_reason.or(Some(reason_category)),
             stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
             last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
             min_liquidity_required: forced_flat_inputs.min_liquidity_required,
@@ -488,71 +476,5 @@ pub(super) fn entry_pricing_block_reason_to_evidence(
         EntryPricingBlockReason::SizedNotionalUnsupported(side) => {
             BoltV3EntryPricingBlockReason::SizedNotionalUnsupported(outcome_side_to_evidence(*side))
         }
-    }
-}
-
-pub(super) fn entry_skip_reason_category_from_str(
-    reason: &str,
-) -> Option<BoltV3EntrySkipReasonCategory> {
-    match reason {
-        ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED => {
-            Some(BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED => {
-            Some(BoltV3EntrySkipReasonCategory::EntryGateBlocked)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED => {
-            Some(BoltV3EntrySkipReasonCategory::EntryPricingBlocked)
-        }
-        ENTRY_BLOCK_REASON_NO_SIDE_SELECTED => Some(BoltV3EntrySkipReasonCategory::NoSideSelected),
-        ENTRY_BLOCK_REASON_SIZED_NOTIONAL_NOT_POSITIVE => {
-            Some(BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive)
-        }
-        ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING => {
-            Some(BoltV3EntrySkipReasonCategory::InstrumentIdMissing)
-        }
-        ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE => {
-            Some(BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING => {
-            Some(BoltV3EntrySkipReasonCategory::EntryPriceMissing)
-        }
-        ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED => {
-            Some(BoltV3EntrySkipReasonCategory::QuantityRoundingFailed)
-        }
-        ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL => {
-            Some(BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM => {
-            Some(BoltV3EntrySkipReasonCategory::EntryQuoteNotionalBelowVenueMinimum)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED => {
-            Some(BoltV3EntrySkipReasonCategory::EntryQuoteNotionalMinimumUnmodeled)
-        }
-        ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE => {
-            Some(BoltV3EntrySkipReasonCategory::QuantityNotPositive)
-        }
-        ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID => {
-            Some(BoltV3EntrySkipReasonCategory::PositionContractInvalid)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED => {
-            Some(BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported)
-        }
-        ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE => {
-            Some(BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable)
-        }
-        ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION => {
-            Some(BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED => {
-            Some(BoltV3EntrySkipReasonCategory::EntryMalformedRejected)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_BALANCE_REJECTED => {
-            Some(BoltV3EntrySkipReasonCategory::EntryBalanceRejected)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_UNFILLABLE_REJECTED_UNCHANGED_BOOK => {
-            Some(BoltV3EntrySkipReasonCategory::EntryUnfillableRejectedUnchangedBook)
-        }
-        _ => None,
     }
 }

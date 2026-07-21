@@ -1104,7 +1104,6 @@ fn rv_clock_domain_amendment_entry_skip_uses_admitted_receipt_after_snapshot_rep
             1_300,
             &decision,
             BoltV3EntrySkipReasonCategory::NoSideSelected,
-            None,
         )
         .expect("skip evidence should record from the admitted receipt");
 
@@ -1595,6 +1594,30 @@ fn shadow_policy_does_not_leave_pending_entry_between_would_be_entries() {
         2,
         "each shadow entry should still record order-intent evidence"
     );
+    let submit_linked_snapshots = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::StrategyInput(snapshot)
+                if !snapshot.client_order_id.is_empty() =>
+            {
+                Some(snapshot)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(submit_linked_snapshots.len(), 2);
+    assert_eq!(
+        submit_linked_snapshots
+            .iter()
+            .map(|snapshot| snapshot.client_order_id.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            first_client_order_id.to_string(),
+            second_client_order_id.to_string(),
+        ],
+        "recovery-bearing submit snapshots must bypass novelty suppression"
+    );
 }
 
 #[test]
@@ -1831,6 +1854,7 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
                 crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
             ready: true,
             sources_used: vec![TEST_SOURCE_ID.to_string()],
+            registered_source_ids: Vec::new(),
             source_diagnostics: Vec::new(),
             horizon_estimates: Vec::new(),
             unknown_source_rejections: std::collections::BTreeMap::new(),
@@ -2021,6 +2045,7 @@ fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections
                 crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
             ready: true,
             sources_used: vec![TEST_SOURCE_ID.to_string()],
+            registered_source_ids: Vec::new(),
             source_diagnostics: Vec::new(),
             horizon_estimates: Vec::new(),
             unknown_source_rejections,
@@ -2078,6 +2103,7 @@ fn strategy_input_evidence_accepts_ready_surfaced_zero_realized_volatility() {
                 crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
             ready: true,
             sources_used: vec![TEST_SOURCE_ID.to_string()],
+            registered_source_ids: Vec::new(),
             source_diagnostics: Vec::new(),
             horizon_estimates: Vec::new(),
             unknown_source_rejections: std::collections::BTreeMap::new(),
@@ -2134,6 +2160,7 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
             crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
         ready: false,
         sources_used: Vec::new(),
+        registered_source_ids: Vec::new(),
         source_diagnostics: Vec::new(),
         horizon_estimates: Vec::new(),
         unknown_source_rejections: std::collections::BTreeMap::new(),
@@ -2266,7 +2293,6 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
             1_200,
             &realized_vol_not_ready,
             BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
         )
         .expect("first pricing-blocked skip should record");
     strategy
@@ -2274,7 +2300,6 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
             1_201,
             &fee_unavailable,
             BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
         )
         .expect("distinct pricing blocker in same interval should record");
 
@@ -2326,7 +2351,6 @@ fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
             1_200,
             &spot_missing,
             BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
         )
         .expect("first spot-missing skip should record");
 
@@ -2336,7 +2360,6 @@ fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
             1_201,
             &spot_missing,
             BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
         )
         .expect("same blocker with price-only evidence changes should not error");
 
@@ -2355,7 +2378,6 @@ fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
             1_202,
             &spot_missing,
             BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
         )
         .expect("same blocker with a liveness-state transition should record");
 
@@ -2448,7 +2470,6 @@ fn entry_skip_dedupe_does_not_record_every_reference_tick_while_blocked() {
                 received_ts_ms,
                 &spot_missing,
                 BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
             )
             .expect("blocked entry skip should record or dedupe without error");
     }
@@ -2700,6 +2721,7 @@ fn minimal_entry_evaluation() -> EntryEvaluation {
                 unknown_source_rejections: BTreeMap::new(),
                 blockers: Vec::new(),
                 config_fingerprint: String::new(),
+                ..RealizedVolatilityEvidenceFields::default()
             },
         },
         pricing_blocked_by: vec![],
@@ -3086,30 +3108,41 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
         return;
     }
 
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        Arc::new(FailingDecisionEvidenceWriter),
-    );
+    let mut strategy = rv_clock_domain_amendment_dedupe_strategy_with_writer(Arc::new(
+        FailingDecisionEvidenceWriter,
+    ));
     let strategy_id = unique_log_capture_strategy_id("entry");
     strategy.config.strategy_id = strategy_id.clone();
 
     let decision = minimal_entry_submission_decision();
-    let result = with_captured_error_log(
-        "binary_oracle_edge_taker entry skip evidence write failed",
-        &strategy_id,
-        || {
-            strategy.record_entry_skip_once(
-                1_000,
-                &decision,
-                BoltV3EntrySkipReasonCategory::NoSideSelected,
-                None,
-            )
-        },
-    );
+    let (result, logs) = with_captured_strategy_logs(&strategy_id, || {
+        strategy.record_entry_skip_once(
+            1_000,
+            &decision,
+            BoltV3EntrySkipReasonCategory::NoSideSelected,
+        )
+    });
 
     assert!(
         result.is_ok(),
         "an entry-skip evidence write failure must not abort the strategy callback: {result:?}"
+    );
+    assert!(
+        result.is_ok_and(|attempted| attempted),
+        "the ready fixture must reach the failing writer: {logs:?}"
+    );
+    let matching = logs
+        .iter()
+        .filter(|(level, message)| {
+            *level == log::Level::Error
+                && message.contains(
+                    "binary_oracle_edge_taker entry skip evidence attempt failed and remains suppressed",
+                )
+        })
+        .count();
+    assert_eq!(
+        matching, 1,
+        "writer failure must log exactly once: {logs:?}"
     );
     assert!(
         strategy
@@ -3607,6 +3640,7 @@ fn rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(
     snapshot.ready = true;
     snapshot.blocked_reasons =
         crate::bolt_v3_realized_volatility::RealizedVolBlockReason::ALL.to_vec();
+    snapshot.registered_source_ids = vec![TEST_SOURCE_ID.to_string()];
     snapshot.source_diagnostics = vec![
         crate::bolt_v3_realized_volatility::RealizedVolSourceDiagnostic {
             source_id: TEST_SOURCE_ID.to_string(),
@@ -4488,6 +4522,12 @@ fn rv_clock_domain_amendment_blocked_mask(events: &[RecordedDecisionEvidenceEven
 fn rv_clock_domain_amendment_dedupe_strategy(
     evidence: Arc<RecordingSequencedDecisionEvidenceWriter>,
 ) -> BinaryOracleEdgeTaker {
+    rv_clock_domain_amendment_dedupe_strategy_with_writer(evidence)
+}
+
+fn rv_clock_domain_amendment_dedupe_strategy_with_writer(
+    evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+) -> BinaryOracleEdgeTaker {
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -4543,7 +4583,6 @@ fn entry_skip_semantic_state_ignores_rv_diagnostic_churn() {
                 1_200 + index as u64,
                 &decision,
                 BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
             )
             .expect("entry skip recording should remain non-aborting");
     }
@@ -4552,15 +4591,15 @@ fn entry_skip_semantic_state_ignores_rv_diagnostic_churn() {
     let mask = rv_clock_domain_amendment_entry_mask(&events);
     assert_eq!(
         mask.count_ones(),
-        1,
-        "RV diagnostics must not multiply one entry-skip semantic state"
+        12,
+        "each registered RV gate/watermark state must emit once"
     );
     assert_eq!(
         events
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        1
+        12
     );
 }
 
@@ -4598,9 +4637,11 @@ fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits(
 
 #[test]
 fn evidence_episode_a_b_a_preserves_previously_seen_state() {
-    const EXPECTED_ENTRY_STATES: [(BoltV3RvGateResult, bool); 2] = [
+    const EXPECTED_ENTRY_STATES: [(BoltV3RvGateResult, bool); 4] = [
         (BoltV3RvGateResult::Accepted, true),
+        (BoltV3RvGateResult::RejectedStale, true),
         (BoltV3RvGateResult::Accepted, true),
+        (BoltV3RvGateResult::RejectedStale, true),
     ];
     const EXPECTED_BLOCKED_STATES: [(BoltV3RvGateResult, bool); 4] = [
         (BoltV3RvGateResult::Accepted, true),
@@ -4632,7 +4673,7 @@ fn evidence_episode_a_b_a_preserves_previously_seen_state() {
         for (gate, watermark) in rv_states {
             rv_clock_domain_amendment_apply_state(&mut entry, gate, watermark);
             entry_strategy
-                .record_entry_skip_once(now_ms, &entry, category, None)
+                .record_entry_skip_once(now_ms, &entry, category)
                 .expect("entry novelty should remain non-aborting");
             now_ms += 1;
         }
@@ -4706,7 +4747,6 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
                 1_200 + index as u64,
                 &entry,
                 BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
             )
             .unwrap();
         blocked_strategy
@@ -4730,7 +4770,6 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
                 1_300 + index,
                 &entry,
                 BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
             )
             .unwrap();
         blocked_strategy
@@ -4742,7 +4781,7 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
     let blocked_events = blocked_evidence.events();
     assert_eq!(
         rv_clock_domain_amendment_entry_mask(&entry_events).count_ones(),
-        1
+        12
     );
     assert_eq!(
         rv_clock_domain_amendment_blocked_mask(&blocked_events).count_ones(),
@@ -4753,8 +4792,8 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        1,
-        "diagnostic churn must remain bounded to one entry semantic state"
+        12,
+        "100+ repeats and A-B-A oscillations must remain bounded to twelve entry semantic states"
     );
     assert_eq!(
         blocked_events
@@ -4838,13 +4877,27 @@ impl RvClockDomainBlockedKeyField {
         Self::UnknownSourceIds,
     ];
 
-    const fn changes_episode(self) -> bool {
+    const fn changes_complete_key(self) -> bool {
         matches!(
             self,
             Self::ConfiguredTargetAndMarketSelectionRulesetIds
+                | Self::MarketSelectionOutcome
                 | Self::MarketId
                 | Self::UpInstrumentId
                 | Self::DownInstrumentId
+                | Self::GateBlockedBy
+                | Self::PricingBlockedBy
+                | Self::SelectedSide
+                | Self::FastVenueAvailable
+                | Self::ReferenceCurrentPriceAvailable
+                | Self::ReferenceCurrentPriceFailedOver
+                | Self::FastVenueIncoherent
+                | Self::RealizedVolatilityBlockers
+                | Self::SourceEnabled
+                | Self::SourceCountsTowardQuorum
+                | Self::SourceStatus
+                | Self::SourceBlockReason
+                | Self::SourceLastRejectedReason
         )
     }
 
@@ -4976,6 +5029,18 @@ impl RvClockDomainBlockedKeyField {
                 if changed {
                     blockers.push("source_stale".to_string());
                 }
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .semantic_blockers = if changed {
+                    vec![
+                        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::QuorumNotReady,
+                        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SourceStale,
+                    ]
+                } else {
+                    vec![crate::bolt_v3_realized_volatility::RealizedVolBlockReason::QuorumNotReady]
+                };
             }
             Self::SourceId => {
                 decision
@@ -4992,6 +5057,12 @@ impl RvClockDomainBlockedKeyField {
                     .evidence
                     .source_diagnostics[0]
                     .enabled = !changed;
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .semantic_source_states[0]
+                    .enabled = !changed;
             }
             Self::SourceCountsTowardQuorum => {
                 decision
@@ -4999,6 +5070,12 @@ impl RvClockDomainBlockedKeyField {
                     .realized_volatility_receipt
                     .evidence
                     .source_diagnostics[0]
+                    .counts_toward_quorum = !changed;
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .semantic_source_states[0]
                     .counts_toward_quorum = !changed;
             }
             Self::SourceStatus => {
@@ -5008,6 +5085,16 @@ impl RvClockDomainBlockedKeyField {
                     .evidence
                     .source_diagnostics[0]
                     .status = if changed { "ready" } else { "blocked" }.to_string();
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .semantic_source_states[0]
+                    .status = if changed {
+                    crate::bolt_v3_realized_volatility::RealizedVolSourceStatus::Ready
+                } else {
+                    crate::bolt_v3_realized_volatility::RealizedVolSourceStatus::Blocked
+                };
             }
             Self::SourceBlockReason => {
                 decision
@@ -5023,6 +5110,16 @@ impl RvClockDomainBlockedKeyField {
                     }
                     .to_string(),
                 );
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .semantic_source_states[0]
+                    .block_reason = Some(if changed {
+                    crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SourceStale
+                } else {
+                    crate::bolt_v3_realized_volatility::RealizedVolBlockReason::QuorumNotReady
+                });
             }
             Self::SourceLastRejectedReason => {
                 decision
@@ -5031,6 +5128,14 @@ impl RvClockDomainBlockedKeyField {
                     .evidence
                     .source_diagnostics[0]
                     .last_rejected_reason = changed.then(|| "out_of_order".to_string());
+                decision
+                    .evaluation
+                    .realized_volatility_receipt
+                    .evidence
+                    .semantic_source_states[0]
+                    .last_rejected_reason = changed.then_some(
+                    crate::bolt_v3_realized_volatility::RealizedVolSourceRejectReason::EventTimeRegression,
+                );
             }
             Self::UnknownSourceIds => {
                 let rejections = &mut decision
@@ -5048,12 +5153,19 @@ impl RvClockDomainBlockedKeyField {
     }
 }
 
-fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
+fn rv_clock_domain_amendment_assert_blocked_key_field_projection(
     field: RvClockDomainBlockedKeyField,
 ) {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy, 1_200, Some(1_200));
+    let mut snapshot = strategy
+        .pricing
+        .latest_realized_vol_snapshot_for_surface(TEST_SURFACE_ID)
+        .expect("RV fixture must contain the installed snapshot")
+        .clone();
+    snapshot.unknown_source_rejections.clear();
+    strategy.pricing.observe_realized_vol_snapshot(snapshot);
     let mut decision = rv_clock_domain_amendment_blocked_decision();
     decision.evaluation.realized_volatility_receipt.evidence =
         strategy.realized_volatility_evidence_fields();
@@ -5066,17 +5178,17 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
     field.set_changed(&mut strategy, &mut decision, false);
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_200, &decision)
-        .unwrap();
+        .unwrap_or_else(|error| panic!("{field:?} baseline failed: {error:#}"));
     field.set_changed(&mut strategy, &mut decision, true);
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_201, &decision)
-        .unwrap();
+        .unwrap_or_else(|error| panic!("{field:?} changed state failed: {error:#}"));
     field.set_changed(&mut strategy, &mut decision, false);
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_202, &decision)
-        .unwrap();
+        .unwrap_or_else(|error| panic!("{field:?} restored state failed: {error:#}"));
 
-    let expected_records = if field.changes_episode() { 2 } else { 1 };
+    let expected_records = if field.changes_complete_key() { 2 } else { 1 };
     assert_eq!(
         evidence.strategy_input_attempts(),
         expected_records,
@@ -5132,7 +5244,7 @@ fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent()
 }
 
 #[test]
-fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
+fn rv_clock_domain_amendment_complete_key_changes_emit_once() {
     let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
@@ -5143,7 +5255,7 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
     );
     let baseline_category = BoltV3EntrySkipReasonCategory::EntryPricingBlocked;
     entry_strategy
-        .record_entry_skip_once(1_200, &entry, baseline_category, None)
+        .record_entry_skip_once(1_200, &entry, baseline_category)
         .unwrap();
 
     let mut next_ms = 1_201_u64;
@@ -5153,7 +5265,7 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
         let now_ms = next_ms;
         next_ms += 1;
         strategy
-            .record_entry_skip_once(now_ms, decision, category, None)
+            .record_entry_skip_once(now_ms, decision, category)
             .unwrap();
     };
 
@@ -5227,12 +5339,12 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
             .iter()
             .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
             .count(),
-        2,
-        "only the two entry-skip semantic categories may emit; volatile field churn must not reset them"
+        8,
+        "distinct category, blocker, episode, and liveness states emit once; interval-open churn and A-B-A returns remain suppressed"
     );
 
     for field in RvClockDomainBlockedKeyField::ALL {
-        rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(field);
+        rv_clock_domain_amendment_assert_blocked_key_field_projection(field);
     }
     rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent();
 }
@@ -5248,16 +5360,15 @@ fn admitted_and_unblocked_transitions_do_not_reset_episode_novelty() {
         Some(LocalReceiveMs::new(1_200)),
     );
     entry_strategy
+        .pricing
+        .observe_reference_current_price(&fast_spot("chainlink", 3_100.5, 1_200));
+    entry_strategy
         .record_entry_skip_once(
             1_200,
             &skip,
             BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
         )
         .unwrap();
-    entry_strategy
-        .pricing
-        .observe_reference_current_price(&fast_spot("chainlink", 3_100.5, 1_200));
     let admitted = entry_strategy.entry_submission_decision_at(1_200);
     assert!(
         admitted.instrument_id.is_some(),
@@ -5269,7 +5380,6 @@ fn admitted_and_unblocked_transitions_do_not_reset_episode_novelty() {
             1_201,
             &skip,
             BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
         )
         .unwrap();
     assert_eq!(
@@ -5306,19 +5416,58 @@ fn admitted_and_unblocked_transitions_do_not_reset_episode_novelty() {
 }
 
 #[test]
-fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        Arc::new(FailingDecisionEvidenceWriter),
-    );
+fn same_market_interval_window_churn_does_not_mint_a_new_evidence_episode() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     let decision = minimal_entry_submission_decision();
+
+    strategy
+        .record_entry_skip_once(
+            1_200,
+            &decision,
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+        )
+        .unwrap();
+    strategy.active.interval_start_ms = strategy
+        .active
+        .interval_start_ms
+        .map(|value| value + 300_000);
+    strategy.active.interval_end_ms = strategy.active.interval_end_ms.map(|value| value + 300_000);
+    strategy
+        .record_entry_skip_once(
+            1_201,
+            &decision,
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+        )
+        .unwrap();
+
+    assert_eq!(
+        evidence
+            .events()
+            .iter()
+            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
+            .count(),
+        1,
+        "timestamps and interval windows are volatile payload context, not stable episode identity"
+    );
+}
+
+#[test]
+fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
+    let mut strategy = rv_clock_domain_amendment_dedupe_strategy_with_writer(Arc::new(
+        FailingDecisionEvidenceWriter,
+    ));
+    let mut decision = minimal_entry_submission_decision();
+    decision
+        .evaluation
+        .pricing_blocked_by
+        .push(EntryPricingBlockReason::SpotPriceMissing);
     assert!(
         strategy
             .record_entry_skip_once(
                 1_200,
                 &decision,
                 BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
             )
             .expect("entry writer errors are swallowed")
     );
@@ -5328,7 +5477,6 @@ fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
                 1_201,
                 &decision,
                 BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
             )
             .expect("seen entry state should remain suppressed after the swallowed error"),
         "entry-skip failure must preserve mark-before-swallowed-error behavior"
@@ -5356,7 +5504,7 @@ fn blocked_snapshot_writer_failure_stays_claimed() {
     );
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_201, &b)
-        .expect_err("B's configured writer attempt must fail");
+        .expect("writer failure is retained and reported as a completed telemetry attempt");
 
     strategy.active.market_id = original_market_id.clone();
     strategy
@@ -5412,7 +5560,7 @@ fn blocked_snapshot_failed_new_state_does_not_retry() {
     );
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_201, &decision)
-        .expect_err("the new bit's configured writer attempt must fail");
+        .expect("writer failure is retained and reported as a completed telemetry attempt");
 
     rv_clock_domain_amendment_apply_state(
         &mut decision,
@@ -5455,5 +5603,32 @@ fn blocked_snapshot_failed_new_state_does_not_retry() {
         recorded_states,
         vec![(Some(BoltV3RvGateResult::Accepted), Some(1_200))],
         "the failed state must not produce a retry storm"
+    );
+}
+
+#[test]
+fn blocked_snapshot_unknown_semantic_source_fails_closed_once_per_episode() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
+    let mut decision = rv_clock_domain_amendment_blocked_decision();
+    decision
+        .evaluation
+        .realized_volatility_receipt
+        .evidence
+        .unknown_semantic_source_ids = vec!["unregistered-source".to_string()];
+
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_200, &decision)
+        .expect("an unknown semantic source must fail closed without aborting admission");
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_201, &decision)
+        .expect("the same invalid episode must remain bounded");
+
+    assert_eq!(evidence.strategy_input_attempts(), 0);
+    assert_eq!(
+        strategy
+            .blocked_strategy_input_novelty
+            .rejected_semantic_key_episode_count(),
+        1
     );
 }

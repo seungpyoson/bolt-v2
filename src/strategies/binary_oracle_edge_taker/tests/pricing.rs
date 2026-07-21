@@ -1923,7 +1923,7 @@ fn entry_submission_blocks_legacy_limit_base_entry_shape_before_liability_sizing
 
     assert_eq!(
         decision.blocked_reason,
-        Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
+        Some(BoltV3EntrySkipReasonCategory::EntryPricingBlocked)
     );
     assert_eq!(
         decision.evaluation.pricing_blocked_by,
@@ -2330,6 +2330,7 @@ fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatili
                 crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
             ready: true,
             sources_used: vec!["<SOURCE_ID_A>".to_string()],
+            registered_source_ids: Vec::new(),
             source_diagnostics: Vec::new(),
             horizon_estimates: Vec::new(),
             unknown_source_rejections: std::collections::BTreeMap::new(),

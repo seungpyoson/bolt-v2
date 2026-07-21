@@ -260,6 +260,9 @@ pub struct RealizedVolSnapshot {
     pub pricing_component: RealizedVolPricingComponent,
     pub ready: bool,
     pub sources_used: Vec<String>,
+    /// Closed source roster from the runtime TOML registration that produced
+    /// this snapshot. Semantic evidence must cover this roster exactly once.
+    pub registered_source_ids: Vec<String>,
     pub source_diagnostics: Vec<RealizedVolSourceDiagnostic>,
     pub horizon_estimates: Vec<RealizedVolHorizonEstimate>,
     pub unknown_source_rejections: BTreeMap<String, u64>,
@@ -316,6 +319,7 @@ impl RealizedVolSnapshot {
             pricing_component: RealizedVolPricingComponent::Measured,
             ready: false,
             sources_used: Vec::new(),
+            registered_source_ids: Vec::new(),
             source_diagnostics: Vec::new(),
             horizon_estimates: Vec::new(),
             unknown_source_rejections: BTreeMap::new(),
@@ -363,7 +367,7 @@ pub struct RealizedVolSourceDiagnostic {
     pub block_reason: Option<RealizedVolBlockReason>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RealizedVolSourceStatus {
     Ready,
     Blocked,
@@ -608,6 +612,7 @@ impl RealizedVolEngine {
             } else {
                 Vec::new()
             },
+            registered_source_ids: self.sources.keys().cloned().collect(),
             source_diagnostics: diagnostics,
             horizon_estimates: Vec::new(),
             unknown_source_rejections: self.unknown_source_rejections.clone(),

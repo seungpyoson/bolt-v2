@@ -5375,13 +5375,13 @@ mod tests {
     fn ensure_issue_789_account_state_scope(
         account_states: &[(u64, AccountState)],
         lifecycle_account_id: AccountId,
-        first_fill_seq: u64,
+        first_submit_seq: u64,
     ) -> Result<()> {
         ensure!(
             account_states.iter().all(|(seq, state)| {
-                state.account_id == lifecycle_account_id || *seq < first_fill_seq
+                state.account_id == lifecycle_account_id || *seq < first_submit_seq
             }),
-            "#789 event store contains unrelated AccountState evidence after execution began"
+            "#789 event store contains unrelated AccountState evidence outside the pre-submission initialization prefix"
         );
         Ok(())
     }
@@ -5437,13 +5437,21 @@ mod tests {
     }
 
     #[test]
-    fn issue_789_rejects_unrelated_account_state_after_execution_begins() {
+    fn issue_789_account_scope_limits_unrelated_state_to_initialization_prefix() {
         let lifecycle_account = AccountId::from("POLYMARKET-001");
         let mut unrelated = test_issue_789_account_state_with_cash("100.00000000 USDC");
         unrelated.account_id = AccountId::from("OTHER-001");
-        let error = ensure_issue_789_account_state_scope(&[(11, unrelated)], lifecycle_account, 10)
-            .expect_err("post-fill account evidence must belong to the routed lifecycle account");
-        assert!(error.to_string().contains("unrelated AccountState"));
+        ensure_issue_789_account_state_scope(&[(9, unrelated.clone())], lifecycle_account, 10)
+            .expect("unrelated node-initialization state may precede the first submission");
+        for seq in [10, 11] {
+            let error = ensure_issue_789_account_state_scope(
+                &[(seq, unrelated.clone())],
+                lifecycle_account,
+                10,
+            )
+            .expect_err("unrelated account evidence at or after submission must fail closed");
+            assert!(error.to_string().contains("unrelated AccountState"));
+        }
     }
 
     #[test]
@@ -6414,10 +6422,15 @@ mod tests {
             .to_nt_venue_config()
             .context("map issue #789 manifest venue configuration")?
             .base_currency();
+        let first_submit_seq = submit_orders
+            .values()
+            .map(|(seq, _, _)| *seq)
+            .min()
+            .context("#789 lifecycle contains no normal SubmitOrder evidence")?;
         ensure_issue_789_account_state_scope(
             &account_states,
             lifecycle_account_id,
-            fill_sequences[0],
+            first_submit_seq,
         )?;
         let raw_lifecycle_account_states = account_states
             .iter()

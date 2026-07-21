@@ -1007,6 +1007,7 @@ pub struct OrderTerminalRecord {
     pub status: OrderStatus,
     pub quantity: Quantity,
     pub filled_qty: Quantity,
+    pub leaves_qty: Quantity,
     pub initialized_quantity: Quantity,
     pub initialized_quote_quantity: bool,
     pub effective_quantity: Quantity,
@@ -1036,10 +1037,20 @@ pub struct NtBacktestNodeRun {
     pub config_override_report: Option<BacktestConfigOverrideReport>,
     pub run_guard_report: Option<BacktestRunGuardReport>,
     pub positions: Vec<Position>,
+    pub configured_execution_account_id: AccountId,
     pub account_terminals: Vec<AccountTerminalRecord>,
     pub resolved_config_hash: Option<String>,
     pub resolved_config_bytes: Option<Vec<u8>>,
     pub execution_contract_report: Option<crate::execution_contract::ExecutionContractReport>,
+}
+
+fn require_pre_run_configured_account(
+    account_id: Option<AccountId>,
+    venue: Venue,
+) -> Result<AccountId> {
+    account_id.with_context(|| {
+        format!("built backtest engine has no configured execution account for {venue}")
+    })
 }
 
 fn reconstructed_reference_current_price_data(
@@ -1254,6 +1265,24 @@ where
             .add_data(instrument_settlement_data, None, false, true)
             .context("add instrument settlement close events")?;
     }
+    let configured_execution_account_id = {
+        let engine = node
+            .get_engine(&manifest.run_id)
+            .with_context(|| format!("no engine for run id {} before run", manifest.run_id))?;
+        let venue = Venue::from(manifest.venue.nt_venue.as_str());
+        let exec_engine = engine.kernel().exec_engine.borrow();
+        let matching_account_ids = exec_engine
+            .get_all_clients()
+            .into_iter()
+            .filter(|client| client.venue() == venue)
+            .map(|client| client.account_id())
+            .collect::<Vec<_>>();
+        ensure!(
+            matching_account_ids.len() <= 1,
+            "built backtest engine has multiple configured execution accounts for {venue}"
+        );
+        require_pre_run_configured_account(matching_account_ids.first().copied(), venue)?
+    };
     let capture = {
         let engine = node
             .get_engine(&manifest.run_id)
@@ -1314,6 +1343,7 @@ where
             config_override_report: added_strategy.config_override_report,
             run_guard_report,
             positions,
+            configured_execution_account_id,
             account_terminals,
             resolved_config_hash: added_strategy.resolved_config_hash,
             resolved_config_bytes: added_strategy.resolved_config_bytes,
@@ -1405,6 +1435,7 @@ fn capture_order_terminals(engine: &BacktestEngine) -> Result<Vec<OrderTerminalR
                 status: order.status(),
                 quantity: order.quantity(),
                 filled_qty: order.filled_qty(),
+                leaves_qty: order.leaves_qty(),
                 initialized_quantity: initialized.quantity,
                 initialized_quote_quantity: initialized.quote_quantity,
                 effective_quantity: order.quantity(),
@@ -2436,13 +2467,13 @@ mod tests {
     use anyhow::{Context, Result, ensure};
     use nautilus_core::{Params, UUID4, UnixNanos};
     use nautilus_model::{
-        data::{InstrumentClose, TradeTick},
+        data::{BookOrder, InstrumentClose, OrderBookDelta, TradeTick},
         enums::{
-            AccountType, AggressorSide, AssetClass, InstrumentCloseType, OrderSide, OrderStatus,
-            OrderType,
+            AccountType, AggressorSide, AssetClass, BookAction, InstrumentCloseType, OrderSide,
+            OrderStatus, OrderType, PositionSide,
         },
         events::AccountState,
-        identifiers::{AccountId, InstrumentId, Symbol, TradeId},
+        identifiers::{AccountId, InstrumentId, PositionId, Symbol, TradeId, Venue},
         instruments::{BinaryOption, Instrument, InstrumentAny},
         types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
     };
@@ -2454,11 +2485,12 @@ mod tests {
 
     use super::{
         BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, BoltV3DecisionEvidenceWriter,
-        OrderTerminalRecord, StrategyPreparationConfig, apply_backtest_config_override,
+        OrderTerminalRecord, Position, StrategyPreparationConfig, apply_backtest_config_override,
         assert_read_back_matches, canonical_resolved_taker_config_bytes,
         ensure_settlement_currency_funded, expected_iterations, iterations_mismatch,
         load_bolt_v3_config, prepare_strategy_client_routes, raw_taker_config,
-        replay_executable_book_at_cursor, resolve_existing_input_path, run_nt_backtest_node,
+        replay_executable_book_at_cursor, require_pre_run_configured_account,
+        resolve_existing_input_path, run_nt_backtest_node,
         run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
         time_window_excludes_all_data,
     };
@@ -2491,6 +2523,14 @@ mod tests {
         SeededL2QuoteAction, SeededL2QuoteMappingConfig, SeededL2QuoteProvenance,
         normalize_seeded_l2_events, parse_seeded_l2_jsonl, seeded_l2_quote_transform_hash,
     };
+
+    type TerminalOrderMutation = Box<dyn Fn(&mut OrderTerminalRecord)>;
+    type SettlementWitnessMutation = Box<
+        dyn Fn(
+            &mut nautilus_model::events::OrderInitialized,
+            &mut nautilus_model::events::OrderAccepted,
+        ),
+    >;
     use crate::source_proof::{SourceProofFidelityClass, SourceProofUsageScope};
 
     const TEST_INSTRUMENT: &str = "BTCUSDT.BYBIT";
@@ -3462,6 +3502,21 @@ mod tests {
             instrument_settlements,
         })?;
 
+        ensure_issue_789_venue_shape(&manifest.venue)?;
+        let expected_binary_settlements = ensure_issue_789_binary_settlement_domain(
+            &manifest.instrument_settlements,
+            &up_projection.instrument,
+            &down_projection.instrument,
+        )?;
+        validate_issue_789_book_domain(
+            &up_projection.instrument,
+            &up_projection.order_book_deltas,
+        )?;
+        validate_issue_789_book_domain(
+            &down_projection.instrument,
+            &down_projection.order_book_deltas,
+        )?;
+
         let output = run_nt_backtest_node_with_execution_contract(&manifest, |output, evidence| {
             evidence.ensure_issue_789_causal_surface(&manifest)?;
             validate_issue_789_execution_contract(
@@ -3470,6 +3525,7 @@ mod tests {
                 &manifest,
                 &up_projection,
                 &down_projection,
+                &expected_binary_settlements,
             )
         })
         .context("run issue #789 first real free-data taker P/L slice")?;
@@ -3569,12 +3625,18 @@ mod tests {
                 .map_err(anyhow::Error::msg)
                 .context("#789 terminal filled quantity is not representable")?;
         ensure!(
+            expected_filled_quantity == expected_effective_quantity,
+            "terminal order {} is not fully filled",
+            initialized.client_order_id
+        );
+        ensure!(
             terminal.client_order_id == initialized.client_order_id.to_string()
                 && terminal.order_side == initialized.order_side
                 && terminal.order_type == initialized.order_type
                 && terminal.status == OrderStatus::Filled
                 && terminal.quantity == expected_effective_quantity
                 && terminal.filled_qty == expected_filled_quantity
+                && terminal.leaves_qty.is_zero()
                 && terminal.initialized_quantity == initialized.quantity
                 && terminal.initialized_quote_quantity == initialized.quote_quantity
                 && terminal.effective_quantity == expected_effective_quantity
@@ -3631,6 +3693,7 @@ mod tests {
 
     fn issue_789_submitted_order_trace(
         command: &nautilus_common::messages::execution::SubmitOrder,
+        submitted: &nautilus_model::events::OrderSubmitted,
     ) -> Result<crate::execution_contract::SubmittedOrderTrace> {
         let initialized = &command.order_init;
         ensure!(
@@ -3641,8 +3704,66 @@ mod tests {
                 && command.exec_algorithm_id == initialized.exec_algorithm_id,
             "#789 SubmitOrder envelope diverges from its embedded initialized-order semantics"
         );
-        Ok(crate::execution_contract::SubmittedOrderTrace::from(
-            initialized,
+        ensure!(
+            submitted.trader_id == initialized.trader_id
+                && submitted.strategy_id == initialized.strategy_id
+                && submitted.instrument_id == initialized.instrument_id
+                && submitted.client_order_id == initialized.client_order_id,
+            "#789 OrderSubmitted diverges from its causal SubmitOrder"
+        );
+        Ok(crate::execution_contract::SubmittedOrderTrace {
+            trader_id: initialized.trader_id,
+            strategy_id: initialized.strategy_id,
+            instrument_id: initialized.instrument_id,
+            client_order_id: initialized.client_order_id,
+            account_id: submitted.account_id,
+            order_side: initialized.order_side,
+            order_type: initialized.order_type,
+            quantity: initialized.quantity,
+            quote_quantity: initialized.quote_quantity,
+            post_only: initialized.post_only,
+            reconciliation: initialized.reconciliation,
+        })
+    }
+
+    fn issue_789_bind_normal_submission(
+        submit_seq: u64,
+        command: &nautilus_common::messages::execution::SubmitOrder,
+        initialized: Option<&(u64, nautilus_model::events::OrderInitialized)>,
+        submitted: Option<&(u64, nautilus_model::events::OrderSubmitted)>,
+        accepted: Option<&(u64, nautilus_model::events::OrderAccepted)>,
+        first_fill_seq: u64,
+    ) -> Result<(u64, crate::execution_contract::SubmittedOrderTrace)> {
+        let (initialized_seq, initialized) = initialized.with_context(|| {
+            format!(
+                "#789 normal order {} lacks OrderInitialized evidence",
+                command.client_order_id
+            )
+        })?;
+        let (submitted_seq, submitted) = submitted.with_context(|| {
+            format!(
+                "#789 normal order {} lacks OrderSubmitted evidence",
+                command.client_order_id
+            )
+        })?;
+        ensure!(
+            *initialized_seq < submit_seq
+                && submit_seq < *submitted_seq
+                && *submitted_seq < first_fill_seq,
+            "#789 normal order is outside its Initialized-to-SubmitOrder-to-Submitted-to-fill causal order"
+        );
+        ensure!(
+            initialized == &command.order_init,
+            "#789 OrderInitialized evidence diverges from its embedded SubmitOrder"
+        );
+        ensure!(
+            accepted.is_none(),
+            "#789 normal order {} has unexpected OrderAccepted evidence",
+            command.client_order_id
+        );
+        Ok((
+            *submitted_seq,
+            issue_789_submitted_order_trace(command, submitted)?,
         ))
     }
 
@@ -3657,9 +3778,193 @@ mod tests {
                     submit_seq < *update_seq && *update_seq < first_fill_seq,
                     "#789 OrderUpdated is outside its SubmitOrder-to-fill causal interval"
                 );
-                Ok(update.clone())
+                Ok(*update)
             })
             .transpose()
+    }
+
+    fn record_issue_789_order_update(
+        updates: &mut BTreeMap<String, (u64, nautilus_model::events::OrderUpdated)>,
+        seq: u64,
+        event: nautilus_model::events::OrderUpdated,
+    ) -> Result<()> {
+        ensure!(
+            updates
+                .insert(event.client_order_id.to_string(), (seq, event))
+                .is_none(),
+            "duplicate OrderUpdated client-order identity in #789 event store"
+        );
+        Ok(())
+    }
+
+    fn validate_issue_789_book_domain(
+        instrument: &InstrumentAny,
+        deltas: &[OrderBookDelta],
+    ) -> Result<()> {
+        let instrument_id = instrument.id();
+        let price_increment = instrument.price_increment().as_decimal();
+        let size_increment = instrument.size_increment().as_decimal();
+        for (index, delta) in deltas.iter().enumerate() {
+            ensure!(
+                delta.instrument_id == instrument_id,
+                "#789 book delta {index} instrument {} diverges from {instrument_id}",
+                delta.instrument_id
+            );
+            if delta.action == BookAction::Clear {
+                continue;
+            }
+
+            let price = delta.order.price;
+            ensure!(
+                price.as_decimal() > Decimal::ZERO
+                    && price.precision == instrument.price_precision()
+                    && (price.as_decimal() % price_increment).is_zero(),
+                "#789 book delta {index} price {price} violates instrument precision/increment"
+            );
+            if let Some(min_price) = instrument.min_price() {
+                ensure!(
+                    price >= min_price,
+                    "#789 book delta {index} price {price} is below instrument minimum {min_price}"
+                );
+            }
+            if let Some(max_price) = instrument.max_price() {
+                ensure!(
+                    price <= max_price,
+                    "#789 book delta {index} price {price} exceeds instrument maximum {max_price}"
+                );
+            }
+
+            let size = delta.order.size;
+            ensure!(
+                size.precision == instrument.size_precision()
+                    && (size.as_decimal() % size_increment).is_zero(),
+                "#789 book delta {index} size {size} violates instrument precision/increment"
+            );
+            if matches!(delta.action, BookAction::Add | BookAction::Update) {
+                ensure!(
+                    size.as_decimal() > Decimal::ZERO,
+                    "#789 book delta {index} executable size must be positive"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_issue_789_venue_shape(venue: &ManifestVenueConfig) -> Result<()> {
+        ensure!(
+            venue.oms_type == "NETTING"
+                && venue.account_type == "CASH"
+                && venue.book_type == "L2_MBP"
+                && venue.liquidity_consumption
+                && venue.fill_model.is_none()
+                && venue.latency_model.is_none()
+                && venue.fee_model.is_none(),
+            "#789 lifecycle evidence is restricted to NETTING/CASH, L2 liquidity consumption, and deterministic default fill/latency/fee models"
+        );
+        Ok(())
+    }
+
+    fn ensure_issue_789_binary_settlement_domain(
+        settlements: &[ManifestInstrumentSettlementInput],
+        up_instrument: &InstrumentAny,
+        down_instrument: &InstrumentAny,
+    ) -> Result<BTreeMap<InstrumentId, Price>> {
+        ensure!(
+            matches!(up_instrument, InstrumentAny::BinaryOption(_))
+                && matches!(down_instrument, InstrumentAny::BinaryOption(_)),
+            "#789 settlement projections must both be binary options"
+        );
+        let expected_ids = [up_instrument.id(), down_instrument.id()]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            expected_ids.len() == 2,
+            "#789 settlement projections must identify two distinct binary legs"
+        );
+        let mut bound = BTreeMap::new();
+        let mut payoffs = BTreeSet::new();
+        for settlement in settlements {
+            let instrument_id = InstrumentId::from_str(&settlement.nt_instrument_id)
+                .map_err(|error| anyhow::anyhow!(error))
+                .context("parse #789 binary settlement instrument")?;
+            ensure!(
+                expected_ids.contains(&instrument_id),
+                "#789 settlement instrument {instrument_id} is not one of the two projected binary legs"
+            );
+            let payoff = Decimal::from_str(&settlement.close_price)
+                .context("parse #789 binary settlement payoff")?;
+            ensure!(
+                payoff == Decimal::ZERO || payoff == Decimal::ONE,
+                "#789 binary settlement payoff must be exactly 0 or 1"
+            );
+            let price = Price::from_str(&settlement.close_price)
+                .map_err(|error| anyhow::anyhow!(error))
+                .context("parse #789 binary settlement price")?;
+            ensure!(
+                price.precision == settlement.price_precision,
+                "#789 binary settlement price precision diverges from its declaration"
+            );
+            ensure!(
+                bound.insert(instrument_id, price).is_none(),
+                "#789 binary settlement contains a duplicate projected leg"
+            );
+            payoffs.insert(payoff);
+        }
+        ensure!(
+            bound.keys().copied().collect::<BTreeSet<_>>() == expected_ids,
+            "#789 binary settlement must exactly cover both projected legs"
+        );
+        ensure!(
+            payoffs == BTreeSet::from([Decimal::ZERO, Decimal::ONE]),
+            "#789 paired binary settlements must contain complementary 0 and 1 payoffs"
+        );
+        Ok(bound)
+    }
+
+    fn issue_789_terminal_position<'a>(
+        positions: &'a [Position],
+        instrument_id: InstrumentId,
+    ) -> Result<&'a Position> {
+        ensure!(
+            positions.len() == 1 && positions[0].instrument_id == instrument_id,
+            "issue #789 requires exactly one terminal position for {instrument_id}, got {} total",
+            positions.len()
+        );
+        let position = &positions[0];
+        ensure!(
+            position.is_closed()
+                && position.side == PositionSide::Flat
+                && position.quantity.is_zero()
+                && position.signed_decimal_qty().is_zero(),
+            "issue #789 terminal position must be closed, flat, and zero quantity"
+        );
+        Ok(position)
+    }
+
+    fn ensure_issue_789_payload_type_is_admitted(payload_type: &str) -> Result<()> {
+        ensure!(
+            matches!(
+                payload_type,
+                "RunStarted"
+                    | "RunEnded"
+                    | "SubscribeCommand"
+                    | "UnsubscribeCommand"
+                    | "TimeEvent"
+                    | "SubmitOrder"
+                    | "OrderInitialized"
+                    | "OrderSubmitted"
+                    | "OrderAccepted"
+                    | "OrderUpdated"
+                    | "OrderFilled"
+                    | "InstrumentClose"
+                    | "AccountState"
+                    | "PositionOpened"
+                    | "PositionChanged"
+                    | "PositionClosed"
+            ),
+            "#789 event store contains unsupported payload type {payload_type:?}"
+        );
+        Ok(())
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -3730,6 +4035,24 @@ mod tests {
                 && !initialized.post_only
                 && !initialized.quote_quantity
                 && !initialized.reconciliation
+                && initialized.price.is_none()
+                && initialized.activation_price.is_none()
+                && initialized.trigger_price.is_none()
+                && initialized.trigger_type == Some(nautilus_model::enums::TriggerType::NoTrigger)
+                && initialized.limit_offset.is_none()
+                && initialized.trailing_offset.is_none()
+                && initialized.trailing_offset_type.is_none()
+                && initialized.expire_time.is_none()
+                && initialized.display_qty.is_none()
+                && initialized.emulation_trigger.is_none()
+                && initialized.trigger_instrument_id.is_none()
+                && initialized.contingency_type.is_none()
+                && initialized.order_list_id.is_none()
+                && initialized.linked_order_ids.is_none()
+                && initialized.parent_order_id.is_none()
+                && initialized.exec_algorithm_id.is_none()
+                && initialized.exec_algorithm_params.is_none()
+                && initialized.exec_spawn_id.is_none()
                 && initialized
                     .tags
                     .as_ref()
@@ -3785,12 +4108,28 @@ mod tests {
         )
     }
 
+    fn test_issue_789_order_submitted(
+        command: &nautilus_common::messages::execution::SubmitOrder,
+    ) -> nautilus_model::events::OrderSubmitted {
+        nautilus_model::events::OrderSubmitted::new(
+            command.trader_id,
+            command.strategy_id,
+            command.instrument_id,
+            command.client_order_id,
+            AccountId::from("POLYMARKET-001"),
+            UUID4::new(),
+            UnixNanos::default(),
+            UnixNanos::default(),
+        )
+    }
+
     #[test]
     fn issue_789_rejects_submit_envelope_identity_drift() {
         let mut command = test_issue_789_submit_order();
+        let submitted = test_issue_789_order_submitted(&command);
         command.strategy_id = nautilus_model::identifiers::StrategyId::from("OTHER-001");
 
-        let error = issue_789_submitted_order_trace(&command)
+        let error = issue_789_submitted_order_trace(&command, &submitted)
             .expect_err("SubmitOrder envelope drift must fail closed");
         assert!(error.to_string().contains("envelope diverges"));
     }
@@ -3798,11 +4137,173 @@ mod tests {
     #[test]
     fn issue_789_rejects_embedded_submit_identity_drift() {
         let mut command = test_issue_789_submit_order();
+        let submitted = test_issue_789_order_submitted(&command);
         command.order_init.instrument_id = InstrumentId::from("OTHER.POLYMARKET");
 
-        let error = issue_789_submitted_order_trace(&command)
+        let error = issue_789_submitted_order_trace(&command, &submitted)
             .expect_err("embedded initialized-order drift must fail closed");
         assert!(error.to_string().contains("envelope diverges"));
+    }
+
+    #[test]
+    fn issue_789_normal_submission_binding_rejects_missing_and_reordered_evidence() {
+        let command = test_issue_789_submit_order();
+        let submitted = test_issue_789_order_submitted(&command);
+        let initialized = command.order_init.clone();
+
+        let missing_initialized =
+            issue_789_bind_normal_submission(10, &command, None, Some(&(15, submitted)), None, 20)
+                .expect_err("a normal order requires OrderInitialized evidence");
+        assert!(
+            missing_initialized
+                .to_string()
+                .contains("lacks OrderInitialized")
+        );
+
+        let missing_submitted = issue_789_bind_normal_submission(
+            10,
+            &command,
+            Some(&(5, initialized.clone())),
+            None,
+            None,
+            20,
+        )
+        .expect_err("a normal order requires OrderSubmitted evidence");
+        assert!(
+            missing_submitted
+                .to_string()
+                .contains("lacks OrderSubmitted")
+        );
+
+        let reordered_initialized = issue_789_bind_normal_submission(
+            10,
+            &command,
+            Some(&(10, initialized.clone())),
+            Some(&(15, submitted)),
+            None,
+            20,
+        )
+        .expect_err("OrderInitialized must precede SubmitOrder");
+        assert!(reordered_initialized.to_string().contains("causal order"));
+
+        for submitted_seq in [10, 20] {
+            let error = issue_789_bind_normal_submission(
+                10,
+                &command,
+                Some(&(5, initialized.clone())),
+                Some(&(submitted_seq, submitted)),
+                None,
+                20,
+            )
+            .expect_err("OrderSubmitted must remain inside its causal interval");
+            assert!(error.to_string().contains("causal order"));
+        }
+    }
+
+    fn ensure_issue_789_order_event_sets(
+        normal_order_ids: &BTreeSet<String>,
+        settlement_order_ids: &BTreeSet<String>,
+        submit_command_ids: &BTreeSet<String>,
+        submitted_event_ids: &BTreeSet<String>,
+        accepted_event_ids: &BTreeSet<String>,
+        initialized_event_ids: &BTreeSet<String>,
+        updated_event_ids: &BTreeSet<String>,
+    ) -> Result<()> {
+        let all_order_ids = normal_order_ids
+            .union(settlement_order_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            submit_command_ids == normal_order_ids && submitted_event_ids == normal_order_ids,
+            "#789 normal SubmitOrder, OrderSubmitted, and fill identities are not complete in both directions"
+        );
+        ensure!(
+            accepted_event_ids == settlement_order_ids,
+            "#789 OrderAccepted evidence does not exactly identify the synthetic settlement"
+        );
+        ensure!(
+            initialized_event_ids == &all_order_ids,
+            "#789 OrderInitialized evidence is missing or unrelated to the frozen lifecycle"
+        );
+        ensure!(
+            updated_event_ids.is_subset(normal_order_ids),
+            "#789 OrderUpdated evidence is not bound to a normal submitted order"
+        );
+        Ok(())
+    }
+
+    fn ensure_issue_789_instrument_close_set(
+        closes: &[(u64, InstrumentClose)],
+        expected: &BTreeMap<InstrumentId, Price>,
+    ) -> Result<()> {
+        ensure!(
+            closes.len() == expected.len()
+                && closes.iter().all(|(_, close)| {
+                    close.close_type == InstrumentCloseType::ContractExpired
+                        && expected.get(&close.instrument_id) == Some(&close.close_price)
+                })
+                && closes
+                    .iter()
+                    .map(|(_, close)| close.instrument_id)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == closes.len(),
+            "#789 InstrumentClose evidence does not exactly match configured binary settlements"
+        );
+        Ok(())
+    }
+
+    fn group_issue_789_fills(
+        sequenced_fills: Vec<(u64, nautilus_model::events::OrderFilled)>,
+    ) -> Result<Vec<(String, u64, Vec<nautilus_model::events::OrderFilled>)>> {
+        let mut grouped = Vec::<(String, u64, Vec<nautilus_model::events::OrderFilled>)>::new();
+        for (seq, fill) in sequenced_fills {
+            let client_order_id = fill.client_order_id.to_string();
+            match grouped.last_mut() {
+                Some((current_id, _, fills)) if *current_id == client_order_id => fills.push(fill),
+                Some((_, _, _)) => {
+                    ensure!(
+                        !grouped
+                            .iter()
+                            .any(|(existing, _, _)| *existing == client_order_id),
+                        "#789 event store contains a non-contiguous order fill sequence"
+                    );
+                    grouped.push((client_order_id, seq, vec![fill]));
+                }
+                None => grouped.push((client_order_id, seq, vec![fill])),
+            }
+        }
+        Ok(grouped)
+    }
+
+    #[test]
+    fn issue_789_normal_submission_binding_rejects_identity_drift_and_acceptance() {
+        let command = test_issue_789_submit_order();
+        let mut submitted = test_issue_789_order_submitted(&command);
+        submitted.strategy_id = nautilus_model::identifiers::StrategyId::from("OTHER-001");
+        let drift = issue_789_bind_normal_submission(
+            10,
+            &command,
+            Some(&(5, command.order_init.clone())),
+            Some(&(15, submitted)),
+            None,
+            20,
+        )
+        .expect_err("OrderSubmitted identity drift must fail closed");
+        assert!(drift.to_string().contains("OrderSubmitted diverges"));
+
+        let submitted = test_issue_789_order_submitted(&command);
+        let accepted = nautilus_model::events::order::spec::OrderAcceptedSpec::builder().build();
+        let unexpected = issue_789_bind_normal_submission(
+            10,
+            &command,
+            Some(&(5, command.order_init.clone())),
+            Some(&(15, submitted)),
+            Some(&(16, accepted)),
+            20,
+        )
+        .expect_err("market-order acknowledgements are outside the frozen #789 shape");
+        assert!(unexpected.to_string().contains("unexpected OrderAccepted"));
     }
 
     #[test]
@@ -3822,6 +4323,352 @@ mod tests {
             .expect("quote conversion inside the causal interval must bind")
             .expect("quote conversion must be retained");
         assert_eq!(bound.event_id, update.event_id);
+    }
+
+    #[test]
+    fn issue_789_rejects_duplicate_quote_conversion_witnesses() {
+        let first = nautilus_model::events::order::spec::OrderUpdatedSpec::builder().build();
+        let mut second = first;
+        second.event_id = UUID4::new();
+        let mut updates = BTreeMap::new();
+        record_issue_789_order_update(&mut updates, 10, first)
+            .expect("first quote-conversion witness must be recorded");
+        let error = record_issue_789_order_update(&mut updates, 11, second)
+            .expect_err("a second witness for one order must fail closed");
+        assert!(error.to_string().contains("duplicate OrderUpdated"));
+    }
+
+    fn issue_789_admission_delta(
+        instrument_id: InstrumentId,
+        action: BookAction,
+        price: &str,
+        size: &str,
+    ) -> OrderBookDelta {
+        OrderBookDelta {
+            instrument_id,
+            action,
+            order: BookOrder::new(OrderSide::Buy, Price::from(price), Quantity::from(size), 1),
+            flags: 0,
+            sequence: 0,
+            ts_event: UnixNanos::from(1),
+            ts_init: UnixNanos::from(1),
+        }
+    }
+
+    fn issue_789_admission_instrument() -> InstrumentAny {
+        let mut instrument = nautilus_model::instruments::stubs::binary_option();
+        instrument.min_price = Some(Price::from("0.001"));
+        instrument.max_price = Some(Price::from("0.999"));
+        InstrumentAny::BinaryOption(instrument)
+    }
+
+    #[test]
+    fn issue_789_static_admission_rejects_invalid_executable_book_values() {
+        let instrument = issue_789_admission_instrument();
+        let instrument_id = instrument.id();
+        let mutations = [
+            (
+                "zero price",
+                issue_789_admission_delta(instrument_id, BookAction::Add, "0.000", "1.00"),
+            ),
+            (
+                "out-of-range price",
+                issue_789_admission_delta(instrument_id, BookAction::Add, "1.500", "1.00"),
+            ),
+            (
+                "price precision",
+                issue_789_admission_delta(instrument_id, BookAction::Add, "0.4210", "1.00"),
+            ),
+            (
+                "size precision",
+                issue_789_admission_delta(instrument_id, BookAction::Add, "0.421", "0.001"),
+            ),
+        ];
+        for (label, delta) in mutations {
+            assert!(
+                validate_issue_789_book_domain(&instrument, std::slice::from_ref(&delta)).is_err(),
+                "{label} must fail before NT runs"
+            );
+        }
+    }
+
+    #[test]
+    fn issue_789_static_admission_accepts_structural_clear_and_zero_size_delete() {
+        let instrument = issue_789_admission_instrument();
+        let instrument_id = instrument.id();
+        let deltas = [
+            OrderBookDelta::clear(instrument_id, 0, UnixNanos::from(1), UnixNanos::from(1)),
+            issue_789_admission_delta(instrument_id, BookAction::Delete, "0.421", "0.00"),
+        ];
+        validate_issue_789_book_domain(&instrument, &deltas)
+            .expect("structural clear and zero-size delete must remain admissible");
+    }
+
+    #[test]
+    fn issue_789_binary_settlement_requires_payoff_endpoints() {
+        let settlement = |close_price: &str| ManifestInstrumentSettlementInput {
+            nt_instrument_id: "YES.POLYMARKET".to_string(),
+            close_price: close_price.to_string(),
+            price_precision: 3,
+            ts_event_ns: 1,
+            ts_init_ns: 1,
+            settlement_currency: "pUSD".to_string(),
+        };
+
+        let mut yes = nautilus_model::instruments::stubs::binary_option();
+        yes.id = InstrumentId::from("YES.POLYMARKET");
+        let mut no = yes.clone();
+        no.id = InstrumentId::from("NO.POLYMARKET");
+        let yes = InstrumentAny::BinaryOption(yes);
+        let no = InstrumentAny::BinaryOption(no);
+
+        ensure_issue_789_binary_settlement_domain(
+            &[settlement("0.000"), {
+                let mut row = settlement("1.000");
+                row.nt_instrument_id = "NO.POLYMARKET".to_string();
+                row
+            }],
+            &yes,
+            &no,
+        )
+        .expect("binary settlement endpoints must be admitted");
+        ensure_issue_789_binary_settlement_domain(&[settlement("0.500")], &yes, &no)
+            .expect_err("a fractional binary payoff must fail closed");
+
+        for invalid in [
+            vec![settlement("0.000")],
+            vec![settlement("0.000"), settlement("1.000")],
+            vec![settlement("0.000"), {
+                let mut row = settlement("1.000");
+                row.nt_instrument_id = "OTHER.POLYMARKET".to_string();
+                row
+            }],
+            vec![settlement("1.000"), {
+                let mut row = settlement("1.000");
+                row.nt_instrument_id = "NO.POLYMARKET".to_string();
+                row
+            }],
+        ] {
+            ensure_issue_789_binary_settlement_domain(&invalid, &yes, &no)
+                .expect_err("missing, duplicate, unrelated, or non-complementary legs must fail");
+        }
+    }
+
+    #[test]
+    fn issue_789_terminal_position_requires_complete_closed_flat_projection() {
+        let instrument = issue_789_admission_instrument();
+        let instrument_id = instrument.id();
+        let mut fill = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
+        fill.instrument_id = instrument_id;
+        fill.position_id = Some(PositionId::from("P-789"));
+        let mut closed = Position::new(&instrument, fill);
+        closed.side = PositionSide::Flat;
+        closed.quantity = Quantity::zero(instrument.size_precision());
+        closed.signed_qty = 0.0;
+        closed.ts_closed = Some(UnixNanos::from(2));
+
+        issue_789_terminal_position(std::slice::from_ref(&closed), instrument_id)
+            .expect("one closed flat terminal position must be admitted");
+
+        let mut nonflat = closed.clone();
+        nonflat.side = PositionSide::Long;
+        nonflat.quantity = Quantity::from("1.00");
+        nonflat.signed_qty = 1.0;
+        nonflat.ts_closed = None;
+        issue_789_terminal_position(&[nonflat], instrument_id)
+            .expect_err("a nonflat terminal position must fail closed");
+
+        let mut unrelated = closed.clone();
+        unrelated.instrument_id = InstrumentId::from("OTHER.POLYMARKET");
+        issue_789_terminal_position(&[closed, unrelated], instrument_id)
+            .expect_err("an extra terminal position must fail closed");
+    }
+
+    #[test]
+    fn issue_789_static_admission_rejects_correct_precision_wrong_increment() {
+        let mut instrument = nautilus_model::instruments::stubs::binary_option();
+        instrument.price_increment = Price::from("0.002");
+        instrument.size_increment = Quantity::from("0.02");
+        instrument.min_price = Some(Price::from("0.001"));
+        instrument.max_price = Some(Price::from("0.999"));
+        let instrument = InstrumentAny::BinaryOption(instrument);
+        let instrument_id = instrument.id();
+
+        for delta in [
+            issue_789_admission_delta(instrument_id, BookAction::Add, "0.421", "1.00"),
+            issue_789_admission_delta(instrument_id, BookAction::Add, "0.420", "1.01"),
+        ] {
+            validate_issue_789_book_domain(&instrument, &[delta])
+                .expect_err("correct precision with wrong increment must fail before NT runs");
+        }
+    }
+
+    #[test]
+    fn issue_789_static_admission_rejects_unsupported_run_shape() {
+        let mut venue = issue_789_venue("POLYMARKET", "pUSD", "L2_MBP", true, true);
+        ensure_issue_789_venue_shape(&venue).expect("declared #789 venue shape must be admitted");
+
+        venue.oms_type = "HEDGING".to_string();
+        let error = ensure_issue_789_venue_shape(&venue)
+            .expect_err("unsupported run shape must fail before NT runs");
+        assert!(error.to_string().contains("restricted to NETTING/CASH"));
+    }
+
+    #[test]
+    fn issue_789_requires_configured_execution_account_before_run() {
+        let venue = Venue::from("POLYMARKET");
+        let account_id = AccountId::from("POLYMARKET-001");
+        assert_eq!(
+            require_pre_run_configured_account(Some(account_id), venue)
+                .expect("configured account must be retained"),
+            account_id
+        );
+        require_pre_run_configured_account(None, venue)
+            .expect_err("missing configured account must fail before BacktestNode::run");
+    }
+
+    #[test]
+    fn issue_789_closed_intake_rejects_unknown_payload_type() {
+        let error = ensure_issue_789_payload_type_is_admitted("OrderRejected")
+            .expect_err("out-of-scope lifecycle payload must fail closed");
+        assert!(error.to_string().contains("unsupported payload type"));
+    }
+
+    #[test]
+    fn issue_789_closed_intake_admits_store_lifecycle_envelopes() {
+        for payload_type in [
+            "RunStarted",
+            "RunEnded",
+            "SubscribeCommand",
+            "UnsubscribeCommand",
+            "TimeEvent",
+        ] {
+            ensure_issue_789_payload_type_is_admitted(payload_type)
+                .expect("store lifecycle envelope must be admitted for integrity validation");
+        }
+    }
+
+    #[test]
+    fn issue_789_order_event_sets_reject_missing_and_unexplained_evidence() {
+        let normal = BTreeSet::from(["ENTRY".to_string(), "EXIT".to_string()]);
+        let settlement = BTreeSet::from(["SETTLEMENT".to_string()]);
+        let all = BTreeSet::from([
+            "ENTRY".to_string(),
+            "EXIT".to_string(),
+            "SETTLEMENT".to_string(),
+        ]);
+        let accepted = settlement.clone();
+        let updated = BTreeSet::from(["ENTRY".to_string()]);
+        ensure_issue_789_order_event_sets(
+            &normal,
+            &settlement,
+            &normal,
+            &normal,
+            &accepted,
+            &all,
+            &updated,
+        )
+        .expect("complete frozen order grammar must pass");
+
+        let cases = [
+            (
+                BTreeSet::from(["ENTRY".to_string()]),
+                normal.clone(),
+                accepted.clone(),
+                all.clone(),
+                updated.clone(),
+            ),
+            (
+                normal.clone(),
+                BTreeSet::from(["ENTRY".to_string()]),
+                accepted.clone(),
+                all.clone(),
+                updated.clone(),
+            ),
+            (
+                normal.clone(),
+                normal.clone(),
+                BTreeSet::from(["OTHER".to_string()]),
+                all.clone(),
+                updated.clone(),
+            ),
+            (
+                normal.clone(),
+                normal.clone(),
+                accepted.clone(),
+                BTreeSet::from(["ENTRY".to_string(), "EXIT".to_string()]),
+                updated.clone(),
+            ),
+            (
+                normal.clone(),
+                normal.clone(),
+                accepted,
+                all,
+                BTreeSet::from(["OTHER".to_string()]),
+            ),
+        ];
+        for (submits, submitted, accepted, initialized, updated) in cases {
+            ensure_issue_789_order_event_sets(
+                &normal,
+                &settlement,
+                &submits,
+                &submitted,
+                &accepted,
+                &initialized,
+                &updated,
+            )
+            .expect_err("missing or unexplained order evidence must fail closed");
+        }
+    }
+
+    #[test]
+    fn issue_789_instrument_close_set_binds_both_binary_legs() {
+        let first_id = InstrumentId::from("YES.POLYMARKET");
+        let second_id = InstrumentId::from("NO.POLYMARKET");
+        let expected = BTreeMap::from([
+            (first_id, Price::from("1.000")),
+            (second_id, Price::from("0.000")),
+        ]);
+        let closes = vec![
+            (
+                10,
+                InstrumentClose::new(
+                    first_id,
+                    Price::from("1.000"),
+                    InstrumentCloseType::ContractExpired,
+                    UnixNanos::from(10),
+                    UnixNanos::from(10),
+                ),
+            ),
+            (
+                11,
+                InstrumentClose::new(
+                    second_id,
+                    Price::from("0.000"),
+                    InstrumentCloseType::ContractExpired,
+                    UnixNanos::from(11),
+                    UnixNanos::from(11),
+                ),
+            ),
+        ];
+        ensure_issue_789_instrument_close_set(&closes, &expected)
+            .expect("both configured binary close receipts must be assigned");
+
+        ensure_issue_789_instrument_close_set(&closes[..1], &expected)
+            .expect_err("a missing paired-market close receipt must fail closed");
+    }
+
+    #[test]
+    fn issue_789_rejects_non_contiguous_fill_groups() {
+        let mut first = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
+        first.client_order_id = nautilus_model::identifiers::ClientOrderId::from("ORDER-A");
+        let mut second = first.clone();
+        second.client_order_id = nautilus_model::identifiers::ClientOrderId::from("ORDER-B");
+        let third = first.clone();
+
+        let error = group_issue_789_fills(vec![(1, first), (2, second), (3, third)])
+            .expect_err("an order's fills must form one contiguous causal group");
+        assert!(error.to_string().contains("non-contiguous"));
     }
 
     fn test_issue_789_terminal_order() -> (
@@ -3847,6 +4694,7 @@ mod tests {
             status: OrderStatus::Filled,
             quantity: fill.last_qty,
             filled_qty: fill.last_qty,
+            leaves_qty: Quantity::zero(fill.last_qty.precision),
             initialized_quantity: initialized.quantity,
             initialized_quote_quantity: initialized.quote_quantity,
             effective_quantity: fill.last_qty,
@@ -3871,15 +4719,23 @@ mod tests {
     #[test]
     fn issue_789_terminal_order_rejects_metadata_and_quantity_drift() {
         let (terminal, initialized, fills) = test_issue_789_terminal_order();
-        let mutations: Vec<Box<dyn Fn(&mut OrderTerminalRecord)>> = vec![
+        let mutations: Vec<TerminalOrderMutation> = vec![
+            Box::new(|terminal| terminal.client_order_id = "OTHER-001".to_string()),
             Box::new(|terminal| terminal.order_side = OrderSide::Sell),
             Box::new(|terminal| terminal.order_type = OrderType::Limit),
             Box::new(|terminal| terminal.status = OrderStatus::Canceled),
             Box::new(|terminal| terminal.quantity = Quantity::from("2.00")),
             Box::new(|terminal| terminal.filled_qty = Quantity::from("2.00")),
+            Box::new(|terminal| terminal.leaves_qty = Quantity::from("1.00")),
             Box::new(|terminal| terminal.initialized_quantity = Quantity::from("2.00")),
             Box::new(|terminal| terminal.initialized_quote_quantity = true),
             Box::new(|terminal| terminal.effective_quantity = Quantity::from("2.00")),
+            Box::new(|terminal| {
+                terminal.fills.clear();
+            }),
+            Box::new(|terminal| {
+                terminal.fills[0].last_px = Price::from("0.990");
+            }),
         ];
         for mutate in mutations {
             let mut candidate = terminal.clone();
@@ -3895,6 +4751,22 @@ mod tests {
     }
 
     #[test]
+    fn issue_789_terminal_order_rejects_filled_status_with_partial_quantity() {
+        let (mut terminal, initialized, fills) = test_issue_789_terminal_order();
+        terminal.quantity = Quantity::from("2.00");
+        terminal.effective_quantity = Quantity::from("2.00");
+
+        let error = ensure_issue_789_terminal_order_matches(
+            &terminal,
+            &initialized,
+            terminal.effective_quantity,
+            &fills,
+        )
+        .expect_err("Filled requires the complete effective quantity");
+        assert!(error.to_string().contains("fully filled"));
+    }
+
+    #[test]
     fn issue_789_rejects_orphan_normal_close_as_settlement() {
         let fill = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
         let close = InstrumentClose::new(
@@ -3904,9 +4776,10 @@ mod tests {
             UnixNanos::from(20),
             UnixNanos::from(20),
         );
+        let client_order_id = fill.client_order_id.to_string();
 
         let error = ensure_issue_789_settlement_witness(
-            &fill.client_order_id.to_string(),
+            &client_order_id,
             10,
             &[fill],
             20,
@@ -3918,6 +4791,99 @@ mod tests {
         .expect_err("a fill without synthetic expiration-order evidence is not settlement");
 
         assert!(error.to_string().contains("synthetic expiration"));
+    }
+
+    fn test_issue_789_settlement_witness() -> (
+        String,
+        nautilus_model::events::OrderFilled,
+        InstrumentClose,
+        nautilus_model::events::OrderInitialized,
+        nautilus_model::events::OrderAccepted,
+    ) {
+        let mut fill = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
+        let client_order_id = format!("EXPIRATION-{}-{}", fill.instrument_id.venue, UUID4::new());
+        fill.client_order_id =
+            nautilus_model::identifiers::ClientOrderId::from(client_order_id.as_str());
+        let mut initialized =
+            nautilus_model::events::order::spec::OrderInitializedSpec::builder().build();
+        initialized.trader_id = fill.trader_id;
+        initialized.strategy_id = fill.strategy_id;
+        initialized.instrument_id = fill.instrument_id;
+        initialized.client_order_id = fill.client_order_id;
+        initialized.order_side = fill.order_side;
+        initialized.order_type = OrderType::Market;
+        initialized.time_in_force = nautilus_model::enums::TimeInForce::Gtc;
+        initialized.quantity = fill.last_qty;
+        initialized.reduce_only = true;
+        initialized.post_only = false;
+        initialized.quote_quantity = false;
+        initialized.reconciliation = false;
+        initialized.trigger_type = Some(nautilus_model::enums::TriggerType::NoTrigger);
+        initialized.tags = Some(vec![ustr::Ustr::from(
+            format!("EXPIRATION_{}_CLOSE", fill.instrument_id.venue).as_str(),
+        )]);
+        let mut accepted =
+            nautilus_model::events::order::spec::OrderAcceptedSpec::builder().build();
+        accepted.trader_id = fill.trader_id;
+        accepted.strategy_id = fill.strategy_id;
+        accepted.instrument_id = fill.instrument_id;
+        accepted.client_order_id = fill.client_order_id;
+        accepted.venue_order_id = fill.venue_order_id;
+        accepted.account_id = fill.account_id;
+        accepted.reconciliation = false;
+        let close = InstrumentClose::new(
+            fill.instrument_id,
+            fill.last_px,
+            InstrumentCloseType::ContractExpired,
+            UnixNanos::from(20),
+            UnixNanos::from(20),
+        );
+        (client_order_id, fill, close, initialized, accepted)
+    }
+
+    #[test]
+    fn issue_789_accepts_the_pinned_synthetic_settlement_witness() {
+        let (client_order_id, fill, close, initialized, accepted) =
+            test_issue_789_settlement_witness();
+        ensure_issue_789_settlement_witness(
+            &client_order_id,
+            10,
+            &[fill],
+            20,
+            &close,
+            Some(&(5, initialized)),
+            None,
+            Some(&(8, accepted)),
+        )
+        .expect("pinned synthetic expiration evidence must be admitted");
+    }
+
+    #[test]
+    fn issue_789_rejects_settlement_origin_shape_and_account_drift() {
+        let mutations: Vec<SettlementWitnessMutation> = vec![
+            Box::new(|initialized, _| initialized.reduce_only = false),
+            Box::new(|initialized, _| initialized.tags = None),
+            Box::new(|initialized, _| initialized.quantity = Quantity::from("1.00")),
+            Box::new(|initialized, _| initialized.price = Some(Price::from("0.500"))),
+            Box::new(|_, accepted| accepted.account_id = AccountId::from("OTHER-001")),
+            Box::new(|_, accepted| accepted.reconciliation = true),
+        ];
+        for mutate in mutations {
+            let (client_order_id, fill, close, mut initialized, mut accepted) =
+                test_issue_789_settlement_witness();
+            mutate(&mut initialized, &mut accepted);
+            ensure_issue_789_settlement_witness(
+                &client_order_id,
+                10,
+                &[fill],
+                20,
+                &close,
+                Some(&(5, initialized)),
+                None,
+                Some(&(8, accepted)),
+            )
+            .expect_err("synthetic settlement witness drift must fail closed");
+        }
     }
 
     fn bind_issue_789_account_states<'a>(
@@ -4032,6 +4998,20 @@ mod tests {
         Ok(bound)
     }
 
+    fn ensure_issue_789_account_state_scope(
+        account_states: &[(u64, AccountState)],
+        lifecycle_account_id: AccountId,
+        first_fill_seq: u64,
+    ) -> Result<()> {
+        ensure!(
+            account_states.iter().all(|(seq, state)| {
+                state.account_id == lifecycle_account_id || *seq < first_fill_seq
+            }),
+            "#789 event store contains unrelated AccountState evidence after execution began"
+        );
+        Ok(())
+    }
+
     fn test_issue_789_account_state(balances: Vec<AccountBalance>) -> AccountState {
         AccountState::new(
             AccountId::from("POLYMARKET-001"),
@@ -4080,6 +5060,16 @@ mod tests {
 
         assert_eq!(bound.len(), 4);
         assert_eq!(bound[3].0, 32);
+    }
+
+    #[test]
+    fn issue_789_rejects_unrelated_account_state_after_execution_begins() {
+        let lifecycle_account = AccountId::from("POLYMARKET-001");
+        let mut unrelated = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        unrelated.account_id = AccountId::from("OTHER-001");
+        let error = ensure_issue_789_account_state_scope(&[(11, unrelated)], lifecycle_account, 10)
+            .expect_err("post-fill account evidence must belong to the routed lifecycle account");
+        assert!(error.to_string().contains("unrelated AccountState"));
     }
 
     #[test]
@@ -4530,17 +5520,8 @@ mod tests {
         manifest: &BacktestingRunManifest,
         up_projection: &crate::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
         down_projection: &crate::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
+        expected_binary_settlements: &BTreeMap<InstrumentId, Price>,
     ) -> Result<crate::execution_contract::ExecutionContractReport> {
-        ensure!(
-            manifest.venue.oms_type == "NETTING"
-                && manifest.venue.account_type == "CASH"
-                && manifest.venue.book_type == "L2_MBP"
-                && manifest.venue.liquidity_consumption
-                && manifest.venue.fill_model.is_none()
-                && manifest.venue.latency_model.is_none()
-                && manifest.venue.fee_model.is_none(),
-            "#789 lifecycle evidence is restricted to NETTING/CASH, L2 liquidity consumption, and deterministic default fill/latency/fee models"
-        );
         let mut submit_orders = BTreeMap::new();
         let mut order_initializations = BTreeMap::new();
         let mut order_submissions = BTreeMap::new();
@@ -4551,8 +5532,32 @@ mod tests {
         let mut position_effects = Vec::new();
         let mut account_states = Vec::new();
         let mut semantic_identities = Vec::new();
+        let unsupported_payload_types = evidence
+            .entries
+            .iter()
+            .map(|entry| entry.payload_type.as_str())
+            .filter(|payload_type| ensure_issue_789_payload_type_is_admitted(payload_type).is_err())
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            unsupported_payload_types.is_empty(),
+            "#789 event store contains unsupported payload types {unsupported_payload_types:?}"
+        );
+        let mut run_started_seq = None;
+        let mut run_ended_seq = None;
         for entry in &evidence.entries {
             match entry.payload_type.as_str() {
+                "RunStarted" => {
+                    ensure!(
+                        run_started_seq.replace(entry.seq).is_none(),
+                        "#789 event store contains duplicate RunStarted envelopes"
+                    );
+                }
+                "RunEnded" => {
+                    ensure!(
+                        run_ended_seq.replace(entry.seq).is_none(),
+                        "#789 event store contains duplicate RunEnded envelopes"
+                    );
+                }
                 "SubmitOrder" => {
                     let command: nautilus_common::messages::execution::SubmitOrder =
                         rmp_serde::from_slice(&entry.payload)
@@ -4629,12 +5634,7 @@ mod tests {
                         event.event_id,
                         "OrderUpdated",
                     )?;
-                    ensure!(
-                        order_updates
-                            .insert(event.client_order_id.to_string(), (entry.seq, event))
-                            .is_none(),
-                        "duplicate OrderUpdated client-order identity in #789 event store"
-                    );
+                    record_issue_789_order_update(&mut order_updates, entry.seq, event)?;
                 }
                 "OrderFilled" => {
                     let fill: nautilus_model::events::OrderFilled =
@@ -4739,9 +5739,24 @@ mod tests {
                 "PositionAdjusted" => {
                     anyhow::bail!("#789 does not admit position-adjustment evidence")
                 }
-                _ => {}
+                "SubscribeCommand" | "UnsubscribeCommand" | "TimeEvent" => {
+                    // Explicit control-plane waiver: these records drive data/time
+                    // delivery but carry no order, fill, position, or account claim.
+                    // Their bytes remain covered by the sealed-store verifier.
+                }
+                other => {
+                    ensure_issue_789_payload_type_is_admitted(other)?;
+                    anyhow::bail!(
+                        "#789 admitted payload type {other:?} lacks an explicit lifecycle handler"
+                    )
+                }
             }
         }
+        ensure!(
+            run_started_seq == evidence.entries.first().map(|entry| entry.seq)
+                && run_ended_seq == evidence.entries.last().map(|entry| entry.seq),
+            "#789 store lifecycle envelopes do not bound the complete sealed stream"
+        );
         ensure!(
             !sequenced_fills.is_empty(),
             "issue #789 event store contains no fills"
@@ -4765,24 +5780,7 @@ mod tests {
             anyhow::bail!("issue #789 fill instrument {instrument_id} has no PMXT projection")
         };
 
-        let mut grouped_fills =
-            Vec::<(String, u64, Vec<nautilus_model::events::OrderFilled>)>::new();
-        for (seq, fill) in sequenced_fills {
-            let client_order_id = fill.client_order_id.to_string();
-            match grouped_fills.last_mut() {
-                Some((current_id, _, fills)) if *current_id == client_order_id => fills.push(fill),
-                Some((_, _, _)) => {
-                    ensure!(
-                        !grouped_fills
-                            .iter()
-                            .any(|(existing, _, _)| *existing == client_order_id),
-                        "#789 event store contains a non-contiguous order fill sequence"
-                    );
-                    grouped_fills.push((client_order_id, seq, vec![fill]));
-                }
-                None => grouped_fills.push((client_order_id, seq, vec![fill])),
-            }
-        }
+        let grouped_fills = group_issue_789_fills(sequenced_fills)?;
 
         let mut orders = Vec::with_capacity(grouped_fills.len());
         let mut ordered_fills = Vec::new();
@@ -4797,6 +5795,14 @@ mod tests {
                         && submit.order_init.client_order_id.to_string() == client_order_id,
                     "#789 normal fill is not causally preceded by its matching SubmitOrder"
                 );
+                let (submitted_seq, submitted_order) = issue_789_bind_normal_submission(
+                    *submit_seq,
+                    submit,
+                    order_initializations.get(&client_order_id),
+                    order_submissions.get(&client_order_id),
+                    order_acceptances.get(&client_order_id),
+                    first_fill_seq,
+                )?;
                 let delta_count = evidence.book_delta_count_at(
                     *submit_seq,
                     *submit_ts_init,
@@ -4810,9 +5816,9 @@ mod tests {
                 )?;
                 crate::execution_contract::ExecutionOrderCause::Submitted {
                     executable_book: Box::new(executable_book),
-                    submitted_order: issue_789_submitted_order_trace(submit)?,
+                    submitted_order,
                     quote_conversion: issue_789_quote_conversion_in_interval(
-                        *submit_seq,
+                        submitted_seq,
                         first_fill_seq,
                         order_updates.get(&client_order_id),
                     )?
@@ -4872,20 +5878,34 @@ mod tests {
             })
             .map(|order| order.fills[0].client_order_id.to_string())
             .collect::<BTreeSet<_>>();
-        let submitted_ids = submit_orders
-            .values()
-            .filter(|(_, _, submit)| submit.instrument_id == instrument_id)
-            .map(|(_, _, submit)| submit.client_order_id.to_string())
+        let settlement_order_ids = orders
+            .iter()
+            .filter(|order| {
+                matches!(
+                    &order.cause,
+                    crate::execution_contract::ExecutionOrderCause::Settlement { .. }
+                )
+            })
+            .map(|order| order.fills[0].client_order_id.to_string())
+            .collect::<BTreeSet<_>>();
+        let submit_command_ids = submit_orders.keys().cloned().collect::<BTreeSet<_>>();
+        let submitted_event_ids = order_submissions.keys().cloned().collect::<BTreeSet<_>>();
+        let accepted_event_ids = order_acceptances.keys().cloned().collect::<BTreeSet<_>>();
+        let initialized_event_ids = order_initializations
+            .keys()
+            .cloned()
             .collect::<BTreeSet<_>>();
         let updated_ids = order_updates.keys().cloned().collect::<BTreeSet<_>>();
-        ensure!(
-            normal_order_ids == submitted_ids,
-            "#789 normal fills and submitted orders are not complete in both directions"
-        );
-        ensure!(
-            updated_ids.is_subset(&normal_order_ids),
-            "#789 OrderUpdated evidence is not bound to a normal submitted order"
-        );
+        ensure_issue_789_order_event_sets(
+            &normal_order_ids,
+            &settlement_order_ids,
+            &submit_command_ids,
+            &submitted_event_ids,
+            &accepted_event_ids,
+            &initialized_event_ids,
+            &updated_ids,
+        )?;
+        ensure_issue_789_instrument_close_set(&closes, expected_binary_settlements)?;
         ensure!(
             output.result.total_orders == orders.len()
                 && output.order_terminals.len() == orders.len(),
@@ -4896,22 +5916,27 @@ mod tests {
             "#789 lifecycle evidence is restricted to exactly one position"
         );
 
-        let positions: Vec<_> = output
-            .positions
+        let position = issue_789_terminal_position(&output.positions, instrument_id)?;
+        let configured_account_id = output.configured_execution_account_id;
+        let lifecycle_account_id = orders
             .iter()
-            .filter(|position| position.instrument_id == instrument_id)
-            .collect();
+            .find_map(|order| match &order.cause {
+                crate::execution_contract::ExecutionOrderCause::Submitted {
+                    submitted_order,
+                    ..
+                } => Some(submitted_order.account_id),
+                crate::execution_contract::ExecutionOrderCause::Settlement { .. } => None,
+            })
+            .context("#789 lifecycle has no submitted account anchor")?;
         ensure!(
-            positions.len() == 1,
-            "issue #789 requires exactly one position for {instrument_id}, got {}",
-            positions.len()
+            lifecycle_account_id == configured_account_id,
+            "submitted account anchor diverges from the pre-run configured account"
         );
-        let position = positions[0];
         ensure!(
-            position_effects
-                .iter()
-                .all(|(_, effect)| effect.position_id == position.id),
-            "terminal position identity diverges from event-store position mutations"
+            position_effects.iter().all(|(_, effect)| {
+                effect.position_id == position.id && effect.account_id == lifecycle_account_id
+            }) && position.account_id == lifecycle_account_id,
+            "terminal position identity/account diverges from submitted and event-store evidence"
         );
         ensure!(
             position.events.len() == ordered_fills.len()
@@ -4945,16 +5970,6 @@ mod tests {
                             format!("missing SubmitOrder projection {client_order_id}")
                         })?
                         .2;
-                    let captured_initialized = &order_initializations
-                        .get(&client_order_id)
-                        .with_context(|| {
-                            format!("missing OrderInitialized projection {client_order_id}")
-                        })?
-                        .1;
-                    ensure!(
-                        captured_initialized == &submit.order_init,
-                        "#789 OrderInitialized evidence diverges from its embedded SubmitOrder"
-                    );
                     let effective_quantity = quote_conversion
                         .as_ref()
                         .map_or(submitted_order.quantity, |update| update.quantity);
@@ -5015,6 +6030,11 @@ mod tests {
             .to_nt_venue_config()
             .context("map issue #789 manifest venue configuration")?
             .base_currency();
+        ensure_issue_789_account_state_scope(
+            &account_states,
+            lifecycle_account_id,
+            fill_sequences[0],
+        )?;
         let raw_lifecycle_account_states = account_states
             .iter()
             .filter(|(_, state)| state.account_id == position.account_id)
@@ -5087,6 +6107,7 @@ mod tests {
         let report = crate::execution_contract::validate_execution_contract(
             &crate::execution_contract::ExecutionContractTrace {
                 instrument: &projection.instrument,
+                configured_account_id,
                 orders,
                 position_effects: position_effects
                     .into_iter()

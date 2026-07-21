@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, bail, ensure};
 use nautilus_model::{
     enums::{LiquiditySide, OrderSide, OrderType, PositionSide},
-    events::{OrderFilled, OrderInitialized, OrderUpdated},
+    events::{OrderFilled, OrderUpdated},
     identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId},
     instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
@@ -29,29 +29,13 @@ pub struct SubmittedOrderTrace {
     pub strategy_id: StrategyId,
     pub instrument_id: InstrumentId,
     pub client_order_id: ClientOrderId,
+    pub account_id: AccountId,
     pub order_side: OrderSide,
     pub order_type: OrderType,
     pub quantity: Quantity,
     pub quote_quantity: bool,
     pub post_only: bool,
     pub reconciliation: bool,
-}
-
-impl From<&OrderInitialized> for SubmittedOrderTrace {
-    fn from(order: &OrderInitialized) -> Self {
-        Self {
-            trader_id: order.trader_id,
-            strategy_id: order.strategy_id,
-            instrument_id: order.instrument_id,
-            client_order_id: order.client_order_id,
-            order_side: order.order_side,
-            order_type: order.order_type,
-            quantity: order.quantity,
-            quote_quantity: order.quote_quantity,
-            post_only: order.post_only,
-            reconciliation: order.reconciliation,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -94,6 +78,7 @@ pub struct PositionEffectTrace {
 
 pub struct ExecutionContractTrace<'a> {
     pub instrument: &'a InstrumentAny,
+    pub configured_account_id: AccountId,
     pub orders: Vec<ExecutionOrderTrace>,
     pub position_effects: Vec<PositionEffectTrace>,
     pub initial_cash: Money,
@@ -147,6 +132,7 @@ pub fn validate_execution_contract(
     );
     let mut trade_ids = BTreeSet::new();
     let mut position_id = None;
+    let mut lifecycle_account_id = None;
     let mut exposure = Decimal::ZERO;
     let mut average_open = Decimal::ZERO;
     let mut derived_pnl = Decimal::ZERO;
@@ -167,6 +153,17 @@ pub fn validate_execution_contract(
                 submitted_order, ..
             } => {
                 ensure!(
+                    submitted_order.account_id == trace.configured_account_id,
+                    "normal order diverges from the configured account anchor"
+                );
+                ensure!(
+                    order
+                        .fills
+                        .iter()
+                        .all(|fill| fill.account_id == submitted_order.account_id),
+                    "normal fills diverge from the submitted account anchor"
+                );
+                ensure!(
                     submitted_order.instrument_id == trace.instrument.id()
                         && submitted_order.order_side != OrderSide::NoOrderSide
                         && submitted_order.order_type == OrderType::Market
@@ -182,18 +179,37 @@ pub fn validate_execution_contract(
                         }),
                     "normal fills diverge from submitted order semantics"
                 );
+                match lifecycle_account_id {
+                    Some(expected) => ensure!(
+                        expected == submitted_order.account_id,
+                        "normal order diverges from the submitted account anchor"
+                    ),
+                    None => lifecycle_account_id = Some(submitted_order.account_id),
+                }
                 submitted_order.order_side
             }
-            ExecutionOrderCause::Settlement { .. } => first_fill.order_side,
+            ExecutionOrderCause::Settlement { .. } => {
+                ensure!(
+                    lifecycle_account_id == Some(first_fill.account_id),
+                    "settlement fill diverges from the submitted account anchor"
+                );
+                first_fill.order_side
+            }
         };
         ensure!(side != OrderSide::NoOrderSide, "fill has no specified side");
         for fill in &order.fills {
             ensure!(
                 fill.instrument_id == trace.instrument.id()
+                    && fill.trader_id == first_fill.trader_id
+                    && fill.strategy_id == first_fill.strategy_id
                     && fill.order_type == OrderType::Market
                     && fill.liquidity_side == LiquiditySide::Taker
                     && fill.order_side == side
-                    && fill.client_order_id == first_fill.client_order_id,
+                    && fill.client_order_id == first_fill.client_order_id
+                    && fill.venue_order_id == first_fill.venue_order_id
+                    && fill.account_id == first_fill.account_id
+                    && fill.currency == trace.realized_pnl.currency
+                    && !fill.reconciliation,
                 "execution order fills must share one market-order identity"
             );
             ensure!(
@@ -261,10 +277,10 @@ pub fn validate_execution_contract(
                         update.venue_order_id
                     );
                     ensure!(
-                        update.account_id == Some(first_fill.account_id),
-                        "quote conversion witness account identity {:?} diverges from fill account {}",
+                        update.account_id == Some(submitted_order.account_id),
+                        "quote conversion witness account identity {:?} diverges from submitted account {}",
                         update.account_id,
-                        first_fill.account_id
+                        submitted_order.account_id
                     );
                     ensure!(
                         update.price.is_none(),
@@ -293,6 +309,11 @@ pub fn validate_execution_contract(
                 (false, None) => {}
             }
             let expected = independent_market_sweep(executable_book, side, requested_base)?;
+            let observed_quantity = order
+                .fills
+                .iter()
+                .map(|fill| fill.last_qty.as_decimal())
+                .sum::<Decimal>();
             ensure!(
                 expected.len() == order.fills.len()
                     && expected
@@ -303,6 +324,10 @@ pub fn validate_execution_contract(
                                 && *quantity == fill.last_qty.as_decimal()
                         }),
                 "observed normal-order fills do not equal the executable book at submission"
+            );
+            ensure!(
+                observed_quantity == requested_base.as_decimal(),
+                "normal-order fill quantity does not equal the effective submitted quantity"
             );
         }
 
@@ -635,6 +660,10 @@ fn independent_market_sweep(
             remaining -= quantity;
         }
     }
+    ensure!(
+        remaining.is_zero(),
+        "insufficient executable depth for the complete normal-order quantity"
+    );
     Ok(fills)
 }
 
@@ -651,6 +680,8 @@ mod tests {
         instruments::stubs,
         types::Currency,
     };
+
+    type OrderUpdatedMutation = Box<dyn Fn(&mut OrderUpdated)>;
 
     struct Fixture {
         instrument: InstrumentAny,
@@ -669,6 +700,7 @@ mod tests {
         fn trace(&self) -> ExecutionContractTrace<'_> {
             ExecutionContractTrace {
                 instrument: &self.instrument,
+                configured_account_id: AccountId::from("POLYMARKET-001"),
                 orders: self.orders.clone(),
                 position_effects: self.position_effects.clone(),
                 initial_cash: self.initial_cash,
@@ -855,6 +887,7 @@ mod tests {
             strategy_id: fill.strategy_id,
             instrument_id: fill.instrument_id,
             client_order_id: fill.client_order_id,
+            account_id: fill.account_id,
             order_side: fill.order_side,
             order_type: fill.order_type,
             quantity,
@@ -949,7 +982,7 @@ mod tests {
 
     #[test]
     fn rejects_quote_conversion_identity_drift() {
-        let mutations: Vec<Box<dyn Fn(&mut OrderUpdated)>> = vec![
+        let mutations: Vec<OrderUpdatedMutation> = vec![
             Box::new(|update| update.trader_id = TraderId::from("OTHER-001")),
             Box::new(|update| update.strategy_id = StrategyId::from("OTHER-001")),
             Box::new(|update| update.instrument_id = InstrumentId::from("OTHER.SIM")),
@@ -974,7 +1007,7 @@ mod tests {
 
     #[test]
     fn rejects_quote_conversion_metadata_drift() {
-        let mutations: Vec<Box<dyn Fn(&mut OrderUpdated)>> = vec![
+        let mutations: Vec<OrderUpdatedMutation> = vec![
             Box::new(|update| update.account_id = Some(AccountId::from("OTHER-001"))),
             Box::new(|update| update.price = Some(Price::from("0.421"))),
             Box::new(|update| update.trigger_price = Some(Price::from("0.421"))),
@@ -995,6 +1028,36 @@ mod tests {
             validate_execution_contract(&fixture.trace())
                 .expect_err("quote conversion metadata drift must fail closed");
         }
+    }
+
+    #[test]
+    fn rejects_correlated_account_drift_from_configured_authority() {
+        let mut fixture = fixture();
+        let wrong_account = AccountId::from("OTHER-001");
+        for order in &mut fixture.orders {
+            if let ExecutionOrderCause::Submitted {
+                submitted_order,
+                quote_conversion,
+                ..
+            } = &mut order.cause
+            {
+                submitted_order.account_id = wrong_account;
+                if let Some(update) = quote_conversion {
+                    update.account_id = Some(wrong_account);
+                }
+            }
+            for fill in &mut order.fills {
+                fill.account_id = wrong_account;
+            }
+        }
+        for effect in &mut fixture.position_effects {
+            effect.account_id = wrong_account;
+        }
+
+        let error = validate_execution_contract(&fixture.trace()).expect_err(
+            "correlated downstream drift must not override the configured account anchor",
+        );
+        assert!(error.to_string().contains("configured account"));
     }
 
     #[test]
@@ -1167,6 +1230,16 @@ mod tests {
         let error = validate_execution_contract(&fixture.trace())
             .expect_err("reconciliation submissions are outside the #789 lifecycle");
         assert!(error.to_string().contains("submitted order semantics"));
+    }
+
+    #[test]
+    fn rejects_reconciliation_fill() {
+        let mut fixture = fixture();
+        fixture.orders[0].fills[0].reconciliation = true;
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("reconciliation fills are outside the frozen #789 lifecycle");
+        assert!(error.to_string().contains("market-order identity"));
     }
 
     #[test]
@@ -1566,6 +1639,16 @@ mod tests {
         let error = validate_execution_contract(&fixture.trace())
             .expect_err("zero quote conversion price must fail with a typed error");
         assert!(error.to_string().contains("strictly positive"));
+    }
+
+    #[test]
+    fn rejects_insufficient_executable_depth_for_a_filled_normal_order() {
+        let fixture = fixture();
+        let book = one_level_book(fixture.instrument.id(), OrderSide::Sell, "0.420", "2.00", 1);
+
+        let error = independent_market_sweep(&book, OrderSide::Buy, Quantity::from("2.71"))
+            .expect_err("a fully filled normal order requires enough executable depth");
+        assert!(error.to_string().contains("insufficient executable depth"));
     }
 
     #[test]

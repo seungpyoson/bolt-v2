@@ -1,4 +1,33 @@
-# Issue #789 Event-Store Evidence Plan
+# Issue #789 Event-Store Evidence Completion Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
+> (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Prove the exact #789 entry -> reduction -> settlement lifecycle through a closed,
+causal evidence contract that cannot silently omit a captured claim.
+
+**Architecture:** Validate Bolt-owned static inputs before NT executes, verify NT's sealed logical
+event stream, assemble one explicitly closed lifecycle grammar, fold quantities and economics from
+independent authorities, then use terminal state only as a cross-check. The implementation retains
+NT's event store and marker registry; it does not add a Bolt ledger or second matcher.
+
+**Tech stack:** Rust 1.97, NautilusTrader at
+`d81be0bcc7a473c45d2dc8a8885638336073a218`, `nautilus-event-store`, MessagePack, Nextest.
+
+## Global constraints
+
+- One Polymarket binary instrument and one single-currency CASH/NETTING account.
+- Exactly one quote-denominated market entry, one base-denominated market reduction leaving a
+  residual, and one synthetic settlement closing that residual.
+- L2 MBP with liquidity consumption, zero latency, no fill model, and no fee model.
+- Classification comes from signed position effect, never timestamps or `reduce_only`.
+- No Bolt ledger, second matcher, terminal-cache authority, compatibility path, #788 work, or #1447
+  reversal.
+- Every admitted claim is bound or explicitly waived; every other captured payload fails closed.
+- Tests verify behavior, never source structure.
+
+---
 
 ## Decision
 
@@ -108,6 +137,169 @@ Derived by the independent validator:
 
 The validator must not call `OrderBook::simulate_fills`, `Position::apply`, or use terminal caches as
 the lifecycle source of truth.
+
+## Frozen completion contract
+
+### Validation phases
+
+1. **Static admission:** Before `BacktestNode::run`, validate the resolved #789 run shape, selected
+   BinaryOption constraints, settlement payoff, and every catalog book row that NT may execute.
+   This is domain validation only: it does not choose fills or emulate matching. Tradable book
+   prices use the instrument's precision, increment, and optional min/max; settlement remains the
+   separately configured binary payoff and may legitimately be `0` or `1`.
+2. **Integrity:** Open NT's event store and markers before the run, then seal and verify both before
+   decoding any payload.
+3. **Closed causal assembly:** Admit only the payload grammar below. Every admitted payload must be
+   assigned to exactly one lifecycle record; an unknown, orphaned, duplicate, or unexplained entry
+   is a typed failure.
+4. **Independent fold:** Reconstruct each submit-cursor book, normalize quote quantity, require a
+   fully satisfied minimal sweep, and fold exposure, commissions, realized P&L, and cash.
+5. **Terminal cross-check:** Compare the successful fold with complete live order, position,
+   account, and result projections. Terminal state never supplies lifecycle authority.
+
+No `catch_unwind` is part of this contract. The known malformed-input path is prevented by static
+admission. Panic containment would require a separate, proven unwind-safe NT lifecycle contract and
+is not silently introduced here.
+
+### Closed lifecycle grammar
+
+- Quote entry: `OrderInitialized -> SubmitOrder -> OrderSubmitted -> OrderUpdated -> OrderFilled+`.
+- Base reduction: `OrderInitialized -> SubmitOrder -> OrderSubmitted -> OrderFilled+` and no
+  `OrderUpdated`.
+- Settlement: synthetic `OrderInitialized -> OrderAccepted -> OrderFilled+ -> PositionClosed /
+  AccountState -> InstrumentClose` receipt, with no `SubmitOrder`, `OrderSubmitted`, or
+  `OrderUpdated`.
+- Position and account effects bind after each fill in strict store-sequence order. Timestamps are
+  diagnostic only.
+- `RunStarted` and `RunEnded` are integrity envelopes. `SubscribeCommand`, `UnsubscribeCommand`,
+  and `TimeEvent` are explicit control-plane waivers: their bytes remain sealed and verified, but
+  they carry no order, fill, position, or account claim.
+- Economic payload types are `SubmitOrder`, `OrderInitialized`, `OrderSubmitted`, `OrderAccepted`,
+  `OrderUpdated`, `OrderFilled`, `InstrumentClose`, `AccountState`, `PositionOpened`,
+  `PositionChanged`, and `PositionClosed`. `PositionAdjusted` and every other payload type fail
+  closed for this fixture.
+
+The execution account created from the primary venue configuration is captured from the built
+execution-client registry before the run. Each normal `OrderSubmitted.account_id` must equal that independent
+authority and both submissions must agree. The configured identity then binds every update, fill,
+position effect, lifecycle AccountState, settlement event, and terminal projection. No downstream
+engine event is its own routing authority.
+
+### Closed evidence matrix
+
+| Stage | Independent authority | NT claim / projection | Required invariant | Phase | Required behavior control |
+|---|---|---|---|---|---|
+| Run shape | Hash-bound manifest, resolved config, and pre-run execution-client registry | Built run configuration | BinaryOption; one lifecycle instrument and configured execution account; CASH/NETTING/L2; supported deterministic models | Admission | Wrong account/OMS/book/model rejected before run |
+| Book domain | Catalog rows plus instrument | None | Add/Update/Delete prices positive, exact precision/increment, within optional bounds; Add/Update sizes positive and aligned; Clear is structural | Admission | Zero, out-of-range, wrong precision/increment price; invalid size; valid Clear/Delete |
+| Settlement input | Manifest close plus the two projected BinaryOptions | `InstrumentClose` | Exact unique projected leg set; complementary `0`/`1` payoffs; quantity-independent from trading min/max | Admission/assembly | Wrong/missing/duplicate leg, fractional/non-complementary payoff; valid zero/one pair |
+| Store integrity | Sealed store and marker sidecar | Entries, dictionaries, cursors | Hashes/counts/sequence/dictionaries valid; no gaps; one unambiguous submit cursor | Integrity | Tampered/gapped/missing/ambiguous evidence |
+| Event surface | Frozen grammar | Every captured payload | Each type admitted and assigned, or typed rejection; no silent wildcard | Assembly | Unknown payload and orphan admitted payload |
+| Normal submission | `SubmitOrder` intent plus pre-run configured execution account | `OrderInitialized`, `OrderSubmitted` | Envelope equals embedded init; exact identity and causal order; both normal submissions equal the configured account | Assembly | Missing/duplicate/reordered/identity/account drift, including correlated downstream drift |
+| Quote conversion | Submitted quote quantity plus cursor book and instrument | `OrderUpdated` | Exactly one entry update; no reduction update; independently normalized quantity; submitted account and pinned shape | Fold | Missing/duplicate/orphan/reordered and every field mutation |
+| Normal fills | Cursor-bound book and submitted semantics | `OrderFilled+` | Exact ordered sweep; sweep remainder zero; sum fills equals effective quantity; unique identities | Fold | Insufficient depth, missing/extra/reordered/drifted/duplicate fill |
+| Position effects | Prior folded exposure and fills | `PositionOpened/Changed/Closed` | One causal effect per fill; kind and signed exposure derived; one position/account; no reversal/reopen | Fold | Missing/reordered/replayed/wrong kind, quantity, identity, or account |
+| Account effects | Starting cash, fills, multiplier, commissions | `AccountState` | Initial state matches config; one fresh causal state after each fill including zero delta; cash/currency/account exact | Fold | Missing/replayed/conflicting/trailing/wrong account or cash |
+| Settlement | Manifest payoff plus remaining exposure | Synthetic expiration events and close receipt | Pinned origin; no normal submission path; anchored account; exact remainder; final exposure zero | Assembly/fold | Orphan masquerade and every witness-shape/order/account/price/quantity mutation |
+| Terminal order | Completed causal order record | Live order cache | Exact IDs/static fields/fills; filled sum equals effective and terminal filled quantity; leaves zero; status Filled | Terminal | Missing/extra order; scalar, fill-vector, partial-Filled, and ID drift |
+| Terminal position | Completed exposure/economics fold | Live position cache and result | Exactly one closed flat position; fills/P&L/commissions/counts exact | Terminal | Extra/missing/nonflat/fill/P&L/count drift |
+| Terminal account | Starting account plus economics fold | Live account cache | Exact anchored identity/type/base/balances; no margins/locks/extra currencies; cash equation exact | Terminal | Correlated account/cash drift, hidden locks, margin, currency, metadata drift |
+
+This matrix is the completion boundary. A later blocking finding must demonstrate a missing admitted
+claim, an unenforced matrix invariant, a failing behavior control, or a repository MUST violation.
+Supporting another lifecycle, execution mode, or transport-hop audit is separate work.
+
+### Payload binding closure
+
+| Payload | Bound fields / disposition |
+|---|---|
+| `RunStarted`, `RunEnded` | Unique and exactly first/last store entries. |
+| `SubscribeCommand`, `UnsubscribeCommand`, `TimeEvent` | Explicit control-plane waiver; integrity-covered, no economic claim. |
+| `SubmitOrder` | Unique command ID; envelope IDs equal embedded initialization; store sequence and `ts_init` bind the book cursor. Client/position/parameter/correlation metadata is diagnostic under the frozen immediate-market slice. |
+| Normal `OrderInitialized` | Full structural equality with the initialization embedded in `SubmitOrder`; unique event ID. |
+| Settlement `OrderInitialized` | Pinned expiration ID, tag, identities, Market/GTC/reduce-only/NoTrigger shape, exact fill quantity, and absence of every price/contingent/algo field; unique event ID. |
+| `OrderSubmitted` | Exactly one per normal order; identities equal intent; account equals the pre-run configured execution account; strict causal interval; unique event ID. |
+| `OrderAccepted` | Exactly one for settlement and none for normal orders; identities/account/venue order/reconciliation and causal interval pinned; unique event ID. |
+| `OrderUpdated` | Exactly one for the quote entry and none for base reduction/settlement; all identities, account, quantity, quote/reconciliation flags, venue-order and optional prices pinned; unique event ID and causal interval. Timestamps are diagnostic. |
+| `OrderFilled` | Exact submitted identities/account/side/type, common venue order, currency, taker/reconciliation shape, unique event/trade IDs, instrument precision/increments, exact cursor-book price/quantity sequence, commission and causal position/account bindings. `info`, causation, and pre-attribution `position_id` are diagnostic. |
+| `PositionOpened/Changed/Closed` | Unique event ID; position/instrument/account, side, quantity, last fill, effect kind and realized P&L equal the independent exposure/economics fold. Timestamps are diagnostic. |
+| `AccountState` | Unique event ID; non-lifecycle accounts permitted only before the first fill; lifecycle account/type/base/balance/margin/lock projection bound initially and after every fill. Timestamps are diagnostic. |
+| `InstrumentClose` | Complete configured paired-binary close set; exactly one held-leg ContractExpired receipt causes fills; instrument, payoff, configured settlement input and strict settlement ordering bound. |
+
+## Closure implementation tasks
+
+### Task 1: Static admission and closed intake
+
+**Files:**
+- Modify: `crates/backtesting-vertical-slice/src/runner.rs`
+- Test: `crates/backtesting-vertical-slice/src/runner.rs`
+
+**Interfaces:**
+- Consumes the mapped #789 manifest, projections, and selected `InstrumentAny` before
+  `BacktestNode::run`.
+- Produces a typed admission result and an explicitly exhaustive evidence decoder.
+
+- [x] Add behavior tests proving zero/out-of-range/misaligned executable prices and invalid sizes
+  fail before the run boundary, while Clear/Delete and binary settlement `0`/`1` remain valid.
+- [x] Run each focused test and confirm RED at the absent admission helper.
+- [x] Implement the smallest static admission helper and invoke it before `node.run()`.
+- [x] Add unknown-payload and orphan-payload behavior tests; confirm the current wildcard accepts
+  the unknown payload before replacing it.
+- [x] Replace silent wildcard decoding with the frozen grammar and typed rejection.
+- [x] Run the focused admission/intake tests and confirm GREEN.
+
+### Task 2: Account-routing closure
+
+**Files:**
+- Modify: `crates/backtesting-vertical-slice/src/execution_contract.rs`
+- Modify: `crates/backtesting-vertical-slice/src/runner.rs`
+- Test: both modules above
+
+**Interfaces:**
+- Consumes the account created from the primary venue configuration before execution and one causal
+  `OrderSubmitted` per normal order; both submitted account IDs must equal that authority.
+- Produces a submitted-order trace whose account anchors updates, fills, effects, account states,
+  settlement, and terminal projections.
+
+- [x] Add RED controls for missing/reordered `OrderSubmitted`, submitted-account drift, and
+  correlated downstream account drift with the submission left unchanged.
+- [x] Capture the primary venue's configured execution account before the run, then extend the
+  submitted trace and causal assembler with that authority and exact event order.
+- [x] Bind every downstream account-bearing claim and terminal projection to that authority.
+- [x] Run account-routing controls and the real #789 replay; confirm GREEN.
+
+### Task 3: Quantity-conservation closure
+
+**Files:**
+- Modify: `crates/backtesting-vertical-slice/src/execution_contract.rs`
+- Modify: `crates/backtesting-vertical-slice/src/runner.rs`
+- Test: both modules above
+
+**Interfaces:**
+- Consumes independently normalized effective quantity and ordered fills.
+- Produces only fully filled normal-order records with zero sweep remainder and consistent terminal
+  quantity/status projections.
+
+- [x] Add RED controls for insufficient book depth, coherent partial fills marked Filled, terminal
+  fill-vector length/content drift, and terminal client-order drift.
+- [x] Require the independent sweep remainder to be zero and fill sum to equal effective quantity.
+- [x] Require terminal effective quantity, filled quantity, summed fills, zero leaves, and Filled
+  status to agree.
+- [x] Run quantity and terminal-order controls; confirm GREEN.
+
+### Task 4: Matrix closure and exact-head evidence
+
+**Files:**
+- Modify only the two Rust modules and this plan if an admitted field needs an explicit waiver.
+
+- [x] Map every admitted type and relevant field to its check or documented diagnostic-only waiver.
+- [x] Add missing settlement-witness, duplicate/orphan update, non-contiguous-fill, and bidirectional
+  completeness controls identified by the matrix.
+- [x] Run BTE formatting, strict Clippy, focused controls, the full BTE Nextest battery, and the real
+  #789 replay.
+- [x] Conduct an internal adversarial review against this matrix and resolve every substantive
+  finding.
+- [x] Commit one closure change, push the exact head, post evidence mapped to matrix rows, and request
+  fresh review from `sp-reviewer` without waiting for CI.
 
 ## Implementation sequence and evidence
 

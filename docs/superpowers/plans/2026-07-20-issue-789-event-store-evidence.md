@@ -14,6 +14,13 @@ event-sequence-bound catalog cursors for order-book data; the already hash-verif
 the source of the actual book records. Before any cursor is consumed, NT's `MarkerVerifier` checks
 the sealed sidecar's record hashes, counts, sequence coverage, dictionary, and monotonicity.
 
+The NT adapter deliberately records each logical UUID once even when the same message crosses more
+than one tap-visible delivery boundary. #789 validates uniqueness in that persisted logical stream;
+it does not claim to audit raw bus-delivery multiplicity. Bolt must not disable the adapter's
+normalization or predict NT's internal hop topology. A repeated dispatch that creates another
+economic effect still fails through the recorded fill/effect/order counts, duplicate trade guard,
+or NT's own fail-stop path; an identical projection republish is not a second lifecycle mutation.
+
 `BacktestNode` does not expose the kernel event-store factory at this revision. The thinnest usable
 integration is therefore a BTE-owned run wrapper that opens the existing NT event-store lifecycle
 against the built engine clock immediately before `BacktestNode::run`, seals it immediately after
@@ -68,11 +75,13 @@ general audit-framework behavior.
 
 Observed NT evidence:
 
-- ordered `SubmitOrder` commands preserving submitted quantity and instrument identity;
+- ordered `SubmitOrder` commands preserving and cross-binding envelope and embedded trader,
+  strategy, instrument, client-order, side, type, quantity, quote-denomination, post-only, and
+  reconciliation semantics;
 - ordered `OrderFilled` events preserving order/trade identity, price, quantity, side, and
   commission;
-- unique command/event identities across submits, order events, fills, position events, and account
-  events;
+- unique command/event identities across persisted logical submits, order events, fills, position
+  events, and account events;
 - ordered position events binding position identity, exact exposure effects, and cumulative P&L;
 - the initial `AccountState` and at least one causally ordered `AccountState` after every fill,
   including fills whose balance map is unchanged;

@@ -13,8 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, bail, ensure};
 use nautilus_model::{
     enums::{LiquiditySide, OrderSide, OrderType, PositionSide},
-    events::OrderFilled,
-    identifiers::{AccountId, InstrumentId, PositionId},
+    events::{OrderFilled, OrderInitialized},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId},
     instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
     types::{Money, Price, Quantity},
@@ -23,12 +23,42 @@ use rust_decimal::{Decimal, RoundingStrategy, prelude::Signed};
 
 use crate::hashing::sha256_hex;
 
+#[derive(Clone, Debug)]
+pub struct SubmittedOrderTrace {
+    pub trader_id: TraderId,
+    pub strategy_id: StrategyId,
+    pub instrument_id: InstrumentId,
+    pub client_order_id: ClientOrderId,
+    pub order_side: OrderSide,
+    pub order_type: OrderType,
+    pub quantity: Quantity,
+    pub quote_quantity: bool,
+    pub post_only: bool,
+    pub reconciliation: bool,
+}
+
+impl From<&OrderInitialized> for SubmittedOrderTrace {
+    fn from(order: &OrderInitialized) -> Self {
+        Self {
+            trader_id: order.trader_id,
+            strategy_id: order.strategy_id,
+            instrument_id: order.instrument_id,
+            client_order_id: order.client_order_id,
+            order_side: order.order_side,
+            order_type: order.order_type,
+            quantity: order.quantity,
+            quote_quantity: order.quote_quantity,
+            post_only: order.post_only,
+            reconciliation: order.reconciliation,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum ExecutionOrderCause {
     Submitted {
         executable_book: Box<OrderBook>,
-        submitted_quantity: Quantity,
-        quote_quantity: bool,
+        submitted_order: SubmittedOrderTrace,
     },
     Settlement {
         declared_price: Price,
@@ -131,7 +161,30 @@ pub fn validate_execution_contract(
             .fills
             .first()
             .with_context(|| format!("execution order {order_index} has no fills"))?;
-        let side = first_fill.order_side;
+        let side = match &order.cause {
+            ExecutionOrderCause::Submitted {
+                submitted_order, ..
+            } => {
+                ensure!(
+                    submitted_order.instrument_id == trace.instrument.id()
+                        && submitted_order.order_side != OrderSide::NoOrderSide
+                        && submitted_order.order_type == OrderType::Market
+                        && !submitted_order.post_only
+                        && !submitted_order.reconciliation
+                        && order.fills.iter().all(|fill| {
+                            fill.trader_id == submitted_order.trader_id
+                                && fill.strategy_id == submitted_order.strategy_id
+                                && fill.instrument_id == submitted_order.instrument_id
+                                && fill.client_order_id == submitted_order.client_order_id
+                                && fill.order_side == submitted_order.order_side
+                                && fill.order_type == submitted_order.order_type
+                        }),
+                    "normal fills diverge from submitted order semantics"
+                );
+                submitted_order.order_side
+            }
+            ExecutionOrderCause::Settlement { .. } => first_fill.order_side,
+        };
         ensure!(side != OrderSide::NoOrderSide, "fill has no specified side");
         for fill in &order.fills {
             ensure!(
@@ -167,8 +220,7 @@ pub fn validate_execution_contract(
 
         if let ExecutionOrderCause::Submitted {
             executable_book,
-            submitted_quantity,
-            quote_quantity,
+            submitted_order,
         } = &order.cause
         {
             ensure!(
@@ -183,8 +235,8 @@ pub fn validate_execution_contract(
                 trace.instrument,
                 executable_book,
                 side,
-                *submitted_quantity,
-                *quote_quantity,
+                submitted_order.quantity,
+                submitted_order.quote_quantity,
             )?;
             let expected = independent_market_sweep(executable_book, side, requested_base)?;
             ensure!(
@@ -612,8 +664,7 @@ mod tests {
                             "21.52",
                             1,
                         )),
-                        submitted_quantity: Quantity::from("1.14"),
-                        quote_quantity: true,
+                        submitted_order: submitted_order(&entry_fill, Quantity::from("1.14"), true),
                     },
                     fills: vec![entry_fill],
                 },
@@ -626,8 +677,11 @@ mod tests {
                             "2.00",
                             2,
                         )),
-                        submitted_quantity: Quantity::from("2.00"),
-                        quote_quantity: false,
+                        submitted_order: submitted_order(
+                            &normal_exit,
+                            Quantity::from("2.00"),
+                            false,
+                        ),
                     },
                     fills: vec![normal_exit],
                 },
@@ -720,6 +774,25 @@ mod tests {
         )
     }
 
+    fn submitted_order(
+        fill: &OrderFilled,
+        quantity: Quantity,
+        quote_quantity: bool,
+    ) -> SubmittedOrderTrace {
+        SubmittedOrderTrace {
+            trader_id: fill.trader_id,
+            strategy_id: fill.strategy_id,
+            instrument_id: fill.instrument_id,
+            client_order_id: fill.client_order_id,
+            order_side: fill.order_side,
+            order_type: fill.order_type,
+            quantity,
+            quote_quantity,
+            post_only: false,
+            reconciliation: false,
+        }
+    }
+
     fn one_level_book(
         instrument_id: nautilus_model::identifiers::InstrumentId,
         side: OrderSide,
@@ -760,6 +833,134 @@ mod tests {
     }
 
     #[test]
+    fn rejects_fill_side_divergent_from_submitted_order() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            submitted_order, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("entry cause changed")
+        };
+        submitted_order.order_side = OrderSide::Sell;
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("fill side must match its submitted order");
+        assert!(error.to_string().contains("submitted order semantics"));
+    }
+
+    #[test]
+    fn rejects_fill_type_divergent_from_submitted_order() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            submitted_order, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("entry cause changed")
+        };
+        submitted_order.order_type = OrderType::Limit;
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("fill type must match its submitted order");
+        assert!(error.to_string().contains("submitted order semantics"));
+    }
+
+    #[test]
+    fn rejects_fill_identity_divergent_from_submitted_order() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            submitted_order, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("entry cause changed")
+        };
+        submitted_order.strategy_id = StrategyId::from("OTHER-001");
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("fill identity must match its submitted order");
+        assert!(error.to_string().contains("submitted order semantics"));
+    }
+
+    #[test]
+    fn rejects_fill_client_identity_divergent_from_submitted_order() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            submitted_order, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("entry cause changed")
+        };
+        submitted_order.client_order_id = ClientOrderId::from("O-OTHER");
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("fill client identity must match its submitted order");
+        assert!(error.to_string().contains("submitted order semantics"));
+    }
+
+    #[test]
+    fn rejects_fill_trader_identity_divergent_from_submitted_order() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            submitted_order, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("entry cause changed")
+        };
+        submitted_order.trader_id = TraderId::from("OTHER-001");
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("fill trader identity must match its submitted order");
+        assert!(error.to_string().contains("submitted order semantics"));
+    }
+
+    #[test]
+    fn rejects_post_only_market_submission() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            submitted_order, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("entry cause changed")
+        };
+        submitted_order.post_only = true;
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("market-taker evidence cannot be post-only");
+        assert!(error.to_string().contains("submitted order semantics"));
+    }
+
+    #[test]
+    fn rejects_reconciliation_submission() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            submitted_order, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("entry cause changed")
+        };
+        submitted_order.reconciliation = true;
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("reconciliation submissions are outside the #789 lifecycle");
+        assert!(error.to_string().contains("submitted order semantics"));
+    }
+
+    #[test]
+    fn rejects_embedded_submit_identity_drift() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            submitted_order, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("entry cause changed")
+        };
+        submitted_order.instrument_id = InstrumentId::from("OTHER.POLYMARKET");
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("embedded submit identity drift must fail closed");
+        assert!(error.to_string().contains("submitted order semantics"));
+    }
+
+    #[test]
     fn rejects_executable_book_for_another_instrument() {
         let mut fixture = fixture();
         let ExecutionOrderCause::Submitted {
@@ -793,13 +994,15 @@ mod tests {
         fixture.orders[0].fills[0].order_type = OrderType::Limit;
         let error = validate_execution_contract(&fixture.trace())
             .expect_err("non-market entry must fail the market-only contract");
-        assert!(error.to_string().contains("market-order identity"));
+        assert!(error.to_string().contains("submitted order semantics"));
     }
 
     #[test]
     fn rejects_second_opening_effect() {
         let mut fixture = fixture();
         fixture.orders[1].fills[0].order_side = OrderSide::Buy;
+        let submitted_order =
+            submitted_order(&fixture.orders[1].fills[0], Quantity::from("2.00"), false);
         fixture.orders[1].cause = ExecutionOrderCause::Submitted {
             executable_book: Box::new(one_level_book(
                 fixture.instrument.id(),
@@ -808,8 +1011,7 @@ mod tests {
                 "2.00",
                 2,
             )),
-            submitted_quantity: Quantity::from("2.00"),
-            quote_quantity: false,
+            submitted_order,
         };
         fixture.position_effects[1].side = PositionSide::Long;
         fixture.position_effects[1].quantity = Quantity::from("4.71");
@@ -826,6 +1028,15 @@ mod tests {
         let instrument_id = fixture.instrument.id();
         let position_id = fixture.position_effects[0].position_id;
 
+        let first_reduction_fill = test_fill(
+            instrument_id,
+            position_id,
+            OrderSide::Sell,
+            "normal-exit-one",
+            "0.430",
+            "0.50",
+            2,
+        );
         fixture.orders[1] = ExecutionOrderTrace {
             cause: ExecutionOrderCause::Submitted {
                 executable_book: Box::new(one_level_book(
@@ -835,19 +1046,23 @@ mod tests {
                     "0.50",
                     2,
                 )),
-                submitted_quantity: Quantity::from("0.50"),
-                quote_quantity: false,
+                submitted_order: submitted_order(
+                    &first_reduction_fill,
+                    Quantity::from("0.50"),
+                    false,
+                ),
             },
-            fills: vec![test_fill(
-                instrument_id,
-                position_id,
-                OrderSide::Sell,
-                "normal-exit-one",
-                "0.430",
-                "0.50",
-                2,
-            )],
+            fills: vec![first_reduction_fill],
         };
+        let second_reduction_fill = test_fill(
+            instrument_id,
+            position_id,
+            OrderSide::Sell,
+            "normal-exit-two",
+            "0.430",
+            "1.50",
+            3,
+        );
         fixture.orders.insert(
             2,
             ExecutionOrderTrace {
@@ -859,18 +1074,13 @@ mod tests {
                         "1.50",
                         3,
                     )),
-                    submitted_quantity: Quantity::from("1.50"),
-                    quote_quantity: false,
+                    submitted_order: submitted_order(
+                        &second_reduction_fill,
+                        Quantity::from("1.50"),
+                        false,
+                    ),
                 },
-                fills: vec![test_fill(
-                    instrument_id,
-                    position_id,
-                    OrderSide::Sell,
-                    "normal-exit-two",
-                    "0.430",
-                    "1.50",
-                    3,
-                )],
+                fills: vec![second_reduction_fill],
             },
         );
         fixture.position_effects.insert(
@@ -902,13 +1112,13 @@ mod tests {
         let mut fixture = fixture();
         if let ExecutionOrderCause::Submitted {
             executable_book,
-            submitted_quantity,
+            submitted_order,
             ..
         } = &mut fixture.orders[1].cause
         {
             **executable_book =
                 one_level_book(fixture.instrument.id(), OrderSide::Buy, "0.430", "3.00", 2);
-            *submitted_quantity = Quantity::from("3.00");
+            submitted_order.quantity = Quantity::from("3.00");
         }
         fixture.orders[1].fills[0].last_qty = Quantity::from("3.00");
         let error = validate_execution_contract(&fixture.trace()).expect_err("reversal");
@@ -1106,26 +1316,24 @@ mod tests {
         instrument.size_precision = 3;
         instrument.size_increment = Quantity::from("0.001");
         if let ExecutionOrderCause::Submitted {
-            submitted_quantity,
-            quote_quantity,
-            ..
+            submitted_order, ..
         } = &mut fixture.orders[0].cause
         {
-            *submitted_quantity = Quantity::from("2.714");
-            *quote_quantity = false;
+            submitted_order.quantity = Quantity::from("2.714");
+            submitted_order.quote_quantity = false;
         }
         fixture.orders[0].fills[0].last_qty = Quantity::from("2.714");
         fixture.position_effects[0].quantity = Quantity::from("2.714");
         fixture.position_effects[0].last_quantity = Quantity::from("2.714");
         if let ExecutionOrderCause::Submitted {
             executable_book,
-            submitted_quantity,
+            submitted_order,
             ..
         } = &mut fixture.orders[1].cause
         {
             **executable_book =
                 one_level_book(fixture.instrument.id(), OrderSide::Buy, "0.430", "2.000", 2);
-            *submitted_quantity = Quantity::from("2.000");
+            submitted_order.quantity = Quantity::from("2.000");
         }
         fixture.orders[1].fills[0].last_qty = Quantity::from("2.000");
         fixture.position_effects[1].quantity = Quantity::from("0.714");

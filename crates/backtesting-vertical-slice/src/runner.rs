@@ -3592,6 +3592,23 @@ mod tests {
         Ok(())
     }
 
+    fn issue_789_submitted_order_trace(
+        command: &nautilus_common::messages::execution::SubmitOrder,
+    ) -> Result<crate::execution_contract::SubmittedOrderTrace> {
+        let initialized = &command.order_init;
+        ensure!(
+            command.trader_id == initialized.trader_id
+                && command.strategy_id == initialized.strategy_id
+                && command.instrument_id == initialized.instrument_id
+                && command.client_order_id == initialized.client_order_id
+                && command.exec_algorithm_id == initialized.exec_algorithm_id,
+            "#789 SubmitOrder envelope diverges from its embedded initialized-order semantics"
+        );
+        Ok(crate::execution_contract::SubmittedOrderTrace::from(
+            initialized,
+        ))
+    }
+
     #[expect(clippy::too_many_arguments)]
     fn ensure_issue_789_settlement_witness(
         client_order_id: &str,
@@ -3694,6 +3711,45 @@ mod tests {
                 .to_string()
                 .contains("duplicate PositionChanged identity")
         );
+    }
+
+    fn test_issue_789_submit_order() -> nautilus_common::messages::execution::SubmitOrder {
+        let initialized =
+            nautilus_model::events::order::spec::OrderInitializedSpec::builder().build();
+        nautilus_common::messages::execution::SubmitOrder::new(
+            initialized.trader_id,
+            None,
+            initialized.strategy_id,
+            initialized.instrument_id,
+            initialized.client_order_id,
+            initialized,
+            None,
+            None,
+            None,
+            UUID4::new(),
+            UnixNanos::default(),
+            None,
+        )
+    }
+
+    #[test]
+    fn issue_789_rejects_submit_envelope_identity_drift() {
+        let mut command = test_issue_789_submit_order();
+        command.strategy_id = nautilus_model::identifiers::StrategyId::from("OTHER-001");
+
+        let error = issue_789_submitted_order_trace(&command)
+            .expect_err("SubmitOrder envelope drift must fail closed");
+        assert!(error.to_string().contains("envelope diverges"));
+    }
+
+    #[test]
+    fn issue_789_rejects_embedded_submit_identity_drift() {
+        let mut command = test_issue_789_submit_order();
+        command.order_init.instrument_id = InstrumentId::from("OTHER.POLYMARKET");
+
+        let error = issue_789_submitted_order_trace(&command)
+            .expect_err("embedded initialized-order drift must fail closed");
+        assert!(error.to_string().contains("envelope diverges"));
     }
 
     #[test]
@@ -4595,8 +4651,7 @@ mod tests {
                 )?;
                 crate::execution_contract::ExecutionOrderCause::Submitted {
                     executable_book: Box::new(executable_book),
-                    submitted_quantity: submit.order_init.quantity,
-                    quote_quantity: submit.order_init.quote_quantity,
+                    submitted_order: issue_789_submitted_order_trace(submit)?,
                 }
             } else {
                 let matching_closes = closes

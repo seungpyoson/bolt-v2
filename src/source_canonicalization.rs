@@ -444,9 +444,9 @@ pub struct GatedSourceRoot {
 
 // THE registry — generated at build time from the repo-root
 // `gated_source_roots.manifest` (the ONLY place gated source roots are named).
-// `build.rs` parses that manifest and emits this `GATED_SOURCE_ROOTS` constant;
-// `scripts/bolt_v3_source_roots.py` reads the same manifest, so the gated file
-// list lives in exactly one place shared across both languages. The runtime
+// `build.rs` parses that manifest and emits this `GATED_SOURCE_ROOTS` constant,
+// so the manifest and `build.rs` are the enforcing pair and the gated file
+// list lives in exactly one place. The runtime
 // integrity owner, the producer, and tests all resolve roots through this list.
 // (Plain `//` comments: rustdoc cannot attach `///` docs to a macro invocation.)
 include!(concat!(env!("OUT_DIR"), "/gated_source_roots.rs"));

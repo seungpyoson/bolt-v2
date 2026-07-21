@@ -1,5 +1,8 @@
 # Implementation Plan: Rename `position_sizer` → `capital_admission` gate
 
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
+
 **Branch**: `docs/711-capital-admission-rename` | **Date**: 2026-06-25 | **Spec**: `specs/711-capital-admission-rename/spec.md`
 **Input**: GitHub issue #711 | **Revised** after external review (GPT/Kimi/GLM), adjudicated vs code at HEAD `07db9cb04`.
 
@@ -30,7 +33,7 @@ Copied from `AGENTS.md` (every task implicitly includes these):
 - **NO DUAL PATHS** — one reader, one config key, one schema version each. Migration is a one-time bridge, not a runtime accept-both. The only residual old literal is the below-schema audit-*skip* legacy string (it never reads/recovers state).
 - **NO DEBTS** — no TODO / "fix later"; no half-rename left on `main` (this is why it is one PR).
 - **STRATEGIES PRODUCE INTENT ONLY** — shared submit/admission code; no strategy-local submit mechanics change (only identifier references update).
-- **Remote-first Rust verification** — local non-compile gates only (`just fmt-check`, `just source-fence-static`, `just ci-lint-workflow`, Python verifiers/tests); Rust compile/test proof via `just verify-remote` exact-head CI on a draft PR. Do not run local compile-heavy cargo.
+- **Remote-first Rust verification** — use the current local non-compile gates from `AGENTS.md`; publish with `git push` and adjudicate advisory CI for the exact head. Do not run local compile-heavy cargo.
 - **Review Bar** — open the PR and request review from the GitHub account with node ID `U_kgDOEZMFhA`; do not merge without its approval; do not request external review until exact-head CI is green.
 - **Evidence per requirement** — refactor evidence = existing tests + static checks + structural-equivalence review; new code (migration tools, equivalence test) = behavior tests; persisted/config contract changes = fail-closed evidence for invalid/missing/legacy inputs + exact-head proof.
 - **Gating model** — the per-task local gate is `just fmt-check`, which (via `fmt-check-inner`, justfile:240) runs `verify_bolt_v3_runtime_literals.py` + `verify_bolt_v3_provider_leaks.py`. **The runtime-literal audit therefore gates EVERY task, not just the final head.** Its allowlist (`docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`, rows keyed `(path, kind, literal, context)`) is part of the rename surface: any task that moves a file or renames a symbol on a classified line MUST update that row's `path`/`context` **in the same commit**, or both the new path's literals (unclassified) and the old rows (stale) fail `fmt-check` (`main()` fails on `unclassified or stale`). Serialized `literal` VALUES change only in Task 5, which updates those rows' `literal` field. What is genuinely deferred to the integrated head (Task 11) are the verifiers that run ONLY in `source-fence-static-inner` and NOT in `fmt-check`: `verify_bolt_v3_naming.py` (Task 9), status-map, and schema-current — plus the audit-TOML `classification` metadata (not part of the scan key, so it never breaks `fmt-check`; batched in Task 10). Run the full `just source-fence-static` ONCE on the integrated head in Task 11; the final head MUST be fence-clean.
@@ -40,7 +43,7 @@ Copied from `AGENTS.md` (every task implicitly includes these):
 **Language/Version**: Rust (repo-pinned toolchain); Python 3.12 on CI (test migration/verifier scripts with `python3.12`).
 **Primary Dependencies**: NautilusTrader Rust API; serde/serde_json; `aws-sdk-ssm` (unaffected).
 **Storage**: Decision-evidence JSONL files (schema-versioned); operator TOML config (root `schema_version`).
-**Testing**: Exact-head remote PR CI (`just verify-remote`) for Rust; `pytest`/`python3.12` for migration + verifier scripts; `just fmt-check`, `just source-fence-static`, runtime-literal audit, `scripts/verify_bolt_v3_schema_current.py` locally.
+**Testing**: Advisory exact-head PR CI for Rust after `git push`; `pytest`/`python3.12` for migration + verifier scripts; use the current local gates from `AGENTS.md`.
 **Target Platform**: Linux server node.
 **Project Type**: Single Rust project (compiler/trading runtime) with Python tooling.
 **Constraints**: Behavior-preserving; fail-closed on invalid/missing/legacy inputs; exact-head CI green before review.
@@ -464,7 +467,7 @@ once the audit TOML's `position_sizer` references are updated by Task 10.
   `--dry-run` first to inspect the manifest — before starting the renamed binary; both partial states
   fail closed if skipped), and `Closes #711` is **omitted** per the no-close-keyword rule — link with
   `Refs #711` / `Blocks #712` instead.
-- [ ] **Step 3:** `just verify-remote` → full `CI` + Backtester CI + actionlint green on exact head.
+- [ ] **Step 3:** `git push` → adjudicate advisory CI evidence for the exact head.
   Evidence: pre-existing behavior tests pass unchanged (FR-017 / SC-006); migration + equivalence
   tests green (FR-013/014 / SC-004); fence green (SC-001); schema verifier + audit green (SC-003).
 - [ ] **Step 4:** Mark ready; request review from GitHub node `U_kgDOEZMFhA`. Do not merge without

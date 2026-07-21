@@ -1,8 +1,0 @@
-scripts/cargo-shim
-scripts/command_understanding.py
-scripts/install-cargo-shim
-scripts/lane_governor.py
-scripts/local_verification_gate.py
-scripts/rust_verification.py
-scripts/sync_ci_debug_ssh_secret.py
-scripts/ubicloud_runner_minutes.py

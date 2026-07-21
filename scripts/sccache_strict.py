@@ -42,7 +42,9 @@ class StrictBuildConfig:
     rustc_release: str
     rustc_commit: str
     features: tuple[str, ...]
+    default_features: bool
     profile: str
+    verification_timeout_ms: int
     targets: Mapping[str, TargetConfig]
 
 
@@ -63,14 +65,19 @@ class VerifiedAsset:
 class VerifiedCandidateSet:
     repository: str
     run_id: str
+    run_attempt: str
     head_sha: str
     source_version: str
     source_commit: str
     source_sha256: str
+    source_date_epoch: int
     patch_sha256: str
     container: str
     rustc_release: str
     rustc_commit: str
+    features: tuple[str, ...]
+    default_features: bool
+    profile: str
     release_tag: str
     assets: Mapping[str, VerifiedAsset]
     provenance_name: str
@@ -122,7 +129,9 @@ def load_document(
 ) -> StrictBuildConfig:
     top = _mapping(document, "document")
     _exact_keys(
-        top, frozenset({"schema_version", "source", "build", "targets"}), "top-level"
+        top,
+        frozenset({"schema_version", "source", "build", "verification", "targets"}),
+        "top-level",
     )
     schema_version = top["schema_version"]
     if type(schema_version) is not int or schema_version != 1:
@@ -171,7 +180,14 @@ def load_document(
     _exact_keys(
         build,
         frozenset(
-            {"container", "rustc_release", "rustc_commit", "features", "profile"}
+            {
+                "container",
+                "rustc_release",
+                "rustc_commit",
+                "features",
+                "default_features",
+                "profile",
+            }
         ),
         "build",
     )
@@ -185,11 +201,27 @@ def load_document(
         raise ValueError("build.rustc_release must be semantic version X.Y.Z")
     rustc_commit = _full_sha(build["rustc_commit"], "build.rustc_commit")
     features_value = build["features"]
-    if not isinstance(features_value, list) or features_value != ["s3"]:
-        raise ValueError("build.features must be exactly ['s3']")
+    if not isinstance(features_value, list) or features_value != [
+        "s3",
+        "vendored-openssl",
+    ]:
+        raise ValueError("build.features must be exactly ['s3', 'vendored-openssl']")
+    default_features = build["default_features"]
+    if default_features is not False:
+        raise ValueError("build.default_features must be false")
     profile = _string(build["profile"], "build.profile")
     if profile != "release":
         raise ValueError("build.profile must be release")
+
+    verification = _mapping(top["verification"], "verification")
+    _exact_keys(verification, frozenset({"strict_timeout_ms"}), "verification")
+    verification_timeout_ms = verification["strict_timeout_ms"]
+    if (
+        isinstance(verification_timeout_ms, bool)
+        or not isinstance(verification_timeout_ms, int)
+        or verification_timeout_ms <= 0
+    ):
+        raise ValueError("verification.strict_timeout_ms must be a positive integer")
 
     target_table = _mapping(top["targets"], "targets")
     if frozenset(target_table) != _TARGET_NAMES:
@@ -222,8 +254,10 @@ def load_document(
         container_digest=container_digest,
         rustc_release=rustc_release,
         rustc_commit=rustc_commit,
-        features=("s3",),
+        features=("s3", "vendored-openssl"),
+        default_features=False,
         profile=profile,
+        verification_timeout_ms=verification_timeout_ms,
         targets=MappingProxyType(targets),
     )
 
@@ -271,6 +305,7 @@ def write_candidate_manifest(
     binary_path: pathlib.Path,
     repository: str,
     run_id: str,
+    run_attempt: str,
     head_sha: str,
     architecture: str,
     replica: str,
@@ -279,6 +314,8 @@ def write_candidate_manifest(
         raise ValueError("repository must be OWNER/REPO")
     if not run_id.isdecimal():
         raise ValueError("run_id must be decimal")
+    if not run_attempt.isdecimal() or int(run_attempt) <= 0:
+        raise ValueError("run_attempt must be a positive decimal")
     _full_sha(head_sha, "head_sha")
     if architecture not in config.targets:
         raise ValueError("architecture is not governed")
@@ -294,16 +331,22 @@ def write_candidate_manifest(
         "schema_version": 1,
         "repository": repository,
         "run_id": run_id,
+        "run_attempt": run_attempt,
         "head_sha": head_sha,
         "architecture": architecture,
         "target": config.targets[architecture].triple,
         "replica": replica,
         "source_commit": config.source_commit,
         "source_sha256": config.source_sha256,
+        "source_date_epoch": config.source_date_epoch,
         "patch_sha256": _file_sha256(patch_path),
         "container": config.container,
         "rustc_release": config.rustc_release,
         "rustc_commit": config.rustc_commit,
+        "features": list(config.features),
+        "default_features": config.default_features,
+        "profile": config.profile,
+        "verification_timeout_ms": config.verification_timeout_ms,
         "binary_name": _candidate_binary_name(config, architecture),
         "binary_sha256": _file_sha256(binary_path),
         "binary_size": binary_size,
@@ -318,16 +361,22 @@ _CANDIDATE_KEYS = frozenset(
         "schema_version",
         "repository",
         "run_id",
+        "run_attempt",
         "head_sha",
         "architecture",
         "target",
         "replica",
         "source_commit",
         "source_sha256",
+        "source_date_epoch",
         "patch_sha256",
         "container",
         "rustc_release",
         "rustc_commit",
+        "features",
+        "default_features",
+        "profile",
+        "verification_timeout_ms",
         "binary_name",
         "binary_sha256",
         "binary_size",
@@ -343,6 +392,7 @@ def verify_candidate_set(
     patch_path: pathlib.Path,
     repository: str,
     run_id: str,
+    run_attempt: str,
     head_sha: str,
 ) -> VerifiedCandidateSet:
     expected_pairs = {
@@ -363,6 +413,8 @@ def verify_candidate_set(
             raise ValueError("candidates must belong to the same repository")
         if manifest["run_id"] != run_id:
             raise ValueError("candidates must come from the same workflow run")
+        if manifest["run_attempt"] != run_attempt:
+            raise ValueError("candidates must come from the same workflow attempt")
         if manifest["head_sha"] != head_sha:
             raise ValueError("candidates must bind the exact head SHA")
         architecture = manifest["architecture"]
@@ -382,10 +434,15 @@ def verify_candidate_set(
         expected_common = {
             "source_commit": config.source_commit,
             "source_sha256": config.source_sha256,
+            "source_date_epoch": config.source_date_epoch,
             "patch_sha256": patch_sha256,
             "container": config.container,
             "rustc_release": config.rustc_release,
             "rustc_commit": config.rustc_commit,
+            "features": list(config.features),
+            "default_features": config.default_features,
+            "profile": config.profile,
+            "verification_timeout_ms": config.verification_timeout_ms,
             "binary_name": _candidate_binary_name(config, architecture),
         }
         for key, expected_value in expected_common.items():
@@ -429,18 +486,24 @@ def verify_candidate_set(
         "schema_version": 1,
         "repository": repository,
         "run_id": run_id,
+        "run_attempt": run_attempt,
         "head_sha": head_sha,
         "release_tag": release_tag,
         "source": {
             "version": config.source_version,
             "commit": config.source_commit,
             "archive_sha256": config.source_sha256,
+            "source_date_epoch": config.source_date_epoch,
             "patch_sha256": patch_sha256,
         },
         "build": {
             "container": config.container,
             "rustc_release": config.rustc_release,
             "rustc_commit": config.rustc_commit,
+            "features": list(config.features),
+            "default_features": config.default_features,
+            "profile": config.profile,
+            "verification_timeout_ms": config.verification_timeout_ms,
         },
         "assets": [
             {
@@ -457,14 +520,19 @@ def verify_candidate_set(
     return VerifiedCandidateSet(
         repository=repository,
         run_id=run_id,
+        run_attempt=run_attempt,
         head_sha=head_sha,
         source_version=config.source_version,
         source_commit=config.source_commit,
         source_sha256=config.source_sha256,
+        source_date_epoch=config.source_date_epoch,
         patch_sha256=patch_sha256,
         container=config.container,
         rustc_release=config.rustc_release,
         rustc_commit=config.rustc_commit,
+        features=config.features,
+        default_features=config.default_features,
+        profile=config.profile,
         release_tag=release_tag,
         assets=MappingProxyType(assets),
         provenance_name=provenance_name,
@@ -480,7 +548,6 @@ def validate_publish_context(
     event_sha: str,
     remote_main_sha: str,
     event_ref: str,
-    immutable_document: Mapping[str, object],
     environment_document: Mapping[str, object],
     environment_name: str,
 ) -> None:
@@ -496,9 +563,6 @@ def validate_publish_context(
         raise ValueError("publication SHA is not exact-current main")
     if event_ref != "refs/heads/main":
         raise ValueError("publication ref must be refs/heads/main")
-    immutable = _mapping(immutable_document, "immutable releases document")
-    if immutable.get("enabled") is not True:
-        raise ValueError("immutable releases are not enabled")
     environment = _mapping(environment_document, "publisher environment document")
     if not environment:
         raise ValueError("publisher environment is absent")
@@ -516,6 +580,7 @@ def validate_publish_context(
 def verify_release_record(
     expected: VerifiedCandidateSet,
     release: Mapping[str, object],
+    tag_ref: Mapping[str, object],
     attestations: Mapping[str, object],
 ) -> None:
     if release.get("tag_name") != expected.release_tag:
@@ -526,6 +591,11 @@ def verify_release_record(
         raise ValueError("release is still a draft")
     if release.get("immutable") is not True:
         raise ValueError("release is not immutable")
+    if tag_ref.get("ref") != f"refs/tags/{expected.release_tag}":
+        raise ValueError("release tag ref does not match")
+    tag_object = _mapping(tag_ref.get("object"), "release tag object")
+    if tag_object.get("type") != "commit" or tag_object.get("sha") != expected.head_sha:
+        raise ValueError("release tag does not target exact head commit")
     raw_assets = release.get("assets")
     if not isinstance(raw_assets, list):
         raise ValueError("release assets must be a list")
@@ -582,6 +652,7 @@ def _verified_summary(verified: VerifiedCandidateSet) -> dict[str, object]:
     return {
         "repository": verified.repository,
         "run_id": verified.run_id,
+        "run_attempt": verified.run_attempt,
         "head_sha": verified.head_sha,
         "release_tag": verified.release_tag,
         "provenance_name": verified.provenance_name,
@@ -612,6 +683,7 @@ def _parser() -> argparse.ArgumentParser:
     candidate.add_argument("--binary", required=True, type=pathlib.Path)
     candidate.add_argument("--repository", required=True)
     candidate.add_argument("--run-id", required=True)
+    candidate.add_argument("--run-attempt", required=True)
     candidate.add_argument("--head-sha", required=True)
     candidate.add_argument("--architecture", required=True)
     candidate.add_argument("--replica", required=True)
@@ -622,6 +694,7 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--patch", required=True, type=pathlib.Path)
     verify.add_argument("--repository", required=True)
     verify.add_argument("--run-id", required=True)
+    verify.add_argument("--run-attempt", required=True)
     verify.add_argument("--head-sha", required=True)
     verify.add_argument(
         "--candidate",
@@ -638,7 +711,6 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument("--event-sha", required=True)
     publish.add_argument("--remote-main-sha", required=True)
     publish.add_argument("--event-ref", required=True)
-    publish.add_argument("--immutable-json", required=True, type=pathlib.Path)
     publish.add_argument("--environment-json", required=True, type=pathlib.Path)
     publish.add_argument("--environment-name", required=True)
 
@@ -647,6 +719,7 @@ def _parser() -> argparse.ArgumentParser:
     release.add_argument("--patch", required=True, type=pathlib.Path)
     release.add_argument("--repository", required=True)
     release.add_argument("--run-id", required=True)
+    release.add_argument("--run-attempt", required=True)
     release.add_argument("--head-sha", required=True)
     release.add_argument(
         "--candidate",
@@ -656,6 +729,7 @@ def _parser() -> argparse.ArgumentParser:
         metavar=("ARCH", "REPLICA", "MANIFEST", "BINARY"),
     )
     release.add_argument("--release-json", required=True, type=pathlib.Path)
+    release.add_argument("--tag-json", required=True, type=pathlib.Path)
     release.add_argument(
         "--attestation",
         required=True,
@@ -678,6 +752,7 @@ def main(argv: list[str] | None = None) -> int:
                 "architecture": args.architecture,
                 "target": target.triple,
                 "elf_machine": target.elf_machine,
+                "source_version": config.source_version,
                 "source_url": config.source_url,
                 "source_sha256": config.source_sha256,
                 "source_date_epoch": config.source_date_epoch,
@@ -685,6 +760,10 @@ def main(argv: list[str] | None = None) -> int:
                 "container": config.container,
                 "rustc_release": config.rustc_release,
                 "rustc_commit": config.rustc_commit,
+                "features": list(config.features),
+                "default_features": config.default_features,
+                "profile": config.profile,
+                "verification_timeout_ms": config.verification_timeout_ms,
             }
             _emit_json(output)
             return 0
@@ -697,6 +776,7 @@ def main(argv: list[str] | None = None) -> int:
                 binary_path=args.binary,
                 repository=args.repository,
                 run_id=args.run_id,
+                run_attempt=args.run_attempt,
                 head_sha=args.head_sha,
                 architecture=args.architecture,
                 replica=args.replica,
@@ -713,6 +793,7 @@ def main(argv: list[str] | None = None) -> int:
                 patch_path=args.patch,
                 repository=args.repository,
                 run_id=args.run_id,
+                run_attempt=args.run_attempt,
                 head_sha=args.head_sha,
             )
             if args.command == "verify-candidates":
@@ -722,6 +803,9 @@ def main(argv: list[str] | None = None) -> int:
             release_document = _mapping(
                 _read_json(args.release_json, "release record"), "release record"
             )
+            tag_document = _mapping(
+                _read_json(args.tag_json, "release tag record"), "release tag record"
+            )
             attestation_records: dict[str, object] = {}
             for architecture, json_name in args.attestation:
                 if architecture not in verified.assets:
@@ -730,14 +814,12 @@ def main(argv: list[str] | None = None) -> int:
                 if isinstance(raw, Mapping) and "attestations" in raw:
                     raw = raw["attestations"]
                 attestation_records[verified.assets[architecture].sha256] = raw
-            verify_release_record(verified, release_document, attestation_records)
+            verify_release_record(
+                verified, release_document, tag_document, attestation_records
+            )
             _emit_json({"release_verified": True})
             return 0
         if args.command == "validate-publish-context":
-            immutable = _mapping(
-                _read_json(args.immutable_json, "immutable releases document"),
-                "immutable releases document",
-            )
             environment = _mapping(
                 _read_json(args.environment_json, "publisher environment document"),
                 "publisher environment document",
@@ -748,7 +830,6 @@ def main(argv: list[str] | None = None) -> int:
                 event_sha=args.event_sha,
                 remote_main_sha=args.remote_main_sha,
                 event_ref=args.event_ref,
-                immutable_document=immutable,
                 environment_document=environment,
                 environment_name=args.environment_name,
             )

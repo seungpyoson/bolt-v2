@@ -1,0 +1,1669 @@
+diff --git a/src/cache/cache.rs b/src/cache/cache.rs
+index 760026f..5949157 100644
+--- a/src/cache/cache.rs
++++ b/src/cache/cache.rs
+@@ -17,14 +17,13 @@ use super::cache_io::*;
+ use crate::cache::azure::AzureBlobCache;
+ #[cfg(feature = "cos")]
+ use crate::cache::cos::COSCache;
+-use crate::cache::disk::DiskCache;
+ #[cfg(feature = "gcs")]
+ use crate::cache::gcs::GCSCache;
+ #[cfg(feature = "gha")]
+ use crate::cache::gha::GHACache;
+ #[cfg(feature = "memcached")]
+ use crate::cache::memcached::MemcachedCache;
+-use crate::cache::multilevel::{MultiLevelStats, MultiLevelStorage};
++use crate::cache::multilevel::MultiLevelStats;
+ #[cfg(feature = "oss")]
+ use crate::cache::oss::OSSCache;
+ #[cfg(feature = "redis")]
+@@ -46,8 +45,19 @@ use crate::cache::utils::normalize_key;
+ #[cfg(feature = "webdav")]
+ use crate::cache::webdav::WebdavCache;
+ use crate::compiler::PreprocessorCacheEntry;
++#[cfg(any(
++    feature = "azure",
++    feature = "cos",
++    feature = "gcs",
++    feature = "gha",
++    feature = "memcached",
++    feature = "oss",
++    feature = "redis",
++    feature = "webdav"
++))]
++use crate::config;
+ use crate::config::Config;
+-use crate::config::{self, CacheType, PreprocessorCacheModeConfig};
++use crate::config::{CacheType, PreprocessorCacheModeConfig};
+ use async_trait::async_trait;
+ use bytes::Bytes;
+ 
+@@ -75,6 +85,11 @@ pub trait Storage: Send + Sync {
+     /// finished.
+     async fn put(&self, key: &str, entry: CacheWrite) -> Result<Duration>;
+ 
++    /// Whether this governed storage is configured read-only.
++    fn is_read_only(&self) -> bool {
++        false
++    }
++
+     /// Get raw serialized cache entry bytes by `key` (for multi-level backfill).
+     /// Returns `None` if the entry is not found, or if the implementation doesn't support raw access.
+     /// This is used by multi-level caches to backfill faster levels.
+@@ -215,10 +230,7 @@ impl Storage for RemoteStorage {
+                 Ok(Cache::Hit(hit))
+             }
+             Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(Cache::Miss),
+-            Err(e) => {
+-                warn!("Got unexpected error: {:?}", e);
+-                Ok(Cache::Miss)
+-            }
++            Err(e) => Err(anyhow!("governed cache read failed: {e:?}")),
+         }
+     }
+ 
+@@ -239,18 +251,6 @@ impl Storage for RemoteStorage {
+             Ok(_) => (),
+             // Read not exist file with not found is ok.
+             Err(err) if err.kind() == ErrorKind::NotFound => (),
+-            // Tricky Part.
+-            //
+-            // We tolerate rate limited here to make sccache keep running.
+-            // For the worse case, we will miss all the cache.
+-            //
+-            // In some super rare cases, user could configure storage in wrong
+-            // and hitting other services rate limit. There are few things we
+-            // can do, so we will print our the error here to make users know
+-            // about it.
+-            Err(err) if err.kind() == ErrorKind::RateLimited => {
+-                eprintln!("cache storage read check: {err:?}, but we decide to keep running");
+-            }
+             Err(err) => bail!("cache storage failed to read: {:?}", err),
+         }
+ 
+@@ -261,25 +261,11 @@ impl Storage for RemoteStorage {
+             return Ok(mode);
+         }
+ 
+-        let can_write = match self.operator.write(path, "Hello, World!").await {
+-            Ok(_) => true,
+-            Err(err) if err.kind() == ErrorKind::AlreadyExists => true,
+-            // Tolerate all other write errors because we can do read at least.
+-            Err(err) => {
+-                eprintln!("storage write check failed: {err:?}");
+-                false
+-            }
+-        };
+-
+-        let mode = if can_write {
+-            CacheMode::ReadWrite
+-        } else {
+-            CacheMode::ReadOnly
+-        };
+-
+-        debug!("storage check result: {mode:?}");
+-
+-        Ok(mode)
++        match self.operator.write(path, "Hello, World!").await {
++            Ok(_) => Ok(CacheMode::ReadWrite),
++            Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(CacheMode::ReadWrite),
++            Err(err) => bail!("cache storage failed to write: {err:?}"),
++        }
+     }
+ 
+     fn location(&self) -> String {
+@@ -570,119 +556,154 @@ pub fn build_single_cache(
+     }
+ }
+ 
+-/// Get a suitable `Storage` implementation from configuration.
+-/// Supports both single-cache (backward compatible) and multi-level cache configurations.
++fn governed_cache_mode_from_value(value: Option<&str>) -> Result<CacheMode> {
++    match value {
++        Some("READ_ONLY") => Ok(CacheMode::ReadOnly),
++        Some("READ_WRITE") => Ok(CacheMode::ReadWrite),
++        _ => bail!("SCCACHE_S3_RW_MODE must be exactly READ_ONLY or READ_WRITE"),
++    }
++}
++
++pub fn governed_cache_mode(config: &Config) -> Result<CacheMode> {
++    let requested = std::env::var("SCCACHE_S3_RW_MODE").ok();
++    let requested = governed_cache_mode_from_value(requested.as_deref())?;
++    governed_cache_mode_for_config(config, requested)
++}
++
++fn governed_cache_mode_for_config(config: &Config, requested: CacheMode) -> Result<CacheMode> {
++    let configs = &config.cache_configs;
++    if configs.multilevel.is_some()
++        || configs.disk.is_some()
++        || configs.azure.is_some()
++        || configs.gcs.is_some()
++        || configs.gha.is_some()
++        || configs.memcached.is_some()
++        || configs.redis.is_some()
++        || configs.webdav.is_some()
++        || configs.oss.is_some()
++        || configs.cos.is_some()
++    {
++        bail!("strict sccache permits exactly one S3 cache backend");
++    }
++
++    let configured = match &config.cache {
++        Some(CacheType::S3(s3)) => CacheMode::from(s3.rw_mode),
++        _ => bail!("strict sccache requires the governed S3 cache backend"),
++    };
++    if configured != requested {
++        bail!("configured S3 mode does not match SCCACHE_S3_RW_MODE");
++    }
++    Ok(requested)
++}
++
++/// Build the single governed S3 storage implementation.
+ pub fn storage_from_config(
+     config: &Config,
+     pool: &tokio::runtime::Handle,
+ ) -> Result<Arc<dyn Storage>> {
+-    // Check for multi-level cache configuration
+-    if let Some(multilevel) = MultiLevelStorage::from_config(config, pool)? {
+-        return Ok(Arc::new(multilevel));
+-    }
+-
+-    // Single cache or fallback to disk (backward compatible path)
+-    #[cfg(any(
+-        feature = "azure",
+-        feature = "gcs",
+-        feature = "gha",
+-        feature = "memcached",
+-        feature = "redis",
+-        feature = "s3",
+-        feature = "webdav",
+-        feature = "oss",
+-        feature = "cos"
+-    ))]
+-    if let Some(cache_type) = &config.cache {
+-        debug!("Configuring single cache from CacheType");
+-        return build_single_cache(cache_type, &config.basedirs, pool);
+-    }
+-
+-    // No remote cache configured - use disk cache only
+-    let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
+-    let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
+-    let rw_mode = config.fallback_cache.rw_mode.into();
+-    debug!("Init disk cache with dir {:?}, size {}", dir, size);
+-    Ok(Arc::new(DiskCache::new(
+-        dir,
+-        size,
+-        pool,
+-        preprocessor_cache_mode_config,
+-        rw_mode,
+-        config.basedirs.clone(),
+-    )))
++    governed_cache_mode(config)?;
++    match &config.cache {
++        Some(cache_type @ CacheType::S3(_)) => {
++            build_single_cache(cache_type, &config.basedirs, pool)
++        }
++        _ => bail!("strict sccache requires the governed S3 cache backend"),
++    }
+ }
+ 
+ #[cfg(test)]
+ mod test {
+     use super::*;
+-    use crate::config::CacheModeConfig;
+-    use fs_err as fs;
++    use crate::config::{CacheModeConfig, MultiLevelConfig, S3CacheConfig};
++
++    fn strict_s3_config(mode: CacheModeConfig) -> Config {
++        Config {
++            cache: Some(CacheType::S3(S3CacheConfig {
++                bucket: "strict-test".to_owned(),
++                region: Some("us-east-1".to_owned()),
++                key_prefix: "governed".to_owned(),
++                no_credentials: true,
++                endpoint: None,
++                use_ssl: None,
++                server_side_encryption: None,
++                enable_virtual_host_style: None,
++                rw_mode: mode,
++            })),
++            ..Default::default()
++        }
++    }
++
++    #[test]
++    fn strict_cache_mode_requires_exact_explicit_value() {
++        assert_eq!(
++            governed_cache_mode_from_value(Some("READ_ONLY")).unwrap(),
++            CacheMode::ReadOnly
++        );
++        assert_eq!(
++            governed_cache_mode_from_value(Some("READ_WRITE")).unwrap(),
++            CacheMode::ReadWrite
++        );
++        for invalid in [None, Some(""), Some("read_only"), Some("ReadWrite")] {
++            assert!(governed_cache_mode_from_value(invalid).is_err());
++        }
++    }
+ 
+     #[test]
+-    fn test_read_write_mode_local() {
++    fn strict_local_cache_is_rejected() {
+         let runtime = tokio::runtime::Builder::new_current_thread()
+             .enable_all()
+             .worker_threads(1)
+             .build()
+             .unwrap();
+ 
+-        // Use disk cache.
+-        let mut config = Config {
++        let config = Config {
+             cache: None,
+             ..Default::default()
+         };
++        assert!(storage_from_config(&config, runtime.handle()).is_err());
++    }
+ 
+-        let tempdir = tempfile::Builder::new()
+-            .prefix("sccache_test_rust_cargo")
+-            .tempdir()
+-            .context("Failed to create tempdir")
+-            .unwrap();
+-        let cache_dir = tempdir.path().join("cache");
+-        fs::create_dir(&cache_dir).unwrap();
+-
+-        config.fallback_cache.dir = cache_dir;
+-
+-        // Test Read Write
+-        config.fallback_cache.rw_mode = CacheModeConfig::ReadWrite;
+-
+-        {
+-            let cache = storage_from_config(&config, runtime.handle()).unwrap();
+-
+-            runtime.block_on(async move {
+-                cache.put("test1", CacheWrite::default()).await.unwrap();
+-                cache
+-                    .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
+-                    .await
+-                    .unwrap();
+-            });
+-        }
++    #[test]
++    fn strict_backend_accepts_only_single_matching_s3_mode() {
++        let config = strict_s3_config(CacheModeConfig::ReadWrite);
++        assert_eq!(
++            governed_cache_mode_for_config(&config, CacheMode::ReadWrite).unwrap(),
++            CacheMode::ReadWrite
++        );
++        assert!(governed_cache_mode_for_config(&config, CacheMode::ReadOnly).is_err());
++    }
+ 
+-        // Test Read-only
+-        config.fallback_cache.rw_mode = CacheModeConfig::ReadOnly;
++    #[test]
++    fn strict_backend_rejects_disk_and_multilevel_redirects() {
++        let mut disk = strict_s3_config(CacheModeConfig::ReadWrite);
++        disk.cache_configs.disk = Some(Default::default());
++        assert!(governed_cache_mode_for_config(&disk, CacheMode::ReadWrite).is_err());
++
++        let mut multilevel = strict_s3_config(CacheModeConfig::ReadWrite);
++        multilevel.cache_configs.multilevel = Some(MultiLevelConfig {
++            chain: vec!["s3".to_owned()],
++            write_error_policy: Default::default(),
++        });
++        assert!(governed_cache_mode_for_config(&multilevel, CacheMode::ReadWrite).is_err());
++    }
+ 
+-        {
+-            let cache = storage_from_config(&config, runtime.handle()).unwrap();
++    #[test]
++    #[cfg(feature = "s3")]
++    fn strict_storage_capability_failure_is_fatal() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let operator =
++            crate::cache::s3::S3Cache::new("strict-test".to_owned(), "governed".to_owned(), true)
++                .with_region(Some("us-east-1".to_owned()))
++                .with_endpoint(Some("http://127.0.0.1:1".to_owned()))
++                .with_use_ssl(Some(false))
++                .build()
++                .unwrap();
++        let storage = RemoteStorage::new(operator, vec![], CacheMode::ReadWrite);
+ 
+-            runtime.block_on(async move {
+-                assert_eq!(
+-                    cache
+-                        .put("test1", CacheWrite::default())
+-                        .await
+-                        .unwrap_err()
+-                        .to_string(),
+-                    "Cannot write to a read-only cache"
+-                );
+-                assert_eq!(
+-                    cache
+-                        .put_preprocessor_cache_entry("test1", PreprocessorCacheEntry::default())
+-                        .await
+-                        .unwrap_err()
+-                        .to_string(),
+-                    "Cannot write to a read-only cache"
+-                );
+-            });
+-        }
++        let error = runtime.block_on(storage.check()).unwrap_err();
++        assert!(error.to_string().contains("cache storage failed to read"));
+     }
+ 
+     #[test]
+diff --git a/src/cache/cache_io.rs b/src/cache/cache_io.rs
+index 9e29743..f7b7215 100644
+--- a/src/cache/cache_io.rs
++++ b/src/cache/cache_io.rs
+@@ -17,6 +17,7 @@ use std::fmt;
+ use std::io::{Cursor, Read, Seek, Write};
+ use std::path::{Path, PathBuf};
+ use tempfile::NamedTempFile;
++use zip::result::ZipError;
+ use zip::write::FileOptions;
+ use zip::{CompressionMethod, ZipArchive, ZipWriter};
+ 
+@@ -86,6 +87,17 @@ impl std::fmt::Display for DecompressionFailure {
+ 
+ impl std::error::Error for DecompressionFailure {}
+ 
++#[derive(Debug)]
++struct CacheObjectMissing;
++
++impl std::fmt::Display for CacheObjectMissing {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(f, "cache object is absent")
++    }
++}
++
++impl std::error::Error for CacheObjectMissing {}
++
+ impl CacheRead {
+     /// Create a cache entry from `reader`.
+     pub fn from<R>(reader: R) -> Result<CacheRead>
+@@ -103,7 +115,11 @@ impl CacheRead {
+     where
+         T: Write,
+     {
+-        let file = self.zip.by_name(name).or(Err(DecompressionFailure))?;
++        let file = match self.zip.by_name(name) {
++            Ok(file) => file,
++            Err(ZipError::FileNotFound) => bail!(CacheObjectMissing),
++            Err(_) => bail!(DecompressionFailure),
++        };
+         if file.compression() != CompressionMethod::Stored {
+             bail!(DecompressionFailure);
+         }
+@@ -113,19 +129,22 @@ impl CacheRead {
+     }
+ 
+     /// Get the stdout from this cache entry, if it exists.
+-    pub fn get_stdout(&mut self) -> Vec<u8> {
++    pub fn get_stdout(&mut self) -> Result<Vec<u8>> {
+         self.get_bytes("stdout")
+     }
+ 
+     /// Get the stderr from this cache entry, if it exists.
+-    pub fn get_stderr(&mut self) -> Vec<u8> {
++    pub fn get_stderr(&mut self) -> Result<Vec<u8>> {
+         self.get_bytes("stderr")
+     }
+ 
+-    fn get_bytes(&mut self, name: &str) -> Vec<u8> {
++    fn get_bytes(&mut self, name: &str) -> Result<Vec<u8>> {
+         let mut bytes = Vec::new();
+-        drop(self.get_object(name, &mut bytes));
+-        bytes
++        match self.get_object(name, &mut bytes) {
++            Ok(_) => Ok(bytes),
++            Err(error) if error.downcast_ref::<CacheObjectMissing>().is_some() => Ok(Vec::new()),
++            Err(error) => Err(error),
++        }
+     }
+ 
+     pub async fn extract_objects<T>(
+@@ -163,19 +182,19 @@ impl CacheRead {
+                 // move it to its final location so that other rustc invocations
+                 // happening in parallel don't see a partially-written file.
+                 match (NamedTempFile::new_in(dir), optional) {
+-                    (Ok(mut tmp), _) => {
+-                        match (self.get_object(&key, &mut tmp), optional) {
+-                            (Ok(mode), _) => {
+-                                tmp.persist(&path)?;
+-                                if let Some(mode) = mode {
+-                                    set_file_mode(path.as_path(), mode)?;
+-                                }
++                    (Ok(mut tmp), _) => match (self.get_object(&key, &mut tmp), optional) {
++                        (Ok(mode), _) => {
++                            tmp.persist(&path)?;
++                            if let Some(mode) = mode {
++                                set_file_mode(path.as_path(), mode)?;
+                             }
+-                            (Err(e), false) => return Err(e),
+-                            // skip if no object found and it's optional
+-                            (Err(_), true) => continue,
+                         }
+-                    }
++                        (Err(e), false) => return Err(e),
++                        (Err(e), true) if e.downcast_ref::<CacheObjectMissing>().is_some() => {
++                            continue;
++                        }
++                        (Err(e), true) => return Err(e),
++                    },
+                     (Err(e), false) => {
+                         // Fall back to writing directly to the final location
+                         warn!("Failed to create temp file on the same file system: {e}");
+@@ -322,6 +341,72 @@ impl Default for CacheWrite {
+ mod tests {
+     use super::*;
+ 
++    fn cache_entry_with_raw_member(name: &str, bytes: &[u8]) -> CacheRead {
++        let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
++        archive
++            .start_file(
++                name,
++                FileOptions::default().compression_method(CompressionMethod::Stored),
++            )
++            .unwrap();
++        archive.write_all(bytes).unwrap();
++        CacheRead::from(Cursor::new(archive.finish().unwrap().into_inner())).unwrap()
++    }
++
++    #[test]
++    fn strict_corrupt_stdout_is_fatal() {
++        let mut cache_read = cache_entry_with_raw_member("stdout", b"not-zstd");
++        assert!(cache_read.get_stdout().is_err());
++    }
++
++    #[test]
++    fn strict_corrupt_stderr_is_fatal() {
++        let mut cache_read = cache_entry_with_raw_member("stderr", b"not-zstd");
++        assert!(cache_read.get_stderr().is_err());
++    }
++
++    #[test]
++    fn strict_corrupt_optional_object_is_fatal() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let cache_read = cache_entry_with_raw_member("optional", b"not-zstd");
++        let temporary = tempfile::tempdir().unwrap();
++        let objects = vec![FileObjectSource {
++            key: "optional".to_owned(),
++            path: temporary.path().join("optional.out"),
++            optional: true,
++        }];
++
++        assert!(
++            runtime
++                .block_on(cache_read.extract_objects(objects, runtime.handle()))
++                .is_err()
++        );
++    }
++
++    #[test]
++    fn strict_corrupt_required_object_is_fatal() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let cache_read = cache_entry_with_raw_member("required", b"not-zstd");
++        let temporary = tempfile::tempdir().unwrap();
++        let objects = vec![FileObjectSource {
++            key: "required".to_owned(),
++            path: temporary.path().join("required.out"),
++            optional: false,
++        }];
++
++        assert!(
++            runtime
++                .block_on(cache_read.extract_objects(objects, runtime.handle()))
++                .is_err()
++        );
++    }
++
+     #[cfg(unix)]
+     #[test]
+     fn test_extract_object_to_devnull_works() {
+diff --git a/src/cache/readonly.rs b/src/cache/readonly.rs
+index 40f9873..9f479da 100644
+--- a/src/cache/readonly.rs
++++ b/src/cache/readonly.rs
+@@ -37,6 +37,10 @@ impl Storage for ReadOnlyStorage {
+         Err(anyhow!("Cannot write to read-only storage"))
+     }
+ 
++    fn is_read_only(&self) -> bool {
++        true
++    }
++
+     /// Check the cache capability.
+     ///
+     /// The ReadOnlyStorage cache is always read-only.
+@@ -111,6 +115,7 @@ mod test {
+     #[test]
+     fn readonly_storage_is_readonly() {
+         let storage = ReadOnlyStorage(Arc::new(MockStorage::new(None, false)));
++        assert!(storage.is_read_only());
+         assert_eq!(
+             storage.check().now_or_never().unwrap().unwrap(),
+             CacheMode::ReadOnly
+diff --git a/src/client.rs b/src/client.rs
+index 88d93fc..1f8389a 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -16,7 +16,6 @@ use crate::errors::*;
+ use crate::net::Connection;
+ use crate::protocol::{Request, Response};
+ use crate::util;
+-use backon::BlockingRetryable;
+ use byteorder::{BigEndian, ByteOrder};
+ use std::io::{self, BufReader, BufWriter, Read};
+ 
+@@ -38,6 +37,12 @@ impl ServerConnection {
+         })
+     }
+ 
++    /// Apply the governed timeout to every IPC read and write.
++    pub fn set_timeout(&mut self, timeout: std::time::Duration) -> io::Result<()> {
++        self.reader.get_ref().set_read_timeout(Some(timeout))?;
++        self.writer.get_ref().set_write_timeout(Some(timeout))
++    }
++
+     /// Send `request` to the server, read and return a `Response`.
+     pub fn request(&mut self, request: Request) -> Result<Response> {
+         trace!("ServerConnection::request");
+@@ -69,24 +74,12 @@ pub fn connect_to_server(addr: &crate::net::SocketAddr) -> io::Result<ServerConn
+     ServerConnection::new(conn)
+ }
+ 
+-/// Attempt to establish a TCP connection to an sccache server listening on `addr`.
+-///
+-/// If the connection fails, retry a few times.
+-pub fn connect_with_retry(addr: &crate::net::SocketAddr) -> io::Result<ServerConnection> {
+-    trace!("connect_with_retry({addr})");
+-    // TODOs:
+-    // * Pass the server Child in here, so we can stop retrying
+-    //   if the process exited.
+-    // * Send a pipe handle to the server process so it can notify
+-    //   us once it starts the server instead of us polling.
+-    let backoff = backon::ConstantBuilder::default()
+-        .with_delay(std::time::Duration::from_millis(500))
+-        .with_max_times(10);
+-    match (|| connect_to_server(addr)).retry(backoff).call() {
+-        Ok(conn) => Ok(conn),
+-        Err(e) => Err(io::Error::new(
+-            io::ErrorKind::TimedOut,
+-            format!("Connection to server timed out: {:?}", e),
+-        )),
+-    }
++/// Establish a connection using the governed connect timeout.
++pub fn connect_to_server_with_timeout(
++    addr: &crate::net::SocketAddr,
++    timeout: std::time::Duration,
++) -> io::Result<ServerConnection> {
++    trace!("connect_to_server_with_timeout({addr})");
++    let conn = crate::net::connect_with_timeout(addr, timeout)?;
++    ServerConnection::new(conn)
+ }
+diff --git a/src/commands.rs b/src/commands.rs
+index 8d8406a..699adf5 100644
+--- a/src/commands.rs
++++ b/src/commands.rs
+@@ -12,15 +12,14 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
+-use crate::cache::storage_from_config;
+-use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
++use crate::client::{ServerConnection, connect_to_server, connect_to_server_with_timeout};
+ use crate::cmdline::{Command, StatsFormat};
+ use crate::compiler::ColorMode;
+ use crate::config::{Config, default_disk_cache_dir};
+ use crate::jobserver::Client;
+ use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
+ use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
+-use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
++use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
+ use crate::util::{daemonize, new_client_runtime};
+ use byteorder::{BigEndian, ByteOrder};
+ use fs::{File, OpenOptions};
+@@ -45,9 +44,6 @@ use crate::errors::*;
+ /// The default sccache server port.
+ pub const DEFAULT_PORT: u16 = 4226;
+ 
+-/// The number of milliseconds to wait for server startup.
+-const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_millis(10000);
+-
+ /// Get the port on which the server should listen.
+ fn get_addr() -> crate::net::SocketAddr {
+     #[cfg(unix)]
+@@ -63,14 +59,6 @@ fn get_addr() -> crate::net::SocketAddr {
+     crate::net::SocketAddr::with_port(port)
+ }
+ 
+-/// Check if ignoring all response errors
+-fn ignore_all_server_io_errors() -> bool {
+-    match env::var("SCCACHE_IGNORE_SERVER_IO_ERROR") {
+-        Ok(ignore_server_error) => ignore_server_error == "1",
+-        Err(_) => false,
+-    }
+-}
+-
+ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
+     mut server: R,
+ ) -> Result<ServerStartup> {
+@@ -88,7 +76,7 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
+ /// Re-execute the current executable as a background server, and wait
+ /// for it to start up.
+ #[cfg(not(windows))]
+-fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
++fn run_server_process(startup_timeout: Duration) -> Result<ServerStartup> {
+     trace!("run_server_process");
+     let tempdir = tempfile::Builder::new().prefix("sccache").tempdir()?;
+     let socket_path = tempdir.path().join("sock");
+@@ -117,7 +105,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+         read_server_startup_status(socket).await
+     };
+ 
+-    let timeout = startup_timeout.unwrap_or(SERVER_STARTUP_TIMEOUT);
++    let timeout = startup_timeout;
+     runtime.block_on(async move {
+         match tokio::time::timeout(timeout, startup).await {
+             Ok(result) => result,
+@@ -174,7 +162,7 @@ fn redirect_error_log(f: File) -> Result<()> {
+ 
+ /// Re-execute the current executable as a background server.
+ #[cfg(windows)]
+-fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
++fn run_server_process(startup_timeout: Duration) -> Result<ServerStartup> {
+     use futures::StreamExt;
+     use std::mem;
+     use std::os::windows::ffi::OsStrExt;
+@@ -290,7 +278,7 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+         read_server_startup_status(socket?).await
+     };
+ 
+-    let timeout = startup_timeout.unwrap_or(SERVER_STARTUP_TIMEOUT);
++    let timeout = startup_timeout;
+     runtime.block_on(async move {
+         match tokio::time::timeout(timeout, startup).await {
+             Ok(result) => result,
+@@ -299,44 +287,15 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+     })
+ }
+ 
+-/// Attempt to connect to an sccache server listening on `addr`, or start one if no server is running.
+-fn connect_or_start_server(
+-    addr: &crate::net::SocketAddr,
+-    startup_timeout: Option<Duration>,
+-) -> Result<ServerConnection> {
+-    trace!("connect_or_start_server({addr})");
+-    match connect_to_server(addr) {
+-        Ok(server) => Ok(server),
+-        Err(ref e)
+-            if (e.kind() == io::ErrorKind::ConnectionRefused
+-                || e.kind() == io::ErrorKind::TimedOut)
+-                || (e.kind() == io::ErrorKind::NotFound && addr.is_unix_path()) =>
+-        {
+-            // If the connection was refused we probably need to start
+-            // the server.
+-            match run_server_process(startup_timeout)? {
+-                ServerStartup::Ok { addr: actual_addr } => {
+-                    if addr.to_string() != actual_addr {
+-                        // bail as the next connect_with_retry will fail
+-                        bail!("sccache: Listening on address {actual_addr} instead of {addr}");
+-                    }
+-                }
+-                ServerStartup::AddrInUse => {
+-                    debug!("AddrInUse: possible parallel server bootstraps, retrying..");
+-                }
+-                ServerStartup::TimedOut => bail!(
+-                    "Timed out waiting for server startup. Maybe the remote service is unreachable?\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information"
+-                ),
+-                ServerStartup::Err { reason } => bail!(
+-                    "Server startup failed: {}\nRun with SCCACHE_LOG=debug SCCACHE_NO_DAEMON=1 to get more information",
+-                    reason
+-                ),
+-            }
+-            let server = connect_with_retry(addr)?;
+-            Ok(server)
+-        }
+-        Err(e) => Err(e.into()),
+-    }
++/// Connect to the one server explicitly started for this job.
++fn connect_required(addr: &crate::net::SocketAddr, timeout: Duration) -> Result<ServerConnection> {
++    trace!("connect_required({addr})");
++    let mut server = connect_to_server_with_timeout(addr, timeout)
++        .context("governed sccache server is not running")?;
++    server
++        .set_timeout(timeout)
++        .context("failed to configure governed IPC timeout")?;
++    Ok(server)
+ }
+ 
+ /// Send a `ZeroStats` request to the server, and return the `ServerInfo` request if successful.
+@@ -501,8 +460,7 @@ fn handle_compile_finished(
+ /// If the server returned `CompileStarted`, wait for a `CompileFinished` and
+ /// print the results.
+ ///
+-/// If the server returned `UnhandledCompile`, run the compilation command
+-/// locally using `creator` and return the result.
++/// Only explicit parser classifications authorize direct client execution.
+ #[allow(clippy::too_many_arguments)]
+ fn handle_compile_response<T>(
+     mut creator: T,
+@@ -527,36 +485,18 @@ where
+                     return handle_compile_finished(result, stdout, stderr);
+                 }
+                 Ok(_) => bail!("unexpected response from server"),
+-                Err(e) => {
+-                    match e.downcast_ref::<io::Error>() {
+-                        Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
+-                            eprintln!(
+-                                "sccache: warning: The server looks like it shut down \
+-                                 unexpectedly, compiling locally instead"
+-                            );
+-                        }
+-                        _ => {
+-                            //TODO: something better here?
+-                            if ignore_all_server_io_errors() {
+-                                eprintln!(
+-                                    "sccache: warning: error reading compile response from server \
+-                                     compiling locally instead"
+-                                );
+-                            } else {
+-                                return Err(e)
+-                                    .context("error reading compile response from server");
+-                            }
+-                        }
+-                    }
+-                }
++                Err(e) => return Err(e).context("error reading compile response from server"),
+             }
+         }
+         CompileResponse::UnsupportedCompiler(s) => {
+             debug!("Server sent UnsupportedCompiler: {:?}", s);
+             bail!("Compiler not supported: {:?}", s);
+         }
+-        CompileResponse::UnhandledCompile => {
+-            debug!("Server sent UnhandledCompile");
++        CompileResponse::NotCompilation => {
++            debug!("Server classified invocation as NotCompilation");
++        }
++        CompileResponse::CannotCache(reason) => {
++            debug!("Server classified invocation as CannotCache: {reason}");
+         }
+     }
+ 
+@@ -617,21 +557,15 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+     // Config isn't required for all commands, but if it's broken then we should flag
+     // it early and loudly.
+     let config = &Config::load()?;
+-    let startup_timeout = config.server_startup_timeout;
++    let startup_timeout =
++        crate::config::governed_duration_from_env("SCCACHE_STRICT_STARTUP_TIMEOUT_MS")?;
++    let ipc_timeout = crate::config::governed_duration_from_env("SCCACHE_STRICT_IPC_TIMEOUT_MS")?;
+ 
+     match cmd {
+         Command::ShowStats(fmt, advanced) => {
+             trace!("Command::ShowStats({:?})", fmt);
+-            let stats = match connect_to_server(&get_addr()) {
+-                Ok(srv) => request_stats(srv).context("failed to get stats from server")?,
+-                // If there is no server, spawning a new server would start with zero stats
+-                // anyways, so we can just return (mostly) empty stats directly.
+-                Err(_) => {
+-                    let runtime = new_client_runtime()?;
+-                    let storage = storage_from_config(config, runtime.handle()).ok();
+-                    runtime.block_on(ServerInfo::new(ServerStats::default(), storage.as_deref()))?
+-                }
+-            };
++            let stats = request_stats(connect_required(&get_addr(), ipc_timeout)?)
++                .context("failed to get stats from server")?;
+             match fmt {
+                 StatsFormat::Text => stats.print(advanced),
+                 StatsFormat::Json => serde_json::to_writer(&mut io::stdout(), &stats)?,
+@@ -691,7 +625,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+         }
+         Command::ZeroStats => {
+             trace!("Command::ZeroStats");
+-            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
++            let conn = connect_required(&get_addr(), ipc_timeout)?;
+             request_zero_stats(conn).context("couldn't zero stats on server")?;
+             eprintln!("Statistics zeroed.");
+         }
+@@ -753,7 +687,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+         ),
+         Command::DistStatus => {
+             trace!("Command::DistStatus");
+-            let srv = connect_or_start_server(&get_addr(), startup_timeout)?;
++            let srv = connect_required(&get_addr(), ipc_timeout)?;
+             let status =
+                 request_dist_status(srv).context("failed to get dist-status from server")?;
+             serde_json::to_writer(&mut io::stdout(), &status)?;
+@@ -807,7 +741,7 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+                 });
+ 
+             let jobserver = Client::new();
+-            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
++            let conn = connect_required(&get_addr(), ipc_timeout)?;
+             let mut runtime = new_client_runtime()?;
+             let res = do_compile(
+                 ProcessCommandCreator::new(&jobserver),
+@@ -827,3 +761,129 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+ 
+     Ok(0)
+ }
++
++#[cfg(all(test, unix))]
++mod strict_test {
++    use super::*;
++    use crate::mock_command::{MockChild, exit_status};
++    use crate::test::utils::{new_creator, next_command_calls};
++    use std::os::unix::net::UnixStream;
++
++    fn connection_pair() -> (ServerConnection, UnixStream) {
++        let (client, server) = UnixStream::pair().unwrap();
++        (ServerConnection::new(Box::new(client)).unwrap(), server)
++    }
++
++    #[test]
++    fn strict_cannot_cache_reason_authorizes_one_client_command() {
++        let creator = new_creator();
++        next_command_calls(&creator, |arguments| {
++            assert_eq!(arguments, [OsString::from("-")]);
++            Ok(MockChild::new(exit_status(0), "classified stdout", ""))
++        });
++        let (mut connection, _server) = connection_pair();
++        let mut runtime = new_client_runtime().unwrap();
++        let mut stdout = Vec::new();
++        let mut stderr = Vec::new();
++
++        let result = handle_compile_response(
++            creator,
++            &mut runtime,
++            &mut connection,
++            CompileResponse::CannotCache("-".to_owned()),
++            Path::new("rustc"),
++            vec![OsString::from("-")],
++            Path::new("."),
++            &mut stdout,
++            &mut stderr,
++        )
++        .unwrap();
++
++        assert_eq!(result, 0);
++        assert!(stderr.is_empty());
++    }
++
++    #[test]
++    fn strict_not_compilation_preserves_output_arguments() {
++        let creator = new_creator();
++        let expected = vec![
++            OsString::from("probe.rs"),
++            OsString::from("--emit"),
++            OsString::from("asm"),
++            OsString::from("-o"),
++            OsString::from("probe.s"),
++        ];
++        let observed = expected.clone();
++        next_command_calls(&creator, move |arguments| {
++            assert_eq!(arguments, observed);
++            Ok(MockChild::new(exit_status(0), "", ""))
++        });
++        let (mut connection, _server) = connection_pair();
++        let mut runtime = new_client_runtime().unwrap();
++        let mut stdout = Vec::new();
++        let mut stderr = Vec::new();
++
++        let result = handle_compile_response(
++            creator,
++            &mut runtime,
++            &mut connection,
++            CompileResponse::NotCompilation,
++            Path::new("rustc"),
++            expected,
++            Path::new("."),
++            &mut stdout,
++            &mut stderr,
++        )
++        .unwrap();
++
++        assert_eq!(result, 0);
++    }
++
++    #[test]
++    fn strict_eof_after_compile_started_never_spawns() {
++        let creator = new_creator();
++        let (mut connection, server) = connection_pair();
++        drop(server);
++        let mut runtime = new_client_runtime().unwrap();
++        let mut stdout = Vec::new();
++        let mut stderr = Vec::new();
++
++        let result = handle_compile_response(
++            creator,
++            &mut runtime,
++            &mut connection,
++            CompileResponse::CompileStarted,
++            Path::new("rustc"),
++            Vec::new(),
++            Path::new("."),
++            &mut stdout,
++            &mut stderr,
++        );
++
++        assert!(result.is_err());
++    }
++
++    #[test]
++    fn strict_missing_server_is_an_error() {
++        let temporary = tempfile::tempdir().unwrap();
++        let address = crate::net::SocketAddr::Unix(temporary.path().join("missing.sock"));
++
++        let result = connect_required(&address, Duration::from_millis(25));
++
++        assert!(result.is_err());
++    }
++
++    #[test]
++    fn strict_timeout_values_must_be_positive_decimal_milliseconds() {
++        assert_eq!(
++            crate::config::governed_duration_from_value("SCCACHE_STRICT_IPC_TIMEOUT_MS", "25",)
++                .unwrap(),
++            Duration::from_millis(25)
++        );
++        for invalid in ["", "0", "-1", " 25", "25 ", "1.5"] {
++            assert!(
++                crate::config::governed_duration_from_value("STRICT_TIMEOUT", invalid).is_err()
++            );
++        }
++    }
++}
+diff --git a/src/compiler/compiler.rs b/src/compiler/compiler.rs
+index 78bb5a4..16f8d59 100644
+--- a/src/compiler/compiler.rs
++++ b/src/compiler/compiler.rs
+@@ -13,7 +13,7 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
+-use crate::cache::{Cache, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
++use crate::cache::{Cache, CacheWrite, FileObjectSource, Storage};
+ use crate::compiler::args::*;
+ use crate::compiler::c::{CCompiler, CCompilerKind};
+ use crate::compiler::cicc::Cicc;
+@@ -585,9 +585,8 @@ where
+             }
+         };
+ 
+-        // Set a maximum time limit for the cache to respond before we forge
+-        // ahead ourselves with a compilation.
+-        let timeout = Duration::new(60, 0);
++        let timeout =
++            crate::config::governed_duration_from_env("SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS")?;
+         let cache_status = async {
+             let res = tokio::time::timeout(timeout, cache_status).await;
+             let duration = start.elapsed();
+@@ -612,8 +611,8 @@ where
+                 );
+                 let output = process::Output {
+                     status: exit_status(0),
+-                    stdout: entry.get_stdout(),
+-                    stderr: entry.get_stderr(),
++                    stdout: entry.get_stdout()?,
++                    stderr: entry.get_stderr()?,
+                 };
+ 
+                 let filtered_outputs = if compilation.is_locally_preprocessed() {
+@@ -638,17 +637,8 @@ where
+                 };
+ 
+                 let hit = CompileResult::CacheHit(duration);
+-                match entry.extract_objects(filtered_outputs, &pool).await {
+-                    Ok(()) => Ok(CacheLookupResult::Success(hit, output)),
+-                    Err(e) => {
+-                        if e.downcast_ref::<DecompressionFailure>().is_some() {
+-                            debug!("[{}]: Failed to decompress object", out_pretty);
+-                            Ok(CacheLookupResult::Miss(MissType::CacheReadError))
+-                        } else {
+-                            Err(e)
+-                        }
+-                    }
+-                }
++                entry.extract_objects(filtered_outputs, &pool).await?;
++                Ok(CacheLookupResult::Success(hit, output))
+             }
+             (Ok(Ok(Cache::Miss)), duration) => {
+                 debug!(
+@@ -674,23 +664,16 @@ where
+                 );
+                 Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
+             }
+-            (Ok(Err(err)), duration) => {
+-                error!(
+-                    "[{}]: Cache read error: {:?} in {}",
+-                    out_pretty,
+-                    err,
+-                    fmt_duration_as_secs(&duration)
+-                );
+-                Ok(CacheLookupResult::Miss(MissType::CacheReadError))
+-            }
+-            (Err(_), duration) => {
+-                debug!(
+-                    "[{}]: Cache timed out {}",
+-                    out_pretty,
++            (Ok(Err(err)), duration) => Err(err).with_context(|| {
++                format!(
++                    "governed cache read failed for {out_pretty} after {}",
+                     fmt_duration_as_secs(&duration)
+-                );
+-                Ok(CacheLookupResult::Miss(MissType::TimedOut))
+-            }
++                )
++            }),
++            (Err(_), duration) => bail!(
++                "governed cache read timed out for {out_pretty} after {}",
++                fmt_duration_as_secs(&duration)
++            ),
+         }?;
+ 
+         match lookup {
+@@ -770,6 +753,16 @@ where
+                         compiler_result,
+                     ));
+                 }
++                if storage.is_read_only() {
++                    return Ok((
++                        CompileResult::ReadOnlyCacheMiss(
++                            miss_type,
++                            dist_type,
++                            duration_compilation,
++                        ),
++                        compiler_result,
++                    ));
++                }
+                 debug!(
+                     "[{}]: Compiled in {}, storing in cache",
+                     out_pretty,
+@@ -1234,6 +1227,8 @@ pub enum CompileResult {
+         Duration, // Compilation time
+         Pin<Box<dyn Future<Output = Result<CacheWriteInfo>> + Send>>,
+     ),
++    /// A governed read-only miss compiled without attempting a cache write.
++    ReadOnlyCacheMiss(MissType, DistType, Duration),
+     /// Not in cache and do not cache the results of the compilation.
+     NotCached(DistType, Duration),
+     /// Not in cache, but the compilation result was determined to be not cacheable.
+@@ -1260,6 +1255,11 @@ impl fmt::Debug for CompileResult {
+             CompileResult::CacheMiss(ref m, ref dt, ref d, _) => {
+                 write!(f, "CompileResult::CacheMiss({:?}, {:?}, {:?}, _)", d, m, dt)
+             }
++            CompileResult::ReadOnlyCacheMiss(ref m, ref dt, ref d) => write!(
++                f,
++                "CompileResult::ReadOnlyCacheMiss({:?}, {:?}, {:?})",
++                d, m, dt
++            ),
+             CompileResult::NotCached(ref dt, ref d) => {
+                 write!(f, "CompileResult::NotCached({:?}, {:?}_", dt, d)
+             }
+@@ -1282,6 +1282,10 @@ impl PartialEq<CompileResult> for CompileResult {
+             (CompileResult::CacheMiss(m, dt, _, _), CompileResult::CacheMiss(n, dt2, _, _)) => {
+                 m == n && dt == dt2
+             }
++            (
++                CompileResult::ReadOnlyCacheMiss(m, dt, _),
++                CompileResult::ReadOnlyCacheMiss(n, dt2, _),
++            ) => m == n && dt == dt2,
+             (CompileResult::NotCached(dt, _), CompileResult::NotCached(dt2, _)) => dt == dt2,
+             (CompileResult::NotCacheable(dt, _), CompileResult::NotCacheable(dt2, _)) => dt == dt2,
+             (CompileResult::CompileFailed(dt, _), CompileResult::CompileFailed(dt2, _)) => {
+@@ -2801,8 +2805,7 @@ LLVM version: 6.0",
+ 
+     #[test_case(true ; "with preprocessor cache")]
+     #[test_case(false ; "without preprocessor cache")]
+-    /// Test that a cache read that results in an error is treated as a cache
+-    /// miss.
++    /// Test that a cache read error stops before compiler execution.
+     fn test_compiler_get_cached_or_compile_cache_error(preprocessor_cache_mode: bool) {
+         drop(env_logger::try_init());
+         let creator = new_creator();
+@@ -2838,21 +2841,7 @@ LLVM version: 6.0",
+             &creator,
+             Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
+         );
+-        // The compiler invocation.
+-        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
+-        const COMPILER_STDERR: &[u8] = b"compiler stderr";
+         let obj = f.tempdir.path().join("foo.o");
+-        let o = obj.clone();
+-        next_command_calls(&creator, move |_| {
+-            // Pretend to compile something.
+-            let mut f = File::create(&o)?;
+-            f.write_all(b"file contents")?;
+-            Ok(MockChild::new(
+-                exit_status(0),
+-                COMPILER_STDOUT,
+-                COMPILER_STDERR,
+-            ))
+-        });
+         let cwd = f.tempdir.path();
+         let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
+         let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
+@@ -2861,7 +2850,7 @@ LLVM version: 6.0",
+         };
+         // The cache will return an error.
+         storage.next_get(Err(anyhow!("Some Error")));
+-        let (cached, res) = runtime
++        let error = runtime
+             .block_on(hasher.get_cached_or_compile(
+                 &service,
+                 None,
+@@ -2873,20 +2862,81 @@ LLVM version: 6.0",
+                 CacheControl::Default,
+                 pool,
+             ))
++            .unwrap_err();
++        assert!(error.to_string().contains("governed cache read failed"));
++        assert!(!obj.exists());
++    }
++
++    #[test_case(true ; "with preprocessor cache")]
++    #[test_case(false ; "without preprocessor cache")]
++    fn strict_read_only_miss_never_attempts_cache_put(preprocessor_cache_mode: bool) {
++        drop(env_logger::try_init());
++        let creator = new_creator();
++        let f = TestFixture::new();
++        let gcc = f.mk_bin("gcc").unwrap();
++        let runtime = Runtime::new().unwrap();
++        let pool = runtime.handle().clone();
++        let storage = Arc::new(MockStorage::new_read_only(None, preprocessor_cache_mode));
++        let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
++
++        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
++        next_command(
++            &creator,
++            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
++        );
++        let c = get_compiler_info(
++            creator.clone(),
++            &gcc,
++            f.tempdir.path(),
++            &[],
++            &[],
++            &pool,
++            None,
++        )
++        .wait()
++        .unwrap()
++        .0;
++        next_command(
++            &creator,
++            Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
++        );
++        let obj = f.tempdir.path().join("foo.o");
++        let output = obj.clone();
++        next_command_calls(&creator, move |_| {
++            File::create(&output)?.write_all(b"file contents")?;
++            Ok(MockChild::new(
++                exit_status(0),
++                "compiler stdout",
++                "compiler stderr",
++            ))
++        });
++        let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
++        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
++            CompilerArguments::Ok(hasher) => hasher,
++            other => panic!("Bad result from parse_arguments: {other:?}"),
++        };
++        storage.next_get(Ok(Cache::Miss));
++
++        let (cached, result) = runtime
++            .block_on(hasher.get_cached_or_compile(
++                &service,
++                None,
++                creator,
++                storage.clone(),
++                arguments,
++                f.tempdir.path().to_path_buf(),
++                vec![],
++                CacheControl::Default,
++                pool,
++            ))
+             .unwrap();
+-        // Ensure that the object file was created.
+-        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
+-        match cached {
+-            CompileResult::CacheMiss(MissType::CacheReadError, DistType::NoDist, _, f) => {
+-                // wait on cache write future so we don't race with it!
+-                let _ = f.wait();
+-            }
+-            _ => panic!("Unexpected compile result: {:?}", cached),
+-        }
+ 
+-        assert_eq!(exit_status(0), res.status);
+-        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
+-        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
++        assert!(matches!(
++            cached,
++            CompileResult::ReadOnlyCacheMiss(MissType::Normal, DistType::NoDist, _)
++        ));
++        assert_eq!(result.status, exit_status(0));
++        assert_eq!(storage.put_count(), 0);
+     }
+ 
+     #[test_case(true ; "with preprocessor cache")]
+diff --git a/src/compiler/nvcc.rs b/src/compiler/nvcc.rs
+index e6f72a7..8ec211c 100644
+--- a/src/compiler/nvcc.rs
++++ b/src/compiler/nvcc.rs
+@@ -1183,7 +1183,7 @@ fn remap_generated_filenames(
+                                 // Don't use the count as the first character of the file name, because the file name
+                                 // may be used as an identifier (via the __FILE__ macro) and identifiers with leading
+                                 // digits are not valid in C/C++, i.e. `x_0.cudafe1.cpp` instead of `0.cudafe1.cpp`.
+-                                .join("x_".to_owned() + &count + extension)
++                                .join("x_".to_owned() + count.as_str() + extension)
+                                 .to_string_lossy()
+                                 .to_string()
+                         })
+diff --git a/src/config.rs b/src/config.rs
+index cef32b2..d957738 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -37,6 +37,24 @@ use typed_path::Utf8TypedPathBuf;
+ 
+ use crate::errors::*;
+ 
++pub fn governed_duration_from_value(name: &str, value: &str) -> Result<std::time::Duration> {
++    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
++        bail!("{name} must be a positive decimal millisecond value");
++    }
++    let millis = value
++        .parse::<u64>()
++        .with_context(|| format!("{name} must fit in an unsigned 64-bit integer"))?;
++    if millis == 0 {
++        bail!("{name} must be greater than zero");
++    }
++    Ok(std::time::Duration::from_millis(millis))
++}
++
++pub fn governed_duration_from_env(name: &str) -> Result<std::time::Duration> {
++    let value = env::var(name).with_context(|| format!("{name} is required"))?;
++    governed_duration_from_value(name, &value)
++}
++
+ /// Defines how the multi-level cache handles write failures.
+ #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "lowercase")]
+diff --git a/src/net.rs b/src/net.rs
+index 43965d0..c7f8a57 100644
+--- a/src/net.rs
++++ b/src/net.rs
+@@ -114,6 +114,8 @@ impl Acceptor for tokio::net::TcpListener {
+ // A helper trait to unify the behavior of TCP and UDS stream.
+ pub trait Connection: std::io::Read + std::io::Write {
+     fn try_clone(&self) -> std::io::Result<Box<dyn Connection>>;
++    fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()>;
++    fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()>;
+ }
+ 
+ impl Connection for std::net::TcpStream {
+@@ -122,6 +124,14 @@ impl Connection for std::net::TcpStream {
+         let stream = std::net::TcpStream::try_clone(self)?;
+         Ok(Box::new(stream))
+     }
++
++    fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
++        std::net::TcpStream::set_read_timeout(self, timeout)
++    }
++
++    fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
++        std::net::TcpStream::set_write_timeout(self, timeout)
++    }
+ }
+ 
+ // Helper function to create a stream. Uses dynamic dispatch to make code more
+@@ -144,6 +154,26 @@ pub fn connect(addr: &SocketAddr) -> std::io::Result<Box<dyn Connection>> {
+     }
+ }
+ 
++/// Connect with the governed timeout when the platform socket API supports it.
++pub fn connect_with_timeout(
++    addr: &SocketAddr,
++    timeout: std::time::Duration,
++) -> std::io::Result<Box<dyn Connection>> {
++    match addr {
++        SocketAddr::Net(addr) => std::net::TcpStream::connect_timeout(addr, timeout)
++            .map(|stream| Box::new(stream) as Box<dyn Connection>),
++        #[cfg(unix)]
++        SocketAddr::Unix(path) => std::os::unix::net::UnixStream::connect(path)
++            .map(|stream| Box::new(stream) as Box<dyn Connection>),
++        #[cfg(any(target_os = "linux", target_os = "android"))]
++        SocketAddr::UnixAbstract(path) => {
++            let address = std::os::unix::net::SocketAddr::from_abstract_name(path)?;
++            std::os::unix::net::UnixStream::connect_addr(&address)
++                .map(|stream| Box::new(stream) as Box<dyn Connection>)
++        }
++    }
++}
++
+ #[cfg(unix)]
+ mod unix_imp {
+     use futures::TryFutureExt;
+@@ -180,5 +210,13 @@ mod unix_imp {
+             let stream = std::os::unix::net::UnixStream::try_clone(self)?;
+             Ok(Box::new(stream))
+         }
++
++        fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
++            std::os::unix::net::UnixStream::set_read_timeout(self, timeout)
++        }
++
++        fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
++            std::os::unix::net::UnixStream::set_write_timeout(self, timeout)
++        }
+     }
+ }
+diff --git a/src/protocol.rs b/src/protocol.rs
+index 8760ba6..0dc1fff 100644
+--- a/src/protocol.rs
++++ b/src/protocol.rs
+@@ -40,8 +40,10 @@ pub enum Response {
+ pub enum CompileResponse {
+     /// The compilation was started.
+     CompileStarted,
+-    /// The server could not handle this compilation request.
+-    UnhandledCompile,
++    /// The parser classified this invocation as not being a compilation.
++    NotCompilation,
++    /// The parser classified this invocation as a compilation that cannot be cached.
++    CannotCache(String),
+     /// The compiler was not supported.
+     UnsupportedCompiler(OsString),
+ }
+diff --git a/src/server.rs b/src/server.rs
+index 98cedfb..40bc4c5 100644
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -13,10 +13,10 @@
+ // limitations under the License.SCCACHE_MAX_FRAME_LENGTH
+ 
+ use crate::cache::readonly::ReadOnlyStorage;
+-use crate::cache::{CacheMode, Storage, storage_from_config};
++use crate::cache::{CacheMode, Storage, governed_cache_mode, storage_from_config};
+ use crate::compiler::{
+-    CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
+-    CompilerProxy, DistType, Language, MissType, get_compiler_info,
++    CacheControl, CacheWriteInfo, CompileResult, Compiler, CompilerArguments, CompilerHasher,
++    CompilerKind, CompilerProxy, DistType, Language, MissType, get_compiler_info,
+ };
+ #[cfg(feature = "dist-client")]
+ use crate::config;
+@@ -465,6 +465,7 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+         }
+     };
+ 
++    let configured_mode = governed_cache_mode(config)?;
+     let cache_mode = runtime.block_on(async {
+         match raw_storage.check().await {
+             Ok(mode) => Ok(mode),
+@@ -482,6 +483,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+             }
+         }
+     })?;
++    if cache_mode != configured_mode {
++        bail!("cache storage negotiated {cache_mode:?}, expected {configured_mode:?}");
++    }
+     info!("server has setup with {cache_mode:?}");
+ 
+     let storage = match cache_mode {
+@@ -1276,17 +1280,20 @@ where
+                         let mut stats = self.stats.lock().await;
+                         stats.requests_not_cacheable += 1;
+                         *stats.not_cached.entry(why.to_string()).or_insert(0) += 1;
++                        return Message::WithoutBody(Response::Compile(
++                            CompileResponse::CannotCache(why.to_string()),
++                        ));
+                     }
+                     CompilerArguments::NotCompilation => {
+                         debug!("parse_arguments: NotCompilation: {:?}", cmd);
+                         self.stats.lock().await.requests_not_compile += 1;
++                        return Message::WithoutBody(Response::Compile(
++                            CompileResponse::NotCompilation,
++                        ));
+                     }
+                 }
+             }
+         }
+-
+-        let res = CompileResponse::UnhandledCompile;
+-        Message::WithoutBody(Response::Compile(res))
+     }
+ 
+     /// Given compiler arguments `arguments`, look up
+@@ -1300,18 +1307,9 @@ where
+         cwd: PathBuf,
+         env_vars: Vec<(OsString, OsString)>,
+     ) -> Result<CompileFinished> {
++        reject_forced_cache_modes(&env_vars)?;
+         self.stats.lock().await.requests_executed += 1;
+-
+-        let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
+-        let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
+-
+-        let cache_control = if force_no_cache {
+-            CacheControl::ForceNoCache
+-        } else if force_recache {
+-            CacheControl::ForceRecache
+-        } else {
+-            CacheControl::Default
+-        };
++        let cache_control = CacheControl::Default;
+ 
+         let out_pretty = hasher.output_pretty().into_owned();
+         let color_mode = hasher.color_mode();
+@@ -1416,6 +1414,16 @@ where
+                                 debug!("stats after compile result: {stats:?}");
+                                 cache_write = Some(future);
+                             }
++                            CompileResult::ReadOnlyCacheMiss(miss_type, dt, duration) => {
++                                debug!("[{}]: governed read-only cache miss", out_pretty);
++                                dist_type = dt;
++                                if miss_type != MissType::Normal {
++                                    bail!("read-only compilation reached a non-normal cache miss");
++                                }
++                                stats.compilations += 1;
++                                stats.cache_misses.increment(&kind, &lang);
++                                stats.compiler_write_duration += duration;
++                            }
+                             CompileResult::NotCached(dt, duration) => {
+                                 debug!("[{}]: compile result: not cached", out_pretty);
+                                 dist_type = dt;
+@@ -1519,13 +1527,13 @@ where
+                 }
+ 
+                 if let Some(cache_write) = cache_write {
+-                    match cache_write.await {
+-                        Err(e) => {
+-                            debug!("Error executing cache write: {}", e);
+-                            me.stats.lock().await.cache_write_errors += 1;
+-                        }
+-                        //TODO: save cache stats!
+-                        Ok(info) => {
++                    let write_timeout = crate::config::governed_duration_from_env(
++                        "SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS",
++                    )?;
++                    match complete_required_cache_write(cache_write, write_timeout, &mut res).await
++                    {
++                        None => me.stats.lock().await.cache_write_errors += 1,
++                        Some(info) => {
+                             debug!(
+                                 "[{}]: Cache write finished in {}",
+                                 info.object_file_pretty,
+@@ -1579,6 +1587,39 @@ impl PerLanguageCount {
+     }
+ }
+ 
++fn reject_forced_cache_modes(env_vars: &[(OsString, OsString)]) -> Result<()> {
++    if env_vars
++        .iter()
++        .any(|(key, _)| key == "SCCACHE_NO_CACHE" || key == "SCCACHE_RECACHE")
++    {
++        bail!("strict sccache rejects SCCACHE_NO_CACHE and SCCACHE_RECACHE");
++    }
++    Ok(())
++}
++
++async fn complete_required_cache_write(
++    cache_write: Pin<Box<dyn Future<Output = Result<CacheWriteInfo>> + Send>>,
++    timeout: Duration,
++    response: &mut CompileFinished,
++) -> Option<CacheWriteInfo> {
++    match tokio::time::timeout(timeout, cache_write).await {
++        Err(_) => {
++            error!("Required cache write timed out");
++            response.retcode = Some(-2);
++            response.stderr = b"sccache: required cache write timed out\n".to_vec();
++            None
++        }
++        Ok(Err(error)) => {
++            error!("Error executing required cache write: {error}");
++            response.retcode = Some(-2);
++            response.stderr =
++                format!("sccache: required cache write failed: {error}\n").into_bytes();
++            None
++        }
++        Ok(Ok(info)) => Some(info),
++    }
++}
++
+ /// Statistics about the server.
+ #[derive(Serialize, Deserialize, Clone, Debug)]
+ pub struct ServerStats {
+@@ -2282,6 +2323,49 @@ fn waits_until_zero() {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn strict_forced_cache_modes_are_rejected() {
++        for name in ["SCCACHE_NO_CACHE", "SCCACHE_RECACHE"] {
++            let env_vars = vec![(OsString::from(name), OsString::from("1"))];
++            assert!(reject_forced_cache_modes(&env_vars).is_err());
++        }
++        assert!(reject_forced_cache_modes(&[]).is_ok());
++    }
++
++    #[test]
++    fn strict_required_cache_write_error_invalidates_compile_result() {
++        let runtime = Runtime::new().unwrap();
++        let mut response = CompileFinished::default();
++        let write = Box::pin(async { Err(anyhow!("write denied")) });
++
++        let completed = runtime.block_on(complete_required_cache_write(
++            write,
++            Duration::from_secs(1),
++            &mut response,
++        ));
++
++        assert!(completed.is_none());
++        assert_eq!(response.retcode, Some(-2));
++        assert!(String::from_utf8_lossy(&response.stderr).contains("write denied"));
++    }
++
++    #[test]
++    fn strict_required_cache_write_timeout_invalidates_compile_result() {
++        let runtime = Runtime::new().unwrap();
++        let mut response = CompileFinished::default();
++        let write = Box::pin(future::pending());
++
++        let completed = runtime.block_on(complete_required_cache_write(
++            write,
++            Duration::from_millis(1),
++            &mut response,
++        ));
++
++        assert!(completed.is_none());
++        assert_eq!(response.retcode, Some(-2));
++        assert!(String::from_utf8_lossy(&response.stderr).contains("timed out"));
++    }
++
+     struct StringWriter {
+         buffer: String,
+     }
+diff --git a/src/test/mock_storage.rs b/src/test/mock_storage.rs
+index d4260e7..1558d10 100644
+--- a/src/test/mock_storage.rs
++++ b/src/test/mock_storage.rs
+@@ -18,6 +18,7 @@ use crate::errors::*;
+ use async_trait::async_trait;
+ use futures::channel::mpsc;
+ use std::sync::Arc;
++use std::sync::atomic::{AtomicUsize, Ordering};
+ use std::time::Duration;
+ use tokio::sync::Mutex;
+ use tokio::time::sleep;
+@@ -28,6 +29,8 @@ pub struct MockStorage {
+     tx: mpsc::UnboundedSender<Result<Cache>>,
+     delay: Option<Duration>,
+     preprocessor_cache_mode: bool,
++    read_only: bool,
++    put_count: AtomicUsize,
+ }
+ 
+ impl MockStorage {
+@@ -39,6 +42,19 @@ impl MockStorage {
+             rx: Arc::new(Mutex::new(rx)),
+             delay,
+             preprocessor_cache_mode,
++            read_only: false,
++            put_count: AtomicUsize::new(0),
++        }
++    }
++
++    /// Create a read-only mock that counts any forbidden put attempt.
++    pub(crate) fn new_read_only(
++        delay: Option<Duration>,
++        preprocessor_cache_mode: bool,
++    ) -> MockStorage {
++        MockStorage {
++            read_only: true,
++            ..Self::new(delay, preprocessor_cache_mode)
+         }
+     }
+ 
+@@ -46,6 +62,10 @@ impl MockStorage {
+     pub(crate) fn next_get(&self, res: Result<Cache>) {
+         self.tx.unbounded_send(res).unwrap();
+     }
++
++    pub(crate) fn put_count(&self) -> usize {
++        self.put_count.load(Ordering::SeqCst)
++    }
+ }
+ 
+ #[async_trait]
+@@ -59,6 +79,7 @@ impl Storage for MockStorage {
+         next.expect("MockStorage get called but no get results available")
+     }
+     async fn put(&self, _key: &str, _entry: CacheWrite) -> Result<Duration> {
++        self.put_count.fetch_add(1, Ordering::SeqCst);
+         Ok(if let Some(delay) = self.delay {
+             sleep(delay).await;
+             delay
+@@ -66,6 +87,9 @@ impl Storage for MockStorage {
+             Duration::from_secs(0)
+         })
+     }
++    fn is_read_only(&self) -> bool {
++        self.read_only
++    }
+     fn location(&self) -> String {
+         "Mock Storage".to_string()
+     }

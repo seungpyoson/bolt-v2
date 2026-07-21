@@ -12,8 +12,12 @@ patch = "ci/sccache-strict/sccache-v0.16.0-strict.patch"
 container = "docker.io/clux/muslrust@sha256:76df925f30e106755517c78cd57b6ea890a73d6f59fcff842849006e734c174e"
 rustc_release = "1.97.1"
 rustc_commit = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
-features = ["s3"]
+features = ["s3", "vendored-openssl"]
+default_features = false
 profile = "release"
+
+[verification]
+strict_timeout_ms = 1000
 
 [targets.ARM64]
 triple = "aarch64-unknown-linux-musl"

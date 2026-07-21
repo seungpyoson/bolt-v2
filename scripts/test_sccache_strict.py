@@ -42,9 +42,11 @@ def valid_document() -> dict[str, object]:
             "container": f"docker.io/clux/muslrust@{CONTAINER_DIGEST}",
             "rustc_release": "1.97.1",
             "rustc_commit": RUSTC_COMMIT,
-            "features": ["s3"],
+            "features": ["s3", "vendored-openssl"],
+            "default_features": False,
             "profile": "release",
         },
+        "verification": {"strict_timeout_ms": 1_000},
         "targets": {
             "ARM64": {
                 "triple": "aarch64-unknown-linux-musl",
@@ -59,6 +61,20 @@ def valid_document() -> dict[str, object]:
 
 
 class LoadConfigTests(unittest.TestCase):
+    def test_loads_governed_verification_timeout(self) -> None:
+        config = sccache_strict.load_document(valid_document(), repo_root=REPO_ROOT)
+
+        self.assertEqual(config.verification_timeout_ms, 1_000)
+
+    def test_rejects_non_positive_verification_timeout(self) -> None:
+        document = valid_document()
+        document["verification"] = {"strict_timeout_ms": 0}
+
+        with self.assertRaisesRegex(
+            ValueError, "verification.strict_timeout_ms must be a positive integer"
+        ):
+            sccache_strict.load_document(document, repo_root=REPO_ROOT)
+
     def test_loads_exact_pinned_build(self) -> None:
         config = sccache_strict.load_config(REPO_ROOT / "ci/sccache-strict.toml")
 
@@ -67,6 +83,8 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.source_sha256, SOURCE_SHA256)
         self.assertEqual(config.container_digest, CONTAINER_DIGEST)
         self.assertEqual(config.rustc_commit, RUSTC_COMMIT)
+        self.assertEqual(config.features, ("s3", "vendored-openssl"))
+        self.assertFalse(config.default_features)
         self.assertEqual(set(config.targets), {"ARM64", "X64"})
 
     def test_rejects_unknown_top_level_key(self) -> None:
@@ -143,6 +161,7 @@ class ManifestTests(unittest.TestCase):
         )
         self.repository = "seungpyoson/bolt-v2"
         self.run_id = "29814080045"
+        self.run_attempt = "1"
         self.head_sha = "1" * 40
         self.binary_paths: dict[tuple[str, str], pathlib.Path] = {}
         self.manifests: list[dict[str, object]] = []
@@ -161,6 +180,7 @@ class ManifestTests(unittest.TestCase):
                     binary_path=binary_path,
                     repository=self.repository,
                     run_id=self.run_id,
+                    run_attempt=self.run_attempt,
                     head_sha=self.head_sha,
                     architecture=architecture,
                     replica=replica,
@@ -177,6 +197,7 @@ class ManifestTests(unittest.TestCase):
             patch_path=self.patch_path,
             repository=self.repository,
             run_id=self.run_id,
+            run_attempt=self.run_attempt,
             head_sha=self.head_sha,
         )
 
@@ -194,6 +215,13 @@ class ManifestTests(unittest.TestCase):
         self.manifests[0]["run_id"] = "other-run"
 
         with self.assertRaisesRegex(ValueError, "same workflow run"):
+            self.verify()
+
+    def test_rejects_cross_attempt_manifest(self) -> None:
+        self.manifests[0] = copy.deepcopy(self.manifests[0])
+        self.manifests[0]["run_attempt"] = "2"
+
+        with self.assertRaisesRegex(ValueError, "same workflow attempt"):
             self.verify()
 
     def test_rejects_changed_binary_bytes(self) -> None:
@@ -215,7 +243,6 @@ class ManifestTests(unittest.TestCase):
 class PublishGateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.sha = "2" * 40
-        self.immutable = {"enabled": True}
         self.environment = {
             "name": "strict-sccache-publisher",
             "deployment_branch_policy": {
@@ -231,19 +258,12 @@ class PublishGateTests(unittest.TestCase):
             event_sha=self.sha,
             remote_main_sha=self.sha,
             event_ref="refs/heads/main",
-            immutable_document=self.immutable,
             environment_document=self.environment,
             environment_name="strict-sccache-publisher",
         )
 
-    def test_accepts_exact_main_with_live_controls(self) -> None:
+    def test_accepts_exact_main_with_protected_environment(self) -> None:
         self.validate()
-
-    def test_rejects_disabled_immutable_releases(self) -> None:
-        self.immutable["enabled"] = False
-
-        with self.assertRaisesRegex(ValueError, "immutable releases are not enabled"):
-            self.validate()
 
     def test_rejects_missing_environment(self) -> None:
         self.environment = {}
@@ -274,6 +294,7 @@ class ReleaseRecordTests(unittest.TestCase):
                             binary_path=binary_path,
                             repository="seungpyoson/bolt-v2",
                             run_id="123",
+                            run_attempt="1",
                             head_sha="3" * 40,
                             architecture=architecture,
                             replica=replica,
@@ -286,6 +307,7 @@ class ReleaseRecordTests(unittest.TestCase):
                 patch_path=patch_path,
                 repository="seungpyoson/bolt-v2",
                 run_id="123",
+                run_attempt="1",
                 head_sha="3" * 40,
             )
             release = {
@@ -319,12 +341,26 @@ class ReleaseRecordTests(unittest.TestCase):
                 ]
                 for asset in verified.assets.values()
             }
+            tag_ref = {
+                "ref": f"refs/tags/{verified.release_tag}",
+                "object": {"type": "commit", "sha": verified.head_sha},
+            }
 
             with self.assertRaisesRegex(ValueError, "release is not immutable"):
-                sccache_strict.verify_release_record(verified, release, attestations)
+                sccache_strict.verify_release_record(
+                    verified, release, tag_ref, attestations
+                )
 
             release["immutable"] = True
-            sccache_strict.verify_release_record(verified, release, attestations)
+            sccache_strict.verify_release_record(
+                verified, release, tag_ref, attestations
+            )
+
+            tag_ref["object"] = {"type": "commit", "sha": "4" * 40}
+            with self.assertRaisesRegex(ValueError, "exact head commit"):
+                sccache_strict.verify_release_record(
+                    verified, release, tag_ref, attestations
+                )
 
 
 class CliTests(unittest.TestCase):
@@ -343,10 +379,14 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         output = json.loads(stdout.getvalue())
+        self.assertEqual(output["source_version"], "0.16.0")
         self.assertEqual(output["target"], "aarch64-unknown-linux-musl")
         self.assertEqual(
             output["container"], f"docker.io/clux/muslrust@{CONTAINER_DIGEST}"
         )
+        self.assertEqual(output["features"], ["s3", "vendored-openssl"])
+        self.assertFalse(output["default_features"])
+        self.assertEqual(output["profile"], "release")
 
     def test_invalid_architecture_returns_nonzero_without_traceback(self) -> None:
         stderr = io.StringIO()

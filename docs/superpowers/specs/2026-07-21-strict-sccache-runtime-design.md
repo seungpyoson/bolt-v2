@@ -73,30 +73,30 @@ The server starts only when the effective backend and mode exactly match the gov
 
 The prerequisite PR creates these bounded units:
 
-- `ci/sccache-strict.toml`: build-provenance inputs only: source URL and digest, upstream commit, patch identity, Rust toolchain, build-container digest, feature set, targets, and normalized build settings. It does not own consumer release, asset, cache-location, runtime-timeout, or runner values.
+- `ci/sccache-strict.toml`: build-provenance inputs only: source URL and digest, upstream commit, patch identity, Rust toolchain, build-executor image digest, feature set, targets, normalized build settings, and the test-only strict timeout used while verifying the derivative. It does not own consumer release, asset, cache-location, runtime-timeout, or runner values.
 - `ci/sccache-strict/sccache-v0.16.0-strict.patch`: the complete upstream code and test delta.
 - `scripts/sccache_strict.py`: the sole config reader and manifest verifier used by local checks and the workflow. It never publishes and never changes repository files.
 - `scripts/test_sccache_strict.py`: behavior tests for configuration validation and manifest/digest verification. It does not scan repository source text.
 - `.github/workflows/sccache-strict-release.yml`: unprivileged builders plus the protected publisher.
 - `ci/github-actions-runners.toml`: the sole runner mapping for the new workflow's existing managed ARM64 and X64 runner classes.
 
-The workflow does not use `.github/actions/sccache-setup`, `RUSTC_WRAPPER`, cache credentials, AWS OIDC, or any compilation cache. Every external action is pinned to a full commit SHA. The derivative is built with `--locked --no-default-features --features s3` inside a container pinned by digest. The ARM64 and X64 targets are built natively on their governed runner architectures.
+The workflow does not use `.github/actions/sccache-setup`, `RUSTC_WRAPPER`, cache credentials, AWS OIDC, or any compilation cache. Every external action is pinned to a full commit SHA. Source, feature, target, profile, and normalized build settings come only from `ci/sccache-strict.toml` and are recorded in each candidate manifest. The lockfile-pinned vendored OpenSSL source avoids an ungoverned host-library dependency in the static musl build. Docker is the current replaceable build executor only: it is not a developer prerequisite, consumer dependency, runtime component, protocol boundary, or adoption authority. Replacing that executor later requires equivalent reviewed build-provenance evidence but no binary runtime or #1494 contract change. The complete upstream library suite remains required. Legacy integration targets whose fixtures require the removed local-disk startup path are not run; governed-S3 startup and failure behavior is covered by the strict tests and workflow negative controls instead. The ARM64 and X64 targets are built natively on their governed runner architectures.
 
 ## Build and publication flow
 
 1. A pull-request or manual build downloads the exact source archive and verifies its SHA-256 before extraction.
 2. The build applies the repository patch with `git apply --check` followed by `git apply`.
-3. Upstream strict behavior tests run before the release build.
+3. The workflow builds the debug binary required by the upstream library harness, then runs the complete upstream library suite before the release build.
 4. Dependency acquisition is checksum-locked. The build then runs network-disabled with fresh Cargo and target directories, no wrapper or incremental compilation, and an explicit normalized environment and path remapping.
 5. Two isolated jobs build each architecture with the same verified source, patch, toolchain, container digest, features, and build settings.
 6. The workflow fails unless the two binary SHA-256 values for each architecture match exactly. Each downloaded candidate is then checked for its expected ELF architecture and ABI and executed on the governed ARM64 or X64 host outside the build container.
-7. Builder jobs upload binaries and a provenance manifest as same-run artifacts bound to the exact head, architecture, replica, toolchain, container, source, and patch. Builders have `contents: read` only and no cache or publisher credentials.
+7. Builder jobs upload binaries and a provenance manifest as same-run, same-attempt artifacts bound to the exact head, architecture, replica, toolchain, container, source, and patch. Attempt-qualified artifact names prevent a re-run from reusing or colliding with an earlier attempt. Builders have `contents: read` only and no cache or publisher credentials.
 8. The publisher runs only for `workflow_dispatch` at exact-current `main`, references a GitHub environment restricted to `main`, and receives job-scoped `contents: write`. Checkout does not persist credentials. The write token is exposed only to the minimal release API commands. The publisher does not execute Cargo, build scripts, or the produced binaries.
 9. The publisher downloads only artifacts required from its own workflow run, verifies every manifest binding, independently hashes all four candidate binaries, requires replica equality per architecture, and refuses any pre-existing tag, release, or draft in the selected namespace.
-10. After confirming exact-current `main` and release immutability immediately before publication, the publisher creates a draft `tooling-sccache-*` release, uploads the two agreed binaries and provenance manifest, and publishes it.
-11. The publisher reads the release back through the pinned GitHub API version and fails unless the tag targets the expected commit, `immutable` is true, the attestation exists, and the exact asset set and digests match the manifest. The later consumer still verifies its independently reviewed SHA-256 pin.
+10. After confirming exact-current `main` and the protected environment immediately before publication, the publisher creates a draft `tooling-sccache-*` release, uploads the two agreed binaries and provenance manifest, and publishes it. GitHub does not expose the immutable-release setting to `GITHUB_TOKEN`, so the publisher validates the publication result itself. If GitHub reports `immutable: false`, it deletes only the exact release and generated tag it just created, then fails.
+11. The publisher reads the immutable release and actual Git tag ref through the pinned GitHub API version and fails unless the tag points directly to the expected commit, the release target field agrees, `immutable` is true, the release attestation exists, and the exact asset set and digests match the manifest. The later consumer still verifies its independently reviewed SHA-256 pin.
 
-The repository's `GET /repos/seungpyoson/bolt-v2/immutable-releases` endpoint currently reports `enabled: false`, and the only existing environment is unrelated. The repository owner must enable release immutability and create the main-restricted publisher environment before the first publication dispatch; live API evidence of both is a release gate. These operator prerequisites are tracked here and do not belong to the prerequisite PR's diff, but publication must not proceed or silently weaken if either is absent. GitHub documents that immutable release assets and their tag cannot be changed individually after publication, although deletion of the whole release remains an availability risk, and recommends draft, upload, then publish: [Immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases).
+The repository's admin-only immutable-release endpoint currently reports `enabled: false`, and the only existing environment is unrelated. The repository owner must enable release immutability and create the main-restricted publisher environment before the first publication dispatch. The workflow uses only `GITHUB_TOKEN`: it verifies the environment before publication and verifies the immutable release result immediately after publication. A disabled immutability setting therefore creates no retained release or tag and cannot silently weaken publication. These operator prerequisites are tracked here and do not belong to the prerequisite PR's diff. GitHub documents that immutable release assets and their tag cannot be changed individually after publication, although deletion of the whole release remains an availability risk, and recommends draft, upload, then publish: [Immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases).
 
 ## Trust boundary
 
@@ -112,19 +112,18 @@ The repository's `GET /repos/seungpyoson/bolt-v2/immutable-releases` endpoint cu
 
 The prerequisite PR requires:
 
-- upstream unit/integration tests proving EOF and other IPC failures return nonzero without a client-side compiler spawn;
-- protocol tests proving only explicit `NotCompilation` and `CannotCache(reason)` responses authorize client execution, preserving stdin and inherited-file-descriptor behavior and recording the typed classification and reason;
-- negative tests proving refusal to auto-start after initial connection failure, server death between invocations, or evidence-time connection failure;
+- upstream library tests proving EOF and other IPC failures return nonzero without a client-side compiler spawn;
+- protocol tests proving only explicit `NotCompilation` and `CannotCache(reason)` responses authorize client execution and preserve the original arguments; structural review confirms that the unchanged client spawn retains inherited stdin and file descriptors;
+- negative tests proving refusal to auto-start after connection failure; the same connect-only helper governs every later compiler and evidence request, including after server death;
 - startup tests rejecting missing S3 configuration, disk or alternate backends, multilevel configuration, rate-limited capability checks, and configured read-write to read-only demotion;
 - storage tests proving read errors, governed timeouts, corrupt stdout/stderr/required/optional objects, and read-write write failures return nonzero;
 - a read-only miss test proving server compilation succeeds without a write attempt;
-- classified-client tests proving stdin-fed and output-producing non-cacheable/non-compilation invocations match official v0.16.0 behavior without consulting cache storage;
+- classified-client tests proving stdin-fed and output-producing arguments reach the unchanged client command path without consulting cache storage;
 - tests rejecting externally forced no-cache and recache modes;
-- a small end-to-end Cargo build per architecture covering a hit, miss, link, probe, and stdin-fed invocation;
 - exact source archive and patch application evidence;
 - two byte-identical cacheless, network-closed clean builds per architecture;
 - ELF/ABI checks and binary smoke tests outside the build container on governed ARM64 and X64 hosts;
-- publisher negative controls for cross-run or mismatched artifacts, stale or non-main heads, pre-existing tags/releases, absent environment approval, and disabled immutability;
+- publisher negative controls for cross-run or mismatched artifacts, stale or non-main heads, pre-existing tags/releases, absent environment approval, and exact cleanup after a mutable publication result;
 - post-publication proof of the exact tag target, immutable release state, attestation, asset set, and digests;
 - actionlint and the repository's targeted Python self-tests;
 - an internal adversarial review of the exact diff before completion is claimed.
@@ -142,7 +141,7 @@ The later #1494 adoption requires separate evidence that a missing asset, channe
 
 ## Failure and recovery
 
-Any verification, build, reproduction, environment, release, download, or digest failure stops the affected workflow. There is no fallback publication or installation channel.
+Any verification, build, reproduction, environment, release, download, or digest failure stops the affected workflow. A mutable publication result is removed together with only its exact generated tag before failure; an immutable result is retained for review even if later evidence retrieval fails. There is no fallback publication or installation channel.
 
 Upgrades use a new reviewed upstream commit, source digest, rebased patch, immutable release, and adoption PR. Historical releases are retained but still depend on GitHub availability and the release not being deleted. Emergency revocation pauses affected CI or adopts a new immutable release; it never mutates an existing asset or restores the official permissive binary.
 

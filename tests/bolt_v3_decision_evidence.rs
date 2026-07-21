@@ -2428,6 +2428,7 @@ fn rv_clock_domain_amendment_production_snapshot(
             .then(|| "<SOURCE_ID_A>".to_string())
             .into_iter()
             .collect(),
+        registered_source_ids: vec!["<SOURCE_ID_A>".to_string()],
         source_diagnostics: Vec::new(),
         horizon_estimates: Vec::new(),
         unknown_source_rejections: BTreeMap::new(),

@@ -82,6 +82,10 @@ fn snapshot(
             .iter()
             .map(|source| (*source).to_string())
             .collect(),
+        registered_source_ids: sources_used
+            .iter()
+            .map(|source| (*source).to_string())
+            .collect(),
         source_diagnostics: Vec::new(),
         horizon_estimates: Vec::new(),
         unknown_source_rejections: BTreeMap::new(),

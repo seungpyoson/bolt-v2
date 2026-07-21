@@ -76,6 +76,7 @@ fn realized_vol_snapshot(as_of_ms: u64, realized_vol: f64, ready: bool) -> Reali
         pricing_component: RealizedVolPricingComponent::Measured,
         ready,
         sources_used: vec![TEST_REALIZED_VOL_SOURCE_ID.to_string()],
+        registered_source_ids: vec![TEST_REALIZED_VOL_SOURCE_ID.to_string()],
         source_diagnostics: Vec::new(),
         horizon_estimates: Vec::new(),
         unknown_source_rejections: BTreeMap::new(),

@@ -23,13 +23,47 @@ env:
   JUST_VERSION: "1.49.0"
   CARGO_TERM_COLOR: always
 
+# First-attempt PR runs may replace older evidence for the same PR. Every other
+# event and every rerun gets a unique group. The v2 namespace prevents a new
+# push from colliding with a schedule/manual run created by the old workflow.
+# Push freshness is decided below because GitHub does not guarantee native
+# concurrency ordering.
 concurrency:
-  group: advisory-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+  group: advisory-v2-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
 
 jobs:
+  supersede_main:
+    name: Admit exact-current main evidence
+    if: github.event_name == 'push'
+    timeout-minutes: 15
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Cancel superseded main evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3.12 scripts/advisory_supersession.py \
+            --config ci/advisory-supersession.toml \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-sha "$GITHUB_SHA"
+
   fmt:
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: supersede_main
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || (github.event_name == 'push' && needs.supersede_main.result == 'success')) }}
     timeout-minutes: 15
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     permissions:
@@ -54,7 +88,8 @@ jobs:
           cargo fmt --check --manifest-path crates/backtesting-vertical-slice/Cargo.toml
 
   clippy:
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: supersede_main
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || (github.event_name == 'push' && needs.supersede_main.result == 'success')) }}
     timeout-minutes: 60
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     permissions:
@@ -90,7 +125,8 @@ jobs:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
   test:
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: supersede_main
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || (github.event_name == 'push' && needs.supersede_main.result == 'success')) }}
     timeout-minutes: 60
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     permissions:
@@ -146,7 +182,8 @@ jobs:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
 
   build:
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: supersede_main
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || (github.event_name == 'push' && needs.supersede_main.result == 'success')) }}
     timeout-minutes: 60
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     permissions:

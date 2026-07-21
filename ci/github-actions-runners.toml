@@ -24,6 +24,7 @@ probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
 [workflows.advisory]
+supersede_main = "github_hosted"
 fmt = "github_hosted"
 clippy = "managed_heavy"
 test = "managed_heavy"

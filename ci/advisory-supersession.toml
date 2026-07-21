@@ -1,0 +1,6 @@
+schema_version = 1
+api_version = "2026-03-10"
+branch = "main"
+workflow = "advisory.yml"
+request_timeout_seconds = 30
+active_statuses = ["queued", "in_progress", "waiting", "requested", "pending"]

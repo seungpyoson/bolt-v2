@@ -78,6 +78,7 @@ class VerifiedCandidateSet:
     features: tuple[str, ...]
     default_features: bool
     profile: str
+    build_identity_sha256: str
     release_tag: str
     assets: Mapping[str, VerifiedAsset]
     provenance_name: str
@@ -480,18 +481,12 @@ def verify_candidate_set(
             path=binary_paths[(architecture, "a")],
         )
 
-    release_tag = f"tooling-sccache-v{config.source_version}-strict-{patch_sha256[:16]}"
-    provenance_name = f"{release_tag}-provenance.json"
-    provenance_document = {
+    build_identity_document = {
         "schema_version": 1,
-        "repository": repository,
-        "run_id": run_id,
-        "run_attempt": run_attempt,
-        "head_sha": head_sha,
-        "release_tag": release_tag,
         "source": {
             "version": config.source_version,
             "commit": config.source_commit,
+            "archive_url": config.source_url,
             "archive_sha256": config.source_sha256,
             "source_date_epoch": config.source_date_epoch,
             "patch_sha256": patch_sha256,
@@ -505,6 +500,31 @@ def verify_candidate_set(
             "profile": config.profile,
             "verification_timeout_ms": config.verification_timeout_ms,
         },
+        "targets": [
+            {
+                "architecture": architecture,
+                "triple": config.targets[architecture].triple,
+                "elf_machine": config.targets[architecture].elf_machine,
+            }
+            for architecture in sorted(config.targets)
+        ],
+    }
+    build_identity_sha256 = hashlib.sha256(
+        _canonical_json(build_identity_document)
+    ).hexdigest()
+    release_tag = (
+        f"tooling-sccache-v{config.source_version}-strict-{build_identity_sha256}"
+    )
+    provenance_name = f"{release_tag}-provenance.json"
+    provenance_document = {
+        "schema_version": 1,
+        "repository": repository,
+        "run_id": run_id,
+        "run_attempt": run_attempt,
+        "head_sha": head_sha,
+        "release_tag": release_tag,
+        "build_identity_sha256": build_identity_sha256,
+        "build_identity": build_identity_document,
         "assets": [
             {
                 "architecture": asset.architecture,
@@ -533,6 +553,7 @@ def verify_candidate_set(
         features=config.features,
         default_features=config.default_features,
         profile=config.profile,
+        build_identity_sha256=build_identity_sha256,
         release_tag=release_tag,
         assets=MappingProxyType(assets),
         provenance_name=provenance_name,
@@ -654,6 +675,7 @@ def _verified_summary(verified: VerifiedCandidateSet) -> dict[str, object]:
         "run_id": verified.run_id,
         "run_attempt": verified.run_attempt,
         "head_sha": verified.head_sha,
+        "build_identity_sha256": verified.build_identity_sha256,
         "release_tag": verified.release_tag,
         "provenance_name": verified.provenance_name,
         "provenance_sha256": verified.provenance_sha256,

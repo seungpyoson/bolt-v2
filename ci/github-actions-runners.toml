@@ -34,6 +34,7 @@ advisories = "github_hosted"
 preflight = "github_hosted"
 build-arm64 = "managed_heavy"
 build-x64 = "managed_light"
+verify = "github_hosted"
 publish = "github_hosted"
 
 [cargo_build_jobs.rust_probe]

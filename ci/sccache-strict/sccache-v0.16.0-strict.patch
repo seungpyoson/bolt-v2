@@ -988,7 +988,7 @@ index 8d8406a..699adf5 100644
 +    }
 +}
 diff --git a/src/compiler/compiler.rs b/src/compiler/compiler.rs
-index 78bb5a4..16f8d59 100644
+index 78bb5a4..e2792b5 100644
 --- a/src/compiler/compiler.rs
 +++ b/src/compiler/compiler.rs
 @@ -13,7 +13,7 @@
@@ -1166,12 +1166,73 @@ index 78bb5a4..16f8d59 100644
              .block_on(hasher.get_cached_or_compile(
                  &service,
                  None,
-@@ -2873,20 +2862,81 @@ LLVM version: 6.0",
+@@ -2873,20 +2862,142 @@ LLVM version: 6.0",
                  CacheControl::Default,
                  pool,
              ))
 +            .unwrap_err();
 +        assert!(error.to_string().contains("governed cache read failed"));
++        assert!(!obj.exists());
++    }
++
++    #[test]
++    fn strict_cache_read_timeout_stops_before_compiler_execution() {
++        drop(env_logger::try_init());
++        let creator = new_creator();
++        let f = TestFixture::new();
++        let gcc = f.mk_bin("gcc").unwrap();
++        let runtime = Runtime::new().unwrap();
++        let pool = runtime.handle().clone();
++        let storage = MockStorage::new(Some(Duration::from_millis(25)), false);
++        let storage: Arc<MockStorage> = Arc::new(storage);
++        let service = server::SccacheService::mock_with_storage(storage.clone(), pool.clone());
++
++        std::fs::write(f.tempdir.path().join("foo.c"), "whatever").unwrap();
++        next_command(
++            &creator,
++            Ok(MockChild::new(exit_status(0), "compiler_id=gcc", "")),
++        );
++        let c = get_compiler_info(
++            creator.clone(),
++            &gcc,
++            f.tempdir.path(),
++            &[],
++            &[],
++            &pool,
++            None,
++        )
++        .wait()
++        .unwrap()
++        .0;
++        next_command(
++            &creator,
++            Ok(MockChild::new(exit_status(0), "preprocessor output", "")),
++        );
++        let obj = f.tempdir.path().join("foo.o");
++        let arguments = ovec!["-c", "foo.c", "-o", "foo.o"];
++        let mut hasher = match c.parse_arguments(&arguments, ".".as_ref(), &[]) {
++            CompilerArguments::Ok(hasher) => hasher,
++            other => panic!("Bad result from parse_arguments: {other:?}"),
++        };
++        storage.next_get(Ok(Cache::Miss));
++
++        let error = temp_env::with_var("SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS", Some("1"), || {
++            runtime
++                .block_on(hasher.get_cached_or_compile(
++                    &service,
++                    None,
++                    creator,
++                    storage,
++                    arguments,
++                    f.tempdir.path().to_path_buf(),
++                    vec![],
++                    CacheControl::Default,
++                    pool,
++                ))
++                .unwrap_err()
++        });
++
++        assert!(error.to_string().contains("governed cache read timed out"));
 +        assert!(!obj.exists());
 +    }
 +
@@ -1389,7 +1450,7 @@ index 8760ba6..0dc1fff 100644
      UnsupportedCompiler(OsString),
  }
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..40bc4c5 100644
+index 98cedfb..81f9dcc 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -13,10 +13,10 @@
@@ -1424,6 +1485,16 @@ index 98cedfb..40bc4c5 100644
      info!("server has setup with {cache_mode:?}");
  
      let storage = match cache_mode {
+@@ -1063,8 +1067,8 @@ where
+         let cmd = compile.args;
+         let cwd: PathBuf = compile.cwd.into();
+         let env_vars = compile.env_vars;
++        reject_forced_cache_modes(&env_vars)?;
+         let me = self.clone();
+-
+         let info = self
+             .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
+             .await;
 @@ -1276,17 +1280,20 @@ where
                          let mut stats = self.stats.lock().await;
                          stats.requests_not_cacheable += 1;
@@ -1448,11 +1519,9 @@ index 98cedfb..40bc4c5 100644
      }
  
      /// Given compiler arguments `arguments`, look up
-@@ -1300,18 +1307,9 @@ where
-         cwd: PathBuf,
+@@ -1301,17 +1308,7 @@ where
          env_vars: Vec<(OsString, OsString)>,
      ) -> Result<CompileFinished> {
-+        reject_forced_cache_modes(&env_vars)?;
          self.stats.lock().await.requests_executed += 1;
 -
 -        let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
@@ -1469,7 +1538,7 @@ index 98cedfb..40bc4c5 100644
  
          let out_pretty = hasher.output_pretty().into_owned();
          let color_mode = hasher.color_mode();
-@@ -1416,6 +1414,16 @@ where
+@@ -1416,6 +1413,16 @@ where
                                  debug!("stats after compile result: {stats:?}");
                                  cache_write = Some(future);
                              }
@@ -1486,7 +1555,7 @@ index 98cedfb..40bc4c5 100644
                              CompileResult::NotCached(dt, duration) => {
                                  debug!("[{}]: compile result: not cached", out_pretty);
                                  dist_type = dt;
-@@ -1519,13 +1527,13 @@ where
+@@ -1519,13 +1526,13 @@ where
                  }
  
                  if let Some(cache_write) = cache_write {
@@ -1507,7 +1576,7 @@ index 98cedfb..40bc4c5 100644
                              debug!(
                                  "[{}]: Cache write finished in {}",
                                  info.object_file_pretty,
-@@ -1579,6 +1587,39 @@ impl PerLanguageCount {
+@@ -1579,6 +1586,39 @@ impl PerLanguageCount {
      }
  }
  
@@ -1547,10 +1616,35 @@ index 98cedfb..40bc4c5 100644
  /// Statistics about the server.
  #[derive(Serialize, Deserialize, Clone, Debug)]
  pub struct ServerStats {
-@@ -2282,6 +2323,49 @@ fn waits_until_zero() {
+@@ -2282,6 +2322,74 @@ fn waits_until_zero() {
  mod tests {
      use super::*;
  
++    #[test]
++    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
++        let runtime = Runtime::new().unwrap();
++        let storage = Arc::new(crate::test::mock_storage::MockStorage::new(None, false));
++        let service = SccacheService::<ProcessCommandCreator>::mock_with_storage(
++            storage,
++            runtime.handle().clone(),
++        );
++
++        for name in ["SCCACHE_NO_CACHE", "SCCACHE_RECACHE"] {
++            let request = Compile {
++                exe: OsString::from("compiler-resolution-must-not-run"),
++                cwd: OsString::from("."),
++                args: Vec::new(),
++                env_vars: vec![(OsString::from(name), OsString::from("1"))],
++            };
++
++            let error = match runtime.block_on(service.handle_compile(request)) {
++                Ok(_) => panic!("forced cache mode reached compiler handling"),
++                Err(error) => error,
++            };
++            assert!(error.to_string().contains("strict sccache rejects"));
++        }
++    }
++
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected() {
 +        for name in ["SCCACHE_NO_CACHE", "SCCACHE_RECACHE"] {

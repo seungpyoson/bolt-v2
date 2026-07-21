@@ -175,9 +175,25 @@ jobs:
           binary="work/target/$target/$profile/sccache"
           machine="$(python3.12 -c 'import json; print(json.load(open("target.json"))["elf_machine"])')"
           readelf -h "$binary" | grep -F "Machine:" | grep -F "$machine"
-          file "$binary" | grep -F 'statically linked'
+          readelf -l "$binary" > program-headers.txt
+          if grep -Fq 'INTERP' program-headers.txt; then
+            echo 'strict candidate has a runtime program interpreter' >&2
+            exit 1
+          fi
+          readelf -d "$binary" > dynamic-section.txt
+          if grep -Fq '(NEEDED)' dynamic-section.txt; then
+            echo 'strict candidate has a dynamic shared-library dependency' >&2
+            exit 1
+          fi
           [[ "$("$binary" --version)" == "sccache $source_version" ]]
-          if SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
+          smoke_home="$(mktemp -d "$RUNNER_TEMP/strict-sccache-smoke.XXXXXX")"
+          mkdir -p "$smoke_home/cache"
+          if env -i \
+            HOME="$smoke_home" \
+            SCCACHE_DIR="$smoke_home/cache" \
+            SCCACHE_S3_RW_MODE=READ_WRITE \
+            TMPDIR="$smoke_home" \
+            SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
             SCCACHE_STRICT_IPC_TIMEOUT_MS="$verification_timeout" \
             SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS="$verification_timeout" \
             SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS="$verification_timeout" \
@@ -299,9 +315,25 @@ jobs:
           binary="work/target/$target/$profile/sccache"
           machine="$(python3.12 -c 'import json; print(json.load(open("target.json"))["elf_machine"])')"
           readelf -h "$binary" | grep -F "Machine:" | grep -F "$machine"
-          file "$binary" | grep -F 'statically linked'
+          readelf -l "$binary" > program-headers.txt
+          if grep -Fq 'INTERP' program-headers.txt; then
+            echo 'strict candidate has a runtime program interpreter' >&2
+            exit 1
+          fi
+          readelf -d "$binary" > dynamic-section.txt
+          if grep -Fq '(NEEDED)' dynamic-section.txt; then
+            echo 'strict candidate has a dynamic shared-library dependency' >&2
+            exit 1
+          fi
           [[ "$("$binary" --version)" == "sccache $source_version" ]]
-          if SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
+          smoke_home="$(mktemp -d "$RUNNER_TEMP/strict-sccache-smoke.XXXXXX")"
+          mkdir -p "$smoke_home/cache"
+          if env -i \
+            HOME="$smoke_home" \
+            SCCACHE_DIR="$smoke_home/cache" \
+            SCCACHE_S3_RW_MODE=READ_WRITE \
+            TMPDIR="$smoke_home" \
+            SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
             SCCACHE_STRICT_IPC_TIMEOUT_MS="$verification_timeout" \
             SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS="$verification_timeout" \
             SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS="$verification_timeout" \
@@ -331,19 +363,13 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  publish:
-    name: Publish immutable strict assets
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && needs.preflight.outputs.publisher_ready == 'true' }}
+  verify:
+    name: Verify exact reproducible candidates
     needs: [preflight, build-arm64, build-x64]
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
-    environment: strict-sccache-publisher
-    concurrency:
-      group: strict-sccache-publisher
-      cancel-in-progress: false
     permissions:
       actions: read
-      attestations: read
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -359,14 +385,9 @@ jobs:
           pattern: strict-sccache-${{ github.run_attempt }}-*
           path: candidates
 
-      - name: Verify and publish exact immutable bytes
+      - name: Verify all four candidates
         env:
-          EVENT_REF: ${{ github.ref }}
-          EVENT_SHA: ${{ github.sha }}
-          GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
-          OWNER_LOGIN: ${{ github.repository_owner }}
-          OWNER_TYPE: ${{ github.event.repository.owner.type }}
           REPOSITORY: ${{ github.repository }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_ID: ${{ github.run_id }}
@@ -388,12 +409,81 @@ jobs:
             "${candidate_args[@]}" \
             --provenance-output provenance.json > verified.json
 
-          tag="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["release_tag"])')"
-          provenance_name="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["provenance_name"])')"
-          arm_name="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["assets"]["ARM64"]["name"])')"
-          x64_name="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["assets"]["X64"]["name"])')"
-          arm_digest="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["assets"]["ARM64"]["sha256"])')"
-          x64_digest="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["assets"]["X64"]["sha256"])')"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: strict-sccache-${{ github.run_attempt }}-verified
+          path: |
+            candidates
+            provenance.json
+            verified.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish immutable strict assets
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && needs.preflight.outputs.publisher_ready == 'true' }}
+    needs: [preflight, verify]
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    environment: strict-sccache-publisher
+    concurrency:
+      group: strict-sccache-publisher
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.preflight.outputs.head_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: strict-sccache-${{ github.run_attempt }}-verified
+          path: verified-bundle
+
+      - name: Verify and publish exact immutable bytes
+        env:
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+          OWNER_LOGIN: ${{ github.repository_owner }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          candidate_args=(
+            --candidate ARM64 a "verified-bundle/candidates/strict-sccache-$RUN_ATTEMPT-ARM64-a/manifest.json" "verified-bundle/candidates/strict-sccache-$RUN_ATTEMPT-ARM64-a/sccache"
+            --candidate ARM64 b "verified-bundle/candidates/strict-sccache-$RUN_ATTEMPT-ARM64-b/manifest.json" "verified-bundle/candidates/strict-sccache-$RUN_ATTEMPT-ARM64-b/sccache"
+            --candidate X64 a "verified-bundle/candidates/strict-sccache-$RUN_ATTEMPT-X64-a/manifest.json" "verified-bundle/candidates/strict-sccache-$RUN_ATTEMPT-X64-a/sccache"
+            --candidate X64 b "verified-bundle/candidates/strict-sccache-$RUN_ATTEMPT-X64-b/manifest.json" "verified-bundle/candidates/strict-sccache-$RUN_ATTEMPT-X64-b/sccache"
+          )
+          python3.12 scripts/sccache_strict.py verify-candidates \
+            --config ci/sccache-strict.toml \
+            --patch ci/sccache-strict/sccache-v0.16.0-strict.patch \
+            --repository "$REPOSITORY" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --head-sha "$HEAD_SHA" \
+            "${candidate_args[@]}" \
+            --provenance-output publisher-provenance.json > publisher-verified.json
+          cmp verified-bundle/provenance.json publisher-provenance.json
+          cmp verified-bundle/verified.json publisher-verified.json
+
+          tag="$(python3.12 -c 'import json; print(json.load(open("publisher-verified.json"))["release_tag"])')"
+          provenance_name="$(python3.12 -c 'import json; print(json.load(open("publisher-verified.json"))["provenance_name"])')"
+          arm_name="$(python3.12 -c 'import json; print(json.load(open("publisher-verified.json"))["assets"]["ARM64"]["name"])')"
+          x64_name="$(python3.12 -c 'import json; print(json.load(open("publisher-verified.json"))["assets"]["X64"]["name"])')"
+          arm_digest="$(python3.12 -c 'import json; print(json.load(open("publisher-verified.json"))["assets"]["ARM64"]["sha256"])')"
+          x64_digest="$(python3.12 -c 'import json; print(json.load(open("publisher-verified.json"))["assets"]["X64"]["sha256"])')"
 
           if gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
@@ -418,9 +508,9 @@ jobs:
             --environment-json environment.json \
             --environment-name strict-sccache-publisher
 
-          cp "candidates/strict-sccache-$RUN_ATTEMPT-ARM64-a/sccache" "$arm_name"
-          cp "candidates/strict-sccache-$RUN_ATTEMPT-X64-a/sccache" "$x64_name"
-          cp provenance.json "$provenance_name"
+          cp "verified-bundle/candidates/strict-sccache-$RUN_ATTEMPT-ARM64-a/sccache" "$arm_name"
+          cp "verified-bundle/candidates/strict-sccache-$RUN_ATTEMPT-X64-a/sccache" "$x64_name"
+          cp publisher-provenance.json "$provenance_name"
           release="$(gh api --method POST -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$REPOSITORY/releases" \
             -f tag_name="$tag" \

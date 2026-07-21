@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import contextlib
+import hashlib
 import io
 import json
 import pathlib
@@ -209,6 +210,66 @@ class ManifestTests(unittest.TestCase):
             verified.release_tag.startswith("tooling-sccache-v0.16.0-strict-")
         )
         self.assertEqual(len(verified.provenance_sha256), 64)
+
+    def test_release_tag_changes_when_governed_build_inputs_change(self) -> None:
+        original = self.verify()
+        document = valid_document()
+        build = copy.deepcopy(document["build"])
+        assert isinstance(build, dict)
+        build["container"] = f"docker.io/clux/muslrust@sha256:{'1' * 64}"
+        document["build"] = build
+        changed_config = sccache_strict.load_document(document, repo_root=self.root)
+        changed_manifests: list[dict[str, object]] = []
+        for architecture in ("ARM64", "X64"):
+            for replica in ("a", "b"):
+                changed_manifests.append(
+                    sccache_strict.write_candidate_manifest(
+                        output_path=self.root
+                        / f"changed-{architecture}-{replica}.json",
+                        config=changed_config,
+                        patch_path=self.patch_path,
+                        binary_path=self.binary_paths[(architecture, replica)],
+                        repository=self.repository,
+                        run_id=self.run_id,
+                        run_attempt=self.run_attempt,
+                        head_sha=self.head_sha,
+                        architecture=architecture,
+                        replica=replica,
+                    )
+                )
+
+        changed = sccache_strict.verify_candidate_set(
+            changed_manifests,
+            self.binary_paths,
+            config=changed_config,
+            patch_path=self.patch_path,
+            repository=self.repository,
+            run_id=self.run_id,
+            run_attempt=self.run_attempt,
+            head_sha=self.head_sha,
+        )
+
+        self.assertNotEqual(original.release_tag, changed.release_tag)
+
+    def test_provenance_build_identity_recomputes_release_identity(self) -> None:
+        verified = self.verify()
+        provenance = json.loads(verified.provenance_bytes)
+        identity_bytes = (
+            json.dumps(
+                provenance["build_identity"],
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+
+        self.assertEqual(
+            hashlib.sha256(identity_bytes).hexdigest(),
+            provenance["build_identity_sha256"],
+        )
+        self.assertTrue(
+            verified.release_tag.endswith(provenance["build_identity_sha256"])
+        )
 
     def test_rejects_cross_run_manifest(self) -> None:
         self.manifests[0] = copy.deepcopy(self.manifests[0])

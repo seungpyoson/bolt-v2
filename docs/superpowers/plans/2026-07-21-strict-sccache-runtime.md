@@ -139,7 +139,7 @@ def load_config(path: pathlib.Path) -> StrictBuildConfig:
 
 - [ ] **Step 5: Write failing manifest tests**
 
-Cover same-head binding, architecture/replica uniqueness, binary SHA-256 recomputation, patch SHA-256 recomputation, exact four-candidate set, per-architecture byte equality, exact asset set, release tag target, `immutable: true`, and asset API digests:
+Cover same-head binding, architecture/replica uniqueness, binary SHA-256 recomputation, patch SHA-256 recomputation, exact four-candidate set, per-architecture byte equality, build-input-sensitive release identity, exact asset set, release tag target, `immutable: true`, and asset API digests:
 
 ```python
 def test_verify_candidates_rejects_cross_run_manifest(self) -> None:
@@ -544,17 +544,21 @@ For PRs, preflight binds builders to `github.sha` and forces `publish=false`. Fo
 5. verifies the pinned container's exact Rust release and commit, then starts it once with network to run `cargo fetch --locked --target <triple>` into a fresh mounted `CARGO_HOME`;
 6. starts the same container with `--network none`, read-only `CARGO_HOME`, fresh target directory, `CARGO_NET_OFFLINE=true`, `CARGO_INCREMENTAL=0`, empty `RUSTC_WRAPPER`, fixed locale/timezone/umask and mount paths, and the TOML-owned `SOURCE_DATE_EPOCH`;
 7. runs the complete upstream library suite and the TOML-owned feature/profile release build (the legacy integration harnesses that require local-disk startup are inapplicable to the strict derivative);
-8. verifies ELF machine, static musl linkage, and the TOML-owned sccache version on the host outside the container, then proves `--start-server` fails without governed S3 configuration instead of selecting a local cache;
+8. verifies ELF machine, absence of a runtime interpreter and shared-library dependencies, and the TOML-owned sccache version on the host outside the container, then uses an isolated empty environment to prove `--start-server` fails without governed S3 configuration instead of inheriting runner residue or selecting a local cache;
 9. creates a candidate manifest and uploads exactly one binary plus one manifest.
 
-- [ ] **Step 5: Add protected publisher with exact input/output predicates**
+- [ ] **Step 5: Verify replicas on every workflow run**
+
+An unprivileged `verify` job depends on all four builders, downloads their attempt-qualified artifacts, recomputes every manifest and binary digest, requires byte equality per architecture, and uploads one verified bundle containing the four candidates plus canonical verification and provenance records. This job runs for pull requests and dispatches, so reproducibility evidence does not depend on entering the protected publication environment.
+
+- [ ] **Step 6: Add protected publisher with exact input/output predicates**
 
 The publisher has:
 
 ```yaml
   publish:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && needs.preflight.outputs.publisher_ready == 'true' }}
-    needs: [preflight, build-arm64, build-x64]
+    needs: [preflight, verify]
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     environment: strict-sccache-publisher
     permissions:
@@ -563,9 +567,9 @@ The publisher has:
       contents: write
 ```
 
-It downloads only attempt-qualified artifacts from its own `needs` graph, rejects manifests from another run or attempt, recomputes all four binary digests, validates manifests, and refuses an existing tag/ref/release/draft. Immediately before creation it rechecks current main and the protected environment. It uses the ephemeral `GITHUB_TOKEN` with the pinned API version only in the release commands. It creates a draft, uploads the two agreed binaries and canonical provenance manifest, and publishes. If the response is mutable, it deletes only that exact newly created release and tag and fails. Otherwise it reads the actual Git tag ref and the user- or organization-owner release-attestation endpoints with `predicate_type=release`, then calls `verify-release-record`.
+It downloads only the verified bundle from its own `needs` graph, reruns the same candidate verifier, requires identical verification and provenance records, and refuses an existing tag/ref/release/draft. The release tag uses the full digest of the canonical governed build-input identity rather than patch identity alone. Immediately before creation it rechecks current main and the protected environment. It uses the ephemeral `GITHUB_TOKEN` with the pinned API version only in the release commands. It creates a draft, uploads the two agreed binaries and canonical provenance manifest, and publishes. If the response is mutable, it deletes only that exact newly created release and tag and fails. Otherwise it reads the actual Git tag ref and the user- or organization-owner release-attestation endpoints with `predicate_type=release`, then calls `verify-release-record`.
 
-- [ ] **Step 6: Register the workflow's sole runner mapping**
+- [ ] **Step 7: Register the workflow's sole runner mapping**
 
 Append:
 
@@ -574,12 +578,13 @@ Append:
 preflight = "github_hosted"
 build-arm64 = "managed_heavy"
 build-x64 = "managed_light"
+verify = "github_hosted"
 publish = "github_hosted"
 ```
 
 No `.github/actionlint.yaml` change is needed because the workflow uses only already-allowlisted variables and runner classes.
 
-- [ ] **Step 7: Run targeted static verification**
+- [ ] **Step 8: Run targeted static verification**
 
 Run:
 

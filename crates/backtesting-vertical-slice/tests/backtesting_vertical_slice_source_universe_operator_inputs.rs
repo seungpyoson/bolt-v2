@@ -1,56 +1,13 @@
 use std::{fs, path::Path};
 
-use crate::backtesting_vertical_slice_test_support::tempdir_in_repo_target;
-
-use backtesting_vertical_slice::reference_fixture_index::{
-    EvictedFixtureIndex, TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH, repo_root_from_manifest_dir,
+use crate::backtesting_vertical_slice_test_support::{
+    generate_evicted_binance_operator_inputs, generate_evicted_bybit_operator_inputs,
+    tempdir_in_repo_target,
 };
-use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
 use backtesting_vertical_slice::source_universe_operator_inputs::{
     SourceUniverseOperatorInputRecordStatus, SourceUniverseOperatorInputs,
     SourceUniverseOperatorInputsStatus, write_source_universe_operator_inputs_from_spec_file,
 };
-
-fn copy_spec_with_output_dir(source_spec: &Path, target_spec: &Path, output_dir: &Path) {
-    let spec = fs::read_to_string(source_spec).expect("read committed source-universe spec");
-    let mut replaced = false;
-    let updated = spec
-        .lines()
-        .map(|line| {
-            if line.starts_with("output_dir = ") {
-                replaced = true;
-                format!("output_dir = \"{}\"", output_dir.display())
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(replaced, "committed source-universe spec has output_dir");
-    fs::write(target_spec, format!("{updated}\n")).expect("write temp source-universe spec");
-}
-
-fn replace_spec_path(spec_text: &str, committed_path: &str, temp_path: &Path) -> String {
-    assert!(
-        spec_text.contains(committed_path),
-        "committed spec contains {committed_path}"
-    );
-    spec_text.replace(committed_path, &temp_path.display().to_string())
-}
-
-fn assert_bytes_match_committed(generated_path: &Path, committed_path: &Path, label: &str) {
-    let generated = fs::read(generated_path)
-        .unwrap_or_else(|err| panic!("read generated {label} {}: {err}", generated_path.display()));
-    let committed = fs::read(committed_path)
-        .unwrap_or_else(|err| panic!("read committed {label} {}: {err}", committed_path.display()));
-    assert!(
-        generated == committed,
-        "regenerated {label} bytes must match committed artifact {}; generated_len={} committed_len={}",
-        committed_path.display(),
-        generated.len(),
-        committed.len()
-    );
-}
 
 #[test]
 fn source_universe_operator_inputs_materialize_ready_bybit_spot_object() {
@@ -432,79 +389,12 @@ overwrite_existing_artifacts = true
 fn committed_bybit_source_universe_operator_inputs_track_current_gates() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let spec_path = reference_root
-        .join("source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01")
-        .join("source-universe-operator-inputs.toml");
     let temp_dir = tempdir_in_repo_target();
-
-    let run_plan_spec_path = temp_dir
-        .path()
-        .join("bybit-source-universe-conversion-run-plan.toml");
-    copy_spec_with_output_dir(
-        &reference_root
-            .join("source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01")
-            .join("source-universe-conversion-run-plan.toml"),
-        &run_plan_spec_path,
-        &temp_dir.path().join("source-universe-conversion-run-plan"),
-    );
-    let run_plan_artifact =
-        write_source_universe_conversion_run_plan_from_spec_file(&run_plan_spec_path)
-            .expect("Bybit run plan is reproducible");
-
-    let temp_spec_path = temp_dir
-        .path()
-        .join("bybit-source-universe-operator-inputs.toml");
-    copy_spec_with_output_dir(
-        &spec_path,
-        &temp_spec_path,
-        &temp_dir.path().join("source-universe-operator-inputs"),
-    );
-    let spec_text = fs::read_to_string(&temp_spec_path).expect("read temp operator-inputs spec");
-    fs::write(
-        &temp_spec_path,
-        replace_spec_path(
-            &spec_text,
-            TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH,
-            &run_plan_artifact.path,
-        ),
-    )
-    .expect("write temp operator-inputs spec with regenerated run plan");
-
-    let artifact = write_source_universe_operator_inputs_from_spec_file(&temp_spec_path)
-        .expect("committed Bybit operator inputs are reproducible");
-    let mut inputs: SourceUniverseOperatorInputs =
-        serde_json::from_slice(&fs::read(&artifact.path).expect("read inputs"))
+    let (operator_inputs_path, _) =
+        generate_evicted_bybit_operator_inputs(&reference_root, temp_dir.path());
+    let inputs: SourceUniverseOperatorInputs =
+        serde_json::from_slice(&fs::read(&operator_inputs_path).expect("read inputs"))
             .expect("inputs parse");
-    let evicted_index =
-        EvictedFixtureIndex::load(&repo_root_from_manifest_dir()).expect("load eviction index");
-    let bybit_run_plan_sha256 = evicted_index
-        .sha256_for(TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH)
-        .unwrap_or_else(|| {
-            panic!("evicted fixture index does not contain {TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH}")
-        });
-    assert_eq!(
-        run_plan_artifact.content_hash, bybit_run_plan_sha256,
-        "regenerated Bybit run-plan bytes must match the evicted fixture index"
-    );
-    let run_plan_ref = inputs
-        .artifact_refs
-        .iter_mut()
-        .find(|artifact_ref| artifact_ref.role == "source_universe_conversion_run_plan")
-        .expect("operator inputs record source-universe conversion run-plan artifact ref");
-    run_plan_ref.path = Path::new(TIER1_BYBIT_CONVERSION_RUN_PLAN_PATH).to_path_buf();
-    let normalized = serde_json::to_vec_pretty(&inputs).expect("serialize normalized inputs");
-    let committed_artifact_path = spec_path
-        .parent()
-        .expect("operator-inputs spec parent")
-        .join("operator-inputs/source-universe-operator-inputs.json");
-    let committed = fs::read(&committed_artifact_path).expect("read committed Bybit inputs");
-    assert!(
-        normalized == committed,
-        "regenerated Bybit operator-inputs bytes must match committed artifact {} after replacing the temp-only evicted run-plan identity; generated_len={} committed_len={}",
-        committed_artifact_path.display(),
-        normalized.len(),
-        committed.len()
-    );
 
     assert_eq!(inputs.status, SourceUniverseOperatorInputsStatus::Ready);
     assert_eq!(inputs.planned_object_count, 5_857);
@@ -526,33 +416,11 @@ fn committed_bybit_source_universe_operator_inputs_track_current_gates() {
 fn committed_binance_source_universe_operator_inputs_track_current_gates_without_overclaiming() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let spec_path = reference_root
-        .join(
-            "source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments",
-        )
-        .join("source-universe-operator-inputs.toml");
-    let committed_artifact_path = spec_path
-        .parent()
-        .expect("operator-inputs spec parent")
-        .join("operator-inputs/source-universe-operator-inputs.json");
     let temp_dir = tempdir_in_repo_target();
-    let temp_spec_path = temp_dir
-        .path()
-        .join("binance-source-universe-operator-inputs.toml");
-    copy_spec_with_output_dir(
-        &spec_path,
-        &temp_spec_path,
-        &temp_dir.path().join("source-universe-operator-inputs"),
-    );
-    let artifact = write_source_universe_operator_inputs_from_spec_file(&temp_spec_path)
-        .expect("committed Binance operator inputs are reproducible");
-    assert_bytes_match_committed(
-        &artifact.path,
-        &committed_artifact_path,
-        "Binance operator-inputs",
-    );
+    let operator_inputs_path =
+        generate_evicted_binance_operator_inputs(&reference_root, temp_dir.path());
     let inputs: SourceUniverseOperatorInputs =
-        serde_json::from_slice(&fs::read(&artifact.path).expect("read inputs"))
+        serde_json::from_slice(&fs::read(&operator_inputs_path).expect("read inputs"))
             .expect("inputs parse");
 
     assert_eq!(inputs.planned_object_count, 2_051);

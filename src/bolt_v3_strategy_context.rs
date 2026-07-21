@@ -200,6 +200,19 @@ impl StrategyBuildContext {
         self.realized_volatility.as_ref()
     }
 
+    pub fn registered_realized_volatility_source_ids(
+        &self,
+        surface_id: &str,
+    ) -> Option<Vec<String>> {
+        self.realized_volatility.as_ref().and_then(|capability| {
+            capability
+                .runtime
+                .lock()
+                .expect("realized-volatility runtime lock should not be poisoned")
+                .registered_source_ids_for_surface(surface_id)
+        })
+    }
+
     pub fn settlement_capability(&self) -> Option<&SettlementCapability> {
         self.settlement.as_ref()
     }

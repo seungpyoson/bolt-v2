@@ -25,6 +25,13 @@ use crate::bolt_v3_timestamp_domain::LocalReceiveMs;
 use crate::bolt_v3_venue_truth::VenueTruthDivergenceAlarmClass;
 use crate::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthDivergenceEvidence};
 
+pub mod identity_generator;
+
+#[rustfmt::skip]
+mod generated_identities;
+
+pub use generated_identities::*;
+
 fn serialize_optional_local_receive_ms<S>(
     value: &Option<LocalReceiveMs>,
     serializer: S,
@@ -35,7 +42,7 @@ where
     value.map(LocalReceiveMs::value).serialize(serializer)
 }
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 15;
+pub const BOLT_V3_LEGACY_V15_SCHEMA_VERSION: u32 = 15;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID: &str = "bolt_v3.capital_admission_rebuild";
@@ -48,34 +55,15 @@ pub const BOLT_V3_REQUOTE_THROTTLE_GATE_ID: &str = "bolt_v3.requote_throttle";
 pub const BOLT_V3_SETTLEMENT_GATE_ID: &str = "bolt_v3.settlement";
 pub const BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID: &str = "bolt_v3.venue_truth_capture_failure";
 pub const BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID: &str = "bolt_v3.venue_truth_divergence";
-pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
-pub const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
-pub const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
-pub const BOLT_V3_ENTRY_SKIP_RECORD_KIND: &str = "entry_skip";
-pub const BOLT_V3_EXIT_DECISION_RECORD_KIND: &str = "exit_decision";
-pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";
-pub const BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND: &str = "requote_throttle";
-pub const BOLT_V3_SETTLEMENT_RECORD_KIND: &str = "settlement";
-pub const BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND: &str = "settlement_booking_error";
-pub const BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND: &str = "terminal_settlement";
-pub const BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND: &str = "venue_truth_capture_failure";
-pub const BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND: &str = "venue_truth_divergence";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";
-const BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND: &str = "basket_admission_decision";
-const BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND: &str = "capital_admission_rebuild";
-const BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND: &str = "submit_reservation_metadata";
-const BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND: &str = "submit_reservation_fill";
 const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";
 const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";
 const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
 pub const BOLT_V3_EXIT_EVALUATION_GATE_ID: &str = "bolt_v3.exit_evaluation";
-pub const BOLT_V3_EXIT_EVALUATION_RECORD_KIND: &str = "exit_evaluation";
 pub const BOLT_V3_ORDER_REJECT_GATE_ID: &str = "bolt_v3.order_reject";
-pub const BOLT_V3_ORDER_REJECT_RECORD_KIND: &str = "order_reject";
 pub const BOLT_V3_ORDER_LIFECYCLE_GATE_ID: &str = "bolt_v3.order_lifecycle";
-pub const BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND: &str = "order_lifecycle";
 
 /// Single source of truth for the upper bound on retained reject-episode maps. Both
 /// the submit-admission reject-episode map and the venue/NT order-reject observer
@@ -693,8 +681,7 @@ pub enum BoltV3EntryPricingBlockReason {
     SizedNotionalUnsupported(BoltV3OutcomeSide),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BoltV3EntrySkipReasonCategory {
     StrategyCoreNotRegistered,
     EntryGateBlocked,
@@ -716,6 +703,100 @@ pub enum BoltV3EntrySkipReasonCategory {
     EntryMalformedRejected,
     EntryBalanceRejected,
     EntryUnfillableRejectedUnchangedBook,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3EntrySkipCompleteReason {
+    StrategyCoreNotRegistered,
+    EntryGateBlocked,
+    EntryPricingBlocked,
+    NoSideSelected,
+    SizedNotionalNotPositive,
+    InstrumentIdMissing,
+    InstrumentMissingFromCache,
+    EntryPriceMissing,
+    QuantityRoundingFailed,
+    LimitNotionalExceedsSizedNotional,
+    EntryQuoteNotionalBelowVenueMinimum,
+    EntryQuoteNotionalMinimumUnmodeled,
+    QuantityNotPositive,
+    PositionContractInvalid,
+    EntryPositionContractUnsupported,
+    HistoricalEntryFeeUnavailable,
+    OnePositionInvariantViolation,
+    EntryMalformedRejected,
+    EntryBalanceRejected,
+    EntryUnfillableRejectedUnchangedBook,
+}
+
+impl TryFrom<BoltV3EntrySkipReasonCategory> for BoltV3EntrySkipCompleteReason {
+    type Error = anyhow::Error;
+
+    fn try_from(reason: BoltV3EntrySkipReasonCategory) -> Result<Self> {
+        Ok(match reason {
+            BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered => {
+                Self::StrategyCoreNotRegistered
+            }
+            BoltV3EntrySkipReasonCategory::EntryGateBlocked => Self::EntryGateBlocked,
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked => Self::EntryPricingBlocked,
+            BoltV3EntrySkipReasonCategory::NoSideSelected => Self::NoSideSelected,
+            BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive => {
+                Self::SizedNotionalNotPositive
+            }
+            BoltV3EntrySkipReasonCategory::InstrumentIdMissing => Self::InstrumentIdMissing,
+            BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache => {
+                Self::InstrumentMissingFromCache
+            }
+            BoltV3EntrySkipReasonCategory::EntryPriceMissing => Self::EntryPriceMissing,
+            BoltV3EntrySkipReasonCategory::QuantityRoundingFailed => Self::QuantityRoundingFailed,
+            BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional => {
+                Self::LimitNotionalExceedsSizedNotional
+            }
+            BoltV3EntrySkipReasonCategory::EntryQuoteNotionalBelowVenueMinimum => {
+                Self::EntryQuoteNotionalBelowVenueMinimum
+            }
+            BoltV3EntrySkipReasonCategory::EntryQuoteNotionalMinimumUnmodeled => {
+                Self::EntryQuoteNotionalMinimumUnmodeled
+            }
+            BoltV3EntrySkipReasonCategory::QuantityNotPositive => Self::QuantityNotPositive,
+            BoltV3EntrySkipReasonCategory::PositionContractInvalid => Self::PositionContractInvalid,
+            BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported => {
+                Self::EntryPositionContractUnsupported
+            }
+            BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable => {
+                Self::HistoricalEntryFeeUnavailable
+            }
+            BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation => {
+                Self::OnePositionInvariantViolation
+            }
+            BoltV3EntrySkipReasonCategory::EntryMalformedRejected => Self::EntryMalformedRejected,
+            BoltV3EntrySkipReasonCategory::EntryBalanceRejected => Self::EntryBalanceRejected,
+            BoltV3EntrySkipReasonCategory::EntryUnfillableRejectedUnchangedBook => {
+                Self::EntryUnfillableRejectedUnchangedBook
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BoltV3EntrySkipV15Reason {
+    StrategyCoreNotRegistered,
+    EntryGateBlocked,
+    EntryPricingBlocked,
+    NoSideSelected,
+    SizedNotionalNotPositive,
+    InstrumentIdMissing,
+    InstrumentMissingFromCache,
+    EntryPriceMissing,
+    QuantityRoundingFailed,
+    LimitNotionalExceedsSizedNotional,
+    QuantityNotPositive,
+    PositionContractInvalid,
+    EntryPositionContractUnsupported,
+    HistoricalEntryFeeUnavailable,
+    OnePositionInvariantViolation,
     Unclassified,
 }
 
@@ -723,8 +804,7 @@ pub enum BoltV3EntrySkipReasonCategory {
 pub struct BoltV3EntrySkipEvidence {
     pub strategy_id: String,
     pub now_ms: u64,
-    pub reason_category: BoltV3EntrySkipReasonCategory,
-    pub unclassified_context: Option<String>,
+    pub reason_category: BoltV3EntrySkipCompleteReason,
     pub gate_blocked_by: Vec<BoltV3EntryBlockReason>,
     pub pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
     pub market_id: Option<String>,
@@ -750,7 +830,7 @@ pub struct BoltV3EntrySkipEvidence {
     pub theta_scaled_min_edge_bps: Option<String>,
     pub up_fee_bps: Option<String>,
     pub down_fee_bps: Option<String>,
-    pub submission_blocked_reason: Option<BoltV3EntrySkipReasonCategory>,
+    pub submission_blocked_reason: Option<BoltV3EntrySkipCompleteReason>,
     pub stale_reference_after_ms: Option<u64>,
     pub last_reference_ts_ms: Option<u64>,
     pub min_liquidity_required: Option<String>,
@@ -761,10 +841,85 @@ pub struct BoltV3EntrySkipEvidence {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BoltV3EntrySkipEvidenceWire {
     strategy_id: String,
     now_ms: u64,
-    reason_category: BoltV3EntrySkipReasonCategory,
+    reason_category: BoltV3EntrySkipCompleteReason,
+    gate_blocked_by: Vec<BoltV3EntryBlockReason>,
+    pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    market_id: Option<String>,
+    phase: String,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    seconds_to_market_end: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    spot_price: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    reference_current_price: Option<String>,
+    fast_venue_available: bool,
+    reference_current_price_available: bool,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    realized_vol: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    realized_vol_source_venue: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    realized_vol_source_ts_ms: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    realized_vol_gate_result: Option<BoltV3RvGateResult>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    realized_vol_receive_watermark_ms: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    realized_vol_snapshot: Option<BoltV3EntryRealizedVolatilitySnapshotEvidence>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    fair_probability_up: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    fair_probability_down: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    selected_side: Option<BoltV3OutcomeSide>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    sized_notional: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    sized_worst_case_ev_bps: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    sized_edge_cents_per_share: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    theta_scaled_min_edge_bps: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    up_fee_bps: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    down_fee_bps: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    submission_blocked_reason: Option<BoltV3EntrySkipCompleteReason>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    stale_reference_after_ms: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    last_reference_ts_ms: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    min_liquidity_required: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    liquidity_available: Option<String>,
+    frozen: bool,
+    metadata_matches_selection: bool,
+    fast_venue_incoherent: bool,
+}
+
+fn deserialize_required_option<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoltV3EntrySkipV15EvidenceWire {
+    strategy_id: String,
+    now_ms: u64,
+    reason_category: BoltV3EntrySkipV15Reason,
     unclassified_context: Option<String>,
     gate_blocked_by: Vec<BoltV3EntryBlockReason>,
     pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
@@ -790,7 +945,7 @@ struct BoltV3EntrySkipEvidenceWire {
     theta_scaled_min_edge_bps: Option<String>,
     up_fee_bps: Option<String>,
     down_fee_bps: Option<String>,
-    submission_blocked_reason: Option<BoltV3EntrySkipReasonCategory>,
+    submission_blocked_reason: Option<BoltV3EntrySkipV15Reason>,
     stale_reference_after_ms: Option<u64>,
     last_reference_ts_ms: Option<u64>,
     min_liquidity_required: Option<String>,
@@ -800,24 +955,59 @@ struct BoltV3EntrySkipEvidenceWire {
     fast_venue_incoherent: bool,
 }
 
+impl BoltV3EntrySkipV15EvidenceWire {
+    fn validate_shape(&self) {
+        let _ = (
+            &self.strategy_id,
+            self.now_ms,
+            self.reason_category,
+            &self.unclassified_context,
+            &self.gate_blocked_by,
+            &self.pricing_blocked_by,
+            &self.market_id,
+            &self.phase,
+            self.seconds_to_market_end,
+            &self.spot_price,
+            &self.reference_current_price,
+            self.fast_venue_available,
+            self.reference_current_price_available,
+            &self.realized_vol,
+            &self.realized_vol_source_venue,
+            self.realized_vol_source_ts_ms,
+            self.realized_vol_gate_result,
+            self.realized_vol_receive_watermark_ms,
+            &self.realized_vol_snapshot,
+            &self.fair_probability_up,
+            &self.fair_probability_down,
+            self.selected_side,
+            &self.sized_notional,
+            &self.sized_worst_case_ev_bps,
+            &self.sized_edge_cents_per_share,
+            &self.theta_scaled_min_edge_bps,
+            &self.up_fee_bps,
+            &self.down_fee_bps,
+            self.submission_blocked_reason,
+            self.stale_reference_after_ms,
+            self.last_reference_ts_ms,
+            &self.min_liquidity_required,
+            &self.liquidity_available,
+            self.frozen,
+            self.metadata_matches_selection,
+            self.fast_venue_incoherent,
+        );
+    }
+}
+
 impl<'de> Deserialize<'de> for BoltV3EntrySkipEvidence {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         let wire = BoltV3EntrySkipEvidenceWire::deserialize(deserializer)?;
-        let realized_vol_gate_result = wire.realized_vol_gate_result.or_else(|| {
-            legacy_admitted_rv_fields(
-                wire.realized_vol.as_deref(),
-                wire.realized_vol_source_venue.as_deref(),
-                wire.realized_vol_source_ts_ms,
-            )
-        });
         Ok(Self {
             strategy_id: wire.strategy_id,
             now_ms: wire.now_ms,
             reason_category: wire.reason_category,
-            unclassified_context: wire.unclassified_context,
             gate_blocked_by: wire.gate_blocked_by,
             pricing_blocked_by: wire.pricing_blocked_by,
             market_id: wire.market_id,
@@ -825,14 +1015,12 @@ impl<'de> Deserialize<'de> for BoltV3EntrySkipEvidence {
             seconds_to_market_end: wire.seconds_to_market_end,
             spot_price: wire.spot_price,
             reference_current_price: wire.reference_current_price,
-            fast_venue_available: wire.fast_venue_available.unwrap_or(false),
-            reference_current_price_available: wire
-                .reference_current_price_available
-                .unwrap_or(false),
+            fast_venue_available: wire.fast_venue_available,
+            reference_current_price_available: wire.reference_current_price_available,
             realized_vol: wire.realized_vol,
             realized_vol_source_venue: wire.realized_vol_source_venue,
             realized_vol_source_ts_ms: wire.realized_vol_source_ts_ms,
-            realized_vol_gate_result,
+            realized_vol_gate_result: wire.realized_vol_gate_result,
             realized_vol_receive_watermark_ms: wire
                 .realized_vol_receive_watermark_ms
                 .map(LocalReceiveMs::new),
@@ -856,17 +1044,6 @@ impl<'de> Deserialize<'de> for BoltV3EntrySkipEvidence {
             fast_venue_incoherent: wire.fast_venue_incoherent,
         })
     }
-}
-
-fn legacy_admitted_rv_fields(
-    realized_vol: Option<&str>,
-    source_venue: Option<&str>,
-    source_ts_ms: Option<u64>,
-) -> Option<BoltV3RvGateResult> {
-    (realized_vol.is_some_and(valid_legacy_rv_value)
-        && source_venue.is_some_and(|value| !value.is_empty())
-        && source_ts_ms.is_some())
-    .then_some(BoltV3RvGateResult::Accepted)
 }
 
 fn valid_legacy_rv_value(value: &str) -> bool {
@@ -2275,7 +2452,6 @@ pub fn read_latest_entry_decision_evidence_chain(
     let mut intents = BTreeMap::<String, BoltV3OrderIntentEvidence>::new();
     let mut admissions = BTreeMap::<String, BoltV3AdmissionDecisionEvidence>::new();
     let mut latest = None;
-    let mut first_older_schema_index = None;
     for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
         if line.is_empty() {
             continue;
@@ -2284,12 +2460,12 @@ pub fn read_latest_entry_decision_evidence_chain(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
-        if decision_evidence_header_is_below_current_schema(&header) {
-            first_older_schema_index.get_or_insert(index);
+        let Some(action) = header.decode_action_for(EvidenceConsumer::EntryDecisionChain, index)?
+        else {
             continue;
-        }
-        match header.kind.as_str() {
-            "strategy_input_snapshot" => {
+        };
+        match action {
+            EvidenceDecodeAction::StrategyInputSnapshot => {
                 header.validate(
                     BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
                     BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
@@ -2308,7 +2484,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                 )?;
                 snapshots.insert(decoded.snapshot.client_order_id.clone(), decoded.snapshot);
             }
-            "order_intent" => {
+            EvidenceDecodeAction::OrderIntent => {
                 header.validate(
                     BOLT_V3_ORDER_INTENT_RECORD_KIND,
                     BOLT_V3_ORDER_INTENT_GATE_ID,
@@ -2323,7 +2499,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     intents.insert(decoded.intent.client_order_id.clone(), decoded.intent);
                 }
             }
-            "admission_decision" => {
+            EvidenceDecodeAction::AdmissionDecision => {
                 header.validate(
                     BOLT_V3_ADMISSION_DECISION_RECORD_KIND,
                     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
@@ -2354,7 +2530,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     }
                 }
             }
-            "basket_admission_decision" => {
+            EvidenceDecodeAction::BasketAdmissionDecision => {
                 header.validate(
                     BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
                     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
@@ -2372,7 +2548,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            "capital_admission_rebuild" => {
+            EvidenceDecodeAction::CapitalAdmissionRebuild => {
                 header.validate(
                     BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND,
                     BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID,
@@ -2390,7 +2566,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            "submit_reservation_metadata" => {
+            EvidenceDecodeAction::SubmitReservationMetadata => {
                 header.validate(
                     BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND,
                     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
@@ -2408,7 +2584,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            "submit_reservation_fill" => {
+            EvidenceDecodeAction::SubmitReservationFill => {
                 header.validate(
                     BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND,
                     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
@@ -2426,7 +2602,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            BOLT_V3_ENTRY_SKIP_RECORD_KIND => {
+            EvidenceDecodeAction::EntrySkipV15 => {
                 header.validate(
                     BOLT_V3_ENTRY_SKIP_RECORD_KIND,
                     BOLT_V3_ENTRY_SKIP_GATE_ID,
@@ -2442,7 +2618,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            BOLT_V3_EXIT_DECISION_RECORD_KIND => {
+            EvidenceDecodeAction::ExitDecision => {
                 header.validate(
                     BOLT_V3_EXIT_DECISION_RECORD_KIND,
                     BOLT_V3_EXIT_DECISION_GATE_ID,
@@ -2458,7 +2634,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            BOLT_V3_EXIT_EVALUATION_RECORD_KIND => {
+            EvidenceDecodeAction::ExitEvaluation => {
                 header.validate(
                     BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
                     BOLT_V3_EXIT_EVALUATION_GATE_ID,
@@ -2474,7 +2650,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND => {
+            EvidenceDecodeAction::LossGovernorHalt => {
                 header.validate(
                     BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
                     BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
@@ -2490,7 +2666,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            BOLT_V3_ORDER_REJECT_RECORD_KIND => {
+            EvidenceDecodeAction::OrderReject => {
                 header.validate(
                     BOLT_V3_ORDER_REJECT_RECORD_KIND,
                     BOLT_V3_ORDER_REJECT_GATE_ID,
@@ -2506,7 +2682,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            BOLT_V3_SETTLEMENT_RECORD_KIND => {
+            EvidenceDecodeAction::Settlement => {
                 header.validate(
                     BOLT_V3_SETTLEMENT_RECORD_KIND,
                     BOLT_V3_SETTLEMENT_GATE_ID,
@@ -2522,7 +2698,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND => {
+            EvidenceDecodeAction::SettlementBookingError => {
                 header.validate(
                     BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
                     BOLT_V3_SETTLEMENT_GATE_ID,
@@ -2540,7 +2716,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND => {
+            EvidenceDecodeAction::TerminalSettlement => {
                 header.validate(
                     BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND,
                     BOLT_V3_SETTLEMENT_GATE_ID,
@@ -2552,7 +2728,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     })?;
                 decoded.validate_header(index)?;
             }
-            BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND => {
+            EvidenceDecodeAction::OrderLifecycle => {
                 header.validate(
                     BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND,
                     BOLT_V3_ORDER_LIFECYCLE_GATE_ID,
@@ -2568,7 +2744,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND => {
+            EvidenceDecodeAction::VenueTruthCaptureFailure => {
                 header.validate(
                     BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND,
                     BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID,
@@ -2586,7 +2762,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND => {
+            EvidenceDecodeAction::VenueTruthDivergence => {
                 header.validate(
                     BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND,
                     BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID,
@@ -2604,7 +2780,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND => {
+            EvidenceDecodeAction::RequoteThrottle => {
                 header.validate(
                     BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
                     BOLT_V3_REQUOTE_THROTTLE_GATE_ID,
@@ -2620,27 +2796,14 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            other => {
+            EvidenceDecodeAction::EntrySkipCompleteReason => {
                 return Err(anyhow!(
-                    "unsupported bolt-v3 decision evidence kind `{other}` at line index {index}"
+                    "entry-decision registry returned unsupported decode action at line index {index}"
                 ));
             }
         }
     }
-    match latest {
-        Some(chain) => Ok(chain),
-        None => {
-            if let Some(index) = first_older_schema_index {
-                Err(anyhow!(
-                    "bolt-v3 decision evidence schema_version mismatch at line index {index}"
-                ))
-            } else {
-                Err(anyhow!(
-                    "bolt-v3 decision evidence has no complete entry decision chain"
-                ))
-            }
-        }
-    }
+    latest.ok_or_else(|| anyhow!("bolt-v3 decision evidence has no complete entry decision chain"))
 }
 
 pub fn read_submit_reservation_recovery_evidence(
@@ -2672,11 +2835,12 @@ pub fn read_submit_reservation_recovery_evidence(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
-        if decision_evidence_header_is_below_current_schema_non_recovery_record(&header) {
+        let Some(action) = header.decode_action_for(EvidenceConsumer::SubmitReservation, index)?
+        else {
             continue;
-        }
-        match header.kind.as_str() {
-            "strategy_input_snapshot" => {
+        };
+        match action {
+            EvidenceDecodeAction::StrategyInputSnapshot => {
                 header.validate(
                     BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
                     BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
@@ -2694,7 +2858,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            "order_intent" => {
+            EvidenceDecodeAction::OrderIntent => {
                 header.validate(
                     BOLT_V3_ORDER_INTENT_RECORD_KIND,
                     BOLT_V3_ORDER_INTENT_GATE_ID,
@@ -2710,7 +2874,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            "admission_decision" => {
+            EvidenceDecodeAction::AdmissionDecision => {
                 header.validate(
                     BOLT_V3_ADMISSION_DECISION_RECORD_KIND,
                     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
@@ -2726,7 +2890,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            "basket_admission_decision" => {
+            EvidenceDecodeAction::BasketAdmissionDecision => {
                 header.validate(
                     BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
                     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
@@ -2744,7 +2908,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            "capital_admission_rebuild" => {
+            EvidenceDecodeAction::CapitalAdmissionRebuild => {
                 header.validate(
                     BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND,
                     BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID,
@@ -2762,7 +2926,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            "submit_reservation_metadata" => {
+            EvidenceDecodeAction::SubmitReservationMetadata => {
                 header.validate(
                     BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND,
                     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
@@ -2791,7 +2955,7 @@ pub fn read_submit_reservation_recovery_evidence(
                         .insert(decoded.metadata.client_order_id.clone(), decoded.metadata);
                 }
             }
-            "submit_reservation_fill" => {
+            EvidenceDecodeAction::SubmitReservationFill => {
                 header.validate(
                     BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND,
                     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
@@ -2813,7 +2977,7 @@ pub fn read_submit_reservation_recovery_evidence(
                 })?;
                 fills.push(decoded.fill);
             }
-            BOLT_V3_ENTRY_SKIP_RECORD_KIND => {
+            EvidenceDecodeAction::EntrySkipV15 => {
                 header.validate(
                     BOLT_V3_ENTRY_SKIP_RECORD_KIND,
                     BOLT_V3_ENTRY_SKIP_GATE_ID,
@@ -2829,7 +2993,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            BOLT_V3_EXIT_DECISION_RECORD_KIND => {
+            EvidenceDecodeAction::ExitDecision => {
                 header.validate(
                     BOLT_V3_EXIT_DECISION_RECORD_KIND,
                     BOLT_V3_EXIT_DECISION_GATE_ID,
@@ -2845,7 +3009,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            BOLT_V3_EXIT_EVALUATION_RECORD_KIND => {
+            EvidenceDecodeAction::ExitEvaluation => {
                 header.validate(
                     BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
                     BOLT_V3_EXIT_EVALUATION_GATE_ID,
@@ -2861,7 +3025,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND => {
+            EvidenceDecodeAction::LossGovernorHalt => {
                 header.validate(
                     BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
                     BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
@@ -2877,7 +3041,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            BOLT_V3_ORDER_REJECT_RECORD_KIND => {
+            EvidenceDecodeAction::OrderReject => {
                 header.validate(
                     BOLT_V3_ORDER_REJECT_RECORD_KIND,
                     BOLT_V3_ORDER_REJECT_GATE_ID,
@@ -2893,7 +3057,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            BOLT_V3_SETTLEMENT_RECORD_KIND => {
+            EvidenceDecodeAction::Settlement => {
                 header.validate(
                     BOLT_V3_SETTLEMENT_RECORD_KIND,
                     BOLT_V3_SETTLEMENT_GATE_ID,
@@ -2909,7 +3073,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND => {
+            EvidenceDecodeAction::SettlementBookingError => {
                 header.validate(
                     BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
                     BOLT_V3_SETTLEMENT_GATE_ID,
@@ -2927,7 +3091,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND => {
+            EvidenceDecodeAction::TerminalSettlement => {
                 header.validate(
                     BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND,
                     BOLT_V3_SETTLEMENT_GATE_ID,
@@ -2939,7 +3103,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     })?;
                 decoded.validate_header(index)?;
             }
-            BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND => {
+            EvidenceDecodeAction::OrderLifecycle => {
                 header.validate(
                     BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND,
                     BOLT_V3_ORDER_LIFECYCLE_GATE_ID,
@@ -2955,7 +3119,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND => {
+            EvidenceDecodeAction::VenueTruthCaptureFailure => {
                 header.validate(
                     BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND,
                     BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID,
@@ -2973,7 +3137,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND => {
+            EvidenceDecodeAction::VenueTruthDivergence => {
                 header.validate(
                     BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND,
                     BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID,
@@ -2991,7 +3155,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND => {
+            EvidenceDecodeAction::RequoteThrottle => {
                 header.validate(
                     BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
                     BOLT_V3_REQUOTE_THROTTLE_GATE_ID,
@@ -3007,9 +3171,9 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            other => {
+            EvidenceDecodeAction::EntrySkipCompleteReason => {
                 return Err(anyhow!(
-                    "unsupported bolt-v3 decision evidence kind `{other}` at line index {index}"
+                    "submit-reservation registry returned unsupported decode action at line index {index}"
                 ));
             }
         }
@@ -3037,47 +3201,6 @@ pub fn read_submit_reservation_recovery_evidence(
     Ok(BoltV3SubmitReservationRecoveryEvidence {
         metadata_by_client_order_id: recovered,
     })
-}
-
-fn decision_evidence_header_is_below_current_schema(
-    header: &DecisionEvidenceEnvelopeHeader,
-) -> bool {
-    header.schema_version < BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
-}
-
-/// Audit-only (non-recovery) record kinds carry no reservation state, so an
-/// older-schema instance is safe to skip rather than fail the entire recovery
-/// read (otherwise one stale audit line poisons recovery of every valid
-/// current-schema reservation after it). Reservation-bearing kinds
-/// (submit_reservation_metadata / submit_reservation_fill) are deliberately NOT
-/// skipped here: an unparseable legacy reservation record must still fail closed
-/// at `header.validate`, so startup degrades to the unreconciled gate instead of
-/// silently ignoring a possibly-open reservation.
-fn decision_evidence_header_is_below_current_schema_non_recovery_record(
-    header: &DecisionEvidenceEnvelopeHeader,
-) -> bool {
-    decision_evidence_header_is_below_current_schema(header)
-        && matches!(
-            header.kind.as_str(),
-            BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND
-                | BOLT_V3_ORDER_INTENT_RECORD_KIND
-                | BOLT_V3_ADMISSION_DECISION_RECORD_KIND
-                | BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND
-                | BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND
-                // Legacy pre-v14 audit-only kind. It never carries reservation state.
-                | "position_sizer_rebuild"
-                | BOLT_V3_ENTRY_SKIP_RECORD_KIND
-                | BOLT_V3_EXIT_DECISION_RECORD_KIND
-                | BOLT_V3_EXIT_EVALUATION_RECORD_KIND
-                | BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND
-                | BOLT_V3_ORDER_REJECT_RECORD_KIND
-                | BOLT_V3_SETTLEMENT_RECORD_KIND
-                | BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND
-                | BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND
-                | BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND
-                | BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND
-                | BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND
-        )
 }
 
 fn open_regular_decision_evidence_file(path: &Path) -> std::io::Result<fs::File> {
@@ -3348,30 +3471,52 @@ struct DecisionEvidenceEnvelopeHeader {
 }
 
 impl DecisionEvidenceEnvelopeHeader {
-    fn validate(&self, expected_kind: &str, expected_gate_id: &str, index: usize) -> Result<()> {
-        if self.schema_version != BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
-            return Err(anyhow!(
-                "bolt-v3 decision evidence schema_version mismatch at line index {index}"
-            ));
-        }
+    fn resolve_identity(&self, index: usize) -> Result<EvidenceRecordIdentity> {
+        let identity = resolve_evidence_record_identity(&self.kind, self.schema_version)
+            .with_context(|| format!("invalid decision-evidence identity at line index {index}"))?;
+        let metadata = identity.metadata();
         if self.recorded_at_utc_ns <= 0 {
             return Err(anyhow!(
                 "bolt-v3 decision evidence recorded_at_utc_ns must be positive at line index {index}"
             ));
         }
+        if self.gate_id != metadata.gate_id {
+            return Err(anyhow!(
+                "bolt-v3 decision evidence gate_id mismatch at line index {index}"
+            ));
+        }
+        if self.gate_version.is_empty() {
+            return Err(anyhow!(
+                "bolt-v3 decision evidence gate_version must not be empty at line index {index}"
+            ));
+        }
+        Ok(identity)
+    }
+
+    fn decode_action_for(
+        &self,
+        consumer: EvidenceConsumer,
+        index: usize,
+    ) -> Result<Option<EvidenceDecodeAction>> {
+        Ok(self.resolve_identity(index)?.decode_action_for(consumer))
+    }
+
+    fn validate(&self, expected_kind: &str, expected_gate_id: &str, index: usize) -> Result<()> {
+        let identity = self.resolve_identity(index)?;
+        let metadata = identity.metadata();
         if self.gate_id != expected_gate_id {
             return Err(anyhow!(
                 "bolt-v3 decision evidence gate_id mismatch at line index {index}"
             ));
         }
-        if self.gate_version != BOLT_V3_DECISION_EVIDENCE_GATE_VERSION {
-            return Err(anyhow!(
-                "bolt-v3 decision evidence gate_version mismatch at line index {index}"
-            ));
-        }
         if self.kind != expected_kind {
             return Err(anyhow!(
                 "bolt-v3 decision evidence kind mismatch at line index {index}"
+            ));
+        }
+        if metadata.gate_id != expected_gate_id || metadata.kind != expected_kind {
+            return Err(anyhow!(
+                "bolt-v3 decision evidence registered identity mismatch at line index {index}"
             ));
         }
         Ok(())
@@ -3453,7 +3598,7 @@ struct SubmitReservationFillLineOwned {
 struct EntrySkipLineOwned {
     #[serde(flatten)]
     header: DecisionEvidenceEnvelopeHeader,
-    entry_skip: BoltV3EntrySkipEvidence,
+    entry_skip: BoltV3EntrySkipV15EvidenceWire,
 }
 
 #[derive(Deserialize)]
@@ -3550,7 +3695,7 @@ impl EntrySkipLineOwned {
         expected_gate_id: &str,
         index: usize,
     ) -> Result<()> {
-        let _ = &self.entry_skip;
+        self.entry_skip.validate_shape();
         self.header.validate(expected_kind, expected_gate_id, index)
     }
 }
@@ -3730,12 +3875,13 @@ fn current_utc_ns() -> i64 {
 }
 
 fn encode_order_intent_line(intent: &BoltV3OrderIntentEvidence) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_order_intent().metadata();
     let envelope = OrderIntentLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_ORDER_INTENT_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: "order_intent",
+        kind: identity.kind,
         intent,
     };
     let mut line = serde_json::to_vec(&envelope)
@@ -3747,12 +3893,13 @@ fn encode_order_intent_line(intent: &BoltV3OrderIntentEvidence) -> Result<Vec<u8
 fn encode_strategy_input_snapshot_line(
     snapshot: &BoltV3StrategyInputEvidenceSnapshot,
 ) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_strategy_input_snapshot().metadata();
     let envelope = StrategyInputSnapshotLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: "strategy_input_snapshot",
+        kind: identity.kind,
         snapshot,
     };
     let mut line = serde_json::to_vec(&envelope)
@@ -3762,12 +3909,13 @@ fn encode_strategy_input_snapshot_line(
 }
 
 fn encode_admission_decision_line(decision: &BoltV3AdmissionDecisionEvidence) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_admission_decision().metadata();
     let envelope = AdmissionDecisionLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: "admission_decision",
+        kind: identity.kind,
         decision,
     };
     let mut line =
@@ -3779,12 +3927,13 @@ fn encode_admission_decision_line(decision: &BoltV3AdmissionDecisionEvidence) ->
 fn encode_basket_admission_decision_line(
     decision: &BoltV3BasketAdmissionDecisionEvidence,
 ) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_basket_admission_decision().metadata();
     let envelope = BasketAdmissionDecisionLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND,
+        kind: identity.kind,
         decision,
     };
     let mut line = serde_json::to_vec(&envelope)
@@ -3796,12 +3945,13 @@ fn encode_basket_admission_decision_line(
 fn encode_capital_admission_rebuild_audit_line(
     audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
 ) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_capital_admission_rebuild().metadata();
     let envelope = CapitalAdmissionRebuildAuditLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND,
+        kind: identity.kind,
         audit,
     };
     let mut line = serde_json::to_vec(&envelope)
@@ -3813,12 +3963,13 @@ fn encode_capital_admission_rebuild_audit_line(
 fn encode_submit_reservation_metadata_line(
     metadata: &BoltV3SubmitReservationMetadataEvidence,
 ) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_submit_reservation_metadata().metadata();
     let envelope = SubmitReservationMetadataLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND,
+        kind: identity.kind,
         metadata,
     };
     let mut line = serde_json::to_vec(&envelope)
@@ -3830,12 +3981,13 @@ fn encode_submit_reservation_metadata_line(
 fn encode_submit_reservation_fill_line(
     fill: &BoltV3SubmitReservationFillEvidence,
 ) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_submit_reservation_fill().metadata();
     let envelope = SubmitReservationFillLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND,
+        kind: identity.kind,
         fill,
     };
     let mut line = serde_json::to_vec(&envelope)
@@ -3845,12 +3997,13 @@ fn encode_submit_reservation_fill_line(
 }
 
 fn encode_entry_skip_line(skip: &BoltV3EntrySkipEvidence) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_entry_skip().metadata();
     let envelope = EntrySkipLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_ENTRY_SKIP_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_ENTRY_SKIP_RECORD_KIND,
+        kind: identity.kind,
         entry_skip: skip,
     };
     let mut line =
@@ -3898,12 +4051,13 @@ fn encode_exit_evaluation_line(evidence: &BoltV3ExitEvaluationEvidence) -> Resul
     {
         anyhow::bail!("rv_snapshot_receive_watermark_ms must be non-negative");
     }
+    let identity = EvidenceRecordIdentity::current_exit_evaluation().metadata();
     let envelope = ExitEvaluationLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_EXIT_EVALUATION_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
+        kind: identity.kind,
         evidence,
     };
     let mut line =
@@ -3913,12 +4067,13 @@ fn encode_exit_evaluation_line(evidence: &BoltV3ExitEvaluationEvidence) -> Resul
 }
 
 fn encode_exit_decision_line(decision: &BoltV3ExitDecisionEvidence) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_exit_decision().metadata();
     let envelope = ExitDecisionLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_EXIT_DECISION_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_EXIT_DECISION_RECORD_KIND,
+        kind: identity.kind,
         exit_decision: decision,
     };
     let mut line =
@@ -3957,12 +4112,13 @@ impl LossGovernorHaltLineOwned {
 }
 
 fn encode_loss_governor_halt_line(evidence: &BoltV3LossGovernorHaltEvidence) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_loss_governor_halt().metadata();
     let envelope = LossGovernorHaltLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+        kind: identity.kind,
         evidence,
     };
     let mut line =
@@ -3972,12 +4128,13 @@ fn encode_loss_governor_halt_line(evidence: &BoltV3LossGovernorHaltEvidence) -> 
 }
 
 fn encode_requote_throttle_line(throttle: &BoltV3RequoteThrottleEvidence) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_requote_throttle().metadata();
     let envelope = RequoteThrottleLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_REQUOTE_THROTTLE_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
+        kind: identity.kind,
         requote_throttle: throttle,
     };
     let mut line =
@@ -4016,12 +4173,13 @@ impl SettlementLineOwned {
 }
 
 fn encode_settlement_line(evidence: &BoltV3SettlementEvidence) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_settlement().metadata();
     let envelope = SettlementLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_SETTLEMENT_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_SETTLEMENT_RECORD_KIND,
+        kind: identity.kind,
         settlement: evidence,
     };
     let mut line =
@@ -4062,12 +4220,13 @@ impl SettlementBookingErrorLineOwned {
 fn encode_settlement_booking_error_line(
     evidence: &BoltV3SettlementBookingErrorEvidence,
 ) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_settlement_booking_error().metadata();
     let envelope = SettlementBookingErrorLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_SETTLEMENT_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
+        kind: identity.kind,
         booking_error: evidence,
     };
     let mut line = serde_json::to_vec(&envelope)
@@ -4110,12 +4269,13 @@ fn encode_terminal_settlement_line(evidence: &BoltV3TerminalSettlementEvidence) 
     evidence
         .validate()
         .context("invalid terminal settlement evidence")?;
+    let identity = EvidenceRecordIdentity::current_terminal_settlement().metadata();
     let envelope = TerminalSettlementLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_SETTLEMENT_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND,
+        kind: identity.kind,
         terminal_settlement: evidence,
     };
     let mut line = serde_json::to_vec(&envelope)
@@ -4127,12 +4287,13 @@ fn encode_terminal_settlement_line(evidence: &BoltV3TerminalSettlementEvidence) 
 fn encode_venue_truth_capture_failure_line(
     evidence: &VenueTruthCaptureFailureEvidence,
 ) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_venue_truth_capture_failure().metadata();
     let envelope = VenueTruthCaptureFailureLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND,
+        kind: identity.kind,
         capture_failure: evidence,
     };
     let mut line = serde_json::to_vec(&envelope)
@@ -4142,12 +4303,13 @@ fn encode_venue_truth_capture_failure_line(
 }
 
 fn encode_venue_truth_divergence_line(evidence: &VenueTruthDivergenceEvidence) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_venue_truth_divergence().metadata();
     let envelope = VenueTruthDivergenceLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_VENUE_TRUTH_DIVERGENCE_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND,
+        kind: identity.kind,
         divergence: evidence,
     };
     let mut line = serde_json::to_vec(&envelope)
@@ -4186,12 +4348,13 @@ impl OrderRejectLineOwned {
 }
 
 fn encode_order_reject_line(evidence: &BoltV3OrderRejectEvidence) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_order_reject().metadata();
     let envelope = OrderRejectLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_ORDER_REJECT_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_ORDER_REJECT_RECORD_KIND,
+        kind: identity.kind,
         evidence,
     };
     let mut line =
@@ -4230,12 +4393,13 @@ impl OrderLifecycleLineOwned {
 }
 
 fn encode_order_lifecycle_line(evidence: &BoltV3OrderLifecycleEvidence) -> Result<Vec<u8>> {
+    let identity = EvidenceRecordIdentity::current_order_lifecycle().metadata();
     let envelope = OrderLifecycleLine {
-        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        schema_version: identity.schema_version,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_ORDER_LIFECYCLE_GATE_ID,
+        gate_id: identity.gate_id,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND,
+        kind: identity.kind,
         evidence,
     };
     let mut line =
@@ -4244,9 +4408,8 @@ fn encode_order_lifecycle_line(evidence: &BoltV3OrderLifecycleEvidence) -> Resul
     Ok(line)
 }
 
-/// Reads every `exit_evaluation` record (current schema) from a decision-evidence
-/// log, in file order. Records of other kinds and older schema versions are skipped,
-/// so this targeted reader is resilient to forward-compatible additions.
+/// Reads every registered `exit_evaluation` identity from a decision-evidence
+/// log, in file order. Identities registered as irrelevant to this consumer are skipped.
 pub fn read_exit_evaluation_evidence(
     path: impl AsRef<Path>,
     max_bytes: u64,
@@ -4254,6 +4417,7 @@ pub fn read_exit_evaluation_evidence(
     read_kind_evidence(
         path,
         max_bytes,
+        EvidenceConsumer::ExitEvaluation,
         BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
         BOLT_V3_EXIT_EVALUATION_GATE_ID,
         |line, index| {
@@ -4271,7 +4435,7 @@ pub fn read_exit_evaluation_evidence(
     )
 }
 
-/// Reads every `loss_governor_halt` record (current schema) from a decision-evidence
+/// Reads every registered `loss_governor_halt` identity from a decision-evidence
 /// log, in file order. See [`read_exit_evaluation_evidence`] for skip semantics.
 pub fn read_loss_governor_halt_evidence(
     path: impl AsRef<Path>,
@@ -4280,6 +4444,7 @@ pub fn read_loss_governor_halt_evidence(
     read_kind_evidence(
         path,
         max_bytes,
+        EvidenceConsumer::LossGovernorHalt,
         BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
         BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
         |line, index| {
@@ -4306,6 +4471,7 @@ pub fn read_order_reject_evidence(
     read_kind_evidence(
         path,
         max_bytes,
+        EvidenceConsumer::OrderReject,
         BOLT_V3_ORDER_REJECT_RECORD_KIND,
         BOLT_V3_ORDER_REJECT_GATE_ID,
         |line, index| {
@@ -4342,6 +4508,7 @@ fn read_settlement_evidence_records(
     read_kind_evidence(
         path,
         max_bytes,
+        EvidenceConsumer::Settlement,
         BOLT_V3_SETTLEMENT_RECORD_KIND,
         BOLT_V3_SETTLEMENT_GATE_ID,
         |line, index| {
@@ -4369,6 +4536,7 @@ pub fn read_settlement_booking_error_evidence(
     read_kind_evidence(
         path,
         max_bytes,
+        EvidenceConsumer::SettlementBookingError,
         BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
         BOLT_V3_SETTLEMENT_GATE_ID,
         |line, index| {
@@ -4396,6 +4564,7 @@ pub fn read_terminal_settlement_evidence(
     read_kind_evidence(
         path,
         max_bytes,
+        EvidenceConsumer::TerminalSettlement,
         BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND,
         BOLT_V3_SETTLEMENT_GATE_ID,
         |line, index| {
@@ -4507,11 +4676,12 @@ fn duplicate_settlement_key_error(settlement_key: &str) -> anyhow::Error {
 
 /// Shared body for the kind-specific evidence readers above. Reads the whole file
 /// under `max_bytes`, then for each non-empty line parses the envelope header,
-/// skips records of other kinds and older schema versions, and decodes matching
-/// lines via `decode`.
+/// resolves each exact identity, skips identities registered as irrelevant to this
+/// consumer, and decodes matching lines via `decode`.
 fn read_kind_evidence<T>(
     path: impl AsRef<Path>,
     max_bytes: u64,
+    consumer: EvidenceConsumer,
     target_kind: &str,
     expected_gate_id: &str,
     decode: impl Fn(&[u8], usize) -> Result<T>,
@@ -4538,10 +4708,7 @@ fn read_kind_evidence<T>(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
-        if header.schema_version < BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
-            continue;
-        }
-        if header.kind.as_str() != target_kind {
+        if header.decode_action_for(consumer, index)?.is_none() {
             continue;
         }
         header.validate(target_kind, expected_gate_id, index)?;
@@ -4563,8 +4730,8 @@ mod tests {
     };
 
     #[test]
-    fn decision_evidence_schema_version_tracks_position_interval_wire_shape() {
-        assert_eq!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION, 15);
+    fn legacy_v15_identity_remains_frozen() {
+        assert_eq!(BOLT_V3_LEGACY_V15_SCHEMA_VERSION, 15);
     }
 
     #[test]
@@ -4716,13 +4883,13 @@ mod tests {
             .expect_err("old v9 strategy-input snapshots must fail the schema gate");
 
         assert!(
-            err.to_string().contains("schema_version mismatch"),
-            "old evidence should fail on schema version, got: {err:#}"
+            format!("{err:#}").contains("unregistered decision-evidence identity"),
+            "old evidence should fail on unregistered identity, got: {err:#}"
         );
     }
 
     #[test]
-    fn legacy_schema_13_rebuild_audit_skips_but_reservations_fail_closed() {
+    fn legacy_schema_13_dispositions_are_registered_per_consumer() {
         let legacy_audit = DecisionEvidenceEnvelopeHeader {
             schema_version: 13,
             recorded_at_utc_ns: 1,
@@ -4730,9 +4897,12 @@ mod tests {
             gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION.to_string(),
             kind: "position_sizer_rebuild".to_string(),
         };
-        assert!(
-            decision_evidence_header_is_below_current_schema_non_recovery_record(&legacy_audit),
-            "legacy schema-13 audit-only rebuild records must remain skippable"
+        assert_eq!(
+            legacy_audit
+                .decode_action_for(EvidenceConsumer::SubmitReservation, 0)
+                .unwrap(),
+            None,
+            "registered legacy audit evidence is irrelevant to reservation recovery"
         );
 
         let legacy_reservation = DecisionEvidenceEnvelopeHeader {
@@ -4742,22 +4912,12 @@ mod tests {
             gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION.to_string(),
             kind: BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND.to_string(),
         };
-        assert!(
-            !decision_evidence_header_is_below_current_schema_non_recovery_record(
-                &legacy_reservation
-            ),
-            "legacy schema-13 reservation records must not be skipped"
-        );
-        let error = legacy_reservation
-            .validate(
-                BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND,
-                BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
-                0,
-            )
-            .expect_err("legacy schema-13 reservation metadata must fail closed");
-        assert!(
-            error.to_string().contains("schema_version mismatch"),
-            "reservation metadata should fail closed on schema mismatch, got: {error:#}"
+        assert_eq!(
+            legacy_reservation
+                .decode_action_for(EvidenceConsumer::SubmitReservation, 0)
+                .unwrap(),
+            Some(EvidenceDecodeAction::SubmitReservationMetadata),
+            "legacy reservation evidence retains an exact native decoder"
         );
     }
 
@@ -4792,10 +4952,7 @@ mod tests {
         let line = encode_order_intent_line(&intent).expect("intent should encode");
         let decoded = parse_line(&line);
 
-        assert_eq!(
-            decoded["schema_version"],
-            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
-        );
+        assert_eq!(decoded["schema_version"], BOLT_V3_LEGACY_V15_SCHEMA_VERSION);
         assert_eq!(decoded["gate_id"], BOLT_V3_ORDER_INTENT_GATE_ID);
         assert_eq!(
             decoded["gate_version"],
@@ -4997,10 +5154,7 @@ mod tests {
         let line = encode_strategy_input_snapshot_line(&snapshot).expect("snapshot should encode");
         let decoded = parse_line(&line);
 
-        assert_eq!(
-            decoded["schema_version"],
-            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
-        );
+        assert_eq!(decoded["schema_version"], BOLT_V3_LEGACY_V15_SCHEMA_VERSION);
         assert_eq!(decoded["gate_id"], BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID);
         assert_eq!(
             decoded["gate_version"],
@@ -5106,10 +5260,7 @@ mod tests {
             let line = encode_admission_decision_line(&decision).expect("decision should encode");
             let decoded = parse_line(&line);
 
-            assert_eq!(
-                decoded["schema_version"],
-                BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
-            );
+            assert_eq!(decoded["schema_version"], BOLT_V3_LEGACY_V15_SCHEMA_VERSION);
             assert_eq!(decoded["gate_id"], BOLT_V3_SUBMIT_ADMISSION_GATE_ID);
             assert_eq!(
                 decoded["gate_version"],
@@ -5313,7 +5464,7 @@ mod tests {
 
         assert_eq!(
             decoded.header.schema_version,
-            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+            BOLT_V3_LEGACY_V15_SCHEMA_VERSION
         );
         assert_eq!(decoded.header.gate_id, BOLT_V3_EXIT_EVALUATION_GATE_ID);
         assert_eq!(decoded.header.kind, BOLT_V3_EXIT_EVALUATION_RECORD_KIND);
@@ -5338,7 +5489,7 @@ mod tests {
 
         assert_eq!(
             decoded.header.schema_version,
-            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+            BOLT_V3_LEGACY_V15_SCHEMA_VERSION
         );
         assert_eq!(decoded.header.gate_id, BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID);
         assert_eq!(decoded.header.kind, BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND);
@@ -5363,7 +5514,7 @@ mod tests {
 
         assert_eq!(
             decoded.header.schema_version,
-            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+            BOLT_V3_LEGACY_V15_SCHEMA_VERSION
         );
         assert_eq!(decoded.header.gate_id, BOLT_V3_ORDER_REJECT_GATE_ID);
         assert_eq!(decoded.header.kind, BOLT_V3_ORDER_REJECT_RECORD_KIND);
@@ -5389,7 +5540,7 @@ mod tests {
 
         assert_eq!(
             decoded.header.schema_version,
-            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+            BOLT_V3_LEGACY_V15_SCHEMA_VERSION
         );
         assert_eq!(
             decoded.header.gate_id,
@@ -5426,7 +5577,7 @@ mod tests {
 
         assert_eq!(
             decoded.header.schema_version,
-            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+            BOLT_V3_LEGACY_V15_SCHEMA_VERSION
         );
         assert_eq!(
             decoded.header.gate_id,

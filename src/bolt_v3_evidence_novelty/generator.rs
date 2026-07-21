@@ -82,7 +82,7 @@ enum DimensionShape {
     Scalar,
     Set,
     Optional,
-    Opaque,
+    SourceMap,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -93,10 +93,18 @@ struct Dimension {
     rust_field_type: String,
     domain: String,
     shape: DimensionShape,
+    #[serde(rename = "component", default)]
+    components: Vec<SourceMapComponent>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SourceMapComponent {
+    name: String,
+    rust_field_type: String,
+    domain: String,
     #[serde(default)]
-    component_domains: Vec<String>,
-    #[serde(default)]
-    optional_component_domains: Vec<String>,
+    optional: bool,
 }
 
 pub fn parse_registry(text: &str) -> Result<EvidenceNoveltyRegistry> {
@@ -339,33 +347,52 @@ impl EvidenceNoveltyRegistry {
                 validate_dimension_type(dimension, domain)?;
                 root_domains.insert(domain.name.as_str());
                 ensure!(
-                    matches!(dimension.shape, DimensionShape::Opaque)
-                        || (dimension.component_domains.is_empty()
-                            && dimension.optional_component_domains.is_empty()),
-                    "only opaque dimension {} may declare component domains",
+                    matches!(dimension.shape, DimensionShape::SourceMap)
+                        || dimension.components.is_empty(),
+                    "only source-map dimension {} may declare components",
                     dimension.name
                 );
                 let mut component_names = BTreeSet::new();
-                for component_domain in dimension
-                    .component_domains
-                    .iter()
-                    .chain(&dimension.optional_component_domains)
-                {
+                for component in &dimension.components {
+                    validate_snake_identifier(&component.name, "source-map component name")?;
+                    validate_rust_type(
+                        &component.rust_field_type,
+                        "source-map component rust_field_type",
+                    )?;
                     ensure!(
-                        component_names.insert(component_domain),
-                        "producer {} dimension {} repeats component domain {}",
+                        component_names.insert(component.name.as_str()),
+                        "producer {} dimension {} repeats component name {}",
                         producer.name,
                         dimension.name,
-                        component_domain
+                        component.name
                     );
-                    let component = domains.get(component_domain.as_str()).with_context(|| {
-                        format!(
-                            "producer {} dimension {} references unknown component domain {}",
-                            producer.name, dimension.name, component_domain
-                        )
-                    })?;
-                    root_domains.insert(component.name.as_str());
+                    let component_domain =
+                        domains.get(component.domain.as_str()).with_context(|| {
+                            format!(
+                                "producer {} dimension {} references unknown component domain {}",
+                                producer.name, dimension.name, component.domain
+                            )
+                        })?;
+                    let expected_type = if component.optional {
+                        format!("Option<{}>", component_domain.rust_type)
+                    } else {
+                        component_domain.rust_type.clone()
+                    };
+                    ensure!(
+                        component.rust_field_type == expected_type,
+                        "source-map component {} type must be {}, got {}",
+                        component.name,
+                        expected_type,
+                        component.rust_field_type
+                    );
+                    root_domains.insert(component_domain.name.as_str());
                 }
+                ensure!(
+                    !matches!(dimension.shape, DimensionShape::SourceMap)
+                        || !dimension.components.is_empty(),
+                    "source-map dimension {} requires components",
+                    dimension.name
+                );
             }
         }
 
@@ -395,7 +422,14 @@ fn validate_dimension_type(dimension: &Dimension, domain: &Domain) -> Result<()>
         DimensionShape::Scalar => domain.rust_type.clone(),
         DimensionShape::Set => format!("CanonicalSet<{}>", domain.rust_type),
         DimensionShape::Optional => format!("Option<{}>", domain.rust_type),
-        DimensionShape::Opaque => return Ok(()),
+        DimensionShape::SourceMap => {
+            ensure!(
+                dimension.rust_field_type == "CanonicalSourceStates",
+                "source-map dimension {} type must be CanonicalSourceStates",
+                dimension.name
+            );
+            return Ok(());
+        }
     };
     ensure!(
         dimension.rust_field_type == expected,
@@ -470,7 +504,7 @@ pub fn render_registry(registry: &EvidenceNoveltyRegistry) -> Result<String> {
     )?;
     writeln!(
         output,
-        "use super::{{CanonicalSet, CanonicalSourceStates, NoveltyEligibleProducer, private}};\n"
+        "use super::{{CanonicalSet, CanonicalSourceStates, FactoredStateUpperBound, NoveltyEligibleProducer, private}};\n"
     )?;
 
     render_owner_enum(registry, &mut output)?;
@@ -480,6 +514,7 @@ pub fn render_registry(registry: &EvidenceNoveltyRegistry) -> Result<String> {
     for domain in registry.domains.iter().filter(|domain| !domain.generated) {
         render_domain_validator(domain, &domains, &mut output)?;
     }
+    render_source_map_state_types(registry, &mut output)?;
     for producer in &registry.producers {
         render_producer(producer, &domains, &mut output)?;
     }
@@ -528,7 +563,7 @@ fn render_cardinality_bounds(
 ) -> Result<()> {
     for producer in &registry.producers {
         let mut static_factor = 1_u128;
-        let mut opaque_per_registered_source = None;
+        let mut source_map_per_registered_source = None;
         for dimension in &producer.dimensions {
             let domain_size = domain_cardinality(&dimension.domain, domains, &mut BTreeSet::new())?;
             let dimension_cardinality = match dimension.shape {
@@ -543,32 +578,28 @@ fn render_cardinality_bounds(
                         .checked_pow(exponent)
                         .context("set semantic dimension cardinality exceeds u128")?
                 }
-                DimensionShape::Opaque => {
+                DimensionShape::SourceMap => {
                     ensure!(
-                        opaque_per_registered_source.is_none(),
+                        source_map_per_registered_source.is_none(),
                         "producer {} may declare at most one source-roster dimension",
                         producer.name
                     );
-                    let mut per_source = domain_size;
-                    for component_domain in &dimension.component_domains {
-                        per_source = per_source
-                            .checked_mul(domain_cardinality(
-                                component_domain,
-                                domains,
-                                &mut BTreeSet::new(),
-                            )?)
-                            .context("source semantic state cardinality overflow")?;
-                    }
-                    for component_domain in &dimension.optional_component_domains {
-                        let optional_component =
-                            domain_cardinality(component_domain, domains, &mut BTreeSet::new())?
+                    let mut per_source = 1_u128;
+                    for component in &dimension.components {
+                        let cardinality =
+                            domain_cardinality(&component.domain, domains, &mut BTreeSet::new())?;
+                        let cardinality = if component.optional {
+                            cardinality
                                 .checked_add(1)
-                                .context("optional source component cardinality overflow")?;
+                                .context("optional source component cardinality overflow")?
+                        } else {
+                            cardinality
+                        };
                         per_source = per_source
-                            .checked_mul(optional_component)
+                            .checked_mul(cardinality)
                             .context("source semantic state cardinality overflow")?;
                     }
-                    opaque_per_registered_source = Some(per_source);
+                    source_map_per_registered_source = Some(per_source);
                     continue;
                 }
             };
@@ -577,7 +608,7 @@ fn render_cardinality_bounds(
                 .context("producer semantic key cardinality overflow")?;
         }
         let constant_name = cardinality_constant_name(&producer.name);
-        if let Some(per_source) = opaque_per_registered_source {
+        if let Some(per_source) = source_map_per_registered_source {
             writeln!(
                 output,
                 "pub const {constant_name}_STATIC_STATE_UPPER_BOUND: u128 = {static_factor};"
@@ -588,12 +619,12 @@ fn render_cardinality_bounds(
             )?;
             writeln!(
                 output,
-                "pub fn {}_per_episode_state_upper_bound(registered_source_count: u32) -> Option<u128> {{",
+                "pub const fn {}_per_episode_state_upper_bound(registered_source_count: u32) -> FactoredStateUpperBound {{",
                 producer.name
             )?;
             writeln!(
                 output,
-                "    {constant_name}_PER_REGISTERED_SOURCE_STATE_UPPER_BOUND.checked_pow(registered_source_count).and_then(|source_states| {constant_name}_STATIC_STATE_UPPER_BOUND.checked_mul(source_states))"
+                "    FactoredStateUpperBound {{ static_factor: {constant_name}_STATIC_STATE_UPPER_BOUND, per_registered_source_factor: {constant_name}_PER_REGISTERED_SOURCE_STATE_UPPER_BOUND, registered_source_count }}"
             )?;
             writeln!(output, "}}\n")?;
         } else {
@@ -743,6 +774,50 @@ fn render_domain_validator(
     Ok(())
 }
 
+fn source_map_state_type_name(dimension_name: &str) -> String {
+    let mut name = String::new();
+    for part in dimension_name.split('_') {
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            name.extend(first.to_uppercase());
+            name.extend(chars);
+        }
+    }
+    name.push_str("SemanticState");
+    name
+}
+
+fn render_source_map_state_types(
+    registry: &EvidenceNoveltyRegistry,
+    output: &mut String,
+) -> Result<()> {
+    for dimension in registry
+        .producers
+        .iter()
+        .flat_map(|producer| &producer.dimensions)
+        .filter(|dimension| matches!(dimension.shape, DimensionShape::SourceMap))
+    {
+        writeln!(
+            output,
+            "#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]"
+        )?;
+        writeln!(
+            output,
+            "pub(super) struct {} {{",
+            source_map_state_type_name(&dimension.name)
+        )?;
+        for component in &dimension.components {
+            writeln!(
+                output,
+                "    pub(super) {}: {},",
+                component.name, component.rust_field_type
+            )?;
+        }
+        writeln!(output, "}}\n")?;
+    }
+    Ok(())
+}
+
 fn render_producer(
     producer: &Producer,
     domains: &BTreeMap<&str, &Domain>,
@@ -776,7 +851,7 @@ fn render_producer(
         let domain = domains
             .get(dimension.domain.as_str())
             .expect("dimension domain validated");
-        if domain.generated || matches!(dimension.shape, DimensionShape::Opaque) {
+        if domain.generated || matches!(dimension.shape, DimensionShape::SourceMap) {
             continue;
         }
         match dimension.shape {
@@ -801,7 +876,7 @@ fn render_producer(
                 writeln!(output, "            validate_{}(value)?;", domain.name)?;
                 writeln!(output, "        }}")?;
             }
-            DimensionShape::Opaque => unreachable!("handled above"),
+            DimensionShape::SourceMap => unreachable!("handled above"),
         }
     }
     writeln!(output, "        Ok(Self {{")?;

@@ -56,7 +56,8 @@ use crate::{
         EvidenceAvailability, EvidenceCoherence, EvidenceConditionIdentity, EvidenceEpisodeId,
         EvidenceEpisodeRejection, EvidenceFailover, EvidenceMarketIdentity, EvidenceNoveltyGuard,
         EvidenceOutcomeIdentity, EvidenceQuestionIdentity, EvidenceStrategyIdentity,
-        EvidenceTargetIdentity, EvidenceWatermark, RvSourceSemanticStateInput,
+        EvidenceTargetIdentity, EvidenceWatermark, RegisteredRvSourceRoster,
+        RvSourceSemanticStateInput,
     },
     bolt_v3_executable_cost::{
         ExactSizeVwap, ExecutableBookQuote, ExecutableCostBreakdown, executable_cost_breakdown,
@@ -689,6 +690,7 @@ pub struct BinaryOracleEdgeTaker {
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     blocked_strategy_input_novelty: EvidenceNoveltyGuard<BlockedStrategyInputSnapshotProducer>,
     entry_skip_novelty: EvidenceNoveltyGuard<EntrySkipProducer>,
+    registered_rv_source_roster: RegisteredRvSourceRoster,
     last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
     pricing: PricingState,
     latest_signal_quote: Option<FastSpotObservation>,
@@ -772,6 +774,20 @@ enum EntryRejectClass {
     Unfillable,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EntrySkipRecordDisposition {
+    Appended,
+    Suppressed,
+    FailedRetained,
+    Rejected,
+}
+
+impl EntrySkipRecordDisposition {
+    fn is_first_attempt(self) -> bool {
+        matches!(self, Self::Appended | Self::FailedRetained)
+    }
+}
+
 impl BinaryOracleEdgeTaker {
     fn new(config: BinaryOracleEdgeTakerConfig, context: StrategyBuildContext) -> Self {
         let pricing = PricingState::from_config(&taker_pricing_config(&config));
@@ -785,6 +801,14 @@ impl BinaryOracleEdgeTaker {
             .iter()
             .map(|instrument_id| InstrumentId::from(instrument_id.as_str()))
             .collect::<Vec<_>>();
+        let registered_rv_source_roster = RegisteredRvSourceRoster::try_new(
+            context
+                .registered_realized_volatility_source_ids(&config.realized_volatility_surface_id)
+                .expect(
+                    "validated realized-volatility configuration must expose the configured surface",
+                ),
+        )
+        .expect("validated realized-volatility configuration must define a closed source roster");
         Self {
             core: StrategyCore::new(StrategyConfig {
                 strategy_id: Some(StrategyId::from(config.strategy_id.as_str())),
@@ -814,6 +838,7 @@ impl BinaryOracleEdgeTaker {
             last_reported_exposure_occupancy: Cell::new(None),
             blocked_strategy_input_novelty: EvidenceNoveltyGuard::new(),
             entry_skip_novelty: EvidenceNoveltyGuard::new(),
+            registered_rv_source_roster,
             last_recorded_exit_decision: None,
             pricing,
             latest_signal_quote: None,
@@ -3959,13 +3984,13 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    /// Returns `true` when a new skip was recorded (not evidence-deduped).
+    /// Attempts one semantic state and reports append, suppression, retained failure, or rejection.
     fn record_entry_skip_once(
         &mut self,
         now_ms: u64,
         decision: &EntrySubmissionDecision,
         reason_category: BoltV3EntrySkipReasonCategory,
-    ) -> Result<bool> {
+    ) -> Result<EntrySkipRecordDisposition> {
         let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
         let forced_flat_inputs = self.entry_forced_flat_evidence_inputs();
         let key = (|| {
@@ -3996,38 +4021,44 @@ impl BinaryOracleEdgeTaker {
             reason_category,
             &fields,
             forced_flat_inputs,
-        );
+        )?;
         let episode = self.evidence_episode_id();
         let writer = self.context.decision_evidence();
         match self
             .entry_skip_novelty
             .attempt_once(episode, key, || writer.record_entry_skip(&evidence))
         {
-            EvidenceAttemptOutcome::Appended => Ok(true),
-            EvidenceAttemptOutcome::PreviouslyAttempted => Ok(false),
+            EvidenceAttemptOutcome::Appended => Ok(EntrySkipRecordDisposition::Appended),
+            EvidenceAttemptOutcome::PreviouslyAttempted => {
+                Ok(EntrySkipRecordDisposition::Suppressed)
+            }
             EvidenceAttemptOutcome::AttemptFailedAndRetained(error) => {
                 log::error!(
                     "binary_oracle_edge_taker entry skip evidence attempt failed and remains suppressed: strategy_id={} error={error:#}",
                     self.config.strategy_id
                 );
-                Ok(true)
+                Ok(EntrySkipRecordDisposition::FailedRetained)
             }
             EvidenceAttemptOutcome::IdentityRejectedFirst(rejection) => {
                 log::error!(
                     "binary_oracle_edge_taker entry skip evidence identity rejected and retained: strategy_id={} rejection={rejection:?}",
                     self.config.strategy_id
                 );
-                Ok(false)
+                Ok(EntrySkipRecordDisposition::Rejected)
             }
-            EvidenceAttemptOutcome::IdentityRejectedPreviously(_) => Ok(false),
+            EvidenceAttemptOutcome::IdentityRejectedPreviously(_) => {
+                Ok(EntrySkipRecordDisposition::Rejected)
+            }
             EvidenceAttemptOutcome::SemanticKeyRejectedFirst(error) => {
                 log::error!(
                     "binary_oracle_edge_taker entry skip semantic key rejected and retained: strategy_id={} error={error:#}",
                     self.config.strategy_id
                 );
-                Ok(false)
+                Ok(EntrySkipRecordDisposition::Rejected)
             }
-            EvidenceAttemptOutcome::SemanticKeyRejectedPreviously => Ok(false),
+            EvidenceAttemptOutcome::SemanticKeyRejectedPreviously => {
+                Ok(EntrySkipRecordDisposition::Rejected)
+            }
         }
     }
 
@@ -4038,7 +4069,10 @@ impl BinaryOracleEdgeTaker {
         reason_category: BoltV3EntrySkipReasonCategory,
     ) -> Result<()> {
         // WARN keyed on the same evidence dedupe as record_entry_skip_once.
-        if self.record_entry_skip_once(now_ms, decision, reason_category)? {
+        if self
+            .record_entry_skip_once(now_ms, decision, reason_category)?
+            .is_first_attempt()
+        {
             log::warn!(
                 "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={reason_category:?}",
                 self.config.strategy_id
@@ -6171,6 +6205,7 @@ impl BinaryOracleEdgeTaker {
                 EvidenceWatermark::from(realized_volatility.receive_watermark_ms.is_some()),
                 CanonicalSet::try_from_iter(semantic_rv.semantic_blockers.iter().copied())?,
                 CanonicalSourceStates::try_new(
+                    &self.registered_rv_source_roster,
                     semantic_rv.registered_source_ids.iter().cloned(),
                     semantic_rv.semantic_source_states.iter().cloned(),
                     semantic_rv.unknown_semantic_source_ids.iter().cloned(),
@@ -7006,14 +7041,14 @@ impl BinaryOracleEdgeTaker {
         let quantity = instrument.try_make_qty(quantity_value, Some(true))?;
 
         if self.exposure_occupancy().is_some() {
-            let newly_recorded = self.record_entry_skip_once(
+            let disposition = self.record_entry_skip_once(
                 now_ms,
                 &decision,
                 BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation,
             )?;
             // Keep WARN on the same dedupe as evidence (not per-tick), then
             // propagate the invariant failure so admission fails closed.
-            if newly_recorded {
+            if disposition.is_first_attempt() {
                 log::warn!(
                     "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={:?}",
                     self.config.strategy_id,

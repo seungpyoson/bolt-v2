@@ -11,26 +11,26 @@ use bolt_v2::bolt_v3_strategy_context::StrategyBuildContext;
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_decision_evidence::{
-        BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_ENTRY_SKIP_COMPLETE_REASON_RECORD_KIND,
         BOLT_V3_ENTRY_SKIP_GATE_ID, BOLT_V3_EXIT_DECISION_GATE_ID, BOLT_V3_EXIT_EVALUATION_GATE_ID,
-        BOLT_V3_EXIT_EVALUATION_RECORD_KIND, BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
-        BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND, BOLT_V3_ORDER_INTENT_GATE_ID,
-        BOLT_V3_ORDER_REJECT_GATE_ID, BOLT_V3_ORDER_REJECT_RECORD_KIND,
-        BOLT_V3_REQUOTE_THROTTLE_GATE_ID, BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
-        BOLT_V3_SETTLEMENT_GATE_ID, BOLT_V3_SETTLEMENT_RECORD_KIND,
-        BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID, BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
-        BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND, BoltV3AdmissionDecisionEvidence,
-        BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
-        BoltV3BasketAdmissionOutcome, BoltV3CapitalAdmissionRebuildAuditEvidence,
-        BoltV3DecisionEvidenceWriter, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
-        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence,
-        BoltV3ExitDecisionOutcome, BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult,
-        BoltV3ExitRvSnapshotBlocker, BoltV3ExitTriggerSource, BoltV3ForcedFlatReason,
-        BoltV3LossGovernorHaltEvidence, BoltV3LossSnapshotSource, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3OrderLifecycleEvidence,
-        BoltV3OrderLifecycleOutcome, BoltV3OrderLifecycleTransition, BoltV3OrderRejectEvidence,
-        BoltV3OrderRejectReason, BoltV3OutcomeSide,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RejectSource,
+        BOLT_V3_EXIT_EVALUATION_RECORD_KIND, BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
+        BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID, BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+        BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_ORDER_REJECT_GATE_ID,
+        BOLT_V3_ORDER_REJECT_RECORD_KIND, BOLT_V3_REQUOTE_THROTTLE_GATE_ID,
+        BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND, BOLT_V3_SETTLEMENT_GATE_ID,
+        BOLT_V3_SETTLEMENT_RECORD_KIND, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+        BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND,
+        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
+        BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
+        BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
+        BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason, BoltV3EntrySkipCompleteReason,
+        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitDecisionOutcome,
+        BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker,
+        BoltV3ExitTriggerSource, BoltV3ForcedFlatReason, BoltV3LossGovernorHaltEvidence,
+        BoltV3LossSnapshotSource, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+        BoltV3OrderIntentOrderFields, BoltV3OrderLifecycleEvidence, BoltV3OrderLifecycleOutcome,
+        BoltV3OrderLifecycleTransition, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
+        BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RejectSource,
         BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
         BoltV3RequoteThrottleEvidence, BoltV3RvGateResult, BoltV3SettlementBookingErrorEvidence,
         BoltV3SettlementBookingErrorReason, BoltV3SettlementEvidence, BoltV3StaleLossReason,
@@ -75,7 +75,7 @@ impl FeeProvider for NoopFeeProvider {
 #[test]
 fn decision_evidence_schema_version_tracks_reference_price_and_capital_admission_records() {
     assert_eq!(
-        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         EXPECTED_CAPITAL_ADMISSION_RECOVERY_SCHEMA_VERSION
     );
 }
@@ -265,8 +265,7 @@ fn latest_entry_decision_evidence_chain_rejects_untrusted_record_metadata() {
                 .remove("schema_version");
         }),
         ("wrong schema_version", |line: &mut serde_json::Value| {
-            line["schema_version"] =
-                serde_json::json!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION + 1);
+            line["schema_version"] = serde_json::json!(BOLT_V3_LEGACY_V15_SCHEMA_VERSION + 1);
         }),
         (
             "missing recorded_at_utc_ns",
@@ -295,8 +294,8 @@ fn latest_entry_decision_evidence_chain_rejects_untrusted_record_metadata() {
                 .expect("line should be an object")
                 .remove("gate_version");
         }),
-        ("wrong gate_version", |line: &mut serde_json::Value| {
-            line["gate_version"] = serde_json::json!("wrong-version");
+        ("empty gate_version", |line: &mut serde_json::Value| {
+            line["gate_version"] = serde_json::json!("");
         }),
     ];
 
@@ -425,8 +424,8 @@ fn latest_entry_decision_evidence_chain_rejects_legacy_schema_before_admission_p
         .expect_err("legacy decision evidence should fail closed before payload parsing");
     let rendered = format!("{error:#}");
     assert!(
-        rendered.contains("schema_version mismatch"),
-        "legacy schema should fail on envelope schema, got: {rendered}"
+        rendered.contains("unregistered decision-evidence identity"),
+        "unknown identity should fail at the envelope, got: {rendered}"
     );
     assert!(
         !rendered.contains("execution_client_id"),
@@ -448,7 +447,7 @@ fn submit_reservation_recovery_rejects_noncanonical_metadata_encodings() {
         write_decision_evidence_lines(
             &evidence_path,
             &[serde_json::json!({
-                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
                 "recorded_at_utc_ns": 1_i64,
                 "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
                 "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -473,7 +472,7 @@ fn submit_reservation_recovery_skips_legacy_v9_non_recovery_lines() {
     let evidence_path = temp.path().join("decision-evidence.jsonl");
     let mut lines = sample_entry_decision_evidence_lines().to_vec();
     for line in &mut lines {
-        line["schema_version"] = serde_json::json!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION - 1);
+        line["schema_version"] = serde_json::json!(BOLT_V3_LEGACY_V15_SCHEMA_VERSION - 1);
     }
     lines.push(serde_json::json!({
         "schema_version": EXPECTED_CAPITAL_ADMISSION_RECOVERY_SCHEMA_VERSION,
@@ -501,8 +500,7 @@ fn submit_reservation_recovery_skips_older_schema_admission_before_payload_parse
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("decision-evidence.jsonl");
     let mut legacy_admission = sample_entry_decision_evidence_lines()[2].clone();
-    legacy_admission["schema_version"] =
-        serde_json::json!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION - 1);
+    legacy_admission["schema_version"] = serde_json::json!(BOLT_V3_LEGACY_V15_SCHEMA_VERSION - 1);
     legacy_admission["decision"]
         .as_object_mut()
         .expect("legacy admission decision should be an object")
@@ -512,7 +510,7 @@ fn submit_reservation_recovery_skips_older_schema_admission_before_payload_parse
         &[
             legacy_admission,
             serde_json::json!({
-                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
                 "recorded_at_utc_ns": 4_i64,
                 "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
                 "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -520,7 +518,7 @@ fn submit_reservation_recovery_skips_older_schema_admission_before_payload_parse
                 "metadata": sample_submit_reservation_metadata(),
             }),
             serde_json::json!({
-                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
                 "recorded_at_utc_ns": 5_i64,
                 "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
                 "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -582,7 +580,7 @@ fn submit_reservation_recovery_skips_below_current_schema_audit_only_records() {
     for mut legacy_audit_line in [
         sample_basket_admission_decision_line(),
         serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": BOLT_V3_ENTRY_SKIP_GATE_ID,
             "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -590,7 +588,7 @@ fn submit_reservation_recovery_skips_below_current_schema_audit_only_records() {
             "entry_skip": sample_entry_skip_evidence(),
         }),
         serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": BOLT_V3_EXIT_DECISION_GATE_ID,
             "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -598,7 +596,7 @@ fn submit_reservation_recovery_skips_below_current_schema_audit_only_records() {
             "exit_decision": sample_exit_decision_evidence(),
         }),
         serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": BOLT_V3_REQUOTE_THROTTLE_GATE_ID,
             "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -611,7 +609,7 @@ fn submit_reservation_recovery_skips_below_current_schema_audit_only_records() {
             .expect("audit line should carry a kind")
             .to_string();
         legacy_audit_line["schema_version"] =
-            serde_json::json!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION - 1);
+            serde_json::json!(BOLT_V3_LEGACY_V15_SCHEMA_VERSION - 1);
         let temp = tempfile::tempdir().expect("tempdir should create");
         let evidence_path = temp.path().join("decision-evidence.jsonl");
         let metadata = sample_submit_reservation_metadata();
@@ -621,7 +619,7 @@ fn submit_reservation_recovery_skips_below_current_schema_audit_only_records() {
             &[
                 legacy_audit_line,
                 serde_json::json!({
-                    "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                    "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
                     "recorded_at_utc_ns": 2_i64,
                     "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
                     "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -658,15 +656,18 @@ fn entry_skip_evidence_writes_one_durable_line_and_readers_skip_it() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         lines[0]["schema_version"],
-        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+        BOLT_V3_LEGACY_V15_SCHEMA_VERSION
     );
-    assert_eq!(lines[0]["kind"], "entry_skip");
+    assert_eq!(
+        lines[0]["kind"],
+        BOLT_V3_ENTRY_SKIP_COMPLETE_REASON_RECORD_KIND
+    );
     let decoded: BoltV3EntrySkipEvidence =
         serde_json::from_value(lines[0]["entry_skip"].clone()).expect("entry skip should decode");
     assert_eq!(decoded, evidence);
     assert_eq!(
         decoded.reason_category,
-        BoltV3EntrySkipReasonCategory::EntryPricingBlocked
+        BoltV3EntrySkipCompleteReason::EntryPricingBlocked
     );
     assert_eq!(decoded.market_id.as_deref(), Some("market-one"));
     assert_eq!(decoded.sized_worst_case_ev_bps.as_deref(), Some("12.5"));
@@ -679,23 +680,22 @@ fn entry_skip_evidence_writes_one_durable_line_and_readers_skip_it() {
 }
 
 #[test]
-fn entry_skip_admitted_markers_default_false_for_predeploy_lines() {
-    let mut value = serde_json::to_value(sample_entry_skip_evidence())
-        .expect("entry skip evidence should encode as json");
-    value
-        .as_object_mut()
-        .expect("entry skip should encode as an object")
-        .remove("fast_venue_available");
-    value
-        .as_object_mut()
-        .expect("entry skip should encode as an object")
-        .remove("reference_current_price_available");
+fn current_entry_skip_wire_shape_rejects_missing_and_unknown_fields() {
+    let value = serde_json::to_value(sample_entry_skip_evidence()).expect("serialize entry skip");
 
-    let decoded: BoltV3EntrySkipEvidence =
-        serde_json::from_value(value).expect("predeploy entry skip should decode");
+    let mut missing = value.clone();
+    missing
+        .as_object_mut()
+        .expect("entry skip must be an object")
+        .remove("realized_vol_snapshot");
+    assert!(serde_json::from_value::<BoltV3EntrySkipEvidence>(missing).is_err());
 
-    assert!(!decoded.fast_venue_available);
-    assert!(!decoded.reference_current_price_available);
+    let mut unknown = value;
+    unknown
+        .as_object_mut()
+        .expect("entry skip must be an object")
+        .insert("other".to_string(), serde_json::json!(true));
+    assert!(serde_json::from_value::<BoltV3EntrySkipEvidence>(unknown).is_err());
 }
 
 #[test]
@@ -729,7 +729,7 @@ fn probability_wire_fields_remain_string_payload_bytes() {
         entry_skip_bytes,
         concat!(
             r#"{"strategy_id":"strategy-one","now_ms":1200,"reason_category":"entry_pricing_blocked","#,
-            r#""unclassified_context":null,"gate_blocked_by":[{"forced_flat":"stale_reference"}],"#,
+            r#""gate_blocked_by":[{"forced_flat":"stale_reference"}],"#,
             r#""pricing_blocked_by":["realized_vol_not_ready"],"market_id":"market-one","#,
             r#""phase":"Active","seconds_to_market_end":300,"spot_price":"3100.5","#,
             r#""reference_current_price":"3100.5","fast_venue_available":true,"#,
@@ -774,7 +774,7 @@ fn exit_decision_evidence_writes_one_durable_line_and_readers_skip_it() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         lines[0]["schema_version"],
-        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+        BOLT_V3_LEGACY_V15_SCHEMA_VERSION
     );
     assert_eq!(lines[0]["kind"], "exit_decision");
     let decoded: BoltV3ExitDecisionEvidence =
@@ -866,7 +866,7 @@ fn requote_throttle_evidence_writes_one_durable_line_and_readers_skip_it() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         lines[0]["schema_version"],
-        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+        BOLT_V3_LEGACY_V15_SCHEMA_VERSION
     );
     assert_eq!(lines[0]["kind"], "requote_throttle");
     let decoded: BoltV3RequoteThrottleEvidence =
@@ -895,13 +895,13 @@ fn requote_throttle_evidence_writes_one_durable_line_and_readers_skip_it() {
 }
 
 #[test]
-fn submit_reservation_recovery_rejects_legacy_v9_reservation_metadata() {
+fn submit_reservation_recovery_accepts_registered_v14_reservation_metadata() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("decision-evidence.jsonl");
     write_decision_evidence_lines(
         &evidence_path,
         &[serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION - 1,
+            "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION - 1,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
             "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -910,16 +910,12 @@ fn submit_reservation_recovery_rejects_legacy_v9_reservation_metadata() {
         })],
     );
 
-    // A reservation-bearing record below the current schema must FAIL CLOSED, not
-    // be silently skipped: only audit-only (non-recovery) kinds are skip-eligible.
-    // Failing closed degrades startup to the unreconciled gate rather than
-    // silently dropping a possibly-open reservation.
-    let error = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
-        .expect_err("legacy v9 reservation metadata must fail closed");
-    let rendered = format!("{error:#}");
+    let recovered = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect("registered v14 reservation metadata must decode through its exact identity");
     assert!(
-        rendered.contains("schema_version mismatch"),
-        "expected schema mismatch for legacy reservation metadata, got: {rendered}"
+        recovered
+            .metadata_by_client_order_id
+            .contains_key("client-order-one")
     );
 }
 
@@ -963,7 +959,7 @@ fn jsonl_decision_evidence_shutdown_drain_succeeds_after_record_write() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         lines[0]["kind"],
-        serde_json::Value::String("entry_skip".to_string())
+        serde_json::Value::String(BOLT_V3_ENTRY_SKIP_COMPLETE_REASON_RECORD_KIND.to_string())
     );
 }
 
@@ -988,8 +984,7 @@ fn sample_entry_skip_evidence() -> BoltV3EntrySkipEvidence {
     BoltV3EntrySkipEvidence {
         strategy_id: "strategy-one".to_string(),
         now_ms: 1_200,
-        reason_category: BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-        unclassified_context: None,
+        reason_category: BoltV3EntrySkipCompleteReason::EntryPricingBlocked,
         gate_blocked_by: vec![BoltV3EntryBlockReason::ForcedFlat(
             BoltV3ForcedFlatReason::StaleReference,
         )],
@@ -1016,7 +1011,7 @@ fn sample_entry_skip_evidence() -> BoltV3EntrySkipEvidence {
         theta_scaled_min_edge_bps: Some("10".to_string()),
         up_fee_bps: Some("2".to_string()),
         down_fee_bps: Some("3".to_string()),
-        submission_blocked_reason: Some(BoltV3EntrySkipReasonCategory::EntryPricingBlocked),
+        submission_blocked_reason: Some(BoltV3EntrySkipCompleteReason::EntryPricingBlocked),
         stale_reference_after_ms: Some(1_500),
         last_reference_ts_ms: Some(1_000),
         min_liquidity_required: Some("100".to_string()),
@@ -1028,64 +1023,7 @@ fn sample_entry_skip_evidence() -> BoltV3EntrySkipEvidence {
 }
 
 #[test]
-fn entry_rv_receipt_fields_deserialize_from_legacy_evidence() {
-    let mut accepted_skip =
-        serde_json::to_value(sample_entry_skip_evidence()).expect("serialize skip");
-    let accepted_skip_object = accepted_skip
-        .as_object_mut()
-        .expect("skip must serialize as object");
-    accepted_skip_object.remove("realized_vol_gate_result");
-    accepted_skip_object.remove("realized_vol_receive_watermark_ms");
-    accepted_skip_object.remove("realized_vol_snapshot");
-    let skip: BoltV3EntrySkipEvidence =
-        serde_json::from_value(accepted_skip.clone()).expect("accepted legacy skip");
-    assert_eq!(
-        skip.realized_vol_gate_result,
-        Some(BoltV3RvGateResult::Accepted)
-    );
-    assert_eq!(skip.realized_vol_receive_watermark_ms, None);
-    assert_eq!(skip.realized_vol_snapshot, None);
-
-    let mut zero_rv_skip = accepted_skip.clone();
-    zero_rv_skip
-        .as_object_mut()
-        .expect("zero-RV skip must remain an object")
-        .insert("realized_vol".to_string(), serde_json::json!("0"));
-    let zero_rv_skip: BoltV3EntrySkipEvidence =
-        serde_json::from_value(zero_rv_skip).expect("zero RV is valid legacy skip evidence");
-    assert_eq!(
-        zero_rv_skip.realized_vol_gate_result,
-        Some(BoltV3RvGateResult::Accepted)
-    );
-
-    for invalid_wire_value in ["-1", "NaN", "inf", "-inf"] {
-        let mut invalid_rv_skip = accepted_skip.clone();
-        invalid_rv_skip
-            .as_object_mut()
-            .expect("invalid-RV skip must remain an object")
-            .insert(
-                "realized_vol".to_string(),
-                serde_json::json!(invalid_wire_value),
-            );
-        let invalid_rv_skip: BoltV3EntrySkipEvidence = serde_json::from_value(invalid_rv_skip)
-            .expect("invalid RV string must remain readable legacy skip evidence");
-        assert_eq!(
-            invalid_rv_skip.realized_vol_gate_result, None,
-            "invalid legacy skip RV must not infer admission: {invalid_wire_value}"
-        );
-    }
-
-    let unclassifiable_skip_object = accepted_skip
-        .as_object_mut()
-        .expect("skip must remain an object");
-    unclassifiable_skip_object.insert(
-        "realized_vol_source_venue".to_string(),
-        serde_json::Value::Null,
-    );
-    let skip: BoltV3EntrySkipEvidence =
-        serde_json::from_value(accepted_skip).expect("unclassifiable legacy skip");
-    assert_eq!(skip.realized_vol_gate_result, None);
-
+fn strategy_input_rv_receipt_fields_deserialize_from_legacy_evidence() {
     let mut snapshot =
         serde_json::to_value(strategy_input_snapshot_with_realized_volatility_snapshot())
             .expect("serialize strategy input");
@@ -1349,7 +1287,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
     };
     [
         serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
             "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -1357,7 +1295,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
             "snapshot": snapshot,
         }),
         serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": BOLT_V3_ORDER_INTENT_GATE_ID,
             "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -1365,7 +1303,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
             "intent": intent,
         }),
         serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
             "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -1412,7 +1350,7 @@ fn sample_submit_reservation_fill() -> BoltV3SubmitReservationFillEvidence {
 
 fn sample_basket_admission_decision_line() -> serde_json::Value {
     serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         "recorded_at_utc_ns": 2_i64,
         "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -1706,7 +1644,7 @@ fn sample_terminal_settlement_lifecycle() -> BoltV3OrderLifecycleEvidence {
 
 fn exit_evaluation_evidence_line(evidence: &BoltV3ExitEvaluationEvidence) -> serde_json::Value {
     serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         "recorded_at_utc_ns": 10_i64,
         "gate_id": BOLT_V3_EXIT_EVALUATION_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -1719,7 +1657,7 @@ fn loss_governor_halt_evidence_line(
     evidence: &BoltV3LossGovernorHaltEvidence,
 ) -> serde_json::Value {
     serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         "recorded_at_utc_ns": 11_i64,
         "gate_id": BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -1730,7 +1668,7 @@ fn loss_governor_halt_evidence_line(
 
 fn order_reject_evidence_line(evidence: &BoltV3OrderRejectEvidence) -> serde_json::Value {
     serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         "recorded_at_utc_ns": 12_i64,
         "gate_id": BOLT_V3_ORDER_REJECT_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -1741,7 +1679,7 @@ fn order_reject_evidence_line(evidence: &BoltV3OrderRejectEvidence) -> serde_jso
 
 fn settlement_evidence_line(evidence: &BoltV3SettlementEvidence) -> serde_json::Value {
     serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         "recorded_at_utc_ns": 13_i64,
         "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -1754,7 +1692,7 @@ fn settlement_booking_error_evidence_line(
     evidence: &BoltV3SettlementBookingErrorEvidence,
 ) -> serde_json::Value {
     serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         "recorded_at_utc_ns": 14_i64,
         "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -2068,7 +2006,7 @@ fn entry_chain_and_recovery_readers_skip_new_rca_evidence_kinds() {
     let evidence_path = temp.path().join("decision-evidence.jsonl");
     let mut lines = sample_entry_decision_evidence_lines().to_vec();
     lines.push(serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         "recorded_at_utc_ns": 4_i64,
         "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -2533,7 +2471,7 @@ fn rv_clock_domain_amendment_round_trip_evaluation_value(
 
 #[test]
 fn rv_clock_domain_amendment_exit_wires_preserve_new_and_legacy_inputs() {
-    assert_eq!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION, 15);
+    assert_eq!(BOLT_V3_LEGACY_V15_SCHEMA_VERSION, 15);
 
     let mut decision = serde_json::to_value(sample_exit_decision_evidence())
         .expect("sample exit decision should serialize");
@@ -2633,7 +2571,7 @@ fn rv_clock_domain_amendment_exit_wires_preserve_new_and_legacy_inputs() {
 
 #[test]
 fn rv_clock_domain_amendment_negative_receive_fields_fail_decode_and_encode() {
-    assert_eq!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION, 15);
+    assert_eq!(BOLT_V3_LEGACY_V15_SCHEMA_VERSION, 15);
 
     for field in ["trigger_ts_init_ms", "rv_snapshot_receive_watermark_ms"] {
         let mut payload = serde_json::to_value(sample_exit_evaluation_evidence(true))

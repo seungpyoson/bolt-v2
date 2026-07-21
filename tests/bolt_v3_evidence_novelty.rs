@@ -14,7 +14,7 @@ use bolt_v2::{
         EvidenceConditionIdentity, EvidenceEpisodeId, EvidenceEpisodeRejection,
         EvidenceMarketIdentity, EvidenceNoveltyGuard, EvidenceOutcomeIdentity,
         EvidenceQuestionIdentity, EvidenceStrategyIdentity, EvidenceTargetIdentity,
-        EvidenceWatermark, RvSourceSemanticStateInput,
+        EvidenceWatermark, RegisteredRvSourceRoster, RvSourceSemanticStateInput,
         blocked_strategy_input_snapshot_per_episode_state_upper_bound, generator::parse_registry,
         generator::render_registry, registered_evidence_dimension_by_id,
     },
@@ -93,15 +93,15 @@ fn registry_is_closed_and_generated_rust_is_byte_exact() -> Result<()> {
     assert!(parse_registry(&unknown_domain).is_err());
 
     let unknown_optional_component = REGISTRY.replacen(
-        "optional_component_domains = [\"rv_blocker\", \"rv_source_rejection\"]",
-        "optional_component_domains = [\"missing_domain\"]",
+        "name = \"last_rejected_reason\"\nrust_field_type = \"Option<RealizedVolSourceRejectReason>\"\ndomain = \"rv_source_rejection\"",
+        "name = \"last_rejected_reason\"\nrust_field_type = \"Option<RealizedVolSourceRejectReason>\"\ndomain = \"missing_domain\"",
         1,
     );
     assert!(parse_registry(&unknown_optional_component).is_err());
 
     let repeated_component = REGISTRY.replacen(
-        "optional_component_domains = [\"rv_blocker\", \"rv_source_rejection\"]",
-        "optional_component_domains = [\"enablement\"]",
+        "name = \"last_rejected_reason\"\nrust_field_type = \"Option<RealizedVolSourceRejectReason>\"",
+        "name = \"enablement\"\nrust_field_type = \"Option<RealizedVolSourceRejectReason>\"",
         1,
     );
     assert!(parse_registry(&repeated_component).is_err());
@@ -111,14 +111,15 @@ fn registry_is_closed_and_generated_rust_is_byte_exact() -> Result<()> {
 #[test]
 fn generated_cardinality_formulas_are_checked_and_finite() {
     assert!(ENTRY_SKIP_PER_EPISODE_STATE_UPPER_BOUND > 4_096);
+    let six_source_bound = blocked_strategy_input_snapshot_per_episode_state_upper_bound(6);
     assert_eq!(
-        blocked_strategy_input_snapshot_per_episode_state_upper_bound(0),
-        Some(BLOCKED_STRATEGY_INPUT_SNAPSHOT_STATIC_STATE_UPPER_BOUND)
-    );
-    assert_eq!(
-        blocked_strategy_input_snapshot_per_episode_state_upper_bound(1),
+        six_source_bound.static_factor,
         BLOCKED_STRATEGY_INPUT_SNAPSHOT_STATIC_STATE_UPPER_BOUND
-            .checked_mul(BLOCKED_STRATEGY_INPUT_SNAPSHOT_PER_REGISTERED_SOURCE_STATE_UPPER_BOUND,)
+    );
+    assert_eq!(six_source_bound.registered_source_count, 6);
+    assert_eq!(
+        six_source_bound.per_registered_source_factor,
+        BLOCKED_STRATEGY_INPUT_SNAPSHOT_PER_REGISTERED_SOURCE_STATE_UPPER_BOUND
     );
     assert_eq!(
         BLOCKED_STRATEGY_INPUT_SNAPSHOT_PER_REGISTERED_SOURCE_STATE_UPPER_BOUND,
@@ -265,6 +266,8 @@ fn structured_pricing_payloads_are_injective() -> Result<()> {
 
 #[test]
 fn canonical_source_states_bind_status_to_registered_source_identity() -> Result<()> {
+    let roster =
+        RegisteredRvSourceRoster::try_new(["source-a".to_string(), "source-b".to_string()])?;
     let source_a = RvSourceSemanticStateInput {
         source_id: "source-a".to_string(),
         enabled: true,
@@ -282,11 +285,13 @@ fn canonical_source_states_bind_status_to_registered_source_identity() -> Result
         last_rejected_reason: None,
     };
     let left = CanonicalSourceStates::try_new(
+        &roster,
         ["source-a".to_string(), "source-b".to_string()],
         [source_a.clone(), source_b.clone()],
         [],
     )?;
     let reordered = CanonicalSourceStates::try_new(
+        &roster,
         ["source-b".to_string(), "source-a".to_string()],
         [source_b, source_a],
         [],
@@ -294,8 +299,28 @@ fn canonical_source_states_bind_status_to_registered_source_identity() -> Result
     assert_eq!(left, reordered);
     assert_eq!(left.len(), 2);
 
+    let fixed_roster = RegisteredRvSourceRoster::try_new(["source-a".to_string()])?;
     assert!(
         CanonicalSourceStates::try_new(
+            &fixed_roster,
+            ["source-tick".to_string()],
+            [RvSourceSemanticStateInput {
+                source_id: "source-tick".to_string(),
+                enabled: true,
+                counts_toward_quorum: true,
+                status: RealizedVolSourceStatus::Ready,
+                block_reason: None,
+                last_rejected_reason: None,
+            }],
+            [],
+        )
+        .is_err(),
+        "a snapshot cannot authorize a rotating source identity"
+    );
+
+    assert!(
+        CanonicalSourceStates::try_new(
+            &roster,
             ["source-a".to_string()],
             [],
             ["unknown-source".to_string()],
@@ -304,6 +329,7 @@ fn canonical_source_states_bind_status_to_registered_source_identity() -> Result
     );
     assert!(
         CanonicalSourceStates::try_new(
+            &roster,
             ["source-a".to_string(), "source-b".to_string()],
             [RvSourceSemanticStateInput {
                 source_id: "source-a".to_string(),
@@ -319,8 +345,13 @@ fn canonical_source_states_bind_status_to_registered_source_identity() -> Result
         "a registered source without one semantic row must fail closed"
     );
     assert!(
-        CanonicalSourceStates::try_new(["source-a".to_string(), "source-a".to_string()], [], [],)
-            .is_err(),
+        CanonicalSourceStates::try_new(
+            &roster,
+            ["source-a".to_string(), "source-a".to_string()],
+            [],
+            [],
+        )
+        .is_err(),
         "a duplicate registered source identity must fail closed"
     );
     Ok(())
@@ -398,24 +429,6 @@ fn volatile_observations_do_not_enter_the_complete_key() -> Result<()> {
         false,
     )?;
     assert_eq!(first, second);
-    Ok(())
-}
-
-#[test]
-fn unknown_runtime_state_fails_closed() -> Result<()> {
-    assert!(
-        entry_key(
-            BoltV3EntrySkipReasonCategory::Unclassified,
-            vec![],
-            vec![],
-            false,
-            false,
-            false,
-            BoltV3RvGateResult::MissingSnapshot,
-            false,
-        )
-        .is_err()
-    );
     Ok(())
 }
 

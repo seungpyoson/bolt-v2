@@ -1369,6 +1369,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         )
+        .with_realized_volatility_surfaces(fixture_realized_volatility_surfaces("<surface_id>"))
         .with_settlement_account_id(Some(fixture_settlement_account_id()))
         .with_settlement_currency(Some(fixture_settlement_currency()))
         .with_settlement_health_transition_emitter(Some(
@@ -1377,6 +1378,48 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
     );
     register_test_strategy(&mut strategy);
     strategy
+}
+
+pub(super) fn fixture_realized_volatility_surfaces(
+    surface_id: &str,
+) -> std::collections::BTreeMap<String, crate::bolt_v3_realized_volatility::RealizedVolEngineConfig>
+{
+    let mut surfaces = std::collections::BTreeMap::new();
+    surfaces.insert(
+        surface_id.to_string(),
+        crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
+            surface_id: surface_id.to_string(),
+            window_ms: 4_000,
+            sampling_interval_ms: 1_000,
+            min_ready_sources: 1,
+            max_source_age_ms: 500,
+            max_inter_sample_gap_ms: 2_000,
+            min_coverage_ratio: 0.75,
+            max_cross_source_dispersion: 0.50,
+            seconds_per_annum: 31_536_000.0,
+            aggregation:
+                crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                    quantile: 1.0,
+                },
+            estimator: crate::bolt_v3_realized_volatility::RealizedVolEstimatorConfig::measured(),
+            sources: vec![
+                crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
+                    source_id: "fixture-source".to_string(),
+                    data_client_id: "fixture-data-client".to_string(),
+                    instrument_id: "FIXTURE-RV.SOURCE".to_string(),
+                    source_class:
+                        crate::bolt_v3_realized_volatility::RealizedVolSourceClass::SpotQuote,
+                    sample_kind:
+                        crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
+                    enabled: true,
+                    counts_toward_quorum: true,
+                    canonical_base_asset: "FIXTURE".to_string(),
+                    canonical_quote_asset: "USD".to_string(),
+                },
+            ],
+        },
+    );
+    surfaces
 }
 
 pub(super) fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {

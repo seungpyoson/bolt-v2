@@ -4,7 +4,7 @@
 use crate::bolt_v3_decision_evidence::{BoltV3BinaryOutcomeEdgeBlockReason, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason, BoltV3EntrySkipReasonCategory, BoltV3ExposureOccupancy, BoltV3ForcedFlatReason, BoltV3OutcomeSide, BoltV3RvGateResult};
 use crate::bolt_v3_market_families::MarketSelectionOutcome;
 use crate::bolt_v3_realized_volatility::{RealizedVolBlockReason, RealizedVolSourceRejectReason, RealizedVolSourceStatus};
-use super::{CanonicalSet, CanonicalSourceStates, NoveltyEligibleProducer, private};
+use super::{CanonicalSet, CanonicalSourceStates, FactoredStateUpperBound, NoveltyEligibleProducer, private};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EvidenceProducerOwner {
@@ -126,7 +126,6 @@ pub(super) fn validate_entry_skip_reason(value: &BoltV3EntrySkipReasonCategory) 
         BoltV3EntrySkipReasonCategory::EntryMalformedRejected => Ok(()),
         BoltV3EntrySkipReasonCategory::EntryBalanceRejected => Ok(()),
         BoltV3EntrySkipReasonCategory::EntryUnfillableRejectedUnchangedBook => Ok(()),
-        BoltV3EntrySkipReasonCategory::Unclassified => anyhow::bail!("unregistered entry_skip_reason state Unclassified"),
     }
 }
 
@@ -281,6 +280,15 @@ pub(super) fn validate_market_selection_outcome(value: &MarketSelectionOutcome) 
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct RvSourceStatesSemanticState {
+    pub(super) enablement: EvidenceEnablement,
+    pub(super) quorum_participation: EvidenceQuorumParticipation,
+    pub(super) status: RealizedVolSourceStatus,
+    pub(super) block_reason: Option<RealizedVolBlockReason>,
+    pub(super) last_rejected_reason: Option<RealizedVolSourceRejectReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EntrySkipSemanticKey {
     reason: BoltV3EntrySkipReasonCategory,
     gate_blockers: CanonicalSet<BoltV3EntryBlockReason>,
@@ -410,8 +418,8 @@ pub const ENTRY_SKIP_PER_EPISODE_STATE_UPPER_BOUND: u128 = 4323455642275676160;
 
 pub const BLOCKED_STRATEGY_INPUT_SNAPSHOT_STATIC_STATE_UPPER_BOUND: u128 = 3984496719921263149056;
 pub const BLOCKED_STRATEGY_INPUT_SNAPSHOT_PER_REGISTERED_SOURCE_STATE_UPPER_BOUND: u128 = 1760;
-pub fn blocked_strategy_input_snapshot_per_episode_state_upper_bound(registered_source_count: u32) -> Option<u128> {
-    BLOCKED_STRATEGY_INPUT_SNAPSHOT_PER_REGISTERED_SOURCE_STATE_UPPER_BOUND.checked_pow(registered_source_count).and_then(|source_states| BLOCKED_STRATEGY_INPUT_SNAPSHOT_STATIC_STATE_UPPER_BOUND.checked_mul(source_states))
+pub const fn blocked_strategy_input_snapshot_per_episode_state_upper_bound(registered_source_count: u32) -> FactoredStateUpperBound {
+    FactoredStateUpperBound { static_factor: BLOCKED_STRATEGY_INPUT_SNAPSHOT_STATIC_STATE_UPPER_BOUND, per_registered_source_factor: BLOCKED_STRATEGY_INPUT_SNAPSHOT_PER_REGISTERED_SOURCE_STATE_UPPER_BOUND, registered_source_count }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

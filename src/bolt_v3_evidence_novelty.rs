@@ -44,6 +44,13 @@ pub trait NoveltyEligibleProducer: private::Sealed {
     const PRODUCER_KIND: &'static str;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FactoredStateUpperBound {
+    pub static_factor: u128,
+    pub per_registered_source_factor: u128,
+    pub registered_source_count: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EvidenceEpisodeRejection {
     StrategyIdentityMissing,
@@ -221,6 +228,27 @@ impl RegisteredRvSourceId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredRvSourceRoster(BTreeSet<RegisteredRvSourceId>);
+
+impl RegisteredRvSourceRoster {
+    pub fn try_new(source_ids: impl IntoIterator<Item = String>) -> Result<Self> {
+        let mut registered = BTreeSet::new();
+        for source_id in source_ids {
+            let source_id = RegisteredRvSourceId::try_new(source_id)?;
+            ensure!(
+                registered.insert(source_id),
+                "RV source roster contains a duplicate identity"
+            );
+        }
+        Ok(Self(registered))
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RvSourceSemanticStateInput {
     pub source_id: String,
     pub enabled: bool,
@@ -231,39 +259,37 @@ pub struct RvSourceSemanticStateInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct RvSourceSemanticState {
-    enablement: EvidenceEnablement,
-    quorum_participation: EvidenceQuorumParticipation,
-    status: RealizedVolSourceStatus,
-    block_reason: Option<RealizedVolBlockReason>,
-    last_rejected_reason: Option<RealizedVolSourceRejectReason>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CanonicalSourceStates(BTreeMap<RegisteredRvSourceId, RvSourceSemanticState>);
+pub struct CanonicalSourceStates(
+    BTreeMap<RegisteredRvSourceId, generated::RvSourceStatesSemanticState>,
+);
 
 impl CanonicalSourceStates {
     pub fn try_new(
-        registered_source_ids: impl IntoIterator<Item = String>,
+        registered_roster: &RegisteredRvSourceRoster,
+        observed_source_ids: impl IntoIterator<Item = String>,
         states: impl IntoIterator<Item = RvSourceSemanticStateInput>,
         unknown_source_ids: impl IntoIterator<Item = String>,
     ) -> Result<Self> {
         if unknown_source_ids.into_iter().next().is_some() {
             bail!("RV semantic state contains an unregistered source identity");
         }
-        let mut registered = BTreeSet::new();
-        for source_id in registered_source_ids {
+        let mut observed = BTreeSet::new();
+        for source_id in observed_source_ids {
             let source_id = RegisteredRvSourceId::try_new(source_id)?;
             ensure!(
-                registered.insert(source_id),
-                "RV source roster contains a duplicate identity"
+                observed.insert(source_id),
+                "RV snapshot source roster contains a duplicate identity"
             );
         }
+        ensure!(
+            observed == registered_roster.0,
+            "RV snapshot source roster differs from configured source authority"
+        );
         let mut canonical = BTreeMap::new();
         for state in states {
             let source_id = RegisteredRvSourceId::try_new(state.source_id)?;
             ensure!(
-                registered.contains(&source_id),
+                registered_roster.0.contains(&source_id),
                 "RV semantic state contains a source outside the registered roster"
             );
             generated::validate_rv_source_status(&state.status)?;
@@ -273,7 +299,7 @@ impl CanonicalSourceStates {
             if let Some(last_rejected_reason) = &state.last_rejected_reason {
                 generated::validate_rv_source_rejection(last_rejected_reason)?;
             }
-            let semantic_state = RvSourceSemanticState {
+            let semantic_state = generated::RvSourceStatesSemanticState {
                 enablement: state.enabled.into(),
                 quorum_participation: state.counts_toward_quorum.into(),
                 status: state.status,
@@ -286,7 +312,7 @@ impl CanonicalSourceStates {
             );
         }
         ensure!(
-            canonical.len() == registered.len(),
+            canonical.len() == registered_roster.len(),
             "RV semantic state must cover every registered source exactly once"
         );
         Ok(Self(canonical))

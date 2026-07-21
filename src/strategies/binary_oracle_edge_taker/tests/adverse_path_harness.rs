@@ -7,7 +7,7 @@ use crate::{
         BinaryRuntimeSettlementInput, settle_binary_runtime_reference_prices,
     },
     bolt_v3_decision_evidence::{
-        BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         BOLT_V3_SETTLEMENT_GATE_ID, BOLT_V3_SETTLEMENT_RECORD_KIND, BoltV3OrderLifecycleOutcome,
         BoltV3OrderLifecycleTransition, BoltV3OutcomeSide, BoltV3SettlementEvidence,
     },
@@ -2918,7 +2918,7 @@ fn venue_truth_snapshot(
 
 fn write_settlement_evidence_line(path: &std::path::Path, evidence: BoltV3SettlementEvidence) {
     let line = json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         "recorded_at_utc_ns": 1_000_i64,
         "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -2940,7 +2940,7 @@ fn write_settlement_booking_error_line(
     evidence: BoltV3SettlementBookingErrorEvidence,
 ) {
     let line = json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         "recorded_at_utc_ns": 1_000_i64,
         "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,

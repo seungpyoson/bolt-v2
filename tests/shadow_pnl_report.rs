@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use bolt_v2::bolt_v3_decision_evidence::{
-    BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+    BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
     BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
 };
@@ -688,7 +688,7 @@ fn shadow_pnl_report_rejects_admitted_entry_without_order_intent() {
     // MUST fail loud rather than silently drop the would-be trade from the report.
     let client_order_id = "client-order-no-intent";
     let snapshot = serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         "recorded_at_utc_ns": 1,
         "gate_id": BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -702,7 +702,7 @@ fn shadow_pnl_report_rejects_admitted_entry_without_order_intent() {
         }
     });
     let admission = serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
         "recorded_at_utc_ns": 3,
         "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
         "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -835,7 +835,7 @@ fn push_trade_lines_with_snapshot_market_id(
     market_id: Option<&str>,
 ) {
     let mut snapshot_record = serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
             "recorded_at_utc_ns": trade.recorded_at_utc_ns,
             "gate_id": BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
             "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -853,7 +853,7 @@ fn push_trade_lines_with_snapshot_market_id(
     lines.push(serde_json::to_string(&snapshot_record).expect("snapshot fixture should serialize"));
     lines.push(
         serde_json::to_string(&serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
             "recorded_at_utc_ns": trade.recorded_at_utc_ns + 1,
             "gate_id": BOLT_V3_ORDER_INTENT_GATE_ID,
             "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
@@ -870,7 +870,7 @@ fn push_trade_lines_with_snapshot_market_id(
     );
     lines.push(
         serde_json::to_string(&serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "schema_version": BOLT_V3_LEGACY_V15_SCHEMA_VERSION,
             "recorded_at_utc_ns": trade.recorded_at_utc_ns + 2,
             "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
             "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,

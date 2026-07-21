@@ -2258,7 +2258,7 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
     let skip = entry_skips[0];
     assert_eq!(
         skip.reason_category,
-        BoltV3EntrySkipReasonCategory::EntryPricingBlocked
+        crate::bolt_v3_decision_evidence::BoltV3EntrySkipCompleteReason::EntryPricingBlocked
     );
     assert_eq!(
         skip.pricing_blocked_by,
@@ -3127,8 +3127,9 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
         result.is_ok(),
         "an entry-skip evidence write failure must not abort the strategy callback: {result:?}"
     );
-    assert!(
-        result.is_ok_and(|attempted| attempted),
+    assert_eq!(
+        result.expect("entry skip attempt should be classified"),
+        EntrySkipRecordDisposition::FailedRetained,
         "the ready fixture must reach the failing writer: {logs:?}"
     );
     let matching = logs
@@ -4535,6 +4536,9 @@ fn rv_clock_domain_amendment_dedupe_strategy_with_writer(
         evidence,
         submit_admission,
     );
+    strategy.registered_rv_source_roster =
+        RegisteredRvSourceRoster::try_new([TEST_SOURCE_ID.to_string()])
+            .expect("test RV roster should be valid");
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy
 }
@@ -5462,23 +5466,25 @@ fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
         .evaluation
         .pricing_blocked_by
         .push(EntryPricingBlockReason::SpotPriceMissing);
-    assert!(
+    assert_eq!(
         strategy
             .record_entry_skip_once(
                 1_200,
                 &decision,
                 BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
             )
-            .expect("entry writer errors are swallowed")
+            .expect("entry writer errors are classified"),
+        EntrySkipRecordDisposition::FailedRetained
     );
-    assert!(
-        !strategy
+    assert_eq!(
+        strategy
             .record_entry_skip_once(
                 1_201,
                 &decision,
                 BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
             )
-            .expect("seen entry state should remain suppressed after the swallowed error"),
+            .expect("seen entry state should remain suppressed after the retained error"),
+        EntrySkipRecordDisposition::Suppressed,
         "entry-skip failure must preserve mark-before-swallowed-error behavior"
     );
 }

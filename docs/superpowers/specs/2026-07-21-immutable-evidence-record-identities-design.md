@@ -20,9 +20,9 @@ new envelope field and no global v16 are introduced.
 ## Invariants
 
 1. A registered identity permanently binds its wire shape, enum domains,
-   units, semantic conversion, owner, gate ID, and recovery-consumer set.
-2. TOML owns identity registration, allocation, current-encoder selection,
-   gate ownership, and recovery-consumer membership. Rust owns dedicated wire
+   units, semantic conversion, producer gate ID, and recovery-consumer set.
+2. TOML owns exact-pair registration, current-encoder selection, producer-gate
+   ownership, decoder action, and recovery-consumer membership. Rust owns wire
    DTOs and exhaustive conversions to runtime or recovery semantics.
 3. Generated Rust is the only identity resolver. It dispatches from the
    declared pair before payload parsing; it never tries one decoder and falls
@@ -33,17 +33,17 @@ new envelope field and no global v16 are introduced.
    recovery consumer fails closed on malformed payload or failed conversion.
 6. A known identity explicitly irrelevant to the active recovery consumer is
    skipped after envelope and identity validation, without parsing its payload.
-   The whole-file audit path still validates that payload and fails closed on
-   corruption.
+   This is consumer policy decided before payload parsing, never a parse-error
+   fallback.
 7. Historical evidence is never rewritten. Supported historical
    recovery-bearing identities have exact Rust decoders and converge on the
    same canonical recovery events as current identities.
 8. `gate_version` remains recorded diagnostic metadata. It must be non-empty,
    but the running package version cannot select or invalidate a decoder.
    Registered `gate_id` remains an exact identity-owned constraint.
-9. Runtime semantic enums are never serialized as historical wire enums.
-   Every identity owns a dedicated private wire type and exhaustive typed
-   conversion.
+9. An evolving runtime semantic enum is never serialized through a historical
+   identity. A changed semantic domain receives a dedicated wire type and an
+   exhaustive typed conversion before its new identity becomes current.
 10. New wire identities contain no `Unclassified`, generic `other`, wildcard,
     textual semantic fallback, or implicit default. The frozen v15 decoder may
     retain historical deterministic decoding rules solely because those rules
@@ -71,16 +71,16 @@ defaulted decoding behavior.
 
 ## Registry
 
-The Rust-parsed TOML registry contains one row per immutable identity:
+The Rust-parsed TOML registry contains one row per immutable semantic binding.
+A row may list multiple exact `(kind, schema_version)` pairs only when those
+pairs intentionally share the same frozen decoder action, gate ownership, and
+consumer set. Each row registers:
 
-- allocation ID;
-- `kind`;
-- exact `schema_version` value;
-- owner;
-- exact `gate_id`;
-- payload field;
-- Rust marker and wire DTO binding;
-- historical or current-encoder disposition;
+- `kind` and its exact `schema_version` values;
+- generated Rust identity and record-kind names;
+- record family and its optional current encoder;
+- exact producer `gate_id`;
+- closed decoder action;
 - closed set of recovery consumers.
 
 The recovery-consumer set is not a binary recovery flag. It is a closed Rust
@@ -97,12 +97,13 @@ Generated code provides:
 - a sealed `EvidenceRecordIdentity` enum;
 - total `(kind, schema_version)` resolution;
 - identity metadata and recovery-consumer membership;
-- exhaustive decoder binding;
+- a closed decoder-action binding consumed by exhaustive Rust matches;
 - exactly one current encoder binding per record family.
 
 Handwritten Rust provides:
 
-- private identity-specific wire DTOs;
+- private wire DTOs for changed identities and exact frozen DTOs for historical
+  shapes whose runtime semantics have diverged;
 - exact payload decoding and encoding;
 - exhaustive conversion from runtime semantics to the current wire DTO;
 - exhaustive conversion from supported wire DTOs to canonical recovery
@@ -146,15 +147,16 @@ unchanged.
 
 - byte-exact deterministic registry generation;
 - append-only compatibility validation for registry rows;
-- captured v15 golden records for every identity exercised by recovery;
-- bidirectional golden tests for every new identity;
+- captured historical records for every compatibility path exercised by this
+  change;
+- strict round-trip and shape-rejection tests for every new identity;
 - exhaustive runtime-to-wire and wire-to-recovery conversions;
 - all-legacy first-start recovery equivalence;
 - mixed historical/current stream recovery equivalence for every consumer;
 - unknown identity, malformed relevant payload, invalid gate ownership,
   duplicate discriminator, truncation, and downgrade fail-closed tests;
-- malformed registered-irrelevant payload leaves recovery unchanged while the
-  audit validator rejects it;
+- malformed registered-irrelevant payload leaves the active recovery consumer
+  unchanged;
 - no remaining global-current or ordered schema comparison in reader paths;
 - no Python migration lane after Rust historical coverage is complete.
 

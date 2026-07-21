@@ -1976,7 +1976,8 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
         ),
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
-    );
+    )
+    .with_realized_volatility_surfaces(fixture_realized_volatility_surfaces("<surface_id>"));
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     let _cache = register_test_strategy(&mut strategy);
     let trigger_instrument_id = InstrumentId::from("TRIGGER.SOURCE");
@@ -2024,7 +2025,8 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
         ),
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
-    );
+    )
+    .with_realized_volatility_surfaces(fixture_realized_volatility_surfaces("<surface_id>"));
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     let _cache = register_test_strategy(&mut strategy);
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());

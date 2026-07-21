@@ -9,9 +9,9 @@ use crate::{
     bolt_v3_binary_outcome_edge::{BinaryOutcomeEdgeBlockReason, BinaryOutcomeEdgeResult},
     bolt_v3_decision_evidence::{
         BoltV3BinaryOutcomeEdgeBlockReason, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
-        BoltV3EntryRealizedVolatilitySnapshotEvidence, BoltV3EntrySkipEvidence,
-        BoltV3EntrySkipReasonCategory, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
-        BoltV3RvGateResult,
+        BoltV3EntryRealizedVolatilitySnapshotEvidence, BoltV3EntrySkipCompleteReason,
+        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
     },
     bolt_v3_evidence_novelty::RvSourceSemanticStateInput,
     bolt_v3_market_families::OutcomeSide,
@@ -328,12 +328,17 @@ impl BoltV3EntrySkipEvidence {
         reason_category: BoltV3EntrySkipReasonCategory,
         fields: &EntryEvaluationLogFields,
         forced_flat_inputs: ForcedFlatEvidenceInputs,
-    ) -> Self {
-        Self {
+    ) -> anyhow::Result<Self> {
+        let wire_reason = BoltV3EntrySkipCompleteReason::try_from(reason_category)?;
+        let submission_blocked_reason = fields
+            .submission_blocked_reason
+            .map(BoltV3EntrySkipCompleteReason::try_from)
+            .transpose()?
+            .or(Some(wire_reason));
+        Ok(Self {
             strategy_id,
             now_ms,
-            reason_category,
-            unclassified_context: None,
+            reason_category: wire_reason,
             gate_blocked_by: fields
                 .gate_blocked_by
                 .iter()
@@ -367,7 +372,7 @@ impl BoltV3EntrySkipEvidence {
             theta_scaled_min_edge_bps: option_evidence_number(fields.theta_scaled_min_edge_bps),
             up_fee_bps: option_evidence_number(fields.up_fee_bps),
             down_fee_bps: option_evidence_number(fields.down_fee_bps),
-            submission_blocked_reason: fields.submission_blocked_reason.or(Some(reason_category)),
+            submission_blocked_reason,
             stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
             last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
             min_liquidity_required: forced_flat_inputs.min_liquidity_required,
@@ -375,7 +380,7 @@ impl BoltV3EntrySkipEvidence {
             frozen: forced_flat_inputs.frozen,
             metadata_matches_selection: forced_flat_inputs.metadata_matches_selection,
             fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
-        }
+        })
     }
 }
 

@@ -1,0 +1,297 @@
+schema_version = 1
+
+consumers = [
+  "entry_decision_chain",
+  "submit_reservation",
+  "exit_evaluation",
+  "loss_governor_halt",
+  "order_reject",
+  "settlement",
+  "settlement_booking_error",
+  "terminal_settlement",
+  "shadow_pnl",
+]
+
+decode_actions = [
+  "strategy_input_snapshot",
+  "order_intent",
+  "admission_decision",
+  "basket_admission_decision",
+  "capital_admission_rebuild",
+  "submit_reservation_metadata",
+  "submit_reservation_fill",
+  "entry_skip_v15",
+  "entry_skip_complete_reason",
+  "exit_decision",
+  "exit_evaluation",
+  "loss_governor_halt",
+  "order_reject",
+  "settlement",
+  "settlement_booking_error",
+  "terminal_settlement",
+  "order_lifecycle",
+  "venue_truth_capture_failure",
+  "venue_truth_divergence",
+  "requote_throttle",
+]
+
+[[identity]]
+name = "strategy_input_snapshot"
+kind = "strategy_input_snapshot"
+schema_versions = [14, 15]
+rust_variant_prefix = "StrategyInputSnapshot"
+rust_kind_constant = "BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND"
+record_family = "strategy_input_snapshot"
+gate_id = "bolt_v3.strategy_input_snapshot"
+decode_action = "strategy_input_snapshot"
+current_encoder_version = 15
+consumers = ["entry_decision_chain", "shadow_pnl"]
+
+[[identity]]
+name = "order_intent"
+kind = "order_intent"
+schema_versions = [14, 15]
+rust_variant_prefix = "OrderIntent"
+rust_kind_constant = "BOLT_V3_ORDER_INTENT_RECORD_KIND"
+record_family = "order_intent"
+gate_id = "bolt_v3.order_intent"
+decode_action = "order_intent"
+current_encoder_version = 15
+consumers = ["entry_decision_chain", "shadow_pnl"]
+
+[[identity]]
+name = "admission_decision"
+kind = "admission_decision"
+schema_versions = [14, 15]
+rust_variant_prefix = "AdmissionDecision"
+rust_kind_constant = "BOLT_V3_ADMISSION_DECISION_RECORD_KIND"
+record_family = "admission_decision"
+gate_id = "bolt_v3.submit_admission"
+decode_action = "admission_decision"
+current_encoder_version = 15
+consumers = ["entry_decision_chain", "shadow_pnl"]
+
+[[identity]]
+name = "basket_admission_decision"
+kind = "basket_admission_decision"
+schema_versions = [14, 15]
+rust_variant_prefix = "BasketAdmissionDecision"
+rust_kind_constant = "BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND"
+record_family = "basket_admission_decision"
+gate_id = "bolt_v3.submit_admission"
+decode_action = "basket_admission_decision"
+current_encoder_version = 15
+consumers = []
+
+[[identity]]
+name = "capital_admission_rebuild"
+kind = "capital_admission_rebuild"
+schema_versions = [14, 15]
+rust_variant_prefix = "CapitalAdmissionRebuild"
+rust_kind_constant = "BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND"
+record_family = "capital_admission_rebuild"
+gate_id = "bolt_v3.capital_admission_rebuild"
+decode_action = "capital_admission_rebuild"
+current_encoder_version = 15
+consumers = []
+
+[[identity]]
+name = "submit_reservation_metadata"
+kind = "submit_reservation_metadata"
+schema_versions = [13, 14, 15]
+rust_variant_prefix = "SubmitReservationMetadata"
+rust_kind_constant = "BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND"
+record_family = "submit_reservation_metadata"
+gate_id = "bolt_v3.submit_admission"
+decode_action = "submit_reservation_metadata"
+current_encoder_version = 15
+consumers = ["submit_reservation"]
+
+[[identity]]
+name = "submit_reservation_fill"
+kind = "submit_reservation_fill"
+schema_versions = [13, 14, 15]
+rust_variant_prefix = "SubmitReservationFill"
+rust_kind_constant = "BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND"
+record_family = "submit_reservation_fill"
+gate_id = "bolt_v3.submit_admission"
+decode_action = "submit_reservation_fill"
+current_encoder_version = 15
+consumers = ["submit_reservation"]
+
+[[identity]]
+name = "entry_skip_v15"
+kind = "entry_skip"
+schema_versions = [14, 15]
+rust_variant_prefix = "EntrySkipLegacy"
+rust_kind_constant = "BOLT_V3_ENTRY_SKIP_RECORD_KIND"
+record_family = "entry_skip"
+gate_id = "bolt_v3.entry_skip"
+decode_action = "entry_skip_v15"
+consumers = []
+
+[[identity]]
+name = "entry_skip_complete_reason"
+kind = "entry_skip_complete_reason"
+schema_versions = [15]
+rust_variant_prefix = "EntrySkipCompleteReason"
+rust_kind_constant = "BOLT_V3_ENTRY_SKIP_COMPLETE_REASON_RECORD_KIND"
+record_family = "entry_skip"
+gate_id = "bolt_v3.entry_skip"
+decode_action = "entry_skip_complete_reason"
+current_encoder_version = 15
+consumers = []
+
+[[identity]]
+name = "exit_decision"
+kind = "exit_decision"
+schema_versions = [14, 15]
+rust_variant_prefix = "ExitDecision"
+rust_kind_constant = "BOLT_V3_EXIT_DECISION_RECORD_KIND"
+record_family = "exit_decision"
+gate_id = "bolt_v3.exit_decision"
+decode_action = "exit_decision"
+current_encoder_version = 15
+consumers = []
+
+[[identity]]
+name = "exit_evaluation"
+kind = "exit_evaluation"
+schema_versions = [14, 15]
+rust_variant_prefix = "ExitEvaluation"
+rust_kind_constant = "BOLT_V3_EXIT_EVALUATION_RECORD_KIND"
+record_family = "exit_evaluation"
+gate_id = "bolt_v3.exit_evaluation"
+decode_action = "exit_evaluation"
+current_encoder_version = 15
+consumers = ["exit_evaluation"]
+
+[[identity]]
+name = "loss_governor_halt"
+kind = "loss_governor_halt"
+schema_versions = [14, 15]
+rust_variant_prefix = "LossGovernorHalt"
+rust_kind_constant = "BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND"
+record_family = "loss_governor_halt"
+gate_id = "bolt_v3.loss_governor_halt"
+decode_action = "loss_governor_halt"
+current_encoder_version = 15
+consumers = ["loss_governor_halt"]
+
+[[identity]]
+name = "order_reject"
+kind = "order_reject"
+schema_versions = [14, 15]
+rust_variant_prefix = "OrderReject"
+rust_kind_constant = "BOLT_V3_ORDER_REJECT_RECORD_KIND"
+record_family = "order_reject"
+gate_id = "bolt_v3.order_reject"
+decode_action = "order_reject"
+current_encoder_version = 15
+consumers = ["order_reject"]
+
+[[identity]]
+name = "settlement"
+kind = "settlement"
+schema_versions = [14, 15]
+rust_variant_prefix = "Settlement"
+rust_kind_constant = "BOLT_V3_SETTLEMENT_RECORD_KIND"
+record_family = "settlement"
+gate_id = "bolt_v3.settlement"
+decode_action = "settlement"
+current_encoder_version = 15
+consumers = ["settlement"]
+
+[[identity]]
+name = "settlement_booking_error"
+kind = "settlement_booking_error"
+schema_versions = [14, 15]
+rust_variant_prefix = "SettlementBookingError"
+rust_kind_constant = "BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND"
+record_family = "settlement_booking_error"
+gate_id = "bolt_v3.settlement"
+decode_action = "settlement_booking_error"
+current_encoder_version = 15
+consumers = ["settlement_booking_error"]
+
+[[identity]]
+name = "terminal_settlement"
+kind = "terminal_settlement"
+schema_versions = [14, 15]
+rust_variant_prefix = "TerminalSettlement"
+rust_kind_constant = "BOLT_V3_TERMINAL_SETTLEMENT_RECORD_KIND"
+record_family = "terminal_settlement"
+gate_id = "bolt_v3.settlement"
+decode_action = "terminal_settlement"
+current_encoder_version = 15
+consumers = ["terminal_settlement", "settlement_booking_error"]
+
+[[identity]]
+name = "order_lifecycle"
+kind = "order_lifecycle"
+schema_versions = [14, 15]
+rust_variant_prefix = "OrderLifecycle"
+rust_kind_constant = "BOLT_V3_ORDER_LIFECYCLE_RECORD_KIND"
+record_family = "order_lifecycle"
+gate_id = "bolt_v3.order_lifecycle"
+decode_action = "order_lifecycle"
+current_encoder_version = 15
+consumers = []
+
+[[identity]]
+name = "venue_truth_capture_failure"
+kind = "venue_truth_capture_failure"
+schema_versions = [14, 15]
+rust_variant_prefix = "VenueTruthCaptureFailure"
+rust_kind_constant = "BOLT_V3_VENUE_TRUTH_CAPTURE_FAILURE_RECORD_KIND"
+record_family = "venue_truth_capture_failure"
+gate_id = "bolt_v3.venue_truth_capture_failure"
+decode_action = "venue_truth_capture_failure"
+current_encoder_version = 15
+consumers = []
+
+[[identity]]
+name = "venue_truth_divergence"
+kind = "venue_truth_divergence"
+schema_versions = [14, 15]
+rust_variant_prefix = "VenueTruthDivergence"
+rust_kind_constant = "BOLT_V3_VENUE_TRUTH_DIVERGENCE_RECORD_KIND"
+record_family = "venue_truth_divergence"
+gate_id = "bolt_v3.venue_truth_divergence"
+decode_action = "venue_truth_divergence"
+current_encoder_version = 15
+consumers = []
+
+[[identity]]
+name = "requote_throttle"
+kind = "requote_throttle"
+schema_versions = [14, 15]
+rust_variant_prefix = "RequoteThrottle"
+rust_kind_constant = "BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND"
+record_family = "requote_throttle"
+gate_id = "bolt_v3.requote_throttle"
+decode_action = "requote_throttle"
+current_encoder_version = 15
+consumers = []
+
+[[identity]]
+name = "legacy_v13_admission_decision"
+kind = "admission_decision"
+schema_versions = [13]
+rust_variant_prefix = "AdmissionDecisionLegacy"
+rust_kind_constant = "BOLT_V3_ADMISSION_DECISION_RECORD_KIND"
+record_family = "admission_decision_legacy"
+gate_id = "bolt_v3.submit_admission"
+decode_action = "admission_decision"
+consumers = []
+
+[[identity]]
+name = "legacy_v13_position_sizer_rebuild"
+kind = "position_sizer_rebuild"
+schema_versions = [13]
+rust_variant_prefix = "PositionSizerRebuildLegacy"
+rust_kind_constant = "BOLT_V3_POSITION_SIZER_REBUILD_LEGACY_RECORD_KIND"
+record_family = "position_sizer_rebuild_legacy"
+gate_id = "bolt_v3.position_sizer_rebuild"
+decode_action = "capital_admission_rebuild"
+consumers = []

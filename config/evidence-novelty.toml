@@ -78,9 +78,6 @@ name = "EntryMalformedRejected"
 name = "EntryBalanceRejected"
 [[domain.variant]]
 name = "EntryUnfillableRejectedUnchangedBook"
-[[domain.variant]]
-name = "Unclassified"
-registered = false
 
 [[domain]]
 name = "entry_gate_blocker"
@@ -524,6 +521,31 @@ id = 163
 name = "rv_source_states"
 rust_field_type = "CanonicalSourceStates"
 domain = "rv_source_status"
-shape = "opaque"
-component_domains = ["enablement", "quorum_participation"]
-optional_component_domains = ["rv_blocker", "rv_source_rejection"]
+shape = "source_map"
+
+[[producer.dimension.component]]
+name = "enablement"
+rust_field_type = "EvidenceEnablement"
+domain = "enablement"
+
+[[producer.dimension.component]]
+name = "quorum_participation"
+rust_field_type = "EvidenceQuorumParticipation"
+domain = "quorum_participation"
+
+[[producer.dimension.component]]
+name = "status"
+rust_field_type = "RealizedVolSourceStatus"
+domain = "rv_source_status"
+
+[[producer.dimension.component]]
+name = "block_reason"
+rust_field_type = "Option<RealizedVolBlockReason>"
+domain = "rv_blocker"
+optional = true
+
+[[producer.dimension.component]]
+name = "last_rejected_reason"
+rust_field_type = "Option<RealizedVolSourceRejectReason>"
+domain = "rv_source_rejection"
+optional = true

@@ -71,6 +71,10 @@ name = "bolt_v3_evidence_novelty"
 path = "tests/bolt_v3_evidence_novelty.rs"
 
 [[test]]
+name = "bolt_v3_decision_evidence_identities"
+path = "tests/bolt_v3_decision_evidence_identities.rs"
+
+[[test]]
 name = "polymarket_redemption_preparation"
 path = "tests/polymarket_redemption_preparation.rs"
 

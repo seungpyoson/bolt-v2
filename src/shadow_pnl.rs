@@ -12,11 +12,10 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_decision_evidence::{
-    BOLT_V3_ADMISSION_DECISION_RECORD_KIND, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-    BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_ORDER_INTENT_RECORD_KIND,
-    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
-    BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionOutcome, BoltV3OrderIntentKind,
-    BoltV3SubmitIntentKind,
+    BOLT_V3_ADMISSION_DECISION_RECORD_KIND, BOLT_V3_ORDER_INTENT_RECORD_KIND,
+    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND, BoltV3AdmissionOutcome, BoltV3OrderIntentKind,
+    BoltV3SubmitIntentKind, EvidenceConsumer, EvidenceDecodeAction,
+    resolve_evidence_record_identity,
 };
 use crate::bolt_v3_market_families::OutcomeSide;
 use crate::bolt_v3_taker_updown_signal::outcome_side_evidence_label;
@@ -105,7 +104,9 @@ struct TradeAccumulator {
 #[derive(Debug, Deserialize)]
 struct EvidenceEnvelope {
     schema_version: u32,
+    recorded_at_utc_ns: i64,
     gate_id: String,
+    gate_version: String,
     kind: String,
     snapshot: Option<StrategyInputSnapshotEvidence>,
     intent: Option<OrderIntentEvidence>,
@@ -271,9 +272,11 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
                 path.display()
             )
         })?;
-        validate_evidence_header(&envelope, line_number)?;
-        match envelope.kind.as_str() {
-            BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND => {
+        let Some(action) = validate_evidence_header(&envelope, line_number)? else {
+            continue;
+        };
+        match action {
+            EvidenceDecodeAction::StrategyInputSnapshot => {
                 let snapshot = envelope.snapshot.ok_or_else(|| {
                     anyhow!("missing snapshot payload at decision evidence line {line_number}")
                 })?;
@@ -285,7 +288,7 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
                     line_number,
                 )?;
             }
-            BOLT_V3_ORDER_INTENT_RECORD_KIND => {
+            EvidenceDecodeAction::OrderIntent => {
                 let intent = envelope.intent.ok_or_else(|| {
                     anyhow!("missing intent payload at decision evidence line {line_number}")
                 })?;
@@ -299,7 +302,7 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
                     )?;
                 }
             }
-            BOLT_V3_ADMISSION_DECISION_RECORD_KIND => {
+            EvidenceDecodeAction::AdmissionDecision => {
                 let decision = envelope.decision.ok_or_else(|| {
                     anyhow!(
                         "missing admission decision payload at decision evidence line {line_number}"
@@ -317,7 +320,27 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
                     )?;
                 }
             }
-            _ => {}
+            EvidenceDecodeAction::BasketAdmissionDecision
+            | EvidenceDecodeAction::CapitalAdmissionRebuild
+            | EvidenceDecodeAction::SubmitReservationMetadata
+            | EvidenceDecodeAction::SubmitReservationFill
+            | EvidenceDecodeAction::EntrySkipV15
+            | EvidenceDecodeAction::EntrySkipCompleteReason
+            | EvidenceDecodeAction::ExitDecision
+            | EvidenceDecodeAction::ExitEvaluation
+            | EvidenceDecodeAction::LossGovernorHalt
+            | EvidenceDecodeAction::OrderReject
+            | EvidenceDecodeAction::Settlement
+            | EvidenceDecodeAction::SettlementBookingError
+            | EvidenceDecodeAction::TerminalSettlement
+            | EvidenceDecodeAction::OrderLifecycle
+            | EvidenceDecodeAction::VenueTruthCaptureFailure
+            | EvidenceDecodeAction::VenueTruthDivergence
+            | EvidenceDecodeAction::RequoteThrottle => {
+                return Err(anyhow!(
+                    "registered shadow-PnL identity selected an unsupported action at line {line_number}"
+                ));
+            }
         }
     }
 
@@ -399,24 +422,29 @@ fn read_jsonl_lines(path: &Path) -> Result<Vec<(usize, String)>> {
         .collect()
 }
 
-fn validate_evidence_header(envelope: &EvidenceEnvelope, line_number: usize) -> Result<()> {
-    if envelope.schema_version != BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
+fn validate_evidence_header(
+    envelope: &EvidenceEnvelope,
+    line_number: usize,
+) -> Result<Option<EvidenceDecodeAction>> {
+    let identity = resolve_evidence_record_identity(&envelope.kind, envelope.schema_version)
+        .with_context(|| format!("invalid decision evidence identity at line {line_number}"))?;
+    let metadata = identity.metadata();
+    if envelope.recorded_at_utc_ns <= 0 {
         return Err(anyhow!(
-            "invalid decision evidence schema_version at line {line_number}"
+            "invalid decision evidence recorded_at_utc_ns at line {line_number}"
         ));
     }
-    let expected_gate_id = match envelope.kind.as_str() {
-        BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND => BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
-        BOLT_V3_ORDER_INTENT_RECORD_KIND => BOLT_V3_ORDER_INTENT_GATE_ID,
-        BOLT_V3_ADMISSION_DECISION_RECORD_KIND => BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
-        _ => return Ok(()),
-    };
-    if envelope.gate_id != expected_gate_id {
+    if envelope.gate_id != metadata.gate_id {
         return Err(anyhow!(
             "invalid decision evidence gate_id at line {line_number}"
         ));
     }
-    Ok(())
+    if envelope.gate_version.is_empty() {
+        return Err(anyhow!(
+            "invalid decision evidence gate_version at line {line_number}"
+        ));
+    }
+    Ok(identity.decode_action_for(EvidenceConsumer::ShadowPnl))
 }
 
 fn settlement_for_trade<'a>(

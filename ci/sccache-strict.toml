@@ -1,0 +1,24 @@
+schema_version = 1
+
+[source]
+version = "0.16.0"
+commit = "b799af2eea02bba9e0ef2550775fe10296b62981"
+archive_url = "https://github.com/mozilla/sccache/archive/b799af2eea02bba9e0ef2550775fe10296b62981.tar.gz"
+archive_sha256 = "a4419b0a2278255d11eda1f76ee98efab0aec72649617bbefd24a5e92acf4af3"
+source_date_epoch = 1781869188
+patch = "ci/sccache-strict/sccache-v0.16.0-strict.patch"
+
+[build]
+container = "docker.io/clux/muslrust@sha256:76df925f30e106755517c78cd57b6ea890a73d6f59fcff842849006e734c174e"
+rustc_release = "1.97.1"
+rustc_commit = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
+features = ["s3"]
+profile = "release"
+
+[targets.ARM64]
+triple = "aarch64-unknown-linux-musl"
+elf_machine = "AArch64"
+
+[targets.X64]
+triple = "x86_64-unknown-linux-musl"
+elf_machine = "Advanced Micro Devices X86-64"

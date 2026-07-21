@@ -4,8 +4,9 @@
 # `agent:` omitted — inherits each developer's global ~/.no-mistakes/config.yaml.
 
 commands:
-  # The repository exposes one complete local evidence path across every workspace.
-  test: "just preflight"
-  lint: "just preflight"
-  # Formatting mutation is likewise repository-wide.
+  # Plain raw-cargo recipes; remote-first is an economic default, not a fence.
+  # Prefer pushing and reading advisory CI evidence over local compile-heavy runs.
+  test: "just test"
+  lint: "just clippy"
+  # Formatting mutation is repository-wide (root + BTE workspaces).
   format: "just fmt"

@@ -1,5 +1,8 @@
 # Static Polymarket Binary Event Implementation Plan
 
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
+
 > **For agentic workers:** `AGENTS.md` governs implementation and verification. Use evidence-driven checks, local non-compile gates, and exact-head PR CI for Rust compile/test proof.
 
 **Goal:** Add config-driven static binary-event market selection and Polymarket slug filtering. The original operator use case is World Cup market making, but the implementation is a generic static Polymarket binary event selector.
@@ -205,7 +208,7 @@ Expected: the diff contains only static Polymarket binary-event selection/filter
 Run after commit and push:
 
 ```bash
-just verify-remote
+git push
 ```
 
-Expected: exact-head PR CI is green.
+Expected: advisory CI evaluates the exact pushed head; adjudicate its result as evidence.

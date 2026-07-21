@@ -56,10 +56,10 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(client.cancelled, [22])
         self.assertFalse(client.listed)
 
-    def test_current_run_cancels_only_active_ancestor_pushes(self) -> None:
+    def test_current_run_cancels_only_active_different_sha_pushes(self) -> None:
         runs = [
             advisory_supersession.WorkflowRun(11, "old", "push", "in_progress"),
-            advisory_supersession.WorkflowRun(12, "newer", "push", "queued"),
+            advisory_supersession.WorkflowRun(12, "unrelated-stale", "push", "queued"),
             advisory_supersession.WorkflowRun(13, "current", "push", "in_progress"),
             advisory_supersession.WorkflowRun(14, "old", "schedule", "in_progress"),
             advisory_supersession.WorkflowRun(15, "old", "push", "completed"),
@@ -67,7 +67,6 @@ class ReconcileTests(unittest.TestCase):
         client = FakeClient(
             current_shas=["current", "current"],
             runs=runs,
-            ancestors={("old", "current")},
         )
 
         result = advisory_supersession.reconcile(
@@ -76,11 +75,52 @@ class ReconcileTests(unittest.TestCase):
             run_sha="current",
         )
 
-        self.assertEqual(result.cancelled_run_ids, (11,))
-        self.assertEqual(client.cancelled, [11])
+        self.assertEqual(result.cancelled_run_ids, (11, 12))
+        self.assertEqual(client.cancelled, [11, 12])
+
+    def test_current_run_cancels_stale_nonancestor_after_stable_main_reads(
+        self,
+    ) -> None:
+        runs = [
+            advisory_supersession.WorkflowRun(
+                16, "force-pushed-away", "push", "in_progress"
+            ),
+        ]
+        client = FakeClient(current_shas=["current", "current"], runs=runs)
+
+        result = advisory_supersession.reconcile(
+            client,
+            run_id=17,
+            run_sha="current",
+        )
+
+        self.assertEqual(result.cancelled_run_ids, (16,))
+        self.assertEqual(client.cancelled, [16])
+
+    def test_current_run_does_not_cancel_a_known_descendant(self) -> None:
+        runs = [
+            advisory_supersession.WorkflowRun(18, "descendant", "push", "queued"),
+        ]
+        client = FakeClient(
+            current_shas=["current", "current"],
+            runs=runs,
+            ancestors={("current", "descendant")},
+        )
+
+        result = advisory_supersession.reconcile(
+            client,
+            run_id=19,
+            run_sha="current",
+        )
+
+        self.assertEqual(result.cancelled_run_ids, ())
+        self.assertEqual(client.cancelled, [])
 
     def test_run_that_becomes_stale_cannot_admit_heavy_jobs(self) -> None:
-        client = FakeClient(current_shas=["current", "newer"])
+        runs = [
+            advisory_supersession.WorkflowRun(34, "newer", "push", "queued"),
+        ]
+        client = FakeClient(current_shas=["current", "newer"], runs=runs)
 
         with self.assertRaises(advisory_supersession.SupersededRun):
             advisory_supersession.reconcile(

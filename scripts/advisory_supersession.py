@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Admit only exact-current-main advisory evidence and cancel older ancestors."""
+"""Admit only exact-current-main advisory evidence and cancel stale runs."""
 
 from __future__ import annotations
 
@@ -273,8 +273,13 @@ def reconcile(
         client.cancel_run(run_id)
         raise SupersededRun(f"run {run_id} is not exact-current main")
 
+    active_runs = client.active_push_runs()
+    if client.current_branch_sha() != run_sha:
+        client.cancel_run(run_id)
+        raise SupersededRun(f"run {run_id} ceased to be exact-current main")
+
     cancelled: list[int] = []
-    for run in client.active_push_runs():
+    for run in active_runs:
         if (
             run.run_id == run_id
             or run.event != "push"
@@ -282,13 +287,10 @@ def reconcile(
             or run.head_sha == current_sha
         ):
             continue
-        if client.is_ancestor(run.head_sha, current_sha):
-            if client.cancel_run(run.run_id):
-                cancelled.append(run.run_id)
-
-    if client.current_branch_sha() != run_sha:
-        client.cancel_run(run_id)
-        raise SupersededRun(f"run {run_id} ceased to be exact-current main")
+        if client.is_ancestor(current_sha, run.head_sha):
+            continue
+        if client.cancel_run(run.run_id):
+            cancelled.append(run.run_id)
 
     return ReconcileResult(cancelled_run_ids=tuple(cancelled))
 

@@ -1,78 +1,42 @@
 #!/usr/bin/env bash
-# clean-merged-managed
-# clean-merged: post-checkout hook (extended; foreign-workspace warning preserved).
-#
-# Args: $1=prev HEAD, $2=new HEAD, $3=is-branch-checkout (1) or file (0).
-#
-# Order matters: clean-merged's Lane H dispatch runs FIRST (gated to branch
-# checkouts landing on trunk), then the existing foreign-workspace warning runs
-# only when prev_head is zeros (new worktree creation). Keeping the dispatch
-# before that early-exit preserves cleanup on ordinary branch checkouts.
-#
-# Never breaks the git op: every path exits 0.
-
-_cm_disabled() {
-    local v="${CLEAN_MERGED_DISABLED:-}"
-    v="${v#"${v%%[![:space:]]*}"}"
-    v="${v%"${v##*[![:space:]]}"}"
-    case "$v" in
-        ''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) return 1 ;;
-        *) return 0 ;;
-    esac
-}
+# Warns if a newly created worktree lives under a foreign Cargo workspace.
+# Read-only warning hook.
+set -euo pipefail
 
 prev_head="${1:-}"
-new_head="${2:-}"
-branch_checkout="${3:-0}"
 
-# --- clean-merged Lane H dispatch (best-effort against stale remote trunk) ---
-# Keep config parsing in Python: the hook gates only on branch checkout, and the
-# script gates the lane to the configured trunk after loading TOML.
-if [ "$branch_checkout" = "1" ] && ! _cm_disabled; then
-    command -v python3 >/dev/null 2>&1 && {
-        common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-        if [ -n "$common_dir" ]; then
-            main_root="$(dirname "$common_dir")"
-            script="$main_root/scripts/clean_merged_artifacts.py"
-            [ -f "$script" ] && python3 "$script" --lane h --apply --quiet --only-if-current-trunk >/dev/null 2>&1 || true
-        fi
-    } || true
+if [ "$prev_head" != "0000000000000000000000000000000000000000" ]; then
+    exit 0
 fi
 
-# --- foreign-workspace warning (existing hook; preserved verbatim) ---
-# Only fires on NEW worktree creation (prev_head all zeros).
-if [ "$prev_head" = "0000000000000000000000000000000000000000" ]; then
-    project_root="$(git rev-parse --show-toplevel 2>/dev/null || exit 0)"
-    dir="$(dirname "$project_root")"
+project_root="$(git rev-parse --show-toplevel 2>/dev/null || exit 0)"
+dir="$(dirname "$project_root")"
 
-    while true; do
-        candidate="$dir/Cargo.toml"
-        if [ -f "$candidate" ] && grep -q '^\[workspace\]' "$candidate"; then
-            echo
-            echo "=========================================="
-            echo "WARNING: Foreign Cargo workspace detected!"
-            echo "=========================================="
-            echo "This worktree is under: $dir"
-            echo "Which has a Cargo.toml with [workspace]."
-            echo "Cargo will capture this project into that workspace."
-            echo
-            echo "Fix: remove this worktree and recreate with:"
-            echo "  just worktree <branch-name>"
-            echo "=========================================="
-            echo
-            break
-        fi
+while true; do
+    candidate="$dir/Cargo.toml"
+    if [ -f "$candidate" ] && grep -q '^\[workspace\]' "$candidate"; then
+        echo
+        echo "=========================================="
+        echo "WARNING: Foreign Cargo workspace detected!"
+        echo "=========================================="
+        echo "This worktree is under: $dir"
+        echo "Which has a Cargo.toml with [workspace]."
+        echo "Cargo will capture this project into that workspace."
+        echo
+        echo "Fix: remove this worktree and recreate with:"
+        echo "  just worktree <branch-name>"
+        echo "=========================================="
+        echo
+        exit 0
+    fi
 
-        if [ "$dir" = "/" ]; then
-            break
-        fi
+    if [ "$dir" = "/" ]; then
+        break
+    fi
 
-        parent="$(dirname "$dir")"
-        if [ "$parent" = "$dir" ]; then
-            break
-        fi
-        dir="$parent"
-    done
-fi
-
-exit 0
+    parent="$(dirname "$dir")"
+    if [ "$parent" = "$dir" ]; then
+        break
+    fi
+    dir="$parent"
+done

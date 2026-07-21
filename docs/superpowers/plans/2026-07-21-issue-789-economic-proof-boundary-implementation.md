@@ -31,7 +31,7 @@
 - Produces: one unambiguous plan source that names the proof-relevant terminal projection and exact
   inclusion/exclusion registry.
 
-- [ ] **Step 1: Replace the superseded boundary wording**
+- [x] **Step 1: Replace the superseded boundary wording**
 
 Link `docs/superpowers/specs/2026-07-21-issue-789-economic-lifecycle-proof-boundary-design.md` as the
 field-level source of truth. Replace unqualified "complete terminal projection" language with
@@ -39,7 +39,7 @@ field-level source of truth. Replace unqualified "complete terminal projection" 
 market acknowledgements, canonical fills, identity uniqueness, exactly-one-fill settlement, and finite
 terminal order/position fields.
 
-- [ ] **Step 2: Verify the documentation alignment**
+- [x] **Step 2: Verify the documentation alignment**
 
 Run:
 
@@ -52,7 +52,7 @@ git diff --check
 Expected: no unqualified superseded phrase remains; the approved design link and replacement phrase are
 present; `git diff --check` exits zero.
 
-- [ ] **Step 3: Commit the alignment**
+- [x] **Step 3: Commit the alignment**
 
 ```bash
 git add docs/superpowers/plans/2026-07-20-issue-789-event-store-evidence.md
@@ -69,7 +69,7 @@ git commit -m "docs(backtesting): align issue 789 proof boundary"
 - Consumes: `ManifestVenueConfig`, `OrderBookDelta`, `ExecutionOrderTrace`, `SubmittedOrderTrace`.
 - Produces: admission that rejects acknowledgement-enabled runs and non-`Clear` `NoOrderSide`; role classification that requires quote entry, base reduction, and exactly one settlement fill.
 
-- [ ] **Step 1: Add failing admission behavior tests**
+- [x] **Step 1: Add failing admission behavior tests**
 
 Add runner tests that mutate an otherwise-valid fixture:
 
@@ -92,7 +92,7 @@ fn issue_789_static_admission_rejects_market_acks_and_no_side_rows() {
 }
 ```
 
-- [ ] **Step 2: Run the admission test and confirm RED**
+- [x] **Step 2: Run the admission test and confirm RED**
 
 Run:
 
@@ -102,7 +102,7 @@ cargo nextest run --locked --filter-expr 'test(issue_789_static_admission_reject
 
 Expected: FAIL because the current admission accepts at least one mutation.
 
-- [ ] **Step 3: Implement exact admission grammar**
+- [x] **Step 3: Implement exact admission grammar**
 
 Extend `ensure_issue_789_venue_shape` with `!venue.use_market_order_acks`. In
 `validate_issue_789_book_domain`, after the `Clear` branch, require:
@@ -114,7 +114,7 @@ ensure!(
 );
 ```
 
-- [ ] **Step 4: Add failing role-denomination and settlement-cardinality tests**
+- [x] **Step 4: Add failing role-denomination and settlement-cardinality tests**
 
 In `execution_contract.rs`, construct coherent fixtures proving that all other invariants pass. For the
 entry mutation use the existing fixture shape directly:
@@ -150,7 +150,7 @@ Use separate tests named:
 
 Each test must assert its typed role/cardinality error, not merely `is_err()`.
 
-- [ ] **Step 5: Run the three tests and confirm RED**
+- [x] **Step 5: Run the three tests and confirm RED**
 
 Run:
 
@@ -160,7 +160,7 @@ cargo nextest run --locked --filter-expr 'test(rejects_base_denominated_entry_ro
 
 Expected: the current validator accepts the denomination mutations and multiple settlement fills.
 
-- [ ] **Step 6: Bind role to denomination and settlement cardinality**
+- [x] **Step 6: Bind role to denomination and settlement cardinality**
 
 In `validate_execution_contract`, bind `submitted_order` in the entry/reduction arms:
 
@@ -181,7 +181,7 @@ ExecutionOrderCause::Settlement { .. } => {
 }
 ```
 
-- [ ] **Step 7: Run Task 1 focused tests and commit**
+- [x] **Step 7: Run Task 1 focused tests and commit**
 
 Run:
 
@@ -208,7 +208,7 @@ git commit -m "fix(backtesting): close issue 789 run grammar"
 - Consumes: decoded `OrderFilled` and `PositionOpened/Changed/Closed` events plus strict store sequence.
 - Produces: enriched `PositionEffectTrace`; one global identity partition for UUIDs, client-order IDs, venue-order IDs, trade IDs, position ID, and configured account.
 
-- [ ] **Step 1: Add failing position-ownership tests**
+- [x] **Step 1: Add failing position-ownership tests**
 
 Extend the execution-contract fixture with independent mutations of:
 
@@ -223,7 +223,7 @@ Extend the execution-contract fixture with independent mutations of:
 Each mutation must preserve price, last quantity, position ID, account, and P&L so it fails only the new
 causal ownership check. Name the table test `rejects_position_effect_causal_identity_drift`.
 
-- [ ] **Step 2: Run the position-ownership test and confirm RED**
+- [x] **Step 2: Run the position-ownership test and confirm RED**
 
 Run:
 
@@ -233,7 +233,7 @@ cargo nextest run --locked --filter-expr 'test(rejects_position_effect_causal_id
 
 Expected: at least one mutation is accepted by the current reduced `PositionEffectTrace`.
 
-- [ ] **Step 3: Enrich and validate `PositionEffectTrace`**
+- [x] **Step 3: Enrich and validate `PositionEffectTrace`**
 
 Add exact fields:
 
@@ -249,7 +249,7 @@ pub struct PositionEffectTrace {
     pub closing_order_id: Option<ClientOrderId>,
     pub entry: OrderSide,
     pub side: PositionSide,
-    pub signed_quantity: Decimal,
+    pub signed_quantity: f64,
     pub quantity: Quantity,
     pub last_quantity: Quantity,
     pub last_price: Price,
@@ -261,9 +261,11 @@ pub struct PositionEffectTrace {
 Populate them directly while decoding all three position-event types. Bind every effect to the
 immediately preceding fill's trader/strategy/instrument/account/last quantity/last price, keep
 `opening_order_id` equal to the entry order, and require only `PositionClosed.closing_order_id` to equal
-the settlement order. Compare `signed_quantity` to the independently folded exposure.
+the settlement order. Require the raw NT `signed_quantity` to be finite, normalize it at the instrument
+size precision, and compare that value to the independently folded exposure. This preserves the captured
+claim without treating binary floating-point representation noise as economic drift.
 
-- [ ] **Step 4: Add failing identity-partition tests**
+- [x] **Step 4: Add failing identity-partition tests**
 
 Add behavior tests for:
 
@@ -275,14 +277,14 @@ Add behavior tests for:
 
 Use a pure helper with explicit sets so the tests mutate evidence values rather than inspect source.
 
-- [ ] **Step 5: Implement the identity partition**
+- [x] **Step 5: Implement the identity partition**
 
 Retain the existing global UUID registry. Add a helper that consumes the assembled orders/effects and
 requires exactly three distinct client-order IDs, exactly three distinct venue-order IDs, globally unique
 trade IDs, exactly one position ID, and exactly one configured account ID. Treat the embedded and stored
 `OrderInitialized` equality as the sole intentional repeated semantic initialization.
 
-- [ ] **Step 6: Run Task 2 focused tests and commit**
+- [x] **Step 6: Run Task 2 focused tests and commit**
 
 Run:
 
@@ -308,7 +310,7 @@ git commit -m "fix(backtesting): bind issue 789 causal identities"
 - Consumes: approved field registry, sealed causal fills, independent fold, current `OrderAny`, `Position`, and `AccountAny` caches.
 - Produces: `Issue789ProofFill`, expanded `OrderTerminalRecord`, and exact terminal order/position/account comparisons limited to proof-relevant fields.
 
-- [ ] **Step 1: Define the canonical fill projection and failing comparison tests**
+- [x] **Step 1: Define the canonical fill projection and failing comparison tests**
 
 Create a private projection derived from both stored and terminal fills:
 
@@ -324,8 +326,8 @@ struct Issue789ProofFill {
     trade_id: TradeId,
     order_side: OrderSide,
     order_type: OrderType,
-    last_qty: Quantity,
-    last_px: Price,
+    quantity: Quantity,
+    price: Price,
     currency: Currency,
     liquidity_side: LiquiditySide,
     event_id: UUID4,
@@ -337,7 +339,7 @@ struct Issue789ProofFill {
 Add tests proving timestamp, `info`, `causation_id`, and raw captured `position_id` differences do not
 change this projection, while every listed field does.
 
-- [ ] **Step 2: Expand terminal-order capture and add RED mutations**
+- [x] **Step 2: Expand terminal-order capture and add RED mutations**
 
 Extend `OrderTerminalRecord` with:
 
@@ -350,13 +352,13 @@ venue_order_id: Option<VenueOrderId>,
 position_id: Option<PositionId>,
 current_quote_quantity: bool,
 trade_ids: Vec<TradeId>,
-commissions: IndexMap<Currency, Money>,
+commissions: Vec<(Currency, Money)>,
 ```
 
 Capture each field from the live `OrderAny`. Extend the existing terminal-order mutation test to change
 each field independently, including a commission map whose key differs from `Money.currency`.
 
-- [ ] **Step 3: Implement exact terminal-order checks**
+- [x] **Step 3: Implement exact terminal-order checks**
 
 Bind identity and routing to initialization, configured account, fills, and the single lifecycle
 position. Compare exact `Issue789ProofFill` vectors, trade IDs, and keyed commission totals derived from
@@ -364,7 +366,7 @@ the causal fills. Retain the full-fill equation and current quote flag (`false` 
 Do not add checks for excluded timestamps, average price, previous status, cached non-fill history,
 normal time-in-force/reduce-only, voided quantity, or overfill quantity.
 
-- [ ] **Step 4: Add RED terminal-position mutations**
+- [x] **Step 4: Add RED terminal-position mutations**
 
 Clone a valid terminal `Position` and independently mutate:
 
@@ -372,26 +374,27 @@ Clone a valid terminal `Position` and independently mutate:
 - trade-ID set;
 - commission key and commission value;
 - one adjustment;
-- one replay event; and
+- one missing, extra, or non-fill replay event; and
 - one fill void.
 
 Retain existing nonflat, wrong-instrument, extra-position, fill, and P&L controls. Every mutation must
 assert the terminal-position boundary error.
 
-- [ ] **Step 5: Implement the terminal-position boundary**
+- [x] **Step 5: Implement the terminal-position boundary**
 
 Replace the flatness-only helper with a validator that consumes the expected configured account,
 entry/reduction/settlement IDs, canonical fills, one position ID, independent P&L, and keyed commission
-map. Require exact included fields and empty adjustment/replay/void collections. Leave excluded
+map. Require exact included fields, empty adjustment/void collections, and the pinned NT
+`replay_events` collection to equal the exact ordered fill-only canonical mirror. Leave excluded
 timestamps, duration, cached averages/returns, peak quantity, and aggregate buy/sell quantities unchecked.
 
-- [ ] **Step 6: Add run-envelope RED controls and implement them**
+- [x] **Step 6: Add run-envelope RED controls and implement them**
 
 Extract a pure envelope helper over `(seq, payload_type)` and add tests for missing, duplicate, reversed,
 non-boundary, and every admitted economic/control payload outside the unique interval. Require exactly one
 `RunStarted` as first entry and one `RunEnded` as last entry.
 
-- [ ] **Step 7: Run Task 3 focused tests and commit**
+- [x] **Step 7: Run Task 3 focused tests and commit**
 
 Run:
 
@@ -408,6 +411,17 @@ git add crates/backtesting-vertical-slice/src/runner.rs
 git commit -m "fix(backtesting): close issue 789 terminal projections"
 ```
 
+Implementation evidence:
+
+- Task 0: boundary alignment commits `e7f0cfa8a` and `4ae5e20aa`; targeted text checks and
+  `git diff --check` passed.
+- Task 1: commit `95ae3c14d`; admission, denomination-role, and exactly-one-settlement-fill controls
+  passed.
+- Task 2: commit `b7a682bde`; causal-position and identity-partition controls passed.
+- Task 3: commit `7f8054549`; 14 terminal/envelope/canonical-fill controls passed. The real replay also
+  passed after normalizing NT's finite signed `f64` at instrument size precision before comparing it to
+  the independent decimal exposure fold.
+
 ### Task 4: Verify and Publish the Aligned Contract
 
 **Files:**
@@ -417,12 +431,12 @@ git commit -m "fix(backtesting): close issue 789 terminal projections"
 - Consumes: Tasks 1–3 and the approved design.
 - Produces: synchronized documentation, exact-head evidence, one resolved internal adversarial review, and an updated PR #1492.
 
-- [ ] **Step 1: Mark implementation evidence in the plans**
+- [x] **Step 1: Mark implementation evidence in the plans**
 
 Mark Tasks 0–3 complete only after their named behavior evidence passes. Do not broaden or narrow the
 approved field registry while recording results.
 
-- [ ] **Step 2: Run focused #789 controls excluding the real replay**
+- [x] **Step 2: Run focused #789 controls excluding the real replay**
 
 Run:
 
@@ -432,7 +446,7 @@ cargo nextest run --locked --filter-expr 'test(/issue_789/) & not test(issue_789
 
 Expected: all selected tests PASS.
 
-- [ ] **Step 3: Run execution-contract controls**
+- [x] **Step 3: Run execution-contract controls**
 
 Run:
 
@@ -442,7 +456,7 @@ cargo nextest run --locked --filter-expr 'test(execution_contract::tests)'
 
 Expected: all selected tests PASS.
 
-- [ ] **Step 4: Run static and full BTE verification**
+- [x] **Step 4: Run static and full BTE verification**
 
 Run:
 
@@ -455,12 +469,26 @@ git diff --check
 
 Expected: formatting, strict Clippy, every BTE test, the real #789 replay, and diff hygiene PASS.
 
-- [ ] **Step 5: Conduct one internal adversarial review against the approved boundary**
+Exact local evidence before internal review:
+
+- focused #789 controls excluding the replay: 50/50 passed;
+- execution-contract controls: 55/55 passed;
+- BTE formatting and strict Clippy: passed;
+- full all-target BTE Nextest battery after resolving the internal-review findings: 1,404/1,404 passed,
+  including the real #789 replay in 131.025 seconds; and
+- `git diff --check`: passed.
+
+- [x] **Step 5: Conduct one internal adversarial review against the approved boundary**
 
 The review may block only on the design's stop-rule categories. Resolve every concrete finding, rerun the
 affected focused control, then rerun Steps 2–4 if Rust changed.
 
-- [ ] **Step 6: Commit documentation alignment**
+The internal review found one bounded-account-waiver mismatch and stale design status. Commit
+`b97a39e1d` tightened unrelated account initialization evidence to the strict prefix before the first
+normal `SubmitOrder`; the authoritative registry now names that waiver. The follow-up review returned
+`APPROVE` with no remaining boundary violation.
+
+- [x] **Step 6: Commit documentation alignment**
 
 ```bash
 git add docs/superpowers/specs/2026-07-21-issue-789-economic-lifecycle-proof-boundary-design.md \

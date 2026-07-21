@@ -1,8 +1,8 @@
 # Issue #789 Economic-Lifecycle Proof Boundary
 
-**Status:** Architecture-reviewed proposed design; implementation is paused pending owner approval.
+**Status:** Owner-approved proof boundary; implementation and exact-head verification are in progress.
 
-**Applies to:** PR #1492 at `97886122462d6f0de92621b70efe41578ea8f36f`, based on
+**Approval baseline:** PR #1492 at `97886122462d6f0de92621b70efe41578ea8f36f`, based on
 `27b6d20e1520956d721312b8f865fa0e2d31ffbf`.
 
 ## Decision
@@ -82,8 +82,8 @@ this registry are not part of #789 unless the exclusion rule below brings them i
 | `OrderAccepted` | settlement only: event identity and sequence; trader, strategy, instrument, client-order, configured account, and venue-order identity; reconciliation false | timestamps |
 | `OrderUpdated` | entry only: event identity and sequence; trader, strategy, instrument, client-order, and configured account identity; independently derived effective quantity; absent venue-order identity before acceptance; quote flag cleared; reconciliation false; absent price, trigger price, and protection price | timestamps |
 | `OrderFilled` | event and trade identity; sequence; trader, strategy, instrument, client-order, venue-order, configured account, side, `Market` type, `Taker` liquidity, price, quantity, currency, commission, reconciliation flag, and settlement/normal cause | timestamps; raw fill `position_id` captured before NT attributes it, which is instead bound through position effects and the terminal position |
-| `PositionOpened/Changed/Closed` | event identity and sequence; trader, strategy, instrument, position, configured account, opening order, entry side, position side, signed and absolute quantity, last quantity, last price, currency, effect kind, and realized P&L; `PositionClosed` additionally binds the settlement closing order | timestamps, average-price/return caches, unrealized P&L, peak quantity, and diagnostic rendering |
-| `AccountState` | event identity and sequence; configured account, account type, base currency, exact balance and margin maps including every key, and causal placement after each position effect | timestamps; reported/calculated presentation status when the exact economic projection is identical |
+| `PositionOpened/Changed/Closed` | event identity and sequence; trader, strategy, instrument, position, configured account, opening order, entry side, position side, signed and absolute quantity, last quantity, last price, currency, effect kind, and realized P&L; the raw NT signed `f64` must be finite and normalize at the instrument size precision to the independently folded exposure; `PositionClosed` additionally binds the settlement closing order | timestamps, average-price/return caches, unrealized P&L, peak quantity, and diagnostic rendering |
+| `AccountState` | event identity and sequence; configured account, account type, base currency, exact balance and margin maps including every key, and causal placement after each position effect. A different-account state is admitted only in the strict node-initialization prefix before the first normal `SubmitOrder`; it remains identity/integrity-covered and carries no lifecycle claim | timestamps; reported/calculated presentation status when the exact economic projection is identical |
 | `InstrumentClose` | store sequence, instrument identity, close price, exact paired-leg membership, and position relative to synthetic settlement evidence | timestamps |
 | `RunStarted` / `RunEnded` | exactly one of each, with every economic entry strictly inside their sequence interval | non-economic payload body |
 | `SubscribeCommand` / `UnsubscribeCommand` / `TimeEvent` | admitted by type and required to remain inside the run envelope; any cardinality is allowed | non-economic payload body |
@@ -140,10 +140,11 @@ Use NautilusTrader's event store and marker sidecar. Open capture before the run
 verify hashes, dictionaries, contiguous sequence numbers, marker gaps, and submission cursors before
 decoding economic evidence.
 
-The admitted payload grammar is closed. The five store/control payloads named in the registry are the
-only explicitly waived non-economic entries. Execution payloads must be assigned to the entry,
-reduction, settlement, position, or account chains. Unknown execution payload types and admitted
-execution payloads that cannot be assigned fail typed.
+The admitted payload grammar is closed. The five store/control payloads named in the registry and the
+bounded different-account `AccountState` initialization prefix are the only explicitly waived
+non-economic entries. All later execution payloads must be assigned to the entry, reduction, settlement,
+position, or configured-account chains. Unknown execution payload types and admitted execution payloads
+that cannot be assigned fail typed.
 
 ### 3. Causal assembly
 
@@ -275,8 +276,10 @@ Bind:
 - realized P&L; and
 - the exact keyed commission map with currency-key consistency.
 
-Because the admitted lifecycle is fill-only, terminal adjustments, replay events, and fill voids must be
-empty. A nonempty collection is unsupported economic state, not harmless diagnostics.
+Because the admitted lifecycle is fill-only, terminal adjustments and fill voids must be empty. At the
+pinned NT revision, `Position::apply` records the causal fills in `replay_events`; that collection must be
+the exact ordered fill-only canonical mirror. An adjusted or otherwise unexplained replay entry is
+unsupported economic state, not harmless diagnostics.
 
 Terminal-position expected values come from the bound initialization/submission identities, the single
 position-effect chain, the ordered causal fills, and the independent exposure/P&L/commission fold. No
@@ -380,8 +383,8 @@ Under this boundary:
 - role-to-denomination binding is a valid defect;
 - non-`Clear` `NoOrderSide` book rows are a valid admission defect because they can be silently ignored;
 - terminal order routing and causal identity fields listed above are valid projection gaps;
-- terminal position causal identity, trade IDs, commission keys, and nonempty adjustment/replay/void
-  collections are valid projection gaps;
+- terminal position causal identity, trade IDs, commission keys, nonempty adjustment/void collections,
+  and replay drift from the exact fill-only mirror are valid projection gaps;
 - terminal timestamps, duration, cached average prices, and aggregate convenience quantities are
   explicitly excluded;
 - disabled market-order acknowledgements are part of admission because the causal grammar depends on

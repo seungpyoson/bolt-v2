@@ -27,7 +27,9 @@ profile="$(jq -r '.profile' "$target_json")"
 source_epoch="$(jq -r '.source_date_epoch' "$target_json")"
 patch="$(jq -r '.patch' "$target_json")"
 verification_timeout="$(jq -r '.verification_timeout_ms' "$target_json")"
+max_frame_bytes="$(jq -r '.max_frame_bytes' "$target_json")"
 verification_cache_mode="$(jq -r '.verification_cache_mode' "$target_json")"
+derivative_identity="$(jq -r '.derivative_identity' "$target_json")"
 machine="$(jq -r '.elf_machine' "$target_json")"
 [[ "$default_features" == "false" ]]
 
@@ -69,10 +71,12 @@ docker run --rm --network none \
   -e CARGO_TARGET_DIR=/target \
   -e LC_ALL=C \
   -e RUSTC_WRAPPER= \
+  -e SCCACHE_STRICT_DERIVATIVE_ID="$derivative_identity" \
   -e SCCACHE_S3_RW_MODE="$verification_cache_mode" \
   -e SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS="$verification_timeout" \
   -e SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS="$verification_timeout" \
   -e SCCACHE_STRICT_IPC_TIMEOUT_MS="$verification_timeout" \
+  -e SCCACHE_STRICT_MAX_FRAME_BYTES="$max_frame_bytes" \
   -e SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
   -e SOURCE_DATE_EPOCH="$source_epoch" \
   -e STRICT_BUILD_FEATURES="$features" \
@@ -109,6 +113,7 @@ run_startup_negative() {
     TMPDIR="$smoke_home" \
     SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
     SCCACHE_STRICT_IPC_TIMEOUT_MS="$verification_timeout" \
+    SCCACHE_STRICT_MAX_FRAME_BYTES="$max_frame_bytes" \
     SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS="$verification_timeout" \
     SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS="$verification_timeout" \
     "$@" \

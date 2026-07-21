@@ -17,9 +17,11 @@ default_features = false
 profile = "release"
 workflow = ".github/workflows/sccache-strict-release.yml"
 recipe = "scripts/build_strict_sccache.sh"
+driver = "scripts/sccache_strict.py"
 
 [verification]
 strict_timeout_ms = 1000
+max_frame_bytes = 16777216
 cache_mode = "READ_WRITE"
 replicas = ["a", "b"]
 attestation_attempts = 12

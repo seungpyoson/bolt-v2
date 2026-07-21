@@ -48,9 +48,11 @@ def valid_document() -> dict[str, object]:
             "profile": "release",
             "workflow": ".github/workflows/sccache-strict-release.yml",
             "recipe": "scripts/build_strict_sccache.sh",
+            "driver": "scripts/sccache_strict.py",
         },
         "verification": {
             "strict_timeout_ms": 1_000,
+            "max_frame_bytes": 16_777_216,
             "cache_mode": "READ_WRITE",
             "replicas": ["a", "b"],
             "attestation_attempts": 12,
@@ -74,6 +76,7 @@ class LoadConfigTests(unittest.TestCase):
         config = sccache_strict.load_document(valid_document(), repo_root=REPO_ROOT)
 
         self.assertEqual(config.verification_timeout_ms, 1_000)
+        self.assertEqual(config.max_frame_bytes, 16_777_216)
 
     def test_rejects_non_positive_verification_timeout(self) -> None:
         document = valid_document()
@@ -85,6 +88,16 @@ class LoadConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, "verification.strict_timeout_ms must be a positive integer"
         ):
+            sccache_strict.load_document(document, repo_root=REPO_ROOT)
+
+    def test_rejects_frame_limit_larger_than_protocol_field(self) -> None:
+        document = valid_document()
+        verification = copy.deepcopy(document["verification"])
+        assert isinstance(verification, dict)
+        verification["max_frame_bytes"] = 2**32
+        document["verification"] = verification
+
+        with self.assertRaisesRegex(ValueError, "positive 32-bit integer"):
             sccache_strict.load_document(document, repo_root=REPO_ROOT)
 
     def test_rejects_unknown_verification_cache_mode(self) -> None:
@@ -218,6 +231,8 @@ class ManifestTests(unittest.TestCase):
         self.recipe_path = self.repo_root / "scripts/build_strict_sccache.sh"
         self.recipe_path.parent.mkdir(parents=True)
         self.recipe_path.write_bytes(b"strict recipe bytes\n")
+        self.driver_path = self.repo_root / "scripts/sccache_strict.py"
+        self.driver_path.write_bytes(b"strict driver bytes\n")
         self.config = sccache_strict.load_document(
             valid_document(), repo_root=self.repo_root
         )
@@ -316,10 +331,11 @@ class ManifestTests(unittest.TestCase):
         original_recipe = self.recipe_path.read_bytes()
 
         for index, governed_path in enumerate(
-            (self.workflow_path, self.recipe_path), start=1
+            (self.workflow_path, self.recipe_path, self.driver_path), start=1
         ):
             self.workflow_path.write_bytes(original_workflow)
             self.recipe_path.write_bytes(original_recipe)
+            self.driver_path.write_bytes(b"strict driver bytes\n")
             governed_path.write_bytes(f"changed-{index}\n".encode())
             manifests: list[dict[str, object]] = []
             for architecture in ("ARM64", "X64"):
@@ -480,6 +496,8 @@ class ReleaseRecordTests(unittest.TestCase):
             recipe_path = repo_root / "scripts/build_strict_sccache.sh"
             recipe_path.parent.mkdir(parents=True)
             recipe_path.write_bytes(b"recipe")
+            driver_path = repo_root / "scripts/sccache_strict.py"
+            driver_path.write_bytes(b"driver")
             config = sccache_strict.load_document(valid_document(), repo_root=repo_root)
             manifests: list[dict[str, object]] = []
             binaries: dict[tuple[str, str], pathlib.Path] = {}
@@ -571,6 +589,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(output["features"], ["s3", "vendored-openssl"])
         self.assertFalse(output["default_features"])
         self.assertEqual(output["profile"], "release")
+        self.assertRegex(output["derivative_identity"], r"^[0-9a-f]{64}$")
 
     def test_invalid_architecture_returns_nonzero_without_traceback(self) -> None:
         stderr = io.StringIO()

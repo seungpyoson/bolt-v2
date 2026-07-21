@@ -40,6 +40,7 @@ class StrictBuildConfig:
     patch_path: pathlib.Path
     workflow_path: pathlib.Path
     recipe_path: pathlib.Path
+    driver_path: pathlib.Path
     container: str
     container_digest: str
     rustc_release: str
@@ -48,6 +49,7 @@ class StrictBuildConfig:
     default_features: bool
     profile: str
     verification_timeout_ms: int
+    max_frame_bytes: int
     verification_cache_mode: str
     replicas: tuple[str, ...]
     attestation_attempts: int
@@ -197,6 +199,7 @@ def load_document(
                 "profile",
                 "workflow",
                 "recipe",
+                "driver",
             }
         ),
         "build",
@@ -240,6 +243,14 @@ def load_document(
     ):
         raise ValueError("build.recipe must be a repository-relative shell recipe")
     recipe_path = repo_root.joinpath(*recipe_relative.parts)
+    driver_relative = pathlib.PurePosixPath(_string(build["driver"], "build.driver"))
+    if (
+        driver_relative.is_absolute()
+        or ".." in driver_relative.parts
+        or driver_relative.suffix != ".py"
+    ):
+        raise ValueError("build.driver must be a repository-relative Python path")
+    driver_path = repo_root.joinpath(*driver_relative.parts)
 
     verification = _mapping(top["verification"], "verification")
     _exact_keys(
@@ -247,6 +258,7 @@ def load_document(
         frozenset(
             {
                 "strict_timeout_ms",
+                "max_frame_bytes",
                 "cache_mode",
                 "replicas",
                 "attestation_attempts",
@@ -262,6 +274,16 @@ def load_document(
         or verification_timeout_ms <= 0
     ):
         raise ValueError("verification.strict_timeout_ms must be a positive integer")
+    max_frame_bytes = verification["max_frame_bytes"]
+    if (
+        isinstance(max_frame_bytes, bool)
+        or not isinstance(max_frame_bytes, int)
+        or max_frame_bytes <= 0
+        or max_frame_bytes > 2**32 - 1
+    ):
+        raise ValueError(
+            "verification.max_frame_bytes must be a positive 32-bit integer"
+        )
     verification_cache_mode = _string(
         verification["cache_mode"], "verification.cache_mode"
     )
@@ -323,6 +345,7 @@ def load_document(
         patch_path=patch_path,
         workflow_path=workflow_path,
         recipe_path=recipe_path,
+        driver_path=driver_path,
         container=container,
         container_digest=container_digest,
         rustc_release=rustc_release,
@@ -331,6 +354,7 @@ def load_document(
         default_features=False,
         profile=profile,
         verification_timeout_ms=verification_timeout_ms,
+        max_frame_bytes=max_frame_bytes,
         verification_cache_mode=verification_cache_mode,
         replicas=tuple(replicas_value),
         attestation_attempts=attestation_attempts,
@@ -363,6 +387,27 @@ def _canonical_json(value: object) -> bytes:
         json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         + "\n"
     ).encode("utf-8")
+
+
+def _derivative_identity(config: StrictBuildConfig, architecture: str) -> str:
+    target = config.targets[architecture]
+    document = {
+        "schema_version": 1,
+        "source_commit": config.source_commit,
+        "source_sha256": config.source_sha256,
+        "patch_sha256": _file_sha256(config.patch_path),
+        "workflow_sha256": _file_sha256(config.workflow_path),
+        "recipe_sha256": _file_sha256(config.recipe_path),
+        "driver_sha256": _file_sha256(config.driver_path),
+        "container": config.container,
+        "rustc_release": config.rustc_release,
+        "rustc_commit": config.rustc_commit,
+        "features": list(config.features),
+        "default_features": config.default_features,
+        "profile": config.profile,
+        "target": target.triple,
+    }
+    return hashlib.sha256(_canonical_json(document)).hexdigest()
 
 
 def _write_exclusive(
@@ -432,6 +477,8 @@ def write_candidate_manifest(
         "patch_sha256": _file_sha256(config.patch_path),
         "workflow_sha256": _file_sha256(config.workflow_path),
         "recipe_sha256": _file_sha256(config.recipe_path),
+        "driver_sha256": _file_sha256(config.driver_path),
+        "derivative_identity": _derivative_identity(config, architecture),
         "container": config.container,
         "rustc_release": config.rustc_release,
         "rustc_commit": config.rustc_commit,
@@ -439,6 +486,7 @@ def write_candidate_manifest(
         "default_features": config.default_features,
         "profile": config.profile,
         "verification_timeout_ms": config.verification_timeout_ms,
+        "max_frame_bytes": config.max_frame_bytes,
         "verification_cache_mode": config.verification_cache_mode,
         "binary_name": _candidate_binary_name(config, architecture),
         "binary_sha256": _file_sha256(binary_path),
@@ -464,6 +512,8 @@ _CANDIDATE_KEYS = frozenset(
         "patch_sha256",
         "workflow_sha256",
         "recipe_sha256",
+        "driver_sha256",
+        "derivative_identity",
         "container",
         "rustc_release",
         "rustc_commit",
@@ -471,6 +521,7 @@ _CANDIDATE_KEYS = frozenset(
         "default_features",
         "profile",
         "verification_timeout_ms",
+        "max_frame_bytes",
         "verification_cache_mode",
         "binary_name",
         "binary_sha256",
@@ -499,6 +550,7 @@ def verify_candidate_set(
     patch_sha256 = _file_sha256(config.patch_path)
     workflow_sha256 = _file_sha256(config.workflow_path)
     recipe_sha256 = _file_sha256(config.recipe_path)
+    driver_sha256 = _file_sha256(config.driver_path)
     by_pair: dict[tuple[str, str], Mapping[str, object]] = {}
     for raw_manifest in manifests:
         manifest = _mapping(raw_manifest, "candidate manifest")
@@ -532,6 +584,8 @@ def verify_candidate_set(
             "patch_sha256": patch_sha256,
             "workflow_sha256": workflow_sha256,
             "recipe_sha256": recipe_sha256,
+            "driver_sha256": driver_sha256,
+            "derivative_identity": _derivative_identity(config, architecture),
             "container": config.container,
             "rustc_release": config.rustc_release,
             "rustc_commit": config.rustc_commit,
@@ -539,6 +593,7 @@ def verify_candidate_set(
             "default_features": config.default_features,
             "profile": config.profile,
             "verification_timeout_ms": config.verification_timeout_ms,
+            "max_frame_bytes": config.max_frame_bytes,
             "verification_cache_mode": config.verification_cache_mode,
             "binary_name": _candidate_binary_name(config, architecture),
         }
@@ -589,6 +644,7 @@ def verify_candidate_set(
             "patch_sha256": patch_sha256,
             "workflow_sha256": workflow_sha256,
             "recipe_sha256": recipe_sha256,
+            "driver_sha256": driver_sha256,
         },
         "build": {
             "container": config.container,
@@ -598,6 +654,7 @@ def verify_candidate_set(
             "default_features": config.default_features,
             "profile": config.profile,
             "verification_timeout_ms": config.verification_timeout_ms,
+            "max_frame_bytes": config.max_frame_bytes,
             "verification_cache_mode": config.verification_cache_mode,
             "replicas": list(config.replicas),
         },
@@ -867,6 +924,7 @@ def main(argv: list[str] | None = None) -> int:
                 "patch": str(config.patch_path),
                 "workflow": str(config.workflow_path),
                 "recipe": str(config.recipe_path),
+                "driver": str(config.driver_path),
                 "container": config.container,
                 "rustc_release": config.rustc_release,
                 "rustc_commit": config.rustc_commit,
@@ -874,10 +932,14 @@ def main(argv: list[str] | None = None) -> int:
                 "default_features": config.default_features,
                 "profile": config.profile,
                 "verification_timeout_ms": config.verification_timeout_ms,
+                "max_frame_bytes": config.max_frame_bytes,
                 "verification_cache_mode": config.verification_cache_mode,
                 "replicas": list(config.replicas),
                 "attestation_attempts": config.attestation_attempts,
                 "attestation_interval_seconds": config.attestation_interval_seconds,
+                "derivative_identity": _derivative_identity(
+                    config, args.architecture
+                ),
             }
             _emit_json(output)
             return 0

@@ -324,12 +324,20 @@ jobs:
         run: |
           set -euo pipefail
           cd "$PUBLISH_ROOT"
-          if gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+          publish_token="$GH_TOKEN"
+          unset GH_TOKEN
+          github_api() {
+            GH_TOKEN="$publish_token" gh api "$@"
+          }
+          github_release() {
+            GH_TOKEN="$publish_token" gh release "$@"
+          }
+          if github_api -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
             echo "release tag already exists: $TAG" >&2
             exit 1
           fi
-          releases="$(gh api --paginate --slurp -H 'X-GitHub-Api-Version: 2026-03-10' \
+          releases="$(github_api --paginate --slurp -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$REPOSITORY/releases?per_page=100")"
           if jq -e --arg tag "$TAG" 'flatten | any(.tag_name == $tag)' \
             <<< "$releases" >/dev/null; then
@@ -339,9 +347,9 @@ jobs:
 
           validate_current_main() {
             local remote_sha
-            remote_sha="$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            remote_sha="$(github_api -H 'X-GitHub-Api-Version: 2026-03-10' \
               "repos/$REPOSITORY/branches/main" --jq '.commit.sha')"
-            gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            github_api -H 'X-GitHub-Api-Version: 2026-03-10' \
               "repos/$REPOSITORY/environments/strict-sccache-publisher" > environment.json
             python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" validate-publish-context \
               --event-name workflow_dispatch \
@@ -356,29 +364,25 @@ jobs:
 
           release_id=""
           cleanup_mutable_release() {
-            local current current_id
+            local current
             set +e
-            current_id="$release_id"
-            if [[ -z "$current_id" ]]; then
-              current_id="$(gh api --paginate --slurp -H 'X-GitHub-Api-Version: 2026-03-10' \
-                "repos/$REPOSITORY/releases?per_page=100" | \
-                jq -r --arg tag "$TAG" 'flatten | .[] | select(.tag_name == $tag) | .id' | head -1)"
-            fi
-            if [[ -n "$current_id" ]] && \
-              current="$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
-                "repos/$REPOSITORY/releases/$current_id" 2>/dev/null)" && \
-              ! jq -e '.immutable == true' <<< "$current" >/dev/null; then
-              gh api --method DELETE -H 'X-GitHub-Api-Version: 2026-03-10' \
-                "repos/$REPOSITORY/releases/$current_id"
-              if gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            if [[ -n "$release_id" ]] && \
+              current="$(github_api -H 'X-GitHub-Api-Version: 2026-03-10' \
+                "repos/$REPOSITORY/releases/$release_id" 2>/dev/null)" && \
+              jq -e --arg tag "$TAG" --arg sha "$HEAD_SHA" \
+                '.tag_name == $tag and .target_commitish == $sha and .immutable != true' \
+                <<< "$current" >/dev/null; then
+              github_api --method DELETE -H 'X-GitHub-Api-Version: 2026-03-10' \
+                "repos/$REPOSITORY/releases/$release_id"
+              if github_api -H 'X-GitHub-Api-Version: 2026-03-10' \
                 "repos/$REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
-                gh api --method DELETE -H 'X-GitHub-Api-Version: 2026-03-10' \
+                github_api --method DELETE -H 'X-GitHub-Api-Version: 2026-03-10' \
                   "repos/$REPOSITORY/git/refs/tags/$TAG"
               fi
             fi
           }
           trap cleanup_mutable_release EXIT
-          release="$(gh api --method POST -H 'X-GitHub-Api-Version: 2026-03-10' \
+          release="$(github_api --method POST -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$REPOSITORY/releases" \
             -f tag_name="$TAG" \
             -f target_commitish="$HEAD_SHA" \
@@ -386,12 +390,15 @@ jobs:
             -f body='Governed strict sccache derivative; adoption requires a separate reviewed digest pin.' \
             -F draft=true)"
           release_id="$(jq -er '.id' <<< "$release")"
+          jq -e --arg tag "$TAG" --arg sha "$HEAD_SHA" \
+            '.tag_name == $tag and .target_commitish == $sha and .draft == true' \
+            <<< "$release" >/dev/null
           upload_url="$(jq -er '.upload_url | sub("\\{.*$"; "")' <<< "$release")"
           [[ "$upload_url" == https://uploads.github.com/* ]]
           for asset in "$ARM_NAME" "$X64_NAME" "$PROVENANCE_NAME"; do
             curl --fail-with-body --silent --show-error \
               --proto '=https' --tlsv1.2 --request POST \
-              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Authorization: Bearer $publish_token" \
               -H 'Accept: application/vnd.github+json' \
               -H 'Content-Type: application/octet-stream' \
               -H 'X-GitHub-Api-Version: 2026-03-10' \
@@ -399,18 +406,22 @@ jobs:
           done
 
           validate_current_main
-          gh api --method PATCH -H 'X-GitHub-Api-Version: 2026-03-10' \
+          github_api --method PATCH -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$REPOSITORY/releases/$release_id" -F draft=false > release.json
           if ! jq -e '.immutable == true' release.json >/dev/null; then
             echo 'GitHub published a mutable release; removing its exact release and tag' >&2
             exit 1
           fi
-          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+          if ! validate_current_main; then
+            echo 'main moved after publication; retaining the immutable candidate without adoption authority' >&2
+            exit 1
+          fi
+          github_api -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$REPOSITORY/git/ref/tags/$TAG" > tag.json
 
           verified_attestation=false
           for ((attempt = 1; attempt <= ATTESTATION_ATTEMPTS; attempt++)); do
-            if gh release verify "$TAG" --repo "$REPOSITORY" --format json \
+            if github_release verify "$TAG" --repo "$REPOSITORY" --format json \
               > release-attestation.json; then
               verified_attestation=true
               break
@@ -422,10 +433,10 @@ jobs:
           [[ "$verified_attestation" == "true" ]]
 
           mkdir release-download
-          gh release download "$TAG" --repo "$REPOSITORY" --dir release-download
+          github_release download "$TAG" --repo "$REPOSITORY" --dir release-download
           for asset in "$ARM_NAME" "$X64_NAME" "$PROVENANCE_NAME"; do
             cmp "publish-input/$asset" "release-download/$asset"
-            gh release verify-asset "$TAG" "release-download/$asset" \
+            github_release verify-asset "$TAG" "release-download/$asset" \
               --repo "$REPOSITORY" --format json > "verified-$asset.json"
           done
 

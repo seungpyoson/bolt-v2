@@ -296,10 +296,12 @@ index 760026f..5949157 100644
 +        let error = runtime.block_on(storage.check()).unwrap_err();
 +        assert!(error.to_string().contains("cache storage failed to read"));
 diff --git a/src/cache/cache_io.rs b/src/cache/cache_io.rs
-index 9e29743..04ffb7c 100644
+index 9e29743..8c696b6 100644
 --- a/src/cache/cache_io.rs
 +++ b/src/cache/cache_io.rs
-@@ -19,0 +20 @@ use tempfile::NamedTempFile;
+@@ -19 +19,2 @@ use std::path::{Path, PathBuf};
+-use tempfile::NamedTempFile;
++use tempfile::{NamedTempFile, tempfile};
 +use zip::result::ZipError;
 @@ -88,0 +90,11 @@ impl std::error::Error for DecompressionFailure {}
 +#[derive(Debug)]
@@ -340,13 +342,36 @@ index 9e29743..04ffb7c 100644
 @@ -131 +150 @@ impl CacheRead {
 -    pub async fn extract_objects<T>(
 +    pub async fn materialize<T>(
-@@ -135 +154 @@ impl CacheRead {
+@@ -135 +154,2 @@ impl CacheRead {
 -    ) -> Result<()>
++        deadline: Option<std::time::Instant>,
 +    ) -> Result<(Vec<u8>, Vec<u8>)>
-@@ -139,0 +159,2 @@ impl CacheRead {
+@@ -139,0 +160,24 @@ impl CacheRead {
++            enum StagedOutput {
++                Persist {
++                    temporary: NamedTempFile,
++                    path: PathBuf,
++                    mode: Option<u32>,
++                },
++                Copy {
++                    temporary: std::fs::File,
++                    path: PathBuf,
++                    mode: Option<u32>,
++                },
++            }
++
++            let check_deadline = || -> Result<()> {
++                if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
++                    bail!("governed cache materialization deadline expired");
++                }
++                Ok(())
++            };
 +            let stdout = self.get_stdout()?;
++            check_deadline()?;
 +            let stderr = self.get_stderr()?;
-@@ -166,7 +187,5 @@ impl CacheRead {
++            check_deadline()?;
++            let mut staged = Vec::new();
+@@ -166,11 +210,9 @@ impl CacheRead {
 -                    (Ok(mut tmp), _) => {
 -                        match (self.get_object(&key, &mut tmp), optional) {
 -                            (Ok(mode), _) => {
@@ -354,26 +379,39 @@ index 9e29743..04ffb7c 100644
 -                                if let Some(mode) = mode {
 -                                    set_file_mode(path.as_path(), mode)?;
 -                                }
-+                    (Ok(mut tmp), _) => match (self.get_object(&key, &mut tmp), optional) {
-+                        (Ok(mode), _) => {
-+                            tmp.persist(&path)?;
-+                            if let Some(mode) = mode {
-+                                set_file_mode(path.as_path(), mode)?;
-@@ -174,3 +192,0 @@ impl CacheRead {
+-                            }
 -                            (Err(e), false) => return Err(e),
 -                            // skip if no object found and it's optional
 -                            (Err(_), true) => continue,
-@@ -178 +194,6 @@ impl CacheRead {
--                    }
++                    (Ok(mut tmp), _) => match (self.get_object(&key, &mut tmp), optional) {
++                        (Ok(mode), _) => staged.push(StagedOutput::Persist {
++                            temporary: tmp,
++                            path,
++                            mode,
++                        }),
 +                        (Err(e), false) => return Err(e),
 +                        (Err(e), true) if e.downcast_ref::<CacheObjectMissing>().is_some() => {
 +                            continue;
-+                        }
+@@ -178 +220,2 @@ impl CacheRead {
+-                    }
 +                        (Err(e), true) => return Err(e),
 +                    },
-@@ -194,2 +215,13 @@ impl CacheRead {
--                    // skip if no object found and it's optional
--                    (Err(_), true) => continue,
+@@ -180 +223,2 @@ impl CacheRead {
+-                        // Fall back to writing directly to the final location
++                        // Stage outside the destination filesystem. Final outputs are not
++                        // touched until every archive member has been validated.
+@@ -182,3 +226,33 @@ impl CacheRead {
+-                        let mut f = std::fs::File::create(&path)?;
+-                        // `optional` is false in this branch, so do not ignore errors
+-                        let mode = self.get_object(&key, &mut f)?;
++                        let mut temporary = tempfile()?;
++                        let mode = self.get_object(&key, &mut temporary)?;
++                        staged.push(StagedOutput::Copy {
++                            temporary,
++                            path,
++                            mode,
++                        });
++                    }
 +                    (Err(_), true) => {
 +                        // The destination is optional, but a present cache member must still
 +                        // decode successfully. Otherwise corruption would be concealed by a
@@ -387,18 +425,53 @@ index 9e29743..04ffb7c 100644
 +                            Err(error) => return Err(error),
 +                        }
 +                    }
-@@ -198 +230 @@ impl CacheRead {
++                }
++                check_deadline()?;
++            }
++            check_deadline()?;
++            for output in staged {
++                match output {
++                    StagedOutput::Persist {
++                        temporary,
++                        path,
++                        mode,
++                    } => {
++                        temporary.persist(&path)?;
+@@ -186,5 +260,14 @@ impl CacheRead {
+-                            if let Err(e) = set_file_mode(path.as_path(), mode) {
+-                                // Here we ignore errors from setting file mode because
+-                                // if we could not create a temp file in the same directory,
+-                                // we probably can't set the mode either (e.g. /dev/stuff)
+-                                warn!("Failed to reset file mode: {e}");
++                            set_file_mode(path.as_path(), mode)?;
++                        }
++                    }
++                    StagedOutput::Copy {
++                        mut temporary,
++                        path,
++                        mode,
++                    } => {
++                        temporary.rewind()?;
++                        let mut destination = fs::File::create(&path)?;
++                        std::io::copy(&mut temporary, &mut destination)?;
++                        if let Some(mode) = mode {
++                            if let Err(error) = set_file_mode(path.as_path(), mode) {
++                                warn!("Failed to reset file mode: {error}");
+@@ -194,2 +276,0 @@ impl CacheRead {
+-                    // skip if no object found and it's optional
+-                    (Err(_), true) => continue,
+@@ -198 +279 @@ impl CacheRead {
 -            Ok(())
 +            Ok((stdout, stderr))
-@@ -201,0 +234,7 @@ impl CacheRead {
+@@ -201,0 +283,7 @@ impl CacheRead {
 +
 +    pub async fn extract_objects<T>(self, objects: T, pool: &tokio::runtime::Handle) -> Result<()>
 +    where
 +        T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
 +    {
-+        self.materialize(objects, pool).await.map(drop)
++        self.materialize(objects, pool, None).await.map(drop)
 +    }
-@@ -323,0 +363,131 @@ mod tests {
+@@ -323,0 +412,186 @@ mod tests {
 +    use std::io::{Seek, SeekFrom};
 +
 +    struct SlowCursor {
@@ -428,6 +501,16 @@ index 9e29743..04ffb7c 100644
 +            )
 +            .unwrap();
 +        archive.write_all(bytes).unwrap();
++        CacheRead::from(Cursor::new(archive.finish().unwrap().into_inner())).unwrap()
++    }
++
++    fn cache_entry_with_valid_then_corrupt_member() -> CacheRead {
++        let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
++        let options = FileOptions::default().compression_method(CompressionMethod::Stored);
++        archive.start_file("valid", options).unwrap();
++        zstd::stream::copy_encode(Cursor::new(b"valid bytes"), &mut archive, 3).unwrap();
++        archive.start_file("corrupt", options).unwrap();
++        archive.write_all(b"not-zstd").unwrap();
 +        CacheRead::from(Cursor::new(archive.finish().unwrap().into_inner())).unwrap()
 +    }
 +
@@ -507,30 +590,75 @@ index 9e29743..04ffb7c 100644
 +    }
 +
 +    #[test]
++    fn strict_late_corruption_does_not_commit_earlier_outputs() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let cache_read = cache_entry_with_valid_then_corrupt_member();
++        let temporary = tempfile::tempdir().unwrap();
++        let valid_path = temporary.path().join("valid.out");
++        let objects = vec![
++            FileObjectSource {
++                key: "valid".to_owned(),
++                path: valid_path.clone(),
++                optional: false,
++            },
++            FileObjectSource {
++                key: "corrupt".to_owned(),
++                path: temporary.path().join("corrupt.out"),
++                optional: false,
++            },
++        ];
++
++        assert!(
++            runtime
++                .block_on(cache_read.extract_objects(objects, runtime.handle()))
++                .is_err()
++        );
++        assert!(!valid_path.exists());
++    }
++
++    #[test]
 +    fn strict_stalled_cache_hit_materialization_obeys_caller_deadline() {
 +        let runtime = tokio::runtime::Builder::new_current_thread()
 +            .enable_all()
 +            .build()
 +            .unwrap();
 +        let mut cache_write = CacheWrite::new();
-+        cache_write.put_stdout(b"cached output").unwrap();
++        cache_write
++            .put_object("object", &mut Cursor::new(b"cached object"), None)
++            .unwrap();
 +        let cache_read = CacheRead::from(SlowCursor {
 +            inner: Cursor::new(cache_write.finish().unwrap()),
 +            delay: std::time::Duration::from_millis(25),
 +        })
 +        .unwrap();
 +
++        let temporary = tempfile::tempdir().unwrap();
++        let output = temporary.path().join("never-created");
++        let objects = vec![FileObjectSource {
++            key: "object".to_owned(),
++            path: output.clone(),
++            optional: false,
++        }];
 +        let result = runtime.block_on(async {
 +            tokio::time::timeout(
 +                std::time::Duration::from_millis(1),
-+                cache_read.materialize(Vec::new(), runtime.handle()),
++                cache_read.materialize(
++                    objects,
++                    runtime.handle(),
++                    Some(std::time::Instant::now() + std::time::Duration::from_millis(1)),
++                ),
 +            )
 +            .await
 +        });
 +
 +        assert!(result.is_err());
++        std::thread::sleep(std::time::Duration::from_millis(50));
++        assert!(!output.exists());
 +    }
-@@ -385 +555 @@ mod tests {
+@@ -385 +659 @@ mod tests {
 -                "Extracting to /dev/fd/{raw_fd} should succeed"
 +                "Extracting to /dev/fd/{raw_fd} should succeed: {result:?}"
 diff --git a/src/cache/readonly.rs b/src/cache/readonly.rs
@@ -545,19 +673,139 @@ index 40f9873..9f479da 100644
 @@ -113,0 +118 @@ mod test {
 +        assert!(storage.is_read_only());
 diff --git a/src/client.rs b/src/client.rs
-index 88d93fc..1f8389a 100644
+index 88d93fc..8d312e9 100644
 --- a/src/client.rs
 +++ b/src/client.rs
-@@ -19 +18,0 @@ use crate::util;
+@@ -18,2 +17,0 @@ use crate::protocol::{Request, Response};
+-use crate::util;
 -use backon::BlockingRetryable;
-@@ -40,0 +40,6 @@ impl ServerConnection {
+@@ -21 +19 @@ use byteorder::{BigEndian, ByteOrder};
+-use std::io::{self, BufReader, BufWriter, Read};
++use std::io::{self, BufReader, Read, Write};
+@@ -28 +26,3 @@ pub struct ServerConnection {
+-    writer: BufWriter<Box<dyn Connection>>,
++    writer: Box<dyn Connection>,
++    timeout: Option<std::time::Duration>,
++    max_frame_bytes: Option<u64>,
+@@ -37 +37,3 @@ impl ServerConnection {
+-            writer: BufWriter::new(write_conn),
++            writer: write_conn,
++            timeout: None,
++            max_frame_bytes: None,
+@@ -40,0 +43,13 @@ impl ServerConnection {
 +    /// Apply the governed timeout to every IPC read and write.
-+    pub fn set_timeout(&mut self, timeout: std::time::Duration) -> io::Result<()> {
++    pub fn set_policy(
++        &mut self,
++        timeout: std::time::Duration,
++        max_frame_bytes: u64,
++    ) -> io::Result<()> {
 +        self.reader.get_ref().set_read_timeout(Some(timeout))?;
-+        self.writer.get_ref().set_write_timeout(Some(timeout))
++        self.writer.set_write_timeout(Some(timeout))?;
++        self.timeout = Some(timeout);
++        self.max_frame_bytes = Some(max_frame_bytes);
++        Ok(())
 +    }
 +
-@@ -72,20 +77,8 @@ pub fn connect_to_server(addr: &crate::net::SocketAddr) -> io::Result<ServerConn
+@@ -44 +59,8 @@ impl ServerConnection {
+-        util::write_length_prefixed_bincode(&mut self.writer, request)?;
++        let data = bincode::serialize(&request)?;
++        self.validate_frame_size(data.len())?;
++        let mut frame = Vec::with_capacity(data.len() + 4);
++        let length = u32::try_from(data.len())
++            .context("governed IPC request exceeds the protocol length field")?;
++        frame.extend_from_slice(&length.to_be_bytes());
++        frame.extend_from_slice(&data);
++        self.write_frame(&frame)?;
+@@ -51,0 +74,3 @@ impl ServerConnection {
++        let deadline = self
++            .timeout
++            .map(|timeout| std::time::Instant::now() + timeout);
+@@ -53,2 +78 @@ impl ServerConnection {
+-        self.reader
+-            .read_exact(&mut bytes)
++        self.read_exact_frame(&mut bytes, deadline)
+@@ -56,0 +81 @@ impl ServerConnection {
++        self.validate_frame_size(len as usize)?;
+@@ -59 +84 @@ impl ServerConnection {
+-        self.reader.read_exact(&mut data)?;
++        self.read_exact_frame(&mut data, deadline)?;
+@@ -62,0 +88,75 @@ impl ServerConnection {
++
++    fn validate_frame_size(&self, length: usize) -> Result<()> {
++        if let Some(maximum) = self.max_frame_bytes
++            && u64::try_from(length).unwrap_or(u64::MAX) > maximum
++        {
++            bail!("governed IPC frame exceeds configured maximum");
++        }
++        Ok(())
++    }
++
++    fn write_frame(&mut self, mut bytes: &[u8]) -> io::Result<()> {
++        let deadline = self
++            .timeout
++            .map(|timeout| std::time::Instant::now() + timeout);
++        while !bytes.is_empty() {
++            if let Some(deadline) = deadline {
++                let remaining = deadline
++                    .checked_duration_since(std::time::Instant::now())
++                    .ok_or_else(|| {
++                        io::Error::new(io::ErrorKind::TimedOut, "IPC write timed out")
++                    })?;
++                self.writer
++                    .set_write_timeout(Some(remaining.max(std::time::Duration::from_micros(1))))
++                    .map_err(|error| {
++                        io::Error::new(
++                            error.kind(),
++                            format!("failed to update IPC write deadline: {error}"),
++                        )
++                    })?;
++            }
++            let written = self.writer.write(bytes)?;
++            if written == 0 {
++                return Err(io::Error::new(
++                    io::ErrorKind::WriteZero,
++                    "failed to write IPC frame",
++                ));
++            }
++            bytes = &bytes[written..];
++        }
++        self.writer.flush()
++    }
++
++    fn read_exact_frame(
++        &mut self,
++        mut bytes: &mut [u8],
++        deadline: Option<std::time::Instant>,
++    ) -> io::Result<()> {
++        while !bytes.is_empty() {
++            if let Some(deadline) = deadline {
++                let remaining = deadline
++                    .checked_duration_since(std::time::Instant::now())
++                    .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "IPC read timed out"))?;
++                if self.reader.buffer().is_empty() {
++                    self.reader
++                        .get_ref()
++                        .set_read_timeout(Some(remaining.max(std::time::Duration::from_micros(1))))
++                        .map_err(|error| {
++                            io::Error::new(
++                                error.kind(),
++                                format!("failed to update IPC read deadline: {error}"),
++                            )
++                        })?;
++                }
++            }
++            let read = self.reader.read(bytes)?;
++            if read == 0 {
++                return Err(io::Error::new(
++                    io::ErrorKind::UnexpectedEof,
++                    "IPC frame ended early",
++                ));
++            }
++            bytes = &mut bytes[read..];
++        }
++        Ok(())
++    }
+@@ -72,19 +172,69 @@ pub fn connect_to_server(addr: &crate::net::SocketAddr) -> io::Result<ServerConn
 -/// Attempt to establish a TCP connection to an sccache server listening on `addr`.
 -///
 -/// If the connection fails, retry a few times.
@@ -577,7 +825,6 @@ index 88d93fc..1f8389a 100644
 -            io::ErrorKind::TimedOut,
 -            format!("Connection to server timed out: {:?}", e),
 -        )),
--    }
 +/// Establish a connection using the governed connect timeout.
 +pub fn connect_to_server_with_timeout(
 +    addr: &crate::net::SocketAddr,
@@ -586,8 +833,69 @@ index 88d93fc..1f8389a 100644
 +    trace!("connect_to_server_with_timeout({addr})");
 +    let conn = crate::net::connect_with_timeout(addr, timeout)?;
 +    ServerConnection::new(conn)
++}
++
++#[cfg(all(test, unix))]
++mod strict_tests {
++    use super::*;
++    use std::os::unix::net::UnixStream;
++    use std::thread;
++    use std::time::Duration;
++
++    fn drip_header(mut stream: impl Write) {
++        for byte in [0_u8, 0, 0, 1] {
++            if stream.write_all(&[byte]).is_err() {
++                return;
++            }
++            thread::sleep(Duration::from_millis(15));
++        }
++    }
++
++    #[test]
++    fn strict_unix_response_frame_uses_one_absolute_deadline() {
++        let (client, server) = UnixStream::pair().unwrap();
++        let sender = thread::spawn(move || drip_header(server));
++        let mut connection = ServerConnection::new(Box::new(client)).unwrap();
++        connection
++            .set_policy(Duration::from_millis(25), 1024)
++            .unwrap();
++
++        assert!(connection.read_one_response().is_err());
++        sender.join().unwrap();
++    }
++
++    #[test]
++    fn strict_tcp_response_frame_uses_one_absolute_deadline() {
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        let address = listener.local_addr().unwrap();
++        let sender = thread::spawn(move || {
++            let (server, _) = listener.accept().unwrap();
++            drip_header(server);
++        });
++        let client = std::net::TcpStream::connect(address).unwrap();
++        let mut connection = ServerConnection::new(Box::new(client)).unwrap();
++        connection
++            .set_policy(Duration::from_millis(25), 1024)
++            .unwrap();
++
++        assert!(connection.read_one_response().is_err());
++        sender.join().unwrap();
++    }
++
++    #[test]
++    fn strict_response_rejects_an_oversized_frame_before_allocation() {
++        let (client, mut server) = UnixStream::pair().unwrap();
++        server.write_all(&2048_u32.to_be_bytes()).unwrap();
++        let mut connection = ServerConnection::new(Box::new(client)).unwrap();
++        connection
++            .set_policy(Duration::from_millis(25), 1024)
++            .unwrap();
++
++        let error = connection.read_one_response().unwrap_err();
++
++        assert!(error.to_string().contains("exceeds configured maximum"));
 diff --git a/src/commands.rs b/src/commands.rs
-index 8d8406a..750cb57 100644
+index 8d8406a..60ef6b9 100644
 --- a/src/commands.rs
 +++ b/src/commands.rs
 @@ -15,2 +15 @@
@@ -690,8 +998,8 @@ index 8d8406a..750cb57 100644
 +    let mut server = connect_to_server_with_timeout(addr, timeout)
 +        .context("governed sccache server is not running")?;
 +    server
-+        .set_timeout(timeout)
-+        .context("failed to configure governed IPC timeout")?;
++        .set_policy(timeout, expected_identity.max_frame_bytes)
++        .context("failed to configure governed IPC policy")?;
 +    match server
 +        .request(Request::GetServerIdentity)
 +        .context("failed to negotiate governed server identity")?
@@ -784,7 +1092,7 @@ index 8d8406a..750cb57 100644
 @@ -810 +766 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
 +            let conn = connect_required(&get_addr(), timeouts.ipc, &identity)?;
-@@ -829,0 +786,224 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -829,0 +786,243 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 +
 +#[cfg(all(test, unix))]
 +mod strict_test {
@@ -802,12 +1110,14 @@ index 8d8406a..750cb57 100644
 +    fn identity() -> crate::protocol::StrictServerIdentity {
 +        crate::protocol::StrictServerIdentity {
 +            protocol_version: 1,
++            derivative_identity: "strict-test".to_owned(),
 +            config_fingerprint: "strict-test".to_owned(),
 +            cache_mode: "READ_WRITE".to_owned(),
 +            startup_timeout_ms: 25,
 +            ipc_timeout_ms: 25,
 +            cache_read_timeout_ms: 25,
 +            cache_write_timeout_ms: 25,
++            max_frame_bytes: 1024 * 1024,
 +        }
 +    }
 +
@@ -929,7 +1239,7 @@ index 8d8406a..750cb57 100644
 +    }
 +
 +    #[test]
-+    fn strict_server_identity_mismatch_is_fatal() {
++    fn strict_stale_derivative_with_matching_policy_is_fatal() {
 +        let temporary = tempfile::tempdir().unwrap();
 +        let socket_path = temporary.path().join("server.sock");
 +        let listener = UnixListener::bind(&socket_path).unwrap();
@@ -944,7 +1254,7 @@ index 8d8406a..750cb57 100644
 +                Request::GetServerIdentity
 +            ));
 +            let mut wrong = identity();
-+            wrong.config_fingerprint = "stale-server".to_owned();
++            wrong.derivative_identity = "stale-derivative".to_owned();
 +            crate::util::write_length_prefixed_bincode(
 +                &mut stream,
 +                Response::ServerIdentity(wrong),
@@ -954,7 +1264,7 @@ index 8d8406a..750cb57 100644
 +
 +        let result = connect_required(
 +            &crate::net::SocketAddr::Unix(socket_path),
-+            Duration::from_millis(25),
++            Duration::from_secs(5),
 +            &identity(),
 +        );
 +
@@ -962,7 +1272,10 @@ index 8d8406a..750cb57 100644
 +            Ok(_) => panic!("mismatched server identity was accepted"),
 +            Err(error) => error,
 +        };
-+        assert!(error.to_string().contains("identity does not match"));
++        assert!(
++            error.to_string().contains("identity does not match"),
++            "unexpected error: {error:#}"
++        );
 +        server.join().unwrap();
 +    }
 +
@@ -991,6 +1304,20 @@ index 8d8406a..750cb57 100644
 +    }
 +
 +    #[test]
++    fn strict_frame_limit_must_fit_the_protocol_length_field() {
++        temp_env::with_var(
++            "SCCACHE_STRICT_MAX_FRAME_BYTES",
++            Some((u64::from(u32::MAX) + 1).to_string()),
++            || {
++                assert!(
++                    crate::config::governed_frame_length_from_env("SCCACHE_STRICT_MAX_FRAME_BYTES")
++                        .is_err()
++                );
++            },
++        );
++    }
++
++    #[test]
 +    fn strict_timeout_policy_is_loaded_as_one_unit() {
 +        temp_env::with_vars(
 +            [
@@ -1010,15 +1337,16 @@ index 8d8406a..750cb57 100644
 +    }
 +}
 diff --git a/src/compiler/compiler.rs b/src/compiler/compiler.rs
-index 78bb5a4..57cd7da 100644
+index 78bb5a4..5f56fe2 100644
 --- a/src/compiler/compiler.rs
 +++ b/src/compiler/compiler.rs
 @@ -16 +16 @@
 -use crate::cache::{Cache, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
 +use crate::cache::{Cache, CacheWrite, FileObjectSource, Storage};
-@@ -586,0 +587 @@ where
+@@ -586,0 +587,2 @@ where
 +        let timeout = service.cache_read_timeout();
-@@ -588,10 +589 @@ where
++        let cache_read_deadline = Instant::now() + timeout;
+@@ -588,10 +590 @@ where
 -        // Set a maximum time limit for the cache to respond before we forge
 -        // ahead ourselves with a compilation.
 -        let timeout = Duration::new(60, 0);
@@ -1030,7 +1358,7 @@ index 78bb5a4..57cd7da 100644
 -
 -        // Check the result of the cache lookup.
 +        // Check the result of the cache lookup and fully restore any hit under one deadline.
-@@ -605,46 +597,30 @@ where
+@@ -605,46 +598,32 @@ where
 -
 -        let lookup = match cache_status.await {
 -            (Ok(Ok(Cache::Hit(mut entry))), duration) => {
@@ -1097,7 +1425,9 @@ index 78bb5a4..57cd7da 100644
 +                    } else {
 +                        outputs.clone()
 +                    };
-+                    let (stdout, stderr) = entry.materialize(filtered_outputs, &pool).await?;
++                    let (stdout, stderr) = entry
++                        .materialize(filtered_outputs, &pool, Some(cache_read_deadline))
++                        .await?;
 +                    let output = process::Output {
 +                        status: exit_status(0),
 +                        stdout,
@@ -1107,7 +1437,7 @@ index 78bb5a4..57cd7da 100644
 +                        CompileResult::CacheHit(duration),
 +                        output,
 +                    ))
-@@ -651,0 +628,30 @@ where
+@@ -651,0 +631,30 @@ where
 +                Ok(Cache::Miss) => {
 +                    debug!(
 +                        "[{}]: Cache miss in {}",
@@ -1138,7 +1468,7 @@ index 78bb5a4..57cd7da 100644
 +                        fmt_duration_as_secs(&duration)
 +                    )
 +                }),
-@@ -653,43 +659,8 @@ where
+@@ -653,43 +662,8 @@ where
 -            (Ok(Ok(Cache::Miss)), duration) => {
 -                debug!(
 -                    "[{}]: Cache miss in {}",
@@ -1190,7 +1520,7 @@ index 78bb5a4..57cd7da 100644
 +                fmt_duration_as_secs(&start.elapsed())
 +            )
 +        })??;
-@@ -772,0 +744,10 @@ where
+@@ -772,0 +747,10 @@ where
 +                if storage.is_read_only() {
 +                    return Ok((
 +                        CompileResult::ReadOnlyCacheMiss(
@@ -1201,29 +1531,29 @@ index 78bb5a4..57cd7da 100644
 +                        compiler_result,
 +                    ));
 +                }
-@@ -1236,0 +1218,2 @@ pub enum CompileResult {
+@@ -1236,0 +1221,2 @@ pub enum CompileResult {
 +    /// A governed read-only miss compiled without attempting a cache write.
 +    ReadOnlyCacheMiss(MissType, DistType, Duration),
-@@ -1262,0 +1246,5 @@ impl fmt::Debug for CompileResult {
+@@ -1262,0 +1249,5 @@ impl fmt::Debug for CompileResult {
 +            CompileResult::ReadOnlyCacheMiss(ref m, ref dt, ref d) => write!(
 +                f,
 +                "CompileResult::ReadOnlyCacheMiss({:?}, {:?}, {:?})",
 +                d, m, dt
 +            ),
-@@ -1284,0 +1273,4 @@ impl PartialEq<CompileResult> for CompileResult {
+@@ -1284,0 +1276,4 @@ impl PartialEq<CompileResult> for CompileResult {
 +            (
 +                CompileResult::ReadOnlyCacheMiss(m, dt, _),
 +                CompileResult::ReadOnlyCacheMiss(n, dt2, _),
 +            ) => m == n && dt == dt2,
-@@ -2804,2 +2796 @@ LLVM version: 6.0",
+@@ -2804,2 +2799 @@ LLVM version: 6.0",
 -    /// Test that a cache read that results in an error is treated as a cache
 -    /// miss.
 +    /// Test that a cache read error stops before compiler execution.
-@@ -2841,3 +2831,0 @@ LLVM version: 6.0",
+@@ -2841,3 +2834,0 @@ LLVM version: 6.0",
 -        // The compiler invocation.
 -        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
 -        const COMPILER_STDERR: &[u8] = b"compiler stderr";
-@@ -2845,11 +2832,0 @@ LLVM version: 6.0",
+@@ -2845,11 +2835,0 @@ LLVM version: 6.0",
 -        let o = obj.clone();
 -        next_command_calls(&creator, move |_| {
 -            // Pretend to compile something.
@@ -1235,10 +1565,10 @@ index 78bb5a4..57cd7da 100644
 -                COMPILER_STDERR,
 -            ))
 -        });
-@@ -2864 +2841 @@ LLVM version: 6.0",
+@@ -2864 +2844 @@ LLVM version: 6.0",
 -        let (cached, res) = runtime
 +        let error = runtime
-@@ -2875,0 +2853,136 @@ LLVM version: 6.0",
+@@ -2875,0 +2856,136 @@ LLVM version: 6.0",
 +            .unwrap_err();
 +        assert!(error.to_string().contains("governed cache read failed"));
 +        assert!(!obj.exists());
@@ -1375,7 +1705,7 @@ index 78bb5a4..57cd7da 100644
 +                CacheControl::Default,
 +                pool,
 +            ))
-@@ -2877,9 +2989,0 @@ LLVM version: 6.0",
+@@ -2877,9 +2992,0 @@ LLVM version: 6.0",
 -        // Ensure that the object file was created.
 -        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
 -        match cached {
@@ -1385,7 +1715,7 @@ index 78bb5a4..57cd7da 100644
 -            }
 -            _ => panic!("Unexpected compile result: {:?}", cached),
 -        }
-@@ -2887,3 +2991,6 @@ LLVM version: 6.0",
+@@ -2887,3 +2994,6 @@ LLVM version: 6.0",
 -        assert_eq!(exit_status(0), res.status);
 -        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
 -        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -1403,10 +1733,10 @@ index e6f72a7..8ec211c 100644
 -                                .join("x_".to_owned() + &count + extension)
 +                                .join("x_".to_owned() + count.as_str() + extension)
 diff --git a/src/config.rs b/src/config.rs
-index cef32b2..a1862a8 100644
+index cef32b2..e5ced02 100644
 --- a/src/config.rs
 +++ b/src/config.rs
-@@ -38,0 +39,53 @@ use crate::errors::*;
+@@ -38,0 +39,75 @@ use crate::errors::*;
 +use crate::protocol::StrictServerIdentity;
 +
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1460,7 +1790,29 @@ index cef32b2..a1862a8 100644
 +    let value = env::var(name).with_context(|| format!("{name} is required"))?;
 +    governed_duration_from_value(name, &value)
 +}
-@@ -1356,0 +1410,65 @@ impl Config {
++
++pub fn governed_positive_u64_from_env(name: &str) -> Result<u64> {
++    let value = env::var(name).with_context(|| format!("{name} is required"))?;
++    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
++        bail!("{name} must be a positive decimal integer");
++    }
++    let parsed = value
++        .parse::<u64>()
++        .with_context(|| format!("{name} must fit in an unsigned 64-bit integer"))?;
++    if parsed == 0 {
++        bail!("{name} must be greater than zero");
++    }
++    Ok(parsed)
++}
++
++pub fn governed_frame_length_from_env(name: &str) -> Result<u64> {
++    let length = governed_positive_u64_from_env(name)?;
++    if length > u64::from(u32::MAX) {
++        bail!("{name} must not exceed the protocol's 32-bit frame length");
++    }
++    Ok(length)
++}
+@@ -1356,0 +1432,70 @@ impl Config {
 +/// Bind the strict protocol to the effective cache and timeout policy.
 +pub fn strict_server_identity(
 +    config: &Config,
@@ -1482,6 +1834,7 @@ index cef32b2..a1862a8 100644
 +        ipc_timeout_ms: u64,
 +        cache_read_timeout_ms: u64,
 +        cache_write_timeout_ms: u64,
++        max_frame_bytes: u64,
 +    }
 +
 +    let validated_mode = crate::cache::governed_cache_mode(config)?;
@@ -1497,6 +1850,7 @@ index cef32b2..a1862a8 100644
 +    let ipc_timeout_ms = duration_millis(timeouts.ipc);
 +    let cache_read_timeout_ms = duration_millis(timeouts.cache_read);
 +    let cache_write_timeout_ms = duration_millis(timeouts.cache_write);
++    let max_frame_bytes = governed_frame_length_from_env("SCCACHE_STRICT_MAX_FRAME_BYTES")?;
 +    let fingerprint = Fingerprint {
 +        bucket: &s3.bucket,
 +        region: &s3.region,
@@ -1512,17 +1866,20 @@ index cef32b2..a1862a8 100644
 +        ipc_timeout_ms,
 +        cache_read_timeout_ms,
 +        cache_write_timeout_ms,
++        max_frame_bytes,
 +    };
 +    let encoded = bincode::serialize(&fingerprint)?;
 +
 +    Ok(StrictServerIdentity {
 +        protocol_version: 1,
++        derivative_identity: env!("SCCACHE_STRICT_DERIVATIVE_ID").to_owned(),
 +        config_fingerprint: blake3::hash(&encoded).to_hex().to_string(),
 +        cache_mode: requested_mode.to_owned(),
 +        startup_timeout_ms,
 +        ipc_timeout_ms,
 +        cache_read_timeout_ms,
 +        cache_write_timeout_ms,
++        max_frame_bytes,
 +    })
 +}
 +
@@ -1723,13 +2080,13 @@ index 43965d0..542ca17 100644
 +            std::os::unix::net::UnixStream::set_write_timeout(self, timeout)
 +        }
 diff --git a/src/protocol.rs b/src/protocol.rs
-index 8760ba6..3c841ae 100644
+index 8760ba6..c2e8ed9 100644
 --- a/src/protocol.rs
 +++ b/src/protocol.rs
 @@ -18,0 +19,2 @@ pub enum Request {
 +    /// Prove that the client reached the exact governed strict server.
 +    GetServerIdentity,
-@@ -35,0 +38,14 @@ pub enum Response {
+@@ -35,0 +38,26 @@ pub enum Response {
 +    /// Identity and runtime policy of the governed strict server.
 +    ServerIdentity(StrictServerIdentity),
 +}
@@ -1738,21 +2095,33 @@ index 8760ba6..3c841ae 100644
 +#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 +pub struct StrictServerIdentity {
 +    pub protocol_version: u32,
++    pub derivative_identity: String,
 +    pub config_fingerprint: String,
 +    pub cache_mode: String,
 +    pub startup_timeout_ms: u64,
 +    pub ipc_timeout_ms: u64,
 +    pub cache_read_timeout_ms: u64,
 +    pub cache_write_timeout_ms: u64,
-@@ -43 +59 @@ pub enum CompileResponse {
++    pub max_frame_bytes: u64,
++}
++
++#[cfg(test)]
++impl StrictServerIdentity {
++    pub fn for_tests() -> Self {
++        Self {
++            max_frame_bytes: u64::from(u32::MAX),
++            ..Self::default()
++        }
++    }
+@@ -43 +71 @@ pub enum CompileResponse {
 -    /// The server could not handle this compilation request.
 +    /// Legacy upstream response. It is retained at its original wire discriminant and is fatal.
-@@ -46,0 +63,4 @@ pub enum CompileResponse {
+@@ -46,0 +75,4 @@ pub enum CompileResponse {
 +    /// The parser classified this invocation as not being a compilation.
 +    NotCompilation,
 +    /// The parser classified this invocation as a compilation that cannot be cached.
 +    CannotCache(String),
-@@ -75,0 +96,51 @@ pub struct Compile {
+@@ -75,0 +108,51 @@ pub struct Compile {
 +
 +#[cfg(test)]
 +mod strict_protocol_tests {
@@ -1805,7 +2174,7 @@ index 8760ba6..3c841ae 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..4ae5678 100644
+index 98cedfb..efcc189 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -1824,11 +2193,78 @@ index 98cedfb..4ae5678 100644
 @@ -53 +55 @@ use std::os::linux::net::SocketAddrExt;
 -use std::path::PathBuf;
 +use std::path::{Path, PathBuf};
-@@ -430 +432,11 @@ thread_local! {
+@@ -430 +432,78 @@ thread_local! {
 -pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()> {
 +#[cfg(unix)]
-+fn bind_governed_unix_listener(path: &Path) -> io::Result<tokio::net::UnixListener> {
-+    tokio::net::UnixListener::bind(path)
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++struct UnixSocketIdentity {
++    device: u64,
++    inode: u64,
++}
++
++#[cfg(unix)]
++fn unix_socket_identity(path: &Path) -> io::Result<UnixSocketIdentity> {
++    use std::os::unix::fs::{FileTypeExt, MetadataExt};
++
++    let metadata = fs::symlink_metadata(path)?;
++    if !metadata.file_type().is_socket() {
++        return Err(io::Error::new(
++            io::ErrorKind::AddrInUse,
++            "governed Unix socket path is not a socket",
++        ));
++    }
++    Ok(UnixSocketIdentity {
++        device: metadata.dev(),
++        inode: metadata.ino(),
++    })
++}
++
++#[cfg(unix)]
++fn remove_owned_unix_socket(path: &Path, identity: UnixSocketIdentity) -> io::Result<()> {
++    match unix_socket_identity(path) {
++        Ok(current) if current == identity => fs::remove_file(path),
++        Ok(_) | Err(_) => Ok(()),
++    }
++}
++
++#[cfg(unix)]
++fn bind_governed_unix_listener(
++    path: &Path,
++    timeout: Duration,
++) -> io::Result<(tokio::net::UnixListener, UnixSocketIdentity)> {
++    match tokio::net::UnixListener::bind(path) {
++        Ok(listener) => return Ok((listener, unix_socket_identity(path)?)),
++        Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
++        Err(error) => return Err(error),
++    }
++
++    let original = unix_socket_identity(path)?;
++    let address = crate::net::SocketAddr::Unix(path.to_path_buf());
++    match crate::net::connect_with_timeout(&address, timeout) {
++        Ok(_) => {
++            return Err(io::Error::new(
++                io::ErrorKind::AddrInUse,
++                "governed Unix socket already has a live listener",
++            ));
++        }
++        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {}
++        Err(error) => return Err(error),
++    }
++    if unix_socket_identity(path)? != original {
++        return Err(io::Error::new(
++            io::ErrorKind::AddrInUse,
++            "governed Unix socket changed during stale-path validation",
++        ));
++    }
++    fs::remove_file(path)?;
++    let listener = tokio::net::UnixListener::bind(path)?;
++    Ok((listener, unix_socket_identity(path)?))
++}
++
++async fn bind_governed_tcp_listener(
++    addr: &std::net::SocketAddr,
++) -> io::Result<tokio::net::TcpListener> {
++    tokio::net::TcpListener::bind(addr).await
 +}
 +
 +pub fn start_server(
@@ -1837,20 +2273,40 @@ index 98cedfb..4ae5678 100644
 +    identity: StrictServerIdentity,
 +    timeouts: crate::config::StrictTimeouts,
 +) -> Result<()> {
-@@ -467,0 +480 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
-+    let configured_mode = governed_cache_mode(config)?;
-@@ -484,0 +498,3 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -467,0 +547,12 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
++    let configured_mode = match governed_cache_mode(config) {
++        Ok(mode) => mode,
++        Err(err) => {
++            notify_server_startup(
++                notify.as_ref(),
++                ServerStartup::Err {
++                    reason: err.to_string(),
++                },
++            )?;
++            return Err(err);
++        }
++    };
+@@ -484,0 +576,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 +    if cache_mode != configured_mode {
-+        bail!("cache storage negotiated {cache_mode:?}, expected {configured_mode:?}");
++        let err = anyhow!("cache storage negotiated {cache_mode:?}, expected {configured_mode:?}");
++        notify_server_startup(
++            notify.as_ref(),
++            ServerStartup::Err {
++                reason: err.to_string(),
++            },
++        )?;
++        return Err(err);
 +    }
-@@ -492,2 +508,2 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -492,2 +593,2 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -    let res: io::Result<(crate::net::SocketAddr, Box<dyn FnOnce(_) -> io::Result<()>>)> = (|| {
 -        match addr {
 +    let res: io::Result<(crate::net::SocketAddr, Box<dyn FnOnce(_) -> io::Result<()>>)> =
 +        (|| match addr {
-@@ -497,2 +513,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -496,3 +597,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+-                let l = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
 -                let srv =
 -                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
++                let l = runtime.block_on(bind_governed_tcp_listener(addr))?;
 +                let srv = SccacheServer::<_>::with_listener(
 +                    l,
 +                    runtime,
@@ -1860,13 +2316,34 @@ index 98cedfb..4ae5678 100644
 +                    identity.clone(),
 +                    timeouts,
 +                );
-@@ -507,2 +529,0 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -507,2 +614,0 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                // Unix socket will report addr in use on any unlink file.
 -                let _ = std::fs::remove_file(path);
-@@ -511 +532 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -511 +617 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                    tokio::net::UnixListener::bind(path)?
-+                    bind_governed_unix_listener(path)?
-@@ -513,2 +534,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
++                    bind_governed_unix_listener(path, timeouts.ipc)?
+@@ -513,2 +619,11 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+-                let srv =
+-                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
++                let socket_path = path.to_path_buf();
++                let (l, socket_identity) = l;
++                let srv = SccacheServer::<_>::with_listener(
++                    l,
++                    runtime,
++                    client,
++                    dist_client,
++                    storage,
++                    identity.clone(),
++                    timeouts,
++                );
+@@ -517 +632,5 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+-                    Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
++                    Box::new(move |f| {
++                        let result = srv.run(f);
++                        let cleanup = remove_owned_unix_socket(&socket_path, socket_identity);
++                        result.and(cleanup)
++                    }) as Box<dyn FnOnce(_) -> _>,
+@@ -530,2 +649,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                let srv =
 -                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
 +                let srv = SccacheServer::<_>::with_listener(
@@ -1878,31 +2355,19 @@ index 98cedfb..4ae5678 100644
 +                    identity.clone(),
 +                    timeouts,
 +                );
-@@ -530,2 +558,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
--                let srv =
--                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
-+                let srv = SccacheServer::<_>::with_listener(
-+                    l,
-+                    runtime,
-+                    client,
-+                    dist_client,
-+                    storage,
-+                    identity.clone(),
-+                    timeouts,
-+                );
-@@ -538,2 +573 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -538,2 +664 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -        }
 -    })();
 +        })();
-@@ -579,0 +614 @@ pub struct SccacheServer<A: crate::net::Acceptor, C: CommandCreatorSync = Proces
+@@ -579,0 +705 @@ pub struct SccacheServer<A: crate::net::Acceptor, C: CommandCreatorSync = Proces
 +#[cfg(test)]
-@@ -596,0 +632,2 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
-+            StrictServerIdentity::default(),
+@@ -596,0 +723,2 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
++            StrictServerIdentity::for_tests(),
 +            crate::config::StrictTimeouts::for_tests(),
-@@ -607,0 +645,2 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -607,0 +736,2 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +        identity: StrictServerIdentity,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -614 +653,10 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -614 +744,10 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 -        let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
 +        let service = SccacheService::new(
 +            dist_client,
@@ -1914,26 +2379,26 @@ index 98cedfb..4ae5678 100644
 +            identity,
 +            timeouts,
 +        );
-@@ -794,0 +843,6 @@ where
+@@ -794,0 +934,6 @@ where
 +    /// Exact derivative, backend, mode, and timeout policy negotiated by clients.
 +    identity: StrictServerIdentity,
 +
 +    /// Timeout policy validated once before server startup.
 +    timeouts: crate::config::StrictTimeouts,
 +
-@@ -866,0 +921,3 @@ where
+@@ -866,0 +1012,3 @@ where
 +                Request::GetServerIdentity => Ok(Message::WithoutBody(Response::ServerIdentity(
 +                    me.identity.clone(),
 +                ))),
-@@ -923,0 +981,2 @@ where
+@@ -923,0 +1072,2 @@ where
 +        identity: StrictServerIdentity,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -934,0 +994,2 @@ where
+@@ -934,0 +1085,2 @@ where
 +            identity,
 +            timeouts,
-@@ -937,0 +999 @@ where
+@@ -937,0 +1090 @@ where
 +    #[cfg(test)]
-@@ -940,0 +1003,13 @@ where
+@@ -940,0 +1094,13 @@ where
 +    ) -> SccacheService<C> {
 +        Self::mock_with_storage_and_timeouts(
 +            storage,
@@ -1947,36 +2412,46 @@ index 98cedfb..4ae5678 100644
 +        storage: Arc<dyn Storage>,
 +        rt: tokio::runtime::Handle,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -955,0 +1031,2 @@ where
-+            identity: StrictServerIdentity::default(),
+@@ -955,0 +1122,2 @@ where
++            identity: StrictServerIdentity::for_tests(),
 +            timeouts,
-@@ -959,0 +1037 @@ where
+@@ -959,0 +1128 @@ where
 +    #[cfg(test)]
-@@ -990,0 +1069,2 @@ where
-+            identity: StrictServerIdentity::default(),
+@@ -990,0 +1160,2 @@ where
++            identity: StrictServerIdentity::for_tests(),
 +            timeouts: crate::config::StrictTimeouts::for_tests(),
-@@ -993,0 +1074,4 @@ where
+@@ -993,0 +1165,4 @@ where
 +    pub fn cache_read_timeout(&self) -> Duration {
 +        self.timeouts.cache_read
 +    }
 +
-@@ -1065,0 +1150 @@ where
+@@ -999,7 +1174,2 @@ where
+-        if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
+-            if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
+-                builder.max_frame_length(max_frame_length);
+-            } else {
+-                warn!("Content of SCCACHE_MAX_FRAME_LENGTH is not a valid number, using default");
+-            }
+-        }
++        builder
++            .max_frame_length(usize::try_from(self.identity.max_frame_bytes).unwrap_or(usize::MAX));
+@@ -1065,0 +1236 @@ where
 +        reject_forced_cache_modes(&env_vars)?;
-@@ -1067 +1151,0 @@ where
+@@ -1067 +1237,0 @@ where
 -
-@@ -1278,0 +1363,3 @@ where
+@@ -1278,0 +1449,3 @@ where
 +                        return Message::WithoutBody(Response::Compile(
 +                            CompileResponse::CannotCache(why.to_string()),
 +                        ));
-@@ -1282,0 +1370,3 @@ where
+@@ -1282,0 +1456,3 @@ where
 +                        return Message::WithoutBody(Response::Compile(
 +                            CompileResponse::NotCompilation,
 +                        ));
-@@ -1287,3 +1376,0 @@ where
+@@ -1287,3 +1462,0 @@ where
 -
 -        let res = CompileResponse::UnhandledCompile;
 -        Message::WithoutBody(Response::Compile(res))
-@@ -1304,11 +1391 @@ where
+@@ -1304,11 +1477 @@ where
 -
 -        let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
 -        let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
@@ -1989,7 +2464,7 @@ index 98cedfb..4ae5678 100644
 -            CacheControl::Default
 -        };
 +        let cache_control = CacheControl::Default;
-@@ -1418,0 +1496,10 @@ where
+@@ -1418,0 +1582,10 @@ where
 +                            CompileResult::ReadOnlyCacheMiss(miss_type, dt, duration) => {
 +                                debug!("[{}]: governed read-only cache miss", out_pretty);
 +                                dist_type = dt;
@@ -2000,7 +2475,7 @@ index 98cedfb..4ae5678 100644
 +                                stats.cache_misses.increment(&kind, &lang);
 +                                stats.compiler_write_duration += duration;
 +                            }
-@@ -1522,7 +1609,5 @@ where
+@@ -1522,7 +1695,5 @@ where
 -                    match cache_write.await {
 -                        Err(e) => {
 -                            debug!("Error executing cache write: {}", e);
@@ -2013,7 +2488,7 @@ index 98cedfb..4ae5678 100644
 +                    {
 +                        None => me.stats.lock().await.cache_write_errors += 1,
 +                        Some(info) => {
-@@ -1581,0 +1667,33 @@ impl PerLanguageCount {
+@@ -1581,0 +1753,33 @@ impl PerLanguageCount {
 +fn reject_forced_cache_modes(env_vars: &[(OsString, OsString)]) -> Result<()> {
 +    if env_vars
 +        .iter()
@@ -2047,7 +2522,7 @@ index 98cedfb..4ae5678 100644
 +    }
 +}
 +
-@@ -2284,0 +2403,83 @@ mod tests {
+@@ -2284,0 +2489,113 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();
@@ -2123,12 +2598,42 @@ index 98cedfb..4ae5678 100644
 +        let temporary = tempfile::tempdir().unwrap();
 +        let path = temporary.path().join("server.sock");
 +        let _guard = runtime.enter();
-+        let listener = bind_governed_unix_listener(&path).unwrap();
++        let (listener, identity) =
++            bind_governed_unix_listener(&path, Duration::from_millis(25)).unwrap();
 +
-+        let replacement = bind_governed_unix_listener(&path);
++        let replacement = bind_governed_unix_listener(&path, Duration::from_millis(25));
 +
 +        assert!(replacement.is_err());
 +        drop(listener);
++        remove_owned_unix_socket(&path, identity).unwrap();
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn strict_server_recovers_an_unchanged_stale_unix_socket() {
++        let runtime = Runtime::new().unwrap();
++        let temporary = tempfile::tempdir().unwrap();
++        let path = temporary.path().join("server.sock");
++        std::os::unix::net::UnixListener::bind(&path).unwrap();
++
++        let _guard = runtime.enter();
++        let (listener, identity) =
++            bind_governed_unix_listener(&path, Duration::from_millis(25)).unwrap();
++
++        drop(listener);
++        remove_owned_unix_socket(&path, identity).unwrap();
++        assert!(!path.exists());
++    }
++
++    #[test]
++    fn strict_server_refuses_an_occupied_tcp_port() {
++        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        let address = occupied.local_addr().unwrap();
++        let runtime = Runtime::new().unwrap();
++
++        let replacement = runtime.block_on(bind_governed_tcp_listener(&address));
++
++        assert_eq!(replacement.unwrap_err().kind(), io::ErrorKind::AddrInUse);
 +    }
 +
 diff --git a/src/test/mock_storage.rs b/src/test/mock_storage.rs
@@ -2165,3 +2670,16 @@ index d4260e7..1558d10 100644
 +    fn is_read_only(&self) -> bool {
 +        self.read_only
 +    }
+diff --git a/src/test/tests.rs b/src/test/tests.rs
+index 8d283a1..d2c7721 100644
+--- a/src/test/tests.rs
++++ b/src/test/tests.rs
+@@ -299,2 +298,0 @@ fn test_server_compile() {
+-// test fails intermittently on macos:
+-// https://github.com/mozilla/sccache/issues/234
+@@ -302 +300 @@ fn test_server_compile() {
+-fn test_server_port_in_use() {
++fn test_strict_server_requires_governed_backend_before_port_bind() {
+@@ -317 +315 @@ fn test_server_port_in_use() {
+-    const MSG: &str = "Server startup failed:";
++    const MSG: &str = "strict sccache requires the governed S3 cache backend";

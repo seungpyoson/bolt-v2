@@ -76,7 +76,7 @@ jobs:
         uses: ./.github/actions/sccache-setup
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
-          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
 
       - name: clippy
         run: |
@@ -129,7 +129,7 @@ jobs:
         uses: ./.github/actions/sccache-setup
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
-          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
 
       - name: test
         env:
@@ -184,7 +184,7 @@ jobs:
         uses: ./.github/actions/sccache-setup
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
-          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
 
       - name: build
         env:

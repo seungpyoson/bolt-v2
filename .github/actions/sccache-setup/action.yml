@@ -50,6 +50,9 @@ runs:
         CONFIG_PATH: ${{ inputs.config-path }}
       run: |
         python3.12 scripts/sccache_eligibility.py
+        strict_env_file="$(mktemp)"
+        awk '$0 !~ /^SCCACHE_IGNORE_SERVER_IO_ERROR=/' "$GITHUB_ENV" > "$strict_env_file"
+        mv "$strict_env_file" "$GITHUB_ENV"
 
     - name: Configure AWS credentials for sccache
       id: aws

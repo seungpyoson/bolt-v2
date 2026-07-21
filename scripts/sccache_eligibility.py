@@ -211,6 +211,7 @@ def main() -> int:
         _write_line(env_path, f"SCCACHE_REGION={eligibility.region}")
         _write_line(env_path, f"SCCACHE_S3_KEY_PREFIX={eligibility.key_prefix}")
         _write_line(env_path, "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true")
+        _write_line(env_path, f"SCCACHE_S3_RW_MODE={eligibility.cache_mode.upper()}")
         _write_line(env_path, f"SCCACHE_IDLE_TIMEOUT={eligibility.idle_timeout_seconds}")
         _write_line(env_path, "SCCACHE_IGNORE_SERVER_IO_ERROR=1")
 

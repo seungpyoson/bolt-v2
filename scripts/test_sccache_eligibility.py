@@ -6,10 +6,12 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import os
 import pathlib
 import shlex
 import tempfile
 import tomllib
+from unittest import mock
 
 import sccache_eligibility
 from sccache_eligibility import resolve_sccache_eligibility
@@ -248,6 +250,35 @@ def main() -> int:
         expected_mode="read_only",
         expected_digest="",
     )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        output_path = pathlib.Path(tmp) / "output"
+        env_path = pathlib.Path(tmp) / "env"
+        common_environment = {
+            "CONFIG_PATH": str(REPO_ROOT / "ci" / "sccache-location.toml"),
+            "SCCACHE_ACTIVE": "true",
+            "READ_ROLE_ARN": read_role,
+            "WRITE_ROLE_ARN": write_role,
+            "RUNNER_ARCH": "ARM64",
+            "GITHUB_OUTPUT": str(output_path),
+            "GITHUB_ENV": str(env_path),
+        }
+        for label, event_name, github_ref, expected_mode in (
+            ("pull request", "pull_request", "refs/pull/1488/merge", "READ_ONLY"),
+            ("main push", "push", "refs/heads/main", "READ_WRITE"),
+        ):
+            output_path.write_text("", encoding="utf-8")
+            env_path.write_text("", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ,
+                {**common_environment, "GITHUB_EVENT_NAME": event_name, "GITHUB_REF": github_ref},
+                clear=True,
+            ), contextlib.redirect_stdout(io.StringIO()):
+                if sccache_eligibility.main() != 0:
+                    raise AssertionError(f"{label}: environment export failed")
+            environment = env_path.read_text(encoding="utf-8").splitlines()
+            if f"SCCACHE_S3_RW_MODE={expected_mode}" not in environment:
+                raise AssertionError(f"{label}: expected SCCACHE_S3_RW_MODE={expected_mode}")
 
     verify = getattr(sccache_eligibility, "verify_sccache_executable", None)
     if not callable(verify):

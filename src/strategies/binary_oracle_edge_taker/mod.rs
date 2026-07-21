@@ -1559,7 +1559,7 @@ impl BinaryOracleEdgeTaker {
         // so an unscoped read could feed a foreign-venue instrument into selection. A real order can
         // only ever route to the execution client's venue, so any market on another venue must be
         // unselectable here. Filtering the cache read by the execution venue makes a wrong-venue
-        // selection structurally impossible and fails closed (P5-5 / Codex P5).
+        // selection structurally impossible and fails closed.
         let execution_venue = self.context.execution_venue();
         let instruments = {
             let cache = self.cache();
@@ -2426,7 +2426,7 @@ impl BinaryOracleEdgeTaker {
         // from every registered execution client; a foreign-venue position must never be accepted
         // into Managed state because the exit path would build/submit an order for it with no
         // additional venue gate. Filtering the cache read by execution venue makes a wrong-venue
-        // recovery structurally impossible and fails closed (P5-5 / Codex P5).
+        // recovery structurally impossible and fails closed.
         let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
         let execution_venue = self.context.execution_venue();
         let cached_recovery = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2860,8 +2860,8 @@ impl BinaryOracleEdgeTaker {
     /// foreign-venue position should never reach here in production. This is the single
     /// fail-closed adoption decision and re-asserts the venue invariant structurally
     /// (defense in depth) BEFORE any contract check: the exit path would otherwise
-    /// build/submit an order for a wrong-venue position with no further venue gate
-    /// (P5-5 / Codex P5). A foreign-venue position is quarantined to blind recovery and
+    /// build/submit an order for a wrong-venue position with no further venue gate.
+    /// A foreign-venue position is quarantined to blind recovery and
     /// is never managed.
     fn bootstrapped_exposure_for(
         &self,

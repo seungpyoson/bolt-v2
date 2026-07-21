@@ -94,7 +94,7 @@ const NT_TRADING_COMMAND_SURFACE_NAMES: &[&str] = &[
     "DenyOrderList",
 ];
 
-// `verify_bolt_v3_no_exit_market_command.py` reserves this exact token in every context. Keep its
+// The retired `verify_bolt_v3_no_exit_market_command.py` fence reserved this exact token in every context. Keep its
 // predicate separate from the narrower strategy-policy command-surface matcher above so the Rust
 // evidence preserves the originating rule rather than only its vocabulary.
 const NT_EXIT_MARKET_COMMAND_NAME: &str = "ExitMarket";
@@ -943,21 +943,4 @@ fn every_archetype_has_one_capability_declaration_and_preparation_path() {
             "{relative} must have one registry preparation path"
         );
     }
-}
-
-#[test]
-fn dependency_allowance_is_empty_and_shrink_only_gate_remains_wired() {
-    let dependency_fence =
-        std::fs::read_to_string(repo_path("scripts/verify_bolt_v3_dependency_direction.py"))
-            .expect("dependency fence should be readable");
-    assert!(
-        dependency_fence
-            .lines()
-            .any(|line| { line.trim() == "FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = ()" })
-    );
-    let runner = std::fs::read_to_string(repo_path("scripts/run_fences.py"))
-        .expect("source-fence runner should be readable");
-    assert!(runner.contains("scripts_dir.glob(\"verify_*.py\")"));
-    assert!(dependency_fence.contains("enforce_shrink_only = argv is None"));
-    assert!(dependency_fence.contains("return check_allowlist_shrink_only()"));
 }

@@ -15,12 +15,17 @@ NT's event store and marker registry; it does not add a Bolt ledger or second ma
 **Tech stack:** Rust 1.97, NautilusTrader at
 `d81be0bcc7a473c45d2dc8a8885638336073a218`, `nautilus-event-store`, MessagePack, Nextest.
 
+**Field-level proof boundary:**
+`docs/superpowers/specs/2026-07-21-issue-789-economic-lifecycle-proof-boundary-design.md` is the
+authoritative inclusion, exclusion, identity, canonical-fill, and review-stop contract.
+
 ## Global constraints
 
 - One Polymarket binary instrument and one single-currency CASH/NETTING account.
 - Exactly one quote-denominated market entry, one base-denominated market reduction leaving a
   residual, and one synthetic settlement closing that residual.
-- L2 MBP with liquidity consumption, zero latency, no fill model, and no fee model.
+- L2 MBP with liquidity consumption, market-order acknowledgements disabled, zero latency, no fill
+  model, and no fee model.
 - Classification comes from signed position effect, never timestamps or `reduce_only`.
 - No Bolt ledger, second matcher, terminal-cache authority, compatibility path, #788 work, or #1447
   reversal.
@@ -154,8 +159,9 @@ the lifecycle source of truth.
    is a typed failure.
 4. **Independent fold:** Reconstruct each submit-cursor book, normalize quote quantity, require a
    fully satisfied minimal sweep, and fold exposure, commissions, realized P&L, and cash.
-5. **Terminal cross-check:** Compare the successful fold with complete live order, position,
-   account, and result projections. Terminal state never supplies lifecycle authority.
+5. **Terminal cross-check:** Compare the successful fold with the exact proof-relevant live order,
+   position, account, and result fields enumerated by the field-level boundary. Explicitly excluded
+   bookkeeping is not claimed. Terminal state never supplies lifecycle authority.
 
 No `catch_unwind` is part of this contract. The known malformed-input path is prevented by static
 admission. Panic containment would require a separate, proven unwind-safe NT lifecycle contract and
@@ -163,14 +169,14 @@ is not silently introduced here.
 
 ### Closed lifecycle grammar
 
-- Quote entry: `OrderInitialized -> SubmitOrder -> OrderSubmitted -> OrderUpdated -> OrderFilled+`.
-- Base reduction: `OrderInitialized -> SubmitOrder -> OrderSubmitted -> OrderFilled+` and no
-  `OrderUpdated`.
-- Settlement: synthetic `OrderInitialized -> OrderAccepted -> OrderFilled+ -> PositionClosed /
-  AccountState -> InstrumentClose` receipt, with no `SubmitOrder`, `OrderSubmitted`, or
-  `OrderUpdated`.
-- Position and account effects bind after each fill in strict store-sequence order. Timestamps are
-  diagnostic only.
+- Quote entry prelude: `OrderInitialized -> SubmitOrder -> OrderSubmitted -> OrderUpdated`.
+- Base reduction prelude: `OrderInitialized -> SubmitOrder -> OrderSubmitted` and no `OrderUpdated`.
+- Each normal prelude is followed by `(OrderFilled -> PositionEffect -> AccountState)+` in strict
+  store-sequence order. Role is bound to denomination: entry is quote; reduction is base.
+- Settlement: synthetic `OrderInitialized -> OrderAccepted -> OrderFilled -> PositionClosed ->
+  AccountState -> InstrumentClose` receipt, with exactly one fill and no `SubmitOrder`,
+  `OrderSubmitted`, or `OrderUpdated`.
+- Timestamps are diagnostic only.
 - `RunStarted` and `RunEnded` are integrity envelopes. `SubscribeCommand`, `UnsubscribeCommand`,
   and `TimeEvent` are explicit control-plane waivers: their bytes remain sealed and verified, but
   they carry no order, fill, position, or account claim.
@@ -189,24 +195,26 @@ engine event is its own routing authority.
 
 | Stage | Independent authority | NT claim / projection | Required invariant | Phase | Required behavior control |
 |---|---|---|---|---|---|
-| Run shape | Hash-bound manifest, resolved config, and pre-run execution-client registry | Built run configuration | BinaryOption; one lifecycle instrument and configured execution account; CASH/NETTING/L2; supported deterministic models | Admission | Wrong account/OMS/book/model rejected before run |
-| Book domain | Catalog rows plus instrument | None | Add/Update/Delete prices positive, exact precision/increment, within optional bounds; Add/Update sizes positive and aligned; Clear is structural | Admission | Zero, out-of-range, wrong precision/increment price; invalid size; valid Clear/Delete |
+| Run shape | Hash-bound manifest, resolved config, and pre-run execution-client registry | Built run configuration | BinaryOption; one lifecycle instrument and configured execution account; CASH/NETTING/L2; liquidity consumption; market acknowledgements disabled; supported deterministic models | Admission | Wrong account/OMS/book/model/acknowledgement setting rejected before run |
+| Book domain | Catalog rows plus instrument | None | Add/Update/Delete require Buy/Sell; prices positive, exact precision/increment, within optional bounds; Add/Update sizes positive and aligned; Clear is structural and may use NoOrderSide | Admission | Wrong action/side, zero, out-of-range, wrong precision/increment price; invalid size; valid Clear/Delete |
 | Settlement input | Manifest close plus the two projected BinaryOptions | `InstrumentClose` | Exact unique projected leg set; complementary `0`/`1` payoffs; quantity-independent from trading min/max | Admission/assembly | Wrong/missing/duplicate leg, fractional/non-complementary payoff; valid zero/one pair |
 | Store integrity | Sealed store and marker sidecar | Entries, dictionaries, cursors | Hashes/counts/sequence/dictionaries valid; no gaps; one unambiguous submit cursor | Integrity | Tampered/gapped/missing/ambiguous evidence |
 | Event surface | Frozen grammar | Every captured payload | Each type admitted and assigned, or typed rejection; no silent wildcard | Assembly | Unknown payload and orphan admitted payload |
-| Normal submission | `SubmitOrder` intent plus pre-run configured execution account | `OrderInitialized`, `OrderSubmitted` | Envelope equals embedded init; exact identity and causal order; both normal submissions equal the configured account | Assembly | Missing/duplicate/reordered/identity/account drift, including correlated downstream drift |
-| Quote conversion | Submitted quote quantity plus cursor book and instrument | `OrderUpdated` | Exactly one entry update; no reduction update; independently normalized quantity; submitted account and pinned shape | Fold | Missing/duplicate/orphan/reordered and every field mutation |
-| Normal fills | Cursor-bound book and submitted semantics | `OrderFilled+` | Exact ordered sweep; sweep remainder zero; sum fills equals effective quantity; unique identities | Fold | Insufficient depth, missing/extra/reordered/drifted/duplicate fill |
-| Position effects | Prior folded exposure and fills | `PositionOpened/Changed/Closed` | One causal effect per fill; kind and signed exposure derived; one position/account; no reversal/reopen | Fold | Missing/reordered/replayed/wrong kind, quantity, identity, or account |
+| Normal submission | `SubmitOrder` intent plus pre-run configured execution account | `OrderInitialized`, `OrderSubmitted` | Envelope equals embedded init; exact identity and causal order; exactly three order-identity classes; both normal submissions equal the configured account | Assembly | Missing/duplicate/reordered/identity/account drift, including correlated downstream drift and cross-order identity reuse |
+| Quote conversion | Submitted quote quantity plus cursor book and instrument | `OrderUpdated` | Entry is quote with exactly one update; reduction is base with no update; independently normalized quantity; submitted account and pinned shape | Fold | Swapped denomination; missing/duplicate/orphan/reordered and every field mutation |
+| Normal fills | Cursor-bound book and submitted semantics | `OrderFilled+` | Exact ordered canonical-fill projection; sweep remainder zero; sum fills equals effective quantity; unique event/trade/venue identities | Fold | Insufficient depth, missing/extra/reordered/drifted/duplicate fill or identity |
+| Position effects | Prior folded exposure and fills | `PositionOpened/Changed/Closed` | One causal effect per fill; ownership/order links, kind and signed exposure derived; one position/account; no reversal/reopen | Fold | Missing/reordered/replayed/wrong kind, quantity, ownership, order link, identity, or account |
 | Account effects | Starting cash, fills, multiplier, commissions | `AccountState` | Initial state matches config; one fresh causal state after each fill including zero delta; cash/currency/account exact | Fold | Missing/replayed/conflicting/trailing/wrong account or cash |
-| Settlement | Manifest payoff plus remaining exposure | Synthetic expiration events and close receipt | Pinned origin; no normal submission path; anchored account; exact remainder; final exposure zero | Assembly/fold | Orphan masquerade and every witness-shape/order/account/price/quantity mutation |
-| Terminal order | Completed causal order record | Live order cache | Exact IDs/static fields/fills; filled sum equals effective and terminal filled quantity; leaves zero; status Filled | Terminal | Missing/extra order; scalar, fill-vector, partial-Filled, and ID drift |
-| Terminal position | Completed exposure/economics fold | Live position cache and result | Exactly one closed flat position; fills/P&L/commissions/counts exact | Terminal | Extra/missing/nonflat/fill/P&L/count drift |
+| Settlement | Manifest payoff plus remaining exposure | Synthetic expiration events and close receipt | Exact pinned initialization/acceptance tuple; no normal submission path; anchored account; exactly one fill closes the exact remainder; final exposure zero | Assembly/fold | Orphan masquerade, multiple fill, and every witness-shape/order/account/price/quantity mutation |
+| Terminal order | Completed causal order record | Live order cache | Exact field-registry identities/routing/canonical fills/trade IDs/keyed commissions; filled sum equals effective and terminal filled quantity; leaves zero; status Filled | Terminal | Missing/extra order; routing, scalar, fill/trade/commission, partial-Filled, and ID drift |
+| Terminal position | Completed exposure/economics fold | Live position cache and result | Exactly one proof-relevant position projection: ownership/order links, canonical fills/trades, empty adjustments/replays/voids, closed flat state, P&L, keyed commissions, and counts exact | Terminal | Extra/missing/nonflat/ownership/order/fill/trade/adjustment/replay/void/P&L/commission/count drift |
 | Terminal account | Starting account plus economics fold | Live account cache | Exact anchored identity/type/base/balances; no margins/locks/extra currencies; cash equation exact | Terminal | Correlated account/cash drift, hidden locks, margin, currency, metadata drift |
 
-This matrix is the completion boundary. A later blocking finding must demonstrate a missing admitted
-claim, an unenforced matrix invariant, a failing behavior control, or a repository MUST violation.
-Supporting another lifecycle, execution mode, or transport-hop audit is separate work.
+This matrix is governed by the field-level design's finite review stop rule. A later blocking finding
+must demonstrate a missing admitted claim, an unenforced included invariant, a failing behavior control,
+materially ambiguous boundary language, an excluded field that concretely changes the accepted causal or
+economic conclusion, or a repository MUST violation. Supporting another lifecycle, execution mode,
+bookkeeping audit, or transport-hop audit is separate work.
 
 ### Payload binding closure
 
@@ -316,7 +324,7 @@ Supporting another lifecycle, execution mode, or transport-hop audit is separate
    identities, instrument and book identity, submitted raw precision/increment, quote-conversion
    identity/quantity/order, strict fill -> position -> account ordering within each causal interval,
    globally unique semantic identities, synthetic expiration origin, exact settlement remainder,
-   manifest-bound account metadata, complete terminal-order/account projections, commission maps,
+   manifest-bound account metadata, proof-relevant terminal-order/account projections, commission maps,
    realized P&L, zero-cash-delta fills, and per-fill cash.
 5. Bind each normal fill to the catalog rows selected by its submit cursor and independently sweep
    price levels. Enforce exactly one entry and one normal reduction, on opposing book sides, so the

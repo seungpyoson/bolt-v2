@@ -1,0 +1,43 @@
+name: Advisory Supersession Watchdog
+
+# Reruns execute the workflow file from their original SHA. This default-branch
+# watchdog cancels stale push reruns that therefore predate advisory.yml's
+# in-workflow admission controller.
+on:
+  workflow_run:
+    workflows: ["Advisory Check"]
+    types: [in_progress]
+
+permissions: {}
+
+jobs:
+  cancel_legacy:
+    name: Cancel stale legacy rerun
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.run_attempt > 1
+    timeout-minutes: 15
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Cancel stale rerun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_RUN_ID: ${{ github.event.workflow_run.id }}
+          TARGET_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          python3.12 scripts/advisory_supersession.py \
+            --config ci/advisory-supersession.toml \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$TARGET_RUN_ID" \
+            --run-sha "$TARGET_RUN_SHA" \
+            --watch-only

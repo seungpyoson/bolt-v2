@@ -31,6 +31,9 @@ test = "managed_heavy"
 build = "managed_heavy"
 advisories = "github_hosted"
 
+[workflows.advisory_supersession_watchdog]
+cancel_legacy = "github_hosted"
+
 [cargo_build_jobs.rust_probe]
 probe-heavy = 3
 probe-light = 3

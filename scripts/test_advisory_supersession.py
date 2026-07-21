@@ -19,27 +19,54 @@ class FakeClient:
         *,
         current_shas: list[str],
         runs: list[advisory_supersession.WorkflowRun] | None = None,
-        ancestors: set[tuple[str, str]] | None = None,
+        cancellation_error: RuntimeError | None = None,
     ) -> None:
-        self.current_shas = iter(current_shas)
+        self.current_shas = current_shas
+        self.current_sha_index = 0
         self.runs = runs or []
-        self.ancestors = ancestors or set()
+        self.cancellation_error = cancellation_error
         self.cancelled: list[int] = []
         self.listed = False
 
     def current_branch_sha(self) -> str:
-        return next(self.current_shas)
+        index = min(self.current_sha_index, len(self.current_shas) - 1)
+        self.current_sha_index += 1
+        return self.current_shas[index]
 
     def active_push_runs(self) -> list[advisory_supersession.WorkflowRun]:
         self.listed = True
         return self.runs
 
-    def is_ancestor(self, older_sha: str, newer_sha: str) -> bool:
-        return (older_sha, newer_sha) in self.ancestors
-
-    def cancel_run(self, run_id: int) -> bool:
+    def cancel_self(self, run_id: int) -> None:
         self.cancelled.append(run_id)
-        return True
+
+    def cancel_and_confirm(self, run_id: int) -> None:
+        if self.cancellation_error is not None:
+            raise self.cancellation_error
+        self.cancelled.append(run_id)
+
+
+class CancellationClient(advisory_supersession.GitHubActionsClient):
+    def __init__(self, statuses: list[str]) -> None:
+        self.config = advisory_supersession.Config(
+            api_version="2026-03-10",
+            branch="main",
+            workflow="advisory.yml",
+            request_timeout_seconds=30,
+            runs_per_page=100,
+            cancel_poll_attempts=1,
+            cancel_poll_interval_seconds=1,
+            active_statuses=("queued", "in_progress"),
+        )
+        self.statuses = iter(statuses)
+        self.requests: list[bool] = []
+
+    def _request_cancel(self, run_id: int, *, force: bool) -> int:
+        self.requests.append(force)
+        return 202
+
+    def _run_status(self, run_id: int) -> str:
+        return next(self.statuses)
 
 
 class ReconcileTests(unittest.TestCase):
@@ -97,14 +124,13 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(result.cancelled_run_ids, (16,))
         self.assertEqual(client.cancelled, [16])
 
-    def test_current_run_does_not_cancel_a_known_descendant(self) -> None:
+    def test_current_run_cancels_a_rolled_back_descendant(self) -> None:
         runs = [
             advisory_supersession.WorkflowRun(18, "descendant", "push", "queued"),
         ]
         client = FakeClient(
             current_shas=["current", "current"],
             runs=runs,
-            ancestors={("current", "descendant")},
         )
 
         result = advisory_supersession.reconcile(
@@ -113,8 +139,8 @@ class ReconcileTests(unittest.TestCase):
             run_sha="current",
         )
 
-        self.assertEqual(result.cancelled_run_ids, ())
-        self.assertEqual(client.cancelled, [])
+        self.assertEqual(result.cancelled_run_ids, (18,))
+        self.assertEqual(client.cancelled, [18])
 
     def test_run_that_becomes_stale_cannot_admit_heavy_jobs(self) -> None:
         runs = [
@@ -130,6 +156,104 @@ class ReconcileTests(unittest.TestCase):
             )
 
         self.assertEqual(client.cancelled, [33])
+
+    def test_main_movement_before_cancellation_cancels_only_current_run(self) -> None:
+        runs = [
+            advisory_supersession.WorkflowRun(35, "newer", "push", "queued"),
+        ]
+        client = FakeClient(
+            current_shas=["current", "current", "newer"],
+            runs=runs,
+        )
+
+        with self.assertRaises(advisory_supersession.SupersededRun):
+            advisory_supersession.reconcile(
+                client,
+                run_id=34,
+                run_sha="current",
+            )
+
+        self.assertEqual(client.cancelled, [34])
+
+    def test_final_main_movement_prevents_admission(self) -> None:
+        client = FakeClient(current_shas=["current", "current", "newer"])
+
+        with self.assertRaises(advisory_supersession.SupersededRun):
+            advisory_supersession.reconcile(
+                client,
+                run_id=36,
+                run_sha="current",
+            )
+
+        self.assertEqual(client.cancelled, [36])
+
+    def test_unconfirmed_cancellation_fails_admission(self) -> None:
+        runs = [
+            advisory_supersession.WorkflowRun(37, "old", "push", "in_progress"),
+        ]
+        client = FakeClient(
+            current_shas=["current"],
+            runs=runs,
+            cancellation_error=RuntimeError("run remained active"),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "remained active"):
+            advisory_supersession.reconcile(
+                client,
+                run_id=38,
+                run_sha="current",
+            )
+
+    def test_watchdog_cancels_a_legacy_stale_rerun(self) -> None:
+        client = FakeClient(current_shas=["current", "current"])
+
+        result = advisory_supersession.cancel_superseded_target(
+            client,
+            run_id=39,
+            run_sha="old",
+        )
+
+        self.assertEqual(result.cancelled_run_ids, (39,))
+        self.assertEqual(client.cancelled, [39])
+
+    def test_watchdog_preserves_current_main_run(self) -> None:
+        client = FakeClient(current_shas=["current"])
+
+        result = advisory_supersession.cancel_superseded_target(
+            client,
+            run_id=40,
+            run_sha="current",
+        )
+
+        self.assertEqual(result.cancelled_run_ids, ())
+        self.assertEqual(client.cancelled, [])
+
+    def test_client_force_cancels_when_normal_cancellation_stays_active(self) -> None:
+        client = CancellationClient(["in_progress", "completed"])
+
+        client.cancel_and_confirm(42)
+
+        self.assertEqual(client.requests, [False, True])
+
+    def test_client_fails_when_force_cancellation_stays_active(self) -> None:
+        client = CancellationClient(["in_progress", "in_progress"])
+
+        with self.assertRaisesRegex(RuntimeError, "remained active"):
+            client.cancel_and_confirm(43)
+
+        self.assertEqual(client.requests, [False, True])
+
+    def test_watchdog_refuses_cancellation_when_main_moves(self) -> None:
+        client = FakeClient(current_shas=["current", "newer"])
+
+        with self.assertRaisesRegex(RuntimeError, "main moved"):
+            advisory_supersession.cancel_superseded_target(
+                client,
+                run_id=41,
+                run_sha="old",
+            )
+
+        self.assertEqual(client.cancelled, [])
 
     def test_same_sha_rerun_is_not_cancelled_by_current_run(self) -> None:
         runs = [

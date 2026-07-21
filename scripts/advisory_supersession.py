@@ -9,6 +9,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 import tomllib
 import urllib.error
 import urllib.parse
@@ -26,6 +27,9 @@ class Config:
     branch: str
     workflow: str
     request_timeout_seconds: int
+    runs_per_page: int
+    cancel_poll_attempts: int
+    cancel_poll_interval_seconds: int
     active_statuses: tuple[str, ...]
 
 
@@ -64,9 +68,9 @@ class ActionsClient(Protocol):
 
     def active_push_runs(self) -> list[WorkflowRun]: ...
 
-    def is_ancestor(self, older_sha: str, newer_sha: str) -> bool: ...
+    def cancel_self(self, run_id: int) -> None: ...
 
-    def cancel_run(self, run_id: int) -> bool: ...
+    def cancel_and_confirm(self, run_id: int) -> None: ...
 
 
 def _require_mapping(value: object, label: str) -> Mapping[str, object]:
@@ -92,6 +96,9 @@ def load_config(path: pathlib.Path) -> Config:
         "branch",
         "workflow",
         "request_timeout_seconds",
+        "runs_per_page",
+        "cancel_poll_attempts",
+        "cancel_poll_interval_seconds",
         "active_statuses",
     }
     unknown = set(document) - expected
@@ -103,6 +110,27 @@ def load_config(path: pathlib.Path) -> Config:
     timeout = document.get("request_timeout_seconds")
     if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
         raise ValueError("request_timeout_seconds must be a positive integer")
+    runs_per_page = document.get("runs_per_page")
+    if (
+        isinstance(runs_per_page, bool)
+        or not isinstance(runs_per_page, int)
+        or not 1 <= runs_per_page <= 100
+    ):
+        raise ValueError("runs_per_page must be an integer from 1 through 100")
+    cancel_poll_attempts = document.get("cancel_poll_attempts")
+    if (
+        isinstance(cancel_poll_attempts, bool)
+        or not isinstance(cancel_poll_attempts, int)
+        or cancel_poll_attempts <= 0
+    ):
+        raise ValueError("cancel_poll_attempts must be a positive integer")
+    cancel_poll_interval_seconds = document.get("cancel_poll_interval_seconds")
+    if (
+        isinstance(cancel_poll_interval_seconds, bool)
+        or not isinstance(cancel_poll_interval_seconds, int)
+        or cancel_poll_interval_seconds <= 0
+    ):
+        raise ValueError("cancel_poll_interval_seconds must be a positive integer")
     statuses = document.get("active_statuses")
     if (
         not isinstance(statuses, list)
@@ -116,6 +144,9 @@ def load_config(path: pathlib.Path) -> Config:
         branch=_require_string(document, "branch"),
         workflow=_require_string(document, "workflow"),
         request_timeout_seconds=timeout,
+        runs_per_page=runs_per_page,
+        cancel_poll_attempts=cancel_poll_attempts,
+        cancel_poll_interval_seconds=cancel_poll_interval_seconds,
         active_statuses=tuple(str(status) for status in statuses),
     )
 
@@ -208,6 +239,7 @@ class GitHubActionsClient:
                         "branch": self.config.branch,
                         "event": "push",
                         "status": status,
+                        "per_page": str(self.config.runs_per_page),
                     }
                 )
             )
@@ -231,25 +263,44 @@ class GitHubActionsClient:
                 next_url = _next_link(headers.get("link"))
         return [runs[run_id] for run_id in sorted(runs)]
 
-    def is_ancestor(self, older_sha: str, newer_sha: str) -> bool:
-        comparison = urllib.parse.quote(f"{older_sha}...{newer_sha}", safe=".")
+    def _run_status(self, run_id: int) -> str:
         _, document, _ = self._request_json(
             "GET",
-            f"repos/{self.repository}/compare/{comparison}",
+            f"repos/{self.repository}/actions/runs/{run_id}",
         )
-        root = _require_mapping(document, "comparison response")
-        merge_base = _require_mapping(
-            root.get("merge_base_commit"), "merge_base_commit"
-        )
-        return root.get("status") == "ahead" and merge_base.get("sha") == older_sha
+        root = _require_mapping(document, "workflow run response")
+        return _require_string(root, "status")
 
-    def cancel_run(self, run_id: int) -> bool:
+    def _request_cancel(self, run_id: int, *, force: bool) -> int:
+        operation = "force-cancel" if force else "cancel"
         status, _, _ = self._request_json(
             "POST",
-            f"repos/{self.repository}/actions/runs/{run_id}/cancel",
+            f"repos/{self.repository}/actions/runs/{run_id}/{operation}",
             expected_statuses=(202, 409),
         )
-        return status == 202
+        if status == 409:
+            print(f"::warning::GitHub returned 409 while cancelling run {run_id}")
+        return status
+
+    def _wait_until_terminal(self, run_id: int) -> bool:
+        for attempt in range(self.config.cancel_poll_attempts):
+            if self._run_status(run_id) not in self.config.active_statuses:
+                return True
+            if attempt + 1 < self.config.cancel_poll_attempts:
+                time.sleep(self.config.cancel_poll_interval_seconds)
+        return False
+
+    def cancel_self(self, run_id: int) -> None:
+        self._request_cancel(run_id, force=False)
+
+    def cancel_and_confirm(self, run_id: int) -> None:
+        self._request_cancel(run_id, force=False)
+        if self._wait_until_terminal(run_id):
+            return
+        self._request_cancel(run_id, force=True)
+        if self._wait_until_terminal(run_id):
+            return
+        raise RuntimeError(f"run {run_id} remained active after force-cancellation")
 
 
 def _next_link(header: str | None) -> str | None:
@@ -268,15 +319,17 @@ def reconcile(
     run_id: int,
     run_sha: str,
 ) -> ReconcileResult:
+    def supersede(message: str) -> None:
+        client.cancel_self(run_id)
+        raise SupersededRun(message)
+
     current_sha = client.current_branch_sha()
     if run_sha != current_sha:
-        client.cancel_run(run_id)
-        raise SupersededRun(f"run {run_id} is not exact-current main")
+        supersede(f"run {run_id} is not exact-current main")
 
     active_runs = client.active_push_runs()
     if client.current_branch_sha() != run_sha:
-        client.cancel_run(run_id)
-        raise SupersededRun(f"run {run_id} ceased to be exact-current main")
+        supersede(f"run {run_id} ceased to be exact-current main")
 
     cancelled: list[int] = []
     for run in active_runs:
@@ -287,12 +340,30 @@ def reconcile(
             or run.head_sha == current_sha
         ):
             continue
-        if client.is_ancestor(current_sha, run.head_sha):
-            continue
-        if client.cancel_run(run.run_id):
-            cancelled.append(run.run_id)
+        if client.current_branch_sha() != run_sha:
+            supersede(f"run {run_id} ceased to be exact-current main")
+        client.cancel_and_confirm(run.run_id)
+        cancelled.append(run.run_id)
+
+    if client.current_branch_sha() != run_sha:
+        supersede(f"run {run_id} ceased to be exact-current main")
 
     return ReconcileResult(cancelled_run_ids=tuple(cancelled))
+
+
+def cancel_superseded_target(
+    client: ActionsClient,
+    *,
+    run_id: int,
+    run_sha: str,
+) -> ReconcileResult:
+    current_sha = client.current_branch_sha()
+    if run_sha == current_sha:
+        return ReconcileResult(cancelled_run_ids=())
+    if client.current_branch_sha() != current_sha:
+        raise RuntimeError("main moved while the watchdog was evaluating a rerun")
+    client.cancel_and_confirm(run_id)
+    return ReconcileResult(cancelled_run_ids=(run_id,))
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -301,6 +372,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--run-id", required=True, type=int)
     parser.add_argument("--run-sha", required=True)
+    parser.add_argument("--watch-only", action="store_true")
     return parser
 
 
@@ -313,7 +385,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             repository=args.repository,
             token=os.environ.get("GITHUB_TOKEN", ""),
         )
-        result = reconcile(client, run_id=args.run_id, run_sha=args.run_sha)
+        operation = cancel_superseded_target if args.watch_only else reconcile
+        result = operation(client, run_id=args.run_id, run_sha=args.run_sha)
     except SupersededRun as error:
         print(f"::notice::{error}")
         return 78

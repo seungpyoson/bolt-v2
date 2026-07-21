@@ -1,42 +1,54 @@
+# Single serial queue for main: approval queues; the four advisory checks must
+# pass on the combined result before squash merge. Batching (carried from the
+# proven prior config): several queued PRs validate together with one combined
+# check run and merge as a batch — one CI bill instead of one per PR.
 merge_queue:
   max_parallel_checks: 1
   reset_on_external_merge: always
-  queue_controls_comment: false
 
 queue_rules:
-  # Exceptional path only. Normal merge sessions use the default queue below.
+  # Exceptional path only. NOTE: since Mergify's 2025-06-30 change, queue-rule
+  # listing order no longer implies priority; without a top-level
+  # priority_rules block, hotfix entries have no express priority over
+  # already-queued default entries (owner decision pending). Normal merge
+  # sessions use the default queue below.
   - name: hotfix
     queue_conditions:
       - label = hotfix
     merge_conditions:
       - approved-reviews-by = sp-reviewer
-    # CI ruleset checks are advisory; native review rules remain enforced by GitHub.
-    branch_protection_injection_mode: none
-    merge_bot_account: seungpyoson
+      - check-success = fmt
+      - check-success = clippy
+      - check-success = test
+      - check-success = build
+    merge_method: squash
+    update_method: rebase
     batch_size: 1
     batch_max_wait_time: 30 seconds
     batch_max_failure_resolution_attempts: 0
     checks_timeout: 150 minutes
-    draft_bot_account: null
-    merge_method: squash
-
-  - name: default
-    queue_conditions: []
-    merge_conditions:
-      - approved-reviews-by = sp-reviewer
-    # CI ruleset checks are advisory; native review rules remain enforced by GitHub.
     branch_protection_injection_mode: none
     merge_bot_account: seungpyoson
-    batch_size: 1
-    batch_max_wait_time: 5 minutes
-    batch_max_failure_resolution_attempts: 0
-    checks_timeout: 150 minutes
-    draft_bot_account: null
-    merge_method: squash
+    update_bot_account: seungpyoson
 
-priority_rules:
-  - name: hotfix
-    conditions:
-      - label = hotfix
-    priority: 10000
-    allow_checks_interruption: true
+  - name: default
+    queue_conditions:
+      - approved-reviews-by = sp-reviewer
+    merge_conditions:
+      - check-success = fmt
+      - check-success = clippy
+      - check-success = test
+      - check-success = build
+    merge_method: squash
+    update_method: rebase
+    batch_size:
+      min: 2
+      max: 6
+    batch_max_wait_time: 5 minutes
+    batch_max_failure_resolution_attempts: 3
+    checks_timeout: 150 minutes
+    # Carried from the proven prior config: checks are advisory (no required
+    # status contexts) and merges use the owner's identity.
+    branch_protection_injection_mode: none
+    merge_bot_account: seungpyoson
+    update_bot_account: seungpyoson

@@ -237,7 +237,7 @@ Current PR verification uses GitHub CI rather than local cargo reruns. Because a
 ## 2026-06-12 Completion Review After `ad57ac4`
 
 **Reviewed working tree**: branch `026-nt-backed-iv-engine`, local delta after PR head `ad57ac408dbeed4e2d61673f3fd80ed2d815e4d8`
-**Recommendation**: PASS for local non-compile review gates; final PR proof requires commit, push, and exact-head GitHub CI through `just verify-remote`.
+**Recommendation**: PASS for local non-compile review gates; publish with `git push` and adjudicate advisory CI for the exact head.
 
 | Issue | Evidence | Resolution |
 |---|---|---|

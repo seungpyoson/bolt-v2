@@ -1,5 +1,8 @@
 # Binary-Maker Slice 0 — Drift Fences & Shared Feed-Health Seam — Implementation Plan
 
+> **Historical reference only.** This plan is superseded by current `AGENTS.md`; its unchecked
+> steps and commands are non-operational and must not be executed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land the two structural enablers the binary-maker build needs before any maker code: (1) the FR-080 CI fence forbidding venue-name string-literal branches outside provider modules, and (2) the stale-feed forced-flat predicates hoisted from the taker into a shared `bolt_v3_feed_health` module so the maker can reuse them (Rule #6, no dual-state) — plus the §16#9 stale `spec.md` assumption fix.
@@ -10,7 +13,7 @@
 
 **Source spec:** `docs/superpowers/specs/2026-06-14-multi-asset-mm-platform-design.md` @ `790da9a2e` (§9, §15, §16#9, §16#12). Program: `docs/superpowers/plans/2026-06-15-binary-maker-program.md`. Issue **#488**.
 
-**Branch:** `feat/488-slice0-fences-feed-health` off `main`. **Verification:** Python fences run locally; Rust runs **remote-first per `AGENTS.md`** (local cargo is refused by `ci/rust-verification.toml [local_compile_policy]` — do NOT run local `cargo build`/`cargo test`; use `just verify-remote` / push and let CI run). The dependency-direction and venue-name fences are plain Python and run locally.
+**Branch:** `feat/488-slice0-fences-feed-health` off `main`. **Verification:** Python fences run locally; Rust runs **remote-first per `AGENTS.md`** (local cargo is refused by `ci/rust-verification.toml [local_compile_policy]` — do NOT run local `cargo build`/`cargo test`; use `git push` and let advisory CI evaluate the exact head). The dependency-direction and venue-name fences are plain Python and run locally.
 
 ---
 
@@ -342,7 +345,7 @@ The behavior to preserve (read from `exposure.rs:385-416`):
 3. `liquidity_available == None` OR non-finite OR `< min_liquidity_required` ⇒ `ThinBook` (`exposure.rs:404`).
 4. `fast_venue_incoherent == true` but reference **fresh** ⇒ **no** `FastVenueIncoherent` (the `&& reference_stale` coupling, `exposure.rs:411`).
 
-Run (remote-first per `AGENTS.md`; do not run local full cargo): the targeted taker forced-flat tests via `just verify-remote` (or the repo's prescribed targeted-test path).
+Run (remote-first per `AGENTS.md`; do not run local full cargo): push the exact head for advisory CI or use the repository's prescribed targeted Rust Probe path.
 Expected: PASS at HEAD — establishes the green baseline the hoist must keep.
 
 ---
@@ -533,7 +536,7 @@ In `tests/orders_admission.rs:2693-2711`, `tests/core_glue.rs:513-524`, `tests/b
 
 - [ ] **Step 1: Run the taker test suite + new inline tests (remote-first)**
 
-Per `AGENTS.md` + `ci/rust-verification.toml [local_compile_policy]` (local cargo refused), run via `just verify-remote` (or the prescribed targeted path) the taker `tests/` families (`exposure`, `orders_admission`, `core_glue`, `book_sizing`, `selection`) plus the new `bolt_v3_feed_health` inline tests.
+Per `AGENTS.md` + `ci/rust-verification.toml [local_compile_policy]` (local cargo refused), push the exact head for advisory CI (or use the prescribed targeted Rust Probe path) covering the taker `tests/` families (`exposure`, `orders_admission`, `core_glue`, `book_sizing`, `selection`) plus the new `bolt_v3_feed_health` inline tests.
 Expected: PASS with zero behavior change — the forced-flat assertions from Task 4 still hold.
 
 - [ ] **Step 2: Run the dependency-direction fence (scan mode)**

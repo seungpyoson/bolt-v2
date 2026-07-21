@@ -60,7 +60,7 @@ use nautilus_model::{
     },
     enums::{
         AccountType, AggregationSource, AggressorSide, BookAction, InstrumentCloseType, OrderSide,
-        OrderStatus, PriceType,
+        OrderStatus, OrderType, PriceType,
     },
     events::OrderEventAny,
     identifiers::{AccountId, ClientId, InstrumentId, Venue},
@@ -1002,11 +1002,11 @@ fn add_manifest_strategy(
 #[derive(Debug, Clone)]
 pub struct OrderTerminalRecord {
     pub client_order_id: String,
-    pub order_side: String,
-    pub order_type: String,
+    pub order_side: OrderSide,
+    pub order_type: OrderType,
     pub status: OrderStatus,
-    pub quantity: String,
-    pub filled_qty: String,
+    pub quantity: Quantity,
+    pub filled_qty: Quantity,
     pub initialized_quantity: Quantity,
     pub initialized_quote_quantity: bool,
     pub effective_quantity: Quantity,
@@ -1400,11 +1400,11 @@ fn capture_order_terminals(engine: &BacktestEngine) -> Result<Vec<OrderTerminalR
                 .context("cached order has no initialization event")?;
             Ok(OrderTerminalRecord {
                 client_order_id: order.client_order_id().to_string(),
-                order_side: order.order_side().to_string(),
-                order_type: order.order_type().to_string(),
+                order_side: order.order_side(),
+                order_type: order.order_type(),
                 status: order.status(),
-                quantity: order.quantity().to_string(),
-                filled_qty: order.filled_qty().to_string(),
+                quantity: order.quantity(),
+                filled_qty: order.filled_qty(),
                 initialized_quantity: initialized.quantity,
                 initialized_quote_quantity: initialized.quote_quantity,
                 effective_quantity: order.quantity(),
@@ -2437,7 +2437,10 @@ mod tests {
     use nautilus_core::{Params, UUID4, UnixNanos};
     use nautilus_model::{
         data::{InstrumentClose, TradeTick},
-        enums::{AccountType, AggressorSide, AssetClass, InstrumentCloseType},
+        enums::{
+            AccountType, AggressorSide, AssetClass, InstrumentCloseType, OrderSide, OrderStatus,
+            OrderType,
+        },
         events::AccountState,
         identifiers::{AccountId, InstrumentId, Symbol, TradeId},
         instruments::{BinaryOption, Instrument, InstrumentAny},
@@ -2451,11 +2454,11 @@ mod tests {
 
     use super::{
         BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, BoltV3DecisionEvidenceWriter,
-        StrategyPreparationConfig, apply_backtest_config_override, assert_read_back_matches,
-        canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
-        expected_iterations, iterations_mismatch, load_bolt_v3_config,
-        prepare_strategy_client_routes, raw_taker_config, replay_executable_book_at_cursor,
-        resolve_existing_input_path, run_nt_backtest_node,
+        OrderTerminalRecord, StrategyPreparationConfig, apply_backtest_config_override,
+        assert_read_back_matches, canonical_resolved_taker_config_bytes,
+        ensure_settlement_currency_funded, expected_iterations, iterations_mismatch,
+        load_bolt_v3_config, prepare_strategy_client_routes, raw_taker_config,
+        replay_executable_book_at_cursor, resolve_existing_input_path, run_nt_backtest_node,
         run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
         time_window_excludes_all_data,
     };
@@ -3551,6 +3554,40 @@ mod tests {
         terminal == stored
     }
 
+    fn ensure_issue_789_terminal_order_matches(
+        terminal: &super::OrderTerminalRecord,
+        initialized: &nautilus_model::events::OrderInitialized,
+        expected_effective_quantity: Quantity,
+        fills: &[nautilus_model::events::OrderFilled],
+    ) -> Result<()> {
+        let filled_decimal = fills
+            .iter()
+            .map(|fill| fill.last_qty.as_decimal())
+            .sum::<Decimal>();
+        let expected_filled_quantity =
+            Quantity::from_decimal_dp(filled_decimal, expected_effective_quantity.precision)
+                .map_err(anyhow::Error::msg)
+                .context("#789 terminal filled quantity is not representable")?;
+        ensure!(
+            terminal.client_order_id == initialized.client_order_id.to_string()
+                && terminal.order_side == initialized.order_side
+                && terminal.order_type == initialized.order_type
+                && terminal.status == OrderStatus::Filled
+                && terminal.quantity == expected_effective_quantity
+                && terminal.filled_qty == expected_filled_quantity
+                && terminal.initialized_quantity == initialized.quantity
+                && terminal.initialized_quote_quantity == initialized.quote_quantity
+                && terminal.effective_quantity == expected_effective_quantity
+                && terminal.fills.len() == fills.len()
+                && terminal.fills.iter().zip(fills).all(|(terminal, stored)| {
+                    fills_equal_before_position_attribution(terminal, stored)
+                }),
+            "terminal order {} diverges from its complete causal projection",
+            initialized.client_order_id
+        );
+        Ok(())
+    }
+
     fn ensure_one_causal_followup_per_fill(
         label: &str,
         fill_sequences: &[u64],
@@ -3607,6 +3644,22 @@ mod tests {
         Ok(crate::execution_contract::SubmittedOrderTrace::from(
             initialized,
         ))
+    }
+
+    fn issue_789_quote_conversion_in_interval(
+        submit_seq: u64,
+        first_fill_seq: u64,
+        update: Option<&(u64, nautilus_model::events::OrderUpdated)>,
+    ) -> Result<Option<nautilus_model::events::OrderUpdated>> {
+        update
+            .map(|(update_seq, update)| {
+                ensure!(
+                    submit_seq < *update_seq && *update_seq < first_fill_seq,
+                    "#789 OrderUpdated is outside its SubmitOrder-to-fill causal interval"
+                );
+                Ok(update.clone())
+            })
+            .transpose()
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -3750,6 +3803,95 @@ mod tests {
         let error = issue_789_submitted_order_trace(&command)
             .expect_err("embedded initialized-order drift must fail closed");
         assert!(error.to_string().contains("envelope diverges"));
+    }
+
+    #[test]
+    fn issue_789_quote_conversion_requires_submit_to_fill_interval() {
+        let update = nautilus_model::events::order::spec::OrderUpdatedSpec::builder().build();
+        for update_seq in [9, 20] {
+            let error = issue_789_quote_conversion_in_interval(10, 20, Some(&(update_seq, update)))
+                .expect_err("quote conversion outside the causal interval must fail closed");
+            assert!(error.to_string().contains("causal interval"));
+        }
+    }
+
+    #[test]
+    fn issue_789_quote_conversion_accepts_causal_interval() {
+        let update = nautilus_model::events::order::spec::OrderUpdatedSpec::builder().build();
+        let bound = issue_789_quote_conversion_in_interval(10, 20, Some(&(15, update)))
+            .expect("quote conversion inside the causal interval must bind")
+            .expect("quote conversion must be retained");
+        assert_eq!(bound.event_id, update.event_id);
+    }
+
+    fn test_issue_789_terminal_order() -> (
+        OrderTerminalRecord,
+        nautilus_model::events::OrderInitialized,
+        Vec<nautilus_model::events::OrderFilled>,
+    ) {
+        let fill = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
+        let mut initialized =
+            nautilus_model::events::order::spec::OrderInitializedSpec::builder().build();
+        initialized.trader_id = fill.trader_id;
+        initialized.strategy_id = fill.strategy_id;
+        initialized.instrument_id = fill.instrument_id;
+        initialized.client_order_id = fill.client_order_id;
+        initialized.order_side = fill.order_side;
+        initialized.order_type = fill.order_type;
+        initialized.quantity = fill.last_qty;
+        initialized.quote_quantity = false;
+        let terminal = OrderTerminalRecord {
+            client_order_id: fill.client_order_id.to_string(),
+            order_side: fill.order_side,
+            order_type: fill.order_type,
+            status: OrderStatus::Filled,
+            quantity: fill.last_qty,
+            filled_qty: fill.last_qty,
+            initialized_quantity: initialized.quantity,
+            initialized_quote_quantity: initialized.quote_quantity,
+            effective_quantity: fill.last_qty,
+            fills: vec![fill.clone()],
+            events_debug: Vec::new(),
+        };
+        (terminal, initialized, vec![fill])
+    }
+
+    #[test]
+    fn issue_789_terminal_order_accepts_complete_projection() {
+        let (terminal, initialized, fills) = test_issue_789_terminal_order();
+        ensure_issue_789_terminal_order_matches(
+            &terminal,
+            &initialized,
+            initialized.quantity,
+            &fills,
+        )
+        .expect("complete terminal order projection must match");
+    }
+
+    #[test]
+    fn issue_789_terminal_order_rejects_metadata_and_quantity_drift() {
+        let (terminal, initialized, fills) = test_issue_789_terminal_order();
+        let mutations: Vec<Box<dyn Fn(&mut OrderTerminalRecord)>> = vec![
+            Box::new(|terminal| terminal.order_side = OrderSide::Sell),
+            Box::new(|terminal| terminal.order_type = OrderType::Limit),
+            Box::new(|terminal| terminal.status = OrderStatus::Canceled),
+            Box::new(|terminal| terminal.quantity = Quantity::from("2.00")),
+            Box::new(|terminal| terminal.filled_qty = Quantity::from("2.00")),
+            Box::new(|terminal| terminal.initialized_quantity = Quantity::from("2.00")),
+            Box::new(|terminal| terminal.initialized_quote_quantity = true),
+            Box::new(|terminal| terminal.effective_quantity = Quantity::from("2.00")),
+        ];
+        for mutate in mutations {
+            let mut candidate = terminal.clone();
+            mutate(&mut candidate);
+            ensure_issue_789_terminal_order_matches(
+                &candidate,
+                &initialized,
+                initialized.quantity,
+                &fills,
+            )
+            .expect_err("terminal order projection drift must fail closed");
+        }
     }
 
     #[test]
@@ -4403,6 +4545,7 @@ mod tests {
         let mut order_initializations = BTreeMap::new();
         let mut order_submissions = BTreeMap::new();
         let mut order_acceptances = BTreeMap::new();
+        let mut order_updates = BTreeMap::new();
         let mut closes = Vec::new();
         let mut sequenced_fills = Vec::new();
         let mut position_effects = Vec::new();
@@ -4475,6 +4618,22 @@ mod tests {
                             .insert(event.client_order_id.to_string(), (entry.seq, event))
                             .is_none(),
                         "duplicate OrderAccepted client-order identity in #789 event store"
+                    );
+                }
+                "OrderUpdated" => {
+                    let event: nautilus_model::events::OrderUpdated =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 OrderUpdated evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        event.event_id,
+                        "OrderUpdated",
+                    )?;
+                    ensure!(
+                        order_updates
+                            .insert(event.client_order_id.to_string(), (entry.seq, event))
+                            .is_none(),
+                        "duplicate OrderUpdated client-order identity in #789 event store"
                     );
                 }
                 "OrderFilled" => {
@@ -4652,6 +4811,12 @@ mod tests {
                 crate::execution_contract::ExecutionOrderCause::Submitted {
                     executable_book: Box::new(executable_book),
                     submitted_order: issue_789_submitted_order_trace(submit)?,
+                    quote_conversion: issue_789_quote_conversion_in_interval(
+                        *submit_seq,
+                        first_fill_seq,
+                        order_updates.get(&client_order_id),
+                    )?
+                    .map(Box::new),
                 }
             } else {
                 let matching_closes = closes
@@ -4712,9 +4877,14 @@ mod tests {
             .filter(|(_, _, submit)| submit.instrument_id == instrument_id)
             .map(|(_, _, submit)| submit.client_order_id.to_string())
             .collect::<BTreeSet<_>>();
+        let updated_ids = order_updates.keys().cloned().collect::<BTreeSet<_>>();
         ensure!(
             normal_order_ids == submitted_ids,
             "#789 normal fills and submitted orders are not complete in both directions"
+        );
+        ensure!(
+            updated_ids.is_subset(&normal_order_ids),
+            "#789 OrderUpdated evidence is not bound to a normal submitted order"
         );
         ensure!(
             output.result.total_orders == orders.len()
@@ -4763,19 +4933,49 @@ mod tests {
                 .iter()
                 .find(|terminal| terminal.client_order_id == client_order_id)
                 .with_context(|| format!("missing terminal order projection {client_order_id}"))?;
-            ensure!(
-                terminal.fills.len() == order.fills.len()
-                    && terminal
-                        .fills
-                        .iter()
-                        .zip(&order.fills)
-                        .all(
-                            |(terminal, stored)| fills_equal_before_position_attribution(
-                                terminal, stored
-                            )
-                        ),
-                "terminal order {client_order_id} diverges from event-store fills"
-            );
+            let (initialized, expected_effective_quantity) = match &order.cause {
+                crate::execution_contract::ExecutionOrderCause::Submitted {
+                    submitted_order,
+                    quote_conversion,
+                    ..
+                } => {
+                    let submit = &submit_orders
+                        .get(&client_order_id)
+                        .with_context(|| {
+                            format!("missing SubmitOrder projection {client_order_id}")
+                        })?
+                        .2;
+                    let captured_initialized = &order_initializations
+                        .get(&client_order_id)
+                        .with_context(|| {
+                            format!("missing OrderInitialized projection {client_order_id}")
+                        })?
+                        .1;
+                    ensure!(
+                        captured_initialized == &submit.order_init,
+                        "#789 OrderInitialized evidence diverges from its embedded SubmitOrder"
+                    );
+                    let effective_quantity = quote_conversion
+                        .as_ref()
+                        .map_or(submitted_order.quantity, |update| update.quantity);
+                    (&submit.order_init, effective_quantity)
+                }
+                crate::execution_contract::ExecutionOrderCause::Settlement { .. } => {
+                    let initialized = &order_initializations
+                        .get(&client_order_id)
+                        .with_context(|| {
+                            format!("missing settlement OrderInitialized {client_order_id}")
+                        })?
+                        .1;
+                    (initialized, initialized.quantity)
+                }
+            };
+            ensure_issue_789_terminal_order_matches(
+                terminal,
+                initialized,
+                expected_effective_quantity,
+                &order.fills,
+            )?;
         }
         let realized_pnl = position
             .realized_pnl

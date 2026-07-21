@@ -78,6 +78,9 @@ Observed NT evidence:
 - ordered `SubmitOrder` commands preserving and cross-binding envelope and embedded trader,
   strategy, instrument, client-order, side, type, quantity, quote-denomination, post-only, and
   reconciliation semantics;
+- the causally intervening `OrderUpdated` for a quote-denominated submission, bound to the same
+  submitted identities and checked against independently normalized base quantity before the first
+  fill;
 - ordered `OrderFilled` events preserving order/trade identity, price, quantity, side, and
   commission;
 - unique command/event identities across persisted logical submits, order events, fills, position
@@ -89,9 +92,10 @@ Observed NT evidence:
   hash-verified catalog;
 - `InstrumentClose`, registered through NT's existing encoder-registry extension;
 - synthetic expiration initialization and acceptance events binding the settlement origin;
-- terminal orders and positions plus the account object's current balances, CashAccount transient
-  per-instrument locks, and applicable margins, used only as completeness cross-checks rather than
-  reconstructed from its last event;
+- terminal orders (including initialization, effective quantity, quote flag, side, type, status,
+  filled quantity, and fills), positions, plus the account object's current balances, CashAccount
+  transient per-instrument locks, and applicable margins, used only as completeness cross-checks
+  rather than reconstructed from their last events;
 
 Derived by the independent validator:
 
@@ -117,10 +121,11 @@ the lifecycle source of truth.
    green and a missing marker/entry negative control fails loudly.
 4. Replace #789 post-run evidence assembly with a pure ordered fold. Port only the valid arithmetic
    and behavioral cases from the closed #1489 branch. Evidence: focused unit tests for duplicate
-   identities, instrument and book identity, raw precision/increment, strict fill -> position ->
-   account ordering within each causal interval, globally unique semantic identities, synthetic
-   expiration origin, exact settlement remainder, manifest-bound account metadata, complete
-   commission maps, realized P&L, zero-cash-delta fills, and per-fill cash.
+   identities, instrument and book identity, submitted raw precision/increment, quote-conversion
+   identity/quantity/order, strict fill -> position -> account ordering within each causal interval,
+   globally unique semantic identities, synthetic expiration origin, exact settlement remainder,
+   manifest-bound account metadata, complete terminal-order/account projections, commission maps,
+   realized P&L, zero-cash-delta fills, and per-fill cash.
 5. Bind each normal fill to the catalog rows selected by its submit cursor and independently sweep
    price levels. Enforce exactly one entry and one normal reduction, on opposing book sides, so the
    declared #789 slice cannot reuse earlier consumed liquidity without adding a second matching

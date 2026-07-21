@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, bail, ensure};
 use nautilus_model::{
     enums::{LiquiditySide, OrderSide, OrderType, PositionSide},
-    events::{OrderFilled, OrderInitialized},
+    events::{OrderFilled, OrderInitialized, OrderUpdated},
     identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId},
     instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
@@ -59,6 +59,7 @@ pub enum ExecutionOrderCause {
     Submitted {
         executable_book: Box<OrderBook>,
         submitted_order: SubmittedOrderTrace,
+        quote_conversion: Option<Box<OrderUpdated>>,
     },
     Settlement {
         declared_price: Price,
@@ -221,6 +222,7 @@ pub fn validate_execution_contract(
         if let ExecutionOrderCause::Submitted {
             executable_book,
             submitted_order,
+            quote_conversion,
         } = &order.cause
         {
             ensure!(
@@ -238,6 +240,58 @@ pub fn validate_execution_contract(
                 submitted_order.quantity,
                 submitted_order.quote_quantity,
             )?;
+            match (submitted_order.quote_quantity, quote_conversion) {
+                (true, Some(update)) => {
+                    ensure!(
+                        update.trader_id == submitted_order.trader_id
+                            && update.strategy_id == submitted_order.strategy_id
+                            && update.instrument_id == submitted_order.instrument_id
+                            && update.client_order_id == submitted_order.client_order_id,
+                        "quote conversion witness identity diverges from submitted order"
+                    );
+                    ensure!(
+                        update.quantity == requested_base,
+                        "quote conversion witness quantity {} diverges from independently normalized {}",
+                        update.quantity,
+                        requested_base
+                    );
+                    ensure!(
+                        update.venue_order_id.is_none(),
+                        "quote conversion witness unexpectedly has venue-order identity {:?}",
+                        update.venue_order_id
+                    );
+                    ensure!(
+                        update.account_id == Some(first_fill.account_id),
+                        "quote conversion witness account identity {:?} diverges from fill account {}",
+                        update.account_id,
+                        first_fill.account_id
+                    );
+                    ensure!(
+                        update.price.is_none(),
+                        "quote conversion witness unexpectedly has price {:?}",
+                        update.price
+                    );
+                    ensure!(
+                        update.trigger_price.is_none(),
+                        "quote conversion witness unexpectedly has trigger price {:?}",
+                        update.trigger_price
+                    );
+                    ensure!(
+                        update.protection_price.is_none(),
+                        "quote conversion witness unexpectedly has protection price {:?}",
+                        update.protection_price
+                    );
+                    ensure!(
+                        !update.is_quote_quantity && !update.reconciliation,
+                        "quote conversion witness retains quote or reconciliation flags"
+                    );
+                }
+                (true, None) => bail!("quote submission lacks its quote conversion witness"),
+                (false, Some(_)) => {
+                    bail!("base-denominated submission has an unexpected quote conversion witness")
+                }
+                (false, None) => {}
+            }
             let expected = independent_market_sweep(executable_book, side, requested_base)?;
             ensure!(
                 expected.len() == order.fills.len()
@@ -516,6 +570,12 @@ fn normalized_base_quantity(
     submitted_quantity: Quantity,
     quote_quantity: bool,
 ) -> Result<Quantity> {
+    ensure!(
+        submitted_quantity.precision == instrument.size_precision(),
+        "submitted quantity precision {} does not match instrument size precision {}",
+        submitted_quantity.precision,
+        instrument.size_precision()
+    );
     let best_price = match side {
         OrderSide::Buy => book.best_ask_price(),
         OrderSide::Sell => book.best_bid_price(),
@@ -534,7 +594,15 @@ fn normalized_base_quantity(
 
     let increment = instrument.size_increment().as_decimal();
     let increment_precision = increment.normalize().scale();
-    let normalized = (submitted_quantity.as_decimal() / best_price.as_decimal())
+    let best_price = best_price.as_decimal();
+    ensure!(
+        best_price > Decimal::ZERO,
+        "quote conversion price must be strictly positive"
+    );
+    let normalized = submitted_quantity
+        .as_decimal()
+        .checked_div(best_price)
+        .context("quote quantity division overflow")?
         .round_dp_with_strategy(increment_precision, RoundingStrategy::MidpointNearestEven);
     ensure!(
         (normalized % increment).is_zero(),
@@ -652,6 +720,7 @@ mod tests {
         let terminal_cash = initial_cash
             .checked_add(realized_pnl)
             .expect("fixture cash addition should be exact");
+        let entry_conversion = quote_conversion(&entry_fill, Quantity::from("2.71"));
         Fixture {
             instrument,
             orders: vec![
@@ -665,6 +734,7 @@ mod tests {
                             1,
                         )),
                         submitted_order: submitted_order(&entry_fill, Quantity::from("1.14"), true),
+                        quote_conversion: Some(Box::new(entry_conversion)),
                     },
                     fills: vec![entry_fill],
                 },
@@ -682,6 +752,7 @@ mod tests {
                             Quantity::from("2.00"),
                             false,
                         ),
+                        quote_conversion: None,
                     },
                     fills: vec![normal_exit],
                 },
@@ -793,6 +864,26 @@ mod tests {
         }
     }
 
+    fn quote_conversion(fill: &OrderFilled, quantity: Quantity) -> OrderUpdated {
+        OrderUpdated::new(
+            fill.trader_id,
+            fill.strategy_id,
+            fill.instrument_id,
+            fill.client_order_id,
+            quantity,
+            nautilus_core::UUID4::new(),
+            fill.ts_event,
+            fill.ts_init,
+            false,
+            None,
+            Some(fill.account_id),
+            None,
+            None,
+            None,
+            false,
+        )
+    }
+
     fn one_level_book(
         instrument_id: nautilus_model::identifiers::InstrumentId,
         side: OrderSide,
@@ -822,6 +913,140 @@ mod tests {
         assert_eq!(report.entry_fill_count, 1);
         assert_eq!(report.normal_exit_fill_count, 1);
         assert_eq!(report.settlement_fill_count, 1);
+    }
+
+    #[test]
+    fn rejects_quote_submission_without_conversion_witness() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            quote_conversion, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("fixture entry order changed")
+        };
+        *quote_conversion = None;
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("quote conversion must be witnessed before its fill");
+        assert!(error.to_string().contains("quote conversion witness"));
+    }
+
+    #[test]
+    fn rejects_quote_conversion_quantity_drift() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            quote_conversion: Some(update),
+            ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("fixture quote conversion changed")
+        };
+        update.quantity = Quantity::from("2.72");
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("quote conversion quantity drift must fail closed");
+        assert!(error.to_string().contains("conversion witness quantity"));
+    }
+
+    #[test]
+    fn rejects_quote_conversion_identity_drift() {
+        let mutations: Vec<Box<dyn Fn(&mut OrderUpdated)>> = vec![
+            Box::new(|update| update.trader_id = TraderId::from("OTHER-001")),
+            Box::new(|update| update.strategy_id = StrategyId::from("OTHER-001")),
+            Box::new(|update| update.instrument_id = InstrumentId::from("OTHER.SIM")),
+            Box::new(|update| update.client_order_id = ClientOrderId::from("OTHER-001")),
+        ];
+        for mutate in mutations {
+            let mut fixture = fixture();
+            let ExecutionOrderCause::Submitted {
+                quote_conversion: Some(update),
+                ..
+            } = &mut fixture.orders[0].cause
+            else {
+                panic!("fixture quote conversion changed")
+            };
+            mutate(update);
+
+            let error = validate_execution_contract(&fixture.trace())
+                .expect_err("quote conversion identity drift must fail closed");
+            assert!(error.to_string().contains("conversion witness identity"));
+        }
+    }
+
+    #[test]
+    fn rejects_quote_conversion_metadata_drift() {
+        let mutations: Vec<Box<dyn Fn(&mut OrderUpdated)>> = vec![
+            Box::new(|update| update.account_id = Some(AccountId::from("OTHER-001"))),
+            Box::new(|update| update.price = Some(Price::from("0.421"))),
+            Box::new(|update| update.trigger_price = Some(Price::from("0.421"))),
+            Box::new(|update| update.protection_price = Some(Price::from("0.421"))),
+            Box::new(|update| update.reconciliation = true),
+        ];
+        for mutate in mutations {
+            let mut fixture = fixture();
+            let ExecutionOrderCause::Submitted {
+                quote_conversion: Some(update),
+                ..
+            } = &mut fixture.orders[0].cause
+            else {
+                panic!("fixture quote conversion changed")
+            };
+            mutate(update);
+
+            validate_execution_contract(&fixture.trace())
+                .expect_err("quote conversion metadata drift must fail closed");
+        }
+    }
+
+    #[test]
+    fn rejects_quote_conversion_that_remains_quote_denominated() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            quote_conversion: Some(update),
+            ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("fixture quote conversion changed")
+        };
+        update.is_quote_quantity = true;
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("quote conversion must produce a base-denominated quantity");
+        assert!(error.to_string().contains("retains quote"));
+    }
+
+    #[test]
+    fn rejects_quote_conversion_with_venue_order_identity_before_acceptance() {
+        let mut fixture = fixture();
+        let venue_order_id = fixture.orders[0].fills[0].venue_order_id;
+        let ExecutionOrderCause::Submitted {
+            quote_conversion: Some(update),
+            ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("fixture quote conversion changed")
+        };
+        update.venue_order_id = Some(venue_order_id);
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("conversion witness must represent the pinned pre-submission boundary");
+        assert!(error.to_string().contains("venue-order identity"));
+    }
+
+    #[test]
+    fn rejects_conversion_witness_for_base_denominated_submission() {
+        let mut fixture = fixture();
+        let conversion = quote_conversion(&fixture.orders[1].fills[0], Quantity::from("2.00"));
+        let ExecutionOrderCause::Submitted {
+            quote_conversion, ..
+        } = &mut fixture.orders[1].cause
+        else {
+            panic!("fixture normal exit changed")
+        };
+        *quote_conversion = Some(Box::new(conversion));
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("base submission must not carry quote conversion evidence");
+        assert!(error.to_string().contains("unexpected quote conversion"));
     }
 
     #[test]
@@ -1012,6 +1237,7 @@ mod tests {
                 2,
             )),
             submitted_order,
+            quote_conversion: None,
         };
         fixture.position_effects[1].side = PositionSide::Long;
         fixture.position_effects[1].quantity = Quantity::from("4.71");
@@ -1051,6 +1277,7 @@ mod tests {
                     Quantity::from("0.50"),
                     false,
                 ),
+                quote_conversion: None,
             },
             fills: vec![first_reduction_fill],
         };
@@ -1079,6 +1306,7 @@ mod tests {
                         Quantity::from("1.50"),
                         false,
                     ),
+                    quote_conversion: None,
                 },
                 fills: vec![second_reduction_fill],
             },
@@ -1308,6 +1536,39 @@ mod tests {
     }
 
     #[test]
+    fn rejects_quote_submission_with_wrong_raw_quantity_precision() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            submitted_order, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("fixture entry order changed")
+        };
+        submitted_order.quantity = Quantity::from("1.140");
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("quote submission precision must be instrument-derived");
+        assert!(error.to_string().contains("submitted quantity precision"));
+    }
+
+    #[test]
+    fn rejects_zero_quote_conversion_price_without_panicking() {
+        let mut fixture = fixture();
+        let instrument_id = fixture.instrument.id();
+        let ExecutionOrderCause::Submitted {
+            executable_book, ..
+        } = &mut fixture.orders[0].cause
+        else {
+            panic!("fixture entry order changed")
+        };
+        **executable_book = one_level_book(instrument_id, OrderSide::Sell, "0.000", "21.52", 1);
+
+        let error = validate_execution_contract(&fixture.trace())
+            .expect_err("zero quote conversion price must fail with a typed error");
+        assert!(error.to_string().contains("strictly positive"));
+    }
+
+    #[test]
     fn accepts_instrument_size_precision_above_two_decimals() {
         let mut fixture = fixture();
         let InstrumentAny::BinaryOption(instrument) = &mut fixture.instrument else {
@@ -1316,11 +1577,14 @@ mod tests {
         instrument.size_precision = 3;
         instrument.size_increment = Quantity::from("0.001");
         if let ExecutionOrderCause::Submitted {
-            submitted_order, ..
+            submitted_order,
+            quote_conversion,
+            ..
         } = &mut fixture.orders[0].cause
         {
             submitted_order.quantity = Quantity::from("2.714");
             submitted_order.quote_quantity = false;
+            *quote_conversion = None;
         }
         fixture.orders[0].fills[0].last_qty = Quantity::from("2.714");
         fixture.position_effects[0].quantity = Quantity::from("2.714");

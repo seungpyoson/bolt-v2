@@ -1,0 +1,488 @@
+name: Strict sccache release
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full exact-current main SHA for a publication run
+        required: true
+        type: string
+      publish:
+        description: Publish immutable release assets
+        required: true
+        default: false
+        type: boolean
+
+permissions: {}
+
+jobs:
+  preflight:
+    name: Bind source and publication controls
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      head_sha: ${{ steps.bind.outputs.head_sha }}
+      publisher_ready: ${{ steps.bind.outputs.publisher_ready }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Bind exact source and live controls
+        id: bind
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish || false }}
+          REPOSITORY: ${{ github.repository }}
+          REQUESTED_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$DEFAULT_BRANCH" == "main" ]]
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            [[ "$PUBLISH" == "false" ]]
+            [[ "$REQUESTED_SHA" == "$EVENT_SHA" ]]
+            {
+              echo "head_sha=$EVENT_SHA"
+              echo "publisher_ready=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          [[ "$EVENT_NAME" == "workflow_dispatch" ]]
+          [[ "$EVENT_REF" == "refs/heads/$DEFAULT_BRANCH" ]]
+          remote_sha="$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$REPOSITORY/branches/$DEFAULT_BRANCH" --jq '.commit.sha')"
+          [[ "$REQUESTED_SHA" == "$EVENT_SHA" && "$REQUESTED_SHA" == "$remote_sha" ]]
+          echo "head_sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+          if [[ "$PUBLISH" != "true" ]]; then
+            echo "publisher_ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$REPOSITORY/environments/strict-sccache-publisher" > environment.json
+          python3.12 scripts/sccache_strict.py validate-publish-context \
+            --event-name "$EVENT_NAME" \
+            --requested-sha "$REQUESTED_SHA" \
+            --event-sha "$EVENT_SHA" \
+            --remote-main-sha "$remote_sha" \
+            --event-ref "$EVENT_REF" \
+            --environment-json environment.json \
+            --environment-name strict-sccache-publisher
+          echo "publisher_ready=true" >> "$GITHUB_OUTPUT"
+
+  build-arm64:
+    name: Build ARM64 replica ${{ matrix.replica }}
+    needs: preflight
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.preflight.outputs.head_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Build cacheless governed candidate
+        env:
+          ARCHITECTURE: ARM64
+          HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+          REPLICA: ${{ matrix.replica }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3.12 scripts/sccache_strict.py show-target \
+            --config ci/sccache-strict.toml --architecture "$ARCHITECTURE" > target.json
+          target="$(python3.12 -c 'import json; print(json.load(open("target.json"))["target"])')"
+          source_version="$(python3.12 -c 'import json; print(json.load(open("target.json"))["source_version"])')"
+          source_url="$(python3.12 -c 'import json; print(json.load(open("target.json"))["source_url"])')"
+          source_sha="$(python3.12 -c 'import json; print(json.load(open("target.json"))["source_sha256"])')"
+          container="$(python3.12 -c 'import json; print(json.load(open("target.json"))["container"])')"
+          rustc_release="$(python3.12 -c 'import json; print(json.load(open("target.json"))["rustc_release"])')"
+          rustc_commit="$(python3.12 -c 'import json; print(json.load(open("target.json"))["rustc_commit"])')"
+          features="$(python3.12 -c 'import json; print(",".join(json.load(open("target.json"))["features"]))')"
+          default_features="$(python3.12 -c 'import json; print(str(json.load(open("target.json"))["default_features"]).lower())')"
+          profile="$(python3.12 -c 'import json; print(json.load(open("target.json"))["profile"])')"
+          source_epoch="$(python3.12 -c 'import json; print(json.load(open("target.json"))["source_date_epoch"])')"
+          patch="$(python3.12 -c 'import json; print(json.load(open("target.json"))["patch"])')"
+          verification_timeout="$(python3.12 -c 'import json; print(json.load(open("target.json"))["verification_timeout_ms"])')"
+          [[ "$default_features" == "false" ]]
+
+          mkdir -p work/source work/cargo-home work/target candidate
+          curl --fail --location --proto '=https' --tlsv1.2 "$source_url" --output work/source.tar.gz
+          echo "$source_sha  work/source.tar.gz" | sha256sum --check --strict
+          tar -xzf work/source.tar.gz --strip-components=1 -C work/source
+          git -C work/source apply --check "$patch"
+          git -C work/source apply "$patch"
+
+          docker run --rm "$container" rustc --version --verbose > rustc-version.txt
+          grep -Fx "release: $rustc_release" rustc-version.txt
+          grep -Fx "commit-hash: $rustc_commit" rustc-version.txt
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/work/source:/volume" \
+            -v "$GITHUB_WORKSPACE/work/cargo-home:/cargo-home" \
+            -w /volume \
+            -e CARGO_HOME=/cargo-home \
+            "$container" \
+            cargo fetch --locked --target "$target"
+
+          docker run --rm --network none \
+            -v "$GITHUB_WORKSPACE/work/source:/volume" \
+            -v "$GITHUB_WORKSPACE/work/cargo-home:/cargo-home:ro" \
+            -v "$GITHUB_WORKSPACE/work/target:/target" \
+            -w /volume \
+            -e CARGO_HOME=/cargo-home \
+            -e CARGO_INCREMENTAL=0 \
+            -e CARGO_NET_OFFLINE=true \
+            -e CARGO_TARGET_DIR=/target \
+            -e LC_ALL=C \
+            -e RUSTC_WRAPPER= \
+            -e SCCACHE_S3_RW_MODE=READ_WRITE \
+            -e SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS="$verification_timeout" \
+            -e SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS="$verification_timeout" \
+            -e SCCACHE_STRICT_IPC_TIMEOUT_MS="$verification_timeout" \
+            -e SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
+            -e SOURCE_DATE_EPOCH="$source_epoch" \
+            -e STRICT_BUILD_FEATURES="$features" \
+            -e STRICT_BUILD_PROFILE="$profile" \
+            -e STRICT_BUILD_TARGET="$target" \
+            -e TZ=UTC \
+            "$container" \
+            sh -ceu 'umask 022; cargo build --locked --offline --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET"; cargo test --locked --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET" --lib; cargo build --locked --offline --profile "$STRICT_BUILD_PROFILE" --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET"'
+
+          binary="work/target/$target/$profile/sccache"
+          machine="$(python3.12 -c 'import json; print(json.load(open("target.json"))["elf_machine"])')"
+          readelf -h "$binary" | grep -F "Machine:" | grep -F "$machine"
+          file "$binary" | grep -F 'statically linked'
+          [[ "$("$binary" --version)" == "sccache $source_version" ]]
+          if SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
+            SCCACHE_STRICT_IPC_TIMEOUT_MS="$verification_timeout" \
+            SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS="$verification_timeout" \
+            SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS="$verification_timeout" \
+            "$binary" --start-server > start.out 2> start.err; then
+            echo 'strict candidate started without governed S3 configuration' >&2
+            exit 1
+          fi
+          grep -F 'strict sccache requires the governed S3 cache backend' start.err
+
+          cp "$binary" candidate/sccache
+          python3.12 scripts/sccache_strict.py candidate-manifest \
+            --config ci/sccache-strict.toml \
+            --patch "$patch" \
+            --binary candidate/sccache \
+            --repository "$REPOSITORY" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --head-sha "$HEAD_SHA" \
+            --architecture "$ARCHITECTURE" \
+            --replica "$REPLICA" \
+            --output candidate/manifest.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: strict-sccache-${{ github.run_attempt }}-ARM64-${{ matrix.replica }}
+          path: candidate
+          if-no-files-found: error
+          retention-days: 1
+
+  build-x64:
+    name: Build X64 replica ${{ matrix.replica }}
+    needs: preflight
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.preflight.outputs.head_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Build cacheless governed candidate
+        env:
+          ARCHITECTURE: X64
+          HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+          REPLICA: ${{ matrix.replica }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3.12 scripts/sccache_strict.py show-target \
+            --config ci/sccache-strict.toml --architecture "$ARCHITECTURE" > target.json
+          target="$(python3.12 -c 'import json; print(json.load(open("target.json"))["target"])')"
+          source_version="$(python3.12 -c 'import json; print(json.load(open("target.json"))["source_version"])')"
+          source_url="$(python3.12 -c 'import json; print(json.load(open("target.json"))["source_url"])')"
+          source_sha="$(python3.12 -c 'import json; print(json.load(open("target.json"))["source_sha256"])')"
+          container="$(python3.12 -c 'import json; print(json.load(open("target.json"))["container"])')"
+          rustc_release="$(python3.12 -c 'import json; print(json.load(open("target.json"))["rustc_release"])')"
+          rustc_commit="$(python3.12 -c 'import json; print(json.load(open("target.json"))["rustc_commit"])')"
+          features="$(python3.12 -c 'import json; print(",".join(json.load(open("target.json"))["features"]))')"
+          default_features="$(python3.12 -c 'import json; print(str(json.load(open("target.json"))["default_features"]).lower())')"
+          profile="$(python3.12 -c 'import json; print(json.load(open("target.json"))["profile"])')"
+          source_epoch="$(python3.12 -c 'import json; print(json.load(open("target.json"))["source_date_epoch"])')"
+          patch="$(python3.12 -c 'import json; print(json.load(open("target.json"))["patch"])')"
+          verification_timeout="$(python3.12 -c 'import json; print(json.load(open("target.json"))["verification_timeout_ms"])')"
+          [[ "$default_features" == "false" ]]
+
+          mkdir -p work/source work/cargo-home work/target candidate
+          curl --fail --location --proto '=https' --tlsv1.2 "$source_url" --output work/source.tar.gz
+          echo "$source_sha  work/source.tar.gz" | sha256sum --check --strict
+          tar -xzf work/source.tar.gz --strip-components=1 -C work/source
+          git -C work/source apply --check "$patch"
+          git -C work/source apply "$patch"
+
+          docker run --rm "$container" rustc --version --verbose > rustc-version.txt
+          grep -Fx "release: $rustc_release" rustc-version.txt
+          grep -Fx "commit-hash: $rustc_commit" rustc-version.txt
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/work/source:/volume" \
+            -v "$GITHUB_WORKSPACE/work/cargo-home:/cargo-home" \
+            -w /volume \
+            -e CARGO_HOME=/cargo-home \
+            "$container" \
+            cargo fetch --locked --target "$target"
+
+          docker run --rm --network none \
+            -v "$GITHUB_WORKSPACE/work/source:/volume" \
+            -v "$GITHUB_WORKSPACE/work/cargo-home:/cargo-home:ro" \
+            -v "$GITHUB_WORKSPACE/work/target:/target" \
+            -w /volume \
+            -e CARGO_HOME=/cargo-home \
+            -e CARGO_INCREMENTAL=0 \
+            -e CARGO_NET_OFFLINE=true \
+            -e CARGO_TARGET_DIR=/target \
+            -e LC_ALL=C \
+            -e RUSTC_WRAPPER= \
+            -e SCCACHE_S3_RW_MODE=READ_WRITE \
+            -e SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS="$verification_timeout" \
+            -e SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS="$verification_timeout" \
+            -e SCCACHE_STRICT_IPC_TIMEOUT_MS="$verification_timeout" \
+            -e SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
+            -e SOURCE_DATE_EPOCH="$source_epoch" \
+            -e STRICT_BUILD_FEATURES="$features" \
+            -e STRICT_BUILD_PROFILE="$profile" \
+            -e STRICT_BUILD_TARGET="$target" \
+            -e TZ=UTC \
+            "$container" \
+            sh -ceu 'umask 022; cargo build --locked --offline --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET"; cargo test --locked --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET" --lib; cargo build --locked --offline --profile "$STRICT_BUILD_PROFILE" --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET"'
+
+          binary="work/target/$target/$profile/sccache"
+          machine="$(python3.12 -c 'import json; print(json.load(open("target.json"))["elf_machine"])')"
+          readelf -h "$binary" | grep -F "Machine:" | grep -F "$machine"
+          file "$binary" | grep -F 'statically linked'
+          [[ "$("$binary" --version)" == "sccache $source_version" ]]
+          if SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
+            SCCACHE_STRICT_IPC_TIMEOUT_MS="$verification_timeout" \
+            SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS="$verification_timeout" \
+            SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS="$verification_timeout" \
+            "$binary" --start-server > start.out 2> start.err; then
+            echo 'strict candidate started without governed S3 configuration' >&2
+            exit 1
+          fi
+          grep -F 'strict sccache requires the governed S3 cache backend' start.err
+
+          cp "$binary" candidate/sccache
+          python3.12 scripts/sccache_strict.py candidate-manifest \
+            --config ci/sccache-strict.toml \
+            --patch "$patch" \
+            --binary candidate/sccache \
+            --repository "$REPOSITORY" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --head-sha "$HEAD_SHA" \
+            --architecture "$ARCHITECTURE" \
+            --replica "$REPLICA" \
+            --output candidate/manifest.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: strict-sccache-${{ github.run_attempt }}-X64-${{ matrix.replica }}
+          path: candidate
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish immutable strict assets
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && needs.preflight.outputs.publisher_ready == 'true' }}
+    needs: [preflight, build-arm64, build-x64]
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    environment: strict-sccache-publisher
+    concurrency:
+      group: strict-sccache-publisher
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.preflight.outputs.head_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: strict-sccache-${{ github.run_attempt }}-*
+          path: candidates
+
+      - name: Verify and publish exact immutable bytes
+        env:
+          EVENT_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+          OWNER_LOGIN: ${{ github.repository_owner }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          candidate_args=(
+            --candidate ARM64 a "candidates/strict-sccache-$RUN_ATTEMPT-ARM64-a/manifest.json" "candidates/strict-sccache-$RUN_ATTEMPT-ARM64-a/sccache"
+            --candidate ARM64 b "candidates/strict-sccache-$RUN_ATTEMPT-ARM64-b/manifest.json" "candidates/strict-sccache-$RUN_ATTEMPT-ARM64-b/sccache"
+            --candidate X64 a "candidates/strict-sccache-$RUN_ATTEMPT-X64-a/manifest.json" "candidates/strict-sccache-$RUN_ATTEMPT-X64-a/sccache"
+            --candidate X64 b "candidates/strict-sccache-$RUN_ATTEMPT-X64-b/manifest.json" "candidates/strict-sccache-$RUN_ATTEMPT-X64-b/sccache"
+          )
+          python3.12 scripts/sccache_strict.py verify-candidates \
+            --config ci/sccache-strict.toml \
+            --patch ci/sccache-strict/sccache-v0.16.0-strict.patch \
+            --repository "$REPOSITORY" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --head-sha "$HEAD_SHA" \
+            "${candidate_args[@]}" \
+            --provenance-output provenance.json > verified.json
+
+          tag="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["release_tag"])')"
+          provenance_name="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["provenance_name"])')"
+          arm_name="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["assets"]["ARM64"]["name"])')"
+          x64_name="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["assets"]["X64"]["name"])')"
+          arm_digest="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["assets"]["ARM64"]["sha256"])')"
+          x64_digest="$(python3.12 -c 'import json; print(json.load(open("verified.json"))["assets"]["X64"]["sha256"])')"
+
+          if gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "release tag already exists: $tag" >&2
+            exit 1
+          fi
+          if gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$REPOSITORY/releases/tags/$tag" >/dev/null 2>&1; then
+            echo "release already exists: $tag" >&2
+            exit 1
+          fi
+          remote_sha="$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$REPOSITORY/branches/main" --jq '.commit.sha')"
+          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$REPOSITORY/environments/strict-sccache-publisher" > environment.json
+          python3.12 scripts/sccache_strict.py validate-publish-context \
+            --event-name workflow_dispatch \
+            --requested-sha "$HEAD_SHA" \
+            --event-sha "$EVENT_SHA" \
+            --remote-main-sha "$remote_sha" \
+            --event-ref "$EVENT_REF" \
+            --environment-json environment.json \
+            --environment-name strict-sccache-publisher
+
+          cp "candidates/strict-sccache-$RUN_ATTEMPT-ARM64-a/sccache" "$arm_name"
+          cp "candidates/strict-sccache-$RUN_ATTEMPT-X64-a/sccache" "$x64_name"
+          cp provenance.json "$provenance_name"
+          release="$(gh api --method POST -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$REPOSITORY/releases" \
+            -f tag_name="$tag" \
+            -f target_commitish="$HEAD_SHA" \
+            -f name="$tag" \
+            -f body='Governed strict sccache derivative; adoption requires a separate reviewed digest pin.' \
+            -F draft=true)"
+          release_id="$(jq -r '.id' <<< "$release")"
+          upload_url="$(jq -r '.upload_url | sub("\\{.*$"; "")' <<< "$release")"
+          [[ "$upload_url" == https://uploads.github.com/* ]]
+          cleanup_mutable_release() {
+            local current
+            set +e
+            if current="$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$REPOSITORY/releases/$release_id" 2>/dev/null)" && \
+              ! jq -e '.immutable == true' <<< "$current" >/dev/null; then
+              gh api --method DELETE -H 'X-GitHub-Api-Version: 2026-03-10' \
+                "repos/$REPOSITORY/releases/$release_id"
+              if gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+                "repos/$REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+                gh api --method DELETE -H 'X-GitHub-Api-Version: 2026-03-10' \
+                  "repos/$REPOSITORY/git/refs/tags/$tag"
+              fi
+            fi
+          }
+          trap cleanup_mutable_release EXIT
+          for asset in "$arm_name" "$x64_name" "$provenance_name"; do
+            curl --fail-with-body --silent --show-error \
+              --proto '=https' --tlsv1.2 --request POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'Content-Type: application/octet-stream' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              --data-binary "@$asset" "$upload_url?name=$asset" >/dev/null
+          done
+          gh api --method PATCH -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$REPOSITORY/releases/$release_id" -F draft=false > release.json
+          if ! jq -e '.immutable == true' release.json >/dev/null; then
+            echo 'GitHub published a mutable release; removing its exact release and tag' >&2
+            exit 1
+          fi
+          trap - EXIT
+          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$REPOSITORY/git/ref/tags/$tag" > tag.json
+          case "$OWNER_TYPE" in
+            User) attestation_owner="users/$OWNER_LOGIN" ;;
+            Organization) attestation_owner="orgs/$OWNER_LOGIN" ;;
+            *) echo "unsupported repository owner type: $OWNER_TYPE" >&2; exit 1 ;;
+          esac
+          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "$attestation_owner/attestations/sha256:$arm_digest?predicate_type=release" > attestation-arm64.json
+          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "$attestation_owner/attestations/sha256:$x64_digest?predicate_type=release" > attestation-x64.json
+          python3.12 scripts/sccache_strict.py verify-release-record \
+            --config ci/sccache-strict.toml \
+            --patch ci/sccache-strict/sccache-v0.16.0-strict.patch \
+            --repository "$REPOSITORY" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --head-sha "$HEAD_SHA" \
+            "${candidate_args[@]}" \
+            --release-json release.json \
+            --tag-json tag.json \
+            --attestation ARM64 attestation-arm64.json \
+            --attestation X64 attestation-x64.json

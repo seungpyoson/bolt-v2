@@ -30,6 +30,12 @@ test = "managed_heavy"
 build = "managed_heavy"
 advisories = "github_hosted"
 
+[workflows.sccache_strict_release]
+preflight = "github_hosted"
+build-arm64 = "managed_heavy"
+build-x64 = "managed_light"
+publish = "github_hosted"
+
 [cargo_build_jobs.rust_probe]
 probe-heavy = 3
 probe-light = 3

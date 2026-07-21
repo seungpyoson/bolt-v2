@@ -148,7 +148,7 @@ jobs:
   build:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     timeout-minutes: 60
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_BUILD }}
     permissions:
       contents: read
       id-token: write

@@ -1247,7 +1247,7 @@ index f639396..f591763 100644
 +                        })
 +                    }
 diff --git a/src/commands.rs b/src/commands.rs
-index 8d8406a..df5a8f5 100644
+index 8d8406a..5e4d050 100644
 --- a/src/commands.rs
 +++ b/src/commands.rs
 @@ -15,2 +15 @@
@@ -1259,13 +1259,14 @@ index 8d8406a..df5a8f5 100644
 +use crate::config::{
 +    CompilerEnvironment, Config, load_strict_controls, materialize_consumer_snapshot_from_path,
 +};
-@@ -21,4 +22,10 @@ use crate::jobserver::Client;
+@@ -21,4 +22,11 @@ use crate::jobserver::Client;
 -use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 -use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 -use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
 -use crate::util::{daemonize, new_client_runtime};
 +use crate::mock_command::{
 +    CommandChild, CommandCreatorSync, ProcessCommandCreator, StrictChildIo, StrictChildLauncher,
++    StrictPoison,
 +};
 +use crate::protocol::{
 +    ClassifiedRequest, CompileFinished, CompileResponse, Request, Response, StrictCompilerFamily,
@@ -1274,20 +1275,20 @@ index 8d8406a..df5a8f5 100644
 +use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 +use crate::util::new_client_runtime;
 +use anyhow::ensure;
-@@ -26,3 +32,0 @@ use byteorder::{BigEndian, ByteOrder};
+@@ -26,3 +33,0 @@ use byteorder::{BigEndian, ByteOrder};
 -use fs::{File, OpenOptions};
 -use fs_err as fs;
 -use log::Level::Trace;
-@@ -32,0 +37,2 @@ use std::io::{self, IsTerminal, Write};
+@@ -32,0 +38,2 @@ use std::io::{self, IsTerminal, Write};
 +use std::os::unix::ffi::OsStrExt;
 +#[cfg(unix)]
-@@ -34 +40 @@ use std::os::unix::process::ExitStatusExt;
+@@ -34 +41 @@ use std::os::unix::process::ExitStatusExt;
 -use std::path::Path;
 +use std::path::{Path, PathBuf};
-@@ -40,2 +45,0 @@ use tokio::runtime::Runtime;
+@@ -40,2 +46,0 @@ use tokio::runtime::Runtime;
 -use walkdir::WalkDir;
 -use which::which_in;
-@@ -45,29 +48,0 @@ use crate::errors::*;
+@@ -45,29 +49,0 @@ use crate::errors::*;
 -/// The default sccache server port.
 -pub const DEFAULT_PORT: u16 = 4226;
 -
@@ -1317,22 +1318,22 @@ index 8d8406a..df5a8f5 100644
 -    }
 -}
 -
-@@ -91 +66 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
+@@ -91 +67 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
 -fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
 +fn run_server_process(startup_timeout: Duration) -> Result<ServerStartup> {
-@@ -107 +82 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -107 +83 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    let _child = process::Command::new(&exe_path)
 +    let mut child = process::Command::new(&exe_path)
-@@ -111,0 +87,3 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -111,0 +88,3 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 +        .stdin(process::Stdio::null())
 +        .stdout(process::Stdio::null())
 +        .stderr(process::Stdio::null())
-@@ -120,2 +98,2 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -120,2 +99,2 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    let timeout = startup_timeout.unwrap_or(SERVER_STARTUP_TIMEOUT);
 -    runtime.block_on(async move {
 +    let timeout = startup_timeout;
 +    let result = runtime.block_on(async move {
-@@ -126,20 +104,6 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -126,20 +105,6 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    })
 -}
 -
@@ -1359,7 +1360,7 @@ index 8d8406a..df5a8f5 100644
 +        child
 +            .wait()
 +            .context("failed to reap unsuccessful server process")?;
-@@ -147,26 +111 @@ fn redirect_stderr(f: File) {
+@@ -147,26 +112 @@ fn redirect_stderr(f: File) {
 -}
 -
 -/// Create the log file and return an error if cannot be created
@@ -1387,22 +1388,22 @@ index 8d8406a..df5a8f5 100644
 -    redirect_stderr(f);
 -    Ok(())
 +    result
-@@ -177 +116 @@ fn redirect_error_log(f: File) -> Result<()> {
+@@ -177 +117 @@ fn redirect_error_log(f: File) -> Result<()> {
 -fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
 +fn run_server_process(startup_timeout: Duration) -> Result<ServerStartup> {
-@@ -293 +232 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -293 +233 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    let timeout = startup_timeout.unwrap_or(SERVER_STARTUP_TIMEOUT);
 +    let timeout = startup_timeout;
-@@ -302,2 +241,2 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -302,2 +242,2 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -/// Attempt to connect to an sccache server listening on `addr`, or start one if no server is running.
 -fn connect_or_start_server(
 +/// Connect to the one server explicitly started for this job.
 +fn connect_required(
-@@ -305 +244,2 @@ fn connect_or_start_server(
+@@ -305 +245,2 @@ fn connect_or_start_server(
 -    startup_timeout: Option<Duration>,
 +    timeout: Duration,
 +    expected_identity: &crate::protocol::StrictServerIdentity,
-@@ -307,30 +247,13 @@ fn connect_or_start_server(
+@@ -307,30 +248,13 @@ fn connect_or_start_server(
 -    trace!("connect_or_start_server({addr})");
 -    match connect_to_server(addr) {
 -        Ok(server) => Ok(server),
@@ -1446,17 +1447,17 @@ index 8d8406a..df5a8f5 100644
 +        Response::ServerIdentity(actual) if actual == *expected_identity => {}
 +        Response::ServerIdentity(_) => {
 +            bail!("governed server identity does not match client policy")
-@@ -338 +261 @@ fn connect_or_start_server(
+@@ -338 +262 @@ fn connect_or_start_server(
 -        Err(e) => Err(e.into()),
 +        _ => bail!("server does not implement the governed strict protocol"),
-@@ -339,0 +263 @@ fn connect_or_start_server(
+@@ -339,0 +264 @@ fn connect_or_start_server(
 +    Ok(server)
-@@ -402 +326,3 @@ fn request_compile<W, X, Y>(
+@@ -402 +327,3 @@ fn request_compile<W, X, Y>(
 -) -> Result<CompileResponse>
 +    compiler_family: StrictCompilerFamily,
 +    snapshot_digest: &str,
 +) -> Result<(CompileResponse, StrictResponseBinding)>
-@@ -408,4 +334,4 @@ where
+@@ -408,4 +335,4 @@ where
 -    let req = Request::Compile(Compile {
 -        exe: exe.as_ref().to_owned().into(),
 -        cwd: cwd.as_ref().to_owned().into(),
@@ -1465,28 +1466,28 @@ index 8d8406a..df5a8f5 100644
 +        exe.as_ref().to_owned().into(),
 +        cwd.as_ref().to_owned().into(),
 +        args.iter().map(|a| a.as_ref().to_owned()).collect(),
-@@ -413 +339,5 @@ where
+@@ -413 +340,5 @@ where
 -    });
 +        compiler_family,
 +        snapshot_digest.to_owned(),
 +    );
 +    let binding = classified.binding.clone();
 +    let req = Request::StrictCompile(classified);
-@@ -420 +350 @@ where
+@@ -420 +351 @@ where
 -        Ok(response)
 +        Ok((response, binding))
-@@ -504,2 +434 @@ fn handle_compile_finished(
+@@ -504,2 +435 @@ fn handle_compile_finished(
 -/// If the server returned `UnhandledCompile`, run the compilation command
 -/// locally using `creator` and return the result.
 +/// Only explicit parser classifications authorize direct client execution.
-@@ -508 +437 @@ fn handle_compile_response<T>(
+@@ -508 +438 @@ fn handle_compile_response<T>(
 -    mut creator: T,
 +    creator: T,
-@@ -511,0 +441 @@ fn handle_compile_response<T>(
+@@ -511,0 +442 @@ fn handle_compile_response<T>(
 +    expected_binding: &StrictResponseBinding,
-@@ -514,0 +445 @@ fn handle_compile_response<T>(
+@@ -514,0 +446 @@ fn handle_compile_response<T>(
 +    environment: &CompilerEnvironment,
-@@ -520,0 +452,8 @@ where
+@@ -520,0 +453,8 @@ where
 +    let require_binding = |actual: &StrictResponseBinding| -> Result<()> {
 +        ensure!(
 +            actual == expected_binding,
@@ -1495,17 +1496,17 @@ index 8d8406a..df5a8f5 100644
 +        Ok(())
 +    };
 +
-@@ -522,2 +461,3 @@ where
+@@ -522,2 +462,3 @@ where
 -        CompileResponse::CompileStarted => {
 -            debug!("Server sent CompileStarted");
 +        CompileResponse::StrictCompileStarted(binding) => {
 +            require_binding(&binding)?;
 +            debug!("Server accepted bound cacheable compilation");
-@@ -526 +466,2 @@ where
+@@ -526 +467,2 @@ where
 -                Ok(Response::CompileFinished(result)) => {
 +                Ok(Response::StrictCompileFinished { binding, result }) => {
 +                    require_binding(&binding)?;
-@@ -530,22 +471 @@ where
+@@ -530,22 +472 @@ where
 -                Err(e) => {
 -                    match e.downcast_ref::<io::Error>() {
 -                        Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
@@ -1529,14 +1530,14 @@ index 8d8406a..df5a8f5 100644
 -                    }
 -                }
 +                Err(e) => return Err(e).context("error reading compile response from server"),
-@@ -554,3 +474,3 @@ where
+@@ -554,3 +475,3 @@ where
 -        CompileResponse::UnsupportedCompiler(s) => {
 -            debug!("Server sent UnsupportedCompiler: {:?}", s);
 -            bail!("Compiler not supported: {:?}", s);
 +        CompileResponse::NotCompilation(binding) => {
 +            require_binding(&binding)?;
 +            debug!("Server classified invocation as NotCompilation");
-@@ -558,2 +478,12 @@ where
+@@ -558,2 +479,12 @@ where
 -        CompileResponse::UnhandledCompile => {
 -            debug!("Server sent UnhandledCompile");
 +        CompileResponse::CannotCache { binding, reason } => {
@@ -1551,7 +1552,7 @@ index 8d8406a..df5a8f5 100644
 +        | CompileResponse::UnhandledCompile
 +        | CompileResponse::UnsupportedCompiler(_) => {
 +            bail!("legacy compile response is forbidden in strict mode");
-@@ -563,6 +493 @@ where
+@@ -563,6 +494 @@ where
 -    let mut cmd = creator.new_command_sync(exe);
 -    cmd.args(&cmdline).current_dir(cwd);
 -    if log_enabled!(Trace) {
@@ -1559,7 +1560,7 @@ index 8d8406a..df5a8f5 100644
 -    }
 -
 +    let mut creator = creator;
-@@ -570 +495,9 @@ where
+@@ -570 +496,9 @@ where
 -        let child = cmd.spawn().await?;
 +        let child = StrictChildLauncher::spawn(
 +            &mut creator,
@@ -1570,13 +1571,13 @@ index 8d8406a..df5a8f5 100644
 +            StrictChildIo::classified_client(),
 +        )
 +        .await?;
-@@ -599,2 +532,3 @@ pub fn do_compile<T>(
+@@ -599,2 +533,3 @@ pub fn do_compile<T>(
 -    path: Option<OsString>,
 -    env_vars: Vec<(OsString, OsString)>,
 +    environment: &CompilerEnvironment,
 +    compiler_family: StrictCompilerFamily,
 +    snapshot_digest: &str,
-@@ -608,2 +542,9 @@ where
+@@ -608,2 +543,9 @@ where
 -    let exe_path = which_in(exe, path, cwd)?;
 -    let res = request_compile(&mut conn, &exe_path, &cmdline, cwd, env_vars)?;
 +    let (res, binding) = request_compile(
@@ -1588,7 +1589,7 @@ index 8d8406a..df5a8f5 100644
 +        compiler_family,
 +        snapshot_digest,
 +    )?;
-@@ -611 +552,11 @@ where
+@@ -611 +553,11 @@ where
 -        creator, runtime, &mut conn, res, &exe_path, cmdline, cwd, stdout, stderr,
 +        creator,
 +        runtime,
@@ -1601,7 +1602,7 @@ index 8d8406a..df5a8f5 100644
 +        environment,
 +        stdout,
 +        stderr,
-@@ -617,4 +568,57 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -617,4 +569,57 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -    // Config isn't required for all commands, but if it's broken then we should flag
 -    // it early and loudly.
 -    let config = &Config::load()?;
@@ -1639,7 +1640,7 @@ index 8d8406a..df5a8f5 100644
 +            return do_compile(
 +                <ProcessCommandCreator as CommandCreatorSync>::new_strict(
 +                    &jobserver,
-+                    timeouts.child_policy(identity.max_child_output_bytes),
++                    timeouts.child_policy(identity.max_child_output_bytes, StrictPoison::new()),
 +                ),
 +                &mut runtime,
 +                connection,
@@ -1663,7 +1664,7 @@ index 8d8406a..df5a8f5 100644
 +    let timeouts = controls.timeouts()?;
 +    let identity = controls.server_identity();
 +    let address = controls.address()?;
-@@ -625,10 +629,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -625,10 +630,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let stats = match connect_to_server(&get_addr()) {
 -                Ok(srv) => request_stats(srv).context("failed to get stats from server")?,
 -                // If there is no server, spawning a new server would start with zero stats
@@ -1676,7 +1677,7 @@ index 8d8406a..df5a8f5 100644
 -            };
 +            let stats = request_stats(connect_required(&address, timeouts.ipc, &identity)?)
 +                .context("failed to get stats from server")?;
-@@ -641,16 +637 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -641,16 +638 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            trace!("Command::DebugPreprocessorCacheEntries");
 -            let entries_dir = default_disk_cache_dir().join("preprocessor");
 -            for entry in WalkDir::new(entries_dir).sort_by_file_name() {
@@ -1694,7 +1695,7 @@ index 8d8406a..df5a8f5 100644
 -                println!("=========================");
 -            }
 +            bail!("preprocessor-cache inspection is unavailable in strict mode");
-@@ -660,10 +641,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -660,10 +642,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            if env::var("SCCACHE_ERROR_LOG").is_ok() {
 -                let f = create_error_log()?;
 -                // Can't report failure here, we're already daemonized.
@@ -1707,17 +1708,17 @@ index 8d8406a..df5a8f5 100644
 -            server::start_server(config, &get_addr())?;
 +            let config = Config::load()?;
 +            server::start_server(&config, &address, identity, timeouts)?;
-@@ -675 +648 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -675 +649 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -                run_server_process(startup_timeout).context("failed to start server process")?;
 +                run_server_process(timeouts.startup).context("failed to start server process")?;
-@@ -688 +661,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -688 +662,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let server = connect_to_server(&get_addr()).context("couldn't connect to server")?;
 +            let server = connect_required(&address, timeouts.ipc, &identity)
 +                .context("couldn't connect to governed server")?;
-@@ -694 +668 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -694 +669 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
 +            let conn = connect_required(&address, timeouts.ipc, &identity)?;
-@@ -698,56 +672 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -698,56 +673 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -        #[cfg(feature = "dist-client")]
 -        Command::DistAuth => {
 -            use crate::config;
@@ -1775,10 +1776,10 @@ index 8d8406a..df5a8f5 100644
 -            "Distributed compilation not compiled in, please rebuild with the dist-client feature"
 -        ),
 +        Command::DistAuth => bail!("distributed authentication is unavailable in strict mode"),
-@@ -756 +675 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -756 +676 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let srv = connect_or_start_server(&get_addr(), startup_timeout)?;
 +            let srv = connect_required(&address, timeouts.ipc, &identity)?;
-@@ -762,3 +681,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -762,3 +682,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -        #[cfg(feature = "dist-client")]
 -        Command::PackageToolchain(executable, out) => {
 -            use crate::compiler;
@@ -1790,7 +1791,7 @@ index 8d8406a..df5a8f5 100644
 +            unreachable!("handled before runtime config")
 +        }
 +    }
-@@ -766,16 +690,121 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -766,16 +691,121 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            trace!("Command::PackageToolchain({})", executable.display());
 -            let runtime = new_client_runtime()?;
 -            let jobserver = Client::new();
@@ -1928,7 +1929,7 @@ index 8d8406a..df5a8f5 100644
 +            max_frame_bytes: 1024 * 1024,
 +            max_child_output_bytes: 1024 * 1024,
 +            compilers: Vec::new(),
-@@ -783,25 +812 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -783,25 +813 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -        #[cfg(not(feature = "dist-client"))]
 -        Command::PackageToolchain(_executable, _out) => bail!(
 -            "Toolchain packaging not compiled in, please rebuild with the dist-client feature"
@@ -1955,7 +1956,7 @@ index 8d8406a..df5a8f5 100644
 -                    _ => (),
 -                });
 +    }
-@@ -809,16 +814,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -809,16 +815,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let jobserver = Client::new();
 -            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
 -            let mut runtime = new_client_runtime()?;
@@ -1980,7 +1981,7 @@ index 8d8406a..df5a8f5 100644
 +        StrictResponseBinding {
 +            request_digest: [7; 32],
 +            snapshot_digest: "strict-test".to_owned(),
-@@ -828 +825,233 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -828 +826,233 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -    Ok(0)
 +    #[test]
 +    fn strict_cannot_cache_reason_authorizes_one_client_command() {
@@ -2887,7 +2888,7 @@ index d6c2c71..b954a0e 100644
 +#[cfg(test)]
 +#[allow(dead_code)]
 diff --git a/src/config.rs b/src/config.rs
-index cef32b2..08e9cf8 100644
+index cef32b2..a90a1da 100644
 --- a/src/config.rs
 +++ b/src/config.rs
 @@ -17,0 +18 @@ use crate::util::normalize_win_path;
@@ -2900,7 +2901,7 @@ index cef32b2..08e9cf8 100644
 +    ffi::{OsStrExt, OsStringExt},
 +    fs::OpenOptionsExt,
 +};
-@@ -38,0 +46,855 @@ use crate::errors::*;
+@@ -38,0 +46,857 @@ use crate::errors::*;
 +use crate::protocol::{
 +    StrictCompilerFamily, StrictCompilerIdentity, StrictEnvironmentEntry, StrictServerIdentity,
 +};
@@ -3695,12 +3696,14 @@ index cef32b2..08e9cf8 100644
 +    pub(crate) fn child_policy(
 +        self,
 +        max_output_bytes: u64,
++        poison: crate::mock_command::StrictPoison,
 +    ) -> crate::mock_command::StrictChildPolicy {
 +        crate::mock_command::StrictChildPolicy {
 +            compiler_timeout: self.compiler,
 +            termination_grace: self.termination_grace,
 +            cleanup_timeout: self.cleanup,
 +            max_output_bytes,
++            poison,
 +        }
 +    }
 +
@@ -3756,7 +3759,7 @@ index cef32b2..08e9cf8 100644
 +    }
 +    Ok(parsed)
 +}
-@@ -1356,0 +2219,223 @@ impl Config {
+@@ -1356,0 +2221,223 @@ impl Config {
 +#[cfg(all(test, unix))]
 +mod strict_snapshot_tests {
 +    use super::*;
@@ -3981,18 +3984,20 @@ index cef32b2..08e9cf8 100644
 +}
 +
 diff --git a/src/mock_command.rs b/src/mock_command.rs
-index d7ffa03..96da2b4 100644
+index d7ffa03..26971e9 100644
 --- a/src/mock_command.rs
 +++ b/src/mock_command.rs
 @@ -49,0 +50 @@ use crate::jobserver::{Acquired, Client};
 +use anyhow::ensure;
-@@ -76,0 +78,2 @@ pub trait CommandChild {
+@@ -76,0 +78,4 @@ pub trait CommandChild {
 +    /// Shared stdout/stderr byte ceiling for this child.
 +    fn strict_output_limit(&self) -> u64;
-@@ -113,0 +117,2 @@ pub trait RunCommand: fmt::Debug + Send {
++    /// Shared daemon poison transition owned by this child.
++    fn strict_poison(&self) -> StrictPoison;
+@@ -113,0 +119,2 @@ pub trait RunCommand: fmt::Debug + Send {
 +    /// Prove that the inherited process environment was cleared before sealing.
 +    fn strict_environment_is_sealed(&self) -> bool;
-@@ -115 +120,6 @@ pub trait RunCommand: fmt::Debug + Send {
+@@ -115 +122,6 @@ pub trait RunCommand: fmt::Debug + Send {
 -    async fn spawn(&mut self) -> Result<Self::C>;
 +    async fn spawn(&mut self, permit: StrictSpawnPermit) -> Result<Self::C>;
 +}
@@ -4000,19 +4005,72 @@ index d7ffa03..96da2b4 100644
 +/// Unforgeable capability required to cross the compiler-child spawn boundary.
 +pub struct StrictSpawnPermit {
 +    _private: (),
-@@ -139,0 +150,5 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
+@@ -139,0 +152,5 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
 +    fn new_strict(client: &Client, policy: StrictChildPolicy) -> Self {
 +        let _ = policy;
 +        Self::new(client)
 +    }
 +
-@@ -142,0 +158,83 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
-+#[derive(Clone, Copy, Debug)]
+@@ -142,0 +160,137 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
++#[derive(Clone, Debug)]
 +pub struct StrictChildPolicy {
 +    pub compiler_timeout: std::time::Duration,
 +    pub termination_grace: std::time::Duration,
 +    pub cleanup_timeout: std::time::Duration,
 +    pub max_output_bytes: u64,
++    pub poison: StrictPoison,
++}
++
++#[derive(Clone, Debug)]
++pub struct StrictPoison {
++    inner: Arc<StrictPoisonInner>,
++}
++
++#[derive(Debug)]
++struct StrictPoisonInner {
++    state: std::sync::atomic::AtomicU8,
++    notify: tokio::sync::Notify,
++}
++
++impl StrictPoison {
++    pub fn new() -> Self {
++        Self {
++            inner: Arc::new(StrictPoisonInner {
++                state: std::sync::atomic::AtomicU8::new(0),
++                notify: tokio::sync::Notify::new(),
++            }),
++        }
++    }
++
++    pub fn is_healthy(&self) -> bool {
++        self.inner.state.load(std::sync::atomic::Ordering::Acquire) == 0
++    }
++
++    pub fn poison(&self) {
++        if self
++            .inner
++            .state
++            .compare_exchange(
++                0,
++                1,
++                std::sync::atomic::Ordering::AcqRel,
++                std::sync::atomic::Ordering::Acquire,
++            )
++            .is_ok()
++        {
++            self.inner.notify.notify_waiters();
++        }
++    }
++
++    pub async fn poisoned(&self) {
++        loop {
++            let notified = self.inner.notify.notified();
++            if !self.is_healthy() {
++                return;
++            }
++            notified.await;
++        }
++    }
 +}
 +
 +#[cfg(test)]
@@ -4023,6 +4081,7 @@ index d7ffa03..96da2b4 100644
 +            termination_grace: std::time::Duration::from_millis(10),
 +            cleanup_timeout: std::time::Duration::from_secs(30),
 +            max_output_bytes: 1024 * 1024,
++            poison: StrictPoison::new(),
 +        }
 +    }
 +}
@@ -4090,10 +4149,24 @@ index d7ffa03..96da2b4 100644
 +    }
 +}
 +
-@@ -145,0 +244,37 @@ pub struct Child {
+@@ -145 +299,50 @@ pub struct Child {
+-    token: Acquired,
++    _token: Acquired,
 +    policy: StrictChildPolicy,
 +    #[cfg(unix)]
 +    process_group: i32,
++    #[cfg(unix)]
++    process_group_armed: bool,
++}
++
++#[cfg(unix)]
++impl Drop for Child {
++    fn drop(&mut self) {
++        if self.process_group_armed {
++            let _ = signal_process_group(self.process_group, libc::SIGKILL);
++            self.policy.poison.poison();
++        }
++    }
 +}
 +
 +#[cfg(unix)]
@@ -4128,7 +4201,7 @@ index d7ffa03..96da2b4 100644
 +        tokio::task::yield_now().await;
 +    }
 +    Ok(())
-@@ -165,5 +300,2 @@ impl CommandChild for Child {
+@@ -165,5 +368,5 @@ impl CommandChild for Child {
 -    async fn wait(self) -> io::Result<ExitStatus> {
 -        let Child { mut inner, token } = self;
 -        inner.wait().await.inspect(|_ret| {
@@ -4136,7 +4209,10 @@ index d7ffa03..96da2b4 100644
 -        })
 +    fn strict_output_limit(&self) -> u64 {
 +        self.policy.max_output_bytes
-@@ -172,4 +304,54 @@ impl CommandChild for Child {
++    }
++    fn strict_poison(&self) -> StrictPoison {
++        self.policy.poison.clone()
+@@ -172,4 +375,68 @@ impl CommandChild for Child {
 -    async fn wait_with_output(self) -> io::Result<Output> {
 -        let Child { inner, token } = self;
 -        inner.wait_with_output().await.inspect(|_ret| {
@@ -4146,6 +4222,7 @@ index d7ffa03..96da2b4 100644
 +            match tokio::time::timeout(self.policy.compiler_timeout, self.inner.wait()).await {
 +                Ok(status) => status?,
 +                Err(_) => {
++                    self.policy.poison.poison();
 +                    #[cfg(unix)]
 +                    signal_process_group(self.process_group, libc::SIGTERM)?;
 +                    tokio::time::sleep(self.policy.termination_grace).await;
@@ -4162,6 +4239,10 @@ index d7ffa03..96da2b4 100644
 +                    #[cfg(unix)]
 +                    wait_for_process_group_exit(self.process_group, self.policy.cleanup_timeout)
 +                        .await?;
++                    #[cfg(unix)]
++                    {
++                        self.process_group_armed = false;
++                    }
 +                    return Err(io::Error::new(
 +                        io::ErrorKind::TimedOut,
 +                        "strict child compiler timeout expired",
@@ -4170,47 +4251,56 @@ index d7ffa03..96da2b4 100644
 +            };
 +        #[cfg(unix)]
 +        if process_group_exists(self.process_group) {
++            self.policy.poison.poison();
 +            signal_process_group(self.process_group, libc::SIGTERM)?;
 +            tokio::time::sleep(self.policy.termination_grace).await;
 +            signal_process_group(self.process_group, libc::SIGKILL)?;
 +            wait_for_process_group_exit(self.process_group, self.policy.cleanup_timeout).await?;
++            self.process_group_armed = false;
 +            return Err(io::Error::other(
 +                "strict child left a live process-group member",
 +            ));
 +        }
-+        drop(self.token);
++        #[cfg(unix)]
++        {
++            self.process_group_armed = false;
++        }
 +        Ok(status)
 +    }
 +
 +    async fn wait_with_output(mut self) -> io::Result<Output> {
 +        use std::sync::{Arc, atomic::AtomicU64};
 +        let limit = self.strict_output_limit();
++        let poison = self.strict_poison();
 +        let reservation = Arc::new(AtomicU64::new(0));
 +        let stdout = self.take_stdout();
 +        let stderr = self.take_stderr();
 +        let stdout = crate::util::read_bounded_child_output(stdout, reservation.clone(), limit);
 +        let stderr = crate::util::read_bounded_child_output(stderr, reservation, limit);
 +        let (status, stdout, stderr) = futures::future::join3(self.wait(), stdout, stderr).await;
++        if stdout.is_err() || stderr.is_err() {
++            poison.poison();
++        }
 +        Ok(Output {
 +            status: status?,
 +            stdout: stdout?,
 +            stderr: stderr?,
-@@ -182,0 +365,2 @@ pub struct AsyncCommand {
+@@ -182,0 +450,2 @@ pub struct AsyncCommand {
 +    environment_cleared: bool,
 +    policy: StrictChildPolicy,
-@@ -186 +370,5 @@ impl AsyncCommand {
+@@ -186 +455,5 @@ impl AsyncCommand {
 -    pub fn new<S: AsRef<OsStr>>(program: S, jobserver: Client) -> AsyncCommand {
 +    pub fn new<S: AsRef<OsStr>>(
 +        program: S,
 +        jobserver: Client,
 +        policy: StrictChildPolicy,
 +    ) -> AsyncCommand {
-@@ -189,0 +378,2 @@ impl AsyncCommand {
+@@ -189,0 +463,2 @@ impl AsyncCommand {
 +            environment_cleared: false,
 +            policy,
-@@ -229,0 +420 @@ impl RunCommand for AsyncCommand {
+@@ -229,0 +505 @@ impl RunCommand for AsyncCommand {
 +        self.environment_cleared = true;
-@@ -249,7 +440,4 @@ impl RunCommand for AsyncCommand {
+@@ -249,7 +525,4 @@ impl RunCommand for AsyncCommand {
 -    async fn spawn(&mut self) -> Result<Child> {
 -        let mut inner = self.inner.take().unwrap();
 -        inner.env_remove("MAKEFLAGS");
@@ -4222,26 +4312,30 @@ index d7ffa03..96da2b4 100644
 +        self.environment_cleared
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<Child> {
-@@ -256,0 +445,6 @@ impl RunCommand for AsyncCommand {
+@@ -256,0 +530,6 @@ impl RunCommand for AsyncCommand {
 +        let mut inner = self.inner.take().unwrap();
 +        #[cfg(unix)]
 +        {
 +            use std::os::unix::process::CommandExt;
 +            inner.process_group(0);
 +        }
-@@ -257,0 +452 @@ impl RunCommand for AsyncCommand {
+@@ -257,0 +537 @@ impl RunCommand for AsyncCommand {
 +        inner.kill_on_drop(true);
-@@ -261,0 +457,3 @@ impl RunCommand for AsyncCommand {
+@@ -261,0 +542,3 @@ impl RunCommand for AsyncCommand {
 +        #[cfg(unix)]
 +        let process_group = i32::try_from(child.id().context("strict child PID is unavailable")?)
 +            .context("strict child PID exceeds process-group range")?;
-@@ -264,0 +463,3 @@ impl RunCommand for AsyncCommand {
-+            policy: self.policy,
+@@ -264 +547,6 @@ impl RunCommand for AsyncCommand {
+-            token,
++            _token: token,
++            policy: self.policy.clone(),
 +            #[cfg(unix)]
 +            process_group,
-@@ -278,0 +480 @@ pub struct ProcessCommandCreator {
++            #[cfg(unix)]
++            process_group_armed: true,
+@@ -278,0 +567 @@ pub struct ProcessCommandCreator {
 +    policy: StrictChildPolicy,
-@@ -286,2 +488,11 @@ impl CommandCreator for ProcessCommandCreator {
+@@ -286,2 +575,11 @@ impl CommandCreator for ProcessCommandCreator {
 -        ProcessCommandCreator {
 -            jobserver: client.clone(),
 +        #[cfg(test)]
@@ -4255,10 +4349,10 @@ index d7ffa03..96da2b4 100644
 +        {
 +            let _ = client;
 +            panic!("strict child policy is required")
-@@ -292 +503 @@ impl CommandCreator for ProcessCommandCreator {
+@@ -292 +590 @@ impl CommandCreator for ProcessCommandCreator {
 -        AsyncCommand::new(program, self.jobserver.clone())
-+        AsyncCommand::new(program, self.jobserver.clone(), self.policy)
-@@ -303,0 +515,7 @@ impl CommandCreatorSync for ProcessCommandCreator {
++        AsyncCommand::new(program, self.jobserver.clone(), self.policy.clone())
+@@ -303,0 +602,7 @@ impl CommandCreatorSync for ProcessCommandCreator {
 +    fn new_strict(client: &Client, policy: StrictChildPolicy) -> ProcessCommandCreator {
 +        ProcessCommandCreator {
 +            jobserver: client.clone(),
@@ -4266,17 +4360,20 @@ index d7ffa03..96da2b4 100644
 +        }
 +    }
 +
-@@ -383,0 +602,3 @@ impl CommandChild for MockChild {
+@@ -383,0 +689,6 @@ impl CommandChild for MockChild {
 +    fn strict_output_limit(&self) -> u64 {
 +        u64::MAX
 +    }
-@@ -470 +691,4 @@ impl RunCommand for MockCommand {
++    fn strict_poison(&self) -> StrictPoison {
++        StrictPoison::new()
++    }
+@@ -470 +781,4 @@ impl RunCommand for MockCommand {
 -    async fn spawn(&mut self) -> Result<MockChild> {
 +    fn strict_environment_is_sealed(&self) -> bool {
 +        true
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<MockChild> {
-@@ -548,0 +773,151 @@ mod test {
+@@ -548,0 +863,161 @@ mod test {
 +    #[test]
 +    fn strict_spawn_does_not_inject_jobserver_environment_after_classification() {
 +        let runtime = tokio::runtime::Builder::new_current_thread()
@@ -4369,7 +4466,9 @@ index d7ffa03..96da2b4 100644
 +            termination_grace: std::time::Duration::from_millis(10),
 +            cleanup_timeout: std::time::Duration::from_secs(1),
 +            max_output_bytes: 1024,
++            poison: StrictPoison::new(),
 +        };
++        let poison = policy.poison.clone();
 +        let client = Client::new_num(1);
 +        let mut command = AsyncCommand::new("/bin/sh", client, policy);
 +        command
@@ -4389,12 +4488,13 @@ index d7ffa03..96da2b4 100644
 +
 +        assert!(error.to_string().contains("compiler timeout"));
 +        assert!(started.elapsed() < std::time::Duration::from_secs(2));
++        assert!(!poison.is_healthy());
 +    }
 +
 +    #[cfg(unix)]
 +    #[test]
 +    fn strict_launcher_enforces_one_combined_output_reservation() {
-+        fn run(limit: u64, script: &str) -> io::Result<Output> {
++        fn run(limit: u64, script: &str) -> (io::Result<Output>, StrictPoison) {
 +            let runtime = tokio::runtime::Builder::new_current_thread()
 +                .enable_all()
 +                .build()
@@ -4404,7 +4504,9 @@ index d7ffa03..96da2b4 100644
 +                termination_grace: std::time::Duration::from_millis(10),
 +                cleanup_timeout: std::time::Duration::from_secs(1),
 +                max_output_bytes: limit,
++                poison: StrictPoison::new(),
 +            };
++            let poison = policy.poison.clone();
 +            let client = Client::new_num(1);
 +            let mut command = AsyncCommand::new("/bin/sh", client, policy);
 +            command
@@ -4413,31 +4515,36 @@ index d7ffa03..96da2b4 100644
 +                .stdin(Stdio::null())
 +                .stdout(Stdio::piped())
 +                .stderr(Stdio::piped());
-+            runtime.block_on(async move {
++            let result = runtime.block_on(async move {
 +                StrictChildLauncher::spawn_prepared(&mut command)
 +                    .await
 +                    .unwrap()
 +                    .wait_with_output()
 +                    .await
-+            })
++            });
++            (result, poison)
 +        }
 +
-+        let exact = run(8, "printf 1234; printf 5678 >&2").unwrap();
++        let (exact, healthy) = run(8, "printf 1234; printf 5678 >&2");
++        let exact = exact.unwrap();
 +        assert_eq!(exact.stdout.len() + exact.stderr.len(), 8);
-+        let overflow = run(8, "printf 12345; printf 6789 >&2").unwrap_err();
++        assert!(healthy.is_healthy());
++        let (overflow, poisoned) = run(8, "printf 12345; printf 6789 >&2");
++        let overflow = overflow.unwrap_err();
 +        assert!(overflow.to_string().contains("governed limit"));
++        assert!(!poisoned.is_healthy());
 +    }
 +
-@@ -553 +928,2 @@ mod test {
+@@ -553 +1028,2 @@ mod test {
 -        creator.new_command(program).spawn().wait()
 +        let mut command = creator.new_command(program);
 +        StrictChildLauncher::spawn_prepared(&mut command).wait()
-@@ -576,2 +952,2 @@ mod test {
+@@ -576,2 +1052,2 @@ mod test {
 -                t.new_command_sync("foo")
 -                    .spawn()
 +                let mut command = t.new_command_sync("foo");
 +                StrictChildLauncher::spawn_prepared(&mut command)
-@@ -612 +988,4 @@ mod test {
+@@ -612 +1088,4 @@ mod test {
 -        creator.new_command("foo").spawn().wait().unwrap();
 +        let mut command = creator.new_command("foo");
 +        StrictChildLauncher::spawn_prepared(&mut command)
@@ -4933,7 +5040,7 @@ index 8760ba6..5ab6c52 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..b47bfbb 100644
+index 98cedfb..aa5280e 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16,2 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -4948,8 +5055,10 @@ index 98cedfb..b47bfbb 100644
 @@ -23 +24 @@ use crate::config;
 -use crate::config::Config;
 +use crate::config::{Config, code_owned_semantic_environment_name};
-@@ -27 +28,4 @@ use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
+@@ -26,2 +27,5 @@ use crate::jobserver::Client;
+-use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 -use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
++use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator, StrictPoison};
 +use crate::protocol::{
 +    ClassifiedRequest, CompileFinished, CompileResponse, Request, Response, StrictCompilerFamily,
 +    StrictEnvironmentEntry, StrictResponseBinding, StrictServerIdentity,
@@ -5195,38 +5304,56 @@ index 98cedfb..b47bfbb 100644
 +            identity,
 +            timeouts,
 +        );
-@@ -794,0 +987,6 @@ where
+@@ -674,0 +867 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
++        let poison = service.poison.clone();
+@@ -721,0 +915,4 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
++        let poisoned = async move {
++            poison.poisoned().await;
++            Err::<(), io::Error>(io::Error::other("strict daemon entered terminal poison"))
++        };
+@@ -727,0 +925 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
++                poisoned = poisoned.fuse() => poisoned,
+@@ -794,0 +993,6 @@ where
 +    /// Exact derivative, backend, mode, and timeout policy negotiated by clients.
 +    identity: StrictServerIdentity,
 +
 +    /// Timeout policy validated once before server startup.
 +    timeouts: crate::config::StrictTimeouts,
 +
-@@ -862 +1060 @@ where
+@@ -814,0 +1019,3 @@ where
++    /// One-way daemon poison transition shared by children, requests, and transports.
++    poison: StrictPoison,
++
+@@ -860,0 +1068 @@ where
++            ensure!(me.poison.is_healthy(), "strict daemon is poisoned");
+@@ -862 +1070 @@ where
 -                Request::Compile(compile) => {
 +                Request::StrictCompile(compile) => {
-@@ -866,0 +1065,6 @@ where
+@@ -866,0 +1075,6 @@ where
 +                Request::Compile(_) => {
 +                    bail!("legacy compile request is forbidden in strict mode")
 +                }
 +                Request::GetServerIdentity => Ok(Message::WithoutBody(Response::ServerIdentity(
 +                    me.identity.clone(),
 +                ))),
-@@ -923,0 +1128,2 @@ where
+@@ -923,0 +1138,2 @@ where
 +        identity: StrictServerIdentity,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -932 +1138,4 @@ where
+@@ -924,0 +1141 @@ where
++        let poison = StrictPoison::new();
+@@ -932 +1149,4 @@ where
 -            creator: C::new(client),
 +            creator: C::new_strict(
 +                client,
-+                timeouts.child_policy(identity.max_child_output_bytes),
++                timeouts.child_policy(identity.max_child_output_bytes, poison.clone()),
 +            ),
-@@ -934,0 +1144,2 @@ where
+@@ -934,0 +1155,3 @@ where
 +            identity,
 +            timeouts,
-@@ -937,0 +1149 @@ where
++            poison,
+@@ -937,0 +1161 @@ where
 +    #[cfg(test)]
-@@ -940,0 +1153,13 @@ where
+@@ -940,0 +1165,13 @@ where
 +    ) -> SccacheService<C> {
 +        Self::mock_with_storage_and_timeouts(
 +            storage,
@@ -5240,20 +5367,22 @@ index 98cedfb..b47bfbb 100644
 +        storage: Arc<dyn Storage>,
 +        rt: tokio::runtime::Handle,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -955,0 +1181,2 @@ where
+@@ -955,0 +1193,3 @@ where
 +            identity: StrictServerIdentity::for_tests(),
 +            timeouts,
-@@ -959,0 +1187 @@ where
++            poison: StrictPoison::new(),
+@@ -959,0 +1200 @@ where
 +    #[cfg(test)]
-@@ -990,0 +1219,2 @@ where
+@@ -990,0 +1232,3 @@ where
 +            identity: StrictServerIdentity::for_tests(),
 +            timeouts: crate::config::StrictTimeouts::for_tests(),
-@@ -993,0 +1224,4 @@ where
++            poison: StrictPoison::new(),
+@@ -993,0 +1238,4 @@ where
 +    pub fn cache_read_timeout(&self) -> Duration {
 +        self.timeouts.cache_read
 +    }
 +
-@@ -999,7 +1233,2 @@ where
+@@ -999,7 +1247,2 @@ where
 -        if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
 -            if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
 -                builder.max_frame_length(max_frame_length);
@@ -5263,7 +5392,11 @@ index 98cedfb..b47bfbb 100644
 -        }
 +        builder
 +            .max_frame_length(usize::try_from(self.identity.max_frame_bytes).unwrap_or(usize::MAX));
-@@ -1061 +1290,34 @@ where
+@@ -1009,0 +1253,3 @@ where
++            poison: self.poison.clone(),
++            commit_timeout: self.timeouts.cleanup,
++            commit_deadline: None,
+@@ -1061 +1307,34 @@ where
 -    async fn handle_compile(&self, compile: Compile) -> Result<SccacheResponse> {
 +    async fn handle_compile(&self, compile: ClassifiedRequest) -> Result<SccacheResponse> {
 +        ensure!(
@@ -5299,23 +5432,23 @@ index 98cedfb..b47bfbb 100644
 +        }
 +        let binding = compile.binding.clone();
 +        let compiler_family = compile.compiler_family;
-@@ -1067 +1328,0 @@ where
+@@ -1067 +1345,0 @@ where
 -
-@@ -1071 +1332,3 @@ where
+@@ -1071 +1349,3 @@ where
 -        Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
 +        Ok(me
 +            .check_compiler(info, cmd, cwd, env_vars, compiler_family, binding)
 +            .await)
-@@ -1238,0 +1502,2 @@ where
+@@ -1238,0 +1519,2 @@ where
 +        compiler_family: StrictCompilerFamily,
 +        binding: StrictResponseBinding,
-@@ -1245 +1510,4 @@ where
+@@ -1245 +1527,4 @@ where
 -                    CompileResponse::UnsupportedCompiler(OsString::from(e.to_string())),
 +                    CompileResponse::StrictUnsupportedCompiler {
 +                        binding,
 +                        reason: OsString::from(e.to_string()),
 +                    },
-@@ -1249,0 +1518,21 @@ where
+@@ -1249,0 +1535,21 @@ where
 +                let compiler_matches = matches!(
 +                    (compiler_family, c.kind()),
 +                    (StrictCompilerFamily::Rust, CompilerKind::Rust)
@@ -5337,9 +5470,9 @@ index 98cedfb..b47bfbb 100644
 +                        },
 +                    ));
 +                }
-@@ -1255,0 +1545 @@ where
+@@ -1255,0 +1562 @@ where
 +                        let finished_binding = binding.clone();
-@@ -1259 +1549,6 @@ where
+@@ -1259 +1566,6 @@ where
 -                            .and_then(|res| async { Ok(Response::CompileFinished(res)) })
 +                            .and_then(|result| async move {
 +                                Ok(Response::StrictCompileFinished {
@@ -5347,25 +5480,25 @@ index 98cedfb..b47bfbb 100644
 +                                    result,
 +                                })
 +                            })
-@@ -1263 +1558 @@ where
+@@ -1263 +1575 @@ where
 -                            Response::Compile(CompileResponse::CompileStarted),
 +                            Response::Compile(CompileResponse::StrictCompileStarted(binding)),
-@@ -1278,0 +1574,6 @@ where
+@@ -1278,0 +1591,6 @@ where
 +                        return Message::WithoutBody(Response::Compile(
 +                            CompileResponse::CannotCache {
 +                                binding,
 +                                reason: why.to_string(),
 +                            },
 +                        ));
-@@ -1282,0 +1584,3 @@ where
+@@ -1282,0 +1601,3 @@ where
 +                        return Message::WithoutBody(Response::Compile(
 +                            CompileResponse::NotCompilation(binding),
 +                        ));
-@@ -1287,3 +1590,0 @@ where
+@@ -1287,3 +1607,0 @@ where
 -
 -        let res = CompileResponse::UnhandledCompile;
 -        Message::WithoutBody(Response::Compile(res))
-@@ -1304,11 +1605 @@ where
+@@ -1304,11 +1622 @@ where
 -
 -        let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
 -        let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
@@ -5378,7 +5511,7 @@ index 98cedfb..b47bfbb 100644
 -            CacheControl::Default
 -        };
 +        let cache_control = CacheControl::Default;
-@@ -1418,0 +1710,10 @@ where
+@@ -1418,0 +1727,10 @@ where
 +                            CompileResult::ReadOnlyCacheMiss(miss_type, dt, duration) => {
 +                                debug!("[{}]: governed read-only cache miss", out_pretty);
 +                                dist_type = dt;
@@ -5389,7 +5522,7 @@ index 98cedfb..b47bfbb 100644
 +                                stats.cache_misses.increment(&kind, &lang);
 +                                stats.compiler_write_duration += duration;
 +                            }
-@@ -1522,7 +1823,5 @@ where
+@@ -1522,7 +1840,5 @@ where
 -                    match cache_write.await {
 -                        Err(e) => {
 -                            debug!("Error executing cache write: {}", e);
@@ -5402,7 +5535,7 @@ index 98cedfb..b47bfbb 100644
 +                    {
 +                        None => me.stats.lock().await.cache_write_errors += 1,
 +                        Some(info) => {
-@@ -1581,0 +1881,69 @@ impl PerLanguageCount {
+@@ -1581,0 +1898,69 @@ impl PerLanguageCount {
 +#[cfg(unix)]
 +fn validate_strict_compiler_environment(
 +    env_vars: &[(OsString, OsString)],
@@ -5472,7 +5605,45 @@ index 98cedfb..b47bfbb 100644
 +    }
 +}
 +
-@@ -2284,0 +2653,214 @@ mod tests {
+@@ -2145,0 +2531,3 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
++    poison: StrictPoison,
++    commit_timeout: Duration,
++    commit_deadline: Option<Pin<Box<Sleep>>>,
+@@ -2161,0 +2550,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
++        if !self.poison.is_healthy() {
++            return Poll::Ready(Err(anyhow!(
++                "strict response commit blocked by daemon poison"
++            )));
++        }
+@@ -2165,0 +2559,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
++        ensure!(
++            self.poison.is_healthy(),
++            "strict response commit blocked by daemon poison"
++        );
++        if self.commit_deadline.is_none() {
++            self.commit_deadline = Some(Box::pin(sleep(self.commit_timeout)));
++        }
+@@ -2174 +2574,18 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+-        Pin::new(&mut self.inner).poll_flush(cx)
++        if !self.poison.is_healthy() {
++            return Poll::Ready(Err(anyhow!(
++                "strict response flush blocked by daemon poison"
++            )));
++        }
++        if let Some(deadline) = self.commit_deadline.as_mut()
++            && deadline.as_mut().poll(cx).is_ready()
++        {
++            self.poison.poison();
++            return Poll::Ready(Err(anyhow!("strict response commit deadline expired")));
++        }
++        match Pin::new(&mut self.inner).poll_flush(cx) {
++            Poll::Ready(Ok(())) => {
++                self.commit_deadline = None;
++                Poll::Ready(Ok(()))
++            }
++            result => result,
++        }
+@@ -2284,0 +2702,306 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();
@@ -5552,6 +5723,98 @@ index 98cedfb..b47bfbb 100644
 +            Err(error) => error,
 +        };
 +        assert!(error.to_string().contains("unknown name"));
++    }
++
++    #[test]
++    fn strict_poison_rejects_later_requests() {
++        let runtime = Runtime::new().unwrap();
++        let storage = Arc::new(crate::test::mock_storage::MockStorage::new(None, false));
++        let service = SccacheService::<ProcessCommandCreator>::mock_with_storage(
++            storage,
++            runtime.handle().clone(),
++        );
++        service.poison.poison();
++        let mut service = Arc::new(service);
++
++        let error = match runtime
++            .block_on(service.call(Message::WithoutBody(Request::GetServerIdentity)))
++        {
++            Ok(_) => panic!("poisoned service accepted a request"),
++            Err(error) => error,
++        };
++
++        assert!(error.to_string().contains("daemon is poisoned"));
++    }
++
++    #[test]
++    fn strict_poison_blocks_transport_commit_readiness() {
++        let runtime = Runtime::new().unwrap();
++        let poison = StrictPoison::new();
++        let (_client, server) = tokio::io::duplex(1024);
++        let mut builder = length_delimited::Builder::new();
++        builder.max_frame_length(1024);
++        let io = builder.new_framed(server);
++        let mut transport = SccacheTransport {
++            inner: Framed::new(io.sink_err_into().err_into(), BincodeCodec),
++            poison: poison.clone(),
++            commit_timeout: Duration::from_secs(1),
++            commit_deadline: None,
++        };
++        poison.poison();
++
++        let error = runtime
++            .block_on(futures::future::poll_fn(|cx| {
++                Pin::new(&mut transport).poll_ready(cx)
++            }))
++            .unwrap_err();
++
++        assert!(error.to_string().contains("commit blocked"));
++    }
++
++    #[test]
++    fn strict_stalled_response_commit_poison_is_bounded() {
++        let runtime = Runtime::new().unwrap();
++        let poison = StrictPoison::new();
++        let (_client, server) = tokio::io::duplex(1);
++        let mut builder = length_delimited::Builder::new();
++        builder.max_frame_length(4096);
++        let io = builder.new_framed(server);
++        let mut transport = SccacheTransport {
++            inner: Framed::new(io.sink_err_into().err_into(), BincodeCodec),
++            poison: poison.clone(),
++            commit_timeout: Duration::from_millis(10),
++            commit_deadline: None,
++        };
++
++        let started = std::time::Instant::now();
++        let error = runtime
++            .block_on(transport.send(Frame::Message {
++                message: Response::ServerIdentity(StrictServerIdentity::for_tests()),
++            }))
++            .unwrap_err();
++
++        assert!(error.to_string().contains("deadline expired"));
++        assert!(!poison.is_healthy());
++        assert!(started.elapsed() < Duration::from_secs(1));
++    }
++
++    #[test]
++    fn strict_daemon_poison_closes_accept_loop_with_error() {
++        let runtime = Runtime::new().unwrap();
++        let storage = Arc::new(crate::test::mock_storage::MockStorage::new(None, false));
++        let server = SccacheServer::<tokio::net::TcpListener, ProcessCommandCreator>::new(
++            0,
++            runtime,
++            Client::new_num(1),
++            DistClientContainer::new_disabled(),
++            storage,
++        )
++        .unwrap();
++        server.service.poison.poison();
++
++        let error = server.run(future::pending::<()>()).unwrap_err();
++
++        assert!(error.to_string().contains("terminal poison"));
 +    }
 +
 +    #[test]
@@ -5782,7 +6045,7 @@ index d8531be..efd56b5 100644
 @@ -221,0 +212 @@ impl TestFixture {
 +        TestFixture { tempdir, bins }
 diff --git a/src/util.rs b/src/util.rs
-index bc64c3d..b14c81d 100644
+index bc64c3d..d10a26c 100644
 --- a/src/util.rs
 +++ b/src/util.rs
 @@ -462,0 +463,34 @@ pub fn fmt_duration_as_secs(duration: &Duration) -> String {
@@ -5820,12 +6083,13 @@ index bc64c3d..b14c81d 100644
 +    }
 +}
 +
-@@ -471 +505,3 @@ where
+@@ -471 +505,4 @@ where
 -    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 +    use tokio::io::AsyncWriteExt;
 +    let limit = child.strict_output_limit();
++    let poison = child.strict_poison();
 +    let reservation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-@@ -477,29 +513,2 @@ where
+@@ -477,29 +514,2 @@ where
 -    let stdout = child.take_stdout();
 -    let stdout = async move {
 -        match stdout {
@@ -5857,20 +6121,23 @@ index bc64c3d..b14c81d 100644
 -    };
 +    let stdout = read_bounded_child_output(child.take_stdout(), reservation.clone(), limit);
 +    let stderr = read_bounded_child_output(child.take_stderr(), reservation, limit);
-@@ -516 +525 @@ where
+@@ -516 +526,4 @@ where
 -    let (status, stdout, stderr) = futures::future::try_join3(status, stdout, stderr).await?;
 +    let (status, stdout, stderr) = futures::future::join3(status, stdout, stderr).await;
-@@ -519,3 +528,3 @@ where
++    if stdout.is_err() || stderr.is_err() {
++        poison.poison();
++    }
+@@ -519,3 +532,3 @@ where
 -        status,
 -        stdout: stdout.unwrap_or_default(),
 -        stderr: stderr.unwrap_or_default(),
 +        status: status?,
 +        stdout: stdout?,
 +        stderr: stderr?,
-@@ -533 +542 @@ where
+@@ -533 +546 @@ where
 -    let child = command
 +    command
-@@ -540,3 +549,2 @@ where
+@@ -540,3 +553,2 @@ where
 -        .stderr(Stdio::piped())
 -        .spawn()
 -        .await?;

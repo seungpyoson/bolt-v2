@@ -14,7 +14,7 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
 
@@ -28,9 +28,11 @@ class Config:
     workflow: str
     request_timeout_seconds: int
     runs_per_page: int
+    discovery_stable_sweeps: int
+    discovery_max_sweeps: int
     cancel_poll_attempts: int
     cancel_poll_interval_seconds: int
-    active_statuses: tuple[str, ...]
+    terminal_status: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,11 +68,15 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 class ActionsClient(Protocol):
     def current_branch_sha(self) -> str: ...
 
-    def active_push_runs(self) -> list[WorkflowRun]: ...
+    def active_push_runs(
+        self, freshness_guard: Callable[[], None]
+    ) -> list[WorkflowRun]: ...
 
     def cancel_self(self, run_id: int) -> None: ...
 
-    def cancel_and_confirm(self, run_id: int) -> None: ...
+    def cancel_and_confirm(
+        self, run_id: int, freshness_guard: Callable[[], None]
+    ) -> None: ...
 
 
 def _require_mapping(value: object, label: str) -> Mapping[str, object]:
@@ -97,9 +103,11 @@ def load_config(path: pathlib.Path) -> Config:
         "workflow",
         "request_timeout_seconds",
         "runs_per_page",
+        "discovery_stable_sweeps",
+        "discovery_max_sweeps",
         "cancel_poll_attempts",
         "cancel_poll_interval_seconds",
-        "active_statuses",
+        "terminal_status",
     }
     unknown = set(document) - expected
     if unknown:
@@ -117,6 +125,22 @@ def load_config(path: pathlib.Path) -> Config:
         or not 1 <= runs_per_page <= 100
     ):
         raise ValueError("runs_per_page must be an integer from 1 through 100")
+    discovery_stable_sweeps = document.get("discovery_stable_sweeps")
+    if (
+        isinstance(discovery_stable_sweeps, bool)
+        or not isinstance(discovery_stable_sweeps, int)
+        or discovery_stable_sweeps < 2
+    ):
+        raise ValueError("discovery_stable_sweeps must be an integer of at least 2")
+    discovery_max_sweeps = document.get("discovery_max_sweeps")
+    if (
+        isinstance(discovery_max_sweeps, bool)
+        or not isinstance(discovery_max_sweeps, int)
+        or discovery_max_sweeps < discovery_stable_sweeps
+    ):
+        raise ValueError(
+            "discovery_max_sweeps must be at least discovery_stable_sweeps"
+        )
     cancel_poll_attempts = document.get("cancel_poll_attempts")
     if (
         isinstance(cancel_poll_attempts, bool)
@@ -131,23 +155,17 @@ def load_config(path: pathlib.Path) -> Config:
         or cancel_poll_interval_seconds <= 0
     ):
         raise ValueError("cancel_poll_interval_seconds must be a positive integer")
-    statuses = document.get("active_statuses")
-    if (
-        not isinstance(statuses, list)
-        or not statuses
-        or any(not isinstance(status, str) or not status for status in statuses)
-        or len(set(statuses)) != len(statuses)
-    ):
-        raise ValueError("active_statuses must contain unique non-empty strings")
     return Config(
         api_version=_require_string(document, "api_version"),
         branch=_require_string(document, "branch"),
         workflow=_require_string(document, "workflow"),
         request_timeout_seconds=timeout,
         runs_per_page=runs_per_page,
+        discovery_stable_sweeps=discovery_stable_sweeps,
+        discovery_max_sweeps=discovery_max_sweeps,
         cancel_poll_attempts=cancel_poll_attempts,
         cancel_poll_interval_seconds=cancel_poll_interval_seconds,
-        active_statuses=tuple(str(status) for status in statuses),
+        terminal_status=_require_string(document, "terminal_status"),
     )
 
 
@@ -227,41 +245,60 @@ class GitHubActionsClient:
         obj = _require_mapping(root.get("object"), "branch response.object")
         return _require_string(obj, "sha")
 
-    def active_push_runs(self) -> list[WorkflowRun]:
+    def _workflow_run_sweep(self) -> list[WorkflowRun]:
         workflow = urllib.parse.quote(self.config.workflow, safe="")
         runs: dict[int, WorkflowRun] = {}
-        for status in self.config.active_statuses:
-            next_url: str | None = (
-                f"{GITHUB_API_ORIGIN}/repos/{self.repository}/actions/workflows/"
-                f"{workflow}/runs?"
-                + urllib.parse.urlencode(
-                    {
-                        "branch": self.config.branch,
-                        "event": "push",
-                        "status": status,
-                        "per_page": str(self.config.runs_per_page),
-                    }
-                )
+        next_url: str | None = (
+            f"{GITHUB_API_ORIGIN}/repos/{self.repository}/actions/workflows/"
+            f"{workflow}/runs?"
+            + urllib.parse.urlencode(
+                {
+                    "branch": self.config.branch,
+                    "event": "push",
+                    "per_page": str(self.config.runs_per_page),
+                }
             )
-            while next_url is not None:
-                _, document, headers = self._request_json("GET", next_url)
-                root = _require_mapping(document, "workflow runs response")
-                raw_runs = root.get("workflow_runs")
-                if not isinstance(raw_runs, list):
-                    raise ValueError("workflow_runs must be an array")
-                for raw_run in raw_runs:
-                    item = _require_mapping(raw_run, "workflow run")
-                    run_id = item.get("id")
-                    if isinstance(run_id, bool) or not isinstance(run_id, int):
-                        raise ValueError("workflow run id must be an integer")
-                    runs[run_id] = WorkflowRun(
-                        run_id=run_id,
-                        head_sha=_require_string(item, "head_sha"),
-                        event=_require_string(item, "event"),
-                        status=_require_string(item, "status"),
-                    )
-                next_url = _next_link(headers.get("link"))
+        )
+        while next_url is not None:
+            _, document, headers = self._request_json("GET", next_url)
+            root = _require_mapping(document, "workflow runs response")
+            raw_runs = root.get("workflow_runs")
+            if not isinstance(raw_runs, list):
+                raise ValueError("workflow_runs must be an array")
+            for raw_run in raw_runs:
+                item = _require_mapping(raw_run, "workflow run")
+                run_id = item.get("id")
+                if isinstance(run_id, bool) or not isinstance(run_id, int):
+                    raise ValueError("workflow run id must be an integer")
+                run = WorkflowRun(
+                    run_id=run_id,
+                    head_sha=_require_string(item, "head_sha"),
+                    event=_require_string(item, "event"),
+                    status=_require_string(item, "status"),
+                )
+                if run.event == "push" and run.status != self.config.terminal_status:
+                    runs[run_id] = run
+            next_url = _next_link(headers.get("link"))
         return [runs[run_id] for run_id in sorted(runs)]
+
+    def active_push_runs(
+        self, freshness_guard: Callable[[], None]
+    ) -> list[WorkflowRun]:
+        previous_signature: tuple[tuple[int, str, str], ...] | None = None
+        stable_sweeps = 0
+        for _ in range(self.config.discovery_max_sweeps):
+            freshness_guard()
+            runs = self._workflow_run_sweep()
+            freshness_guard()
+            signature = tuple((run.run_id, run.head_sha, run.event) for run in runs)
+            if signature == previous_signature:
+                stable_sweeps += 1
+            else:
+                previous_signature = signature
+                stable_sweeps = 1
+            if stable_sweeps >= self.config.discovery_stable_sweeps:
+                return runs
+        raise RuntimeError("active workflow-run discovery did not stabilize")
 
     def _run_status(self, run_id: int) -> str:
         _, document, _ = self._request_json(
@@ -284,7 +321,7 @@ class GitHubActionsClient:
 
     def _wait_until_terminal(self, run_id: int) -> bool:
         for attempt in range(self.config.cancel_poll_attempts):
-            if self._run_status(run_id) not in self.config.active_statuses:
+            if self._run_status(run_id) == self.config.terminal_status:
                 return True
             if attempt + 1 < self.config.cancel_poll_attempts:
                 time.sleep(self.config.cancel_poll_interval_seconds)
@@ -293,10 +330,14 @@ class GitHubActionsClient:
     def cancel_self(self, run_id: int) -> None:
         self._request_cancel(run_id, force=False)
 
-    def cancel_and_confirm(self, run_id: int) -> None:
+    def cancel_and_confirm(
+        self, run_id: int, freshness_guard: Callable[[], None]
+    ) -> None:
+        freshness_guard()
         self._request_cancel(run_id, force=False)
         if self._wait_until_terminal(run_id):
             return
+        freshness_guard()
         self._request_cancel(run_id, force=True)
         if self._wait_until_terminal(run_id):
             return
@@ -327,7 +368,11 @@ def reconcile(
     if run_sha != current_sha:
         supersede(f"run {run_id} is not exact-current main")
 
-    active_runs = client.active_push_runs()
+    def require_current_main() -> None:
+        if client.current_branch_sha() != run_sha:
+            supersede(f"run {run_id} ceased to be exact-current main")
+
+    active_runs = client.active_push_runs(require_current_main)
     if client.current_branch_sha() != run_sha:
         supersede(f"run {run_id} ceased to be exact-current main")
 
@@ -342,7 +387,7 @@ def reconcile(
             continue
         if client.current_branch_sha() != run_sha:
             supersede(f"run {run_id} ceased to be exact-current main")
-        client.cancel_and_confirm(run.run_id)
+        client.cancel_and_confirm(run.run_id, require_current_main)
         cancelled.append(run.run_id)
 
     if client.current_branch_sha() != run_sha:
@@ -362,7 +407,12 @@ def cancel_superseded_target(
         return ReconcileResult(cancelled_run_ids=())
     if client.current_branch_sha() != current_sha:
         raise RuntimeError("main moved while the watchdog was evaluating a rerun")
-    client.cancel_and_confirm(run_id)
+
+    def require_stable_main() -> None:
+        if client.current_branch_sha() != current_sha:
+            raise RuntimeError("main moved while the watchdog was cancelling a rerun")
+
+    client.cancel_and_confirm(run_id, require_stable_main)
     return ReconcileResult(cancelled_run_ids=(run_id,))
 
 

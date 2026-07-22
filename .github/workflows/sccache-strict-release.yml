@@ -363,19 +363,51 @@ jobs:
           validate_current_main
 
           release_id=""
+          ownership_marker="$(python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" \
+            release-ownership-marker \
+            --repository "$REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --head-sha "$HEAD_SHA" \
+            --tag "$TAG")"
           cleanup_mutable_release() {
-            local current
+            local cleanup_id current tag_current
+            local -a cleanup_args
             set +e
-            if [[ -n "$release_id" ]] && \
+            if [[ -n "$release_id" ]]; then
               current="$(github_api -H 'X-GitHub-Api-Version: 2026-03-10' \
-                "repos/$REPOSITORY/releases/$release_id" 2>/dev/null)" && \
-              jq -e --arg tag "$TAG" --arg sha "$HEAD_SHA" \
-                '.tag_name == $tag and .target_commitish == $sha and .immutable != true' \
-                <<< "$current" >/dev/null; then
+                "repos/$REPOSITORY/releases/$release_id" 2>/dev/null)" || return
+            else
+              current="$(github_api --paginate --slurp \
+                -H 'X-GitHub-Api-Version: 2026-03-10' \
+                "repos/$REPOSITORY/releases?per_page=100" 2>/dev/null)" || return
+            fi
+            printf '%s\n' "$current" > cleanup-release.json
+            cleanup_args=(
+              select-cleanup-release
+              --releases-json cleanup-release.json
+              --tag "$TAG"
+              --head-sha "$HEAD_SHA"
+              --ownership-marker "$ownership_marker"
+            )
+            if [[ -n "$release_id" ]]; then
+              cleanup_args+=(--release-id "$release_id")
+            fi
+            if cleanup_id="$(python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" \
+              "${cleanup_args[@]}" 2>/dev/null)" && [[ -n "$cleanup_id" ]]; then
               github_api --method DELETE -H 'X-GitHub-Api-Version: 2026-03-10' \
-                "repos/$REPOSITORY/releases/$release_id"
-              if github_api -H 'X-GitHub-Api-Version: 2026-03-10' \
-                "repos/$REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+                "repos/$REPOSITORY/releases/$cleanup_id"
+              if tag_current="$(github_api -H 'X-GitHub-Api-Version: 2026-03-10' \
+                "repos/$REPOSITORY/git/ref/tags/$TAG" 2>/dev/null)"; then
+                printf '%s\n' "$tag_current" > cleanup-tag.json
+                if ! python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" \
+                  validate-cleanup-tag \
+                  --tag-json cleanup-tag.json \
+                  --tag "$TAG" \
+                  --head-sha "$HEAD_SHA"; then
+                  echo 'cleanup left a tag whose identity changed after publication' >&2
+                  return
+                fi
                 github_api --method DELETE -H 'X-GitHub-Api-Version: 2026-03-10' \
                   "repos/$REPOSITORY/git/refs/tags/$TAG"
               fi
@@ -387,11 +419,11 @@ jobs:
             -f tag_name="$TAG" \
             -f target_commitish="$HEAD_SHA" \
             -f name="$TAG" \
-            -f body='Governed strict sccache derivative; adoption requires a separate reviewed digest pin.' \
+            -f body="$ownership_marker" \
             -F draft=true)"
           release_id="$(jq -er '.id' <<< "$release")"
-          jq -e --arg tag "$TAG" --arg sha "$HEAD_SHA" \
-            '.tag_name == $tag and .target_commitish == $sha and .draft == true' \
+          jq -e --arg tag "$TAG" --arg sha "$HEAD_SHA" --arg body "$ownership_marker" \
+            '.tag_name == $tag and .target_commitish == $sha and .draft == true and .body == $body' \
             <<< "$release" >/dev/null
           upload_url="$(jq -er '.upload_url | sub("\\{.*$"; "")' <<< "$release")"
           [[ "$upload_url" == https://uploads.github.com/* ]]

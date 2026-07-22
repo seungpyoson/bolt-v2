@@ -658,6 +658,10 @@ def verify_candidate_set(
             "verification_cache_mode": config.verification_cache_mode,
             "replicas": list(config.replicas),
         },
+        "release_verification": {
+            "attestation_attempts": config.attestation_attempts,
+            "attestation_interval_seconds": config.attestation_interval_seconds,
+        },
         "targets": [
             {
                 "architecture": architecture,
@@ -799,6 +803,90 @@ def verify_release_record(
             raise ValueError(f"release asset {name} does not match expected bytes")
 
 
+def release_ownership_marker(
+    *,
+    repository: str,
+    run_id: str,
+    run_attempt: str,
+    head_sha: str,
+    tag: str,
+) -> str:
+    if not re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
+        raise ValueError("repository must be OWNER/REPO")
+    if not run_id.isdecimal():
+        raise ValueError("run_id must be decimal")
+    if not run_attempt.isdecimal() or int(run_attempt) <= 0:
+        raise ValueError("run_attempt must be a positive decimal")
+    _full_sha(head_sha, "head_sha")
+    if not tag:
+        raise ValueError("release tag must not be empty")
+    return (
+        _canonical_json(
+            {
+                "kind": "governed-strict-sccache-publication",
+                "repository": repository,
+                "run_id": run_id,
+                "run_attempt": run_attempt,
+                "head_sha": head_sha,
+                "tag": tag,
+            }
+        )
+        .decode("utf-8")
+        .rstrip("\n")
+    )
+
+
+def _release_records(value: object) -> list[Mapping[str, object]]:
+    if isinstance(value, Mapping):
+        return [value]
+    if not isinstance(value, list):
+        raise ValueError("release cleanup input must be a record or array")
+    records: list[Mapping[str, object]] = []
+    for item in value:
+        records.extend(_release_records(item))
+    return records
+
+
+def select_owned_mutable_release(
+    releases: object,
+    *,
+    expected_id: int | None,
+    tag: str,
+    head_sha: str,
+    ownership_marker: str,
+) -> int | None:
+    _full_sha(head_sha, "head_sha")
+    matches: list[int] = []
+    for release in _release_records(releases):
+        release_id = release.get("id")
+        if isinstance(release_id, bool) or not isinstance(release_id, int):
+            raise ValueError("release id must be an integer")
+        if expected_id is not None and release_id != expected_id:
+            continue
+        if (
+            release.get("tag_name") == tag
+            and release.get("target_commitish") == head_sha
+            and (release.get("draft") is True or release.get("draft") is False)
+            and release.get("immutable") is not True
+            and release.get("body") == ownership_marker
+        ):
+            matches.append(release_id)
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def validate_cleanup_tag(
+    tag_ref: Mapping[str, object], *, tag: str, head_sha: str
+) -> None:
+    _full_sha(head_sha, "head_sha")
+    if tag_ref.get("ref") != f"refs/tags/{tag}":
+        raise ValueError("cleanup tag ref does not match")
+    tag_object = _mapping(tag_ref.get("object"), "cleanup tag object")
+    if tag_object.get("type") != "commit" or tag_object.get("sha") != head_sha:
+        raise ValueError("cleanup tag does not target exact head commit")
+
+
 def _read_json(path: pathlib.Path, name: str) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -902,6 +990,25 @@ def _parser() -> argparse.ArgumentParser:
     )
     release.add_argument("--release-json", required=True, type=pathlib.Path)
     release.add_argument("--tag-json", required=True, type=pathlib.Path)
+
+    marker = subparsers.add_parser("release-ownership-marker")
+    marker.add_argument("--repository", required=True)
+    marker.add_argument("--run-id", required=True)
+    marker.add_argument("--run-attempt", required=True)
+    marker.add_argument("--head-sha", required=True)
+    marker.add_argument("--tag", required=True)
+
+    cleanup = subparsers.add_parser("select-cleanup-release")
+    cleanup.add_argument("--releases-json", required=True, type=pathlib.Path)
+    cleanup.add_argument("--release-id", type=int)
+    cleanup.add_argument("--tag", required=True)
+    cleanup.add_argument("--head-sha", required=True)
+    cleanup.add_argument("--ownership-marker", required=True)
+
+    cleanup_tag = subparsers.add_parser("validate-cleanup-tag")
+    cleanup_tag.add_argument("--tag-json", required=True, type=pathlib.Path)
+    cleanup_tag.add_argument("--tag", required=True)
+    cleanup_tag.add_argument("--head-sha", required=True)
     return parser
 
 
@@ -937,9 +1044,7 @@ def main(argv: list[str] | None = None) -> int:
                 "replicas": list(config.replicas),
                 "attestation_attempts": config.attestation_attempts,
                 "attestation_interval_seconds": config.attestation_interval_seconds,
-                "derivative_identity": _derivative_identity(
-                    config, args.architecture
-                ),
+                "derivative_identity": _derivative_identity(config, args.architecture),
             }
             _emit_json(output)
             return 0
@@ -1002,6 +1107,40 @@ def main(argv: list[str] | None = None) -> int:
                 environment_name=args.environment_name,
             )
             _emit_json({"publisher_ready": True})
+            return 0
+        if args.command == "release-ownership-marker":
+            print(
+                release_ownership_marker(
+                    repository=args.repository,
+                    run_id=args.run_id,
+                    run_attempt=args.run_attempt,
+                    head_sha=args.head_sha,
+                    tag=args.tag,
+                )
+            )
+            return 0
+        if args.command == "select-cleanup-release":
+            release_id = select_owned_mutable_release(
+                _read_json(args.releases_json, "cleanup release records"),
+                expected_id=args.release_id,
+                tag=args.tag,
+                head_sha=args.head_sha,
+                ownership_marker=args.ownership_marker,
+            )
+            if release_id is None:
+                return 1
+            print(release_id)
+            return 0
+        if args.command == "validate-cleanup-tag":
+            tag_document = _mapping(
+                _read_json(args.tag_json, "cleanup tag record"),
+                "cleanup tag record",
+            )
+            validate_cleanup_tag(
+                tag_document,
+                tag=args.tag,
+                head_sha=args.head_sha,
+            )
             return 0
         raise ValueError("unsupported command")
     except ValueError as error:

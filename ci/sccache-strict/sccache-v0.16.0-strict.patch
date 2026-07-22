@@ -296,14 +296,14 @@ index 760026f..5949157 100644
 +        let error = runtime.block_on(storage.check()).unwrap_err();
 +        assert!(error.to_string().contains("cache storage failed to read"));
 diff --git a/src/cache/cache_io.rs b/src/cache/cache_io.rs
-index 9e29743..8c696b6 100644
+index 9e29743..f109501 100644
 --- a/src/cache/cache_io.rs
 +++ b/src/cache/cache_io.rs
 @@ -19 +19,2 @@ use std::path::{Path, PathBuf};
 -use tempfile::NamedTempFile;
 +use tempfile::{NamedTempFile, tempfile};
 +use zip::result::ZipError;
-@@ -88,0 +90,11 @@ impl std::error::Error for DecompressionFailure {}
+@@ -88,0 +90,191 @@ impl std::error::Error for DecompressionFailure {}
 +#[derive(Debug)]
 +struct CacheObjectMissing;
 +
@@ -315,23 +315,203 @@ index 9e29743..8c696b6 100644
 +
 +impl std::error::Error for CacheObjectMissing {}
 +
-@@ -106 +118,5 @@ impl CacheRead {
++enum StagedOutput {
++    Persist {
++        temporary: NamedTempFile,
++        path: PathBuf,
++        mode: Option<u32>,
++    },
++    Copy {
++        temporary: std::fs::File,
++        path: PathBuf,
++        mode: Option<u32>,
++    },
++}
++
++impl StagedOutput {
++    fn path(&self) -> &Path {
++        match self {
++            Self::Persist { path, .. } | Self::Copy { path, .. } => path,
++        }
++    }
++
++    fn permits_special_destination(&self) -> bool {
++        match self {
++            Self::Persist { .. } => false,
++            Self::Copy { path, .. } => is_stream_destination(path),
++        }
++    }
++
++    fn commit(self) -> Result<()> {
++        match self {
++            Self::Persist {
++                temporary,
++                path,
++                mode,
++            } => {
++                temporary.persist(&path)?;
++                if let Some(mode) = mode {
++                    set_file_mode(path.as_path(), mode)?;
++                }
++            }
++            Self::Copy {
++                mut temporary,
++                path,
++                mode,
++            } => {
++                temporary.rewind()?;
++                let mut destination = fs::File::create(&path)?;
++                std::io::copy(&mut temporary, &mut destination)?;
++                if let Some(mode) = mode {
++                    set_file_mode(path.as_path(), mode)?;
++                }
++            }
++        }
++        Ok(())
++    }
++}
++
++enum DestinationBackup {
++    Missing(PathBuf),
++    Regular {
++        path: PathBuf,
++        temporary: std::fs::File,
++        mode: Option<u32>,
++    },
++    Special,
++}
++
++impl DestinationBackup {
++    fn capture(path: &Path, permits_special_destination: bool) -> Result<Self> {
++        let metadata = match fs::symlink_metadata(path) {
++            Ok(metadata) => metadata,
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
++                return Ok(Self::Missing(path.to_path_buf()));
++            }
++            Err(error) => return Err(error.into()),
++        };
++        if !metadata.file_type().is_file() {
++            if permits_special_destination {
++                return Ok(Self::Special);
++            }
++            bail!("refusing to replace a non-regular cache output destination");
++        }
++        let mut source = fs::File::open(path)?;
++        let mode = get_file_mode(&source)?;
++        let mut temporary = tempfile()?;
++        std::io::copy(&mut source, &mut temporary)?;
++        Ok(Self::Regular {
++            path: path.to_path_buf(),
++            temporary,
++            mode,
++        })
++    }
++
++    fn restore(self) -> Result<()> {
++        match self {
++            Self::Missing(path) => match fs::remove_file(path) {
++                Ok(()) => Ok(()),
++                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
++                Err(error) => Err(error.into()),
++            },
++            Self::Regular {
++                path,
++                mut temporary,
++                mode,
++            } => {
++                temporary.rewind()?;
++                let directory = path
++                    .parent()
++                    .context("cache output destination has no parent directory")?;
++                let mut destination = NamedTempFile::new_in(directory)?;
++                std::io::copy(&mut temporary, &mut destination)?;
++                if let Some(mode) = mode {
++                    set_file_mode(destination.path(), mode)?;
++                }
++                destination.persist(path)?;
++                Ok(())
++            }
++            Self::Special => Ok(()),
++        }
++    }
++}
++
++struct StagedCacheRead {
++    stdout: Vec<u8>,
++    stderr: Vec<u8>,
++    outputs: Vec<StagedOutput>,
++}
++
++impl StagedCacheRead {
++    fn rollback(mut backups: Vec<DestinationBackup>) -> Result<()> {
++        let mut first_error = None;
++        while let Some(backup) = backups.pop() {
++            if let Err(error) = backup.restore()
++                && first_error.is_none()
++            {
++                first_error = Some(error);
++            }
++        }
++        if let Some(error) = first_error {
++            return Err(error).context("failed to roll back cache-hit output commit");
++        }
++        Ok(())
++    }
++
++    fn commit(self, deadline: Option<std::time::Instant>) -> Result<(Vec<u8>, Vec<u8>)> {
++        let mut backups = Vec::new();
++        for output in self.outputs {
++            if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
++                Self::rollback(backups)?;
++                bail!("governed cache materialization deadline expired before commit");
++            }
++            let backup = match DestinationBackup::capture(
++                output.path(),
++                output.permits_special_destination(),
++            ) {
++                Ok(backup) => backup,
++                Err(error) => {
++                    Self::rollback(backups)?;
++                    return Err(error);
++                }
++            };
++            if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
++                backups.push(backup);
++                Self::rollback(backups)?;
++                bail!("governed cache materialization deadline expired before output mutation");
++            }
++            if let Err(error) = output.commit() {
++                backups.push(backup);
++                Self::rollback(backups)?;
++                return Err(error);
++            }
++            backups.push(backup);
++            if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
++                Self::rollback(backups)?;
++                bail!("governed cache materialization deadline expired during commit");
++            }
++        }
++        Ok((self.stdout, self.stderr))
++    }
++}
++
+@@ -106 +298,5 @@ impl CacheRead {
 -        let file = self.zip.by_name(name).or(Err(DecompressionFailure))?;
 +        let file = match self.zip.by_name(name) {
 +            Ok(file) => file,
 +            Err(ZipError::FileNotFound) => bail!(CacheObjectMissing),
 +            Err(_) => bail!(DecompressionFailure),
 +        };
-@@ -116 +132 @@ impl CacheRead {
+@@ -116 +312 @@ impl CacheRead {
 -    pub fn get_stdout(&mut self) -> Vec<u8> {
 +    pub fn get_stdout(&mut self) -> Result<Vec<u8>> {
-@@ -121 +137 @@ impl CacheRead {
+@@ -121 +317 @@ impl CacheRead {
 -    pub fn get_stderr(&mut self) -> Vec<u8> {
 +    pub fn get_stderr(&mut self) -> Result<Vec<u8>> {
-@@ -125 +141 @@ impl CacheRead {
+@@ -125 +321 @@ impl CacheRead {
 -    fn get_bytes(&mut self, name: &str) -> Vec<u8> {
 +    fn get_bytes(&mut self, name: &str) -> Result<Vec<u8>> {
-@@ -127,2 +143,5 @@ impl CacheRead {
+@@ -127,2 +323,5 @@ impl CacheRead {
 -        drop(self.get_object(name, &mut bytes));
 -        bytes
 +        match self.get_object(name, &mut bytes) {
@@ -339,27 +519,16 @@ index 9e29743..8c696b6 100644
 +            Err(error) if error.downcast_ref::<CacheObjectMissing>().is_some() => Ok(Vec::new()),
 +            Err(error) => Err(error),
 +        }
-@@ -131 +150 @@ impl CacheRead {
+@@ -131 +330 @@ impl CacheRead {
 -    pub async fn extract_objects<T>(
 +    pub async fn materialize<T>(
-@@ -135 +154,2 @@ impl CacheRead {
+@@ -135 +334,2 @@ impl CacheRead {
 -    ) -> Result<()>
 +        deadline: Option<std::time::Instant>,
 +    ) -> Result<(Vec<u8>, Vec<u8>)>
-@@ -139,0 +160,24 @@ impl CacheRead {
-+            enum StagedOutput {
-+                Persist {
-+                    temporary: NamedTempFile,
-+                    path: PathBuf,
-+                    mode: Option<u32>,
-+                },
-+                Copy {
-+                    temporary: std::fs::File,
-+                    path: PathBuf,
-+                    mode: Option<u32>,
-+                },
-+            }
-+
+@@ -139 +339,12 @@ impl CacheRead {
+-        pool.spawn_blocking(move || {
++        let staging = pool.spawn_blocking(move || {
 +            let check_deadline = || -> Result<()> {
 +                if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
 +                    bail!("governed cache materialization deadline expired");
@@ -370,8 +539,8 @@ index 9e29743..8c696b6 100644
 +            check_deadline()?;
 +            let stderr = self.get_stderr()?;
 +            check_deadline()?;
-+            let mut staged = Vec::new();
-@@ -166,11 +210,9 @@ impl CacheRead {
++            let mut outputs = Vec::new();
+@@ -166,11 +377,9 @@ impl CacheRead {
 -                    (Ok(mut tmp), _) => {
 -                        match (self.get_object(&key, &mut tmp), optional) {
 -                            (Ok(mode), _) => {
@@ -384,7 +553,7 @@ index 9e29743..8c696b6 100644
 -                            // skip if no object found and it's optional
 -                            (Err(_), true) => continue,
 +                    (Ok(mut tmp), _) => match (self.get_object(&key, &mut tmp), optional) {
-+                        (Ok(mode), _) => staged.push(StagedOutput::Persist {
++                        (Ok(mode), _) => outputs.push(StagedOutput::Persist {
 +                            temporary: tmp,
 +                            path,
 +                            mode,
@@ -392,21 +561,27 @@ index 9e29743..8c696b6 100644
 +                        (Err(e), false) => return Err(e),
 +                        (Err(e), true) if e.downcast_ref::<CacheObjectMissing>().is_some() => {
 +                            continue;
-@@ -178 +220,2 @@ impl CacheRead {
+@@ -178 +387,2 @@ impl CacheRead {
 -                    }
 +                        (Err(e), true) => return Err(e),
 +                    },
-@@ -180 +223,2 @@ impl CacheRead {
+@@ -180 +390,2 @@ impl CacheRead {
 -                        // Fall back to writing directly to the final location
 +                        // Stage outside the destination filesystem. Final outputs are not
 +                        // touched until every archive member has been validated.
-@@ -182,3 +226,33 @@ impl CacheRead {
+@@ -182,9 +393,17 @@ impl CacheRead {
 -                        let mut f = std::fs::File::create(&path)?;
 -                        // `optional` is false in this branch, so do not ignore errors
 -                        let mode = self.get_object(&key, &mut f)?;
+-                        if let Some(mode) = mode {
+-                            if let Err(e) = set_file_mode(path.as_path(), mode) {
+-                                // Here we ignore errors from setting file mode because
+-                                // if we could not create a temp file in the same directory,
+-                                // we probably can't set the mode either (e.g. /dev/stuff)
+-                                warn!("Failed to reset file mode: {e}");
 +                        let mut temporary = tempfile()?;
 +                        let mode = self.get_object(&key, &mut temporary)?;
-+                        staged.push(StagedOutput::Copy {
++                        outputs.push(StagedOutput::Copy {
 +                            temporary,
 +                            path,
 +                            mode,
@@ -421,57 +596,54 @@ index 9e29743..8c696b6 100644
 +                            Ok(_) => continue,
 +                            Err(error) if error.downcast_ref::<CacheObjectMissing>().is_some() => {
 +                                continue;
-+                            }
+@@ -191,0 +411 @@ impl CacheRead {
 +                            Err(error) => return Err(error),
-+                        }
-+                    }
-+                }
-+                check_deadline()?;
-+            }
-+            check_deadline()?;
-+            for output in staged {
-+                match output {
-+                    StagedOutput::Persist {
-+                        temporary,
-+                        path,
-+                        mode,
-+                    } => {
-+                        temporary.persist(&path)?;
-@@ -186,5 +260,14 @@ impl CacheRead {
--                            if let Err(e) = set_file_mode(path.as_path(), mode) {
--                                // Here we ignore errors from setting file mode because
--                                // if we could not create a temp file in the same directory,
--                                // we probably can't set the mode either (e.g. /dev/stuff)
--                                warn!("Failed to reset file mode: {e}");
-+                            set_file_mode(path.as_path(), mode)?;
-+                        }
-+                    }
-+                    StagedOutput::Copy {
-+                        mut temporary,
-+                        path,
-+                        mode,
-+                    } => {
-+                        temporary.rewind()?;
-+                        let mut destination = fs::File::create(&path)?;
-+                        std::io::copy(&mut temporary, &mut destination)?;
-+                        if let Some(mode) = mode {
-+                            if let Err(error) = set_file_mode(path.as_path(), mode) {
-+                                warn!("Failed to reset file mode: {error}");
-@@ -194,2 +276,0 @@ impl CacheRead {
+@@ -194,2 +413,0 @@ impl CacheRead {
 -                    // skip if no object found and it's optional
 -                    (Err(_), true) => continue,
-@@ -198 +279 @@ impl CacheRead {
+@@ -196,0 +415 @@ impl CacheRead {
++                check_deadline()?;
+@@ -198,3 +417,24 @@ impl CacheRead {
 -            Ok(())
-+            Ok((stdout, stderr))
-@@ -201,0 +283,7 @@ impl CacheRead {
+-        })
+-        .await?
++            Ok(StagedCacheRead {
++                stdout,
++                stderr,
++                outputs,
++            })
++        });
++        let staged = if let Some(deadline) = deadline {
++            let remaining = deadline
++                .checked_duration_since(std::time::Instant::now())
++                .context("governed cache materialization deadline expired before staging")?;
++            tokio::time::timeout(remaining, staging)
++                .await
++                .context("governed cache materialization staging timed out")???
++        } else {
++            staging.await??
++        };
++        pool.spawn_blocking(move || staged.commit(deadline)).await?
++    }
 +
 +    pub async fn extract_objects<T>(self, objects: T, pool: &tokio::runtime::Handle) -> Result<()>
 +    where
 +        T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
 +    {
 +        self.materialize(objects, pool, None).await.map(drop)
-+    }
-@@ -323,0 +412,186 @@ mod tests {
+@@ -208,0 +449,5 @@ fn is_path_null(path: &Path) -> bool {
++#[cfg(unix)]
++fn is_stream_destination(path: &Path) -> bool {
++    path.parent() == Some(Path::new("/dev/fd"))
++}
++
+@@ -220,0 +466,5 @@ fn is_path_null(path: &Path) -> bool {
++#[cfg(windows)]
++fn is_stream_destination(_path: &Path) -> bool {
++    false
++}
++
+@@ -323,0 +574,220 @@ mod tests {
 +    use std::io::{Seek, SeekFrom};
 +
 +    struct SlowCursor {
@@ -620,6 +792,46 @@ index 9e29743..8c696b6 100644
 +    }
 +
 +    #[test]
++    fn strict_late_commit_failure_rolls_back_earlier_outputs() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let mut cache_write = CacheWrite::new();
++        cache_write
++            .put_object("first", &mut Cursor::new(b"first output"), None)
++            .unwrap();
++        cache_write
++            .put_object("second", &mut Cursor::new(b"second output"), None)
++            .unwrap();
++        let cache_read = CacheRead::from(Cursor::new(cache_write.finish().unwrap())).unwrap();
++        let temporary = tempfile::tempdir().unwrap();
++        let first_path = temporary.path().join("first.out");
++        let directory_destination = temporary.path().join("directory-destination");
++        fs::create_dir(&directory_destination).unwrap();
++        let objects = vec![
++            FileObjectSource {
++                key: "first".to_owned(),
++                path: first_path.clone(),
++                optional: false,
++            },
++            FileObjectSource {
++                key: "second".to_owned(),
++                path: directory_destination.clone(),
++                optional: false,
++            },
++        ];
++
++        assert!(
++            runtime
++                .block_on(cache_read.extract_objects(objects, runtime.handle()))
++                .is_err()
++        );
++        assert!(!first_path.exists());
++        assert!(directory_destination.is_dir());
++    }
++
++    #[test]
 +    fn strict_stalled_cache_hit_materialization_obeys_caller_deadline() {
 +        let runtime = tokio::runtime::Builder::new_current_thread()
 +            .enable_all()
@@ -642,23 +854,17 @@ index 9e29743..8c696b6 100644
 +            path: output.clone(),
 +            optional: false,
 +        }];
-+        let result = runtime.block_on(async {
-+            tokio::time::timeout(
-+                std::time::Duration::from_millis(1),
-+                cache_read.materialize(
-+                    objects,
-+                    runtime.handle(),
-+                    Some(std::time::Instant::now() + std::time::Duration::from_millis(1)),
-+                ),
-+            )
-+            .await
-+        });
++        let result = runtime.block_on(cache_read.materialize(
++            objects,
++            runtime.handle(),
++            Some(std::time::Instant::now() + std::time::Duration::from_millis(1)),
++        ));
 +
 +        assert!(result.is_err());
 +        std::thread::sleep(std::time::Duration::from_millis(50));
 +        assert!(!output.exists());
 +    }
-@@ -385 +659 @@ mod tests {
+@@ -385 +855 @@ mod tests {
 -                "Extracting to /dev/fd/{raw_fd} should succeed"
 +                "Extracting to /dev/fd/{raw_fd} should succeed: {result:?}"
 diff --git a/src/cache/readonly.rs b/src/cache/readonly.rs
@@ -895,7 +1101,7 @@ index 88d93fc..8d312e9 100644
 +
 +        assert!(error.to_string().contains("exceeds configured maximum"));
 diff --git a/src/commands.rs b/src/commands.rs
-index 8d8406a..60ef6b9 100644
+index 8d8406a..f941db1 100644
 --- a/src/commands.rs
 +++ b/src/commands.rs
 @@ -15,2 +15 @@
@@ -1092,7 +1298,7 @@ index 8d8406a..60ef6b9 100644
 @@ -810 +766 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
 +            let conn = connect_required(&get_addr(), timeouts.ipc, &identity)?;
-@@ -829,0 +786,243 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -829,0 +786,247 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 +
 +#[cfg(all(test, unix))]
 +mod strict_test {
@@ -1301,6 +1507,10 @@ index 8d8406a..60ef6b9 100644
 +                crate::config::governed_duration_from_value("STRICT_TIMEOUT", invalid).is_err()
 +            );
 +        }
++        assert!(
++            crate::config::governed_duration_from_value("STRICT_TIMEOUT", &u64::MAX.to_string(),)
++                .is_err()
++        );
 +    }
 +
 +    #[test]
@@ -1337,16 +1547,18 @@ index 8d8406a..60ef6b9 100644
 +    }
 +}
 diff --git a/src/compiler/compiler.rs b/src/compiler/compiler.rs
-index 78bb5a4..5f56fe2 100644
+index 78bb5a4..78d7ab4 100644
 --- a/src/compiler/compiler.rs
 +++ b/src/compiler/compiler.rs
 @@ -16 +16 @@
 -use crate::cache::{Cache, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
 +use crate::cache::{Cache, CacheWrite, FileObjectSource, Storage};
-@@ -586,0 +587,2 @@ where
+@@ -586,0 +587,4 @@ where
 +        let timeout = service.cache_read_timeout();
-+        let cache_read_deadline = Instant::now() + timeout;
-@@ -588,10 +590 @@ where
++        let cache_read_deadline = Instant::now()
++            .checked_add(timeout)
++            .context("governed cache-read timeout exceeds the monotonic-clock range")?;
+@@ -588,10 +592 @@ where
 -        // Set a maximum time limit for the cache to respond before we forge
 -        // ahead ourselves with a compilation.
 -        let timeout = Duration::new(60, 0);
@@ -1358,15 +1570,23 @@ index 78bb5a4..5f56fe2 100644
 -
 -        // Check the result of the cache lookup.
 +        // Check the result of the cache lookup and fully restore any hit under one deadline.
-@@ -605,46 +598,32 @@ where
+@@ -605,3 +600,12 @@ where
 -
 -        let lookup = match cache_status.await {
 -            (Ok(Ok(Cache::Hit(mut entry))), duration) => {
--                debug!(
--                    "[{}]: Cache hit in {}",
--                    out_pretty,
--                    fmt_duration_as_secs(&duration)
--                );
++        let locally_preprocessed = compilation.is_locally_preprocessed();
++        let cache_status = tokio::time::timeout(timeout, cache_status)
++            .await
++            .map_err(|_| {
++                anyhow!(
++                    "governed cache read or materialization timed out for {out_pretty} after {}",
++                    fmt_duration_as_secs(&start.elapsed())
++                )
++            })?;
++        let duration = start.elapsed();
++        let lookup = match cache_status {
++            Ok(Cache::Hit(entry)) => {
+@@ -613,14 +617 @@ where
 -                let output = process::Output {
 -                    status: exit_status(0),
 -                    stdout: entry.get_stdout(),
@@ -1381,18 +1601,16 @@ index 78bb5a4..5f56fe2 100644
 -                    // the dependency file except for the compilation unit that originally produced it.
 -                    // Since we did local preprocessing, that should already have produced the dependency
 -                    // file - just leave that one alone and don't overwrite it from the cache.
--                    outputs
--                        .iter()
++                let filtered_outputs = if locally_preprocessed {
+@@ -629 +620 @@ where
 -                        .filter(|fobj_source| fobj_source.key != "d") // key "d" means dependency file
--                        .cloned()
--                        .collect()
--                } else {
++                        .filter(|fobj_source| fobj_source.key != "d")
+@@ -633,4 +623,0 @@ where
 -                    // In this mode, no local preprocessing was done, so the dependency file (if any)
 -                    // has not been created. But in this mode, the cache key also includes a lot of
 -                    // information about filenames (and less relevant here, file hashes), so it *is* safe
 -                    // to restore the dependency file from the cache.
--                    outputs.clone()
--                };
+@@ -639,13 +626,15 @@ where
 -
 -                let hit = CompileResult::CacheHit(duration);
 -                match entry.extract_objects(filtered_outputs, &pool).await {
@@ -1405,94 +1623,41 @@ index 78bb5a4..5f56fe2 100644
 -                            Err(e)
 -                        }
 -                    }
-+        let locally_preprocessed = compilation.is_locally_preprocessed();
-+        let lookup = tokio::time::timeout(timeout, async {
-+            let cache_status = cache_status.await;
-+            let duration = start.elapsed();
-+            match cache_status {
-+                Ok(Cache::Hit(entry)) => {
-+                    debug!(
-+                        "[{}]: Cache hit in {}",
-+                        out_pretty,
-+                        fmt_duration_as_secs(&duration)
-+                    );
-+                    let filtered_outputs = if locally_preprocessed {
-+                        outputs
-+                            .iter()
-+                            .filter(|fobj_source| fobj_source.key != "d")
-+                            .cloned()
-+                            .collect()
-+                    } else {
-+                        outputs.clone()
-+                    };
-+                    let (stdout, stderr) = entry
-+                        .materialize(filtered_outputs, &pool, Some(cache_read_deadline))
-+                        .await?;
-+                    let output = process::Output {
-+                        status: exit_status(0),
-+                        stdout,
-+                        stderr,
-+                    };
-+                    Ok(CacheLookupResult::Success(
-+                        CompileResult::CacheHit(duration),
-+                        output,
-+                    ))
-@@ -651,0 +631,30 @@ where
-+                Ok(Cache::Miss) => {
-+                    debug!(
-+                        "[{}]: Cache miss in {}",
-+                        out_pretty,
-+                        fmt_duration_as_secs(&duration)
-+                    );
-+                    Ok(CacheLookupResult::Miss(MissType::Normal))
-+                }
-+                Ok(Cache::None) => {
-+                    debug!(
-+                        "[{}]: Cache none in {}",
-+                        out_pretty,
-+                        fmt_duration_as_secs(&duration)
-+                    );
-+                    Ok(CacheLookupResult::Miss(MissType::ForcedNoCache))
-+                }
-+                Ok(Cache::Recache) => {
-+                    debug!(
-+                        "[{}]: Cache recache in {}",
-+                        out_pretty,
-+                        fmt_duration_as_secs(&duration)
-+                    );
-+                    Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
-+                }
-+                Err(error) => Err(error).with_context(|| {
-+                    format!(
-+                        "governed cache read failed for {out_pretty} after {}",
-+                        fmt_duration_as_secs(&duration)
-+                    )
-+                }),
-@@ -653,43 +662,8 @@ where
+-                }
++                let (stdout, stderr) = entry
++                    .materialize(filtered_outputs, &pool, Some(cache_read_deadline))
++                    .await
++                    .with_context(|| {
++                        format!(
++                            "governed cache materialization failed for {out_pretty} after {}",
++                            fmt_duration_as_secs(&start.elapsed())
++                        )
++                    })?;
++                let output = process::Output {
++                    status: exit_status(0),
++                    stdout,
++                    stderr,
++                };
++                CacheLookupResult::Success(CompileResult::CacheHit(duration), output)
+@@ -653 +642 @@ where
 -            (Ok(Ok(Cache::Miss)), duration) => {
--                debug!(
--                    "[{}]: Cache miss in {}",
--                    out_pretty,
--                    fmt_duration_as_secs(&duration)
--                );
++            Ok(Cache::Miss) => {
+@@ -659 +648 @@ where
 -                Ok(CacheLookupResult::Miss(MissType::Normal))
--            }
++                CacheLookupResult::Miss(MissType::Normal)
+@@ -661 +650 @@ where
 -            (Ok(Ok(Cache::None)), duration) => {
--                debug!(
--                    "[{}]: Cache none in {}",
--                    out_pretty,
--                    fmt_duration_as_secs(&duration)
--                );
++            Ok(Cache::None) => {
+@@ -667 +656 @@ where
 -                Ok(CacheLookupResult::Miss(MissType::ForcedNoCache))
--            }
++                CacheLookupResult::Miss(MissType::ForcedNoCache)
+@@ -669 +658 @@ where
 -            (Ok(Ok(Cache::Recache)), duration) => {
--                debug!(
--                    "[{}]: Cache recache in {}",
--                    out_pretty,
--                    fmt_duration_as_secs(&duration)
--                );
++            Ok(Cache::Recache) => {
+@@ -675 +664 @@ where
 -                Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
--            }
++                CacheLookupResult::Miss(MissType::ForcedRecache)
+@@ -677,16 +666,7 @@ where
 -            (Ok(Err(err)), duration) => {
 -                error!(
 -                    "[{}]: Cache read error: {:?} in {}",
@@ -1509,18 +1674,18 @@ index 78bb5a4..5f56fe2 100644
 -                    fmt_duration_as_secs(&duration)
 -                );
 -                Ok(CacheLookupResult::Miss(MissType::TimedOut))
--            }
++            Err(error) => {
++                return Err(error).with_context(|| {
++                    format!(
++                        "governed cache read failed for {out_pretty} after {}",
++                        fmt_duration_as_secs(&duration)
++                    )
++                });
+@@ -694,2 +674 @@ where
 -        }?;
 -
-+        })
-+        .await
-+        .map_err(|_| {
-+            anyhow!(
-+                "governed cache read or materialization timed out for {out_pretty} after {}",
-+                fmt_duration_as_secs(&start.elapsed())
-+            )
-+        })??;
-@@ -772,0 +747,10 @@ where
++        };
+@@ -772,0 +752,10 @@ where
 +                if storage.is_read_only() {
 +                    return Ok((
 +                        CompileResult::ReadOnlyCacheMiss(
@@ -1531,29 +1696,29 @@ index 78bb5a4..5f56fe2 100644
 +                        compiler_result,
 +                    ));
 +                }
-@@ -1236,0 +1221,2 @@ pub enum CompileResult {
+@@ -1236,0 +1226,2 @@ pub enum CompileResult {
 +    /// A governed read-only miss compiled without attempting a cache write.
 +    ReadOnlyCacheMiss(MissType, DistType, Duration),
-@@ -1262,0 +1249,5 @@ impl fmt::Debug for CompileResult {
+@@ -1262,0 +1254,5 @@ impl fmt::Debug for CompileResult {
 +            CompileResult::ReadOnlyCacheMiss(ref m, ref dt, ref d) => write!(
 +                f,
 +                "CompileResult::ReadOnlyCacheMiss({:?}, {:?}, {:?})",
 +                d, m, dt
 +            ),
-@@ -1284,0 +1276,4 @@ impl PartialEq<CompileResult> for CompileResult {
+@@ -1284,0 +1281,4 @@ impl PartialEq<CompileResult> for CompileResult {
 +            (
 +                CompileResult::ReadOnlyCacheMiss(m, dt, _),
 +                CompileResult::ReadOnlyCacheMiss(n, dt2, _),
 +            ) => m == n && dt == dt2,
-@@ -2804,2 +2799 @@ LLVM version: 6.0",
+@@ -2804,2 +2804 @@ LLVM version: 6.0",
 -    /// Test that a cache read that results in an error is treated as a cache
 -    /// miss.
 +    /// Test that a cache read error stops before compiler execution.
-@@ -2841,3 +2834,0 @@ LLVM version: 6.0",
+@@ -2841,3 +2839,0 @@ LLVM version: 6.0",
 -        // The compiler invocation.
 -        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
 -        const COMPILER_STDERR: &[u8] = b"compiler stderr";
-@@ -2845,11 +2835,0 @@ LLVM version: 6.0",
+@@ -2845,11 +2840,0 @@ LLVM version: 6.0",
 -        let o = obj.clone();
 -        next_command_calls(&creator, move |_| {
 -            // Pretend to compile something.
@@ -1565,10 +1730,10 @@ index 78bb5a4..5f56fe2 100644
 -                COMPILER_STDERR,
 -            ))
 -        });
-@@ -2864 +2844 @@ LLVM version: 6.0",
+@@ -2864 +2849 @@ LLVM version: 6.0",
 -        let (cached, res) = runtime
 +        let error = runtime
-@@ -2875,0 +2856,136 @@ LLVM version: 6.0",
+@@ -2875,0 +2861,136 @@ LLVM version: 6.0",
 +            .unwrap_err();
 +        assert!(error.to_string().contains("governed cache read failed"));
 +        assert!(!obj.exists());
@@ -1705,7 +1870,7 @@ index 78bb5a4..5f56fe2 100644
 +                CacheControl::Default,
 +                pool,
 +            ))
-@@ -2877,9 +2992,0 @@ LLVM version: 6.0",
+@@ -2877,9 +2997,0 @@ LLVM version: 6.0",
 -        // Ensure that the object file was created.
 -        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
 -        match cached {
@@ -1715,7 +1880,7 @@ index 78bb5a4..5f56fe2 100644
 -            }
 -            _ => panic!("Unexpected compile result: {:?}", cached),
 -        }
-@@ -2887,3 +2994,6 @@ LLVM version: 6.0",
+@@ -2887,3 +2999,6 @@ LLVM version: 6.0",
 -        assert_eq!(exit_status(0), res.status);
 -        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
 -        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -1733,10 +1898,10 @@ index e6f72a7..8ec211c 100644
 -                                .join("x_".to_owned() + &count + extension)
 +                                .join("x_".to_owned() + count.as_str() + extension)
 diff --git a/src/config.rs b/src/config.rs
-index cef32b2..e5ced02 100644
+index cef32b2..07f19b7 100644
 --- a/src/config.rs
 +++ b/src/config.rs
-@@ -38,0 +39,75 @@ use crate::errors::*;
+@@ -38,0 +39,79 @@ use crate::errors::*;
 +use crate::protocol::StrictServerIdentity;
 +
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1783,7 +1948,11 @@ index cef32b2..e5ced02 100644
 +    if millis == 0 {
 +        bail!("{name} must be greater than zero");
 +    }
-+    Ok(std::time::Duration::from_millis(millis))
++    let duration = std::time::Duration::from_millis(millis);
++    if std::time::Instant::now().checked_add(duration).is_none() {
++        bail!("{name} exceeds the platform monotonic-clock range");
++    }
++    Ok(duration)
 +}
 +
 +pub fn governed_duration_from_env(name: &str) -> Result<std::time::Duration> {
@@ -1812,7 +1981,7 @@ index cef32b2..e5ced02 100644
 +    }
 +    Ok(length)
 +}
-@@ -1356,0 +1432,70 @@ impl Config {
+@@ -1356,0 +1436,70 @@ impl Config {
 +/// Bind the strict protocol to the effective cache and timeout policy.
 +pub fn strict_server_identity(
 +    config: &Config,
@@ -2174,7 +2343,7 @@ index 8760ba6..c2e8ed9 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..efcc189 100644
+index 98cedfb..b803aac 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -2193,13 +2362,21 @@ index 98cedfb..efcc189 100644
 @@ -53 +55 @@ use std::os::linux::net::SocketAddrExt;
 -use std::path::PathBuf;
 +use std::path::{Path, PathBuf};
-@@ -430 +432,78 @@ thread_local! {
+@@ -430 +432,127 @@ thread_local! {
 -pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()> {
 +#[cfg(unix)]
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +struct UnixSocketIdentity {
 +    device: u64,
 +    inode: u64,
++}
++
++#[cfg(unix)]
++#[derive(Debug)]
++struct UnixSocketOwnership {
++    path: PathBuf,
++    identity: UnixSocketIdentity,
++    _lock: fs::File,
 +}
 +
 +#[cfg(unix)]
@@ -2220,9 +2397,37 @@ index 98cedfb..efcc189 100644
 +}
 +
 +#[cfg(unix)]
-+fn remove_owned_unix_socket(path: &Path, identity: UnixSocketIdentity) -> io::Result<()> {
-+    match unix_socket_identity(path) {
-+        Ok(current) if current == identity => fs::remove_file(path),
++fn unix_socket_lock_path(path: &Path) -> PathBuf {
++    let mut lock_name = path.as_os_str().to_os_string();
++    lock_name.push(".lock");
++    PathBuf::from(lock_name)
++}
++
++#[cfg(unix)]
++fn acquire_unix_socket_lock(path: &Path) -> io::Result<fs::File> {
++    use std::os::fd::AsRawFd;
++
++    let lock = fs::OpenOptions::new()
++        .read(true)
++        .write(true)
++        .create(true)
++        .truncate(false)
++        .open(unix_socket_lock_path(path))?;
++    let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
++    if result != 0 {
++        let source = io::Error::last_os_error();
++        return Err(io::Error::new(
++            io::ErrorKind::AddrInUse,
++            format!("governed Unix socket ownership lock is held: {source}"),
++        ));
++    }
++    Ok(lock)
++}
++
++#[cfg(unix)]
++fn remove_owned_unix_socket(ownership: UnixSocketOwnership) -> io::Result<()> {
++    match unix_socket_identity(&ownership.path) {
++        Ok(current) if current == ownership.identity => fs::remove_file(&ownership.path),
 +        Ok(_) | Err(_) => Ok(()),
 +    }
 +}
@@ -2231,9 +2436,17 @@ index 98cedfb..efcc189 100644
 +fn bind_governed_unix_listener(
 +    path: &Path,
 +    timeout: Duration,
-+) -> io::Result<(tokio::net::UnixListener, UnixSocketIdentity)> {
++) -> io::Result<(tokio::net::UnixListener, UnixSocketOwnership)> {
++    let lock = acquire_unix_socket_lock(path)?;
 +    match tokio::net::UnixListener::bind(path) {
-+        Ok(listener) => return Ok((listener, unix_socket_identity(path)?)),
++        Ok(listener) => {
++            let ownership = UnixSocketOwnership {
++                path: path.to_path_buf(),
++                identity: unix_socket_identity(path)?,
++                _lock: lock,
++            };
++            return Ok((listener, ownership));
++        }
 +        Err(error) if error.kind() == io::ErrorKind::AddrInUse => {}
 +        Err(error) => return Err(error),
 +    }
@@ -2258,7 +2471,12 @@ index 98cedfb..efcc189 100644
 +    }
 +    fs::remove_file(path)?;
 +    let listener = tokio::net::UnixListener::bind(path)?;
-+    Ok((listener, unix_socket_identity(path)?))
++    let ownership = UnixSocketOwnership {
++        path: path.to_path_buf(),
++        identity: unix_socket_identity(path)?,
++        _lock: lock,
++    };
++    Ok((listener, ownership))
 +}
 +
 +async fn bind_governed_tcp_listener(
@@ -2273,7 +2491,7 @@ index 98cedfb..efcc189 100644
 +    identity: StrictServerIdentity,
 +    timeouts: crate::config::StrictTimeouts,
 +) -> Result<()> {
-@@ -467,0 +547,12 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -467,0 +596,12 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 +    let configured_mode = match governed_cache_mode(config) {
 +        Ok(mode) => mode,
 +        Err(err) => {
@@ -2286,7 +2504,7 @@ index 98cedfb..efcc189 100644
 +            return Err(err);
 +        }
 +    };
-@@ -484,0 +576,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -484,0 +625,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 +    if cache_mode != configured_mode {
 +        let err = anyhow!("cache storage negotiated {cache_mode:?}, expected {configured_mode:?}");
 +        notify_server_startup(
@@ -2297,12 +2515,12 @@ index 98cedfb..efcc189 100644
 +        )?;
 +        return Err(err);
 +    }
-@@ -492,2 +593,2 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -492,2 +642,2 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -    let res: io::Result<(crate::net::SocketAddr, Box<dyn FnOnce(_) -> io::Result<()>>)> = (|| {
 -        match addr {
 +    let res: io::Result<(crate::net::SocketAddr, Box<dyn FnOnce(_) -> io::Result<()>>)> =
 +        (|| match addr {
-@@ -496,3 +597,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -496,3 +646,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                let l = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
 -                let srv =
 -                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
@@ -2316,17 +2534,16 @@ index 98cedfb..efcc189 100644
 +                    identity.clone(),
 +                    timeouts,
 +                );
-@@ -507,2 +614,0 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -507,2 +663,0 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                // Unix socket will report addr in use on any unlink file.
 -                let _ = std::fs::remove_file(path);
-@@ -511 +617 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -511 +666 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                    tokio::net::UnixListener::bind(path)?
 +                    bind_governed_unix_listener(path, timeouts.ipc)?
-@@ -513,2 +619,11 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -513,2 +668,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                let srv =
 -                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
-+                let socket_path = path.to_path_buf();
-+                let (l, socket_identity) = l;
++                let (l, socket_ownership) = l;
 +                let srv = SccacheServer::<_>::with_listener(
 +                    l,
 +                    runtime,
@@ -2336,14 +2553,14 @@ index 98cedfb..efcc189 100644
 +                    identity.clone(),
 +                    timeouts,
 +                );
-@@ -517 +632,5 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -517 +680,5 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                    Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
 +                    Box::new(move |f| {
 +                        let result = srv.run(f);
-+                        let cleanup = remove_owned_unix_socket(&socket_path, socket_identity);
++                        let cleanup = remove_owned_unix_socket(socket_ownership);
 +                        result.and(cleanup)
 +                    }) as Box<dyn FnOnce(_) -> _>,
-@@ -530,2 +649,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -530,2 +697,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                let srv =
 -                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
 +                let srv = SccacheServer::<_>::with_listener(
@@ -2355,19 +2572,19 @@ index 98cedfb..efcc189 100644
 +                    identity.clone(),
 +                    timeouts,
 +                );
-@@ -538,2 +664 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -538,2 +712 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -        }
 -    })();
 +        })();
-@@ -579,0 +705 @@ pub struct SccacheServer<A: crate::net::Acceptor, C: CommandCreatorSync = Proces
+@@ -579,0 +753 @@ pub struct SccacheServer<A: crate::net::Acceptor, C: CommandCreatorSync = Proces
 +#[cfg(test)]
-@@ -596,0 +723,2 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
+@@ -596,0 +771,2 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
 +            StrictServerIdentity::for_tests(),
 +            crate::config::StrictTimeouts::for_tests(),
-@@ -607,0 +736,2 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -607,0 +784,2 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +        identity: StrictServerIdentity,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -614 +744,10 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -614 +792,10 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 -        let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
 +        let service = SccacheService::new(
 +            dist_client,
@@ -2379,26 +2596,26 @@ index 98cedfb..efcc189 100644
 +            identity,
 +            timeouts,
 +        );
-@@ -794,0 +934,6 @@ where
+@@ -794,0 +982,6 @@ where
 +    /// Exact derivative, backend, mode, and timeout policy negotiated by clients.
 +    identity: StrictServerIdentity,
 +
 +    /// Timeout policy validated once before server startup.
 +    timeouts: crate::config::StrictTimeouts,
 +
-@@ -866,0 +1012,3 @@ where
+@@ -866,0 +1060,3 @@ where
 +                Request::GetServerIdentity => Ok(Message::WithoutBody(Response::ServerIdentity(
 +                    me.identity.clone(),
 +                ))),
-@@ -923,0 +1072,2 @@ where
+@@ -923,0 +1120,2 @@ where
 +        identity: StrictServerIdentity,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -934,0 +1085,2 @@ where
+@@ -934,0 +1133,2 @@ where
 +            identity,
 +            timeouts,
-@@ -937,0 +1090 @@ where
+@@ -937,0 +1138 @@ where
 +    #[cfg(test)]
-@@ -940,0 +1094,13 @@ where
+@@ -940,0 +1142,13 @@ where
 +    ) -> SccacheService<C> {
 +        Self::mock_with_storage_and_timeouts(
 +            storage,
@@ -2412,20 +2629,20 @@ index 98cedfb..efcc189 100644
 +        storage: Arc<dyn Storage>,
 +        rt: tokio::runtime::Handle,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -955,0 +1122,2 @@ where
+@@ -955,0 +1170,2 @@ where
 +            identity: StrictServerIdentity::for_tests(),
 +            timeouts,
-@@ -959,0 +1128 @@ where
+@@ -959,0 +1176 @@ where
 +    #[cfg(test)]
-@@ -990,0 +1160,2 @@ where
+@@ -990,0 +1208,2 @@ where
 +            identity: StrictServerIdentity::for_tests(),
 +            timeouts: crate::config::StrictTimeouts::for_tests(),
-@@ -993,0 +1165,4 @@ where
+@@ -993,0 +1213,4 @@ where
 +    pub fn cache_read_timeout(&self) -> Duration {
 +        self.timeouts.cache_read
 +    }
 +
-@@ -999,7 +1174,2 @@ where
+@@ -999,7 +1222,2 @@ where
 -        if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
 -            if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
 -                builder.max_frame_length(max_frame_length);
@@ -2435,23 +2652,23 @@ index 98cedfb..efcc189 100644
 -        }
 +        builder
 +            .max_frame_length(usize::try_from(self.identity.max_frame_bytes).unwrap_or(usize::MAX));
-@@ -1065,0 +1236 @@ where
+@@ -1065,0 +1284 @@ where
 +        reject_forced_cache_modes(&env_vars)?;
-@@ -1067 +1237,0 @@ where
+@@ -1067 +1285,0 @@ where
 -
-@@ -1278,0 +1449,3 @@ where
+@@ -1278,0 +1497,3 @@ where
 +                        return Message::WithoutBody(Response::Compile(
 +                            CompileResponse::CannotCache(why.to_string()),
 +                        ));
-@@ -1282,0 +1456,3 @@ where
+@@ -1282,0 +1504,3 @@ where
 +                        return Message::WithoutBody(Response::Compile(
 +                            CompileResponse::NotCompilation,
 +                        ));
-@@ -1287,3 +1462,0 @@ where
+@@ -1287,3 +1510,0 @@ where
 -
 -        let res = CompileResponse::UnhandledCompile;
 -        Message::WithoutBody(Response::Compile(res))
-@@ -1304,11 +1477 @@ where
+@@ -1304,11 +1525 @@ where
 -
 -        let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
 -        let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
@@ -2464,7 +2681,7 @@ index 98cedfb..efcc189 100644
 -            CacheControl::Default
 -        };
 +        let cache_control = CacheControl::Default;
-@@ -1418,0 +1582,10 @@ where
+@@ -1418,0 +1630,10 @@ where
 +                            CompileResult::ReadOnlyCacheMiss(miss_type, dt, duration) => {
 +                                debug!("[{}]: governed read-only cache miss", out_pretty);
 +                                dist_type = dt;
@@ -2475,7 +2692,7 @@ index 98cedfb..efcc189 100644
 +                                stats.cache_misses.increment(&kind, &lang);
 +                                stats.compiler_write_duration += duration;
 +                            }
-@@ -1522,7 +1695,5 @@ where
+@@ -1522,7 +1743,5 @@ where
 -                    match cache_write.await {
 -                        Err(e) => {
 -                            debug!("Error executing cache write: {}", e);
@@ -2488,7 +2705,7 @@ index 98cedfb..efcc189 100644
 +                    {
 +                        None => me.stats.lock().await.cache_write_errors += 1,
 +                        Some(info) => {
-@@ -1581,0 +1753,33 @@ impl PerLanguageCount {
+@@ -1581,0 +1801,33 @@ impl PerLanguageCount {
 +fn reject_forced_cache_modes(env_vars: &[(OsString, OsString)]) -> Result<()> {
 +    if env_vars
 +        .iter()
@@ -2522,7 +2739,7 @@ index 98cedfb..efcc189 100644
 +    }
 +}
 +
-@@ -2284,0 +2489,113 @@ mod tests {
+@@ -2284,0 +2537,158 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();
@@ -2593,19 +2810,45 @@ index 98cedfb..efcc189 100644
 +
 +    #[cfg(unix)]
 +    #[test]
++    fn strict_server_requires_exclusive_socket_ownership_lock() {
++        use std::os::fd::AsRawFd;
++
++        let runtime = Runtime::new().unwrap();
++        let temporary = tempfile::tempdir().unwrap();
++        let path = temporary.path().join("server.sock");
++        let mut lock_name = path.as_os_str().to_os_string();
++        lock_name.push(".lock");
++        let lock = fs::OpenOptions::new()
++            .read(true)
++            .write(true)
++            .create(true)
++            .truncate(false)
++            .open(PathBuf::from(lock_name))
++            .unwrap();
++        let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
++        assert_eq!(result, 0);
++
++        let _guard = runtime.enter();
++        let replacement = bind_governed_unix_listener(&path, Duration::from_millis(25));
++
++        assert_eq!(replacement.unwrap_err().kind(), io::ErrorKind::AddrInUse);
++    }
++
++    #[cfg(unix)]
++    #[test]
 +    fn strict_server_refuses_to_replace_a_live_unix_socket() {
 +        let runtime = Runtime::new().unwrap();
 +        let temporary = tempfile::tempdir().unwrap();
 +        let path = temporary.path().join("server.sock");
 +        let _guard = runtime.enter();
-+        let (listener, identity) =
++        let (listener, ownership) =
 +            bind_governed_unix_listener(&path, Duration::from_millis(25)).unwrap();
 +
 +        let replacement = bind_governed_unix_listener(&path, Duration::from_millis(25));
 +
 +        assert!(replacement.is_err());
 +        drop(listener);
-+        remove_owned_unix_socket(&path, identity).unwrap();
++        remove_owned_unix_socket(ownership).unwrap();
 +    }
 +
 +    #[cfg(unix)]
@@ -2617,12 +2860,31 @@ index 98cedfb..efcc189 100644
 +        std::os::unix::net::UnixListener::bind(&path).unwrap();
 +
 +        let _guard = runtime.enter();
-+        let (listener, identity) =
++        let (listener, ownership) =
 +            bind_governed_unix_listener(&path, Duration::from_millis(25)).unwrap();
 +
 +        drop(listener);
-+        remove_owned_unix_socket(&path, identity).unwrap();
++        remove_owned_unix_socket(ownership).unwrap();
 +        assert!(!path.exists());
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn strict_server_cleanup_preserves_replacement_socket_inode() {
++        let runtime = Runtime::new().unwrap();
++        let temporary = tempfile::tempdir().unwrap();
++        let path = temporary.path().join("server.sock");
++        let _guard = runtime.enter();
++        let (listener, ownership) =
++            bind_governed_unix_listener(&path, Duration::from_millis(25)).unwrap();
++        drop(listener);
++        fs::remove_file(&path).unwrap();
++        let replacement = std::os::unix::net::UnixListener::bind(&path).unwrap();
++
++        remove_owned_unix_socket(ownership).unwrap();
++
++        assert!(path.exists());
++        drop(replacement);
 +    }
 +
 +    #[test]

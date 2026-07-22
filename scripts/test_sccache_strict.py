@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import contextlib
+import dataclasses
 import hashlib
 import io
 import json
@@ -387,6 +388,25 @@ class ManifestTests(unittest.TestCase):
             verified.release_tag.endswith(provenance["build_identity_sha256"])
         )
 
+    def test_attestation_retry_policy_changes_release_identity(self) -> None:
+        original = self.verify()
+        changed_config = dataclasses.replace(
+            self.config,
+            attestation_attempts=self.config.attestation_attempts + 1,
+        )
+
+        changed = sccache_strict.verify_candidate_set(
+            self.manifests,
+            self.binary_paths,
+            config=changed_config,
+            repository=self.repository,
+            run_id=self.run_id,
+            run_attempt=self.run_attempt,
+            head_sha=self.head_sha,
+        )
+
+        self.assertNotEqual(original.release_tag, changed.release_tag)
+
     def test_rejects_cross_run_manifest(self) -> None:
         self.manifests[0] = copy.deepcopy(self.manifests[0])
         self.manifests[0]["run_id"] = "other-run"
@@ -563,6 +583,102 @@ class ReleaseRecordTests(unittest.TestCase):
             tag_ref["object"] = {"type": "commit", "sha": "4" * 40}
             with self.assertRaisesRegex(ValueError, "exact head commit"):
                 sccache_strict.verify_release_record(verified, release, tag_ref)
+
+
+class ReleaseCleanupTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.repository = "owner/repository"
+        self.run_id = "123"
+        self.run_attempt = "2"
+        self.head_sha = "a" * 40
+        self.tag = "tooling-sccache-v0.16.0-strict-" + "b" * 64
+        self.marker = sccache_strict.release_ownership_marker(
+            repository=self.repository,
+            run_id=self.run_id,
+            run_attempt=self.run_attempt,
+            head_sha=self.head_sha,
+            tag=self.tag,
+        )
+
+    def release(
+        self, *, release_id: int = 77, body: str | None = None
+    ) -> dict[str, object]:
+        return {
+            "id": release_id,
+            "tag_name": self.tag,
+            "target_commitish": self.head_sha,
+            "draft": True,
+            "immutable": False,
+            "body": self.marker if body is None else body,
+        }
+
+    def test_recovers_exact_owned_draft_when_create_response_is_lost(self) -> None:
+        release_id = sccache_strict.select_owned_mutable_release(
+            [[self.release()]],
+            expected_id=None,
+            tag=self.tag,
+            head_sha=self.head_sha,
+            ownership_marker=self.marker,
+        )
+
+        self.assertEqual(release_id, 77)
+
+    def test_selects_exact_owned_mutable_published_release(self) -> None:
+        published = self.release()
+        published["draft"] = False
+
+        release_id = sccache_strict.select_owned_mutable_release(
+            published,
+            expected_id=77,
+            tag=self.tag,
+            head_sha=self.head_sha,
+            ownership_marker=self.marker,
+        )
+
+        self.assertEqual(release_id, 77)
+
+    def test_refuses_foreign_or_ambiguous_draft_recovery(self) -> None:
+        foreign = self.release(body="different publisher")
+        duplicate = self.release(release_id=78)
+
+        self.assertIsNone(
+            sccache_strict.select_owned_mutable_release(
+                [[foreign]],
+                expected_id=None,
+                tag=self.tag,
+                head_sha=self.head_sha,
+                ownership_marker=self.marker,
+            )
+        )
+        self.assertIsNone(
+            sccache_strict.select_owned_mutable_release(
+                [[self.release(), duplicate]],
+                expected_id=None,
+                tag=self.tag,
+                head_sha=self.head_sha,
+                ownership_marker=self.marker,
+            )
+        )
+
+    def test_cleanup_tag_must_still_target_exact_head_commit(self) -> None:
+        owned = {
+            "ref": f"refs/tags/{self.tag}",
+            "object": {"type": "commit", "sha": self.head_sha},
+        }
+        replaced = copy.deepcopy(owned)
+        replaced["object"]["sha"] = "c" * 40
+
+        sccache_strict.validate_cleanup_tag(
+            owned,
+            tag=self.tag,
+            head_sha=self.head_sha,
+        )
+        with self.assertRaisesRegex(ValueError, "exact head commit"):
+            sccache_strict.validate_cleanup_tag(
+                replaced,
+                tag=self.tag,
+                head_sha=self.head_sha,
+            )
 
 
 class CliTests(unittest.TestCase):

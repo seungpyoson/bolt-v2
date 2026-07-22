@@ -2011,15 +2011,20 @@ index e6f72a7..8ec211c 100644
 -                                .join("x_".to_owned() + &count + extension)
 +                                .join("x_".to_owned() + count.as_str() + extension)
 diff --git a/src/config.rs b/src/config.rs
-index cef32b2..2dc7985 100644
+index cef32b2..95130ac 100644
 --- a/src/config.rs
 +++ b/src/config.rs
 @@ -17,0 +18 @@ use crate::util::normalize_win_path;
 +use anyhow::ensure;
-@@ -30,0 +32,2 @@ use std::io::{Read, Write};
+@@ -29,0 +31 @@ use std::env;
++use std::ffi::{OsStr, OsString};
+@@ -30,0 +33,5 @@ use std::io::{Read, Write};
 +#[cfg(unix)]
-+use std::os::unix::fs::OpenOptionsExt;
-@@ -38,0 +42,444 @@ use crate::errors::*;
++use std::os::unix::{
++    ffi::{OsStrExt, OsStringExt},
++    fs::OpenOptionsExt,
++};
+@@ -38,0 +46,669 @@ use crate::errors::*;
 +use crate::protocol::StrictServerIdentity;
 +
 +const CONSUMER_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
@@ -2069,6 +2074,205 @@ index cef32b2..2dc7985 100644
 +    pub compilers: Vec<ConsumerCompiler>,
 +    pub routing: Vec<ConsumerEnvironmentEntry>,
 +    pub handshake: ConsumerHandshakePolicy,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct StrictClientControls {
++    snapshot_digest: String,
++    abstract_socket_name: Vec<u8>,
++    timeouts: ConsumerTimeouts,
++    max_frame_bytes: u64,
++    compiler_identities: Vec<(Vec<u8>, ConsumerCompilerFamily)>,
++    routing: Vec<ConsumerEnvironmentEntry>,
++    handshake: ConsumerHandshakePolicy,
++}
++
++impl StrictClientControls {
++    pub fn snapshot_digest(&self) -> &str {
++        &self.snapshot_digest
++    }
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct CompilerEnvironment {
++    entries: Vec<ConsumerEnvironmentEntry>,
++}
++
++impl CompilerEnvironment {
++    pub fn entries(&self) -> &[ConsumerEnvironmentEntry] {
++        &self.entries
++    }
++
++    pub fn canonical_key_component(&self) -> Vec<u8> {
++        let mut component = b"strict-compiler-environment-v1\0".to_vec();
++        component.extend_from_slice(&(self.entries.len() as u64).to_be_bytes());
++        for entry in &self.entries {
++            component.push(1);
++            component.extend_from_slice(&(entry.name.len() as u64).to_be_bytes());
++            component.extend_from_slice(&entry.name);
++            component.extend_from_slice(&(entry.value.len() as u64).to_be_bytes());
++            component.extend_from_slice(&entry.value);
++        }
++        component
++    }
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct ClassifiedStrictClient {
++    controls: StrictClientControls,
++    compiler: ConsumerCompiler,
++    environment: CompilerEnvironment,
++}
++
++impl ClassifiedStrictClient {
++    pub fn controls(&self) -> &StrictClientControls {
++        &self.controls
++    }
++
++    pub fn compiler(&self) -> &ConsumerCompiler {
++        &self.compiler
++    }
++
++    pub fn environment(&self) -> &CompilerEnvironment {
++        &self.environment
++    }
++}
++
++fn code_owned_semantic_environment_name(family: &ConsumerCompilerFamily, name: &[u8]) -> bool {
++    const CARGO_NAMES: &[&[u8]] = &[
++        b"CARGO",
++        b"CARGO_CRATE_NAME",
++        b"CARGO_MANIFEST_DIR",
++        b"CARGO_MANIFEST_PATH",
++        b"CARGO_PKG_AUTHORS",
++        b"CARGO_PKG_DESCRIPTION",
++        b"CARGO_PKG_HOMEPAGE",
++        b"CARGO_PKG_LICENSE",
++        b"CARGO_PKG_LICENSE_FILE",
++        b"CARGO_PKG_NAME",
++        b"CARGO_PKG_README",
++        b"CARGO_PKG_REPOSITORY",
++        b"CARGO_PKG_RUST_VERSION",
++        b"CARGO_PKG_VERSION",
++        b"CARGO_PKG_VERSION_MAJOR",
++        b"CARGO_PKG_VERSION_MINOR",
++        b"CARGO_PKG_VERSION_PATCH",
++        b"CARGO_PKG_VERSION_PRE",
++        b"CARGO_PRIMARY_PACKAGE",
++        b"CARGO_TARGET_TMPDIR",
++        b"DEBUG",
++        b"HOST",
++        b"NUM_JOBS",
++        b"OPT_LEVEL",
++        b"OUT_DIR",
++        b"PROFILE",
++        b"TARGET",
++    ];
++    CARGO_NAMES.contains(&name)
++        || matches!(
++            (family, name),
++            (ConsumerCompilerFamily::Rust, b"CARGO_ENCODED_RUSTFLAGS")
++                | (ConsumerCompilerFamily::Rust, b"RUSTC")
++                | (ConsumerCompilerFamily::Rust, b"RUSTDOC")
++        )
++}
++
++#[cfg(unix)]
++pub fn classify_strict_client(
++    locator: &Path,
++    selector: &OsStr,
++    raw_environment: Vec<(OsString, OsString)>,
++) -> Result<ClassifiedStrictClient> {
++    let snapshot = load_consumer_snapshot(locator)?;
++    let selector = selector.as_bytes();
++    let compiler = snapshot
++        .compilers
++        .iter()
++        .find(|compiler| compiler.path == selector)
++        .cloned()
++        .context("compiler selector is not an exact configured absolute path")?;
++
++    let mut raw = std::collections::BTreeMap::<Vec<u8>, Vec<u8>>::new();
++    for (name, value) in raw_environment {
++        let name = name.into_vec();
++        ensure!(
++            !name.is_empty() && !name.contains(&0) && !name.contains(&b'='),
++            "raw compiler environment contains a malformed name"
++        );
++        ensure!(
++            raw.insert(name, value.into_vec()).is_none(),
++            "raw compiler environment contains a duplicate name"
++        );
++    }
++
++    let bootstrap_name = b"SCCACHE_STRICT_BOOTSTRAP".as_slice();
++    let bootstrap = raw
++        .remove(bootstrap_name)
++        .context("strict bootstrap locator is missing")?;
++    ensure!(
++        bootstrap == locator.as_os_str().as_bytes(),
++        "strict bootstrap locator changed before classification"
++    );
++    for entry in &snapshot.routing {
++        let actual = raw
++            .remove(entry.name.as_slice())
++            .with_context(|| format!("required routing entry is missing: {:?}", entry.name))?;
++        ensure!(
++            actual == entry.value,
++            "required routing entry does not match the snapshot"
++        );
++    }
++    raw.remove(b"CARGO_MAKEFLAGS".as_slice());
++
++    let mut entries = Vec::new();
++    for required in &compiler.environment {
++        let actual = raw.remove(required.name.as_slice()).with_context(|| {
++            format!(
++                "required compiler environment is missing: {:?}",
++                required.name
++            )
++        })?;
++        ensure!(
++            actual == required.value,
++            "required compiler environment does not match the snapshot"
++        );
++        entries.push(required.clone());
++    }
++    for (name, value) in raw {
++        ensure!(
++            code_owned_semantic_environment_name(&compiler.family, &name),
++            "raw compiler environment contains an unknown name"
++        );
++        entries.push(ConsumerEnvironmentEntry { name, value });
++    }
++    entries.sort_by(|left, right| left.name.cmp(&right.name));
++
++    let file_name = locator
++        .file_name()
++        .and_then(|name| name.to_str())
++        .context("strict bootstrap locator name is not canonical UTF-8")?;
++    let digest = file_name
++        .strip_prefix("consumer-config-v1-")
++        .and_then(|name| name.strip_suffix(".bin"))
++        .context("strict bootstrap locator name does not contain a snapshot digest")?;
++    let controls = StrictClientControls {
++        snapshot_digest: digest.to_owned(),
++        abstract_socket_name: snapshot.abstract_socket_name.clone(),
++        timeouts: snapshot.timeouts.clone(),
++        max_frame_bytes: snapshot.max_frame_bytes,
++        compiler_identities: snapshot
++            .compilers
++            .iter()
++            .map(|configured| (configured.path.clone(), configured.family.clone()))
++            .collect(),
++        routing: snapshot.routing.clone(),
++        handshake: snapshot.handshake.clone(),
++    };
++    Ok(ClassifiedStrictClient {
++        controls,
++        compiler,
++        environment: CompilerEnvironment { entries },
++    })
 +}
 +
 +#[derive(Deserialize)]
@@ -2122,6 +2326,18 @@ index cef32b2..2dc7985 100644
 +    Ok(())
 +}
 +
++fn reserved_client_control_name(name: &[u8]) -> bool {
++    matches!(
++        name,
++        b"SCCACHE_STRICT_BOOTSTRAP"
++            | b"CARGO_MAKEFLAGS"
++            | b"MAKEFLAGS"
++            | b"MFLAGS"
++            | b"RUSTC_WRAPPER"
++            | b"RUSTC_WORKSPACE_WRAPPER"
++    )
++}
++
 +fn validate_consumer_snapshot(snapshot: &ConsumerConfigSnapshot) -> Result<()> {
 +    ensure!(
 +        snapshot.schema_version == CONSUMER_SNAPSHOT_SCHEMA_VERSION,
@@ -2157,8 +2373,22 @@ index cef32b2..2dc7985 100644
 +            "consumer snapshot compiler path is duplicated"
 +        );
 +        validate_environment_entries(&compiler.environment, "consumer compiler environment")?;
++        ensure!(
++            compiler
++                .environment
++                .iter()
++                .all(|entry| !reserved_client_control_name(&entry.name)),
++            "consumer compiler environment contains a reserved control name"
++        );
 +    }
 +    validate_environment_entries(&snapshot.routing, "consumer routing environment")?;
++    ensure!(
++        snapshot.routing.iter().all(|entry| matches!(
++            entry.name.as_slice(),
++            b"RUSTC_WRAPPER" | b"RUSTC_WORKSPACE_WRAPPER"
++        )),
++        "consumer routing environment contains a non-routing or reserved control name"
++    );
 +    ensure!(
 +        snapshot.handshake.protocol_version > 0,
 +        "consumer handshake version must be positive"
@@ -2464,7 +2694,7 @@ index cef32b2..2dc7985 100644
 +    }
 +    Ok(length)
 +}
-@@ -1356,0 +1804,194 @@ impl Config {
+@@ -1356,0 +2033,266 @@ impl Config {
 +/// Bind the strict protocol to the effective cache and timeout policy.
 +pub fn strict_server_identity(
 +    config: &Config,
@@ -2538,6 +2768,7 @@ index cef32b2..2dc7985 100644
 +#[cfg(all(test, unix))]
 +mod strict_snapshot_tests {
 +    use super::*;
++    use std::ffi::{OsStr, OsString};
 +    use std::os::unix::fs::symlink;
 +
 +    fn snapshot() -> ConsumerConfigSnapshot {
@@ -2555,8 +2786,8 @@ index cef32b2..2dc7985 100644
 +                path: b"/usr/bin/rustc".to_vec(),
 +                family: ConsumerCompilerFamily::Rust,
 +                environment: vec![ConsumerEnvironmentEntry {
-+                    name: b"CARGO_PKG_NAME".to_vec(),
-+                    value: b"fixture".to_vec(),
++                    name: b"SOURCE_DATE_EPOCH".to_vec(),
++                    value: b"1781869188".to_vec(),
 +                }],
 +            }],
 +            routing: vec![ConsumerEnvironmentEntry {
@@ -2617,6 +2848,77 @@ index cef32b2..2dc7985 100644
 +            snapshot.compilers[0].environment[0].name,
 +            b"SOURCE_DATE_EPOCH"
 +        );
++    }
++
++    #[test]
++    fn strict_client_classification_separates_controls_environment_and_jobserver() {
++        let directory = tempfile::tempdir().unwrap();
++        let locator = materialize_consumer_snapshot(&snapshot(), directory.path()).unwrap();
++        let raw_environment = vec![
++            (
++                OsString::from("SCCACHE_STRICT_BOOTSTRAP"),
++                locator.as_os_str().to_owned(),
++            ),
++            (
++                OsString::from("RUSTC_WRAPPER"),
++                OsString::from("/opt/strict/sccache"),
++            ),
++            (
++                OsString::from("SOURCE_DATE_EPOCH"),
++                OsString::from("1781869188"),
++            ),
++            (OsString::from("CARGO_PKG_NAME"), OsString::from("fixture")),
++            (
++                OsString::from("CARGO_MAKEFLAGS"),
++                OsString::from("--jobserver-auth=31,32"),
++            ),
++        ];
++
++        let classified =
++            classify_strict_client(&locator, OsStr::new("/usr/bin/rustc"), raw_environment)
++                .unwrap();
++
++        assert!(!classified.controls().snapshot_digest().is_empty());
++        assert_eq!(classified.compiler().family, ConsumerCompilerFamily::Rust);
++        assert_eq!(
++            classified.environment().entries(),
++            &[
++                ConsumerEnvironmentEntry {
++                    name: b"CARGO_PKG_NAME".to_vec(),
++                    value: b"fixture".to_vec(),
++                },
++                ConsumerEnvironmentEntry {
++                    name: b"SOURCE_DATE_EPOCH".to_vec(),
++                    value: b"1781869188".to_vec(),
++                },
++            ]
++        );
++        let keyed = classified.environment().canonical_key_component();
++        assert!(
++            keyed
++                .windows(b"CARGO_PKG_NAME".len())
++                .any(|part| part == b"CARGO_PKG_NAME")
++        );
++        assert!(
++            !keyed
++                .windows(b"RUSTC_WRAPPER".len())
++                .any(|part| part == b"RUSTC_WRAPPER")
++        );
++        assert!(
++            !keyed
++                .windows(b"CARGO_MAKEFLAGS".len())
++                .any(|part| part == b"CARGO_MAKEFLAGS")
++        );
++    }
++
++    #[test]
++    fn strict_snapshot_rejects_reserved_control_as_compiler_environment() {
++        let directory = tempfile::tempdir().unwrap();
++        let mut invalid = snapshot();
++        invalid.compilers[0].environment[0].name = b"SCCACHE_STRICT_BOOTSTRAP".to_vec();
++
++        let error = materialize_consumer_snapshot(&invalid, directory.path()).unwrap_err();
++        assert!(error.to_string().contains("reserved control"));
 +    }
 +
 +    #[test]

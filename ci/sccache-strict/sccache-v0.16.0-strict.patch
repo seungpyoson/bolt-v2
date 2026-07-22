@@ -4092,7 +4092,7 @@ index e6f72a7..8ec211c 100644
 -                                .join("x_".to_owned() + &count + extension)
 +                                .join("x_".to_owned() + count.as_str() + extension)
 diff --git a/src/compiler/rust.rs b/src/compiler/rust.rs
-index d6c2c71..7bef599 100644
+index d6c2c71..cde6828 100644
 --- a/src/compiler/rust.rs
 +++ b/src/compiler/rust.rs
 @@ -15,0 +16,2 @@ use crate::cache::{FileObjectSource, Storage};
@@ -4362,13 +4362,138 @@ index d6c2c71..7bef599 100644
 +            .preflight_outputs
 +            .take()
 +            .context("strict Rust output preflight is missing")?;
-@@ -3491,0 +3514 @@ proc_macro false
+@@ -2663,0 +2686,2 @@ mod test {
++    use crate::cache::CacheMode;
++    use crate::cache::disk::DiskCache;
+@@ -2664,0 +2689 @@ mod test {
++    use crate::config::PreprocessorCacheModeConfig;
+@@ -2665,0 +2691 @@ mod test {
++    use crate::server::SccacheService;
+@@ -3423,0 +3450,117 @@ proc_macro false
++    #[test]
++    fn strict_rust_cacheable_path_produces_a_genuine_second_run_hit() {
++        let fixture = TestFixture::new();
++        fixture.touch("foo.rs").unwrap();
++        fs::create_dir(fixture.tempdir.path().join("out")).unwrap();
++        let parsed_args = parses!(
++            "--crate-name",
++            "foo",
++            "--crate-type",
++            "rlib",
++            "--emit",
++            "link",
++            "foo.rs",
++            "--out-dir",
++            "out"
++        );
++        let mut hasher = Box::new(RustHasher {
++            executable: "rustc".into(),
++            host: "x86_64-unknown-linux-gnu".to_owned(),
++            version: TEST_RUSTC_VERSION.to_owned(),
++            sysroot: fixture.tempdir.path().join("sysroot"),
++            compiler_shlibs_digests: vec![],
++            #[cfg(feature = "dist-client")]
++            rlib_dep_reader: None,
++            parsed_args,
 +            preflight_outputs: None,
-@@ -3494 +3516,0 @@ proc_macro false
++        });
++        let creator = new_creator();
++        let runtime = single_threaded_runtime();
++        let pool = runtime.handle().clone();
++        let storage = Arc::new(DiskCache::new(
++            fixture.tempdir.path().join("cache"),
++            u64::MAX,
++            &pool,
++            PreprocessorCacheModeConfig::default(),
++            CacheMode::ReadWrite,
++            vec![],
++        ));
++        let service = SccacheService::mock_with_storage(storage.clone(), pool.clone());
++        let cwd = fixture.tempdir.path();
++        let arguments = ovec![
++            "--crate-name",
++            "foo",
++            "--crate-type",
++            "rlib",
++            "--emit",
++            "link",
++            "foo.rs",
++            "--out-dir",
++            "out"
++        ];
++        let environment = vec![(OsString::from("CARGO_PKG_NAME"), OsString::from("foo"))];
++
++        mock_file_names(&creator, &["libfoo.rlib"]);
++        mock_dep_info(&creator, &["foo.rs"]);
++        let first_output = cwd.join("out/libfoo.rlib");
++        next_command_calls(&creator, move |_| {
++            fs::write(&first_output, b"strict rust output")?;
++            Ok(MockChild::new(
++                exit_status(0),
++                b"rust stdout",
++                b"rust stderr",
++            ))
++        });
++        hasher
++            .strict_preflight(&creator, cwd, &environment)
++            .wait()
++            .unwrap();
++        let (first, first_process) = runtime
++            .block_on(hasher.get_cached_or_compile(
++                &service,
++                None,
++                creator.clone(),
++                storage.clone(),
++                arguments.clone(),
++                cwd.to_path_buf(),
++                environment.clone(),
++                CacheControl::Default,
++                pool.clone(),
++            ))
++            .unwrap();
++        match first {
++            CompileResult::CacheMiss(MissType::Normal, DistType::NoDist, _, write) => {
++                write.wait().unwrap();
++            }
++            result => panic!("strict Rust first run was not a genuine miss: {result:?}"),
++        }
++        assert_eq!(first_process.stdout, b"rust stdout");
++        fs::remove_file(cwd.join("out/libfoo.rlib")).unwrap();
++
++        mock_file_names(&creator, &["libfoo.rlib"]);
++        mock_dep_info(&creator, &["foo.rs"]);
++        hasher
++            .strict_preflight(&creator, cwd, &environment)
++            .wait()
++            .unwrap();
++        let (second, second_process) = runtime
++            .block_on(hasher.get_cached_or_compile(
++                &service,
++                None,
++                creator,
++                storage,
++                arguments,
++                cwd.to_path_buf(),
++                environment,
++                CacheControl::Default,
++                pool,
++            ))
++            .unwrap();
++        assert_eq!(second, CompileResult::CacheHit(std::time::Duration::ZERO));
++        assert_eq!(second_process.stdout, b"rust stdout");
++        assert_eq!(
++            fs::read(cwd.join("out/libfoo.rlib")).unwrap(),
++            b"strict rust output"
++        );
++    }
++
+@@ -3491,0 +3635 @@ proc_macro false
++            preflight_outputs: None,
+@@ -3494 +3637,0 @@ proc_macro false
 -        mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
-@@ -3495,0 +3518 @@ proc_macro false
+@@ -3495,0 +3639 @@ proc_macro false
 +        mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
-@@ -3497,0 +3521,18 @@ proc_macro false
+@@ -3497,0 +3642,18 @@ proc_macro false
 +        let environment = [
 +            (OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
 +            (OsString::from("FOO"), OsString::from("bar")),
@@ -4387,7 +4512,7 @@ index d6c2c71..7bef599 100644
 +            .strict_preflight(&creator, f.tempdir.path(), &environment)
 +            .wait()
 +            .unwrap();
-@@ -3502,14 +3543 @@ proc_macro false
+@@ -3502,14 +3664 @@ proc_macro false
 -                [
 -                    (OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
 -                    (OsString::from("FOO"), OsString::from("bar")),
@@ -4403,14 +4528,14 @@ index d6c2c71..7bef599 100644
 -                ]
 -                .to_vec(),
 +                environment,
-@@ -3529,0 +3558,2 @@ proc_macro false
+@@ -3529,0 +3679,2 @@ proc_macro false
 +        // Strict cache format boundary.
 +        m.update(env!("SCCACHE_STRICT_CACHE_FORMAT_TOKEN").as_bytes());
-@@ -3594,0 +3625 @@ proc_macro false
+@@ -3594,0 +3746 @@ proc_macro false
 +            preflight_outputs: None,
-@@ -3601 +3631,0 @@ proc_macro false
+@@ -3601 +3752,0 @@ proc_macro false
 -        mock_dep_info(&creator, &["foo.rs"]);
-@@ -3602,0 +3633,5 @@ proc_macro false
+@@ -3602,0 +3754,5 @@ proc_macro false
 +        mock_dep_info(&creator, &["foo.rs"]);
 +        hasher
 +            .strict_preflight(&creator, f.tempdir.path(), env_vars)

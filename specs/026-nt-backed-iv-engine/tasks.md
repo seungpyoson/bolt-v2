@@ -2,7 +2,7 @@
 
 **Input**: Design documents from `specs/026-nt-backed-iv-engine/`
 **Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/iv-engine-api.md`, `quickstart.md`
-**Verification**: Required. The spec and `AGENTS.md` require evidence-driven verification; the SpecKit constitution records the matching project principle. Use behavior tests and RED/GREEN evidence where tests are the smallest reliable proof; otherwise record the exact static check, source-fence result, remote CI result, review artifact, or live/operator evidence that proves the claim.
+**Verification**: Required. The spec and `AGENTS.md` require evidence-driven verification. Use behavior tests and RED/GREEN evidence where tests are the smallest reliable proof; otherwise record the exact static check, source-fence result, remote CI result, review artifact, or live/operator evidence that proves the claim.
 **Scope**: IV/implied-volatility engine only. FV and RV are explicitly out of scope.
 
 ## Phase 1: Setup

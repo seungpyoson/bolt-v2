@@ -1,0 +1,6 @@
+Revision history for #1500:
+
+rev 2 (content) 2026-07-22 10:25 UTC
+rev 1 (initial) 2026-07-22 10:25 UTC
+
+<!-- mergify-revision-data: {"schema_version":1,"pull_number":1500,"entries":[{"number":1,"change_type":"initial","old_sha":null,"new_sha":"b521a7271bdf71192c792482d54ce4f8f4bd078a","timestamp_iso":"2026-07-22T10:25:51Z","reason":"","replay_sha":null,"compare_url":null},{"number":2,"change_type":"content","old_sha":"b521a7271bdf71192c792482d54ce4f8f4bd078a","new_sha":"409c148a865643bec48f13378114d420ad240ffa","timestamp_iso":"2026-07-22T10:25:51Z","reason":"","replay_sha":null,"compare_url":"https://github.com/seungpyoson/bolt-v2/compare/b521a7271bdf71192c792482d54ce4f8f4bd078a...409c148a865643bec48f13378114d420ad240ffa"}]} -->

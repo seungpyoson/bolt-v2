@@ -1247,7 +1247,7 @@ index f639396..f591763 100644
 +                        })
 +                    }
 diff --git a/src/commands.rs b/src/commands.rs
-index 8d8406a..d959d22 100644
+index 8d8406a..a9d8c5f 100644
 --- a/src/commands.rs
 +++ b/src/commands.rs
 @@ -15,2 +15 @@
@@ -1559,18 +1559,18 @@ index 8d8406a..d959d22 100644
 -        trace!("running command: {:?}", cmd);
 -    }
 -
-+    let mut launcher = StrictChildLauncher::new(creator);
++    let mut creator = creator;
 @@ -570 +496,9 @@ where
 -        let child = cmd.spawn().await?;
-+        let child = launcher
-+            .spawn(
-+                exe.as_os_str(),
-+                &cmdline,
-+                cwd,
-+                environment,
-+                StrictChildIo::classified_client(),
-+            )
-+            .await?;
++        let child = StrictChildLauncher::spawn(
++            &mut creator,
++            exe.as_os_str(),
++            &cmdline,
++            cwd,
++            environment,
++            StrictChildIo::classified_client(),
++        )
++        .await?;
 @@ -599,2 +533,3 @@ pub fn do_compile<T>(
 -    path: Option<OsString>,
 -    env_vars: Vec<(OsString, OsString)>,
@@ -2237,18 +2237,29 @@ index 8d8406a..d959d22 100644
 +        );
 +    }
 diff --git a/src/compiler/compiler.rs b/src/compiler/compiler.rs
-index 78bb5a4..78d7ab4 100644
+index 78bb5a4..f381fcd 100644
 --- a/src/compiler/compiler.rs
 +++ b/src/compiler/compiler.rs
-@@ -16 +16 @@
+@@ -16,2 +16 @@
 -use crate::cache::{Cache, CacheWrite, DecompressionFailure, FileObjectSource, Storage};
+-use crate::compiler::args::*;
 +use crate::cache::{Cache, CacheWrite, FileObjectSource, Storage};
-@@ -586,0 +587,4 @@ where
+@@ -30 +29 @@ use crate::compiler::ptxas::Ptxas;
+-use crate::compiler::rust::{Rust, RustupProxy};
++use crate::compiler::rust::Rust;
+@@ -31,0 +31 @@ use crate::compiler::tasking_vx::TaskingVX;
++use crate::dist;
+@@ -39 +39 @@ use crate::util::{fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_i
+-use crate::{counted_array, dist};
++use anyhow::ensure;
+@@ -44 +43,0 @@ use fs_err as fs;
+-use itertools::Itertools as _;
+@@ -586,0 +586,4 @@ where
 +        let timeout = service.cache_read_timeout();
 +        let cache_read_deadline = Instant::now()
 +            .checked_add(timeout)
 +            .context("governed cache-read timeout exceeds the monotonic-clock range")?;
-@@ -588,10 +592 @@ where
+@@ -588,10 +591 @@ where
 -        // Set a maximum time limit for the cache to respond before we forge
 -        // ahead ourselves with a compilation.
 -        let timeout = Duration::new(60, 0);
@@ -2260,7 +2271,7 @@ index 78bb5a4..78d7ab4 100644
 -
 -        // Check the result of the cache lookup.
 +        // Check the result of the cache lookup and fully restore any hit under one deadline.
-@@ -605,3 +600,12 @@ where
+@@ -605,3 +599,12 @@ where
 -
 -        let lookup = match cache_status.await {
 -            (Ok(Ok(Cache::Hit(mut entry))), duration) => {
@@ -2276,7 +2287,7 @@ index 78bb5a4..78d7ab4 100644
 +        let duration = start.elapsed();
 +        let lookup = match cache_status {
 +            Ok(Cache::Hit(entry)) => {
-@@ -613,14 +617 @@ where
+@@ -613,14 +616 @@ where
 -                let output = process::Output {
 -                    status: exit_status(0),
 -                    stdout: entry.get_stdout(),
@@ -2292,15 +2303,15 @@ index 78bb5a4..78d7ab4 100644
 -                    // Since we did local preprocessing, that should already have produced the dependency
 -                    // file - just leave that one alone and don't overwrite it from the cache.
 +                let filtered_outputs = if locally_preprocessed {
-@@ -629 +620 @@ where
+@@ -629 +619 @@ where
 -                        .filter(|fobj_source| fobj_source.key != "d") // key "d" means dependency file
 +                        .filter(|fobj_source| fobj_source.key != "d")
-@@ -633,4 +623,0 @@ where
+@@ -633,4 +622,0 @@ where
 -                    // In this mode, no local preprocessing was done, so the dependency file (if any)
 -                    // has not been created. But in this mode, the cache key also includes a lot of
 -                    // information about filenames (and less relevant here, file hashes), so it *is* safe
 -                    // to restore the dependency file from the cache.
-@@ -639,13 +626,15 @@ where
+@@ -639,13 +625,15 @@ where
 -
 -                let hit = CompileResult::CacheHit(duration);
 -                match entry.extract_objects(filtered_outputs, &pool).await {
@@ -2329,25 +2340,24 @@ index 78bb5a4..78d7ab4 100644
 +                    stderr,
 +                };
 +                CacheLookupResult::Success(CompileResult::CacheHit(duration), output)
-@@ -653 +642 @@ where
+@@ -653 +641 @@ where
 -            (Ok(Ok(Cache::Miss)), duration) => {
 +            Ok(Cache::Miss) => {
-@@ -659 +648 @@ where
+@@ -659 +647 @@ where
 -                Ok(CacheLookupResult::Miss(MissType::Normal))
 +                CacheLookupResult::Miss(MissType::Normal)
-@@ -661 +650 @@ where
+@@ -661 +649 @@ where
 -            (Ok(Ok(Cache::None)), duration) => {
 +            Ok(Cache::None) => {
-@@ -667 +656 @@ where
+@@ -667 +655 @@ where
 -                Ok(CacheLookupResult::Miss(MissType::ForcedNoCache))
 +                CacheLookupResult::Miss(MissType::ForcedNoCache)
-@@ -669 +658 @@ where
+@@ -669 +657 @@ where
 -            (Ok(Ok(Cache::Recache)), duration) => {
 +            Ok(Cache::Recache) => {
-@@ -675 +664 @@ where
+@@ -675,10 +663 @@ where
 -                Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
-+                CacheLookupResult::Miss(MissType::ForcedRecache)
-@@ -677,16 +666,7 @@ where
+-            }
 -            (Ok(Err(err)), duration) => {
 -                error!(
 -                    "[{}]: Cache read error: {:?} in {}",
@@ -2356,7 +2366,8 @@ index 78bb5a4..78d7ab4 100644
 -                    fmt_duration_as_secs(&duration)
 -                );
 -                Ok(CacheLookupResult::Miss(MissType::CacheReadError))
--            }
++                CacheLookupResult::Miss(MissType::ForcedRecache)
+@@ -686,7 +665,7 @@ where
 -            (Err(_), duration) => {
 -                debug!(
 -                    "[{}]: Cache timed out {}",
@@ -2371,11 +2382,11 @@ index 78bb5a4..78d7ab4 100644
 +                        fmt_duration_as_secs(&duration)
 +                    )
 +                });
-@@ -694,2 +674 @@ where
+@@ -694,2 +673 @@ where
 -        }?;
 -
 +        };
-@@ -772,0 +752,10 @@ where
+@@ -772,0 +751,10 @@ where
 +                if storage.is_read_only() {
 +                    return Ok((
 +                        CompileResult::ReadOnlyCacheMiss(
@@ -2386,29 +2397,285 @@ index 78bb5a4..78d7ab4 100644
 +                        compiler_result,
 +                    ));
 +                }
-@@ -1236,0 +1226,2 @@ pub enum CompileResult {
+@@ -1236,0 +1225,2 @@ pub enum CompileResult {
 +    /// A governed read-only miss compiled without attempting a cache write.
 +    ReadOnlyCacheMiss(MissType, DistType, Duration),
-@@ -1262,0 +1254,5 @@ impl fmt::Debug for CompileResult {
+@@ -1262,0 +1253,5 @@ impl fmt::Debug for CompileResult {
 +            CompileResult::ReadOnlyCacheMiss(ref m, ref dt, ref d) => write!(
 +                f,
 +                "CompileResult::ReadOnlyCacheMiss({:?}, {:?}, {:?})",
 +                d, m, dt
 +            ),
-@@ -1284,0 +1281,4 @@ impl PartialEq<CompileResult> for CompileResult {
+@@ -1284,0 +1280,4 @@ impl PartialEq<CompileResult> for CompileResult {
 +            (
 +                CompileResult::ReadOnlyCacheMiss(m, dt, _),
 +                CompileResult::ReadOnlyCacheMiss(n, dt2, _),
 +            ) => m == n && dt == dt2,
-@@ -2804,2 +2804 @@ LLVM version: 6.0",
+@@ -1485,3 +1484,12 @@ where
+-        // Even if it does not look like rustc like it might still be rustc driver
+-        // so we do full check
+-        executable
++        #[cfg(not(test))]
++        bail!("compiler selector basename is unavailable in strict mode");
++        #[cfg(test)]
++        {
++            ensure!(
++                !executable
++                    .file_name()
++                    .is_some_and(|name| name == "rustc-workspace-wrapper"),
++                "strict compiler proxies are forbidden"
++            );
++            executable
++        }
+@@ -1521,2 +1529,2 @@ async fn resolve_rust_compiler<T>(
+-    env: &[(OsString, OsString)],
+-    cwd: PathBuf,
++    _env: &[(OsString, OsString)],
++    _cwd: PathBuf,
+@@ -1528,0 +1537,4 @@ where
++    ensure!(
++        rustc_executable == executable,
++        "strict compiler proxies are forbidden"
++    );
+@@ -1530,7 +1542 @@ where
+-    // We're wrapping rustc if the executable doesn't match the detected rustc_executable. In this case the wrapper
+-    // expects rustc as the first argument.
+-    if rustc_executable != executable {
+-        child.arg(&rustc_executable);
+-    }
+-
+-    child.env_clear().envs(env.to_vec()).args(&["-vV"]);
++    child.env_clear().args(&["-vV"]);
+@@ -1550,54 +1556 @@ where
+-            let rustc_executable2 = rustc_executable.clone();
+-
+-            let proxy = RustupProxy::find_proxy_executable::<T>(
+-                &rustc_executable2,
+-                "rustup",
+-                creator.clone(),
+-                env,
+-            );
+-            use futures::TryFutureExt;
+-            let creator1 = creator.clone();
+-            let res = proxy.and_then(move |proxy| async move {
+-                match proxy {
+-                    Ok(Some(proxy)) => {
+-                        trace!("Found rustup proxy executable");
+-                        // take the pathbuf for rustc as resolved by the proxy
+-                        match proxy.resolve_proxied_executable(creator1, cwd, env).await {
+-                            Ok((resolved_path, _time)) => {
+-                                trace!("Resolved path with rustup proxy {:?}", &resolved_path);
+-                                Ok((Some(proxy), resolved_path))
+-                            }
+-                            Err(e) => {
+-                                trace!("Could not resolve compiler with rustup proxy: {}", e);
+-                                Ok((None, rustc_executable))
+-                            }
+-                        }
+-                    }
+-                    Ok(None) => {
+-                        trace!("Did not find rustup");
+-                        Ok((None, rustc_executable))
+-                    }
+-                    Err(e) => {
+-                        trace!("Did not find rustup due to {}, compiling without proxy", e);
+-                        Ok((None, rustc_executable))
+-                    }
+-                }
+-            });
+-
+-            let (proxy, resolved_rustc) = res
+-                .await
+-                .map(|(proxy, resolved_compiler_executable)| {
+-                    (
+-                        proxy
+-                            .map(Box::new)
+-                            .map(|x: Box<RustupProxy>| x as Box<dyn CompilerProxy<T>>),
+-                        resolved_compiler_executable,
+-                    )
+-                })
+-                .unwrap_or_else(|_e| {
+-                    trace!("Compiling rust without proxy");
+-                    (None, rustc_executable2)
+-                });
+-
+-            debug!("Using rustc at path: {resolved_rustc:?}");
+-
++            debug!("Using governed rustc at path: {rustc_executable:?}");
+@@ -1606,2 +1559,2 @@ where
+-                resolved_rustc,
+-                env,
++                rustc_executable,
++                &[],
+@@ -1613,6 +1566 @@ where
+-            .map(|c| {
+-                (
+-                    Box::new(c) as Box<dyn Compiler<T>>,
+-                    proxy as Option<Box<dyn CompilerProxy<T>>>,
+-                )
+-            })
++            .map(|c| (Box::new(c) as Box<dyn Compiler<T>>, None))
+@@ -1624,20 +1571,0 @@ where
+-ArgData! {
+-    PassThrough(OsString),
+-}
+-use self::ArgData::PassThrough as Detect_PassThrough;
+-
+-// Establish a set of compiler flags that are required for
+-// valid execution of the compiler even in preprocessor mode.
+-// If the requested compiler invocatiomn has any of these arguments
+-// propagate them when doing our compiler vendor detection
+-//
+-// Current known required flags:
+-// ccbin/compiler-bindir needed for nvcc
+-//  This flag specifies the host compiler to use otherwise
+-//  gcc is expected to exist on the PATH. So if gcc doesn't exist
+-//  compiler detection fails if we don't pass along the ccbin arg
+-counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
+-    take_arg!("--compiler-bindir", OsString, CanBeSeparated(b'='), Detect_PassThrough),
+-    take_arg!("-ccbin", OsString, CanBeSeparated(b'='), Detect_PassThrough),
+-]);
+-
+@@ -1647 +1575 @@ async fn detect_c_compiler<T, P>(
+-    arguments: &[OsString],
++    _arguments: &[OsString],
+@@ -1708 +1635,0 @@ compiler_version=__VERSION__
+-    // Resolve compiler avoiding ccache wrappers to prevent double-caching.
+@@ -1710,3 +1637 @@ compiler_version=__VERSION__
+-    let resolved_executable = resolve_compiler_avoiding_wrapper(executable, &env);
+-
+-    let mut cmd = creator.clone().new_command_sync(&resolved_executable);
++    let mut cmd = creator.clone().new_command_sync(executable);
+@@ -1715,12 +1640 @@ compiler_version=__VERSION__
+-        .envs(env.iter().map(|s| (&s.0, &s.1)));
+-
+-    // Iterate over all the arguments for compilation and extract
+-    // any that are required for any valid execution of the compiler.
+-    // Allowing our compiler vendor detection to always properly execute
+-    for arg in ArgsIter::new(arguments.iter().cloned(), &ARGS[..]) {
+-        let arg = arg.unwrap_or_else(|_| Argument::Raw(OsString::from("")));
+-        if let Some(Detect_PassThrough(_)) = arg.get_data() {
+-            let required_arg = arg.normalize(NormalizedDisposition::Concatenated);
+-            cmd.args(&required_arg.iter_os_strings().collect_vec());
+-        }
+-    }
++        .env_clear();
+@@ -1730 +1644 @@ compiler_version=__VERSION__
+-    let child = cmd.spawn().await?;
++    let child = crate::mock_command::StrictChildLauncher::spawn_prepared(&mut cmd).await?;
+@@ -1753 +1667,8 @@ compiler_version=__VERSION__
+-        let executable = resolved_executable;
++        ensure!(
++            matches!(
++                kind,
++                "clang" | "clang++" | "apple-clang" | "apple-clang++" | "gcc" | "g++"
++            ),
++            "compiler family is unavailable in strict mode"
++        );
++        let executable = executable.to_owned();
+@@ -2067 +1988 @@ mod test {
+-    fn test_detect_compiler_kind_msvc() {
++    fn test_strict_detection_rejects_msvc() {
+@@ -2098,5 +2019,5 @@ mod test {
+-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
+-            .wait()
+-            .unwrap()
+-            .0;
+-        assert_eq!(CompilerKind::C(CCompilerKind::Msvc), c.kind());
++        assert!(
++            detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
++                .wait()
++                .is_err()
++        );
+@@ -2106 +2027 @@ mod test {
+-    fn test_detect_compiler_kind_nvcc() {
++    fn test_strict_detection_rejects_nvcc() {
+@@ -2116,5 +2037,5 @@ mod test {
+-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
+-            .wait()
+-            .unwrap()
+-            .0;
+-        assert_eq!(CompilerKind::C(CCompilerKind::Nvcc), c.kind());
++        assert!(
++            detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
++                .wait()
++                .is_err()
++        );
+@@ -2124 +2045 @@ mod test {
+-    fn test_detect_compiler_kind_nvhpc() {
++    fn test_strict_detection_rejects_nvhpc() {
+@@ -2134,5 +2055,5 @@ mod test {
+-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
+-            .wait()
+-            .unwrap()
+-            .0;
+-        assert_eq!(CompilerKind::C(CCompilerKind::Nvhpc), c.kind());
++        assert!(
++            detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
++                .wait()
++                .is_err()
++        );
+@@ -2203 +2124 @@ LLVM version: 6.0",
+-    fn test_detect_compiler_kind_rustc_workspace_wrapper() {
++    fn test_strict_detection_rejects_rustc_workspace_wrappers() {
+@@ -2213,14 +2134,14 @@ LLVM version: 6.0",
+-        let c = detect_compiler(
+-            creator,
+-            &rustc,
+-            f.tempdir.path(),
+-            // Specifying an extension tests the ignoring
+-            &[OsString::from("rustc.exe")],
+-            &[(OsString::from("CARGO"), OsString::from("CARGO"))],
+-            pool,
+-            None,
+-        )
+-        .wait()
+-        .unwrap()
+-        .0;
+-        assert_eq!(CompilerKind::Rust, c.kind());
++        assert!(
++            detect_compiler(
++                creator,
++                &rustc,
++                f.tempdir.path(),
++                // Specifying an extension tests the ignoring
++                &[OsString::from("rustc.exe")],
++                &[(OsString::from("CARGO"), OsString::from("CARGO"))],
++                pool,
++                None,
++            )
++            .wait()
++            .is_err()
++        );
+@@ -2246 +2167 @@ LLVM version: 6.0",
+-        // Test we detect rustc if the CARGO env is not defined
++        // Wrapper-shaped selectors remain forbidden without Cargo environment.
+@@ -2260 +2181 @@ LLVM version: 6.0",
+-            .is_ok()
++            .is_err()
+@@ -2265 +2186 @@ LLVM version: 6.0",
+-    fn test_detect_compiler_kind_diab() {
++    fn test_strict_detection_rejects_diab() {
+@@ -2275,5 +2196,5 @@ LLVM version: 6.0",
+-        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
+-            .wait()
+-            .unwrap()
+-            .0;
+-        assert_eq!(CompilerKind::C(CCompilerKind::Diab), c.kind());
++        assert!(
++            detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
++                .wait()
++                .is_err()
++        );
+@@ -2804,2 +2725 @@ LLVM version: 6.0",
 -    /// Test that a cache read that results in an error is treated as a cache
 -    /// miss.
 +    /// Test that a cache read error stops before compiler execution.
-@@ -2841,3 +2839,0 @@ LLVM version: 6.0",
+@@ -2841,3 +2760,0 @@ LLVM version: 6.0",
 -        // The compiler invocation.
 -        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
 -        const COMPILER_STDERR: &[u8] = b"compiler stderr";
-@@ -2845,11 +2840,0 @@ LLVM version: 6.0",
+@@ -2845,11 +2761,0 @@ LLVM version: 6.0",
 -        let o = obj.clone();
 -        next_command_calls(&creator, move |_| {
 -            // Pretend to compile something.
@@ -2420,10 +2687,10 @@ index 78bb5a4..78d7ab4 100644
 -                COMPILER_STDERR,
 -            ))
 -        });
-@@ -2864 +2849 @@ LLVM version: 6.0",
+@@ -2864 +2770 @@ LLVM version: 6.0",
 -        let (cached, res) = runtime
 +        let error = runtime
-@@ -2875,0 +2861,136 @@ LLVM version: 6.0",
+@@ -2875,0 +2782,136 @@ LLVM version: 6.0",
 +            .unwrap_err();
 +        assert!(error.to_string().contains("governed cache read failed"));
 +        assert!(!obj.exists());
@@ -2560,7 +2827,7 @@ index 78bb5a4..78d7ab4 100644
 +                CacheControl::Default,
 +                pool,
 +            ))
-@@ -2877,9 +2997,0 @@ LLVM version: 6.0",
+@@ -2877,9 +2918,0 @@ LLVM version: 6.0",
 -        // Ensure that the object file was created.
 -        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
 -        match cached {
@@ -2570,7 +2837,7 @@ index 78bb5a4..78d7ab4 100644
 -            }
 -            _ => panic!("Unexpected compile result: {:?}", cached),
 -        }
-@@ -2887,3 +2999,6 @@ LLVM version: 6.0",
+@@ -2887,3 +2920,6 @@ LLVM version: 6.0",
 -        assert_eq!(exit_status(0), res.status);
 -        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
 -        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -2587,6 +2854,42 @@ index e6f72a7..8ec211c 100644
 @@ -1186 +1186 @@ fn remap_generated_filenames(
 -                                .join("x_".to_owned() + &count + extension)
 +                                .join("x_".to_owned() + count.as_str() + extension)
+diff --git a/src/compiler/rust.rs b/src/compiler/rust.rs
+index d6c2c71..b954a0e 100644
+--- a/src/compiler/rust.rs
++++ b/src/compiler/rust.rs
+@@ -15,0 +16,2 @@ use crate::cache::{FileObjectSource, Storage};
++#[cfg(test)]
++use crate::compiler::CompilerProxy;
+@@ -19,2 +21,2 @@ use crate::compiler::{
+-    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
+-    SingleCompileCommand, c::ArtifactDescriptor,
++    CompilerArguments, CompilerHasher, CompilerKind, HashResult, Language, SingleCompileCommand,
++    c::ArtifactDescriptor,
+@@ -32,0 +35 @@ use async_trait::async_trait;
++#[cfg(test)]
+@@ -48,0 +52 @@ use std::fmt;
++#[cfg(test)]
+@@ -55,0 +60 @@ use std::path::{Path, PathBuf};
++#[cfg(test)]
+@@ -140,0 +146,2 @@ pub struct RustHasher {
++#[cfg(test)]
++#[allow(dead_code)]
+@@ -408 +415 @@ impl Rust {
+-        env_vars: &[(OsString, OsString)],
++        _env_vars: &[(OsString, OsString)],
+@@ -429,2 +436 @@ impl Rust {
+-            .env_clear()
+-            .envs(env_vars.to_vec());
++            .env_clear();
+@@ -467 +473 @@ impl Rust {
+-                let env_vars = env_vars.to_owned();
++                let env_vars = _env_vars.to_owned();
+@@ -561,0 +568 @@ where
++#[cfg(test)]
+@@ -611,0 +619,2 @@ where
++#[cfg(test)]
++#[allow(dead_code)]
 diff --git a/src/config.rs b/src/config.rs
 index cef32b2..db7fa79 100644
 --- a/src/config.rs
@@ -3694,10 +3997,23 @@ index cef32b2..db7fa79 100644
 +}
 +
 diff --git a/src/mock_command.rs b/src/mock_command.rs
-index d7ffa03..091a873 100644
+index d7ffa03..c44ea0b 100644
 --- a/src/mock_command.rs
 +++ b/src/mock_command.rs
-@@ -142,0 +143,58 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
+@@ -49,0 +50 @@ use crate::jobserver::{Acquired, Client};
++use anyhow::ensure;
+@@ -113,0 +115,2 @@ pub trait RunCommand: fmt::Debug + Send {
++    /// Prove that the inherited process environment was cleared before sealing.
++    fn strict_environment_is_sealed(&self) -> bool;
+@@ -115 +118,6 @@ pub trait RunCommand: fmt::Debug + Send {
+-    async fn spawn(&mut self) -> Result<Self::C>;
++    async fn spawn(&mut self, permit: StrictSpawnPermit) -> Result<Self::C>;
++}
++
++/// Unforgeable capability required to cross the compiler-child spawn boundary.
++pub struct StrictSpawnPermit {
++    _private: (),
+@@ -142,0 +151,63 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
 +pub struct StrictChildIo {
 +    stdin: Stdio,
 +    stdout: Stdio,
@@ -3723,27 +4039,21 @@ index d7ffa03..091a873 100644
 +    }
 +}
 +
-+pub struct StrictChildLauncher<C> {
-+    creator: C,
-+}
++pub struct StrictChildLauncher;
 +
-+impl<C> StrictChildLauncher<C>
-+where
-+    C: CommandCreatorSync,
-+{
-+    pub fn new(creator: C) -> Self {
-+        Self { creator }
-+    }
-+
-+    pub async fn spawn(
-+        &mut self,
++impl StrictChildLauncher {
++    pub async fn spawn<C>(
++        creator: &mut C,
 +        executable: &OsStr,
 +        arguments: &[OsString],
 +        cwd: &Path,
 +        environment: &crate::config::CompilerEnvironment,
 +        io: StrictChildIo,
-+    ) -> Result<<C::Cmd as RunCommand>::C> {
-+        let mut command = self.creator.new_command_sync(executable);
++    ) -> Result<<C::Cmd as RunCommand>::C>
++    where
++        C: CommandCreatorSync,
++    {
++        let mut command = creator.new_command_sync(executable);
 +        command
 +            .args(arguments)
 +            .env_clear()
@@ -3752,20 +4062,48 @@ index d7ffa03..091a873 100644
 +            .stdin(io.stdin)
 +            .stdout(io.stdout)
 +            .stderr(io.stderr);
-+        command.spawn().await
++        Self::spawn_prepared(&mut command).await
++    }
++
++    pub async fn spawn_prepared<C>(command: &mut C) -> Result<C::C>
++    where
++        C: RunCommand,
++    {
++        ensure!(
++            command.strict_environment_is_sealed(),
++            "strict child environment was not cleared before spawn"
++        );
++        command.spawn(StrictSpawnPermit { _private: () }).await
 +    }
 +}
 +
-@@ -250,6 +307,0 @@ impl RunCommand for AsyncCommand {
+@@ -182,0 +254 @@ pub struct AsyncCommand {
++    environment_cleared: bool,
+@@ -189,0 +262 @@ impl AsyncCommand {
++            environment_cleared: false,
+@@ -229,0 +303 @@ impl RunCommand for AsyncCommand {
++        self.environment_cleared = true;
+@@ -249,7 +323,4 @@ impl RunCommand for AsyncCommand {
+-    async fn spawn(&mut self) -> Result<Child> {
 -        let mut inner = self.inner.take().unwrap();
 -        inner.env_remove("MAKEFLAGS");
 -        inner.env_remove("MFLAGS");
 -        inner.env_remove("CARGO_MAKEFLAGS");
 -        self.jobserver.configure(&mut inner);
 -
-@@ -256,0 +309 @@ impl RunCommand for AsyncCommand {
++    fn strict_environment_is_sealed(&self) -> bool {
++        self.environment_cleared
++    }
++    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<Child> {
+@@ -256,0 +328 @@ impl RunCommand for AsyncCommand {
 +        let inner = self.inner.take().unwrap();
-@@ -548,0 +602,65 @@ mod test {
+@@ -470 +542,4 @@ impl RunCommand for MockCommand {
+-    async fn spawn(&mut self) -> Result<MockChild> {
++    fn strict_environment_is_sealed(&self) -> bool {
++        true
++    }
++    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<MockChild> {
+@@ -548,0 +624,80 @@ mod test {
 +    #[test]
 +    fn strict_spawn_does_not_inject_jobserver_environment_after_classification() {
 +        let runtime = tokio::runtime::Builder::new_current_thread()
@@ -3782,8 +4120,7 @@ index d7ffa03..091a873 100644
 +            .stderr(Stdio::piped());
 +
 +        let output = runtime.block_on(async move {
-+            command
-+                .spawn()
++            StrictChildLauncher::spawn_prepared(&mut command)
 +                .await
 +                .unwrap()
 +                .wait_with_output()
@@ -3797,33 +4134,49 @@ index d7ffa03..091a873 100644
 +    }
 +
 +    #[test]
++    fn strict_launcher_rejects_an_inherited_environment_before_spawn() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let client = Client::new_num(1);
++        let mut command = AsyncCommand::new("/usr/bin/env", client);
++
++        let error = match runtime.block_on(StrictChildLauncher::spawn_prepared(&mut command)) {
++            Ok(_) => panic!("inherited environment reached spawn"),
++            Err(error) => error,
++        };
++
++        assert!(error.to_string().contains("environment was not cleared"));
++    }
++
++    #[test]
 +    fn strict_child_launcher_installs_only_the_compiler_environment() {
 +        let runtime = tokio::runtime::Builder::new_current_thread()
 +            .enable_all()
 +            .build()
 +            .unwrap();
 +        let client = Client::new_num(1);
-+        let creator = <ProcessCommandCreator as CommandCreatorSync>::new(&client);
-+        let mut launcher = StrictChildLauncher::new(creator);
++        let mut creator = <ProcessCommandCreator as CommandCreatorSync>::new(&client);
 +        let environment = crate::config::CompilerEnvironment::for_tests(vec![(
 +            b"STRICT_ONLY".to_vec(),
 +            b"canonical".to_vec(),
 +        )]);
 +
 +        let output = runtime.block_on(async move {
-+            launcher
-+                .spawn(
-+                    OsStr::new("/usr/bin/env"),
-+                    &[],
-+                    Path::new("/"),
-+                    &environment,
-+                    StrictChildIo::captured(),
-+                )
-+                .await
-+                .unwrap()
-+                .wait_with_output()
-+                .await
-+                .unwrap()
++            StrictChildLauncher::spawn(
++                &mut creator,
++                OsStr::new("/usr/bin/env"),
++                &[],
++                Path::new("/"),
++                &environment,
++                StrictChildIo::captured(),
++            )
++            .await
++            .unwrap()
++            .wait_with_output()
++            .await
++            .unwrap()
 +        });
 +
 +        assert!(output.status.success());
@@ -3831,6 +4184,21 @@ index d7ffa03..091a873 100644
 +        assert!(output.stderr.is_empty());
 +    }
 +
+@@ -553 +708,2 @@ mod test {
+-        creator.new_command(program).spawn().wait()
++        let mut command = creator.new_command(program);
++        StrictChildLauncher::spawn_prepared(&mut command).wait()
+@@ -576,2 +732,2 @@ mod test {
+-                t.new_command_sync("foo")
+-                    .spawn()
++                let mut command = t.new_command_sync("foo");
++                StrictChildLauncher::spawn_prepared(&mut command)
+@@ -612 +768,4 @@ mod test {
+-        creator.new_command("foo").spawn().wait().unwrap();
++        let mut command = creator.new_command("foo");
++        StrictChildLauncher::spawn_prepared(&mut command)
++            .wait()
++            .unwrap();
 diff --git a/src/net.rs b/src/net.rs
 index 43965d0..542ca17 100644
 --- a/src/net.rs
@@ -5046,3 +5414,16 @@ index d8531be..efd56b5 100644
 -            bins,
 @@ -221,0 +212 @@ impl TestFixture {
 +        TestFixture { tempdir, bins }
+diff --git a/src/util.rs b/src/util.rs
+index bc64c3d..18650f1 100644
+--- a/src/util.rs
++++ b/src/util.rs
+@@ -533 +533 @@ where
+-    let child = command
++    command
+@@ -540,3 +540,2 @@ where
+-        .stderr(Stdio::piped())
+-        .spawn()
+-        .await?;
++        .stderr(Stdio::piped());
++    let child = crate::mock_command::StrictChildLauncher::spawn_prepared(&mut command).await?;

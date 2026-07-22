@@ -9,19 +9,22 @@ use std::{
 use anyhow::Error;
 
 use super::codec::{
-    encode_basket_admission_granted, encode_basket_admission_rejected,
-    encode_capital_admission_rebuild, encode_entry_order_intent, encode_loss_governor_halt,
-    encode_order_lifecycle, encode_requote_throttle_observation, encode_reservation_fill,
-    encode_reservation_metadata, encode_risk_reducing_exit_order_intent, encode_settlement,
-    encode_settlement_booking_error, encode_terminal_settlement,
-    encode_venue_truth_capture_failure, encode_venue_truth_divergence,
+    encode_admitted_entry_admission, encode_basket_admission_granted,
+    encode_basket_admission_rejected, encode_capital_admission_rebuild, encode_entry_order_intent,
+    encode_forced_reduction_admission, encode_loss_governor_halt, encode_order_lifecycle,
+    encode_rejected_entry_admission, encode_requote_throttle_observation, encode_reservation_fill,
+    encode_reservation_metadata, encode_risk_reducing_exit_admission,
+    encode_risk_reducing_exit_order_intent, encode_settlement, encode_settlement_booking_error,
+    encode_terminal_settlement, encode_venue_truth_capture_failure, encode_venue_truth_divergence,
 };
 use super::facts::{
-    BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, CapitalAdmissionRebuildFact,
-    EntryOrderIntentFact, LossGovernorHaltFact, OrderLifecycleFact, RequoteThrottleObservationFact,
-    RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
-    SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
-    VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
+    AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
+    CapitalAdmissionRebuildFact, EntryOrderIntentFact, ForcedReductionAdmissionFact,
+    LossGovernorHaltFact, OrderLifecycleFact, RejectedEntryAdmissionFact,
+    RequoteThrottleObservationFact, RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact,
+    SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
+    SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
+    VenueTruthDivergenceFact,
 };
 use super::generated_contract::{KnownPurpose, KnownSink, sink_for_purpose};
 
@@ -156,6 +159,43 @@ impl DecisionEvidenceRecorder {
         fact: EntryOrderIntentFact,
     ) -> Result<AppendReceipt, RecordFailure> {
         self.record_blocking(encode_entry_order_intent(fact)?)
+    }
+
+    pub fn record_admitted_entry_admission(
+        &self,
+        fact: AdmittedEntryAdmissionFact,
+    ) -> Result<AppendReceipt, RecordFailure> {
+        self.record_blocking(encode_admitted_entry_admission(fact)?)
+    }
+
+    pub fn record_rejected_entry_admission(
+        &self,
+        fact: RejectedEntryAdmissionFact,
+    ) -> NonBlockingRecordOutcome {
+        match encode_rejected_entry_admission(fact) {
+            Ok(record) => self.record_nonblocking(record),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
+    }
+
+    pub fn record_risk_reducing_exit_admission(
+        &self,
+        fact: RiskReducingExitAdmissionFact,
+    ) -> NonBlockingRecordOutcome {
+        match encode_risk_reducing_exit_admission(fact) {
+            Ok(record) => self.record_nonblocking(record),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
+    }
+
+    pub fn record_forced_reduction_admission(
+        &self,
+        fact: ForcedReductionAdmissionFact,
+    ) -> NonBlockingRecordOutcome {
+        match encode_forced_reduction_admission(fact) {
+            Ok(record) => self.record_nonblocking(record),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
     }
 
     pub fn record_risk_reducing_exit_order_intent(

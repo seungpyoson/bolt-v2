@@ -261,6 +261,111 @@ pub struct LossGovernorHaltFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LossHaltReason {
+    PerTradeLossLimit,
+    DailyLossLimit,
+    RollingLossLimit,
+    MaxDrawdownLimit,
+    StaleLossSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LossSnapshotSource {
+    NtLossRuntimeFeed,
+    NtPortfolioSnapshot,
+    NtAccountSnapshot,
+    NtAccountAndPositionSnapshot,
+    NtPositionEvent,
+    NtPositionChanged,
+    NtPositionClosed,
+    NtPositionAdjusted,
+    NtCapitalAdmissionState,
+    BoltLossSnapshot,
+    LossGovernor,
+    Unknown,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LossSnapshotStaleReason {
+    MissingSnapshot,
+    SourceEmpty,
+    FutureDated,
+    AgeExceeded,
+    MissingRequiredField,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionRejectionReason {
+    KillSwitchLatched,
+    SubmitLifecycleDisallowed,
+    LossGovernorHalted,
+    NonPositiveNotional,
+    NotionalCapExceeded,
+    InvalidRiskReducingExitProof,
+    CountCapExhausted,
+    KillSwitchForcedReductionProofInvalid,
+    KillSwitchForcedReductionCapExceeded,
+    CapitalAdmission,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionDecisionOutcome {
+    Admitted,
+    Rejected(AdmissionRejectionReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmissionDetails {
+    pub strategy_id: String,
+    pub execution_client_id: String,
+    pub client_order_id: String,
+    pub instrument_id: String,
+    pub notional: String,
+    pub loss_halt_reasons: Vec<LossHaltReason>,
+    pub snapshot_present: bool,
+    pub snapshot_observed_at_ns: Option<u64>,
+    pub admission_now_ns: u64,
+    pub snapshot_age_ns: Option<u64>,
+    pub max_snapshot_age_ns: Option<u64>,
+    pub snapshot_source: Option<LossSnapshotSource>,
+    pub per_trade_pnl_present: bool,
+    pub daily_pnl_present: bool,
+    pub rolling_pnl_present: bool,
+    pub current_equity_present: bool,
+    pub peak_equity_present: bool,
+    pub last_account_state_observed_at_ns: Option<u64>,
+    pub last_portfolio_snapshot_observed_at_ns: Option<u64>,
+    pub last_position_event_observed_at_ns: Option<u64>,
+    pub stale_reason: Option<LossSnapshotStaleReason>,
+    pub loss_snapshot_observed_at_ns: Option<u64>,
+    pub loss_eval_now_ns: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmittedEntryAdmissionFact {
+    pub details: AdmissionDetails,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedEntryAdmissionFact {
+    pub details: AdmissionDetails,
+    pub reason: AdmissionRejectionReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RiskReducingExitAdmissionFact {
+    pub details: AdmissionDetails,
+    pub outcome: AdmissionDecisionOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForcedReductionAdmissionFact {
+    pub details: AdmissionDetails,
+    pub outcome: AdmissionDecisionOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,
     Down,

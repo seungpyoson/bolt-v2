@@ -13,12 +13,13 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     facts::{
-        BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, CapitalAdmissionRebuildFact,
-        EntryOrderIntentFact, LossGovernorHaltFact, OrderLifecycleFact, RecoveryFact,
-        RequoteThrottleObservationFact, RiskReducingExitOrderIntentFact,
-        SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
-        SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
-        VenueTruthDivergenceFact,
+        AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
+        CapitalAdmissionRebuildFact, EntryOrderIntentFact, ForcedReductionAdmissionFact,
+        LossGovernorHaltFact, OrderLifecycleFact, RecoveryFact, RejectedEntryAdmissionFact,
+        RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
+        RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
+        SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
+        VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
     },
     generated_contract::{
         ConsumerDisposition, IdentityDescriptor, KnownConsumer, KnownIdentity, KnownPurpose,
@@ -282,10 +283,110 @@ impl CodecFor<identities::LossGovernorHaltV1> for CurrentCodecs {
     }
 }
 
+impl CodecFor<identities::AdmittedEntryAdmissionV1> for CurrentCodecs {
+    type Input = AdmittedEntryAdmissionFact;
+    type Fact = AdmittedEntryAdmissionFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        admission::encode_admitted_entry(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        admission::decode_admitted_entry(line, line_number)
+    }
+}
+
+impl CodecFor<identities::RejectedEntryAdmissionV1> for CurrentCodecs {
+    type Input = RejectedEntryAdmissionFact;
+    type Fact = RejectedEntryAdmissionFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        admission::encode_rejected_entry(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        admission::decode_rejected_entry(line, line_number)
+    }
+}
+
+impl CodecFor<identities::RiskReducingExitAdmissionV1> for CurrentCodecs {
+    type Input = RiskReducingExitAdmissionFact;
+    type Fact = RiskReducingExitAdmissionFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        admission::encode_risk_reducing_exit(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        admission::decode_risk_reducing_exit(line, line_number)
+    }
+}
+
+impl CodecFor<identities::ForcedReductionAdmissionV1> for CurrentCodecs {
+    type Input = ForcedReductionAdmissionFact;
+    type Fact = ForcedReductionAdmissionFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        admission::encode_forced_reduction(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        admission::decode_forced_reduction(line, line_number)
+    }
+}
+
 pub(crate) fn encode_entry_order_intent(
     fact: EntryOrderIntentFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     <CurrentCodecs as CodecFor<identities::EntryOrderIntentV1>>::encode(&fact, current_utc_ns()?)
+}
+
+pub(crate) fn encode_admitted_entry_admission(
+    fact: AdmittedEntryAdmissionFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
+}
+
+pub(crate) fn encode_rejected_entry_admission(
+    fact: RejectedEntryAdmissionFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::RejectedEntryAdmissionV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
+}
+
+pub(crate) fn encode_risk_reducing_exit_admission(
+    fact: RiskReducingExitAdmissionFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::RiskReducingExitAdmissionV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
+}
+
+pub(crate) fn encode_forced_reduction_admission(
+    fact: ForcedReductionAdmissionFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::ForcedReductionAdmissionV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
 }
 
 pub(crate) fn encode_risk_reducing_exit_order_intent(
@@ -562,8 +663,9 @@ fn validate_envelope(
 #[cfg(test)]
 mod tests {
     use super::super::facts::{
-        OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome, OrderIntentDetails,
-        OrderIntentOrderFields,
+        AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason, LossHaltReason,
+        LossSnapshotSource, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
+        OrderIntentDetails, OrderIntentOrderFields,
     };
     use super::*;
 
@@ -773,6 +875,34 @@ mod tests {
             stable_halt_key: "age_exceeded:nt_account_snapshot".to_string(),
             retry_count: 1,
             elapsed_since_first_halt_ns: 0,
+        }
+    }
+
+    fn admission_details() -> AdmissionDetails {
+        AdmissionDetails {
+            strategy_id: "strategy-1".to_string(),
+            execution_client_id: "execution-1".to_string(),
+            client_order_id: "client-1".to_string(),
+            instrument_id: "YES-USD.POLYMARKET".to_string(),
+            notional: "10".to_string(),
+            loss_halt_reasons: vec![LossHaltReason::DailyLossLimit],
+            snapshot_present: true,
+            snapshot_observed_at_ns: Some(10),
+            admission_now_ns: 12,
+            snapshot_age_ns: Some(2),
+            max_snapshot_age_ns: Some(5),
+            snapshot_source: Some(LossSnapshotSource::NtAccountSnapshot),
+            per_trade_pnl_present: true,
+            daily_pnl_present: true,
+            rolling_pnl_present: true,
+            current_equity_present: true,
+            peak_equity_present: true,
+            last_account_state_observed_at_ns: Some(10),
+            last_portfolio_snapshot_observed_at_ns: Some(10),
+            last_position_event_observed_at_ns: Some(10),
+            stale_reason: None,
+            loss_snapshot_observed_at_ns: Some(10),
+            loss_eval_now_ns: Some(12),
         }
     }
 
@@ -1059,6 +1189,98 @@ mod tests {
             <CurrentCodecs as CodecFor<identities::LossGovernorHaltV1>>::decode(line, 1)
                 .expect("loss halt must decode"),
             expected
+        );
+    }
+
+    #[test]
+    fn admission_identities_are_purpose_pure_and_round_trip() {
+        let admitted = AdmittedEntryAdmissionFact {
+            details: admission_details(),
+        };
+        let admitted_record =
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(
+                &admitted, 24,
+            )
+            .expect("valid admitted entry must encode");
+        let admitted_line = std::str::from_utf8(admitted_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::decode(
+                admitted_line,
+                1,
+            )
+            .expect("admitted entry must decode"),
+            admitted
+        );
+
+        let rejected = RejectedEntryAdmissionFact {
+            details: admission_details(),
+            reason: AdmissionRejectionReason::NotionalCapExceeded,
+        };
+        let rejected_record =
+            <CurrentCodecs as CodecFor<identities::RejectedEntryAdmissionV1>>::encode(
+                &rejected, 25,
+            )
+            .expect("valid rejected entry must encode");
+        let rejected_line = std::str::from_utf8(rejected_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::RejectedEntryAdmissionV1>>::decode(
+                rejected_line,
+                1,
+            )
+            .expect("rejected entry must decode"),
+            rejected
+        );
+
+        let exit = RiskReducingExitAdmissionFact {
+            details: admission_details(),
+            outcome: AdmissionDecisionOutcome::Admitted,
+        };
+        let exit_record =
+            <CurrentCodecs as CodecFor<identities::RiskReducingExitAdmissionV1>>::encode(&exit, 26)
+                .expect("valid exit admission must encode");
+        let exit_line = std::str::from_utf8(exit_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::RiskReducingExitAdmissionV1>>::decode(
+                exit_line, 1,
+            )
+            .expect("exit admission must decode"),
+            exit
+        );
+
+        let forced = ForcedReductionAdmissionFact {
+            details: admission_details(),
+            outcome: AdmissionDecisionOutcome::Rejected(
+                AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
+            ),
+        };
+        let forced_record =
+            <CurrentCodecs as CodecFor<identities::ForcedReductionAdmissionV1>>::encode(
+                &forced, 27,
+            )
+            .expect("valid forced reduction admission must encode");
+        let forced_line = std::str::from_utf8(forced_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::ForcedReductionAdmissionV1>>::decode(
+                forced_line,
+                1,
+            )
+            .expect("forced reduction admission must decode"),
+            forced
+        );
+        assert!(
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::decode(
+                rejected_line,
+                1,
+            )
+            .is_err()
         );
     }
 }

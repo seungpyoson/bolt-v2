@@ -58,6 +58,14 @@ def valid_document() -> dict[str, object]:
             "replicas": ["a", "b"],
             "attestation_attempts": 12,
             "attestation_interval_seconds": 10,
+            "consumer": {
+                "abstract_socket_template": "bolt-sccache-verifier-{job_identity}",
+                "compiler_path": "/usr/bin/cc",
+                "compiler_family": "gcc",
+                "s3_bucket": "bolt-sccache-verifier",
+                "s3_region": "us-east-1",
+                "s3_key_prefix": "strict-verifier",
+            },
         },
         "runtime_contract": {
             "max_runtime_timeout_ms": 3_600_000,
@@ -88,6 +96,7 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.max_runtime_timeout_ms, 3_600_000)
         self.assertEqual(config.abstract_name_max_bytes, 107)
         self.assertEqual(config.cache_format_token, "bolt-sccache-strict-v1")
+        self.assertEqual(config.verification_consumer.compiler_path, "/usr/bin/cc")
 
     def test_rejects_non_positive_verification_timeout(self) -> None:
         document = valid_document()
@@ -702,6 +711,28 @@ class ReleaseCleanupTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_writes_governed_verification_consumer_outside_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = pathlib.Path(temporary) / "consumer.toml"
+            result = sccache_strict.main(
+                [
+                    "write-verification-consumer",
+                    "--config",
+                    str(REPO_ROOT / "ci/sccache-strict.toml"),
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            self.assertEqual(result, 0)
+            document = output.read_text()
+            self.assertIn(
+                'abstract_socket_template = "bolt-sccache-verifier-{job_identity}"',
+                document,
+            )
+            self.assertIn('path = "/usr/bin/cc"', document)
+            self.assertIn("startup_timeout_ms = 1000", document)
+
     def test_show_target_emits_governed_json(self) -> None:
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):

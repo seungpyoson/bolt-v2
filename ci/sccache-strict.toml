@@ -27,6 +27,14 @@ replicas = ["a", "b"]
 attestation_attempts = 12
 attestation_interval_seconds = 10
 
+[verification.consumer]
+abstract_socket_template = "bolt-sccache-verifier-{job_identity}"
+compiler_path = "/usr/bin/cc"
+compiler_family = "gcc"
+s3_bucket = "bolt-sccache-verifier"
+s3_region = "us-east-1"
+s3_key_prefix = "strict-verifier"
+
 [runtime_contract]
 max_runtime_timeout_ms = 3600000
 snapshot_max_bytes = 65536

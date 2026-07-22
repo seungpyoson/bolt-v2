@@ -29,6 +29,16 @@ class TargetConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class VerificationConsumerConfig:
+    abstract_socket_template: str
+    compiler_path: str
+    compiler_family: str
+    s3_bucket: str
+    s3_region: str
+    s3_key_prefix: str
+
+
+@dataclasses.dataclass(frozen=True)
 class StrictBuildConfig:
     schema_version: int
     repo_root: pathlib.Path
@@ -58,6 +68,7 @@ class StrictBuildConfig:
     replicas: tuple[str, ...]
     attestation_attempts: int
     attestation_interval_seconds: int
+    verification_consumer: VerificationConsumerConfig
     targets: Mapping[str, TargetConfig]
 
 
@@ -276,6 +287,7 @@ def load_document(
                 "replicas",
                 "attestation_attempts",
                 "attestation_interval_seconds",
+                "consumer",
             }
         ),
         "verification",
@@ -359,6 +371,53 @@ def load_document(
     )
     if verification_cache_mode not in {"READ_ONLY", "READ_WRITE"}:
         raise ValueError("verification.cache_mode must be READ_ONLY or READ_WRITE")
+    consumer = _mapping(verification["consumer"], "verification.consumer")
+    _exact_keys(
+        consumer,
+        frozenset(
+            {
+                "abstract_socket_template",
+                "compiler_path",
+                "compiler_family",
+                "s3_bucket",
+                "s3_region",
+                "s3_key_prefix",
+            }
+        ),
+        "verification.consumer",
+    )
+    abstract_socket_template = _string(
+        consumer["abstract_socket_template"],
+        "verification.consumer.abstract_socket_template",
+    )
+    if (
+        abstract_socket_template.count("{job_identity}") != 1
+        or not abstract_socket_template.isascii()
+        or len(abstract_socket_template.encode()) > abstract_name_max_bytes
+    ):
+        raise ValueError(
+            "verification consumer socket template must contain one job identity placeholder and fit the compiled ceiling"
+        )
+    compiler_path = _string(
+        consumer["compiler_path"], "verification.consumer.compiler_path"
+    )
+    if not pathlib.PurePosixPath(compiler_path).is_absolute():
+        raise ValueError("verification consumer compiler path must be absolute")
+    compiler_family = _string(
+        consumer["compiler_family"], "verification.consumer.compiler_family"
+    )
+    if compiler_family not in {"rust", "gcc", "clang"}:
+        raise ValueError("verification consumer compiler family is invalid")
+    s3_bucket = _string(consumer["s3_bucket"], "verification.consumer.s3_bucket")
+    s3_region = _string(consumer["s3_region"], "verification.consumer.s3_region")
+    s3_key_prefix = _string(
+        consumer["s3_key_prefix"], "verification.consumer.s3_key_prefix"
+    )
+    if any(
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", value) is None
+        for value in (s3_bucket, s3_region, s3_key_prefix)
+    ):
+        raise ValueError("verification consumer S3 values must be portable identifiers")
     replicas_value = verification["replicas"]
     if (
         not isinstance(replicas_value, list)
@@ -433,6 +492,14 @@ def load_document(
         replicas=tuple(replicas_value),
         attestation_attempts=attestation_attempts,
         attestation_interval_seconds=attestation_interval_seconds,
+        verification_consumer=VerificationConsumerConfig(
+            abstract_socket_template=abstract_socket_template,
+            compiler_path=compiler_path,
+            compiler_family=compiler_family,
+            s3_bucket=s3_bucket,
+            s3_region=s3_region,
+            s3_key_prefix=s3_key_prefix,
+        ),
         targets=MappingProxyType(targets),
     )
 
@@ -483,6 +550,7 @@ def _derivative_identity(config: StrictBuildConfig, architecture: str) -> str:
         "snapshot_max_bytes": config.snapshot_max_bytes,
         "abstract_name_max_bytes": config.abstract_name_max_bytes,
         "cache_format_token": config.cache_format_token,
+        "verification_consumer": dataclasses.asdict(config.verification_consumer),
         "target": target.triple,
     }
     return hashlib.sha256(_canonical_json(document)).hexdigest()
@@ -509,6 +577,38 @@ def _emit_json(value: object) -> None:
 def _candidate_binary_name(config: StrictBuildConfig, architecture: str) -> str:
     target = config.targets[architecture]
     return f"sccache-v{config.source_version}-strict-{target.triple}"
+
+
+def write_verification_consumer(
+    *, output_path: pathlib.Path, config: StrictBuildConfig
+) -> None:
+    consumer = config.verification_consumer
+
+    def quote(value: str) -> str:
+        return json.dumps(value, ensure_ascii=True)
+
+    timeout = config.verification_timeout_ms
+    document = f"""schema_version = 1
+
+[consumer]
+abstract_socket_template = {quote(consumer.abstract_socket_template)}
+startup_timeout_ms = {timeout}
+ipc_frame_timeout_ms = {timeout}
+cache_read_timeout_ms = {timeout}
+required_write_timeout_ms = {timeout}
+classification_timeout_ms = {timeout}
+compiler_timeout_ms = {timeout}
+termination_grace_ms = {timeout}
+cleanup_timeout_ms = {timeout}
+max_frame_bytes = {config.max_frame_bytes}
+max_child_output_bytes = {config.max_frame_bytes}
+cache_mode = {quote(config.verification_cache_mode)}
+
+[[consumer.compilers]]
+path = {quote(consumer.compiler_path)}
+family = {quote(consumer.compiler_family)}
+""".encode()
+    _write_exclusive(output_path, document, repo_root=config.repo_root)
 
 
 def write_candidate_manifest(
@@ -570,6 +670,7 @@ def write_candidate_manifest(
         "abstract_name_max_bytes": config.abstract_name_max_bytes,
         "cache_format_token": config.cache_format_token,
         "verification_cache_mode": config.verification_cache_mode,
+        "verification_consumer": dataclasses.asdict(config.verification_consumer),
         "binary_name": _candidate_binary_name(config, architecture),
         "binary_sha256": _file_sha256(binary_path),
         "binary_size": binary_size,
@@ -609,6 +710,7 @@ _CANDIDATE_KEYS = frozenset(
         "abstract_name_max_bytes",
         "cache_format_token",
         "verification_cache_mode",
+        "verification_consumer",
         "binary_name",
         "binary_sha256",
         "binary_size",
@@ -685,6 +787,7 @@ def verify_candidate_set(
             "abstract_name_max_bytes": config.abstract_name_max_bytes,
             "cache_format_token": config.cache_format_token,
             "verification_cache_mode": config.verification_cache_mode,
+            "verification_consumer": dataclasses.asdict(config.verification_consumer),
             "binary_name": _candidate_binary_name(config, architecture),
         }
         for key, expected_value in expected_common.items():
@@ -750,6 +853,7 @@ def verify_candidate_set(
             "abstract_name_max_bytes": config.abstract_name_max_bytes,
             "cache_format_token": config.cache_format_token,
             "verification_cache_mode": config.verification_cache_mode,
+            "verification_consumer": dataclasses.asdict(config.verification_consumer),
             "replicas": list(config.replicas),
         },
         "release_verification": {
@@ -1034,6 +1138,10 @@ def _parser() -> argparse.ArgumentParser:
     show_target.add_argument("--config", required=True, type=pathlib.Path)
     show_target.add_argument("--architecture", required=True)
 
+    consumer = subparsers.add_parser("write-verification-consumer")
+    consumer.add_argument("--config", required=True, type=pathlib.Path)
+    consumer.add_argument("--output", required=True, type=pathlib.Path)
+
     candidate = subparsers.add_parser("candidate-manifest")
     candidate.add_argument("--config", required=True, type=pathlib.Path)
     candidate.add_argument("--binary", required=True, type=pathlib.Path)
@@ -1139,12 +1247,20 @@ def main(argv: list[str] | None = None) -> int:
                 "abstract_name_max_bytes": config.abstract_name_max_bytes,
                 "cache_format_token": config.cache_format_token,
                 "verification_cache_mode": config.verification_cache_mode,
+                "verification_consumer": dataclasses.asdict(
+                    config.verification_consumer
+                ),
                 "replicas": list(config.replicas),
                 "attestation_attempts": config.attestation_attempts,
                 "attestation_interval_seconds": config.attestation_interval_seconds,
                 "derivative_identity": _derivative_identity(config, args.architecture),
             }
             _emit_json(output)
+            return 0
+        if args.command == "write-verification-consumer":
+            config = load_config(args.config)
+            write_verification_consumer(output_path=args.output, config=config)
+            _emit_json({"consumer_config": str(args.output)})
             return 0
         if args.command == "candidate-manifest":
             config = load_config(args.config)

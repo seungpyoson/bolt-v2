@@ -27,21 +27,26 @@ profile="$(jq -r '.profile' "$target_json")"
 source_epoch="$(jq -r '.source_date_epoch' "$target_json")"
 patch="$(jq -r '.patch' "$target_json")"
 verification_timeout="$(jq -r '.verification_timeout_ms' "$target_json")"
-max_frame_bytes="$(jq -r '.max_frame_bytes' "$target_json")"
 snapshot_max_bytes="$(jq -r '.snapshot_max_bytes' "$target_json")"
 max_runtime_timeout_ms="$(jq -r '.max_runtime_timeout_ms' "$target_json")"
 abstract_name_max_bytes="$(jq -r '.abstract_name_max_bytes' "$target_json")"
 cache_format_token="$(jq -r '.cache_format_token' "$target_json")"
-verification_cache_mode="$(jq -r '.verification_cache_mode' "$target_json")"
+consumer_socket_template="$(jq -r '.verification_consumer.abstract_socket_template' "$target_json")"
+consumer_compiler_path="$(jq -r '.verification_consumer.compiler_path' "$target_json")"
+consumer_compiler_family="$(jq -r '.verification_consumer.compiler_family' "$target_json")"
+s3_bucket="$(jq -r '.verification_consumer.s3_bucket' "$target_json")"
+s3_region="$(jq -r '.verification_consumer.s3_region' "$target_json")"
+s3_key_prefix="$(jq -r '.verification_consumer.s3_key_prefix' "$target_json")"
 derivative_identity="$(jq -r '.derivative_identity' "$target_json")"
 machine="$(jq -r '.elf_machine' "$target_json")"
 [[ "$default_features" == "false" ]]
 
 source_dir="$build_root/source"
 cargo_home="$build_root/cargo-home"
-target_dir="$build_root/target"
+debug_target_dir="$build_root/debug-target"
+release_target_dir="$build_root/release-target"
 candidate_dir="$build_root/candidate"
-mkdir -p "$source_dir" "$cargo_home" "$target_dir" "$candidate_dir"
+mkdir -p "$source_dir" "$cargo_home" "$debug_target_dir" "$candidate_dir"
 
 archive="$build_root/source.tar.gz"
 curl --fail --location --proto '=https' --tlsv1.2 "$source_url" --output "$archive"
@@ -67,7 +72,7 @@ docker run --rm \
 docker run --rm --network none \
   -v "$source_dir:/volume" \
   -v "$cargo_home:/cargo-home:ro" \
-  -v "$target_dir:/target" \
+  -v "$debug_target_dir:/target" \
   -w /volume \
   -e CARGO_HOME=/cargo-home \
   -e CARGO_INCREMENTAL=0 \
@@ -76,25 +81,45 @@ docker run --rm --network none \
   -e LC_ALL=C \
   -e RUSTC_WRAPPER= \
   -e SCCACHE_STRICT_DERIVATIVE_ID="$derivative_identity" \
-  -e SCCACHE_S3_RW_MODE="$verification_cache_mode" \
-  -e SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS="$verification_timeout" \
-  -e SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS="$verification_timeout" \
-  -e SCCACHE_STRICT_IPC_TIMEOUT_MS="$verification_timeout" \
-  -e SCCACHE_STRICT_MAX_FRAME_BYTES="$max_frame_bytes" \
   -e SCCACHE_STRICT_SNAPSHOT_MAX_BYTES="$snapshot_max_bytes" \
   -e SCCACHE_STRICT_MAX_RUNTIME_TIMEOUT_MS="$max_runtime_timeout_ms" \
   -e SCCACHE_STRICT_ABSTRACT_NAME_MAX_BYTES="$abstract_name_max_bytes" \
   -e SCCACHE_STRICT_CACHE_FORMAT_TOKEN="$cache_format_token" \
-  -e SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
   -e SOURCE_DATE_EPOCH="$source_epoch" \
   -e STRICT_BUILD_FEATURES="$features" \
   -e STRICT_BUILD_PROFILE="$profile" \
   -e STRICT_BUILD_TARGET="$target" \
   -e TZ=UTC \
   "$container" \
-  sh -ceu 'umask 022; cargo build --locked --offline --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET"; cargo test --locked --offline --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET" --lib; cargo build --locked --offline --profile "$STRICT_BUILD_PROFILE" --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET"'
+  sh -ceu 'umask 022; cargo build --locked --offline --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET"; cargo test --locked --offline --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET" --lib'
 
-binary="$target_dir/$target/$profile/sccache"
+[[ ! -e "$release_target_dir" ]]
+mkdir "$release_target_dir"
+docker run --rm --network none \
+  -v "$source_dir:/volume:ro" \
+  -v "$cargo_home:/cargo-home:ro" \
+  -v "$release_target_dir:/target" \
+  -w /volume \
+  -e CARGO_HOME=/cargo-home \
+  -e CARGO_INCREMENTAL=0 \
+  -e CARGO_NET_OFFLINE=true \
+  -e CARGO_TARGET_DIR=/target \
+  -e LC_ALL=C \
+  -e RUSTC_WRAPPER= \
+  -e SCCACHE_STRICT_DERIVATIVE_ID="$derivative_identity" \
+  -e SCCACHE_STRICT_SNAPSHOT_MAX_BYTES="$snapshot_max_bytes" \
+  -e SCCACHE_STRICT_MAX_RUNTIME_TIMEOUT_MS="$max_runtime_timeout_ms" \
+  -e SCCACHE_STRICT_ABSTRACT_NAME_MAX_BYTES="$abstract_name_max_bytes" \
+  -e SCCACHE_STRICT_CACHE_FORMAT_TOKEN="$cache_format_token" \
+  -e SOURCE_DATE_EPOCH="$source_epoch" \
+  -e STRICT_BUILD_FEATURES="$features" \
+  -e STRICT_BUILD_PROFILE="$profile" \
+  -e STRICT_BUILD_TARGET="$target" \
+  -e TZ=UTC \
+  "$container" \
+  sh -ceu 'umask 022; cargo build --locked --offline --profile "$STRICT_BUILD_PROFILE" --no-default-features --features "$STRICT_BUILD_FEATURES" --target "$STRICT_BUILD_TARGET"'
+
+binary="$release_target_dir/$target/$profile/sccache"
 readelf -h "$binary" | grep -F 'Machine:' | grep -F "$machine"
 readelf -l "$binary" > "$build_root/program-headers.txt"
 if grep -Fq 'INTERP' "$build_root/program-headers.txt"; then
@@ -108,6 +133,28 @@ if grep -Fq '(NEEDED)' "$build_root/dynamic-section.txt"; then
 fi
 [[ "$("$binary" --version)" == "sccache $source_version" ]]
 
+consumer_config="$build_root/consumer.toml"
+python3.12 scripts/sccache_strict.py write-verification-consumer \
+  --config ci/sccache-strict.toml --output "$consumer_config" > "$build_root/consumer-config.json"
+grep -F "abstract_socket_template = \"$consumer_socket_template\"" "$consumer_config"
+grep -F "path = \"$consumer_compiler_path\"" "$consumer_config"
+grep -F "family = \"$consumer_compiler_family\"" "$consumer_config"
+snapshot_dir="$build_root/snapshots"
+mkdir "$snapshot_dir"
+snapshot_locator="$(env -i HOME="$build_root" TMPDIR="$build_root" \
+  "$binary" --materialize-consumer-snapshot "$consumer_config" \
+  "$RUN_ID-$RUN_ATTEMPT-$ARCHITECTURE-$REPLICA" "$snapshot_dir")"
+[[ -f "$snapshot_locator" && "$snapshot_locator" == "$snapshot_dir"/* ]]
+if env -i HOME="$build_root" TMPDIR="$build_root" \
+  "$binary" --materialize-consumer-snapshot "$consumer_config" \
+  "$RUN_ID-$RUN_ATTEMPT-$ARCHITECTURE-$REPLICA" "$snapshot_dir" \
+  > "$build_root/rematerialize-stdout" 2> "$build_root/rematerialize-stderr"; then
+  echo 'strict consumer snapshot was unexpectedly overwritten' >&2
+  exit 1
+fi
+grep -F 'consumer snapshot destination already exists or is unsafe' \
+  "$build_root/rematerialize-stderr"
+
 run_startup_negative() {
   local name="$1"
   local expected="$2"
@@ -116,14 +163,8 @@ run_startup_negative() {
   mkdir -p "$smoke_home"
   if env -i \
     HOME="$smoke_home" \
-    SCCACHE_SERVER_UDS="$smoke_home/server.sock" \
-    SCCACHE_S3_RW_MODE="$verification_cache_mode" \
+    SCCACHE_STRICT_BOOTSTRAP="$snapshot_locator" \
     TMPDIR="$smoke_home" \
-    SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
-    SCCACHE_STRICT_IPC_TIMEOUT_MS="$verification_timeout" \
-    SCCACHE_STRICT_MAX_FRAME_BYTES="$max_frame_bytes" \
-    SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS="$verification_timeout" \
-    SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS="$verification_timeout" \
     "$@" \
     "$binary" --start-server > "$smoke_home/stdout" 2> "$smoke_home/stderr"; then
     cat "$smoke_home/stdout" "$smoke_home/stderr" >&2
@@ -140,6 +181,74 @@ run_startup_negative() {
 run_startup_negative missing-s3 'strict sccache requires the governed S3 cache backend'
 run_startup_negative disk-backend 'strict sccache permits exactly one S3 cache backend' \
   SCCACHE_DIR="$build_root/smoke-disk-backend/cache"
+
+endpoint_file="$build_root/s3-endpoint"
+python3.12 -c '
+import http.server
+import pathlib
+import sys
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+    do_HEAD = do_GET
+    def do_PUT(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+    def log_message(self, format, *args):
+        pass
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+pathlib.Path(sys.argv[1]).write_text(f"http://127.0.0.1:{server.server_port}")
+server.serve_forever()
+' "$endpoint_file" &
+s3_server_pid=$!
+trap 'kill "$s3_server_pid" 2>/dev/null || true; wait "$s3_server_pid" 2>/dev/null || true' EXIT
+# The inner shell expands its positional parameter.
+# shellcheck disable=SC2016
+timeout "${verification_timeout}ms" sh -ceu 'while [ ! -s "$1" ]; do :; done' sh "$endpoint_file"
+s3_endpoint="$(< "$endpoint_file")"
+backend_environment=(
+  SCCACHE_BUCKET="$s3_bucket"
+  SCCACHE_REGION="$s3_region"
+  SCCACHE_ENDPOINT="$s3_endpoint"
+  SCCACHE_S3_KEY_PREFIX="$s3_key_prefix"
+  SCCACHE_S3_NO_CREDENTIALS=true
+  SCCACHE_S3_USE_SSL=false
+  SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE=false
+)
+
+run_server_control() {
+  local smoke_home="$1"
+  shift
+  mkdir -p "$smoke_home"
+  env -i \
+    HOME="$smoke_home" \
+    SCCACHE_STRICT_BOOTSTRAP="$snapshot_locator" \
+    TMPDIR="$smoke_home" \
+    "${backend_environment[@]}" \
+    "$binary" "$@"
+}
+
+lifecycle_home="$build_root/smoke-lifecycle"
+run_server_control "$lifecycle_home" --start-server
+if find "$lifecycle_home" -type s -print -quit | grep -q .; then
+  echo 'strict server created a filesystem socket' >&2
+  exit 1
+fi
+run_startup_negative occupied-abstract-socket 'Address in use' "${backend_environment[@]}"
+run_server_control "$lifecycle_home" --stop-server
+run_server_control "$lifecycle_home" --start-server
+run_server_control "$lifecycle_home" --stop-server
+if find "$lifecycle_home" -type s -print -quit | grep -q .; then
+  echo 'strict server left a filesystem socket after lifecycle verification' >&2
+  exit 1
+fi
 
 cp "$binary" "$candidate_dir/sccache"
 python3.12 scripts/sccache_strict.py candidate-manifest \

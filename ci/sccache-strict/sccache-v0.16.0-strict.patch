@@ -5843,7 +5843,7 @@ index cef32b2..f22a567 100644
 +}
 +
 diff --git a/src/mock_command.rs b/src/mock_command.rs
-index d7ffa03..29a17f7 100644
+index d7ffa03..e310b8a 100644
 --- a/src/mock_command.rs
 +++ b/src/mock_command.rs
 @@ -47,0 +48 @@
@@ -6112,7 +6112,16 @@ index d7ffa03..29a17f7 100644
 +    }
 +}
 +
-@@ -145 +402,153 @@ pub struct Child {
+@@ -143,0 +401,8 @@ pub struct Child {
++    stdin: Option<ChildStdin>,
++    stdout: Option<ChildStdout>,
++    stderr: Option<ChildStderr>,
++    policy: StrictChildPolicy,
++    supervisor: tokio::task::JoinHandle<io::Result<ExitStatus>>,
++}
++
++struct GovernedChild {
+@@ -145 +410,8 @@ pub struct Child {
 -    token: Acquired,
 +    _token: Acquired,
 +    policy: StrictChildPolicy,
@@ -6122,10 +6131,10 @@ index d7ffa03..29a17f7 100644
 +    process_group: i32,
 +    #[cfg(unix)]
 +    process_group_armed: bool,
-+}
-+
+@@ -148 +420,308 @@ pub struct Child {
+-/// Trivial implementation of `CommandChild` for `std::process::Child`.
 +#[cfg(unix)]
-+impl Drop for Child {
++impl Drop for GovernedChild {
 +    fn drop(&mut self) {
 +        if self.process_group_armed {
 +            let _ = signal_process_group(self.process_group, libc::SIGKILL);
@@ -6267,22 +6276,9 @@ index d7ffa03..29a17f7 100644
 +        poison.terminate_on_deadline();
 +    }
 +    result
-@@ -165,5 +574,5 @@ impl CommandChild for Child {
--    async fn wait(self) -> io::Result<ExitStatus> {
--        let Child { mut inner, token } = self;
--        inner.wait().await.inspect(|_ret| {
--            drop(token);
--        })
-+    fn strict_output_limit(&self) -> u64 {
-+        self.policy.max_output_bytes
-+    }
-+    fn strict_poison(&self) -> StrictPoison {
-+        self.policy.poison.clone()
-@@ -172,4 +581,177 @@ impl CommandChild for Child {
--    async fn wait_with_output(self) -> io::Result<Output> {
--        let Child { inner, token } = self;
--        inner.wait_with_output().await.inspect(|_ret| {
--            drop(token);
++}
++
++impl GovernedChild {
 +    async fn wait(mut self) -> io::Result<ExitStatus> {
 +        #[cfg(target_os = "linux")]
 +        {
@@ -6442,7 +6438,38 @@ index d7ffa03..29a17f7 100644
 +            Ok(status)
 +        }
 +    }
++}
 +
++/// Cancellation-safe handle for one independently supervised compiler process.
+@@ -156 +735 @@ impl CommandChild for Child {
+-        self.inner.stdin.take()
++        self.stdin.take()
+@@ -159 +738 @@ impl CommandChild for Child {
+-        self.inner.stdout.take()
++        self.stdout.take()
+@@ -162 +741,8 @@ impl CommandChild for Child {
+-        self.inner.stderr.take()
++        self.stderr.take()
++    }
++
++    fn strict_output_limit(&self) -> u64 {
++        self.policy.max_output_bytes
++    }
++    fn strict_poison(&self) -> StrictPoison {
++        self.policy.poison.clone()
+@@ -166,4 +752,3 @@ impl CommandChild for Child {
+-        let Child { mut inner, token } = self;
+-        inner.wait().await.inspect(|_ret| {
+-            drop(token);
+-        })
++        self.supervisor
++            .await
++            .map_err(|error| io::Error::other(format!("strict child supervisor failed: {error}")))?
+@@ -172,4 +757,17 @@ impl CommandChild for Child {
+-    async fn wait_with_output(self) -> io::Result<Output> {
+-        let Child { inner, token } = self;
+-        inner.wait_with_output().await.inspect(|_ret| {
+-            drop(token);
 +    async fn wait_with_output(mut self) -> io::Result<Output> {
 +        use std::sync::{Arc, atomic::AtomicU64};
 +        let limit = self.strict_output_limit();
@@ -6460,12 +6487,12 @@ index d7ffa03..29a17f7 100644
 +            status: status?,
 +            stdout: stdout?,
 +            stderr: stderr?,
-@@ -182,0 +765,4 @@ pub struct AsyncCommand {
+@@ -182,0 +781,4 @@ pub struct AsyncCommand {
 +    environment_cleared: bool,
 +    policy: StrictChildPolicy,
 +    deadline: StrictDeadline,
 +    purpose: StrictChildPurpose,
-@@ -186 +772,24 @@ impl AsyncCommand {
+@@ -186 +788,24 @@ impl AsyncCommand {
 -    pub fn new<S: AsRef<OsStr>>(program: S, jobserver: Client) -> AsyncCommand {
 +    pub fn new<S: AsRef<OsStr>>(
 +        program: S,
@@ -6491,14 +6518,14 @@ index d7ffa03..29a17f7 100644
 +        deadline: StrictDeadline,
 +        purpose: StrictChildPurpose,
 +    ) -> AsyncCommand {
-@@ -189,0 +799,4 @@ impl AsyncCommand {
+@@ -189,0 +815,4 @@ impl AsyncCommand {
 +            environment_cleared: false,
 +            policy,
 +            deadline,
 +            purpose,
-@@ -229,0 +843 @@ impl RunCommand for AsyncCommand {
+@@ -229,0 +859 @@ impl RunCommand for AsyncCommand {
 +        self.environment_cleared = true;
-@@ -249,7 +863,4 @@ impl RunCommand for AsyncCommand {
+@@ -249,7 +879,4 @@ impl RunCommand for AsyncCommand {
 -    async fn spawn(&mut self) -> Result<Child> {
 -        let mut inner = self.inner.take().unwrap();
 -        inner.env_remove("MAKEFLAGS");
@@ -6510,33 +6537,49 @@ index d7ffa03..29a17f7 100644
 +        self.environment_cleared
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<Child> {
-@@ -256,0 +868,6 @@ impl RunCommand for AsyncCommand {
+@@ -256,0 +884,6 @@ impl RunCommand for AsyncCommand {
 +        let mut inner = self.inner.take().unwrap();
 +        #[cfg(unix)]
 +        {
 +            use std::os::unix::process::CommandExt;
 +            inner.process_group(0);
 +        }
-@@ -257,0 +875 @@ impl RunCommand for AsyncCommand {
+@@ -258 +891,2 @@ impl RunCommand for AsyncCommand {
+-        let child = inner
 +        inner.kill_on_drop(true);
-@@ -261,0 +880,3 @@ impl RunCommand for AsyncCommand {
++        let mut child = inner
+@@ -262 +896,8 @@ impl RunCommand for AsyncCommand {
+-        Ok(Child {
 +        #[cfg(unix)]
 +        let process_group = i32::try_from(child.id().context("strict child PID is unavailable")?)
 +            .context("strict child PID exceeds process-group range")?;
-@@ -264 +885,8 @@ impl RunCommand for AsyncCommand {
++        let stdin = child.stdin.take();
++        let stdout = child.stdout.take();
++        let stderr = child.stderr.take();
++        let policy = self.policy.clone();
++        let governed = GovernedChild {
+@@ -264 +905,16 @@ impl RunCommand for AsyncCommand {
 -            token,
 +            _token: token,
-+            policy: self.policy.clone(),
++            policy: policy.clone(),
 +            deadline: self.deadline,
 +            purpose: self.purpose,
 +            #[cfg(unix)]
 +            process_group,
 +            #[cfg(unix)]
 +            process_group_armed: true,
-@@ -278,0 +907,2 @@ pub struct ProcessCommandCreator {
++        };
++        let supervisor = tokio::spawn(async move { governed.wait().await });
++        Ok(Child {
++            stdin,
++            stdout,
++            stderr,
++            policy,
++            supervisor,
+@@ -278,0 +935,2 @@ pub struct ProcessCommandCreator {
 +    policy: StrictChildPolicy,
 +    classification_deadline: Option<StrictDeadline>,
-@@ -286,2 +916,12 @@ impl CommandCreator for ProcessCommandCreator {
+@@ -286,2 +944,12 @@ impl CommandCreator for ProcessCommandCreator {
 -        ProcessCommandCreator {
 -            jobserver: client.clone(),
 +        #[cfg(test)]
@@ -6551,7 +6594,7 @@ index d7ffa03..29a17f7 100644
 +        {
 +            let _ = client;
 +            panic!("strict child policy is required")
-@@ -292 +932,10 @@ impl CommandCreator for ProcessCommandCreator {
+@@ -292 +960,10 @@ impl CommandCreator for ProcessCommandCreator {
 -        AsyncCommand::new(program, self.jobserver.clone())
 +        match self.classification_deadline {
 +            Some(deadline) => AsyncCommand::new_with_deadline(
@@ -6563,7 +6606,7 @@ index d7ffa03..29a17f7 100644
 +            ),
 +            None => AsyncCommand::new(program, self.jobserver.clone(), self.policy.clone()),
 +        }
-@@ -303,0 +953,20 @@ impl CommandCreatorSync for ProcessCommandCreator {
+@@ -303,0 +981,20 @@ impl CommandCreatorSync for ProcessCommandCreator {
 +    fn new_strict(client: &Client, policy: StrictChildPolicy) -> ProcessCommandCreator {
 +        ProcessCommandCreator {
 +            jobserver: client.clone(),
@@ -6584,20 +6627,20 @@ index d7ffa03..29a17f7 100644
 +        classification
 +    }
 +
-@@ -383,0 +1053,6 @@ impl CommandChild for MockChild {
+@@ -383,0 +1081,6 @@ impl CommandChild for MockChild {
 +    fn strict_output_limit(&self) -> u64 {
 +        u64::MAX
 +    }
 +    fn strict_poison(&self) -> StrictPoison {
 +        StrictPoison::new()
 +    }
-@@ -470 +1145,4 @@ impl RunCommand for MockCommand {
+@@ -470 +1173,4 @@ impl RunCommand for MockCommand {
 -    async fn spawn(&mut self) -> Result<MockChild> {
 +    fn strict_environment_is_sealed(&self) -> bool {
 +        true
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<MockChild> {
-@@ -548,0 +1227,239 @@ mod test {
+@@ -548,0 +1255,285 @@ mod test {
 +    #[cfg(target_os = "linux")]
 +    #[test]
 +    fn strict_linux_proc_stat_parser_handles_parentheses_in_command_name() {
@@ -6794,6 +6837,52 @@ index d7ffa03..29a17f7 100644
 +
 +    #[cfg(unix)]
 +    #[test]
++    fn strict_launcher_supervision_survives_request_cancellation() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let policy = StrictChildPolicy {
++            classification_timeout: std::time::Duration::from_millis(50),
++            compiler_timeout: std::time::Duration::from_millis(50),
++            termination_grace: std::time::Duration::from_millis(10),
++            cleanup_timeout: std::time::Duration::from_secs(1),
++            max_output_bytes: 1024,
++            poison: StrictPoison::new(),
++        };
++        let poison = policy.poison.clone();
++        let client = Client::new_num(1);
++        let mut command = AsyncCommand::new("/bin/sh", client.clone(), policy);
++        command
++            .env_clear()
++            .args(&["-c", "trap '' TERM; sleep 10"])
++            .stdin(Stdio::null())
++            .stdout(Stdio::null())
++            .stderr(Stdio::null());
++        let started = std::time::Instant::now();
++
++        runtime.block_on(async {
++            let child = StrictChildLauncher::spawn_prepared(&mut command)
++                .await
++                .unwrap();
++            drop(child);
++
++            tokio::time::timeout(std::time::Duration::from_secs(2), poison.poisoned())
++                .await
++                .expect("detached supervisor did not govern the cancelled request");
++            let _released =
++                tokio::time::timeout(std::time::Duration::from_secs(2), client.acquire())
++                    .await
++                    .expect("detached supervisor did not release the reaped child's job token")
++                    .unwrap();
++        });
++
++        assert!(started.elapsed() < std::time::Duration::from_secs(2));
++        assert!(!poison.is_healthy());
++    }
++
++    #[cfg(unix)]
++    #[test]
 +    fn strict_launcher_enforces_one_combined_output_reservation() {
 +        fn run(limit: u64, script: &str) -> (io::Result<Output>, StrictPoison) {
 +            let runtime = tokio::runtime::Builder::new_current_thread()
@@ -6837,16 +6926,16 @@ index d7ffa03..29a17f7 100644
 +        assert!(!poisoned.is_healthy());
 +    }
 +
-@@ -553 +1470,2 @@ mod test {
+@@ -553 +1544,2 @@ mod test {
 -        creator.new_command(program).spawn().wait()
 +        let mut command = creator.new_command(program);
 +        StrictChildLauncher::spawn_prepared(&mut command).wait()
-@@ -576,2 +1494,2 @@ mod test {
+@@ -576,2 +1568,2 @@ mod test {
 -                t.new_command_sync("foo")
 -                    .spawn()
 +                let mut command = t.new_command_sync("foo");
 +                StrictChildLauncher::spawn_prepared(&mut command)
-@@ -612 +1530,4 @@ mod test {
+@@ -612 +1604,4 @@ mod test {
 -        creator.new_command("foo").spawn().wait().unwrap();
 +        let mut command = creator.new_command("foo");
 +        StrictChildLauncher::spawn_prepared(&mut command)

@@ -972,6 +972,259 @@ mod tests {
     };
     use super::*;
 
+    fn positive_fixture(identity: KnownIdentity) -> &'static str {
+        match identity {
+            KnownIdentity::BlockedStrategyInputObservationV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/blocked_strategy_input_observation.jsonl"
+            )),
+            KnownIdentity::SubmitLinkedStrategyInputSnapshotV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/submit_linked_strategy_input_snapshot.jsonl"
+            )),
+            KnownIdentity::EntryOrderIntentV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/entry_order_intent.jsonl"
+            )),
+            KnownIdentity::RiskReducingExitOrderIntentV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/risk_reducing_exit_order_intent.jsonl"
+            )),
+            KnownIdentity::AdmittedEntryAdmissionV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/admitted_entry_admission.jsonl"
+            )),
+            KnownIdentity::RejectedEntryAdmissionV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/rejected_entry_admission.jsonl"
+            )),
+            KnownIdentity::RiskReducingExitAdmissionV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/risk_reducing_exit_admission.jsonl"
+            )),
+            KnownIdentity::ForcedReductionAdmissionV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/forced_reduction_admission.jsonl"
+            )),
+            KnownIdentity::BasketAdmissionGrantedV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/basket_admission_granted.jsonl"
+            )),
+            KnownIdentity::BasketAdmissionRejectedV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/basket_admission_rejected.jsonl"
+            )),
+            KnownIdentity::CapitalAdmissionRebuildV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/capital_admission_rebuild.jsonl"
+            )),
+            KnownIdentity::SubmitReservationMetadataV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/submit_reservation_metadata.jsonl"
+            )),
+            KnownIdentity::SubmitReservationFillV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/submit_reservation_fill.jsonl"
+            )),
+            KnownIdentity::EntrySkipObservationV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/entry_skip_observation.jsonl"
+            )),
+            KnownIdentity::ExitSubmissionDecisionV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/exit_submission_decision.jsonl"
+            )),
+            KnownIdentity::ExitHoldDecisionV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/exit_hold_decision.jsonl"
+            )),
+            KnownIdentity::ExitEvaluationV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/exit_evaluation.jsonl"
+            )),
+            KnownIdentity::LossGovernorHaltV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/loss_governor_halt.jsonl"
+            )),
+            KnownIdentity::OrderRejectV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/order_reject.jsonl"
+            )),
+            KnownIdentity::OrderLifecycleV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/order_lifecycle.jsonl"
+            )),
+            KnownIdentity::RequoteThrottleObservationV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/requote_throttle_observation.jsonl"
+            )),
+            KnownIdentity::SettlementV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/settlement.jsonl"
+            )),
+            KnownIdentity::SettlementBookingErrorV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/settlement_booking_error.jsonl"
+            )),
+            KnownIdentity::TerminalSettlementV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/terminal_settlement.jsonl"
+            )),
+            KnownIdentity::VenueTruthCaptureFailureV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/venue_truth_capture_failure.jsonl"
+            )),
+            KnownIdentity::VenueTruthDivergenceV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/venue_truth_divergence.jsonl"
+            )),
+        }
+    }
+
+    fn reencode_current_fact(
+        fact: CurrentFact,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        match fact {
+            CurrentFact::BlockedStrategyInputObservation(value) => {
+                <CurrentCodecs as CodecFor<identities::BlockedStrategyInputObservationV1>>::encode(
+                    value.as_ref(),
+                    recorded_at_utc_ns,
+                )
+            }
+            CurrentFact::SubmitLinkedStrategyInputSnapshot(value) => {
+                <CurrentCodecs as CodecFor<identities::SubmitLinkedStrategyInputSnapshotV1>>::encode(
+                    value.as_ref(),
+                    recorded_at_utc_ns,
+                )
+            }
+            CurrentFact::EntryOrderIntent(value) => <CurrentCodecs as CodecFor<
+                identities::EntryOrderIntentV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+            CurrentFact::RiskReducingExitOrderIntent(value) => <CurrentCodecs as CodecFor<
+                identities::RiskReducingExitOrderIntentV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+            CurrentFact::AdmittedEntryAdmission(value) => <CurrentCodecs as CodecFor<
+                identities::AdmittedEntryAdmissionV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
+            CurrentFact::RejectedEntryAdmission(value) => <CurrentCodecs as CodecFor<
+                identities::RejectedEntryAdmissionV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
+            CurrentFact::RiskReducingExitAdmission(value) => <CurrentCodecs as CodecFor<
+                identities::RiskReducingExitAdmissionV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
+            CurrentFact::ForcedReductionAdmission(value) => <CurrentCodecs as CodecFor<
+                identities::ForcedReductionAdmissionV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
+            CurrentFact::BasketAdmissionGranted(value) => <CurrentCodecs as CodecFor<
+                identities::BasketAdmissionGrantedV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+            CurrentFact::BasketAdmissionRejected(value) => <CurrentCodecs as CodecFor<
+                identities::BasketAdmissionRejectedV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+            CurrentFact::CapitalAdmissionRebuild(value) => <CurrentCodecs as CodecFor<
+                identities::CapitalAdmissionRebuildV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+            CurrentFact::SubmitReservationMetadata(value) => <CurrentCodecs as CodecFor<
+                identities::SubmitReservationMetadataV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+            CurrentFact::SubmitReservationFill(value) => <CurrentCodecs as CodecFor<
+                identities::SubmitReservationFillV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+            CurrentFact::EntrySkipObservation(value) => <CurrentCodecs as CodecFor<
+                identities::EntrySkipObservationV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
+            CurrentFact::ExitSubmissionDecision(value) => <CurrentCodecs as CodecFor<
+                identities::ExitSubmissionDecisionV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
+            CurrentFact::ExitHoldDecision(value) => <CurrentCodecs as CodecFor<
+                identities::ExitHoldDecisionV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
+            CurrentFact::ExitEvaluation(value) => <CurrentCodecs as CodecFor<
+                identities::ExitEvaluationV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
+            CurrentFact::LossGovernorHalt(value) => <CurrentCodecs as CodecFor<
+                identities::LossGovernorHaltV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+            CurrentFact::OrderReject(value) => <CurrentCodecs as CodecFor<
+                identities::OrderRejectV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
+            CurrentFact::OrderLifecycle(value) => <CurrentCodecs as CodecFor<
+                identities::OrderLifecycleV1,
+            >>::encode(&value, recorded_at_utc_ns),
+            CurrentFact::RequoteThrottleObservation(value) => <CurrentCodecs as CodecFor<
+                identities::RequoteThrottleObservationV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+            CurrentFact::Settlement(value) => <CurrentCodecs as CodecFor<
+                identities::SettlementV1,
+            >>::encode(&value, recorded_at_utc_ns),
+            CurrentFact::SettlementBookingError(value) => <CurrentCodecs as CodecFor<
+                identities::SettlementBookingErrorV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+            CurrentFact::TerminalSettlement(value) => <CurrentCodecs as CodecFor<
+                identities::TerminalSettlementV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
+            CurrentFact::VenueTruthCaptureFailure(value) => <CurrentCodecs as CodecFor<
+                identities::VenueTruthCaptureFailureV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+            CurrentFact::VenueTruthDivergence(value) => <CurrentCodecs as CodecFor<
+                identities::VenueTruthDivergenceV1,
+            >>::encode(
+                &value, recorded_at_utc_ns
+            ),
+        }
+    }
+
+    fn mutation_is_rejected(identity: KnownIdentity, value: &serde_json::Value) {
+        let line = serde_json::to_string(value).expect("mutated fixture must remain JSON");
+        assert!(
+            decode_current_fact(identity, &line, 1).is_err(),
+            "{identity:?} accepted malformed fixture: {line}"
+        );
+    }
+
     fn metadata() -> SubmitReservationMetadataFact {
         SubmitReservationMetadataFact {
             client_order_id: "client-1".to_string(),
@@ -1385,6 +1638,107 @@ mod tests {
     }
 
     #[test]
+    fn current_identity_corpus_is_complete_byte_exact_and_strict() {
+        use super::super::generated_contract::{ALL_IDENTITIES, resolve_identity};
+
+        for identity in ALL_IDENTITIES.iter().copied() {
+            let fixture = positive_fixture(identity);
+            assert!(
+                fixture.ends_with('\n') && !fixture.trim_end_matches('\n').contains('\n'),
+                "{identity:?} fixture must be exactly one newline-terminated JSONL record"
+            );
+            let line = fixture.trim_end_matches('\n');
+            let value: serde_json::Value =
+                serde_json::from_str(line).expect("positive fixture must be JSON");
+            let object = value
+                .as_object()
+                .expect("positive fixture must have an object envelope");
+            let kind = object
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .expect("positive fixture must declare kind");
+            let schema_version = object
+                .get("schema_version")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .expect("positive fixture must declare a u32 schema version");
+            let recorded_at_utc_ns = object
+                .get("recorded_at_utc_ns")
+                .and_then(serde_json::Value::as_i64)
+                .expect("positive fixture must declare a recorded timestamp");
+            assert_eq!(resolve_identity(kind, schema_version), Some(identity));
+
+            let fact = decode_current_fact(identity, line, 1)
+                .expect("positive fixture must decode through the sole dispatch path");
+            let reencoded = reencode_current_fact(fact, recorded_at_utc_ns)
+                .expect("decoded fixture must re-encode");
+            assert_eq!(
+                reencoded.line(),
+                fixture.as_bytes(),
+                "{identity:?} encoder drifted from its frozen bytes"
+            );
+
+            let payload_keys = object
+                .keys()
+                .filter(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "schema_version"
+                            | "recorded_at_utc_ns"
+                            | "gate_id"
+                            | "gate_version"
+                            | "kind"
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                payload_keys.len(),
+                1,
+                "{identity:?} must own exactly one payload member"
+            );
+            let payload_key = payload_keys[0].as_str();
+
+            let mut extra_envelope = value.clone();
+            extra_envelope
+                .as_object_mut()
+                .expect("fixture envelope")
+                .insert("unexpected_envelope_field".to_string(), true.into());
+            mutation_is_rejected(identity, &extra_envelope);
+
+            let mut wrong_gate = value.clone();
+            wrong_gate
+                .as_object_mut()
+                .expect("fixture envelope")
+                .insert("gate_id".to_string(), "wrong.gate".into());
+            mutation_is_rejected(identity, &wrong_gate);
+
+            let mut missing_payload = value.clone();
+            missing_payload
+                .as_object_mut()
+                .expect("fixture envelope")
+                .remove(payload_key);
+            mutation_is_rejected(identity, &missing_payload);
+
+            let mut wrong_payload_type = value.clone();
+            wrong_payload_type
+                .as_object_mut()
+                .expect("fixture envelope")
+                .insert(payload_key.to_string(), "not-an-object".into());
+            mutation_is_rejected(identity, &wrong_payload_type);
+
+            let mut extra_payload_field = value.clone();
+            extra_payload_field
+                .as_object_mut()
+                .and_then(|envelope| envelope.get_mut(payload_key))
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("fixture payload must be an object")
+                .insert("unexpected_payload_field".to_string(), true.into());
+            mutation_is_rejected(identity, &extra_payload_field);
+        }
+    }
+
+    #[test]
     fn reservation_identity_binding_is_deterministic_and_round_trips() {
         let expected = metadata();
         let encoded = <CurrentCodecs as CodecFor<identities::SubmitReservationMetadataV1>>::encode(
@@ -1407,6 +1761,32 @@ mod tests {
             ),
             Err(RecordFailure::Rejected(_))
         ));
+
+        let expected_fill = SubmitReservationFillFact {
+            client_order_id: "client-1".to_string(),
+            submit_reservation_id: "reservation-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "YES-USD.POLYMARKET".to_string(),
+            side: "buy".to_string(),
+            fill_quantity: "0.5".to_string(),
+            observed_at_ns: 2,
+            reconciliation: false,
+            source: "execution_event".to_string(),
+        };
+        let encoded_fill =
+            <CurrentCodecs as CodecFor<identities::SubmitReservationFillV1>>::encode(
+                &expected_fill,
+                8,
+            )
+            .expect("valid fill must encode");
+        let fill_line = std::str::from_utf8(encoded_fill.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::SubmitReservationFillV1>>::decode(fill_line, 1,)
+                .expect("encoded fill must decode"),
+            expected_fill
+        );
     }
 
     #[test]

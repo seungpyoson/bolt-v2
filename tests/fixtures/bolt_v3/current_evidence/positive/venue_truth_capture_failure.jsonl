@@ -1,0 +1,1 @@
+{"schema_version":16,"recorded_at_utc_ns":21,"gate_id":"bolt_v3.capital_admission_rebuild","gate_version":"0.1.0","kind":"venue_truth_capture_failure","capture_failure":{"source":"venue_truth","observed_at_ns":8,"endpoint":"venue_snapshot","error_class":"timeout","captures_missed":1}}

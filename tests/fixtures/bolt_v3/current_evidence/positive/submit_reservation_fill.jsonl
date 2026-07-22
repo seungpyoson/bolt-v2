@@ -1,0 +1,1 @@
+{"schema_version":16,"recorded_at_utc_ns":8,"gate_id":"bolt_v3.submit_admission","gate_version":"0.1.0","kind":"submit_reservation_fill","fill":{"client_order_id":"client-1","submit_reservation_id":"reservation-1","trade_id":"trade-1","instrument_id":"YES-USD.POLYMARKET","side":"buy","fill_quantity":"0.5","observed_at_ns":2,"reconciliation":false,"source":"execution_event"}}

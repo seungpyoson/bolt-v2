@@ -91,6 +91,35 @@ pub(crate) enum KnownIdentity {
     VenueTruthDivergenceV1,
 }
 
+pub(crate) const ALL_IDENTITIES: &[KnownIdentity] = &[
+    KnownIdentity::BlockedStrategyInputObservationV1,
+    KnownIdentity::SubmitLinkedStrategyInputSnapshotV1,
+    KnownIdentity::EntryOrderIntentV1,
+    KnownIdentity::RiskReducingExitOrderIntentV1,
+    KnownIdentity::AdmittedEntryAdmissionV1,
+    KnownIdentity::RejectedEntryAdmissionV1,
+    KnownIdentity::RiskReducingExitAdmissionV1,
+    KnownIdentity::ForcedReductionAdmissionV1,
+    KnownIdentity::BasketAdmissionGrantedV1,
+    KnownIdentity::BasketAdmissionRejectedV1,
+    KnownIdentity::CapitalAdmissionRebuildV1,
+    KnownIdentity::SubmitReservationMetadataV1,
+    KnownIdentity::SubmitReservationFillV1,
+    KnownIdentity::EntrySkipObservationV1,
+    KnownIdentity::ExitSubmissionDecisionV1,
+    KnownIdentity::ExitHoldDecisionV1,
+    KnownIdentity::ExitEvaluationV1,
+    KnownIdentity::LossGovernorHaltV1,
+    KnownIdentity::OrderRejectV1,
+    KnownIdentity::OrderLifecycleV1,
+    KnownIdentity::RequoteThrottleObservationV1,
+    KnownIdentity::SettlementV1,
+    KnownIdentity::SettlementBookingErrorV1,
+    KnownIdentity::TerminalSettlementV1,
+    KnownIdentity::VenueTruthCaptureFailureV1,
+    KnownIdentity::VenueTruthDivergenceV1,
+];
+
 pub(crate) mod identities {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct BlockedStrategyInputObservationV1;

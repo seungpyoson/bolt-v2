@@ -9,12 +9,14 @@ use std::{
 use anyhow::Error;
 
 use super::codec::{
-    encode_reservation_fill, encode_reservation_metadata, encode_settlement,
-    encode_settlement_booking_error, encode_terminal_settlement,
+    encode_entry_order_intent, encode_reservation_fill, encode_reservation_metadata,
+    encode_risk_reducing_exit_order_intent, encode_settlement, encode_settlement_booking_error,
+    encode_terminal_settlement,
 };
 use super::facts::{
-    SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
-    SubmitReservationMetadataFact, TerminalSettlementFact,
+    EntryOrderIntentFact, RiskReducingExitOrderIntentFact, SettlementBookingErrorFact,
+    SettlementFact, SubmitReservationFillFact, SubmitReservationMetadataFact,
+    TerminalSettlementFact,
 };
 use super::generated_contract::{KnownPurpose, KnownSink, sink_for_purpose};
 
@@ -142,6 +144,23 @@ impl DecisionEvidenceRecorder {
         command: SubmitReservationFillFact,
     ) -> Result<AppendReceipt, RecordFailure> {
         self.record_blocking(encode_reservation_fill(command)?)
+    }
+
+    pub fn record_entry_order_intent(
+        &self,
+        fact: EntryOrderIntentFact,
+    ) -> Result<AppendReceipt, RecordFailure> {
+        self.record_blocking(encode_entry_order_intent(fact)?)
+    }
+
+    pub fn record_risk_reducing_exit_order_intent(
+        &self,
+        fact: RiskReducingExitOrderIntentFact,
+    ) -> NonBlockingRecordOutcome {
+        match encode_risk_reducing_exit_order_intent(fact) {
+            Ok(record) => self.record_nonblocking(record),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
     }
 
     pub fn record_settlement(&self, fact: SettlementFact) -> Result<AppendReceipt, RecordFailure> {

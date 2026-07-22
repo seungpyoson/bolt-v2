@@ -36,6 +36,64 @@ pub struct SubmitReservationFillFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderIntentClampNotEvaluatedReason {
+    NoVenueTruth,
+    ForeignInstrument,
+    NonSellOrderSide,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderIntentClampOutcome {
+    WithinBounds,
+    Clamped {
+        original_quantity: String,
+    },
+    Rejected,
+    NotEvaluated {
+        reason: OrderIntentClampNotEvaluatedReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderIntentOrderFields {
+    pub order_type: String,
+    pub time_in_force: String,
+    pub price: Option<String>,
+    pub trigger_price: Option<String>,
+    pub activation_price: Option<String>,
+    pub trigger_type: Option<String>,
+    pub trigger_instrument_id: Option<String>,
+    pub trailing_offset: Option<String>,
+    pub trailing_offset_type: Option<String>,
+    pub expire_time_unix_nanos: Option<String>,
+    pub is_post_only: bool,
+    pub is_reduce_only: bool,
+    pub is_quote_quantity: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderIntentDetails {
+    pub strategy_id: String,
+    pub instrument_id: String,
+    pub client_order_id: String,
+    pub order_side: String,
+    pub price: String,
+    pub quantity: String,
+    pub clamp_outcome: Option<OrderIntentClampOutcome>,
+    pub order_fields: OrderIntentOrderFields,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryOrderIntentFact {
+    pub details: OrderIntentDetails,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RiskReducingExitOrderIntentFact {
+    pub details: OrderIntentDetails,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,
     Down,

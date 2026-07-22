@@ -1,3 +1,4 @@
+mod order_intent;
 mod reservation;
 mod settlement;
 
@@ -6,7 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     facts::{
-        RecoveryFact, SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
+        EntryOrderIntentFact, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
+        OrderIntentDetails, OrderIntentOrderFields, RecoveryFact, RiskReducingExitOrderIntentFact,
+        SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
         SubmitReservationMetadataFact, TerminalSettlementFact,
     },
     generated_contract::{
@@ -109,6 +112,53 @@ impl CodecFor<identities::TerminalSettlementV1> for CurrentCodecs {
     fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
         settlement::decode_terminal(line, line_number)
     }
+}
+
+impl CodecFor<identities::EntryOrderIntentV1> for CurrentCodecs {
+    type Input = EntryOrderIntentFact;
+    type Fact = EntryOrderIntentFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        order_intent::encode_entry(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        order_intent::decode_entry(line, line_number)
+    }
+}
+
+impl CodecFor<identities::RiskReducingExitOrderIntentV1> for CurrentCodecs {
+    type Input = RiskReducingExitOrderIntentFact;
+    type Fact = RiskReducingExitOrderIntentFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        order_intent::encode_risk_reducing_exit(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        order_intent::decode_risk_reducing_exit(line, line_number)
+    }
+}
+
+pub(crate) fn encode_entry_order_intent(
+    fact: EntryOrderIntentFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::EntryOrderIntentV1>>::encode(&fact, current_utc_ns()?)
+}
+
+pub(crate) fn encode_risk_reducing_exit_order_intent(
+    fact: RiskReducingExitOrderIntentFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::RiskReducingExitOrderIntentV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
 }
 
 pub(crate) fn encode_reservation_metadata(
@@ -394,6 +444,35 @@ mod tests {
         }
     }
 
+    fn order_intent_details() -> OrderIntentDetails {
+        OrderIntentDetails {
+            strategy_id: "strategy-1".to_string(),
+            instrument_id: "YES-USD.POLYMARKET".to_string(),
+            client_order_id: "client-1".to_string(),
+            order_side: "buy".to_string(),
+            price: "0.4".to_string(),
+            quantity: "2".to_string(),
+            clamp_outcome: Some(OrderIntentClampOutcome::NotEvaluated {
+                reason: OrderIntentClampNotEvaluatedReason::NoVenueTruth,
+            }),
+            order_fields: OrderIntentOrderFields {
+                order_type: "limit".to_string(),
+                time_in_force: "gtc".to_string(),
+                price: Some("0.4".to_string()),
+                trigger_price: None,
+                activation_price: None,
+                trigger_type: None,
+                trigger_instrument_id: None,
+                trailing_offset: None,
+                trailing_offset_type: None,
+                expire_time_unix_nanos: None,
+                is_post_only: true,
+                is_reduce_only: false,
+                is_quote_quantity: false,
+            },
+        }
+    }
+
     #[test]
     fn reservation_identity_binding_is_deterministic_and_round_trips() {
         let expected = metadata();
@@ -471,6 +550,47 @@ mod tests {
             )
             .expect("encoded terminal settlement must decode"),
             expected_terminal
+        );
+    }
+
+    #[test]
+    fn order_intent_identities_are_distinct_and_round_trip() {
+        let entry = EntryOrderIntentFact {
+            details: order_intent_details(),
+        };
+        let entry_record =
+            <CurrentCodecs as CodecFor<identities::EntryOrderIntentV1>>::encode(&entry, 14)
+                .expect("valid entry intent must encode");
+        let entry_line = std::str::from_utf8(entry_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::EntryOrderIntentV1>>::decode(entry_line, 1)
+                .expect("entry intent must decode"),
+            entry
+        );
+
+        let exit = RiskReducingExitOrderIntentFact {
+            details: order_intent_details(),
+        };
+        let exit_record =
+            <CurrentCodecs as CodecFor<identities::RiskReducingExitOrderIntentV1>>::encode(
+                &exit, 15,
+            )
+            .expect("valid exit intent must encode");
+        let exit_line = std::str::from_utf8(exit_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::RiskReducingExitOrderIntentV1>>::decode(
+                exit_line, 1,
+            )
+            .expect("exit intent must decode"),
+            exit
+        );
+        assert!(
+            <CurrentCodecs as CodecFor<identities::EntryOrderIntentV1>>::decode(exit_line, 1)
+                .is_err()
         );
     }
 }

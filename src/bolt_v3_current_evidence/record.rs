@@ -10,14 +10,15 @@ use anyhow::Error;
 
 use super::codec::{
     encode_basket_admission_granted, encode_basket_admission_rejected,
-    encode_capital_admission_rebuild, encode_entry_order_intent, encode_order_lifecycle,
-    encode_requote_throttle_observation, encode_reservation_fill, encode_reservation_metadata,
-    encode_risk_reducing_exit_order_intent, encode_settlement, encode_settlement_booking_error,
-    encode_terminal_settlement, encode_venue_truth_capture_failure, encode_venue_truth_divergence,
+    encode_capital_admission_rebuild, encode_entry_order_intent, encode_loss_governor_halt,
+    encode_order_lifecycle, encode_requote_throttle_observation, encode_reservation_fill,
+    encode_reservation_metadata, encode_risk_reducing_exit_order_intent, encode_settlement,
+    encode_settlement_booking_error, encode_terminal_settlement,
+    encode_venue_truth_capture_failure, encode_venue_truth_divergence,
 };
 use super::facts::{
     BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, CapitalAdmissionRebuildFact,
-    EntryOrderIntentFact, OrderLifecycleFact, RequoteThrottleObservationFact,
+    EntryOrderIntentFact, LossGovernorHaltFact, OrderLifecycleFact, RequoteThrottleObservationFact,
     RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
     SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
     VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
@@ -225,6 +226,16 @@ impl DecisionEvidenceRecorder {
         fact: VenueTruthDivergenceFact,
     ) -> NonBlockingRecordOutcome {
         match encode_venue_truth_divergence(fact) {
+            Ok(record) => self.record_nonblocking(record),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
+    }
+
+    pub fn record_loss_governor_halt(
+        &self,
+        fact: LossGovernorHaltFact,
+    ) -> NonBlockingRecordOutcome {
+        match encode_loss_governor_halt(fact) {
             Ok(record) => self.record_nonblocking(record),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }

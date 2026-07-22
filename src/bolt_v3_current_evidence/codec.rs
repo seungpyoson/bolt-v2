@@ -1,6 +1,7 @@
 mod admission;
 mod basket_admission;
 mod lifecycle;
+mod loss;
 mod order_intent;
 mod requote;
 mod reservation;
@@ -13,8 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     facts::{
         BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, CapitalAdmissionRebuildFact,
-        EntryOrderIntentFact, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
-        OrderIntentDetails, OrderIntentOrderFields, OrderLifecycleFact, RecoveryFact,
+        EntryOrderIntentFact, LossGovernorHaltFact, OrderLifecycleFact, RecoveryFact,
         RequoteThrottleObservationFact, RiskReducingExitOrderIntentFact,
         SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
         SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
@@ -266,6 +266,22 @@ impl CodecFor<identities::VenueTruthDivergenceV1> for CurrentCodecs {
     }
 }
 
+impl CodecFor<identities::LossGovernorHaltV1> for CurrentCodecs {
+    type Input = LossGovernorHaltFact;
+    type Fact = LossGovernorHaltFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        loss::encode(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        loss::decode_fact(line, line_number)
+    }
+}
+
 pub(crate) fn encode_entry_order_intent(
     fact: EntryOrderIntentFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
@@ -339,6 +355,12 @@ pub(crate) fn encode_venue_truth_divergence(
         &fact,
         current_utc_ns()?,
     )
+}
+
+pub(crate) fn encode_loss_governor_halt(
+    fact: LossGovernorHaltFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::LossGovernorHaltV1>>::encode(&fact, current_utc_ns()?)
 }
 
 pub(crate) fn encode_reservation_metadata(
@@ -539,6 +561,10 @@ fn validate_envelope(
 
 #[cfg(test)]
 mod tests {
+    use super::super::facts::{
+        OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome, OrderIntentDetails,
+        OrderIntentOrderFields,
+    };
     use super::*;
 
     fn metadata() -> SubmitReservationMetadataFact {
@@ -721,6 +747,32 @@ mod tests {
             prior_accepted_value: "1".to_string(),
             missing_explanation: "unexplained_open_order_delta".to_string(),
             alarm_class: super::super::facts::VenueTruthDivergenceAlarmClass::TrueDivergence,
+        }
+    }
+
+    fn loss_halt() -> LossGovernorHaltFact {
+        LossGovernorHaltFact {
+            snapshot_present: true,
+            snapshot_observed_at_ns: Some(10),
+            admission_now_ns: 12,
+            snapshot_age_ns: Some(2),
+            max_snapshot_age_ns: 1,
+            snapshot_source: Some("nt_account_snapshot".to_string()),
+            has_per_trade_pnl: true,
+            has_daily_pnl: true,
+            has_rolling_pnl: true,
+            has_current_equity: true,
+            has_peak_equity: true,
+            last_account_state_ts_ns: Some(10),
+            last_portfolio_snapshot_ts_ns: Some(10),
+            last_position_event_ts_ns: Some(10),
+            account_state_count: 1,
+            portfolio_snapshot_count: 1,
+            position_event_count: 1,
+            stale_reason: super::super::facts::StaleLossReason::AgeExceeded,
+            stable_halt_key: "age_exceeded:nt_account_snapshot".to_string(),
+            retry_count: 1,
+            elapsed_since_first_halt_ns: 0,
         }
     }
 
@@ -991,6 +1043,22 @@ mod tests {
                 1,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn loss_governor_halt_identity_round_trips() {
+        let expected = loss_halt();
+        let record =
+            <CurrentCodecs as CodecFor<identities::LossGovernorHaltV1>>::encode(&expected, 23)
+                .expect("valid loss halt must encode");
+        let line = std::str::from_utf8(record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::LossGovernorHaltV1>>::decode(line, 1)
+                .expect("loss halt must decode"),
+            expected
         );
     }
 }

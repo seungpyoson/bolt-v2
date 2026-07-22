@@ -227,6 +227,40 @@ pub struct VenueTruthDivergenceFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleLossReason {
+    MissingSnapshot,
+    SourceEmpty,
+    FutureDated,
+    AgeExceeded,
+    MissingRequiredField,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LossGovernorHaltFact {
+    pub snapshot_present: bool,
+    pub snapshot_observed_at_ns: Option<u64>,
+    pub admission_now_ns: u64,
+    pub snapshot_age_ns: Option<u64>,
+    pub max_snapshot_age_ns: u64,
+    pub snapshot_source: Option<String>,
+    pub has_per_trade_pnl: bool,
+    pub has_daily_pnl: bool,
+    pub has_rolling_pnl: bool,
+    pub has_current_equity: bool,
+    pub has_peak_equity: bool,
+    pub last_account_state_ts_ns: Option<u64>,
+    pub last_portfolio_snapshot_ts_ns: Option<u64>,
+    pub last_position_event_ts_ns: Option<u64>,
+    pub account_state_count: u64,
+    pub portfolio_snapshot_count: u64,
+    pub position_event_count: u64,
+    pub stale_reason: StaleLossReason,
+    pub stable_halt_key: String,
+    pub retry_count: u32,
+    pub elapsed_since_first_halt_ns: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,
     Down,

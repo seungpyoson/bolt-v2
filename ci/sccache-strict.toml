@@ -26,6 +26,7 @@ cache_mode = "READ_WRITE"
 replicas = ["a", "b"]
 attestation_attempts = 12
 attestation_interval_seconds = 10
+attestation_max_wait_seconds = 120
 
 [verification.consumer]
 abstract_socket_template = "bolt-sccache-verifier-{job_identity}"

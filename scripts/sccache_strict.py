@@ -87,6 +87,7 @@ class StrictBuildConfig:
     replicas: tuple[str, ...]
     attestation_attempts: int
     attestation_interval_seconds: int
+    attestation_max_wait_seconds: int
     verification_consumer: VerificationConsumerConfig
     publisher: PublisherConfig
     targets: Mapping[str, TargetConfig]
@@ -308,6 +309,7 @@ def load_document(
                 "replicas",
                 "attestation_attempts",
                 "attestation_interval_seconds",
+                "attestation_max_wait_seconds",
                 "consumer",
             }
         ),
@@ -497,15 +499,25 @@ def load_document(
         )
     attestation_attempts = verification["attestation_attempts"]
     attestation_interval_seconds = verification["attestation_interval_seconds"]
+    attestation_max_wait_seconds = verification["attestation_max_wait_seconds"]
     for value, name in (
         (attestation_attempts, "verification.attestation_attempts"),
         (
             attestation_interval_seconds,
             "verification.attestation_interval_seconds",
         ),
+        (
+            attestation_max_wait_seconds,
+            "verification.attestation_max_wait_seconds",
+        ),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError(f"{name} must be a positive integer")
+    if (
+        attestation_attempts * attestation_interval_seconds
+        > attestation_max_wait_seconds
+    ):
+        raise ValueError("attestation retry wait exceeds its governed ceiling")
 
     publisher = _mapping(top["publisher"], "publisher")
     _exact_keys(
@@ -610,6 +622,7 @@ def load_document(
         replicas=tuple(replicas_value),
         attestation_attempts=attestation_attempts,
         attestation_interval_seconds=attestation_interval_seconds,
+        attestation_max_wait_seconds=attestation_max_wait_seconds,
         verification_consumer=VerificationConsumerConfig(
             abstract_socket_template=abstract_socket_template,
             compiler_path=compiler_path,
@@ -1017,6 +1030,7 @@ def verify_candidate_set(
         "release_verification": {
             "attestation_attempts": config.attestation_attempts,
             "attestation_interval_seconds": config.attestation_interval_seconds,
+            "attestation_max_wait_seconds": config.attestation_max_wait_seconds,
         },
         "targets": [
             {
@@ -1530,6 +1544,7 @@ def main(argv: list[str] | None = None) -> int:
                 "replicas": list(config.replicas),
                 "attestation_attempts": config.attestation_attempts,
                 "attestation_interval_seconds": config.attestation_interval_seconds,
+                "attestation_max_wait_seconds": config.attestation_max_wait_seconds,
                 "derivative_identity": _derivative_identity(config, args.architecture),
             }
             _emit_json(output)

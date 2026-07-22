@@ -58,6 +58,7 @@ def valid_document() -> dict[str, object]:
             "replicas": ["a", "b"],
             "attestation_attempts": 12,
             "attestation_interval_seconds": 10,
+            "attestation_max_wait_seconds": 120,
             "consumer": {
                 "abstract_socket_template": "bolt-sccache-verifier-{job_identity}",
                 "compiler_path": "/usr/bin/cc",
@@ -124,6 +125,18 @@ class LoadConfigTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError, "verification.strict_timeout_ms must be a positive integer"
+        ):
+            sccache_strict.load_document(document, repo_root=REPO_ROOT)
+
+    def test_rejects_attestation_retry_product_above_governed_ceiling(self) -> None:
+        document = valid_document()
+        verification = copy.deepcopy(document["verification"])
+        assert isinstance(verification, dict)
+        verification["attestation_attempts"] = 13
+        document["verification"] = verification
+
+        with self.assertRaisesRegex(
+            ValueError, "attestation retry wait exceeds its governed ceiling"
         ):
             sccache_strict.load_document(document, repo_root=REPO_ROOT)
 

@@ -18,12 +18,13 @@ use serde::{Deserialize, Serialize};
 use super::{
     facts::{
         AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
-        BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, EntryOrderIntentFact,
-        EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitSubmissionDecisionFact,
-        ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
-        RecoveryFact, RejectedEntryAdmissionFact, RequoteThrottleObservationFact,
-        RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact, SettlementBookingErrorFact,
-        SettlementFact, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
+        BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, CurrentFact,
+        EntryOrderIntentFact, EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact,
+        ExitSubmissionDecisionFact, ForcedReductionAdmissionFact, LossGovernorHaltFact,
+        OrderLifecycleFact, OrderRejectFact, RecoveryFact, RejectedEntryAdmissionFact,
+        RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
+        RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
+        SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
         SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
         VenueTruthDivergenceFact,
     },
@@ -683,57 +684,184 @@ pub(crate) fn decode_startup_recovery_fact(
     if !is_startup_relevant(identity) {
         return Ok(None);
     }
-    let fact = match identity {
+    let fact = match decode_current_fact(identity, line, line_number)? {
+        CurrentFact::SubmitReservationMetadata(value) => RecoveryFact::ReservationMetadata(value),
+        CurrentFact::SubmitReservationFill(value) => RecoveryFact::ReservationFill(value),
+        CurrentFact::Settlement(value) => RecoveryFact::Settlement(value),
+        CurrentFact::SettlementBookingError(value) => RecoveryFact::BookingError(value),
+        CurrentFact::TerminalSettlement(value) => RecoveryFact::TerminalSettlement(*value),
+        CurrentFact::BlockedStrategyInputObservation(_)
+        | CurrentFact::SubmitLinkedStrategyInputSnapshot(_)
+        | CurrentFact::EntryOrderIntent(_)
+        | CurrentFact::RiskReducingExitOrderIntent(_)
+        | CurrentFact::AdmittedEntryAdmission(_)
+        | CurrentFact::RejectedEntryAdmission(_)
+        | CurrentFact::RiskReducingExitAdmission(_)
+        | CurrentFact::ForcedReductionAdmission(_)
+        | CurrentFact::BasketAdmissionGranted(_)
+        | CurrentFact::BasketAdmissionRejected(_)
+        | CurrentFact::CapitalAdmissionRebuild(_)
+        | CurrentFact::EntrySkipObservation(_)
+        | CurrentFact::ExitSubmissionDecision(_)
+        | CurrentFact::ExitHoldDecision(_)
+        | CurrentFact::ExitEvaluation(_)
+        | CurrentFact::LossGovernorHalt(_)
+        | CurrentFact::OrderReject(_)
+        | CurrentFact::OrderLifecycle(_)
+        | CurrentFact::RequoteThrottleObservation(_)
+        | CurrentFact::VenueTruthCaptureFailure(_)
+        | CurrentFact::VenueTruthDivergence(_) => {
+            unreachable!("startup-irrelevant fact returned relevant disposition")
+        }
+    };
+    Ok(Some(fact))
+}
+
+pub(super) fn decode_current_fact(
+    identity: KnownIdentity,
+    line: &str,
+    line_number: usize,
+) -> Result<CurrentFact> {
+    Ok(match identity {
+        KnownIdentity::BlockedStrategyInputObservationV1 => {
+            CurrentFact::BlockedStrategyInputObservation(Box::new(<CurrentCodecs as CodecFor<
+                identities::BlockedStrategyInputObservationV1,
+            >>::decode(
+                line, line_number
+            )?))
+        }
+        KnownIdentity::SubmitLinkedStrategyInputSnapshotV1 => {
+            CurrentFact::SubmitLinkedStrategyInputSnapshot(Box::new(<CurrentCodecs as CodecFor<
+                identities::SubmitLinkedStrategyInputSnapshotV1,
+            >>::decode(
+                line, line_number
+            )?))
+        }
+        KnownIdentity::EntryOrderIntentV1 => {
+            CurrentFact::EntryOrderIntent(<CurrentCodecs as CodecFor<
+                identities::EntryOrderIntentV1,
+            >>::decode(line, line_number)?)
+        }
+        KnownIdentity::RiskReducingExitOrderIntentV1 => {
+            CurrentFact::RiskReducingExitOrderIntent(<CurrentCodecs as CodecFor<
+                identities::RiskReducingExitOrderIntentV1,
+            >>::decode(line, line_number)?)
+        }
+        KnownIdentity::AdmittedEntryAdmissionV1 => {
+            CurrentFact::AdmittedEntryAdmission(Box::new(<CurrentCodecs as CodecFor<
+                identities::AdmittedEntryAdmissionV1,
+            >>::decode(line, line_number)?))
+        }
+        KnownIdentity::RejectedEntryAdmissionV1 => {
+            CurrentFact::RejectedEntryAdmission(Box::new(<CurrentCodecs as CodecFor<
+                identities::RejectedEntryAdmissionV1,
+            >>::decode(line, line_number)?))
+        }
+        KnownIdentity::RiskReducingExitAdmissionV1 => {
+            CurrentFact::RiskReducingExitAdmission(Box::new(<CurrentCodecs as CodecFor<
+                identities::RiskReducingExitAdmissionV1,
+            >>::decode(
+                line, line_number
+            )?))
+        }
+        KnownIdentity::ForcedReductionAdmissionV1 => {
+            CurrentFact::ForcedReductionAdmission(Box::new(<CurrentCodecs as CodecFor<
+                identities::ForcedReductionAdmissionV1,
+            >>::decode(
+                line, line_number
+            )?))
+        }
+        KnownIdentity::BasketAdmissionGrantedV1 => {
+            CurrentFact::BasketAdmissionGranted(<CurrentCodecs as CodecFor<
+                identities::BasketAdmissionGrantedV1,
+            >>::decode(line, line_number)?)
+        }
+        KnownIdentity::BasketAdmissionRejectedV1 => {
+            CurrentFact::BasketAdmissionRejected(<CurrentCodecs as CodecFor<
+                identities::BasketAdmissionRejectedV1,
+            >>::decode(line, line_number)?)
+        }
+        KnownIdentity::CapitalAdmissionRebuildV1 => {
+            CurrentFact::CapitalAdmissionRebuild(<CurrentCodecs as CodecFor<
+                identities::CapitalAdmissionRebuildV1,
+            >>::decode(line, line_number)?)
+        }
         KnownIdentity::SubmitReservationMetadataV1 => {
-            RecoveryFact::ReservationMetadata(<CurrentCodecs as CodecFor<
+            CurrentFact::SubmitReservationMetadata(<CurrentCodecs as CodecFor<
                 identities::SubmitReservationMetadataV1,
             >>::decode(line, line_number)?)
         }
         KnownIdentity::SubmitReservationFillV1 => {
-            RecoveryFact::ReservationFill(<CurrentCodecs as CodecFor<
+            CurrentFact::SubmitReservationFill(<CurrentCodecs as CodecFor<
                 identities::SubmitReservationFillV1,
             >>::decode(line, line_number)?)
         }
+        KnownIdentity::EntrySkipObservationV1 => {
+            CurrentFact::EntrySkipObservation(Box::new(<CurrentCodecs as CodecFor<
+                identities::EntrySkipObservationV1,
+            >>::decode(line, line_number)?))
+        }
+        KnownIdentity::ExitSubmissionDecisionV1 => {
+            CurrentFact::ExitSubmissionDecision(Box::new(<CurrentCodecs as CodecFor<
+                identities::ExitSubmissionDecisionV1,
+            >>::decode(line, line_number)?))
+        }
+        KnownIdentity::ExitHoldDecisionV1 => {
+            CurrentFact::ExitHoldDecision(Box::new(<CurrentCodecs as CodecFor<
+                identities::ExitHoldDecisionV1,
+            >>::decode(line, line_number)?))
+        }
+        KnownIdentity::ExitEvaluationV1 => {
+            CurrentFact::ExitEvaluation(Box::new(<CurrentCodecs as CodecFor<
+                identities::ExitEvaluationV1,
+            >>::decode(line, line_number)?))
+        }
+        KnownIdentity::LossGovernorHaltV1 => {
+            CurrentFact::LossGovernorHalt(<CurrentCodecs as CodecFor<
+                identities::LossGovernorHaltV1,
+            >>::decode(line, line_number)?)
+        }
+        KnownIdentity::OrderRejectV1 => {
+            CurrentFact::OrderReject(Box::new(<CurrentCodecs as CodecFor<
+                identities::OrderRejectV1,
+            >>::decode(line, line_number)?))
+        }
+        KnownIdentity::OrderLifecycleV1 => {
+            CurrentFact::OrderLifecycle(<CurrentCodecs as CodecFor<
+                identities::OrderLifecycleV1,
+            >>::decode(line, line_number)?)
+        }
+        KnownIdentity::RequoteThrottleObservationV1 => {
+            CurrentFact::RequoteThrottleObservation(<CurrentCodecs as CodecFor<
+                identities::RequoteThrottleObservationV1,
+            >>::decode(line, line_number)?)
+        }
         KnownIdentity::SettlementV1 => {
-            RecoveryFact::Settlement(
+            CurrentFact::Settlement(
                 <CurrentCodecs as CodecFor<identities::SettlementV1>>::decode(line, line_number)?,
             )
         }
         KnownIdentity::SettlementBookingErrorV1 => {
-            RecoveryFact::BookingError(<CurrentCodecs as CodecFor<
+            CurrentFact::SettlementBookingError(<CurrentCodecs as CodecFor<
                 identities::SettlementBookingErrorV1,
             >>::decode(line, line_number)?)
         }
         KnownIdentity::TerminalSettlementV1 => {
-            RecoveryFact::TerminalSettlement(<CurrentCodecs as CodecFor<
+            CurrentFact::TerminalSettlement(Box::new(<CurrentCodecs as CodecFor<
                 identities::TerminalSettlementV1,
+            >>::decode(line, line_number)?))
+        }
+        KnownIdentity::VenueTruthCaptureFailureV1 => {
+            CurrentFact::VenueTruthCaptureFailure(<CurrentCodecs as CodecFor<
+                identities::VenueTruthCaptureFailureV1,
             >>::decode(line, line_number)?)
         }
-        KnownIdentity::BlockedStrategyInputObservationV1
-        | KnownIdentity::SubmitLinkedStrategyInputSnapshotV1
-        | KnownIdentity::EntryOrderIntentV1
-        | KnownIdentity::RiskReducingExitOrderIntentV1
-        | KnownIdentity::AdmittedEntryAdmissionV1
-        | KnownIdentity::RejectedEntryAdmissionV1
-        | KnownIdentity::RiskReducingExitAdmissionV1
-        | KnownIdentity::ForcedReductionAdmissionV1
-        | KnownIdentity::BasketAdmissionGrantedV1
-        | KnownIdentity::BasketAdmissionRejectedV1
-        | KnownIdentity::CapitalAdmissionRebuildV1
-        | KnownIdentity::EntrySkipObservationV1
-        | KnownIdentity::ExitSubmissionDecisionV1
-        | KnownIdentity::ExitHoldDecisionV1
-        | KnownIdentity::ExitEvaluationV1
-        | KnownIdentity::LossGovernorHaltV1
-        | KnownIdentity::OrderRejectV1
-        | KnownIdentity::OrderLifecycleV1
-        | KnownIdentity::RequoteThrottleObservationV1
-        | KnownIdentity::VenueTruthCaptureFailureV1
-        | KnownIdentity::VenueTruthDivergenceV1 => {
-            unreachable!("startup-irrelevant identity returned relevant disposition")
+        KnownIdentity::VenueTruthDivergenceV1 => {
+            CurrentFact::VenueTruthDivergence(<CurrentCodecs as CodecFor<
+                identities::VenueTruthDivergenceV1,
+            >>::decode(line, line_number)?)
         }
-    };
-    Ok(Some(fact))
+    })
 }
 
 fn is_startup_relevant(identity: KnownIdentity) -> bool {

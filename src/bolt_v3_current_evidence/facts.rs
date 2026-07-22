@@ -1083,6 +1083,35 @@ impl StartupRecoveryFacts {
     }
 }
 
+pub(super) enum CurrentFact {
+    BlockedStrategyInputObservation(Box<BlockedStrategyInputObservationFact>),
+    SubmitLinkedStrategyInputSnapshot(Box<SubmitLinkedStrategyInputSnapshotFact>),
+    EntryOrderIntent(EntryOrderIntentFact),
+    RiskReducingExitOrderIntent(RiskReducingExitOrderIntentFact),
+    AdmittedEntryAdmission(Box<AdmittedEntryAdmissionFact>),
+    RejectedEntryAdmission(Box<RejectedEntryAdmissionFact>),
+    RiskReducingExitAdmission(Box<RiskReducingExitAdmissionFact>),
+    ForcedReductionAdmission(Box<ForcedReductionAdmissionFact>),
+    BasketAdmissionGranted(BasketAdmissionGrantedFact),
+    BasketAdmissionRejected(BasketAdmissionRejectedFact),
+    CapitalAdmissionRebuild(CapitalAdmissionRebuildFact),
+    SubmitReservationMetadata(SubmitReservationMetadataFact),
+    SubmitReservationFill(SubmitReservationFillFact),
+    EntrySkipObservation(Box<EntrySkipFact>),
+    ExitSubmissionDecision(Box<ExitSubmissionDecisionFact>),
+    ExitHoldDecision(Box<ExitHoldDecisionFact>),
+    ExitEvaluation(Box<ExitEvaluationFact>),
+    LossGovernorHalt(LossGovernorHaltFact),
+    OrderReject(Box<OrderRejectFact>),
+    OrderLifecycle(OrderLifecycleFact),
+    RequoteThrottleObservation(RequoteThrottleObservationFact),
+    Settlement(SettlementFact),
+    SettlementBookingError(SettlementBookingErrorFact),
+    TerminalSettlement(Box<TerminalSettlementFact>),
+    VenueTruthCaptureFailure(VenueTruthCaptureFailureFact),
+    VenueTruthDivergence(VenueTruthDivergenceFact),
+}
+
 pub(super) enum RecoveryFact {
     ReservationMetadata(SubmitReservationMetadataFact),
     ReservationFill(SubmitReservationFillFact),

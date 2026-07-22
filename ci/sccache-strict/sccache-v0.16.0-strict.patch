@@ -7645,7 +7645,7 @@ index 8760ba6..5ab6c52 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..a4d038f 100644
+index 98cedfb..5d7e008 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16,2 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -7932,20 +7932,21 @@ index 98cedfb..a4d038f 100644
 @@ -621 +807 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 -            timeout: Duration::from_secs(get_idle_timeout()),
 +            timeout: Duration::ZERO,
-@@ -674,0 +861,2 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -674,0 +861,3 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +        let poison = service.poison.clone();
 +        let terminal_poison = poison.clone();
-@@ -690,0 +879,2 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
++        let shutdown_timeout = service.timeouts.cleanup;
+@@ -690,0 +880,2 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +            #[allow(unreachable_code)]
 +            Ok::<(), io::Error>(())
-@@ -721,0 +912,3 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -721,0 +913,3 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +        let poisoned = async move {
 +            poison.poisoned().await;
 +        };
-@@ -723 +916 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -723 +917 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 -        runtime.block_on(async {
 +        let poisoned_shutdown = runtime.block_on(async {
-@@ -725,3 +918,4 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -725,3 +919,4 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 -                server = server.fuse() => server,
 -                _res = shutdown.fuse() => Ok(()),
 -                _res = shutdown_idle.fuse() => Ok::<_, io::Error>(()),
@@ -7953,11 +7954,19 @@ index 98cedfb..a4d038f 100644
 +                _res = shutdown.fuse() => Ok::<_, io::Error>(false),
 +                _res = shutdown_idle.fuse() => Ok::<_, io::Error>(false),
 +                _res = poisoned.fuse() => Ok::<_, io::Error>(true),
-@@ -729,0 +924,4 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -729,0 +925,4 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +        if poisoned_shutdown {
 +            runtime.block_on(terminal_poison.terminal());
 +            return Err(io::Error::other("strict daemon entered terminal poison"));
 +        }
+@@ -731 +929,0 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+-        const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+@@ -735 +933 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+-            SHUTDOWN_TIMEOUT.as_secs()
++            shutdown_timeout.as_secs_f64()
+@@ -745 +943 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+-        runtime.block_on(async { time::timeout(SHUTDOWN_TIMEOUT, wait).await })?;
++        runtime.block_on(async { time::timeout(shutdown_timeout, wait).await })?;
 @@ -794,0 +993,6 @@ where
 +    /// Exact derivative, backend, mode, and timeout policy negotiated by clients.
 +    identity: StrictServerIdentity,
@@ -8540,7 +8549,7 @@ index 98cedfb..a4d038f 100644
 +            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
 +            Poll::Pending => Poll::Pending,
 +        }
-@@ -2284,0 +2921,547 @@ mod tests {
+@@ -2284,0 +2921,571 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();
@@ -8953,6 +8962,30 @@ index 98cedfb..a4d038f 100644
 +        running.join().unwrap();
 +
 +        assert!(error.to_string().contains("terminal poison"));
++    }
++
++    #[test]
++    fn strict_shutdown_wait_uses_the_governed_cleanup_timeout() {
++        let runtime = Runtime::new().unwrap();
++        let storage = Arc::new(crate::test::mock_storage::MockStorage::new(None, false));
++        let mut server = SccacheServer::<tokio::net::TcpListener, ProcessCommandCreator>::new(
++            0,
++            runtime,
++            Client::new_num(1),
++            DistClientContainer::new_disabled(),
++            storage,
++        )
++        .unwrap();
++        let cleanup_timeout = Duration::from_millis(25);
++        server.service.timeouts.cleanup = cleanup_timeout;
++        let _active_request = server.service.clone();
++        let started = std::time::Instant::now();
++
++        let error = server.run(future::ready(())).unwrap_err();
++
++        assert!(started.elapsed() >= cleanup_timeout);
++        assert!(started.elapsed() < Duration::from_secs(1));
++        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
 +    }
 +
 +    #[test]

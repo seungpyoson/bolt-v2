@@ -1,16 +1,16 @@
 <!--
 Sync Impact Report
-Version change: 2.2.0 -> 2.3.0
-Modified principles: V. Evidence Before Claims uses advisory CI plus targeted probes for a pushed head
+Version change: 2.3.0 -> 2.3.1
+Modified principles: IV. Evidence-Driven Verification Gates permits standalone and Mergify-managed stack queue mechanics
 Additional Constraints: unchanged
-Added sections: v2.3.0 migration note
+Added sections: v2.3.1 migration note
 Removed sections: none
 Templates reviewed: .specify/templates/plan-template.md - no update needed;
 .specify/templates/spec-template.md - no update needed;
 .specify/templates/tasks-template.md - no update needed;
 .specify/templates/constitution-template.md - no update needed;
 .specify/templates/commands - absent in this repo
-Runtime guidance updated: AGENTS.md establishes plain-push publication with advisory CI and rust-probe as remote evidence
+Runtime guidance reviewed: AGENTS.md - no update needed
 Follow-up items: none
 -->
 
@@ -43,7 +43,7 @@ often useful, but it is not mandatory unless the user, active spec, or risk
 analysis explicitly requires it. Every change MUST have current evidence before
 readiness is claimed. Detailed agent workflow belongs in `AGENTS.md`.
 
-The approved merge-governance state has zero required CI statuses. CI is visible evidence, not merge authority; native code-owner approval, stale-review dismissal, last-push approval, and human review-thread resolution remain mandatory. The repository accepts temporarily red or broken `main` as repository risk, never as deploy or trading permission. Repository admission is limited to identity, pull-request state and mergeability, required-reviewer approval, Mergify routing, and single-PR queue mechanics.
+The approved merge-governance state has zero required CI statuses. CI is visible evidence, not merge authority; native code-owner approval, stale-review dismissal, last-push approval, and human review-thread resolution remain mandatory. The repository accepts temporarily red or broken `main` as repository risk, never as deploy or trading permission. Repository admission is limited to identity, pull-request state and mergeability, required-reviewer approval, Mergify routing, and queue mechanics for standalone pull requests and Mergify-managed stacks.
 
 Live trading stays fail-closed. No live submit may occur unless production entrypoint, live canary gate, submit admission, mandatory decision evidence, no-submit readiness evidence, configured caps, and explicit operator approval all pass on the exact head being run. The exact installed executable must also validate its selected manifest and config bundle and complete its finite in-process pre-arm phase. Only complete success may construct the opaque, non-serializable, non-cloneable, one-use Rust `LiveReadinessPermit` consumed by the sole Start entrypoint. Installation, advisory CI, prior results, caches, tags, same-SHA evidence, and persisted receipts cannot authorize Start. Every start or restart requires a fresh permit.
 
@@ -100,6 +100,12 @@ this artifact requires redesign, not waiver-by-documentation. Amendments require
 an explicit user-approved diff, a migration note for affected specs/plans, and a
 version bump.
 
+Migration note for v2.3.1: repository queue mechanics now permit standalone
+default-branch pull requests and exact Mergify-managed dependency stacks.
+Mergify remains responsible for stack propagation, ordering, and merging; the
+repository helper performs only mechanical validation and queue-comment
+submission.
+
 Migration note for v2.3.0: the CI teardown removes the non-compile preflight
 gate, the sandbox-safe-push publisher, and
 the merge-queue operator recipe. Publication is a plain exact-head git push;
@@ -146,4 +152,4 @@ and `specs/023-nt-research-analytics-platform/tasks.md`. Runtime code is not
 changed by this amendment; implementation remains gated by feature-branch
 SpecKit checks and exact-head verification.
 
-**Version**: 2.3.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-07-19
+**Version**: 2.3.1 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-07-22

@@ -6,11 +6,17 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import dataclasses
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import advisory_supersession  # noqa: E402
+
+
+GOVERNED_CONFIG = advisory_supersession.load_config(
+    REPO_ROOT / "ci" / "advisory-supersession.toml"
+)
 
 
 class FakeClient:
@@ -50,17 +56,10 @@ class FakeClient:
 
 class CancellationClient(advisory_supersession.GitHubActionsClient):
     def __init__(self, statuses: list[str]) -> None:
-        self.config = advisory_supersession.Config(
-            api_version="2026-03-10",
-            branch="main",
-            workflow="advisory.yml",
-            request_timeout_seconds=30,
-            runs_per_page=100,
-            discovery_stable_sweeps=2,
-            discovery_max_sweeps=4,
+        self.config = dataclasses.replace(
+            GOVERNED_CONFIG,
             cancel_poll_attempts=1,
             cancel_poll_interval_seconds=1,
-            terminal_status="completed",
         )
         self.statuses = iter(statuses)
         self.requests: list[bool] = []
@@ -78,17 +77,10 @@ class DiscoveryClient(advisory_supersession.GitHubActionsClient):
         self,
         sweeps: list[list[advisory_supersession.WorkflowRun]],
     ) -> None:
-        self.config = advisory_supersession.Config(
-            api_version="2026-03-10",
-            branch="main",
-            workflow="advisory.yml",
-            request_timeout_seconds=30,
-            runs_per_page=100,
-            discovery_stable_sweeps=2,
-            discovery_max_sweeps=4,
+        self.config = dataclasses.replace(
+            GOVERNED_CONFIG,
             cancel_poll_attempts=1,
             cancel_poll_interval_seconds=1,
-            terminal_status="completed",
         )
         self.sweeps = iter(sweeps)
 
@@ -458,12 +450,85 @@ alternate_api_url = "https://example.com"
             advisory_supersession.load_config(path)
 
     def test_loads_governed_repository_config(self) -> None:
-        config = advisory_supersession.load_config(
-            REPO_ROOT / "ci" / "advisory-supersession.toml"
-        )
+        config = GOVERNED_CONFIG
 
         self.assertEqual(config.branch, "main")
         self.assertEqual(config.workflow, "advisory.yml")
+        self.assertEqual(config.event, "push")
+
+    def test_governed_topology_is_exact(self) -> None:
+        topology = advisory_supersession.reconciliation_topology(GOVERNED_CONFIG)
+
+        self.assertEqual(topology.requests, 358)
+        self.assertEqual(topology.secondary_points, 438)
+        self.assertEqual(topology.minimum_pacing_seconds, 260)
+
+    def test_rejects_runs_per_page_other_than_one_hundred(self) -> None:
+        governed = (
+            REPO_ROOT / "ci" / "advisory-supersession.toml"
+        ).read_text(encoding="utf-8")
+        path = self.write_config(governed.replace("runs_per_page = 100", "runs_per_page = 99"))
+
+        with self.assertRaisesRegex(ValueError, "runs_per_page"):
+            advisory_supersession.load_config(path)
+
+    def test_rejects_lookback_without_margin(self) -> None:
+        governed = (
+            REPO_ROOT / "ci" / "advisory-supersession.toml"
+        ).read_text(encoding="utf-8")
+        path = self.write_config(
+            governed.replace("created_lookback_days = 66", "created_lookback_days = 65")
+        )
+
+        with self.assertRaisesRegex(ValueError, "created_lookback_days"):
+            advisory_supersession.load_config(path)
+
+    def test_rejects_search_threshold_at_platform_limit(self) -> None:
+        governed = (
+            REPO_ROOT / "ci" / "advisory-supersession.toml"
+        ).read_text(encoding="utf-8")
+        path = self.write_config(
+            governed.replace("max_search_results = 900", "max_search_results = 1000")
+        )
+
+        with self.assertRaisesRegex(ValueError, "max_search_results"):
+            advisory_supersession.load_config(path)
+
+    def test_rejects_request_ceiling_below_topology(self) -> None:
+        governed = (
+            REPO_ROOT / "ci" / "advisory-supersession.toml"
+        ).read_text(encoding="utf-8")
+        path = self.write_config(
+            governed.replace("max_total_requests = 400", "max_total_requests = 357")
+        )
+
+        with self.assertRaisesRegex(ValueError, "max_total_requests"):
+            advisory_supersession.load_config(path)
+
+    def test_rejects_secondary_ceiling_below_topology(self) -> None:
+        governed = (
+            REPO_ROOT / "ci" / "advisory-supersession.toml"
+        ).read_text(encoding="utf-8")
+        path = self.write_config(
+            governed.replace("max_secondary_points = 500", "max_secondary_points = 437")
+        )
+
+        with self.assertRaisesRegex(ValueError, "max_secondary_points"):
+            advisory_supersession.load_config(path)
+
+    def test_rejects_deadline_below_minimum_pacing(self) -> None:
+        governed = (
+            REPO_ROOT / "ci" / "advisory-supersession.toml"
+        ).read_text(encoding="utf-8")
+        path = self.write_config(
+            governed.replace(
+                "reconciliation_timeout_seconds = 600",
+                "reconciliation_timeout_seconds = 259",
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "reconciliation_timeout_seconds"):
+            advisory_supersession.load_config(path)
 
     def test_client_refuses_to_send_token_to_external_pagination_url(self) -> None:
         config = advisory_supersession.load_config(

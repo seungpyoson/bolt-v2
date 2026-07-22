@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import os
 import pathlib
 import sys
@@ -26,13 +27,83 @@ class Config:
     api_version: str
     branch: str
     workflow: str
+    event: str
     request_timeout_seconds: int
     runs_per_page: int
+    sweep_interval_seconds: int
+    reconciliation_timeout_seconds: int
+    api_rate_limit_reserve: int
+    secondary_read_points: int
+    secondary_mutation_points: int
+    max_secondary_points: int
+    workflow_run_lifetime_days: int
+    rerun_request_window_days: int
+    created_lookback_days: int
+    search_result_limit: int
+    max_search_results: int
     discovery_stable_sweeps: int
     discovery_max_sweeps: int
+    max_cancellation_targets: int
+    max_total_requests: int
+    max_reconciliation_rounds: int
     cancel_poll_attempts: int
     cancel_poll_interval_seconds: int
     terminal_status: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ReconciliationTopology:
+    requests: int
+    secondary_points: int
+    minimum_pacing_seconds: int
+
+
+def reconciliation_topology(config: Config) -> ReconciliationTopology:
+    pages_per_sweep = math.ceil(
+        config.max_search_results / config.runs_per_page
+    )
+    census_count = config.max_reconciliation_rounds + 1
+    sweep_count = census_count * config.discovery_max_sweeps
+    sweep_reads = pages_per_sweep + 2
+    episode_reads = 4 + (2 * config.cancel_poll_attempts)
+    episode_mutations = 2
+    episode_requests = episode_reads + episode_mutations
+    requests = (
+        1
+        + (sweep_count * sweep_reads)
+        + (config.max_cancellation_targets * episode_requests)
+        + 1
+    )
+    secondary_points = (
+        config.secondary_read_points
+        + (
+            sweep_count
+            * sweep_reads
+            * config.secondary_read_points
+        )
+        + (
+            config.max_cancellation_targets
+            * (
+                episode_reads * config.secondary_read_points
+                + episode_mutations * config.secondary_mutation_points
+            )
+        )
+        + config.secondary_read_points
+    )
+    minimum_pacing_seconds = (
+        census_count
+        * (config.discovery_max_sweeps - 1)
+        * config.sweep_interval_seconds
+        + config.max_cancellation_targets
+        * 2
+        * (config.cancel_poll_attempts - 1)
+        * config.cancel_poll_interval_seconds
+    )
+    return ReconciliationTopology(
+        requests=requests,
+        secondary_points=secondary_points,
+        minimum_pacing_seconds=minimum_pacing_seconds,
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -92,6 +163,13 @@ def _require_string(document: Mapping[str, object], key: str) -> str:
     return value
 
 
+def _require_positive_integer(document: Mapping[str, object], key: str) -> int:
+    value = document.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{key} must be a positive integer")
+    return value
+
+
 def load_config(path: pathlib.Path) -> Config:
     document = _require_mapping(
         tomllib.loads(path.read_text(encoding="utf-8")), "config"
@@ -101,10 +179,25 @@ def load_config(path: pathlib.Path) -> Config:
         "api_version",
         "branch",
         "workflow",
+        "event",
         "request_timeout_seconds",
         "runs_per_page",
+        "sweep_interval_seconds",
+        "reconciliation_timeout_seconds",
+        "api_rate_limit_reserve",
+        "secondary_read_points",
+        "secondary_mutation_points",
+        "max_secondary_points",
+        "workflow_run_lifetime_days",
+        "rerun_request_window_days",
+        "created_lookback_days",
+        "search_result_limit",
+        "max_search_results",
         "discovery_stable_sweeps",
         "discovery_max_sweeps",
+        "max_cancellation_targets",
+        "max_total_requests",
+        "max_reconciliation_rounds",
         "cancel_poll_attempts",
         "cancel_poll_interval_seconds",
         "terminal_status",
@@ -115,58 +208,94 @@ def load_config(path: pathlib.Path) -> Config:
     schema_version = document.get("schema_version")
     if isinstance(schema_version, bool) or schema_version != 1:
         raise ValueError("schema_version must be 1")
-    timeout = document.get("request_timeout_seconds")
-    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
-        raise ValueError("request_timeout_seconds must be a positive integer")
-    runs_per_page = document.get("runs_per_page")
-    if (
-        isinstance(runs_per_page, bool)
-        or not isinstance(runs_per_page, int)
-        or not 1 <= runs_per_page <= 100
-    ):
-        raise ValueError("runs_per_page must be an integer from 1 through 100")
-    discovery_stable_sweeps = document.get("discovery_stable_sweeps")
-    if (
-        isinstance(discovery_stable_sweeps, bool)
-        or not isinstance(discovery_stable_sweeps, int)
-        or discovery_stable_sweeps < 2
-    ):
+    values = {
+        key: _require_positive_integer(document, key)
+        for key in expected
+        if key
+        not in {
+            "schema_version",
+            "api_version",
+            "branch",
+            "workflow",
+            "event",
+            "terminal_status",
+        }
+    }
+    runs_per_page = values["runs_per_page"]
+    if runs_per_page != 100:
+        raise ValueError("runs_per_page must be exactly 100")
+    discovery_stable_sweeps = values["discovery_stable_sweeps"]
+    if discovery_stable_sweeps < 2:
         raise ValueError("discovery_stable_sweeps must be an integer of at least 2")
-    discovery_max_sweeps = document.get("discovery_max_sweeps")
-    if (
-        isinstance(discovery_max_sweeps, bool)
-        or not isinstance(discovery_max_sweeps, int)
-        or discovery_max_sweeps < discovery_stable_sweeps
-    ):
+    discovery_max_sweeps = values["discovery_max_sweeps"]
+    if discovery_max_sweeps < discovery_stable_sweeps:
         raise ValueError(
             "discovery_max_sweeps must be at least discovery_stable_sweeps"
         )
-    cancel_poll_attempts = document.get("cancel_poll_attempts")
-    if (
-        isinstance(cancel_poll_attempts, bool)
-        or not isinstance(cancel_poll_attempts, int)
-        or cancel_poll_attempts <= 0
+    if values["created_lookback_days"] <= (
+        values["workflow_run_lifetime_days"]
+        + values["rerun_request_window_days"]
     ):
-        raise ValueError("cancel_poll_attempts must be a positive integer")
-    cancel_poll_interval_seconds = document.get("cancel_poll_interval_seconds")
-    if (
-        isinstance(cancel_poll_interval_seconds, bool)
-        or not isinstance(cancel_poll_interval_seconds, int)
-        or cancel_poll_interval_seconds <= 0
-    ):
-        raise ValueError("cancel_poll_interval_seconds must be a positive integer")
-    return Config(
+        raise ValueError(
+            "created_lookback_days must exceed the workflow lifetime plus rerun window"
+        )
+    if values["max_search_results"] >= values["search_result_limit"]:
+        raise ValueError("max_search_results must be below search_result_limit")
+    if values["secondary_read_points"] != 1:
+        raise ValueError("secondary_read_points must be exactly 1")
+    if values["secondary_mutation_points"] != 5:
+        raise ValueError("secondary_mutation_points must be exactly 5")
+    if values["max_cancellation_targets"] < 2:
+        raise ValueError(
+            "max_cancellation_targets must fit an episode and successor reservation"
+        )
+    event = _require_string(document, "event")
+    if event != "push":
+        raise ValueError("event must be push")
+    terminal_status = _require_string(document, "terminal_status")
+    if terminal_status != "completed":
+        raise ValueError("terminal_status must be completed")
+    config = Config(
         api_version=_require_string(document, "api_version"),
         branch=_require_string(document, "branch"),
         workflow=_require_string(document, "workflow"),
-        request_timeout_seconds=timeout,
+        event=event,
+        request_timeout_seconds=values["request_timeout_seconds"],
         runs_per_page=runs_per_page,
+        sweep_interval_seconds=values["sweep_interval_seconds"],
+        reconciliation_timeout_seconds=values["reconciliation_timeout_seconds"],
+        api_rate_limit_reserve=values["api_rate_limit_reserve"],
+        secondary_read_points=values["secondary_read_points"],
+        secondary_mutation_points=values["secondary_mutation_points"],
+        max_secondary_points=values["max_secondary_points"],
+        workflow_run_lifetime_days=values["workflow_run_lifetime_days"],
+        rerun_request_window_days=values["rerun_request_window_days"],
+        created_lookback_days=values["created_lookback_days"],
+        search_result_limit=values["search_result_limit"],
+        max_search_results=values["max_search_results"],
         discovery_stable_sweeps=discovery_stable_sweeps,
         discovery_max_sweeps=discovery_max_sweeps,
-        cancel_poll_attempts=cancel_poll_attempts,
-        cancel_poll_interval_seconds=cancel_poll_interval_seconds,
-        terminal_status=_require_string(document, "terminal_status"),
+        max_cancellation_targets=values["max_cancellation_targets"],
+        max_total_requests=values["max_total_requests"],
+        max_reconciliation_rounds=values["max_reconciliation_rounds"],
+        cancel_poll_attempts=values["cancel_poll_attempts"],
+        cancel_poll_interval_seconds=values["cancel_poll_interval_seconds"],
+        terminal_status=terminal_status,
     )
+    topology = reconciliation_topology(config)
+    if config.max_total_requests < topology.requests:
+        raise ValueError(
+            "max_total_requests cannot cover the configured reconciliation topology"
+        )
+    if config.max_secondary_points < topology.secondary_points:
+        raise ValueError(
+            "max_secondary_points cannot cover the configured reconciliation topology"
+        )
+    if config.reconciliation_timeout_seconds < topology.minimum_pacing_seconds:
+        raise ValueError(
+            "reconciliation_timeout_seconds cannot cover configured pacing"
+        )
+    return config
 
 
 class GitHubActionsClient:

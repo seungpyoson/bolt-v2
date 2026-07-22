@@ -2,10 +2,31 @@ schema_version = 1
 api_version = "2026-03-10"
 branch = "main"
 workflow = "advisory.yml"
+event = "push"
 request_timeout_seconds = 30
 runs_per_page = 100
+sweep_interval_seconds = 5
+reconciliation_timeout_seconds = 600
+api_rate_limit_reserve = 100
+secondary_read_points = 1
+secondary_mutation_points = 5
+max_secondary_points = 500
+
+# GitHub cancels workflow runs after 35 days and permits reruns for 30 days.
+# The extra day keeps the fixed GitHub-time census boundary outside both windows.
+workflow_run_lifetime_days = 35
+rerun_request_window_days = 30
+created_lookback_days = 66
+
+# Filtered workflow-run searches stop at 1,000 results. Admission fails closed
+# before that ceiling can make the census incomplete.
+search_result_limit = 1000
+max_search_results = 900
 discovery_stable_sweeps = 2
 discovery_max_sweeps = 4
+max_cancellation_targets = 10
+max_total_requests = 400
+max_reconciliation_rounds = 3
 cancel_poll_attempts = 6
 cancel_poll_interval_seconds = 2
 terminal_status = "completed"

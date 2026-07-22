@@ -5853,7 +5853,7 @@ index cef32b2..61681ad 100644
 +}
 +
 diff --git a/src/mock_command.rs b/src/mock_command.rs
-index d7ffa03..70f7c83 100644
+index d7ffa03..55b78cc 100644
 --- a/src/mock_command.rs
 +++ b/src/mock_command.rs
 @@ -47,0 +48 @@
@@ -5886,7 +5886,7 @@ index d7ffa03..70f7c83 100644
 +        self.clone()
 +    }
 +
-@@ -142,0 +165,235 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
+@@ -142,0 +165,311 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
 +#[derive(Clone, Debug)]
 +pub struct StrictChildPolicy {
 +    pub classification_timeout: std::time::Duration,
@@ -5905,6 +5905,7 @@ index d7ffa03..70f7c83 100644
 +#[derive(Debug)]
 +struct StrictPoisonInner {
 +    state: std::sync::atomic::AtomicU8,
++    cleanup_pending: std::sync::atomic::AtomicUsize,
 +    notify: tokio::sync::Notify,
 +    commit_waker: futures::task::AtomicWaker,
 +}
@@ -5921,6 +5922,7 @@ index d7ffa03..70f7c83 100644
 +        Self {
 +            inner: Arc::new(StrictPoisonInner {
 +                state: std::sync::atomic::AtomicU8::new(0),
++                cleanup_pending: std::sync::atomic::AtomicUsize::new(0),
 +                notify: tokio::sync::Notify::new(),
 +                commit_waker: futures::task::AtomicWaker::new(),
 +            }),
@@ -5935,6 +5937,14 @@ index d7ffa03..70f7c83 100644
 +        loop {
 +            let state = self.inner.state.load(std::sync::atomic::Ordering::Acquire);
 +            let next = match state {
++                0 if self
++                    .inner
++                    .cleanup_pending
++                    .load(std::sync::atomic::Ordering::Acquire)
++                    > 0 =>
++                {
++                    2
++                }
 +                0 => 3,
 +                1 => 2,
 +                2 | 3 => return,
@@ -5956,6 +5966,54 @@ index d7ffa03..70f7c83 100644
 +                return;
 +            }
 +        }
++    }
++
++    pub(crate) fn begin_cleanup_poison(&self) {
++        self.inner
++            .cleanup_pending
++            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
++        loop {
++            let state = self.inner.state.load(std::sync::atomic::Ordering::Acquire);
++            let next = match state {
++                0 | 1 => 2,
++                2 | 3 => return,
++                _ => unreachable!("strict poison state is invalid"),
++            };
++            if self
++                .inner
++                .state
++                .compare_exchange(
++                    state,
++                    next,
++                    std::sync::atomic::Ordering::AcqRel,
++                    std::sync::atomic::Ordering::Acquire,
++                )
++                .is_ok()
++            {
++                self.inner.notify.notify_waiters();
++                self.inner.commit_waker.wake();
++                return;
++            }
++        }
++    }
++
++    pub(crate) fn complete_cleanup_poison(&self) {
++        let pending = self
++            .inner
++            .cleanup_pending
++            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
++        assert!(
++            pending > 0,
++            "strict cleanup poison completion is unbalanced"
++        );
++        if pending > 1 {
++            return;
++        }
++        self.inner
++            .state
++            .store(3, std::sync::atomic::Ordering::Release);
++        self.inner.notify.notify_waiters();
++        self.inner.commit_waker.wake();
 +    }
 +
 +    pub(crate) fn terminate_on_deadline(&self) {
@@ -5996,6 +6054,14 @@ index d7ffa03..70f7c83 100644
 +            let state = self.inner.state.load(std::sync::atomic::Ordering::Acquire);
 +            let next = match state {
 +                1 => 0,
++                2 if self
++                    .inner
++                    .cleanup_pending
++                    .load(std::sync::atomic::Ordering::Acquire)
++                    > 0 =>
++                {
++                    return;
++                }
 +                2 => 3,
 +                _ => return,
 +            };
@@ -6023,6 +6089,16 @@ index d7ffa03..70f7c83 100644
 +        loop {
 +            let notified = self.inner.notify.notified();
 +            if self.inner.state.load(std::sync::atomic::Ordering::Acquire) >= 2 {
++                return;
++            }
++            notified.await;
++        }
++    }
++
++    pub async fn terminal(&self) {
++        loop {
++            let notified = self.inner.notify.notified();
++            if self.inner.state.load(std::sync::atomic::Ordering::Acquire) == 3 {
 +                return;
 +            }
 +            notified.await;
@@ -6122,7 +6198,7 @@ index d7ffa03..70f7c83 100644
 +    }
 +}
 +
-@@ -143,0 +401,8 @@ pub struct Child {
+@@ -143,0 +477,8 @@ pub struct Child {
 +    stdin: Option<ChildStdin>,
 +    stdout: Option<ChildStdout>,
 +    stderr: Option<ChildStderr>,
@@ -6131,7 +6207,7 @@ index d7ffa03..70f7c83 100644
 +}
 +
 +struct GovernedChild {
-@@ -145 +410,165 @@ pub struct Child {
+@@ -145 +486,148 @@ pub struct Child {
 -    token: Acquired,
 +    _token: Acquired,
 +    policy: StrictChildPolicy,
@@ -6281,8 +6357,8 @@ index d7ffa03..70f7c83 100644
 +#[cfg(all(not(target_os = "linux"), not(test)))]
 +fn require_strict_descriptor_seal() -> Result<()> {
 +    anyhow::bail!("strict child descriptor sealing requires Linux")
-+}
-+
+@@ -148 +636,199 @@ pub struct Child {
+-/// Trivial implementation of `CommandChild` for `std::process::Child`.
 +#[cfg(unix)]
 +async fn wait_for_process_group_exit(
 +    process_group: i32,
@@ -6298,8 +6374,8 @@ index d7ffa03..70f7c83 100644
 +        tokio::task::yield_now().await;
 +    }
 +    Ok(())
-@@ -148 +577,178 @@ pub struct Child {
--/// Trivial implementation of `CommandChild` for `std::process::Child`.
++}
++
 +async fn wait_for_strict_phase(name: &str, duration: std::time::Duration) -> io::Result<()> {
 +    let deadline = StrictDeadline::from_now(name, duration)
 +        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
@@ -6329,7 +6405,7 @@ index d7ffa03..70f7c83 100644
 +                }
 +            };
 +            if timed_out {
-+                self.policy.poison.poison();
++                self.policy.poison.begin_cleanup_poison();
 +                require_strict_cleanup(
 +                    &self.policy.poison,
 +                    signal_process_group(leader, libc::SIGTERM),
@@ -6357,6 +6433,7 @@ index d7ffa03..70f7c83 100644
 +                self.process_group_armed = false;
 +                let reaped = self.inner.wait().await;
 +                require_strict_cleanup(&self.policy.poison, reaped)?;
++                self.policy.poison.complete_cleanup_poison();
 +                return Err(io::Error::new(
 +                    io::ErrorKind::TimedOut,
 +                    self.purpose.deadline_error(),
@@ -6364,7 +6441,7 @@ index d7ffa03..70f7c83 100644
 +            }
 +
 +            if linux_process_group_has_member(leader, leader)? {
-+                self.policy.poison.poison();
++                self.policy.poison.begin_cleanup_poison();
 +                require_strict_cleanup(
 +                    &self.policy.poison,
 +                    signal_process_group(leader, libc::SIGTERM),
@@ -6390,6 +6467,7 @@ index d7ffa03..70f7c83 100644
 +                self.process_group_armed = false;
 +                let reaped = self.inner.wait().await;
 +                require_strict_cleanup(&self.policy.poison, reaped)?;
++                self.policy.poison.complete_cleanup_poison();
 +                return Err(io::Error::other(
 +                    "strict child left a live process-group member",
 +                ));
@@ -6407,7 +6485,7 @@ index d7ffa03..70f7c83 100644
 +                {
 +                    Ok(status) => status?,
 +                    Err(_) => {
-+                        self.policy.poison.poison();
++                        self.policy.poison.begin_cleanup_poison();
 +                        #[cfg(unix)]
 +                        signal_process_group(self.process_group, libc::SIGTERM)?;
 +                        wait_for_strict_phase(
@@ -6441,6 +6519,7 @@ index d7ffa03..70f7c83 100644
 +                        {
 +                            self.process_group_armed = false;
 +                        }
++                        self.policy.poison.complete_cleanup_poison();
 +                        return Err(io::Error::new(
 +                            io::ErrorKind::TimedOut,
 +                            self.purpose.deadline_error(),
@@ -6449,7 +6528,7 @@ index d7ffa03..70f7c83 100644
 +                };
 +            #[cfg(unix)]
 +            if process_group_exists(self.process_group) {
-+                self.policy.poison.poison();
++                self.policy.poison.begin_cleanup_poison();
 +                signal_process_group(self.process_group, libc::SIGTERM)?;
 +                wait_for_strict_phase(
 +                    "strict child termination-grace deadline",
@@ -6464,6 +6543,7 @@ index d7ffa03..70f7c83 100644
 +                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
 +                wait_for_process_group_exit(self.process_group, cleanup_deadline).await?;
 +                self.process_group_armed = false;
++                self.policy.poison.complete_cleanup_poison();
 +                return Err(io::Error::other(
 +                    "strict child left a live process-group member",
 +                ));
@@ -6478,13 +6558,13 @@ index d7ffa03..70f7c83 100644
 +}
 +
 +/// Cancellation-safe handle for one independently supervised compiler process.
-@@ -156 +762 @@ impl CommandChild for Child {
+@@ -156 +842 @@ impl CommandChild for Child {
 -        self.inner.stdin.take()
 +        self.stdin.take()
-@@ -159 +765 @@ impl CommandChild for Child {
+@@ -159 +845 @@ impl CommandChild for Child {
 -        self.inner.stdout.take()
 +        self.stdout.take()
-@@ -162 +768,8 @@ impl CommandChild for Child {
+@@ -162 +848,8 @@ impl CommandChild for Child {
 -        self.inner.stderr.take()
 +        self.stderr.take()
 +    }
@@ -6494,7 +6574,7 @@ index d7ffa03..70f7c83 100644
 +    }
 +    fn strict_poison(&self) -> StrictPoison {
 +        self.policy.poison.clone()
-@@ -166,4 +779,3 @@ impl CommandChild for Child {
+@@ -166,4 +859,3 @@ impl CommandChild for Child {
 -        let Child { mut inner, token } = self;
 -        inner.wait().await.inspect(|_ret| {
 -            drop(token);
@@ -6502,7 +6582,7 @@ index d7ffa03..70f7c83 100644
 +        self.supervisor
 +            .await
 +            .map_err(|error| io::Error::other(format!("strict child supervisor failed: {error}")))?
-@@ -172,4 +784,17 @@ impl CommandChild for Child {
+@@ -172,4 +864,17 @@ impl CommandChild for Child {
 -    async fn wait_with_output(self) -> io::Result<Output> {
 -        let Child { inner, token } = self;
 -        inner.wait_with_output().await.inspect(|_ret| {
@@ -6524,12 +6604,12 @@ index d7ffa03..70f7c83 100644
 +            status: status?,
 +            stdout: stdout?,
 +            stderr: stderr?,
-@@ -182,0 +808,4 @@ pub struct AsyncCommand {
+@@ -182,0 +888,4 @@ pub struct AsyncCommand {
 +    environment_cleared: bool,
 +    policy: StrictChildPolicy,
 +    deadline: StrictDeadline,
 +    purpose: StrictChildPurpose,
-@@ -186 +815,24 @@ impl AsyncCommand {
+@@ -186 +895,24 @@ impl AsyncCommand {
 -    pub fn new<S: AsRef<OsStr>>(program: S, jobserver: Client) -> AsyncCommand {
 +    pub fn new<S: AsRef<OsStr>>(
 +        program: S,
@@ -6555,14 +6635,14 @@ index d7ffa03..70f7c83 100644
 +        deadline: StrictDeadline,
 +        purpose: StrictChildPurpose,
 +    ) -> AsyncCommand {
-@@ -189,0 +842,4 @@ impl AsyncCommand {
+@@ -189,0 +922,4 @@ impl AsyncCommand {
 +            environment_cleared: false,
 +            policy,
 +            deadline,
 +            purpose,
-@@ -229,0 +886 @@ impl RunCommand for AsyncCommand {
+@@ -229,0 +966 @@ impl RunCommand for AsyncCommand {
 +        self.environment_cleared = true;
-@@ -249,7 +906,5 @@ impl RunCommand for AsyncCommand {
+@@ -249,7 +986,5 @@ impl RunCommand for AsyncCommand {
 -    async fn spawn(&mut self) -> Result<Child> {
 -        let mut inner = self.inner.take().unwrap();
 -        inner.env_remove("MAKEFLAGS");
@@ -6575,7 +6655,7 @@ index d7ffa03..70f7c83 100644
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<Child> {
 +        require_strict_descriptor_seal()?;
-@@ -256,0 +912,10 @@ impl RunCommand for AsyncCommand {
+@@ -256,0 +992,10 @@ impl RunCommand for AsyncCommand {
 +        let mut inner = self.inner.take().unwrap();
 +        #[cfg(unix)]
 +        {
@@ -6586,11 +6666,11 @@ index d7ffa03..70f7c83 100644
 +                inner.pre_exec(mark_non_stdio_descriptors_close_on_exec);
 +            }
 +        }
-@@ -258 +923,2 @@ impl RunCommand for AsyncCommand {
+@@ -258 +1003,2 @@ impl RunCommand for AsyncCommand {
 -        let child = inner
 +        inner.kill_on_drop(true);
 +        let mut child = inner
-@@ -262 +928,8 @@ impl RunCommand for AsyncCommand {
+@@ -262 +1008,8 @@ impl RunCommand for AsyncCommand {
 -        Ok(Child {
 +        #[cfg(unix)]
 +        let process_group = i32::try_from(child.id().context("strict child PID is unavailable")?)
@@ -6600,7 +6680,7 @@ index d7ffa03..70f7c83 100644
 +        let stderr = child.stderr.take();
 +        let policy = self.policy.clone();
 +        let governed = GovernedChild {
-@@ -264 +937,16 @@ impl RunCommand for AsyncCommand {
+@@ -264 +1017,16 @@ impl RunCommand for AsyncCommand {
 -            token,
 +            _token: token,
 +            policy: policy.clone(),
@@ -6618,10 +6698,10 @@ index d7ffa03..70f7c83 100644
 +            stderr,
 +            policy,
 +            supervisor,
-@@ -278,0 +967,2 @@ pub struct ProcessCommandCreator {
+@@ -278,0 +1047,2 @@ pub struct ProcessCommandCreator {
 +    policy: StrictChildPolicy,
 +    classification_deadline: Option<StrictDeadline>,
-@@ -286,2 +976,12 @@ impl CommandCreator for ProcessCommandCreator {
+@@ -286,2 +1056,12 @@ impl CommandCreator for ProcessCommandCreator {
 -        ProcessCommandCreator {
 -            jobserver: client.clone(),
 +        #[cfg(test)]
@@ -6636,7 +6716,7 @@ index d7ffa03..70f7c83 100644
 +        {
 +            let _ = client;
 +            panic!("strict child policy is required")
-@@ -292 +992,10 @@ impl CommandCreator for ProcessCommandCreator {
+@@ -292 +1072,10 @@ impl CommandCreator for ProcessCommandCreator {
 -        AsyncCommand::new(program, self.jobserver.clone())
 +        match self.classification_deadline {
 +            Some(deadline) => AsyncCommand::new_with_deadline(
@@ -6648,7 +6728,7 @@ index d7ffa03..70f7c83 100644
 +            ),
 +            None => AsyncCommand::new(program, self.jobserver.clone(), self.policy.clone()),
 +        }
-@@ -303,0 +1013,20 @@ impl CommandCreatorSync for ProcessCommandCreator {
+@@ -303,0 +1093,20 @@ impl CommandCreatorSync for ProcessCommandCreator {
 +    fn new_strict(client: &Client, policy: StrictChildPolicy) -> ProcessCommandCreator {
 +        ProcessCommandCreator {
 +            jobserver: client.clone(),
@@ -6669,23 +6749,23 @@ index d7ffa03..70f7c83 100644
 +        classification
 +    }
 +
-@@ -383,0 +1113,6 @@ impl CommandChild for MockChild {
+@@ -383,0 +1193,6 @@ impl CommandChild for MockChild {
 +    fn strict_output_limit(&self) -> u64 {
 +        u64::MAX
 +    }
 +    fn strict_poison(&self) -> StrictPoison {
 +        StrictPoison::new()
 +    }
-@@ -470 +1205,4 @@ impl RunCommand for MockCommand {
+@@ -470 +1285,4 @@ impl RunCommand for MockCommand {
 -    async fn spawn(&mut self) -> Result<MockChild> {
 +    fn strict_environment_is_sealed(&self) -> bool {
 +        true
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<MockChild> {
-@@ -544,0 +1283,2 @@ mod test {
+@@ -544,0 +1363,2 @@ mod test {
 +    #[cfg(target_os = "linux")]
 +    use std::os::fd::{AsRawFd, FromRawFd};
-@@ -548,0 +1289,352 @@ mod test {
+@@ -548,0 +1369,371 @@ mod test {
 +    #[cfg(target_os = "linux")]
 +    #[test]
 +    fn strict_linux_proc_stat_parser_handles_parentheses_in_command_name() {
@@ -6737,6 +6817,23 @@ index d7ffa03..70f7c83 100644
 +        };
 +
 +        assert!(error.to_string().contains("environment was not cleared"));
++    }
++
++    #[test]
++    fn strict_cleanup_poison_cannot_terminalize_before_cleanup_completes() {
++        let poison = StrictPoison::new();
++        assert_eq!(poison.try_acquire_commit_gate(), StrictCommitGate::Acquired);
++
++        poison.begin_cleanup_poison();
++        poison.begin_cleanup_poison();
++        poison.release_commit_gate();
++
++        assert!(!poison.is_healthy());
++        assert!(!poison.is_terminal());
++        poison.complete_cleanup_poison();
++        assert!(!poison.is_terminal());
++        poison.complete_cleanup_poison();
++        assert!(poison.is_terminal());
 +    }
 +
 +    #[test]
@@ -6945,6 +7042,7 @@ index d7ffa03..70f7c83 100644
 +        );
 +        assert!(started.elapsed() < std::time::Duration::from_secs(2));
 +        assert!(!poison.is_healthy());
++        assert!(poison.is_terminal());
 +    }
 +
 +    #[cfg(unix)]
@@ -6991,6 +7089,7 @@ index d7ffa03..70f7c83 100644
 +
 +        assert!(started.elapsed() < std::time::Duration::from_secs(2));
 +        assert!(!poison.is_healthy());
++        assert!(poison.is_terminal());
 +    }
 +
 +    #[cfg(unix)]
@@ -7038,16 +7137,16 @@ index d7ffa03..70f7c83 100644
 +        assert!(!poisoned.is_healthy());
 +    }
 +
-@@ -553 +1645,2 @@ mod test {
+@@ -553 +1744,2 @@ mod test {
 -        creator.new_command(program).spawn().wait()
 +        let mut command = creator.new_command(program);
 +        StrictChildLauncher::spawn_prepared(&mut command).wait()
-@@ -576,2 +1669,2 @@ mod test {
+@@ -576,2 +1768,2 @@ mod test {
 -                t.new_command_sync("foo")
 -                    .spawn()
 +                let mut command = t.new_command_sync("foo");
 +                StrictChildLauncher::spawn_prepared(&mut command)
-@@ -612 +1705,4 @@ mod test {
+@@ -612 +1804,4 @@ mod test {
 -        creator.new_command("foo").spawn().wait().unwrap();
 +        let mut command = creator.new_command("foo");
 +        StrictChildLauncher::spawn_prepared(&mut command)
@@ -7546,7 +7645,7 @@ index 8760ba6..5ab6c52 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..48c4c57 100644
+index 98cedfb..a4d038f 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16,2 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -7833,56 +7932,73 @@ index 98cedfb..48c4c57 100644
 @@ -621 +807 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 -            timeout: Duration::from_secs(get_idle_timeout()),
 +            timeout: Duration::ZERO,
-@@ -674,0 +861 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -674,0 +861,2 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +        let poison = service.poison.clone();
-@@ -721,0 +909,4 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
++        let terminal_poison = poison.clone();
+@@ -690,0 +879,2 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
++            #[allow(unreachable_code)]
++            Ok::<(), io::Error>(())
+@@ -721,0 +912,3 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +        let poisoned = async move {
 +            poison.poisoned().await;
-+            Err::<(), io::Error>(io::Error::other("strict daemon entered terminal poison"))
 +        };
-@@ -727,0 +919 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
-+                poisoned = poisoned.fuse() => poisoned,
-@@ -794,0 +987,6 @@ where
+@@ -723 +916 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+-        runtime.block_on(async {
++        let poisoned_shutdown = runtime.block_on(async {
+@@ -725,3 +918,4 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+-                server = server.fuse() => server,
+-                _res = shutdown.fuse() => Ok(()),
+-                _res = shutdown_idle.fuse() => Ok::<_, io::Error>(()),
++                server = server.fuse() => server.map(|()| false),
++                _res = shutdown.fuse() => Ok::<_, io::Error>(false),
++                _res = shutdown_idle.fuse() => Ok::<_, io::Error>(false),
++                _res = poisoned.fuse() => Ok::<_, io::Error>(true),
+@@ -729,0 +924,4 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
++        if poisoned_shutdown {
++            runtime.block_on(terminal_poison.terminal());
++            return Err(io::Error::other("strict daemon entered terminal poison"));
++        }
+@@ -794,0 +993,6 @@ where
 +    /// Exact derivative, backend, mode, and timeout policy negotiated by clients.
 +    identity: StrictServerIdentity,
 +
 +    /// Timeout policy validated once before server startup.
 +    timeouts: crate::config::StrictTimeouts,
 +
-@@ -814,0 +1013,3 @@ where
+@@ -814,0 +1019,3 @@ where
 +    /// One-way daemon poison transition shared by children, requests, and transports.
 +    poison: StrictPoison,
 +
-@@ -860,0 +1062 @@ where
+@@ -860,0 +1068 @@ where
 +            ensure!(me.poison.is_healthy(), "strict daemon is poisoned");
-@@ -862 +1064 @@ where
+@@ -862 +1070 @@ where
 -                Request::Compile(compile) => {
 +                Request::StrictCompile(compile) => {
-@@ -866,0 +1069,6 @@ where
+@@ -866,0 +1075,6 @@ where
 +                Request::Compile(_) => {
 +                    bail!("legacy compile request is forbidden in strict mode")
 +                }
 +                Request::GetServerIdentity => Ok(Message::WithoutBody(Response::ServerIdentity(
 +                    me.identity.clone(),
 +                ))),
-@@ -923,0 +1132,2 @@ where
+@@ -923,0 +1138,2 @@ where
 +        identity: StrictServerIdentity,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -924,0 +1135 @@ where
+@@ -924,0 +1141 @@ where
 +        let poison = StrictPoison::new();
-@@ -932 +1143,4 @@ where
+@@ -932 +1149,4 @@ where
 -            creator: C::new(client),
 +            creator: C::new_strict(
 +                client,
 +                timeouts.child_policy(identity.max_child_output_bytes, poison.clone()),
 +            ),
-@@ -934,0 +1149,3 @@ where
+@@ -934,0 +1155,3 @@ where
 +            identity,
 +            timeouts,
 +            poison,
-@@ -937,0 +1155 @@ where
+@@ -937,0 +1161 @@ where
 +    #[cfg(test)]
-@@ -940,0 +1159,13 @@ where
+@@ -940,0 +1165,13 @@ where
 +    ) -> SccacheService<C> {
 +        Self::mock_with_storage_and_timeouts(
 +            storage,
@@ -7896,22 +8012,22 @@ index 98cedfb..48c4c57 100644
 +        storage: Arc<dyn Storage>,
 +        rt: tokio::runtime::Handle,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -955,0 +1187,3 @@ where
+@@ -955,0 +1193,3 @@ where
 +            identity: StrictServerIdentity::for_tests(),
 +            timeouts,
 +            poison: StrictPoison::new(),
-@@ -959,0 +1194 @@ where
+@@ -959,0 +1200 @@ where
 +    #[cfg(test)]
-@@ -990,0 +1226,3 @@ where
+@@ -990,0 +1232,3 @@ where
 +            identity: StrictServerIdentity::for_tests(),
 +            timeouts: crate::config::StrictTimeouts::for_tests(),
 +            poison: StrictPoison::new(),
-@@ -993,0 +1232,4 @@ where
+@@ -993,0 +1238,4 @@ where
 +    pub fn cache_read_timeout(&self) -> Duration {
 +        self.timeouts.cache_read
 +    }
 +
-@@ -999,7 +1241,2 @@ where
+@@ -999,7 +1247,2 @@ where
 -        if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
 -            if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
 -                builder.max_frame_length(max_frame_length);
@@ -7921,12 +8037,12 @@ index 98cedfb..48c4c57 100644
 -        }
 +        builder
 +            .max_frame_length(usize::try_from(self.identity.max_frame_bytes).unwrap_or(usize::MAX));
-@@ -1009,0 +1247,4 @@ where
+@@ -1009,0 +1253,4 @@ where
 +            poison: self.poison.clone(),
 +            commit_timeout: self.timeouts.cleanup,
 +            commit_deadline: None,
 +            commit_gate_held: false,
-@@ -1061 +1302,54 @@ where
+@@ -1061 +1308,54 @@ where
 -    async fn handle_compile(&self, compile: Compile) -> Result<SccacheResponse> {
 +    async fn handle_compile(&self, compile: ClassifiedRequest) -> Result<SccacheResponse> {
 +        ensure!(
@@ -7982,10 +8098,10 @@ index 98cedfb..48c4c57 100644
 +        }
 +        let binding = compile.binding.clone();
 +        let compiler_family = compile.compiler_family;
-@@ -1067 +1361 @@ where
+@@ -1067 +1367 @@ where
 -
 +        let classification_creator = self.creator.begin_classification();
-@@ -1069 +1363,6 @@ where
+@@ -1069 +1369,6 @@ where
 -            .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
 +            .strict_compiler_info(
 +                classification_creator.clone(),
@@ -7993,7 +8109,7 @@ index 98cedfb..48c4c57 100644
 +                cwd.clone(),
 +                compiler_family,
 +            )
-@@ -1071 +1370,10 @@ where
+@@ -1071 +1376,10 @@ where
 -        Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
 +        me.check_compiler(
 +            info,
@@ -8005,7 +8121,7 @@ index 98cedfb..48c4c57 100644
 +            classification_creator,
 +        )
 +        .await
-@@ -1081,0 +1390,50 @@ where
+@@ -1081,0 +1396,50 @@ where
 +    ) -> Result<Box<dyn Compiler<C>>> {
 +        self.compiler_info_with_creator(self.creator.begin_classification(), path, cwd, args, env)
 +            .await
@@ -8056,19 +8172,19 @@ index 98cedfb..48c4c57 100644
 +        cwd: PathBuf,
 +        args: &[OsString],
 +        env: &[(OsString, OsString)],
-@@ -1102 +1460 @@ where
+@@ -1102 +1466 @@ where
 -                            self.creator.clone(),
 +                            classification_creator.clone(),
-@@ -1178 +1536 @@ where
+@@ -1178 +1542 @@ where
 -                    me.creator.clone(),
 +                    classification_creator,
-@@ -1239 +1597,4 @@ where
+@@ -1239 +1603,4 @@ where
 -    ) -> SccacheResponse {
 +        compiler_family: StrictCompilerFamily,
 +        binding: StrictResponseBinding,
 +        classification_creator: C,
 +    ) -> Result<SccacheResponse> {
-@@ -1244,3 +1605,6 @@ where
+@@ -1244,3 +1611,6 @@ where
 -                return Message::WithoutBody(Response::Compile(
 -                    CompileResponse::UnsupportedCompiler(OsString::from(e.to_string())),
 -                ));
@@ -8078,7 +8194,7 @@ index 98cedfb..48c4c57 100644
 +                        reason: OsString::from(e.to_string()),
 +                    },
 +                )));
-@@ -1249,0 +1614,21 @@ where
+@@ -1249,0 +1620,21 @@ where
 +                let compiler_matches = matches!(
 +                    (compiler_family, c.kind()),
 +                    (StrictCompilerFamily::Rust, CompilerKind::Rust)
@@ -8100,7 +8216,7 @@ index 98cedfb..48c4c57 100644
 +                        },
 +                    )));
 +                }
-@@ -1253 +1638,15 @@ where
+@@ -1253 +1644,15 @@ where
 -                    CompilerArguments::Ok(hasher) => {
 +                    CompilerArguments::Ok(mut hasher) => {
 +                        let preflight = hasher
@@ -8117,9 +8233,9 @@ index 98cedfb..48c4c57 100644
 +                                },
 +                            )));
 +                        }
-@@ -1255,0 +1655 @@ where
+@@ -1255,0 +1661 @@ where
 +                        let finished_binding = binding.clone();
-@@ -1259 +1659,6 @@ where
+@@ -1259 +1665,6 @@ where
 -                            .and_then(|res| async { Ok(Response::CompileFinished(res)) })
 +                            .and_then(|result| async move {
 +                                Ok(Response::StrictCompileFinished {
@@ -8127,30 +8243,30 @@ index 98cedfb..48c4c57 100644
 +                                    result,
 +                                })
 +                            })
-@@ -1262,2 +1667,2 @@ where
+@@ -1262,2 +1673,2 @@ where
 -                        return Message::WithBody(
 -                            Response::Compile(CompileResponse::CompileStarted),
 +                        return Ok(Message::WithBody(
 +                            Response::Compile(CompileResponse::StrictCompileStarted(binding)),
-@@ -1265 +1670 @@ where
+@@ -1265 +1676 @@ where
 -                        );
 +                        ));
-@@ -1278,0 +1684,6 @@ where
+@@ -1278,0 +1690,6 @@ where
 +                        return Ok(Message::WithoutBody(Response::Compile(
 +                            CompileResponse::CannotCache {
 +                                binding,
 +                                reason: why.to_string(),
 +                            },
 +                        )));
-@@ -1282,0 +1694,3 @@ where
+@@ -1282,0 +1700,3 @@ where
 +                        return Ok(Message::WithoutBody(Response::Compile(
 +                            CompileResponse::NotCompilation(binding),
 +                        )));
-@@ -1287,3 +1700,0 @@ where
+@@ -1287,3 +1706,0 @@ where
 -
 -        let res = CompileResponse::UnhandledCompile;
 -        Message::WithoutBody(Response::Compile(res))
-@@ -1304,11 +1715 @@ where
+@@ -1304,11 +1721 @@ where
 -
 -        let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
 -        let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
@@ -8163,7 +8279,7 @@ index 98cedfb..48c4c57 100644
 -            CacheControl::Default
 -        };
 +        let cache_control = CacheControl::Default;
-@@ -1418,0 +1820,10 @@ where
+@@ -1418,0 +1826,10 @@ where
 +                            CompileResult::ReadOnlyCacheMiss(miss_type, dt, duration) => {
 +                                debug!("[{}]: governed read-only cache miss", out_pretty);
 +                                dist_type = dt;
@@ -8174,7 +8290,7 @@ index 98cedfb..48c4c57 100644
 +                                stats.cache_misses.increment(&kind, &lang);
 +                                stats.compiler_write_duration += duration;
 +                            }
-@@ -1522,7 +1933,5 @@ where
+@@ -1522,7 +1939,5 @@ where
 -                    match cache_write.await {
 -                        Err(e) => {
 -                            debug!("Error executing cache write: {}", e);
@@ -8187,7 +8303,7 @@ index 98cedfb..48c4c57 100644
 +                    {
 +                        None => me.stats.lock().await.cache_write_errors += 1,
 +                        Some(info) => {
-@@ -1581,0 +1991,78 @@ impl PerLanguageCount {
+@@ -1581,0 +1997,78 @@ impl PerLanguageCount {
 +#[cfg(unix)]
 +fn validate_strict_compiler_environment(
 +    env_vars: &[(OsString, OsString)],
@@ -8266,7 +8382,7 @@ index 98cedfb..48c4c57 100644
 +    }
 +}
 +
-@@ -2145,0 +2633,90 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
+@@ -2145,0 +2639,90 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
 +    poison: StrictPoison,
 +    commit_timeout: Duration,
 +    commit_deadline: Option<Pin<Box<Sleep>>>,
@@ -8357,7 +8473,7 @@ index 98cedfb..48c4c57 100644
 +            self.release_commit_gate();
 +        }
 +    }
-@@ -2162 +2739,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2162 +2745,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        Pin::new(&mut self.inner).poll_ready(cx)
 +        match self.poll_commit_gate(cx) {
 +            Poll::Ready(Ok(())) => match Pin::new(&mut self.inner).poll_ready(cx) {
@@ -8371,7 +8487,7 @@ index 98cedfb..48c4c57 100644
 +            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
 +            Poll::Pending => Poll::Pending,
 +        }
-@@ -2166 +2754,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2166 +2760,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        match item {
 +        ensure!(
 +            self.commit_gate_held,
@@ -8386,14 +8502,14 @@ index 98cedfb..48c4c57 100644
 +            "strict response commit deadline was not armed"
 +        );
 +        let result = match item {
-@@ -2169,0 +2770,4 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2169,0 +2776,4 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        };
 +        if result.is_err() {
 +            self.poison.poison();
 +            self.release_commit_gate();
-@@ -2170,0 +2775 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2170,0 +2781 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        result
-@@ -2174 +2779,22 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2174 +2785,22 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        Pin::new(&mut self.inner).poll_flush(cx)
 +        if !self.poison.is_healthy() {
 +            self.release_commit_gate();
@@ -8417,14 +8533,14 @@ index 98cedfb..48c4c57 100644
 +            }
 +            result => result,
 +        }
-@@ -2178 +2804,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2178 +2810,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        Pin::new(&mut self.inner).poll_close(cx)
 +        match <Self as Sink<Frame<Response, Response>>>::poll_flush(self.as_mut(), cx) {
 +            Poll::Ready(Ok(())) => Pin::new(&mut self.inner).poll_close(cx),
 +            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
 +            Poll::Pending => Poll::Pending,
 +        }
-@@ -2284,0 +2915,514 @@ mod tests {
+@@ -2284,0 +2921,547 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();
@@ -8802,6 +8918,39 @@ index 98cedfb..48c4c57 100644
 +        server.service.poison.poison();
 +
 +        let error = server.run(future::pending::<()>()).unwrap_err();
++
++        assert!(error.to_string().contains("terminal poison"));
++    }
++
++    #[test]
++    fn strict_daemon_keeps_supervisors_alive_until_cleanup_poison_is_terminal() {
++        let runtime = Runtime::new().unwrap();
++        let storage = Arc::new(crate::test::mock_storage::MockStorage::new(None, false));
++        let server = SccacheServer::<tokio::net::TcpListener, ProcessCommandCreator>::new(
++            0,
++            runtime,
++            Client::new_num(1),
++            DistClientContainer::new_disabled(),
++            storage,
++        )
++        .unwrap();
++        let poison = server.service.poison.clone();
++        let (sender, receiver) = std::sync::mpsc::channel();
++        let running = std::thread::spawn(move || {
++            sender.send(server.run(future::pending::<()>())).unwrap();
++        });
++
++        poison.begin_cleanup_poison();
++        assert!(matches!(
++            receiver.recv_timeout(Duration::from_millis(50)),
++            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
++        ));
++        poison.complete_cleanup_poison();
++        let error = receiver
++            .recv_timeout(Duration::from_secs(1))
++            .expect("daemon did not terminate after governed cleanup completed")
++            .unwrap_err();
++        running.join().unwrap();
 +
 +        assert!(error.to_string().contains("terminal poison"));
 +    }

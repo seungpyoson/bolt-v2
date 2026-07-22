@@ -2229,7 +2229,7 @@ index e6294d5..463b38a 100644
 @@ -189,0 +190 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
 +    flag!("--no-default-config", PassThroughFlag),
 diff --git a/src/compiler/compiler.rs b/src/compiler/compiler.rs
-index 78bb5a4..634a61d 100644
+index 78bb5a4..d3f8f51 100644
 --- a/src/compiler/compiler.rs
 +++ b/src/compiler/compiler.rs
 @@ -16,2 +16,2 @@
@@ -2376,10 +2376,9 @@ index 78bb5a4..634a61d 100644
 @@ -669 +683 @@ where
 -            (Ok(Ok(Cache::Recache)), duration) => {
 +            Ok(Cache::Recache) => {
-@@ -675 +689 @@ where
+@@ -675,10 +689 @@ where
 -                Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
-+                CacheLookupResult::Miss(MissType::ForcedRecache)
-@@ -677,16 +691,7 @@ where
+-            }
 -            (Ok(Err(err)), duration) => {
 -                error!(
 -                    "[{}]: Cache read error: {:?} in {}",
@@ -2388,7 +2387,8 @@ index 78bb5a4..634a61d 100644
 -                    fmt_duration_as_secs(&duration)
 -                );
 -                Ok(CacheLookupResult::Miss(MissType::CacheReadError))
--            }
++                CacheLookupResult::Miss(MissType::ForcedRecache)
+@@ -686,7 +691,7 @@ where
 -            (Err(_), duration) => {
 -                debug!(
 -                    "[{}]: Cache timed out {}",
@@ -2532,6 +2532,9 @@ index 78bb5a4..634a61d 100644
 +                CompileResult::ReadOnlyCacheMiss(m, dt, _),
 +                CompileResult::ReadOnlyCacheMiss(n, dt2, _),
 +            ) => m == n && dt == dt2,
+@@ -1482 +1606 @@ where
+-        let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
++        let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool, None).await;
 @@ -1485,3 +1609,12 @@ where
 -        // Even if it does not look like rustc like it might still be rustc driver
 -        // so we do full check
@@ -2548,17 +2551,21 @@ index 78bb5a4..634a61d 100644
 +            );
 +            executable
 +        }
-@@ -1521,2 +1654,2 @@ async fn resolve_rust_compiler<T>(
+@@ -1506 +1639,2 @@ where
+-                let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
++                let cc =
++                    detect_c_compiler(creator, executable, args, env.to_vec(), pool, None).await;
+@@ -1521,2 +1655,2 @@ async fn resolve_rust_compiler<T>(
 -    env: &[(OsString, OsString)],
 -    cwd: PathBuf,
 +    _env: &[(OsString, OsString)],
 +    _cwd: PathBuf,
-@@ -1528,0 +1662,4 @@ where
+@@ -1528,0 +1663,4 @@ where
 +    ensure!(
 +        rustc_executable == executable,
 +        "strict compiler proxies are forbidden"
 +    );
-@@ -1530,7 +1667 @@ where
+@@ -1530,7 +1668 @@ where
 -    // We're wrapping rustc if the executable doesn't match the detected rustc_executable. In this case the wrapper
 -    // expects rustc as the first argument.
 -    if rustc_executable != executable {
@@ -2567,7 +2574,7 @@ index 78bb5a4..634a61d 100644
 -
 -    child.env_clear().envs(env.to_vec()).args(&["-vV"]);
 +    child.env_clear().args(&["-vV"]);
-@@ -1550,54 +1681 @@ where
+@@ -1550,54 +1682 @@ where
 -            let rustc_executable2 = rustc_executable.clone();
 -
 -            let proxy = RustupProxy::find_proxy_executable::<T>(
@@ -2623,12 +2630,12 @@ index 78bb5a4..634a61d 100644
 -            debug!("Using rustc at path: {resolved_rustc:?}");
 -
 +            debug!("Using governed rustc at path: {rustc_executable:?}");
-@@ -1606,2 +1684,2 @@ where
+@@ -1606,2 +1685,2 @@ where
 -                resolved_rustc,
 -                env,
 +                rustc_executable,
 +                &[],
-@@ -1613,6 +1691 @@ where
+@@ -1613,6 +1692 @@ where
 -            .map(|c| {
 -                (
 -                    Box::new(c) as Box<dyn Compiler<T>>,
@@ -2636,7 +2643,7 @@ index 78bb5a4..634a61d 100644
 -                )
 -            })
 +            .map(|c| (Box::new(c) as Box<dyn Compiler<T>>, None))
-@@ -1624,20 +1696,0 @@ where
+@@ -1624,20 +1697,0 @@ where
 -ArgData! {
 -    PassThrough(OsString),
 -}
@@ -2657,17 +2664,19 @@ index 78bb5a4..634a61d 100644
 -    take_arg!("-ccbin", OsString, CanBeSeparated(b'='), Detect_PassThrough),
 -]);
 -
-@@ -1647 +1700 @@ async fn detect_c_compiler<T, P>(
+@@ -1647 +1701 @@ async fn detect_c_compiler<T, P>(
 -    arguments: &[OsString],
 +    _arguments: &[OsString],
-@@ -1708 +1760,0 @@ compiler_version=__VERSION__
+@@ -1649,0 +1704 @@ async fn detect_c_compiler<T, P>(
++    expected_family: Option<StrictCompilerFamily>,
+@@ -1708 +1762,0 @@ compiler_version=__VERSION__
 -    // Resolve compiler avoiding ccache wrappers to prevent double-caching.
-@@ -1710,3 +1762 @@ compiler_version=__VERSION__
+@@ -1710,3 +1764 @@ compiler_version=__VERSION__
 -    let resolved_executable = resolve_compiler_avoiding_wrapper(executable, &env);
 -
 -    let mut cmd = creator.clone().new_command_sync(&resolved_executable);
 +    let mut cmd = creator.clone().new_command_sync(executable);
-@@ -1715,12 +1765 @@ compiler_version=__VERSION__
+@@ -1715,12 +1767 @@ compiler_version=__VERSION__
 -        .envs(env.iter().map(|s| (&s.0, &s.1)));
 -
 -    // Iterate over all the arguments for compilation and extract
@@ -2681,10 +2690,14 @@ index 78bb5a4..634a61d 100644
 -        }
 -    }
 +        .env_clear();
-@@ -1730 +1769 @@ compiler_version=__VERSION__
+@@ -1727,0 +1769,3 @@ compiler_version=__VERSION__
++    if expected_family == Some(StrictCompilerFamily::Clang) {
++        cmd.arg("--no-default-config");
++    }
+@@ -1730 +1774 @@ compiler_version=__VERSION__
 -    let child = cmd.spawn().await?;
 +    let child = crate::mock_command::StrictChildLauncher::spawn_prepared(&mut cmd).await?;
-@@ -1753 +1792,8 @@ compiler_version=__VERSION__
+@@ -1753 +1797,21 @@ compiler_version=__VERSION__
 -        let executable = resolved_executable;
 +        ensure!(
 +            matches!(
@@ -2693,10 +2706,61 @@ index 78bb5a4..634a61d 100644
 +            ),
 +            "compiler family is unavailable in strict mode"
 +        );
++        if let Some(expected_family) = expected_family {
++            ensure!(
++                matches!(
++                    (expected_family, kind),
++                    (StrictCompilerFamily::Gcc, "gcc" | "g++")
++                        | (
++                            StrictCompilerFamily::Clang,
++                            "clang" | "clang++" | "apple-clang" | "apple-clang++"
++                        )
++                ),
++                "configured compiler family mismatch"
++            );
++        }
 +        let executable = executable.to_owned();
-@@ -1903,0 +1950 @@ mod test {
+@@ -1896,0 +1961,37 @@ where
++pub async fn get_strict_compiler_info<T>(
++    creator: T,
++    executable: &Path,
++    cwd: &Path,
++    expected_family: StrictCompilerFamily,
++    pool: &tokio::runtime::Handle,
++) -> Result<Box<dyn Compiler<T>>>
++where
++    T: CommandCreatorSync,
++{
++    let pool = pool.clone();
++    match expected_family {
++        StrictCompilerFamily::Rust => resolve_rust_compiler(
++            creator,
++            executable,
++            executable.to_path_buf(),
++            &[],
++            cwd.to_path_buf(),
++            None,
++            pool,
++        )
++        .await
++        .map(|(compiler, _)| compiler),
++        StrictCompilerFamily::Gcc | StrictCompilerFamily::Clang => {
++            detect_c_compiler(
++                creator,
++                executable,
++                &[],
++                Vec::new(),
++                pool,
++                Some(expected_family),
++            )
++            .await
++        }
++    }
++}
++
+@@ -1903,0 +2005 @@ mod test {
 +    use crate::protocol::StrictCompilerFamily;
-@@ -1912,0 +1960,77 @@ mod test {
+@@ -1912,0 +2015,77 @@ mod test {
 +    #[cfg(unix)]
 +    #[test]
 +    fn strict_argument_preclassification_is_byte_oriented_and_precedence_ordered() {
@@ -2774,10 +2838,78 @@ index 78bb5a4..634a61d 100644
 +        );
 +    }
 +
-@@ -2067 +2191 @@ mod test {
+@@ -2026,0 +2206,67 @@ mod test {
++    #[test]
++    fn strict_clang_probe_suppresses_default_configuration() {
++        let f = TestFixture::new();
++        let creator = new_creator();
++        let runtime = single_threaded_runtime();
++        let compiler = f.mk_bin("clang").unwrap();
++        next_command_calls(&creator, |arguments| {
++            assert_eq!(
++                arguments.first(),
++                Some(&OsString::from("--no-default-config"))
++            );
++            assert_eq!(arguments.get(1), Some(&OsString::from("-E")));
++            assert_eq!(arguments.len(), 3);
++            Ok(MockChild::new(
++                exit_status(0),
++                "compiler_id=clang\ncompiler_version=strict-clang",
++                "",
++            ))
++        });
++
++        let detected = get_strict_compiler_info(
++            creator,
++            &compiler,
++            f.tempdir.path(),
++            StrictCompilerFamily::Clang,
++            runtime.handle(),
++        )
++        .wait()
++        .unwrap();
++        assert_eq!(CompilerKind::C(CCompilerKind::Clang), detected.kind());
++    }
++
++    #[test]
++    fn strict_c_probe_rejects_the_wrong_configured_family() {
++        let f = TestFixture::new();
++        let creator = new_creator();
++        let runtime = single_threaded_runtime();
++        let compiler = f.mk_bin("gcc").unwrap();
++        next_command_calls(&creator, |arguments| {
++            assert_eq!(arguments.first(), Some(&OsString::from("-E")));
++            assert!(!arguments.contains(&OsString::from("--no-default-config")));
++            Ok(MockChild::new(
++                exit_status(0),
++                "compiler_id=clang\ncompiler_version=strict-clang",
++                "",
++            ))
++        });
++
++        let error = match get_strict_compiler_info(
++            creator,
++            &compiler,
++            f.tempdir.path(),
++            StrictCompilerFamily::Gcc,
++            runtime.handle(),
++        )
++        .wait()
++        {
++            Ok(_) => panic!("wrong compiler family was accepted"),
++            Err(error) => error,
++        };
++        assert!(
++            error
++                .to_string()
++                .contains("configured compiler family mismatch")
++        );
++    }
++
+@@ -2067 +2313 @@ mod test {
 -    fn test_detect_compiler_kind_msvc() {
 +    fn test_strict_detection_rejects_msvc() {
-@@ -2098,5 +2222,5 @@ mod test {
+@@ -2098,5 +2344,5 @@ mod test {
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -2788,10 +2920,10 @@ index 78bb5a4..634a61d 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2106 +2230 @@ mod test {
+@@ -2106 +2352 @@ mod test {
 -    fn test_detect_compiler_kind_nvcc() {
 +    fn test_strict_detection_rejects_nvcc() {
-@@ -2116,5 +2240,5 @@ mod test {
+@@ -2116,5 +2362,5 @@ mod test {
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -2802,10 +2934,10 @@ index 78bb5a4..634a61d 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2124 +2248 @@ mod test {
+@@ -2124 +2370 @@ mod test {
 -    fn test_detect_compiler_kind_nvhpc() {
 +    fn test_strict_detection_rejects_nvhpc() {
-@@ -2134,5 +2258,5 @@ mod test {
+@@ -2134,5 +2380,5 @@ mod test {
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -2816,10 +2948,10 @@ index 78bb5a4..634a61d 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2203 +2327 @@ LLVM version: 6.0",
+@@ -2203 +2449 @@ LLVM version: 6.0",
 -    fn test_detect_compiler_kind_rustc_workspace_wrapper() {
 +    fn test_strict_detection_rejects_rustc_workspace_wrappers() {
-@@ -2213,14 +2337,14 @@ LLVM version: 6.0",
+@@ -2213,14 +2459,14 @@ LLVM version: 6.0",
 -        let c = detect_compiler(
 -            creator,
 -            &rustc,
@@ -2848,16 +2980,16 @@ index 78bb5a4..634a61d 100644
 +            .wait()
 +            .is_err()
 +        );
-@@ -2246 +2370 @@ LLVM version: 6.0",
+@@ -2246 +2492 @@ LLVM version: 6.0",
 -        // Test we detect rustc if the CARGO env is not defined
 +        // Wrapper-shaped selectors remain forbidden without Cargo environment.
-@@ -2260 +2384 @@ LLVM version: 6.0",
+@@ -2260 +2506 @@ LLVM version: 6.0",
 -            .is_ok()
 +            .is_err()
-@@ -2265 +2389 @@ LLVM version: 6.0",
+@@ -2265 +2511 @@ LLVM version: 6.0",
 -    fn test_detect_compiler_kind_diab() {
 +    fn test_strict_detection_rejects_diab() {
-@@ -2275,5 +2399,5 @@ LLVM version: 6.0",
+@@ -2275,5 +2521,5 @@ LLVM version: 6.0",
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -2868,15 +3000,15 @@ index 78bb5a4..634a61d 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2804,2 +2928 @@ LLVM version: 6.0",
+@@ -2804,2 +3050 @@ LLVM version: 6.0",
 -    /// Test that a cache read that results in an error is treated as a cache
 -    /// miss.
 +    /// Test that a cache read error stops before compiler execution.
-@@ -2841,3 +2963,0 @@ LLVM version: 6.0",
+@@ -2841,3 +3085,0 @@ LLVM version: 6.0",
 -        // The compiler invocation.
 -        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
 -        const COMPILER_STDERR: &[u8] = b"compiler stderr";
-@@ -2845,11 +2964,0 @@ LLVM version: 6.0",
+@@ -2845,11 +3086,0 @@ LLVM version: 6.0",
 -        let o = obj.clone();
 -        next_command_calls(&creator, move |_| {
 -            // Pretend to compile something.
@@ -2888,10 +3020,10 @@ index 78bb5a4..634a61d 100644
 -                COMPILER_STDERR,
 -            ))
 -        });
-@@ -2864 +2973 @@ LLVM version: 6.0",
+@@ -2864 +3095 @@ LLVM version: 6.0",
 -        let (cached, res) = runtime
 +        let error = runtime
-@@ -2875,0 +2985,136 @@ LLVM version: 6.0",
+@@ -2875,0 +3107,136 @@ LLVM version: 6.0",
 +            .unwrap_err();
 +        assert!(error.to_string().contains("governed cache read failed"));
 +        assert!(!obj.exists());
@@ -3028,7 +3160,7 @@ index 78bb5a4..634a61d 100644
 +                CacheControl::Default,
 +                pool,
 +            ))
-@@ -2877,9 +3121,0 @@ LLVM version: 6.0",
+@@ -2877,9 +3243,0 @@ LLVM version: 6.0",
 -        // Ensure that the object file was created.
 -        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
 -        match cached {
@@ -3038,7 +3170,7 @@ index 78bb5a4..634a61d 100644
 -            }
 -            _ => panic!("Unexpected compile result: {:?}", cached),
 -        }
-@@ -2887,3 +3123,6 @@ LLVM version: 6.0",
+@@ -2887,3 +3245,6 @@ LLVM version: 6.0",
 -        assert_eq!(exit_status(0), res.status);
 -        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
 -        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -5509,7 +5641,7 @@ index 8760ba6..5ab6c52 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..170f300 100644
+index 98cedfb..6951108 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16,2 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -5521,7 +5653,7 @@ index 98cedfb..170f300 100644
 -    CompilerProxy, DistType, Language, MissType, get_compiler_info,
 +    CacheControl, CacheWriteInfo, CompileResult, Compiler, CompilerArguments, CompilerHasher,
 +    CompilerKind, CompilerProxy, DistType, Language, MissType, get_compiler_info,
-+    strict_preclassify_arguments,
++    get_strict_compiler_info, strict_preclassify_arguments,
 @@ -23 +25 @@ use crate::config;
 -use crate::config::Config;
 +use crate::config::{Config, code_owned_semantic_environment_name};
@@ -5925,16 +6057,15 @@ index 98cedfb..170f300 100644
 @@ -1067 +1367 @@ where
 -
 +        let classification_creator = self.creator.begin_classification();
-@@ -1069 +1369,7 @@ where
+@@ -1069 +1369,6 @@ where
 -            .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
-+            .compiler_info_with_creator(
++            .strict_compiler_info(
 +                classification_creator.clone(),
 +                exe.into(),
 +                cwd.clone(),
-+                &cmd,
-+                &env_vars,
++                compiler_family,
 +            )
-@@ -1071 +1377,10 @@ where
+@@ -1071 +1376,10 @@ where
 -        Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
 +        me.check_compiler(
 +            info,
@@ -5946,10 +6077,48 @@ index 98cedfb..170f300 100644
 +            classification_creator,
 +        )
 +        .await
-@@ -1081,0 +1397,12 @@ where
+@@ -1081,0 +1396,50 @@ where
 +    ) -> Result<Box<dyn Compiler<C>>> {
 +        self.compiler_info_with_creator(self.creator.begin_classification(), path, cwd, args, env)
 +            .await
++    }
++
++    async fn strict_compiler_info(
++        &self,
++        classification_creator: C,
++        path: PathBuf,
++        cwd: PathBuf,
++        expected_family: StrictCompilerFamily,
++    ) -> Result<Box<dyn Compiler<C>>> {
++        let metadata = metadata(&path)?;
++        let mtime = FileTime::from_last_modification_time(&metadata);
++        if let Some(Some(entry)) = self.compilers.read().await.get(&path)
++            && entry.mtime == mtime
++            && entry.dist_info.is_none()
++        {
++            return Ok(entry.compiler.box_clone());
++        }
++
++        let compiler = match get_strict_compiler_info(
++            classification_creator,
++            &path,
++            &cwd,
++            expected_family,
++            &self.rt,
++        )
++        .await
++        {
++            Ok(compiler) => compiler,
++            Err(error) => {
++                self.compilers.write().await.insert(path, None);
++                return Err(error);
++            }
++        };
++        self.compilers.write().await.insert(
++            path,
++            Some(CompilerCacheEntry::new(compiler.clone(), mtime, None)),
++        );
++        Ok(compiler)
 +    }
 +
 +    async fn compiler_info_with_creator(
@@ -5959,19 +6128,19 @@ index 98cedfb..170f300 100644
 +        cwd: PathBuf,
 +        args: &[OsString],
 +        env: &[(OsString, OsString)],
-@@ -1102 +1429 @@ where
+@@ -1102 +1466 @@ where
 -                            self.creator.clone(),
 +                            classification_creator.clone(),
-@@ -1178 +1505 @@ where
+@@ -1178 +1542 @@ where
 -                    me.creator.clone(),
 +                    classification_creator,
-@@ -1239 +1566,4 @@ where
+@@ -1239 +1603,4 @@ where
 -    ) -> SccacheResponse {
 +        compiler_family: StrictCompilerFamily,
 +        binding: StrictResponseBinding,
 +        classification_creator: C,
 +    ) -> Result<SccacheResponse> {
-@@ -1244,3 +1574,6 @@ where
+@@ -1244,3 +1611,6 @@ where
 -                return Message::WithoutBody(Response::Compile(
 -                    CompileResponse::UnsupportedCompiler(OsString::from(e.to_string())),
 -                ));
@@ -5981,7 +6150,7 @@ index 98cedfb..170f300 100644
 +                        reason: OsString::from(e.to_string()),
 +                    },
 +                )));
-@@ -1249,0 +1583,21 @@ where
+@@ -1249,0 +1620,21 @@ where
 +                let compiler_matches = matches!(
 +                    (compiler_family, c.kind()),
 +                    (StrictCompilerFamily::Rust, CompilerKind::Rust)
@@ -6003,15 +6172,15 @@ index 98cedfb..170f300 100644
 +                        },
 +                    )));
 +                }
-@@ -1253 +1607,4 @@ where
+@@ -1253 +1644,4 @@ where
 -                    CompilerArguments::Ok(hasher) => {
 +                    CompilerArguments::Ok(mut hasher) => {
 +                        hasher
 +                            .strict_preflight(&classification_creator, &cwd, &env_vars)
 +                            .await?;
-@@ -1255,0 +1613 @@ where
+@@ -1255,0 +1650 @@ where
 +                        let finished_binding = binding.clone();
-@@ -1259 +1617,6 @@ where
+@@ -1259 +1654,6 @@ where
 -                            .and_then(|res| async { Ok(Response::CompileFinished(res)) })
 +                            .and_then(|result| async move {
 +                                Ok(Response::StrictCompileFinished {
@@ -6019,30 +6188,30 @@ index 98cedfb..170f300 100644
 +                                    result,
 +                                })
 +                            })
-@@ -1262,2 +1625,2 @@ where
+@@ -1262,2 +1662,2 @@ where
 -                        return Message::WithBody(
 -                            Response::Compile(CompileResponse::CompileStarted),
 +                        return Ok(Message::WithBody(
 +                            Response::Compile(CompileResponse::StrictCompileStarted(binding)),
-@@ -1265 +1628 @@ where
+@@ -1265 +1665 @@ where
 -                        );
 +                        ));
-@@ -1278,0 +1642,6 @@ where
+@@ -1278,0 +1679,6 @@ where
 +                        return Ok(Message::WithoutBody(Response::Compile(
 +                            CompileResponse::CannotCache {
 +                                binding,
 +                                reason: why.to_string(),
 +                            },
 +                        )));
-@@ -1282,0 +1652,3 @@ where
+@@ -1282,0 +1689,3 @@ where
 +                        return Ok(Message::WithoutBody(Response::Compile(
 +                            CompileResponse::NotCompilation(binding),
 +                        )));
-@@ -1287,3 +1658,0 @@ where
+@@ -1287,3 +1695,0 @@ where
 -
 -        let res = CompileResponse::UnhandledCompile;
 -        Message::WithoutBody(Response::Compile(res))
-@@ -1304,11 +1673 @@ where
+@@ -1304,11 +1710 @@ where
 -
 -        let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
 -        let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
@@ -6055,7 +6224,7 @@ index 98cedfb..170f300 100644
 -            CacheControl::Default
 -        };
 +        let cache_control = CacheControl::Default;
-@@ -1418,0 +1778,10 @@ where
+@@ -1418,0 +1815,10 @@ where
 +                            CompileResult::ReadOnlyCacheMiss(miss_type, dt, duration) => {
 +                                debug!("[{}]: governed read-only cache miss", out_pretty);
 +                                dist_type = dt;
@@ -6066,7 +6235,7 @@ index 98cedfb..170f300 100644
 +                                stats.cache_misses.increment(&kind, &lang);
 +                                stats.compiler_write_duration += duration;
 +                            }
-@@ -1522,7 +1891,5 @@ where
+@@ -1522,7 +1928,5 @@ where
 -                    match cache_write.await {
 -                        Err(e) => {
 -                            debug!("Error executing cache write: {}", e);
@@ -6079,7 +6248,7 @@ index 98cedfb..170f300 100644
 +                    {
 +                        None => me.stats.lock().await.cache_write_errors += 1,
 +                        Some(info) => {
-@@ -1581,0 +1949,69 @@ impl PerLanguageCount {
+@@ -1581,0 +1986,69 @@ impl PerLanguageCount {
 +#[cfg(unix)]
 +fn validate_strict_compiler_environment(
 +    env_vars: &[(OsString, OsString)],
@@ -6149,17 +6318,17 @@ index 98cedfb..170f300 100644
 +    }
 +}
 +
-@@ -2145,0 +2582,3 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
+@@ -2145,0 +2619,3 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
 +    poison: StrictPoison,
 +    commit_timeout: Duration,
 +    commit_deadline: Option<Pin<Box<Sleep>>>,
-@@ -2161,0 +2601,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2161,0 +2638,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        if !self.poison.is_healthy() {
 +            return Poll::Ready(Err(anyhow!(
 +                "strict response commit blocked by daemon poison"
 +            )));
 +        }
-@@ -2165,0 +2610,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2165,0 +2647,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        ensure!(
 +            self.poison.is_healthy(),
 +            "strict response commit blocked by daemon poison"
@@ -6167,7 +6336,7 @@ index 98cedfb..170f300 100644
 +        if self.commit_deadline.is_none() {
 +            self.commit_deadline = Some(Box::pin(sleep(self.commit_timeout)));
 +        }
-@@ -2174 +2625,18 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2174 +2662,18 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        Pin::new(&mut self.inner).poll_flush(cx)
 +        if !self.poison.is_healthy() {
 +            return Poll::Ready(Err(anyhow!(
@@ -6187,7 +6356,7 @@ index 98cedfb..170f300 100644
 +            }
 +            result => result,
 +        }
-@@ -2284,0 +2753,306 @@ mod tests {
+@@ -2284,0 +2790,306 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();
@@ -6529,43 +6698,50 @@ index d4260e7..1558d10 100644
 +        self.read_only
 +    }
 diff --git a/src/test/tests.rs b/src/test/tests.rs
-index 8d283a1..924ac5a 100644
+index 8d283a1..f1c0f74 100644
 --- a/src/test/tests.rs
 +++ b/src/test/tests.rs
 @@ -19 +19 @@ use crate::commands::{do_compile, request_shutdown, request_stats};
 -use crate::config::PreprocessorCacheModeConfig;
 +use crate::config::{CompilerEnvironment, PreprocessorCacheModeConfig};
-@@ -199 +199 @@ fn test_server_unsupported_compiler() {
+@@ -183,4 +183,2 @@ fn test_server_unsupported_compiler() {
+-        // fail rust driver check
+-        c.next_command_spawns(Ok(MockChild::new(exit_status(1), "hello", "error")));
+-        // The server will check the compiler, so pretend to be an unsupported
+-        // compiler.
++        // The strict server probes only the configured GCC family, so pretend
++        // that exact probe reports an unsupported compiler.
+@@ -199 +197 @@ fn test_server_unsupported_compiler() {
 -    let path = Some(f.paths);
 +    let environment = CompilerEnvironment::for_tests(Vec::new());
-@@ -208,2 +208,3 @@ fn test_server_unsupported_compiler() {
+@@ -208,2 +206,3 @@ fn test_server_unsupported_compiler() {
 -        path,
 -        vec![],
 +        &environment,
 +        crate::protocol::StrictCompilerFamily::Gcc,
 +        "",
-@@ -215 +216,4 @@ fn test_server_unsupported_compiler() {
+@@ -215 +214,4 @@ fn test_server_unsupported_compiler() {
 -        Err(e) => assert_eq!("Compiler not supported: \"error\"", e.to_string()),
 +        Err(e) => assert_eq!(
 +            "governed compiler identity was not supported: \"error\"",
 +            e.to_string()
 +        ),
-@@ -269 +273 @@ fn test_server_compile() {
+@@ -269 +271 @@ fn test_server_compile() {
 -    let path = Some(f.paths);
 +    let environment = CompilerEnvironment::for_tests(Vec::new());
-@@ -280,2 +284,3 @@ fn test_server_compile() {
+@@ -280,2 +282,3 @@ fn test_server_compile() {
 -            path,
 -            vec![],
 +            &environment,
 +            crate::protocol::StrictCompilerFamily::Gcc,
 +            "",
-@@ -299,2 +303,0 @@ fn test_server_compile() {
+@@ -299,2 +301,0 @@ fn test_server_compile() {
 -// test fails intermittently on macos:
 -// https://github.com/mozilla/sccache/issues/234
-@@ -302 +305 @@ fn test_server_compile() {
+@@ -302 +303 @@ fn test_server_compile() {
 -fn test_server_port_in_use() {
 +fn test_strict_server_requires_governed_backend_before_port_bind() {
-@@ -317 +320 @@ fn test_server_port_in_use() {
+@@ -317 +318 @@ fn test_server_port_in_use() {
 -    const MSG: &str = "Server startup failed:";
 +    const MSG: &str = "strict sccache requires the governed S3 cache backend";
 diff --git a/src/test/utils.rs b/src/test/utils.rs

@@ -2216,6 +2216,12 @@ index 8d8406a..5e4d050 100644
 +                .is_err()
 +        );
 +    }
+diff --git a/src/compiler/c.rs b/src/compiler/c.rs
+index 7cf84b5..806e99a 100644
+--- a/src/compiler/c.rs
++++ b/src/compiler/c.rs
+@@ -1569,0 +1570 @@ impl<'a> HashKeyParams<'a> {
++        m.update(env!("SCCACHE_STRICT_CACHE_FORMAT_TOKEN").as_bytes());
 diff --git a/src/compiler/compiler.rs b/src/compiler/compiler.rs
 index 78bb5a4..64a9d0a 100644
 --- a/src/compiler/compiler.rs
@@ -2852,7 +2858,7 @@ index e6f72a7..8ec211c 100644
 -                                .join("x_".to_owned() + &count + extension)
 +                                .join("x_".to_owned() + count.as_str() + extension)
 diff --git a/src/compiler/rust.rs b/src/compiler/rust.rs
-index d6c2c71..b954a0e 100644
+index d6c2c71..69de375 100644
 --- a/src/compiler/rust.rs
 +++ b/src/compiler/rust.rs
 @@ -15,0 +16,2 @@ use crate::cache::{FileObjectSource, Storage};
@@ -2887,6 +2893,11 @@ index d6c2c71..b954a0e 100644
 @@ -611,0 +619,2 @@ where
 +#[cfg(test)]
 +#[allow(dead_code)]
+@@ -1442,0 +1452 @@ where
++        m.update(env!("SCCACHE_STRICT_CACHE_FORMAT_TOKEN").as_bytes());
+@@ -3529,0 +3540,2 @@ proc_macro false
++        // Strict cache format boundary.
++        m.update(env!("SCCACHE_STRICT_CACHE_FORMAT_TOKEN").as_bytes());
 diff --git a/src/config.rs b/src/config.rs
 index cef32b2..a90a1da 100644
 --- a/src/config.rs

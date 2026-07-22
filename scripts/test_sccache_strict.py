@@ -63,6 +63,7 @@ def valid_document() -> dict[str, object]:
             "max_runtime_timeout_ms": 3_600_000,
             "snapshot_max_bytes": 65_536,
             "abstract_name_max_bytes": 107,
+            "cache_format_token": "bolt-sccache-strict-v1",
         },
         "targets": {
             "ARM64": {
@@ -86,6 +87,7 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.snapshot_max_bytes, 65_536)
         self.assertEqual(config.max_runtime_timeout_ms, 3_600_000)
         self.assertEqual(config.abstract_name_max_bytes, 107)
+        self.assertEqual(config.cache_format_token, "bolt-sccache-strict-v1")
 
     def test_rejects_non_positive_verification_timeout(self) -> None:
         document = valid_document()
@@ -97,6 +99,16 @@ class LoadConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError, "verification.strict_timeout_ms must be a positive integer"
         ):
+            sccache_strict.load_document(document, repo_root=REPO_ROOT)
+
+    def test_rejects_nonportable_cache_format_token(self) -> None:
+        document = valid_document()
+        runtime_contract = copy.deepcopy(document["runtime_contract"])
+        assert isinstance(runtime_contract, dict)
+        runtime_contract["cache_format_token"] = "strict token"
+        document["runtime_contract"] = runtime_contract
+
+        with self.assertRaisesRegex(ValueError, "bounded portable identifier"):
             sccache_strict.load_document(document, repo_root=REPO_ROOT)
 
     def test_rejects_frame_limit_larger_than_protocol_field(self) -> None:

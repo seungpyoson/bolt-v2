@@ -53,6 +53,7 @@ class StrictBuildConfig:
     max_runtime_timeout_ms: int
     snapshot_max_bytes: int
     abstract_name_max_bytes: int
+    cache_format_token: str
     verification_cache_mode: str
     replicas: tuple[str, ...]
     attestation_attempts: int
@@ -304,6 +305,7 @@ def load_document(
                 "max_runtime_timeout_ms",
                 "snapshot_max_bytes",
                 "abstract_name_max_bytes",
+                "cache_format_token",
             }
         ),
         "runtime_contract",
@@ -311,6 +313,10 @@ def load_document(
     max_runtime_timeout_ms = runtime_contract["max_runtime_timeout_ms"]
     snapshot_max_bytes = runtime_contract["snapshot_max_bytes"]
     abstract_name_max_bytes = runtime_contract["abstract_name_max_bytes"]
+    cache_format_token = _string(
+        runtime_contract["cache_format_token"],
+        "runtime_contract.cache_format_token",
+    )
     if (
         isinstance(max_runtime_timeout_ms, bool)
         or not isinstance(max_runtime_timeout_ms, int)
@@ -336,6 +342,17 @@ def load_document(
     ):
         raise ValueError(
             "runtime_contract.abstract_name_max_bytes must fit Linux sockaddr_un"
+        )
+    if (
+        len(cache_format_token) > 64
+        or not cache_format_token[0].isalnum()
+        or any(
+            not (character.isascii() and (character.isalnum() or character in "._-"))
+            for character in cache_format_token
+        )
+    ):
+        raise ValueError(
+            "runtime_contract.cache_format_token must be a bounded portable identifier"
         )
     verification_cache_mode = _string(
         verification["cache_mode"], "verification.cache_mode"
@@ -411,6 +428,7 @@ def load_document(
         max_runtime_timeout_ms=max_runtime_timeout_ms,
         snapshot_max_bytes=snapshot_max_bytes,
         abstract_name_max_bytes=abstract_name_max_bytes,
+        cache_format_token=cache_format_token,
         verification_cache_mode=verification_cache_mode,
         replicas=tuple(replicas_value),
         attestation_attempts=attestation_attempts,
@@ -464,6 +482,7 @@ def _derivative_identity(config: StrictBuildConfig, architecture: str) -> str:
         "max_runtime_timeout_ms": config.max_runtime_timeout_ms,
         "snapshot_max_bytes": config.snapshot_max_bytes,
         "abstract_name_max_bytes": config.abstract_name_max_bytes,
+        "cache_format_token": config.cache_format_token,
         "target": target.triple,
     }
     return hashlib.sha256(_canonical_json(document)).hexdigest()
@@ -549,6 +568,7 @@ def write_candidate_manifest(
         "max_runtime_timeout_ms": config.max_runtime_timeout_ms,
         "snapshot_max_bytes": config.snapshot_max_bytes,
         "abstract_name_max_bytes": config.abstract_name_max_bytes,
+        "cache_format_token": config.cache_format_token,
         "verification_cache_mode": config.verification_cache_mode,
         "binary_name": _candidate_binary_name(config, architecture),
         "binary_sha256": _file_sha256(binary_path),
@@ -587,6 +607,7 @@ _CANDIDATE_KEYS = frozenset(
         "max_runtime_timeout_ms",
         "snapshot_max_bytes",
         "abstract_name_max_bytes",
+        "cache_format_token",
         "verification_cache_mode",
         "binary_name",
         "binary_sha256",
@@ -662,6 +683,7 @@ def verify_candidate_set(
             "max_runtime_timeout_ms": config.max_runtime_timeout_ms,
             "snapshot_max_bytes": config.snapshot_max_bytes,
             "abstract_name_max_bytes": config.abstract_name_max_bytes,
+            "cache_format_token": config.cache_format_token,
             "verification_cache_mode": config.verification_cache_mode,
             "binary_name": _candidate_binary_name(config, architecture),
         }
@@ -726,6 +748,7 @@ def verify_candidate_set(
             "max_runtime_timeout_ms": config.max_runtime_timeout_ms,
             "snapshot_max_bytes": config.snapshot_max_bytes,
             "abstract_name_max_bytes": config.abstract_name_max_bytes,
+            "cache_format_token": config.cache_format_token,
             "verification_cache_mode": config.verification_cache_mode,
             "replicas": list(config.replicas),
         },
@@ -1114,6 +1137,7 @@ def main(argv: list[str] | None = None) -> int:
                 "max_runtime_timeout_ms": config.max_runtime_timeout_ms,
                 "snapshot_max_bytes": config.snapshot_max_bytes,
                 "abstract_name_max_bytes": config.abstract_name_max_bytes,
+                "cache_format_token": config.cache_format_token,
                 "verification_cache_mode": config.verification_cache_mode,
                 "replicas": list(config.replicas),
                 "attestation_attempts": config.attestation_attempts,

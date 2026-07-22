@@ -1,5 +1,6 @@
 mod admission;
 mod basket_admission;
+mod entry_skip;
 mod lifecycle;
 mod loss;
 mod order_intent;
@@ -15,12 +16,12 @@ use serde::{Deserialize, Serialize};
 use super::{
     facts::{
         AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
-        CapitalAdmissionRebuildFact, EntryOrderIntentFact, ForcedReductionAdmissionFact,
-        LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact, RecoveryFact,
-        RejectedEntryAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
-        RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
-        SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
-        VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
+        CapitalAdmissionRebuildFact, EntryOrderIntentFact, EntrySkipFact,
+        ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
+        RecoveryFact, RejectedEntryAdmissionFact, RequoteThrottleObservationFact,
+        RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact, SettlementBookingErrorFact,
+        SettlementFact, SubmitReservationFillFact, SubmitReservationMetadataFact,
+        TerminalSettlementFact, VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
     },
     generated_contract::{
         ConsumerDisposition, IdentityDescriptor, KnownConsumer, KnownIdentity, KnownPurpose,
@@ -300,6 +301,22 @@ impl CodecFor<identities::OrderRejectV1> for CurrentCodecs {
     }
 }
 
+impl CodecFor<identities::EntrySkipObservationV1> for CurrentCodecs {
+    type Input = EntrySkipFact;
+    type Fact = EntrySkipFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        entry_skip::encode(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        entry_skip::decode_fact(line, line_number)
+    }
+}
+
 impl CodecFor<identities::AdmittedEntryAdmissionV1> for CurrentCodecs {
     type Input = AdmittedEntryAdmissionFact;
     type Fact = AdmittedEntryAdmissionFact;
@@ -485,6 +502,15 @@ pub(crate) fn encode_order_reject(
     fact: OrderRejectFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     <CurrentCodecs as CodecFor<identities::OrderRejectV1>>::encode(&fact, current_utc_ns()?)
+}
+
+pub(crate) fn encode_entry_skip_observation(
+    fact: EntrySkipFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::EntrySkipObservationV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
 }
 
 pub(crate) fn encode_reservation_metadata(
@@ -689,7 +715,7 @@ mod tests {
         AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason, LossHaltReason,
         LossSnapshotSource, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
         OrderIntentDetails, OrderIntentOrderFields, OrderRejectFact, OrderRejectReason,
-        OrderRejectSource,
+        OrderRejectSource, RvGateResult,
     };
     use super::*;
 
@@ -955,6 +981,50 @@ mod tests {
             backoff_cooldown_state: None,
             stable_episode_key: "YES-USD.POLYMARKET/venue/min_notional_rejected".to_string(),
             elapsed_ns: 0,
+        }
+    }
+
+    fn entry_skip() -> EntrySkipFact {
+        EntrySkipFact {
+            strategy_id: "strategy-1".to_string(),
+            now_ms: 30,
+            reason_category: super::super::facts::EntrySkipReason::EntryPricingBlocked,
+            gate_blocked_by: vec![super::super::facts::EntryBlockReason::WarmupIncomplete],
+            pricing_blocked_by: vec![
+                super::super::facts::EntryPricingBlockReason::RealizedVolNotReady,
+            ],
+            market_id: Some("market-1".to_string()),
+            phase: "Active".to_string(),
+            seconds_to_market_end: Some(60),
+            spot_price: Some("100".to_string()),
+            reference_current_price: Some("100".to_string()),
+            fast_venue_available: true,
+            reference_current_price_available: true,
+            realized_vol: None,
+            realized_vol_source_venue: None,
+            realized_vol_source_ts_ms: None,
+            realized_vol_gate_result: Some(RvGateResult::MissingSnapshot),
+            realized_vol_receive_watermark_ms: None,
+            realized_vol_snapshot: None,
+            fair_probability_up: None,
+            fair_probability_down: None,
+            selected_side: None,
+            sized_notional: None,
+            sized_worst_case_ev_bps: None,
+            sized_edge_cents_per_share: None,
+            theta_scaled_min_edge_bps: None,
+            up_fee_bps: None,
+            down_fee_bps: None,
+            submission_blocked_reason: Some(
+                super::super::facts::EntrySkipReason::EntryPricingBlocked,
+            ),
+            stale_reference_after_ms: Some(5_000),
+            last_reference_ts_ms: Some(29),
+            min_liquidity_required: Some("1".to_string()),
+            liquidity_available: Some("0".to_string()),
+            frozen: false,
+            metadata_matches_selection: true,
+            fast_venue_incoherent: false,
         }
     }
 
@@ -1360,6 +1430,22 @@ mod tests {
         };
         assert!(
             <CurrentCodecs as CodecFor<identities::OrderRejectV1>>::encode(&invalid, 29).is_err()
+        );
+    }
+
+    #[test]
+    fn entry_skip_identity_round_trips_to_observation_sink_shape() {
+        let expected = entry_skip();
+        let record =
+            <CurrentCodecs as CodecFor<identities::EntrySkipObservationV1>>::encode(&expected, 31)
+                .expect("valid entry skip must encode");
+        let line = std::str::from_utf8(record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::EntrySkipObservationV1>>::decode(line, 1)
+                .expect("entry skip must decode"),
+            expected
         );
     }
 }

@@ -11,15 +11,16 @@ use anyhow::Error;
 use super::codec::{
     encode_admitted_entry_admission, encode_basket_admission_granted,
     encode_basket_admission_rejected, encode_capital_admission_rebuild, encode_entry_order_intent,
-    encode_forced_reduction_admission, encode_loss_governor_halt, encode_order_lifecycle,
-    encode_order_reject, encode_rejected_entry_admission, encode_requote_throttle_observation,
-    encode_reservation_fill, encode_reservation_metadata, encode_risk_reducing_exit_admission,
-    encode_risk_reducing_exit_order_intent, encode_settlement, encode_settlement_booking_error,
-    encode_terminal_settlement, encode_venue_truth_capture_failure, encode_venue_truth_divergence,
+    encode_entry_skip_observation, encode_forced_reduction_admission, encode_loss_governor_halt,
+    encode_order_lifecycle, encode_order_reject, encode_rejected_entry_admission,
+    encode_requote_throttle_observation, encode_reservation_fill, encode_reservation_metadata,
+    encode_risk_reducing_exit_admission, encode_risk_reducing_exit_order_intent, encode_settlement,
+    encode_settlement_booking_error, encode_terminal_settlement,
+    encode_venue_truth_capture_failure, encode_venue_truth_divergence,
 };
 use super::facts::{
     AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
-    CapitalAdmissionRebuildFact, EntryOrderIntentFact, ForcedReductionAdmissionFact,
+    CapitalAdmissionRebuildFact, EntryOrderIntentFact, EntrySkipFact, ForcedReductionAdmissionFact,
     LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact, RejectedEntryAdmissionFact,
     RequoteThrottleObservationFact, RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact,
     SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
@@ -285,6 +286,15 @@ impl DecisionEvidenceRecorder {
         match encode_order_reject(fact) {
             Ok(record) => self.record_nonblocking(record),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
+    }
+
+    pub fn record_entry_skip_observation(&self, fact: EntrySkipFact) -> ObservationRecordOutcome {
+        match encode_entry_skip_observation(fact) {
+            Ok(record) => self.record_observation(record),
+            Err(error) => {
+                self.report_observation_failure(KnownPurpose::EntrySkipObservation, error)
+            }
         }
     }
 

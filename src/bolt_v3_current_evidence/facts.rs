@@ -412,6 +412,255 @@ pub struct OrderRejectFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntrySkipReason {
+    StrategyCoreNotRegistered,
+    EntryGateBlocked,
+    EntryPricingBlocked,
+    NoSideSelected,
+    SizedNotionalNotPositive,
+    InstrumentIdMissing,
+    InstrumentMissingFromCache,
+    EntryPriceMissing,
+    QuantityRoundingFailed,
+    LimitNotionalExceedsSizedNotional,
+    EntryQuoteNotionalBelowVenueMinimum,
+    EntryQuoteNotionalMinimumUnmodeled,
+    QuantityNotPositive,
+    PositionContractInvalid,
+    EntryPositionContractUnsupported,
+    HistoricalEntryFeeUnavailable,
+    OnePositionInvariantViolation,
+    EntryMalformedRejected,
+    EntryBalanceRejected,
+    EntryUnfillableRejectedUnchangedBook,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForcedFlatReason {
+    Freeze,
+    StaleReference,
+    ThinBook,
+    MetadataMismatch,
+    FastVenueIncoherent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExposureOccupancy {
+    PendingEntry,
+    EntryReconcilePending,
+    ManagedPosition,
+    ExitPending,
+    UnsupportedObserved,
+    BlindRecovery,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryBlockReason {
+    PhaseNotActive,
+    MetadataMismatch,
+    ActiveBookNotPriced,
+    BookCrossed,
+    IntervalOpenMissing,
+    WarmupIncomplete,
+    FeesNotReady,
+    RecoveryMode,
+    MarketCoolingDown,
+    SpotSpikeCooldown,
+    ForcedFlat(ForcedFlatReason),
+    OnePositionInvariant(ExposureOccupancy),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOutcomeEdgeBlockReason {
+    MissingOrderBook,
+    InsufficientDepth,
+    InvalidProbability,
+    InvalidCost,
+    UnsupportedOrderShape,
+    EdgeBelowThreshold,
+    SpreadOrSlippageWipedEdge,
+    FeeUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryPricingBlockReason {
+    SpotPriceMissing,
+    ReferenceCurrentPriceStale,
+    StrikePriceMissing,
+    SecondsToExpiryMissing,
+    RealizedVolNotReady,
+    ThetaScalerUnavailable,
+    UncertaintyBandUnavailable,
+    FairProbabilityUnavailable,
+    FeeUnavailable(OutcomeSide),
+    ExecutableEntryCostUnavailable(OutcomeSide),
+    ExecutableEdgeUnavailable(OutcomeSide, BinaryOutcomeEdgeBlockReason),
+    SizedNotionalUnsupported(OutcomeSide),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RvGateResult {
+    Accepted,
+    MissingSnapshot,
+    MissingEvaluationEventTime,
+    RejectedFutureDated,
+    RejectedStale,
+    RejectedNotReady,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealizedVolPricingComponent {
+    Measured,
+    NoiseRobust,
+    Continuous,
+    Forecast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealizedVolAggregation {
+    UpperQuantile,
+    Median,
+    TrimmedMean,
+    MedianWithUpperQuantileGuard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealizedVolSourceClass {
+    SpotQuote,
+    Trade,
+    Mark,
+    Index,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealizedVolSampleKind {
+    Midpoint,
+    Trade,
+    Mark,
+    Index,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealizedVolSourceStatus {
+    Ready,
+    Blocked,
+    DiagnosticOnly,
+    Waiting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RealizedVolSourceRejectReason {
+    DisabledSource,
+    InvalidPrice,
+    SourceClassMismatch,
+    SampleKindMismatch,
+    EventTimeRegression,
+    DuplicateTimestamp,
+    StaleSameEventUpdate,
+    ReceiveBeforeEvent,
+    EventReceiveLagExceeded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealizedVolBlockReason {
+    InvalidConfig,
+    QuorumNotReady,
+    SourceStale,
+    CoverageBelowMinimum,
+    InterSampleGapExceeded,
+    SourceClassMismatch,
+    SampleKindMismatch,
+    CrossSourceDispersion,
+    AnnualizationBasisInvalid,
+    NotWarm,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RealizedVolatilitySourceDiagnosticFact {
+    pub source_id: String,
+    pub source_class: RealizedVolSourceClass,
+    pub sample_kind: RealizedVolSampleKind,
+    pub enabled: bool,
+    pub counts_toward_quorum: bool,
+    pub status: RealizedVolSourceStatus,
+    pub annualized_realized_volatility_decimal: Option<String>,
+    pub measured_annualized_realized_volatility_decimal: Option<String>,
+    pub noise_robust_annualized_realized_volatility_decimal: Option<String>,
+    pub continuous_annualized_realized_volatility_decimal: Option<String>,
+    pub jump_annualized_realized_volatility_decimal: Option<String>,
+    pub first_sample_ts_ms: Option<u64>,
+    pub last_sample_ts_ms: Option<u64>,
+    pub raw_sample_count: usize,
+    pub grid_sample_count: usize,
+    pub coverage_ratio: String,
+    pub max_inter_sample_gap_ms: Option<u64>,
+    pub last_rejected_reason: Option<RealizedVolSourceRejectReason>,
+    pub last_rejected_event_ts_ms: Option<u64>,
+    pub last_rejected_recv_ts_ms: Option<u64>,
+    pub rejection_counters: BTreeMap<RealizedVolSourceRejectReason, u64>,
+    pub block_reason: Option<RealizedVolBlockReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryRealizedVolatilitySnapshotFact {
+    pub surface_id: String,
+    pub as_of_ms: Option<u64>,
+    pub annualized_decimal: String,
+    pub measured_annualized_decimal: String,
+    pub noise_robust_annualized_decimal: String,
+    pub continuous_annualized_decimal: String,
+    pub jump_annualized_decimal: String,
+    pub forecast_annualized_decimal: String,
+    pub pricing_component: RealizedVolPricingComponent,
+    pub seconds_per_annum: String,
+    pub aggregation: RealizedVolAggregation,
+    pub sources_used: Vec<String>,
+    pub source_diagnostics: Vec<RealizedVolatilitySourceDiagnosticFact>,
+    pub unknown_source_rejections: BTreeMap<String, u64>,
+    pub blockers: Vec<RealizedVolBlockReason>,
+    pub config_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntrySkipFact {
+    pub strategy_id: String,
+    pub now_ms: u64,
+    pub reason_category: EntrySkipReason,
+    pub gate_blocked_by: Vec<EntryBlockReason>,
+    pub pricing_blocked_by: Vec<EntryPricingBlockReason>,
+    pub market_id: Option<String>,
+    pub phase: String,
+    pub seconds_to_market_end: Option<u64>,
+    pub spot_price: Option<String>,
+    pub reference_current_price: Option<String>,
+    pub fast_venue_available: bool,
+    pub reference_current_price_available: bool,
+    pub realized_vol: Option<String>,
+    pub realized_vol_source_venue: Option<String>,
+    pub realized_vol_source_ts_ms: Option<u64>,
+    pub realized_vol_gate_result: Option<RvGateResult>,
+    pub realized_vol_receive_watermark_ms: Option<u64>,
+    pub realized_vol_snapshot: Option<EntryRealizedVolatilitySnapshotFact>,
+    pub fair_probability_up: Option<String>,
+    pub fair_probability_down: Option<String>,
+    pub selected_side: Option<OutcomeSide>,
+    pub sized_notional: Option<String>,
+    pub sized_worst_case_ev_bps: Option<String>,
+    pub sized_edge_cents_per_share: Option<String>,
+    pub theta_scaled_min_edge_bps: Option<String>,
+    pub up_fee_bps: Option<String>,
+    pub down_fee_bps: Option<String>,
+    pub submission_blocked_reason: Option<EntrySkipReason>,
+    pub stale_reference_after_ms: Option<u64>,
+    pub last_reference_ts_ms: Option<u64>,
+    pub min_liquidity_required: Option<String>,
+    pub liquidity_available: Option<String>,
+    pub frozen: bool,
+    pub metadata_matches_selection: bool,
+    pub fast_venue_incoherent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,
     Down,

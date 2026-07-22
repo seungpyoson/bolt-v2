@@ -11,6 +11,10 @@ label = "ubuntu-latest"
 variable = "CI_RUNNER_MANAGED_HEAVY"
 label = "ubicloud-standard-4-arm"
 
+[runners.managed_build]
+variable = "CI_RUNNER_MANAGED_BUILD"
+label = "ubicloud-standard-8-arm"
+
 [runners.managed_light]
 variable = "CI_RUNNER_MANAGED_LIGHT"
 label = "ubicloud-standard-2"
@@ -27,7 +31,7 @@ probe-light = "managed_light"
 fmt = "github_hosted"
 clippy = "managed_heavy"
 test = "managed_heavy"
-build = "managed_heavy"
+build = "managed_build"
 advisories = "github_hosted"
 
 [cargo_build_jobs.rust_probe]

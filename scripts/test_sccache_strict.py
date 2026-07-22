@@ -469,22 +469,29 @@ class ManifestTests(unittest.TestCase):
 
     def test_attestation_retry_policy_changes_release_identity(self) -> None:
         original = self.verify()
-        changed_config = dataclasses.replace(
-            self.config,
-            attestation_attempts=self.config.attestation_attempts + 1,
-        )
+        for changed_config in (
+            dataclasses.replace(
+                self.config,
+                attestation_attempts=self.config.attestation_attempts + 1,
+            ),
+            dataclasses.replace(
+                self.config,
+                attestation_max_wait_seconds=(
+                    self.config.attestation_max_wait_seconds + 1
+                ),
+            ),
+        ):
+            changed = sccache_strict.verify_candidate_set(
+                self.manifests,
+                self.binary_paths,
+                config=changed_config,
+                repository=self.repository,
+                run_id=self.run_id,
+                run_attempt=self.run_attempt,
+                head_sha=self.head_sha,
+            )
 
-        changed = sccache_strict.verify_candidate_set(
-            self.manifests,
-            self.binary_paths,
-            config=changed_config,
-            repository=self.repository,
-            run_id=self.run_id,
-            run_attempt=self.run_attempt,
-            head_sha=self.head_sha,
-        )
-
-        self.assertNotEqual(original.release_tag, changed.release_tag)
+            self.assertNotEqual(original.release_tag, changed.release_tag)
 
     def test_rejects_cross_run_manifest(self) -> None:
         self.manifests[0] = copy.deepcopy(self.manifests[0])

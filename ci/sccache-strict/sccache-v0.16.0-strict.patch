@@ -7345,7 +7345,7 @@ index 8760ba6..5ab6c52 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..85a6405 100644
+index 98cedfb..48c4c57 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16,2 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -8223,7 +8223,7 @@ index 98cedfb..85a6405 100644
 +            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
 +            Poll::Pending => Poll::Pending,
 +        }
-@@ -2284,0 +2915,409 @@ mod tests {
+@@ -2284,0 +2915,514 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();
@@ -8457,7 +8457,7 @@ index 98cedfb..85a6405 100644
 +    fn strict_stalled_response_commit_poison_is_bounded() {
 +        let runtime = Runtime::new().unwrap();
 +        let poison = StrictPoison::new();
-+        let (_client, server) = tokio::io::duplex(1);
++        let (mut client, server) = tokio::io::duplex(1);
 +        let mut builder = length_delimited::Builder::new();
 +        builder.max_frame_length(4096);
 +        let io = builder.new_framed(server);
@@ -8478,6 +8478,111 @@ index 98cedfb..85a6405 100644
 +
 +        assert!(error.to_string().contains("deadline expired"));
 +        assert!(!poison.is_healthy());
++        assert!(poison.is_terminal());
++        assert!(started.elapsed() < Duration::from_secs(1));
++        drop(transport);
++        let mut partial = Vec::new();
++        runtime
++            .block_on(tokio::io::AsyncReadExt::read_to_end(
++                &mut client,
++                &mut partial,
++            ))
++            .unwrap();
++        assert!(!partial.is_empty());
++        assert!(partial.len() < 4);
++    }
++
++    #[test]
++    fn strict_fully_committed_response_precedes_later_poison() {
++        let runtime = Runtime::new().unwrap();
++        let poison = StrictPoison::new();
++        let (mut client, server) = tokio::io::duplex(4096);
++        let mut builder = length_delimited::Builder::new();
++        builder.max_frame_length(4096);
++        let io = builder.new_framed(server);
++        let mut transport = SccacheTransport {
++            inner: Framed::new(io.sink_err_into().err_into(), BincodeCodec),
++            poison: poison.clone(),
++            commit_timeout: Duration::from_secs(1),
++            commit_deadline: None,
++            commit_gate_held: false,
++        };
++        let expected = StrictServerIdentity::for_tests();
++
++        runtime
++            .block_on(transport.send(Frame::Message {
++                message: Response::ServerIdentity(expected.clone()),
++            }))
++            .unwrap();
++        poison.poison();
++        drop(transport);
++
++        let mut header = [0_u8; 4];
++        runtime
++            .block_on(tokio::io::AsyncReadExt::read_exact(
++                &mut client,
++                &mut header,
++            ))
++            .unwrap();
++        let mut payload = vec![0_u8; u32::from_be_bytes(header) as usize];
++        runtime
++            .block_on(tokio::io::AsyncReadExt::read_exact(
++                &mut client,
++                &mut payload,
++            ))
++            .unwrap();
++        match bincode::deserialize::<Response>(&payload).unwrap() {
++            Response::ServerIdentity(actual) => assert_eq!(actual, expected),
++            actual => panic!("unexpected committed strict response: {actual:?}"),
++        }
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn strict_unix_slow_reader_obeys_the_response_deadline() {
++        use std::os::fd::AsRawFd;
++
++        let runtime = Runtime::new().unwrap();
++        let poison = StrictPoison::new();
++        let (_client, server) = std::os::unix::net::UnixStream::pair().unwrap();
++        let send_buffer: libc::c_int = 1024;
++        let result = unsafe {
++            libc::setsockopt(
++                server.as_raw_fd(),
++                libc::SOL_SOCKET,
++                libc::SO_SNDBUF,
++                (&raw const send_buffer).cast(),
++                std::mem::size_of_val(&send_buffer) as libc::socklen_t,
++            )
++        };
++        assert_eq!(result, 0);
++        server.set_nonblocking(true).unwrap();
++        let server = {
++            let _guard = runtime.enter();
++            tokio::net::UnixStream::from_std(server).unwrap()
++        };
++        let mut builder = length_delimited::Builder::new();
++        builder.max_frame_length(128 * 1024);
++        let io = builder.new_framed(server);
++        let mut transport = SccacheTransport {
++            inner: Framed::new(io.sink_err_into().err_into(), BincodeCodec),
++            poison: poison.clone(),
++            commit_timeout: Duration::from_millis(10),
++            commit_deadline: None,
++            commit_gate_held: false,
++        };
++        let mut response = CompileFinished::default();
++        response.stdout = vec![b'x'; 64 * 1024];
++
++        let started = std::time::Instant::now();
++        let error = runtime
++            .block_on(transport.send(Frame::Message {
++                message: Response::CompileFinished(response),
++            }))
++            .unwrap_err();
++
++        assert!(error.to_string().contains("deadline expired"));
++        assert!(poison.is_terminal());
 +        assert!(started.elapsed() < Duration::from_secs(1));
 +    }
 +

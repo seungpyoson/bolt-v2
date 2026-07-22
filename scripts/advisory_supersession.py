@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
+import email.utils
 import json
 import math
 import os
@@ -112,6 +114,19 @@ class WorkflowRun:
     head_sha: str
     event: str
     status: str
+    run_attempt: int = 1
+    created_at: str = "1970-01-01T00:00:00Z"
+    head_branch: str = "main"
+
+
+@dataclasses.dataclass(frozen=True)
+class ReconciliationContext:
+    invoking_run: WorkflowRun
+    repository_id: int
+    repository_full_name: str
+    github_now: datetime.datetime
+    created_filter: str
+    deadline: float
 
 
 @dataclasses.dataclass(frozen=True)
@@ -121,6 +136,10 @@ class ReconcileResult:
 
 class SupersededRun(RuntimeError):
     """The invoking run no longer represents current main."""
+
+
+class IncompleteCensus(RuntimeError):
+    """A workflow-run sweep cannot prove a complete bounded census."""
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -137,10 +156,20 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 class ActionsClient(Protocol):
+    def capture_context(
+        self,
+        *,
+        run_id: int,
+        run_sha: str,
+        monotonic_now: Callable[[], float] = time.monotonic,
+    ) -> ReconciliationContext: ...
+
     def current_branch_sha(self) -> str: ...
 
     def active_push_runs(
-        self, freshness_guard: Callable[[], None]
+        self,
+        context: ReconciliationContext,
+        freshness_guard: Callable[[], None],
     ) -> list[WorkflowRun]: ...
 
     def cancel_self(self, run_id: int) -> None: ...
@@ -168,6 +197,17 @@ def _require_positive_integer(document: Mapping[str, object], key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{key} must be a positive integer")
     return value
+
+
+def _require_timestamp(document: Mapping[str, object], key: str) -> datetime.datetime:
+    value = _require_string(document, key)
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{key} must be an ISO-8601 timestamp") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"{key} must include a timezone")
+    return parsed.astimezone(datetime.UTC)
 
 
 def load_config(path: pathlib.Path) -> Config:
@@ -319,6 +359,93 @@ class GitHubActionsClient:
             "X-GitHub-Api-Version": config.api_version,
         }
         self._opener = urllib.request.build_opener(_NoRedirectHandler())
+        self._sleep = time.sleep
+
+    def capture_context(
+        self,
+        *,
+        run_id: int,
+        run_sha: str,
+        monotonic_now: Callable[[], float] = time.monotonic,
+    ) -> ReconciliationContext:
+        if run_id <= 0:
+            raise ValueError("run_id must be positive")
+        _, document, headers = self._request_json(
+            "GET",
+            f"repos/{self.repository}/actions/runs/{run_id}",
+        )
+        root = _require_mapping(document, "exact workflow run response")
+        observed_run_id = root.get("id")
+        if (
+            isinstance(observed_run_id, bool)
+            or not isinstance(observed_run_id, int)
+            or observed_run_id != run_id
+        ):
+            raise ValueError("exact workflow run id does not match requested run")
+        run_attempt = root.get("run_attempt")
+        if (
+            isinstance(run_attempt, bool)
+            or not isinstance(run_attempt, int)
+            or run_attempt <= 0
+        ):
+            raise ValueError("exact workflow run attempt must be positive")
+        repository = _require_mapping(
+            root.get("repository"), "exact workflow run repository"
+        )
+        repository_id = repository.get("id")
+        if (
+            isinstance(repository_id, bool)
+            or not isinstance(repository_id, int)
+            or repository_id <= 0
+        ):
+            raise ValueError("exact workflow run repository id must be positive")
+        repository_full_name = _require_string(repository, "full_name")
+        if repository_full_name != self.repository:
+            raise ValueError("exact workflow run repository does not match request")
+        event = _require_string(root, "event")
+        if event != self.config.event:
+            raise ValueError("exact workflow run event does not match config")
+        head_branch = _require_string(root, "head_branch")
+        if head_branch != self.config.branch:
+            raise ValueError("exact workflow run branch does not match config")
+        head_sha = _require_string(root, "head_sha")
+        if head_sha != run_sha:
+            raise ValueError("exact workflow run SHA does not match invocation")
+        workflow_path = _require_string(root, "path").split("@", maxsplit=1)[0]
+        expected_workflow_path = f".github/workflows/{self.config.workflow}"
+        if workflow_path != expected_workflow_path:
+            raise ValueError("exact workflow run workflow does not match config")
+        created_at = _require_timestamp(root, "created_at")
+        run_started_at = _require_timestamp(root, "run_started_at")
+        raw_date = headers.get("date")
+        if raw_date is None:
+            raise ValueError("exact workflow run response is missing HTTP Date")
+        github_now = email.utils.parsedate_to_datetime(raw_date)
+        if github_now is None or github_now.tzinfo is None:
+            raise ValueError("exact workflow run response has malformed HTTP Date")
+        github_now = github_now.astimezone(datetime.UTC)
+        if github_now < created_at or github_now < run_started_at:
+            raise ValueError("GitHub HTTP Date precedes exact workflow run timestamps")
+        cutoff = github_now - datetime.timedelta(
+            days=self.config.created_lookback_days
+        )
+        created_filter = f">={cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        return ReconciliationContext(
+            invoking_run=WorkflowRun(
+                run_id=run_id,
+                head_sha=head_sha,
+                event=event,
+                status=_require_string(root, "status"),
+                run_attempt=run_attempt,
+                created_at=created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                head_branch=head_branch,
+            ),
+            repository_id=repository_id,
+            repository_full_name=repository_full_name,
+            github_now=github_now,
+            created_filter=created_filter,
+            deadline=monotonic_now() + self.config.reconciliation_timeout_seconds,
+        )
 
     def _request_json(
         self,
@@ -374,52 +501,217 @@ class GitHubActionsClient:
         obj = _require_mapping(root.get("object"), "branch response.object")
         return _require_string(obj, "sha")
 
-    def _workflow_run_sweep(self) -> list[WorkflowRun]:
+    def _workflow_run_sweep(
+        self, context: ReconciliationContext
+    ) -> list[WorkflowRun]:
         workflow = urllib.parse.quote(self.config.workflow, safe="")
-        runs: dict[int, WorkflowRun] = {}
+        runs: list[WorkflowRun] = []
+        seen_run_ids: set[int] = set()
+        seen_urls: set[str] = set()
+        seen_pages: set[int] = set()
+        expected_total: int | None = None
+        sentinel_seen = False
+        max_pages = math.ceil(
+            self.config.max_search_results / self.config.runs_per_page
+        )
         next_url: str | None = (
             f"{GITHUB_API_ORIGIN}/repos/{self.repository}/actions/workflows/"
             f"{workflow}/runs?"
             + urllib.parse.urlencode(
                 {
                     "branch": self.config.branch,
-                    "event": "push",
+                    "event": self.config.event,
+                    "created": context.created_filter,
                     "per_page": str(self.config.runs_per_page),
                 }
             )
         )
         while next_url is not None:
+            if len(seen_urls) >= max_pages:
+                raise IncompleteCensus("workflow-run census exceeded page budget")
+            page = self._validate_census_url(next_url, context)
+            if next_url in seen_urls or page in seen_pages:
+                raise IncompleteCensus("workflow-run pagination repeated a page")
+            seen_urls.add(next_url)
+            seen_pages.add(page)
             _, document, headers = self._request_json("GET", next_url)
             root = _require_mapping(document, "workflow runs response")
+            total_count = root.get("total_count")
+            if (
+                isinstance(total_count, bool)
+                or not isinstance(total_count, int)
+                or total_count < 0
+            ):
+                raise IncompleteCensus("workflow-run total_count must be non-negative")
+            if total_count >= self.config.max_search_results:
+                raise IncompleteCensus(
+                    "workflow-run total_count reached the governed search threshold"
+                )
+            if expected_total is None:
+                expected_total = total_count
+            elif total_count != expected_total:
+                raise IncompleteCensus("workflow-run total_count changed between pages")
             raw_runs = root.get("workflow_runs")
             if not isinstance(raw_runs, list):
-                raise ValueError("workflow_runs must be an array")
+                raise IncompleteCensus("workflow_runs must be an array")
+            if not raw_runs and _next_link(headers.get("link")) is not None:
+                raise IncompleteCensus("empty workflow-run page has a continuation")
             for raw_run in raw_runs:
                 item = _require_mapping(raw_run, "workflow run")
                 run_id = item.get("id")
-                if isinstance(run_id, bool) or not isinstance(run_id, int):
-                    raise ValueError("workflow run id must be an integer")
+                if (
+                    isinstance(run_id, bool)
+                    or not isinstance(run_id, int)
+                    or run_id <= 0
+                ):
+                    raise IncompleteCensus("workflow run id must be positive")
+                if run_id in seen_run_ids:
+                    raise IncompleteCensus("workflow-run census contains a duplicate id")
+                seen_run_ids.add(run_id)
+                run_attempt = item.get("run_attempt")
+                if (
+                    isinstance(run_attempt, bool)
+                    or not isinstance(run_attempt, int)
+                    or run_attempt <= 0
+                ):
+                    raise IncompleteCensus("workflow run attempt must be positive")
+                event = _require_string(item, "event")
+                if event != self.config.event:
+                    raise IncompleteCensus("workflow run event does not match config")
+                head_branch = _require_string(item, "head_branch")
+                if head_branch != self.config.branch:
+                    raise IncompleteCensus("workflow run branch does not match config")
+                created_at = _require_timestamp(item, "created_at").strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                )
                 run = WorkflowRun(
                     run_id=run_id,
                     head_sha=_require_string(item, "head_sha"),
-                    event=_require_string(item, "event"),
+                    event=event,
                     status=_require_string(item, "status"),
+                    run_attempt=run_attempt,
+                    created_at=created_at,
+                    head_branch=head_branch,
                 )
-                if run.event == "push" and run.status != self.config.terminal_status:
-                    runs[run_id] = run
-            next_url = _next_link(headers.get("link"))
-        return [runs[run_id] for run_id in sorted(runs)]
+                if run.run_id == context.invoking_run.run_id:
+                    if (
+                        run.run_attempt != context.invoking_run.run_attempt
+                        or run.head_sha != context.invoking_run.head_sha
+                    ):
+                        raise IncompleteCensus(
+                            "workflow-run sentinel identity changed in census"
+                        )
+                    sentinel_seen = True
+                if run.status != self.config.terminal_status:
+                    runs.append(run)
+            if expected_total is None:
+                raise AssertionError("total_count was not initialized")
+            fetched = len(seen_run_ids)
+            continuation = _next_link(headers.get("link"))
+            if fetched < expected_total and continuation is None:
+                raise IncompleteCensus(
+                    "workflow-run census ended before total_count records"
+                )
+            if fetched == expected_total and continuation is not None:
+                raise IncompleteCensus(
+                    "workflow-run census continued after total_count records"
+                )
+            if fetched > expected_total:
+                raise IncompleteCensus(
+                    "workflow-run census fetched more than total_count records"
+                )
+            next_url = continuation
+        if expected_total is None or len(seen_run_ids) != expected_total:
+            raise IncompleteCensus("workflow-run census count is incomplete")
+        if not sentinel_seen:
+            raise IncompleteCensus("exact workflow-run sentinel is missing")
+        return sorted(runs, key=lambda run: run.run_id)
+
+    def _validate_census_url(
+        self,
+        url: str,
+        context: ReconciliationContext,
+    ) -> int:
+        parsed = urllib.parse.urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "api.github.com"
+            or parsed.port not in (None, 443)
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise IncompleteCensus("workflow-run pagination has a foreign origin")
+        decoded_path = urllib.parse.unquote(parsed.path)
+        configured_path = (
+            f"/repos/{self.repository}/actions/workflows/"
+            f"{self.config.workflow}/runs"
+        )
+        numeric_path = (
+            f"/repositories/{context.repository_id}/actions/workflows/"
+            f"{self.config.workflow}/runs"
+        )
+        if decoded_path not in {configured_path, numeric_path}:
+            raise IncompleteCensus(
+                "workflow-run pagination does not match the governed repository and workflow"
+            )
+        query: dict[str, list[str]] = {}
+        for key, value in urllib.parse.parse_qsl(
+            parsed.query, keep_blank_values=True
+        ):
+            query.setdefault(key, []).append(value)
+        required = {
+            "branch": self.config.branch,
+            "event": self.config.event,
+            "created": context.created_filter,
+            "per_page": str(self.config.runs_per_page),
+        }
+        if set(query) - (set(required) | {"page"}):
+            raise IncompleteCensus("workflow-run pagination has unknown query keys")
+        for key, expected in required.items():
+            if query.get(key) != [expected]:
+                raise IncompleteCensus(
+                    f"workflow-run pagination has invalid {key} query authority"
+                )
+        page_values = query.get("page")
+        if page_values is None:
+            return 1
+        if len(page_values) != 1:
+            raise IncompleteCensus("workflow-run pagination has duplicate page keys")
+        try:
+            page = int(page_values[0])
+        except ValueError as error:
+            raise IncompleteCensus(
+                "workflow-run pagination page must be positive"
+            ) from error
+        if page <= 0 or str(page) != page_values[0]:
+            raise IncompleteCensus("workflow-run pagination page must be positive")
+        return page
 
     def active_push_runs(
-        self, freshness_guard: Callable[[], None]
+        self,
+        context: ReconciliationContext,
+        freshness_guard: Callable[[], None],
     ) -> list[WorkflowRun]:
-        previous_signature: tuple[tuple[int, str, str], ...] | None = None
+        previous_signature: tuple[tuple[int, int, str, str], ...] | None = None
         stable_sweeps = 0
-        for _ in range(self.config.discovery_max_sweeps):
+        last_incomplete: IncompleteCensus | None = None
+        for sweep_index in range(self.config.discovery_max_sweeps):
             freshness_guard()
-            runs = self._workflow_run_sweep()
+            try:
+                runs = self._workflow_run_sweep(context)
+            except IncompleteCensus as error:
+                last_incomplete = error
+                previous_signature = None
+                stable_sweeps = 0
+                if sweep_index + 1 < self.config.discovery_max_sweeps:
+                    self._sleep(self.config.sweep_interval_seconds)
+                continue
             freshness_guard()
-            signature = tuple((run.run_id, run.head_sha, run.event) for run in runs)
+            signature = tuple(
+                (run.run_id, run.run_attempt, run.head_sha, run.created_at)
+                for run in runs
+            )
             if signature == previous_signature:
                 stable_sweeps += 1
             else:
@@ -427,7 +719,12 @@ class GitHubActionsClient:
                 stable_sweeps = 1
             if stable_sweeps >= self.config.discovery_stable_sweeps:
                 return runs
-        raise RuntimeError("active workflow-run discovery did not stabilize")
+            if sweep_index + 1 < self.config.discovery_max_sweeps:
+                self._sleep(self.config.sweep_interval_seconds)
+        message = "active workflow-run discovery did not stabilize"
+        if last_incomplete is not None:
+            message = f"{message}: {last_incomplete}"
+        raise RuntimeError(message)
 
     def _run_status(self, run_id: int) -> str:
         _, document, _ = self._request_json(
@@ -476,11 +773,17 @@ class GitHubActionsClient:
 def _next_link(header: str | None) -> str | None:
     if header is None:
         return None
+    next_urls: list[str] = []
     for entry in header.split(","):
         parts = [part.strip() for part in entry.split(";")]
-        if len(parts) == 2 and parts[1] == 'rel="next"':
-            return parts[0].removeprefix("<").removesuffix(">")
-    return None
+        if 'rel="next"' not in parts[1:]:
+            continue
+        if not parts[0].startswith("<") or not parts[0].endswith(">"):
+            raise IncompleteCensus("workflow-run next link is malformed")
+        next_urls.append(parts[0][1:-1])
+    if len(next_urls) > 1:
+        raise IncompleteCensus("workflow-run response has duplicate next links")
+    return next_urls[0] if next_urls else None
 
 
 def reconcile(
@@ -489,6 +792,8 @@ def reconcile(
     run_id: int,
     run_sha: str,
 ) -> ReconcileResult:
+    context = client.capture_context(run_id=run_id, run_sha=run_sha)
+
     def supersede(message: str) -> None:
         client.cancel_self(run_id)
         raise SupersededRun(message)
@@ -501,7 +806,7 @@ def reconcile(
         if client.current_branch_sha() != run_sha:
             supersede(f"run {run_id} ceased to be exact-current main")
 
-    active_runs = client.active_push_runs(require_current_main)
+    active_runs = client.active_push_runs(context, require_current_main)
     if client.current_branch_sha() != run_sha:
         supersede(f"run {run_id} ceased to be exact-current main")
 
@@ -531,6 +836,7 @@ def cancel_superseded_target(
     run_id: int,
     run_sha: str,
 ) -> ReconcileResult:
+    client.capture_context(run_id=run_id, run_sha=run_sha)
     current_sha = client.current_branch_sha()
     if run_sha == current_sha:
         return ReconcileResult(cancelled_run_ids=())

@@ -45,10 +45,10 @@
 - Produces: validated exact-run record containing positive run ID/attempt, repository identity, workflow/event/branch, SHA, status, `created_at`, and `run_started_at`.
 - Produces: one reconciliation context containing the parsed response `Date`, fixed 66-day cutoff, repository ID/name, sentinel `(run_id, run_attempt)`, and absolute deadline.
 
-- [ ] Add behavior tests for valid exact-run capture, malformed identity/attempt/timestamps, GitHub `Date` before run timestamps, old rerun creation time, and proof that the cutoff is captured once and reused.
-- [ ] Add exact-run fetching and validation before census or watchdog mutation; parse RFC-compliant GitHub `Date` once and reject missing/malformed/preceding values.
-- [ ] Bind repository numeric ID and owner/name from the exact response for later canonical pagination validation.
-- [ ] Run the exact-run test group; expect no mutation on every validation failure.
+- [x] Add behavior tests for valid exact-run capture, malformed identity/attempt/timestamps, GitHub `Date` before run timestamps, old rerun creation time, and proof that the cutoff is captured once and reused.
+- [x] Add exact-run fetching and validation before census or watchdog mutation; parse RFC-compliant GitHub `Date` once and reject missing/malformed/preceding values.
+- [x] Bind repository numeric ID and owner/name from the exact response for later canonical pagination validation.
+- [x] Run the exact-run test group; expect no mutation on every validation failure.
 
 ### Task 3: Replace open-ended pagination with a bounded semantic census
 
@@ -60,11 +60,11 @@
 - Consumes: fixed reconciliation context from Task 2 and the shared request ledger from Task 1.
 - Produces: one complete sweep with exact `total_count`, fetched count, page count, sentinel presence, and active signature `(run_id, run_attempt, head_sha, created_at)` sorted by run ID.
 
-- [ ] Add behavior tests for configured and numeric-repository next links, decoded query order/encoding, duplicate/dropped/changed filters, foreign origins or repository IDs, repeated URLs, empty intermediate pages, duplicate run IDs, missing/extra links, exact page multiples, total-count drift, thresholds immediately below/at 900, and page-bound exhaustion.
-- [ ] Validate decoded query multimaps: exactly one governed branch, event, cutoff, and page size; exactly one positive page cursor may vary; reject every other key.
-- [ ] Require non-negative stable `total_count`, unique positive run IDs, matching branch/event, exact fetched count, sentinel presence, and no continuation mismatch.
+- [x] Add behavior tests for configured and numeric-repository next links, decoded query order/encoding, duplicate/dropped/changed filters, foreign origins or repository IDs, repeated URLs, empty intermediate pages, duplicate run IDs, missing/extra links, exact page multiples, total-count drift, thresholds immediately below/at 900, and page-bound exhaustion.
+- [x] Validate decoded query multimaps: exactly one governed branch, event, cutoff, and page size; exactly one positive page cursor may vary; reject every other key.
+- [x] Require non-negative stable `total_count`, unique positive run IDs, matching branch/event, exact fetched count, sentinel presence, and no continuation mismatch.
 - [ ] Charge each page request and its secondary point before dispatch; cap pages at `ceil(max_search_results / runs_per_page)`.
-- [ ] Run the pagination/census test group; expect malformed and incomplete sweeps to fail closed before mutation.
+- [x] Run the pagination/census test group; expect malformed and incomplete sweeps to fail closed before mutation.
 
 ### Task 4: Stabilize discovery under one fixed cutoff and current-main fence
 

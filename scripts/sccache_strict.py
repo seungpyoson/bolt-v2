@@ -82,6 +82,7 @@ class StrictBuildConfig:
     snapshot_max_bytes: int
     abstract_name_max_bytes: int
     cache_format_token: str
+    cache_compression_level: int
     verification_cache_mode: str
     replicas: tuple[str, ...]
     attestation_attempts: int
@@ -338,6 +339,7 @@ def load_document(
                 "snapshot_max_bytes",
                 "abstract_name_max_bytes",
                 "cache_format_token",
+                "cache_compression_level",
             }
         ),
         "runtime_contract",
@@ -349,6 +351,15 @@ def load_document(
         runtime_contract["cache_format_token"],
         "runtime_contract.cache_format_token",
     )
+    cache_compression_level = runtime_contract["cache_compression_level"]
+    if (
+        isinstance(cache_compression_level, bool)
+        or not isinstance(cache_compression_level, int)
+        or not 1 <= cache_compression_level <= 22
+    ):
+        raise ValueError(
+            "runtime_contract.cache_compression_level must be between 1 and 22"
+        )
     if (
         isinstance(max_runtime_timeout_ms, bool)
         or not isinstance(max_runtime_timeout_ms, int)
@@ -594,6 +605,7 @@ def load_document(
         snapshot_max_bytes=snapshot_max_bytes,
         abstract_name_max_bytes=abstract_name_max_bytes,
         cache_format_token=cache_format_token,
+        cache_compression_level=cache_compression_level,
         verification_cache_mode=verification_cache_mode,
         replicas=tuple(replicas_value),
         attestation_attempts=attestation_attempts,
@@ -672,6 +684,7 @@ def _derivative_identity(config: StrictBuildConfig, architecture: str) -> str:
         "snapshot_max_bytes": config.snapshot_max_bytes,
         "abstract_name_max_bytes": config.abstract_name_max_bytes,
         "cache_format_token": config.cache_format_token,
+        "cache_compression_level": config.cache_compression_level,
         "verification_consumer": dataclasses.asdict(config.verification_consumer),
         "publisher": dataclasses.asdict(config.publisher),
         "target": target.triple,
@@ -806,6 +819,7 @@ def write_candidate_manifest(
         "snapshot_max_bytes": config.snapshot_max_bytes,
         "abstract_name_max_bytes": config.abstract_name_max_bytes,
         "cache_format_token": config.cache_format_token,
+        "cache_compression_level": config.cache_compression_level,
         "verification_cache_mode": config.verification_cache_mode,
         "verification_consumer": dataclasses.asdict(config.verification_consumer),
         "publisher": dataclasses.asdict(config.publisher),
@@ -847,6 +861,7 @@ _CANDIDATE_KEYS = frozenset(
         "snapshot_max_bytes",
         "abstract_name_max_bytes",
         "cache_format_token",
+        "cache_compression_level",
         "verification_cache_mode",
         "verification_consumer",
         "publisher",
@@ -925,6 +940,7 @@ def verify_candidate_set(
             "snapshot_max_bytes": config.snapshot_max_bytes,
             "abstract_name_max_bytes": config.abstract_name_max_bytes,
             "cache_format_token": config.cache_format_token,
+            "cache_compression_level": config.cache_compression_level,
             "verification_cache_mode": config.verification_cache_mode,
             "verification_consumer": dataclasses.asdict(config.verification_consumer),
             "publisher": dataclasses.asdict(config.publisher),
@@ -992,6 +1008,7 @@ def verify_candidate_set(
             "snapshot_max_bytes": config.snapshot_max_bytes,
             "abstract_name_max_bytes": config.abstract_name_max_bytes,
             "cache_format_token": config.cache_format_token,
+            "cache_compression_level": config.cache_compression_level,
             "verification_cache_mode": config.verification_cache_mode,
             "verification_consumer": dataclasses.asdict(config.verification_consumer),
             "publisher": dataclasses.asdict(config.publisher),
@@ -1504,6 +1521,7 @@ def main(argv: list[str] | None = None) -> int:
                 "snapshot_max_bytes": config.snapshot_max_bytes,
                 "abstract_name_max_bytes": config.abstract_name_max_bytes,
                 "cache_format_token": config.cache_format_token,
+                "cache_compression_level": config.cache_compression_level,
                 "verification_cache_mode": config.verification_cache_mode,
                 "verification_consumer": dataclasses.asdict(
                     config.verification_consumer

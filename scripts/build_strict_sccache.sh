@@ -31,6 +31,7 @@ snapshot_max_bytes="$(jq -r '.snapshot_max_bytes' "$target_json")"
 max_runtime_timeout_ms="$(jq -r '.max_runtime_timeout_ms' "$target_json")"
 abstract_name_max_bytes="$(jq -r '.abstract_name_max_bytes' "$target_json")"
 cache_format_token="$(jq -r '.cache_format_token' "$target_json")"
+cache_compression_level="$(jq -r '.cache_compression_level' "$target_json")"
 consumer_socket_template="$(jq -r '.verification_consumer.abstract_socket_template' "$target_json")"
 consumer_compiler_path="$(jq -r '.verification_consumer.compiler_path' "$target_json")"
 consumer_compiler_family="$(jq -r '.verification_consumer.compiler_family' "$target_json")"
@@ -89,6 +90,7 @@ docker run --rm --network none \
   -e SCCACHE_STRICT_MAX_RUNTIME_TIMEOUT_MS="$max_runtime_timeout_ms" \
   -e SCCACHE_STRICT_ABSTRACT_NAME_MAX_BYTES="$abstract_name_max_bytes" \
   -e SCCACHE_STRICT_CACHE_FORMAT_TOKEN="$cache_format_token" \
+  -e SCCACHE_STRICT_CACHE_COMPRESSION_LEVEL="$cache_compression_level" \
   -e SOURCE_DATE_EPOCH="$source_epoch" \
   -e STRICT_BUILD_FEATURES="$features" \
   -e STRICT_BUILD_PROFILE="$profile" \
@@ -115,6 +117,7 @@ docker run --rm --network none \
   -e SCCACHE_STRICT_MAX_RUNTIME_TIMEOUT_MS="$max_runtime_timeout_ms" \
   -e SCCACHE_STRICT_ABSTRACT_NAME_MAX_BYTES="$abstract_name_max_bytes" \
   -e SCCACHE_STRICT_CACHE_FORMAT_TOKEN="$cache_format_token" \
+  -e SCCACHE_STRICT_CACHE_COMPRESSION_LEVEL="$cache_compression_level" \
   -e SOURCE_DATE_EPOCH="$source_epoch" \
   -e STRICT_BUILD_FEATURES="$features" \
   -e STRICT_BUILD_PROFILE="$profile" \
@@ -221,6 +224,21 @@ run_startup_negative() {
 run_startup_negative missing-s3 'strict sccache requires the governed S3 cache backend'
 run_startup_negative disk-backend 'strict sccache permits exactly one S3 cache backend' \
   SCCACHE_DIR="$build_root/smoke-disk-backend/cache"
+run_startup_negative legacy-cache-mode \
+  'legacy environment runtime policy is unavailable in strict mode' \
+  SCCACHE_S3_RW_MODE=READ_WRITE
+run_startup_negative legacy-compression \
+  'legacy environment runtime policy is unavailable in strict mode' \
+  SCCACHE_CACHE_ZSTD_LEVEL="$cache_compression_level"
+run_startup_negative legacy-multiarch \
+  'legacy environment runtime policy is unavailable in strict mode' \
+  SCCACHE_CACHE_MULTIARCH=1
+run_startup_negative legacy-idle-timeout \
+  'legacy environment runtime policy is unavailable in strict mode' \
+  SCCACHE_IDLE_TIMEOUT=1
+run_startup_negative legacy-direct-cache \
+  'legacy environment runtime policy is unavailable in strict mode' \
+  SCCACHE_DIRECT=1
 
 backend_environment=(
   SCCACHE_BUCKET="$s3_bucket"

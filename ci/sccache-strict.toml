@@ -44,6 +44,7 @@ max_runtime_timeout_ms = 3600000
 snapshot_max_bytes = 65536
 abstract_name_max_bytes = 107
 cache_format_token = "bolt-sccache-strict-v1"
+cache_compression_level = 3
 
 [publisher]
 environment = "strict-sccache-publisher"

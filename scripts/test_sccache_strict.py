@@ -76,6 +76,7 @@ def valid_document() -> dict[str, object]:
             "snapshot_max_bytes": 65_536,
             "abstract_name_max_bytes": 107,
             "cache_format_token": "bolt-sccache-strict-v1",
+            "cache_compression_level": 3,
         },
         "publisher": {
             "environment": "strict-sccache-publisher",
@@ -110,6 +111,7 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.max_runtime_timeout_ms, 3_600_000)
         self.assertEqual(config.abstract_name_max_bytes, 107)
         self.assertEqual(config.cache_format_token, "bolt-sccache-strict-v1")
+        self.assertEqual(config.cache_compression_level, 3)
         self.assertEqual(config.verification_consumer.compiler_path, "/usr/bin/cc")
         self.assertEqual(config.publisher.gh_version, "2.96.0")
 
@@ -133,6 +135,16 @@ class LoadConfigTests(unittest.TestCase):
         document["runtime_contract"] = runtime_contract
 
         with self.assertRaisesRegex(ValueError, "bounded portable identifier"):
+            sccache_strict.load_document(document, repo_root=REPO_ROOT)
+
+    def test_rejects_out_of_range_cache_compression_level(self) -> None:
+        document = valid_document()
+        runtime_contract = copy.deepcopy(document["runtime_contract"])
+        assert isinstance(runtime_contract, dict)
+        runtime_contract["cache_compression_level"] = 23
+        document["runtime_contract"] = runtime_contract
+
+        with self.assertRaisesRegex(ValueError, "cache_compression_level"):
             sccache_strict.load_document(document, repo_root=REPO_ROOT)
 
     def test_rejects_frame_limit_larger_than_protocol_field(self) -> None:

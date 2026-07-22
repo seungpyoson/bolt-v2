@@ -2891,7 +2891,7 @@ index d6c2c71..b954a0e 100644
 +#[cfg(test)]
 +#[allow(dead_code)]
 diff --git a/src/config.rs b/src/config.rs
-index cef32b2..db7fa79 100644
+index cef32b2..400ca69 100644
 --- a/src/config.rs
 +++ b/src/config.rs
 @@ -17,0 +18 @@ use crate::util::normalize_win_path;
@@ -2904,8 +2904,10 @@ index cef32b2..db7fa79 100644
 +    ffi::{OsStrExt, OsStringExt},
 +    fs::OpenOptionsExt,
 +};
-@@ -38,0 +46,806 @@ use crate::errors::*;
-+use crate::protocol::{StrictCompilerFamily, StrictCompilerIdentity, StrictServerIdentity};
+@@ -38,0 +46,815 @@ use crate::errors::*;
++use crate::protocol::{
++    StrictCompilerFamily, StrictCompilerIdentity, StrictEnvironmentEntry, StrictServerIdentity,
++};
 +
 +const CONSUMER_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 +
@@ -2962,7 +2964,7 @@ index cef32b2..db7fa79 100644
 +    abstract_socket_name: Vec<u8>,
 +    timeouts: ConsumerTimeouts,
 +    max_frame_bytes: u64,
-+    compiler_identities: Vec<(Vec<u8>, ConsumerCompilerFamily)>,
++    compiler_identities: Vec<ConsumerCompiler>,
 +    routing: Vec<ConsumerEnvironmentEntry>,
 +    handshake: ConsumerHandshakePolicy,
 +}
@@ -3018,9 +3020,17 @@ index cef32b2..db7fa79 100644
 +            compilers: self
 +                .compiler_identities
 +                .iter()
-+                .map(|(path, family)| StrictCompilerIdentity {
-+                    path: path.clone(),
-+                    family: strict_compiler_family(family),
++                .map(|compiler| StrictCompilerIdentity {
++                    path: compiler.path.clone(),
++                    family: strict_compiler_family(&compiler.family),
++                    environment: compiler
++                        .environment
++                        .iter()
++                        .map(|entry| StrictEnvironmentEntry {
++                            name: entry.name.clone(),
++                            value: entry.value.clone(),
++                        })
++                        .collect(),
 +                })
 +                .collect(),
 +        }
@@ -3112,7 +3122,10 @@ index cef32b2..db7fa79 100644
 +    }
 +}
 +
-+fn code_owned_semantic_environment_name(family: &ConsumerCompilerFamily, name: &[u8]) -> bool {
++pub(crate) fn code_owned_semantic_environment_name(
++    family: StrictCompilerFamily,
++    name: &[u8],
++) -> bool {
 +    const CARGO_NAMES: &[&[u8]] = &[
 +        b"CARGO",
 +        b"CARGO_CRATE_NAME",
@@ -3142,12 +3155,12 @@ index cef32b2..db7fa79 100644
 +        b"PROFILE",
 +        b"TARGET",
 +    ];
-+    CARGO_NAMES.contains(&name)
++    (family == StrictCompilerFamily::Rust && CARGO_NAMES.contains(&name))
 +        || matches!(
 +            (family, name),
-+            (ConsumerCompilerFamily::Rust, b"CARGO_ENCODED_RUSTFLAGS")
-+                | (ConsumerCompilerFamily::Rust, b"RUSTC")
-+                | (ConsumerCompilerFamily::Rust, b"RUSTDOC")
++            (StrictCompilerFamily::Rust, b"CARGO_ENCODED_RUSTFLAGS")
++                | (StrictCompilerFamily::Rust, b"RUSTC")
++                | (StrictCompilerFamily::Rust, b"RUSTDOC")
 +        )
 +}
 +
@@ -3168,11 +3181,7 @@ index cef32b2..db7fa79 100644
 +        abstract_socket_name: snapshot.abstract_socket_name.clone(),
 +        timeouts: snapshot.timeouts.clone(),
 +        max_frame_bytes: snapshot.max_frame_bytes,
-+        compiler_identities: snapshot
-+            .compilers
-+            .iter()
-+            .map(|configured| (configured.path.clone(), configured.family.clone()))
-+            .collect(),
++        compiler_identities: snapshot.compilers.clone(),
 +        routing: snapshot.routing.clone(),
 +        handshake: snapshot.handshake.clone(),
 +    })
@@ -3246,7 +3255,7 @@ index cef32b2..db7fa79 100644
 +    }
 +    for (name, value) in raw {
 +        ensure!(
-+            code_owned_semantic_environment_name(&compiler.family, &name),
++            code_owned_semantic_environment_name(strict_compiler_family(&compiler.family), &name,),
 +            "raw compiler environment contains an unknown name"
 +        );
 +        entries.push(ConsumerEnvironmentEntry { name, value });
@@ -3711,7 +3720,7 @@ index cef32b2..db7fa79 100644
 +    }
 +    Ok(length)
 +}
-@@ -1356,0 +2170,284 @@ impl Config {
+@@ -1356,0 +2179,284 @@ impl Config {
 +/// Bind the strict protocol to the effective cache and timeout policy.
 +pub fn strict_server_identity(
 +    config: &Config,
@@ -4396,7 +4405,7 @@ index 43965d0..542ca17 100644
 +            std::os::unix::net::UnixStream::set_write_timeout(self, timeout)
 +        }
 diff --git a/src/protocol.rs b/src/protocol.rs
-index 8760ba6..5471924 100644
+index 8760ba6..d5cacc5 100644
 --- a/src/protocol.rs
 +++ b/src/protocol.rs
 @@ -4,0 +5,2 @@ use std::ffi::OsString;
@@ -4407,7 +4416,7 @@ index 8760ba6..5471924 100644
 +    GetServerIdentity,
 +    /// Execute a request classified and bound to one immutable consumer snapshot.
 +    StrictCompile(ClassifiedRequest),
-@@ -35,0 +42,45 @@ pub enum Response {
+@@ -35,0 +42,52 @@ pub enum Response {
 +    /// Identity and runtime policy of the governed strict server.
 +    ServerIdentity(StrictServerIdentity),
 +    /// Bound completion of a governed strict compilation.
@@ -4428,6 +4437,13 @@ index 8760ba6..5471924 100644
 +pub struct StrictCompilerIdentity {
 +    pub path: Vec<u8>,
 +    pub family: StrictCompilerFamily,
++    pub environment: Vec<StrictEnvironmentEntry>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct StrictEnvironmentEntry {
++    pub name: Vec<u8>,
++    pub value: Vec<u8>,
 +}
 +
 +/// Identity negotiated before any governed server request is accepted by a client.
@@ -4453,10 +4469,10 @@ index 8760ba6..5471924 100644
 +            ..Self::default()
 +        }
 +    }
-@@ -43 +94 @@ pub enum CompileResponse {
+@@ -43 +101 @@ pub enum CompileResponse {
 -    /// The server could not handle this compilation request.
 +    /// Legacy upstream response. It is retained at its original wire discriminant and is fatal.
-@@ -46,0 +98,20 @@ pub enum CompileResponse {
+@@ -46,0 +105,20 @@ pub enum CompileResponse {
 +    /// The parser classified this bound invocation as not being a compilation.
 +    NotCompilation(StrictResponseBinding),
 +    /// The parser classified this bound invocation as a compilation that cannot be cached.
@@ -4477,7 +4493,7 @@ index 8760ba6..5471924 100644
 +pub struct StrictResponseBinding {
 +    pub request_digest: [u8; 32],
 +    pub snapshot_digest: String,
-@@ -75,0 +147,169 @@ pub struct Compile {
+@@ -75,0 +154,169 @@ pub struct Compile {
 +
 +/// A complete request whose classification remains attached through the response boundary.
 +#[derive(Serialize, Deserialize, Debug)]
@@ -4648,7 +4664,7 @@ index 8760ba6..5471924 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..59bb08e 100644
+index 98cedfb..3a10e51 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16,2 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -4660,11 +4676,14 @@ index 98cedfb..59bb08e 100644
 -    CompilerProxy, DistType, Language, MissType, get_compiler_info,
 +    CacheControl, CacheWriteInfo, CompileResult, Compiler, CompilerArguments, CompilerHasher,
 +    CompilerKind, CompilerProxy, DistType, Language, MissType, get_compiler_info,
+@@ -23 +24 @@ use crate::config;
+-use crate::config::Config;
++use crate::config::{Config, code_owned_semantic_environment_name};
 @@ -27 +28,4 @@ use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 -use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 +use crate::protocol::{
 +    ClassifiedRequest, CompileFinished, CompileResponse, Request, Response, StrictCompilerFamily,
-+    StrictResponseBinding, StrictServerIdentity,
++    StrictEnvironmentEntry, StrictResponseBinding, StrictServerIdentity,
 +};
 @@ -30,0 +35 @@ use anyhow::Context as _;
 +use anyhow::ensure;
@@ -4969,7 +4988,7 @@ index 98cedfb..59bb08e 100644
 -        }
 +        builder
 +            .max_frame_length(usize::try_from(self.identity.max_frame_bytes).unwrap_or(usize::MAX));
-@@ -1061 +1287,24 @@ where
+@@ -1061 +1287,34 @@ where
 -    async fn handle_compile(&self, compile: Compile) -> Result<SccacheResponse> {
 +    async fn handle_compile(&self, compile: ClassifiedRequest) -> Result<SccacheResponse> {
 +        ensure!(
@@ -4980,40 +4999,48 @@ index 98cedfb..59bb08e 100644
 +            compile.binding.snapshot_digest == self.identity.config_fingerprint,
 +            "strict compile request snapshot mismatch"
 +        );
++        reject_forced_cache_modes(&compile.env_vars)?;
 +        #[cfg(unix)]
 +        {
-+            let configured_compiler = self.identity.compilers.iter().any(|compiler| {
++            let configured_compiler = self.identity.compilers.iter().find(|compiler| {
 +                compiler.path == compile.exe.as_os_str().as_bytes()
 +                    && compiler.family == compile.compiler_family
 +            });
 +            #[cfg(test)]
-+            let configured_compiler = configured_compiler || self.identity.compilers.is_empty();
++            let configured_compiler_missing_is_allowed = self.identity.compilers.is_empty();
++            #[cfg(not(test))]
++            let configured_compiler_missing_is_allowed = false;
 +            ensure!(
-+                configured_compiler,
++                configured_compiler.is_some() || configured_compiler_missing_is_allowed,
 +                "strict compile request compiler identity mismatch"
 +            );
++            validate_strict_compiler_environment(
++                &compile.env_vars,
++                configured_compiler
++                    .map(|compiler| compiler.environment.as_slice())
++                    .unwrap_or_default(),
++                compile.compiler_family,
++            )?;
 +        }
 +        let binding = compile.binding.clone();
 +        let compiler_family = compile.compiler_family;
-@@ -1065,0 +1315 @@ where
-+        reject_forced_cache_modes(&env_vars)?;
-@@ -1067 +1316,0 @@ where
+@@ -1067 +1325,0 @@ where
 -
-@@ -1071 +1320,3 @@ where
+@@ -1071 +1329,3 @@ where
 -        Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
 +        Ok(me
 +            .check_compiler(info, cmd, cwd, env_vars, compiler_family, binding)
 +            .await)
-@@ -1238,0 +1490,2 @@ where
+@@ -1238,0 +1499,2 @@ where
 +        compiler_family: StrictCompilerFamily,
 +        binding: StrictResponseBinding,
-@@ -1245 +1498,4 @@ where
+@@ -1245 +1507,4 @@ where
 -                    CompileResponse::UnsupportedCompiler(OsString::from(e.to_string())),
 +                    CompileResponse::StrictUnsupportedCompiler {
 +                        binding,
 +                        reason: OsString::from(e.to_string()),
 +                    },
-@@ -1249,0 +1506,21 @@ where
+@@ -1249,0 +1515,21 @@ where
 +                let compiler_matches = matches!(
 +                    (compiler_family, c.kind()),
 +                    (StrictCompilerFamily::Rust, CompilerKind::Rust)
@@ -5035,9 +5062,9 @@ index 98cedfb..59bb08e 100644
 +                        },
 +                    ));
 +                }
-@@ -1255,0 +1533 @@ where
+@@ -1255,0 +1542 @@ where
 +                        let finished_binding = binding.clone();
-@@ -1259 +1537,6 @@ where
+@@ -1259 +1546,6 @@ where
 -                            .and_then(|res| async { Ok(Response::CompileFinished(res)) })
 +                            .and_then(|result| async move {
 +                                Ok(Response::StrictCompileFinished {
@@ -5045,25 +5072,25 @@ index 98cedfb..59bb08e 100644
 +                                    result,
 +                                })
 +                            })
-@@ -1263 +1546 @@ where
+@@ -1263 +1555 @@ where
 -                            Response::Compile(CompileResponse::CompileStarted),
 +                            Response::Compile(CompileResponse::StrictCompileStarted(binding)),
-@@ -1278,0 +1562,6 @@ where
+@@ -1278,0 +1571,6 @@ where
 +                        return Message::WithoutBody(Response::Compile(
 +                            CompileResponse::CannotCache {
 +                                binding,
 +                                reason: why.to_string(),
 +                            },
 +                        ));
-@@ -1282,0 +1572,3 @@ where
+@@ -1282,0 +1581,3 @@ where
 +                        return Message::WithoutBody(Response::Compile(
 +                            CompileResponse::NotCompilation(binding),
 +                        ));
-@@ -1287,3 +1578,0 @@ where
+@@ -1287,3 +1587,0 @@ where
 -
 -        let res = CompileResponse::UnhandledCompile;
 -        Message::WithoutBody(Response::Compile(res))
-@@ -1304,11 +1593 @@ where
+@@ -1304,11 +1602 @@ where
 -
 -        let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
 -        let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
@@ -5076,7 +5103,7 @@ index 98cedfb..59bb08e 100644
 -            CacheControl::Default
 -        };
 +        let cache_control = CacheControl::Default;
-@@ -1418,0 +1698,10 @@ where
+@@ -1418,0 +1707,10 @@ where
 +                            CompileResult::ReadOnlyCacheMiss(miss_type, dt, duration) => {
 +                                debug!("[{}]: governed read-only cache miss", out_pretty);
 +                                dist_type = dt;
@@ -5087,7 +5114,7 @@ index 98cedfb..59bb08e 100644
 +                                stats.cache_misses.increment(&kind, &lang);
 +                                stats.compiler_write_duration += duration;
 +                            }
-@@ -1522,7 +1811,5 @@ where
+@@ -1522,7 +1820,5 @@ where
 -                    match cache_write.await {
 -                        Err(e) => {
 -                            debug!("Error executing cache write: {}", e);
@@ -5100,7 +5127,43 @@ index 98cedfb..59bb08e 100644
 +                    {
 +                        None => me.stats.lock().await.cache_write_errors += 1,
 +                        Some(info) => {
-@@ -1581,0 +1869,33 @@ impl PerLanguageCount {
+@@ -1581,0 +1878,69 @@ impl PerLanguageCount {
++#[cfg(unix)]
++fn validate_strict_compiler_environment(
++    env_vars: &[(OsString, OsString)],
++    fixed_environment: &[StrictEnvironmentEntry],
++    family: StrictCompilerFamily,
++) -> Result<()> {
++    let mut previous_name: Option<&[u8]> = None;
++    for (name, value) in env_vars {
++        let name = name.as_os_str().as_bytes();
++        ensure!(
++            previous_name.is_none_or(|previous| previous < name),
++            "strict compiler environment is not uniquely sorted"
++        );
++        previous_name = Some(name);
++        match fixed_environment.iter().find(|entry| entry.name == name) {
++            Some(entry) => ensure!(
++                entry.value == value.as_os_str().as_bytes(),
++                "strict compiler environment fixed value mismatch"
++            ),
++            None => ensure!(
++                code_owned_semantic_environment_name(family, name),
++                "strict compiler environment contains an unknown name"
++            ),
++        }
++    }
++    for required in fixed_environment {
++        ensure!(
++            env_vars
++                .iter()
++                .any(|(name, _)| name.as_os_str().as_bytes() == required.name),
++            "strict compiler environment is missing a fixed entry"
++        );
++    }
++    Ok(())
++}
++
 +fn reject_forced_cache_modes(env_vars: &[(OsString, OsString)]) -> Result<()> {
 +    if env_vars
 +        .iter()
@@ -5134,7 +5197,7 @@ index 98cedfb..59bb08e 100644
 +    }
 +}
 +
-@@ -2284,0 +2605,185 @@ mod tests {
+@@ -2284,0 +2650,214 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();
@@ -5185,6 +5248,35 @@ index 98cedfb..59bb08e 100644
 +            Err(error) => error,
 +        };
 +        assert!(error.to_string().contains("request digest mismatch"));
++    }
++
++    #[test]
++    fn strict_unknown_compiler_environment_is_rejected_before_resolution() {
++        let runtime = Runtime::new().unwrap();
++        let storage = Arc::new(crate::test::mock_storage::MockStorage::new(None, false));
++        let mut service = SccacheService::<ProcessCommandCreator>::mock_with_storage(
++            storage,
++            runtime.handle().clone(),
++        );
++        service.identity.compilers = vec![crate::protocol::StrictCompilerIdentity {
++            path: b"/usr/bin/rustc".to_vec(),
++            family: StrictCompilerFamily::Rust,
++            environment: Vec::new(),
++        }];
++        let request = ClassifiedRequest::new(
++            OsString::from("/usr/bin/rustc"),
++            OsString::from("."),
++            Vec::new(),
++            vec![(OsString::from("UNEXPECTED"), OsString::from("1"))],
++            StrictCompilerFamily::Rust,
++            String::new(),
++        );
++
++        let error = match runtime.block_on(service.handle_compile(request)) {
++            Ok(_) => panic!("unknown environment reached compiler resolution"),
++            Err(error) => error,
++        };
++        assert!(error.to_string().contains("unknown name"));
 +    }
 +
 +    #[test]

@@ -1,680 +1,150 @@
-# Strict sccache Runtime Implementation Plan
+# Strict sccache Runtime Reconciliation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution:** Use `superpowers:executing-plans` task by task. Preserve the existing branch and commits. Do not publish, merge, or edit PR #1494 until the gates below authorize that action.
 
-**Goal:** Build and publish a reproducible ARM64/X64 sccache v0.16.0 derivative in which only explicit server classifications authorize client compiler execution and every cache, storage, IPC, or lifecycle failure is fatal.
+**Goal:** Reconcile the existing PR #1497 implementation with the approved design at `e66cf11f6`, producing one reproducible ARM64/X64 sccache v0.16.0 derivative whose typed configuration, compiler environment, request classification, child-launch, transport, storage, and publication boundaries fail closed without silently bypassing the cache.
 
-**Architecture:** The repository stores one reviewed patch against the digest-pinned upstream archive, one build-provenance TOML, one Python config/manifest verifier, and one canonical shell build recipe. A single workflow builds the TOML-governed replicas per architecture inside a pinned musl container without sccache, verifies byte equality and host execution, and permits publication only from exact-current `main` through a protected immutable-release environment. PR #1494 remains the sole consumer/adoption change and the sole owner of install IDs, binary digests, cache location, and runtime timeout values.
+**Architecture:** The derivative owns one canonical `ConsumerConfigSnapshot` materializer/encoder/schema/loader, one typed `StrictClientControls`, one irreversible family-aware `CompilerEnvironment`, one retained `ClassifiedRequest`, one private `StrictChildLauncher`, and one response-commit/terminal-poison authority. The repository owns one digest-pinned upstream patch, one strict build-provenance TOML, one verifier, one cacheless build recipe, one release workflow, and one runner registry. PR #1494 remains the consumer/adoption change.
 
-**Tech Stack:** Rust 1.97.1, sccache v0.16.0, Python 3.12 standard library, TOML, GitHub Actions, GitHub Releases REST API 2026-03-10, Docker/OCI, musl Linux ARM64/X64.
+**Authoritative files:**
 
-## Global Constraints
+- `docs/superpowers/specs/2026-07-21-strict-sccache-runtime-design.md`
+- `ci/sccache-strict/sccache-v0.16.0-strict.patch`
+- `ci/sccache-strict.toml`
+- `scripts/sccache_strict.py`
+- `scripts/test_sccache_strict.py`
+- `scripts/build_strict_sccache.sh`
+- `.github/workflows/sccache-strict-release.yml`
+- `ci/github-actions-runners.toml`
 
-- Base upstream source is commit `b799af2eea02bba9e0ef2550775fe10296b62981`; archive SHA-256 is `a4419b0a2278255d11eda1f76ee98efab0aec72649617bbefd24a5e92acf4af3`.
-- Builder image is `docker.io/clux/muslrust@sha256:76df925f30e106755517c78cd57b6ea890a73d6f59fcff842849006e734c174e`; it must report `rustc 1.97.1` at commit `8bab26f4f68e0e26f0bb7960be334d5b520ea452`.
-- Build features, default-feature policy, profile, native targets, and normalized build settings come only from `ci/sccache-strict.toml` and are bound into every candidate manifest. Vendored OpenSSL is lockfile-pinned and removes a mutable host-library dependency from static musl builds.
-- `SOURCE_DATE_EPOCH` is `1781869188`, the pinned upstream commit time.
-- `RUSTC_WRAPPER`, sccache, incremental compilation, cache credentials, and AWS OIDC are absent from builders.
-- Only `NotCompilation` and `CannotCache(reason)` responses may authorize client compiler execution. Reasons are telemetry, never runtime policy.
-- Only an authoritative S3 `NotFound` is a cache miss. Every other storage, corruption, timeout, IPC, or configuration failure is fatal.
-- The strict binary requires positive integer values for `SCCACHE_STRICT_STARTUP_TIMEOUT_MS`, `SCCACHE_STRICT_IPC_TIMEOUT_MS`, `SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS`, and `SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS`; it has no defaults. PR #1494 later exports these from `ci/sccache-location.toml`.
-- Exactly one S3 backend and one configured `SCCACHE_S3_RW_MODE` are accepted. Disk fallback, alternate backends, multilevel storage, forced no-cache, forced recache, and automatic server startup are rejected.
-- External Actions use full 40-character commit SHAs. Repository automation uses only `GITHUB_TOKEN`.
-- Tests are behavioral. Do not add repository source-scanning tests.
-- This PR does not edit PR #1494, #1495, #1496, Rust Probe, AWS IAM, repository settings, or release assets.
+## Global gates
+
+- Preserve the local branch and its ahead commits. Never reset, recreate, force-push, or overwrite unrelated runner mappings.
+- Validate the patch only in the pristine `/private/tmp/sccache-v0.16.0-review` tree at upstream commit `b799af2eea02bba9e0ef2550775fe10296b62981`. Require a clean tree before application, exact forward application, and exact reverse application after all tests.
+- Runtime values come from TOML. Code owns schemas, variants, types, and semantic allowlists; it owns no alternate runtime defaults or environment fallbacks.
+- Tests exercise behavior, protocol, process, transport, storage, and filesystems. Add no source-scanning tests.
+- Use remote-first Rust verification. Cheap Python, TOML, patch, formatting, and actionlint checks run locally. Native architecture suites and replica builds run in the dedicated workflow.
+- Every rejection must happen at the earliest governed boundary. Environment errors are fatal; only truthful `NotCompilation` and typed `CannotCache` authorize exactly one classified client execution.
+- Do not merge #1497 until #1495 has native approval and is merged, then mechanically rebase #1497 and preserve both workflow runner mappings.
+- Do not remove the temporary design and plan until implementation findings and exact-head evidence are resolved. Their removal must be a behavior-neutral commit followed by a full evidence rerun and fresh code-only review.
 
 ---
 
-### Task 1: Build-Provenance Configuration and Manifest Verifier
-
-**Files:**
-- Create: `ci/sccache-strict.toml`
-- Create: `scripts/sccache_strict.py`
-- Create: `scripts/test_sccache_strict.py`
-
-**Interfaces:**
-- Produces: `StrictBuildConfig`, `TargetConfig`, `CandidateManifest`, `load_config()`, `write_candidate_manifest()`, `verify_candidate_set()`, `validate_publish_context()`, and `verify_release_record()`.
-- Produces CLI commands used by the workflow: `show-target`, `candidate-manifest`, `verify-candidates`, `validate-publish-context`, and `verify-release-record`.
-- Does not publish, call GitHub, mutate tracked files, or own consumer asset IDs/digests.
-
-- [ ] **Step 1: Write configuration-validation tests**
-
-Add `unittest` cases that load a temporary TOML and prove exact acceptance/rejection:
-
-```python
-class LoadConfigTests(unittest.TestCase):
-    def test_loads_exact_pinned_build(self) -> None:
-        config = load_config(REPO_ROOT / "ci/sccache-strict.toml")
-        self.assertEqual(config.schema_version, 1)
-        self.assertEqual(config.source_commit, "b799af2eea02bba9e0ef2550775fe10296b62981")
-        self.assertEqual(config.source_sha256, "a4419b0a2278255d11eda1f76ee98efab0aec72649617bbefd24a5e92acf4af3")
-        self.assertEqual(config.container_digest, "sha256:76df925f30e106755517c78cd57b6ea890a73d6f59fcff842849006e734c174e")
-        self.assertEqual(set(config.targets), {"ARM64", "X64"})
-
-    def test_rejects_unknown_key_and_unpinned_image(self) -> None:
-        document = valid_document()
-        document["build"]["extra"] = "forbidden"
-        with self.assertRaisesRegex(ValueError, "unknown build key"):
-            load_document(document)
-        document = valid_document()
-        document["build"]["container"] = "docker.io/clux/muslrust:stable"
-        with self.assertRaisesRegex(ValueError, "container must use sha256 digest"):
-            load_document(document)
-```
-
-- [ ] **Step 2: Run the tests and confirm the missing-module failure**
-
-Run: `python3.12 -m unittest scripts/test_sccache_strict.py -v`
-
-Expected: FAIL because `scripts.sccache_strict` and `ci/sccache-strict.toml` do not exist.
-
-- [ ] **Step 3: Add the exact build-provenance TOML**
-
-Use this schema and values:
-
-```toml
-schema_version = 1
-
-[source]
-version = "0.16.0"
-commit = "b799af2eea02bba9e0ef2550775fe10296b62981"
-archive_url = "https://github.com/mozilla/sccache/archive/b799af2eea02bba9e0ef2550775fe10296b62981.tar.gz"
-archive_sha256 = "a4419b0a2278255d11eda1f76ee98efab0aec72649617bbefd24a5e92acf4af3"
-source_date_epoch = 1781869188
-patch = "ci/sccache-strict/sccache-v0.16.0-strict.patch"
-
-[build]
-container = "docker.io/clux/muslrust@sha256:76df925f30e106755517c78cd57b6ea890a73d6f59fcff842849006e734c174e"
-workflow = ".github/workflows/sccache-strict-release.yml"
-recipe = "scripts/build_strict_sccache.sh"
-rustc_release = "1.97.1"
-rustc_commit = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
-features = ["s3", "vendored-openssl"]
-default_features = false
-profile = "release"
-
-[verification]
-strict_timeout_ms = 1000
-cache_mode = "READ_WRITE"
-replicas = ["a", "b"]
-attestation_attempts = 12
-attestation_interval_seconds = 10
-
-[targets.ARM64]
-triple = "aarch64-unknown-linux-musl"
-elf_machine = "AArch64"
-
-[targets.X64]
-triple = "x86_64-unknown-linux-musl"
-elf_machine = "Advanced Micro Devices X86-64"
-```
-
-- [ ] **Step 4: Implement strict typed parsing**
-
-Define immutable dataclasses and reject booleans-as-integers, missing keys, unknown keys, non-HTTPS source URLs, non-full SHAs, non-64-character digests, duplicate triples, and any target outside `ARM64`/`X64`:
-
-```python
-@dataclasses.dataclass(frozen=True)
-class TargetConfig:
-    triple: str
-    elf_machine: str
-
-@dataclasses.dataclass(frozen=True)
-class StrictBuildConfig:
-    schema_version: int
-    source_version: str
-    source_commit: str
-    source_url: str
-    source_sha256: str
-    source_date_epoch: int
-    patch_path: pathlib.Path
-    workflow_path: pathlib.Path
-    recipe_path: pathlib.Path
-    container: str
-    container_digest: str
-    rustc_release: str
-    rustc_commit: str
-    features: tuple[str, ...]
-    default_features: bool
-    profile: str
-    verification_timeout_ms: int
-    verification_cache_mode: str
-    replicas: tuple[str, ...]
-    attestation_attempts: int
-    attestation_interval_seconds: int
-    targets: Mapping[str, TargetConfig]
-
-def load_config(path: pathlib.Path) -> StrictBuildConfig:
-    document = tomllib.loads(path.read_text(encoding="utf-8"))
-    return load_document(document, repo_root=path.resolve().parents[1])
-```
-
-- [ ] **Step 5: Write failing manifest tests**
-
-Cover same-head binding, architecture/replica uniqueness, binary SHA-256 recomputation, patch SHA-256 recomputation, exact four-candidate set, per-architecture byte equality, build-input-sensitive release identity, exact asset set, release tag target, `immutable: true`, and asset API digests:
-
-```python
-def test_verify_candidates_rejects_cross_run_manifest(self) -> None:
-    manifests, binaries = candidate_fixture()
-    manifests[0]["run_id"] = "other-run"
-    with self.assertRaisesRegex(ValueError, "same workflow run"):
-        verify_candidate_set(manifests, binaries)
-
-def test_verify_release_record_requires_exact_immutable_assets(self) -> None:
-    expected = verified_candidate_set()
-    release = release_fixture(expected, immutable=False)
-    with self.assertRaisesRegex(ValueError, "release is not immutable"):
-        verify_release_record(expected, release, tag_ref={})
-```
-
-- [ ] **Step 6: Implement canonical manifests and pure publication gates**
-
-Use sorted-key compact JSON and lowercase hex digests. The candidate manifest must contain exactly:
-
-```python
-REQUIRED_CANDIDATE_KEYS = {
-    "schema_version", "repository", "run_id", "run_attempt", "head_sha", "architecture",
-    "target", "replica", "source_commit", "source_sha256", "source_date_epoch",
-    "patch_sha256", "workflow_sha256", "recipe_sha256", "container",
-    "rustc_release", "rustc_commit", "features",
-    "default_features", "profile", "verification_timeout_ms", "binary_name",
-    "binary_sha256", "binary_size",
-}
-```
-
-`validate_publish_context()` must require `event_name == "workflow_dispatch"`, `requested_sha == event_sha == remote_main_sha`, `event_ref == "refs/heads/main"`, and live environment JSON for `strict-sccache-publisher` whose deployment policy admits protected branches. A missing environment is failure; the workflow must not rely on GitHub implicitly creating it. `verify_release_record()` requires the actual tag ref to point directly to the exact head commit, the release's matching target field, `draft == false`, `immutable == true`, the exact three assets (ARM64 binary, X64 binary, provenance JSON), and matching `sha256:` API digests. The workflow separately performs GitHub CLI cryptographic release and per-asset verification. A mutable publication result must be deleted with only its exact generated tag before the workflow fails.
-
-- [ ] **Step 7: Run the targeted tests**
-
-Run: `python3.12 -m unittest scripts/test_sccache_strict.py -v`
-
-Expected: all config, manifest, and publication-gate tests PASS.
-
-- [ ] **Step 8: Commit the config/verifier unit**
-
-```bash
-git add ci/sccache-strict.toml scripts/sccache_strict.py scripts/test_sccache_strict.py
-git commit -m "feat(ci): govern strict sccache provenance"
-```
-
-### Task 2: Explicit Classification and Connect-Only Client Patch
-
-**Files:**
-- Create: `ci/sccache-strict/sccache-v0.16.0-strict.patch`
-- Upstream files represented in the patch: `src/cache/cache.rs`, `src/cache/cache_io.rs`, `src/cache/readonly.rs`, `src/client.rs`, `src/commands.rs`, `src/compiler/compiler.rs`, `src/compiler/nvcc.rs`, `src/config.rs`, `src/net.rs`, `src/protocol.rs`, `src/server.rs`, and `src/test/mock_storage.rs`
-
-**Interfaces:**
-- Produces upstream protocol variants `CompileResponse::NotCompilation` and `CompileResponse::CannotCache(String)`.
-- Produces `connect_required(addr, ipc_timeout, expected_identity) -> Result<ServerConnection>` and a mandatory server-identity handshake binding the derivative, backend, mode, and timeout policy.
-- Produces `StrictTimeouts::from_env() -> Result<StrictTimeouts>` with four required positive durations.
-- Preserves original client stdin, stdout, stderr, environment, cwd, and jobserver file descriptors for classified client execution.
-
-- [ ] **Step 1: Prepare a disposable exact upstream tree**
-
-Run:
-
-```bash
-STRICT_SCCACHE_TMP="$(mktemp -d)"
-export STRICT_SCCACHE_TMP
-curl -fL --proto '=https' --tlsv1.2 -o "$STRICT_SCCACHE_TMP/sccache.tar.gz" "https://github.com/mozilla/sccache/archive/b799af2eea02bba9e0ef2550775fe10296b62981.tar.gz"
-printf '%s  %s\n' 'a4419b0a2278255d11eda1f76ee98efab0aec72649617bbefd24a5e92acf4af3' "$STRICT_SCCACHE_TMP/sccache.tar.gz" | sha256sum --check --strict
-mkdir "$STRICT_SCCACHE_TMP/sccache-source"
-tar -xzf "$STRICT_SCCACHE_TMP/sccache.tar.gz" --strip-components=1 -C "$STRICT_SCCACHE_TMP/sccache-source"
-git -C "$STRICT_SCCACHE_TMP/sccache-source" init
-git -C "$STRICT_SCCACHE_TMP/sccache-source" add .
-git -C "$STRICT_SCCACHE_TMP/sccache-source" -c user.name=builder -c user.email=builder@example.invalid commit -m upstream
-```
-
-Expected: digest check succeeds and the disposable repository has one clean baseline commit.
-
-- [ ] **Step 2: Add failing protocol and response-handler tests upstream**
-
-The tests must assert:
-
-```rust
-#[test]
-fn cannot_cache_reason_authorizes_exactly_one_client_command() {
-    let response = CompileResponse::CannotCache("-".to_owned());
-    let (result, commands) = run_response(response, client_command_that_reads_stdin());
-    assert_eq!(result.unwrap(), 0);
-    assert_eq!(commands.spawn_count(), 1);
-}
-
-#[test]
-fn eof_after_compile_started_never_spawns() {
-    let (result, commands) = run_compile_started_with_read_error(ErrorKind::UnexpectedEof);
-    assert!(result.is_err());
-    assert_eq!(commands.spawn_count(), 0);
-}
-
-#[test]
-fn missing_server_never_starts_one() {
-    let result = connect_required(&unused_socket(), strict_timeouts());
-    assert!(result.is_err());
-    assert_eq!(observed_server_processes(), 0);
-}
-```
-
-Define the helpers inside the test module with `MockCommandCreator`, an in-memory fake connection, and an atomic spawn counter; do not inspect Rust source text.
-
-- [ ] **Step 3: Run the focused tests and verify red state**
-
-Run inside the pinned builder image:
-
-```bash
-cargo test --locked --no-default-features --features s3,vendored-openssl strict_ -- --nocapture
-```
-
-Expected: FAIL because the dedicated variants, required timeouts, and connect-only helper do not exist.
-
-- [ ] **Step 4: Split explicit classifications from failures**
-
-Change the response protocol and server classification to:
-
-```rust
-pub enum CompileResponse {
-    CompileStarted,
-    UnhandledCompile,
-    UnsupportedCompiler(OsString),
-    NotCompilation,
-    CannotCache(String),
-}
-```
-
-The first three variants retain the upstream wire discriminants; the two strict classifications are appended. `check_compiler()` returns `CannotCache(why.to_string())` after incrementing `requests_not_cacheable` and `not_cached[why]`; it returns `NotCompilation` after incrementing `requests_not_compile`. `handle_compile_response()` runs the client command only for those two variants. Legacy `UnhandledCompile`, `UnsupportedCompiler`, EOF, other read errors, and unexpected responses return errors before `spawn()`.
-
-- [ ] **Step 5: Add required strict timeout parsing**
-
-Add:
-
-```rust
-#[derive(Clone, Copy, Debug)]
-pub struct StrictTimeouts {
-    pub startup: Duration,
-    pub ipc: Duration,
-    pub cache_read: Duration,
-    pub cache_write: Duration,
-}
-
-impl StrictTimeouts {
-    pub fn from_env() -> Result<Self> {
-        Ok(Self {
-            startup: required_millis("SCCACHE_STRICT_STARTUP_TIMEOUT_MS")?,
-            ipc: required_millis("SCCACHE_STRICT_IPC_TIMEOUT_MS")?,
-            cache_read: required_millis("SCCACHE_STRICT_CACHE_READ_TIMEOUT_MS")?,
-            cache_write: required_millis("SCCACHE_STRICT_CACHE_WRITE_TIMEOUT_MS")?,
-        })
-    }
-}
-```
-
-Reject missing, zero, negative, non-decimal, overflow, or whitespace-padded values. `StartServer`, `InternalStartServer`, `Compile`, `ShowStats`, `ZeroStats`, and `StopServer` load the same values. `--version` remains configuration-free.
-
-- [ ] **Step 6: Make all non-start commands connect-only with governed IPC timeouts**
-
-Extend `net::Connection` with `set_read_timeout()` and `set_write_timeout()`. Add `ServerConnection::set_timeout()` to apply both values to its cloned reader and writer streams. Replace `connect_or_start_server()` in compile, zero-stats, stats, and evidence paths with:
-
-```rust
-fn connect_required(
-    addr: &SocketAddr,
-    timeout: Duration,
-    expected_identity: &StrictServerIdentity,
-) -> Result<ServerConnection> {
-    let mut connection = connect_with_timeout(addr, timeout)
-        .context("governed sccache server is not running")?;
-    connection.set_timeout(timeout)?;
-    require_exact_server_identity(&mut connection, expected_identity)?;
-    Ok(connection)
-}
-```
-
-Delete the empty-statistics fallback from `ShowStats`. Route `StopServer` through the same governed connection and handshake. Keep `run_server_process()` reachable only from explicit `StartServer`; on Unix retain the direct child handle, kill and reap it on startup timeout, and refuse to replace a live socket.
-
-- [ ] **Step 7: Add classified-command preservation tests**
-
-Pass commands equivalent to the following through the dedicated `CannotCache` and `NotCompilation` responses:
-
-```bash
-printf 'pub fn probe() {}\n' | sccache rustc - --crate-name stdin_probe --crate-type lib --emit metadata -o stdin_probe.rmeta
-sccache rustc probe.rs --crate-name asm_probe --crate-type lib --emit asm -o probe.s
-```
-
-Assert that each typed response authorizes exactly one client command with the original arguments and that EOF after `CompileStarted` authorizes none. The patch leaves the upstream client command construction unchanged, so inherited stdin, output file descriptors, cwd, environment, and jobserver descriptors remain structural equivalents rather than a second execution implementation.
-
-- [ ] **Step 8: Regenerate the repository patch and commit**
-
-Run `git -C "$STRICT_SCCACHE_TMP/sccache-source" diff --binary HEAD > ci/sccache-strict/sccache-v0.16.0-strict.patch`, then:
-
-```bash
-git add ci/sccache-strict/sccache-v0.16.0-strict.patch
-git commit -m "feat(ci): make sccache classification explicit"
-```
-
-### Task 3: Strict S3, Cache Integrity, and Write Completion Patch
-
-**Files:**
-- Modify: `ci/sccache-strict/sccache-v0.16.0-strict.patch`
-- Upstream files represented in the patch: `src/cache/cache.rs`, `src/cache/cache_io.rs`, `src/compiler/compiler.rs`, `src/server.rs`, `src/config.rs`
-- Upstream tests represented in the patch: `src/cache/cache.rs`, `src/cache/cache_io.rs`, `src/compiler/compiler.rs`, `src/server.rs`
-
-**Interfaces:**
-- Consumes: `StrictTimeouts`, the dedicated compile classifications, and the existing `CacheMode`.
-- Produces: exactly-one-S3 startup validation, fatal capability checks, authoritative `NotFound` misses, `CacheObjectError::{Missing, Corrupt}`, read-only zero-put, and read-write completed-put success.
-
-- [ ] **Step 1: Write failing backend and capability tests**
-
-Add behavior tests for missing S3, `SCCACHE_MULTILEVEL_CHAIN`, disk configuration, a read capability error, rate limiting, and a read-write capability failure:
-
-```rust
-#[test]
-fn strict_storage_rejects_missing_and_multilevel_backends() {
-    assert!(strict_storage_from_config(&config_without_remote()).is_err());
-    with_env("SCCACHE_MULTILEVEL_CHAIN", "s3,disk", || {
-        assert!(strict_storage_from_config(&valid_s3_config()).is_err());
-    });
-}
-
-#[tokio::test]
-async fn read_write_check_never_demotes() {
-    let storage = remote_storage_with_write_error(ErrorKind::PermissionDenied);
-    assert!(storage.check().await.is_err());
-}
-```
-
-- [ ] **Step 2: Run focused storage tests and verify red state**
-
-Run:
-
-```bash
-cargo test --locked --no-default-features --features s3,vendored-openssl strict_ -- --nocapture
-```
-
-Expected: FAIL because upstream permits disk/multilevel selection, rate-limit tolerance, and read-write demotion.
-
-- [ ] **Step 3: Enforce one S3 backend and authoritative configured mode**
-
-Replace permissive selection with a strict constructor:
-
-```rust
-pub fn strict_storage_from_config(config: &Config, pool: &Handle) -> Result<Arc<dyn Storage>> {
-    ensure!(env::var_os("SCCACHE_MULTILEVEL_CHAIN").is_none(), "multilevel storage is forbidden");
-    match &config.cache {
-        Some(cache @ CacheType::S3(_)) => build_single_cache(cache, &config.basedirs, pool),
-        Some(_) => bail!("only the governed S3 backend is supported"),
-        None => bail!("governed S3 configuration is required"),
-    }
-}
-```
-
-Make every non-`NotFound` read error propagate. Make read capability rate limiting fatal. In configured read-write mode, propagate every failed write check rather than returning `ReadOnly`. The negotiated mode must equal configured `SCCACHE_S3_RW_MODE` before startup notification succeeds.
-
-- [ ] **Step 4: Write failing corruption tests**
+### Task 1: Establish the exact implementation delta and requirement ledger
 
-Create cache entries whose stdout, stderr, required object, and optional object members are separately missing or malformed. Assert every present-but-corrupt member fails and an absent optional object alone remains allowed:
+**Files:** Read-only inspection of all authoritative files and the pristine patched upstream tree.
 
-```rust
-#[test]
-fn corrupt_optional_object_is_not_treated_as_absent() {
-    let mut entry = cache_entry_with_corrupt_member("optional.o");
-    let error = entry.extract_objects(optional_output("optional.o")).wait().unwrap_err();
-    assert!(matches!(error.downcast_ref::<CacheObjectError>(), Some(CacheObjectError::Corrupt)));
-}
-```
+- [ ] Record the local head, upstream head, merge base, clean status, and complete changed-file list without changing branch history.
+- [ ] Verify the current patch applies to the pristine pinned tree and capture its upstream file list with `git diff --name-only` inside that tree.
+- [ ] Build a requirement ledger from the approved design with one row per boundary: snapshot, controls, raw environment, retained request, launcher, jobserver, poison gate, storage/output, reproducibility, publisher, and positive capability.
+- [ ] Map every row to implementation symbols, behavior tests, workflow evidence, and unresolved gaps. Treat missing or ambiguous evidence as unfinished work.
+- [ ] Confirm the PR owns only the standalone derivative and immutable publisher. Flag consumer adoption, install pins, storage location, runtime values, and job-wide wrapper enforcement as #1494 scope.
 
-- [ ] **Step 5: Make cache decoding distinguish absence from corruption**
+**Evidence:** clean branch/status record; exact patch forward/reverse baseline; changed-file list; requirement-to-symbol/test/evidence ledger; targeted `rg`/compiler inspection showing no second implementation path.
 
-Use a typed error:
+### Task 2: Make `ConsumerConfigSnapshot` the sole configuration authority
 
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum CacheObjectError {
-    #[error("cache object is absent")]
-    Missing,
-    #[error("cache object is corrupt")]
-    Corrupt,
-}
-```
+**Files:** patch, strict TOML, verifier, Python tests, upstream Rust behavior tests.
 
-Change `get_stdout()` and `get_stderr()` to return `Result<Vec<u8>>`. Map only `ZipError::FileNotFound` to `Missing`; compression mismatch, decode failure, malformed ZIP data, and persistence failure are `Corrupt`. Optional extraction ignores only `Missing`.
+- [ ] Add failing tests for the sole materializer: it consumes adoption TOML plus governed job identity, emits one canonical bounded content-addressed snapshot to a fresh job-local destination, and refuses overwrite.
+- [ ] Add failing loader tests for missing, duplicate, unknown, malformed, oversized, mutable, symlinked, non-regular, wrong-name, digest-mismatched, noncanonical, credential-bearing, and schema-incompatible snapshots.
+- [ ] Implement one canonical encoder/schema/loader. The snapshot includes socket, timeouts, frame limits, compiler path/family identities, routing expectations, governed environment values, schema identity, and handshake policy, but no credentials or self-authorizing locator.
+- [ ] Make server and client consume the bootstrap locator exactly once, open with no-follow bounded regular-file checks, verify the digest-derived name, and parse once.
+- [ ] Construct one `StrictClientControls` from the parsed snapshot plus exact validated routing input. Pass the complete typed object to selector validation, connection, framing, handshake, and request construction; prohibit child/key access and later selector reads.
+- [ ] Delete or make unreachable every later environment/filesystem socket, timeout, identity, frame, routing, or policy lookup. Reject broad SCCACHE/bootstrap namespaces and adoption-extensible control tables.
 
-- [ ] **Step 6: Make cache-read failures and forced modes fatal**
+**Evidence:** materializer round trips; byte-canonical digest/name tests; mutation and no-follow negatives; exact one-consumption tests; server/client digest mismatch tests; handshake identity tests; behavioral proof that later environment/file changes cannot alter policy.
 
-Pass `StrictTimeouts.cache_read` into `get_cached_or_compile()`. Replace `MissType::CacheReadError` and `MissType::TimedOut` conversion with returned errors before the compiler future is created. Reject `SCCACHE_NO_CACHE` and `SCCACHE_RECACHE` in `check_compiler()` with `CompileResponse::Rejected`; delete the environment opt-out path from the governed build.
+### Task 3: Close the raw compiler-environment and request boundary
 
-- [ ] **Step 7: Write failing read-only and read-write completion tests**
+**Files:** patch and upstream Rust behavior tests.
 
-Use a counting mock storage:
+- [ ] Add failing raw Unix environment tests before upstream filtering for Rust and C-family requests: duplicate byte names, missing required names, governed mismatch, malformed bytes, credentials, interposition/search state, per-run metadata, unknown names, and routing/control leakage are fatal before connection.
+- [ ] Define one closed code-owned family schema plus exact snapshot-governed names. Separate only the verified bootstrap locator, exact routing entries, and exact `CARGO_MAKEFLAGS` orchestration name before irreversible construction of `CompilerEnvironment`.
+- [ ] Preserve each admitted compiler name/value byte-for-byte and unconditionally key it in deterministic name order using one domain-separated, presence-tagged, length-framed canonical component. Rust env-dep may add absent dependencies but may not remove or replace this component.
+- [ ] Prove `option_env!` distinguishes absent, present-empty, and present-value state; prove `RUSTC_BOOTSTRAP` and all governed Rust/C values affect keys and behavior; prove outer run metadata, credentials, socket, and bootstrap state never enter compiler children or keys.
+- [ ] Retain `ClassifiedRequest` locally and bind every response to its request digest plus snapshot digest. Only `Cacheable` enters server compilation/storage. Truthful `NotCompilation` or typed `CannotCache(reason)` consumes the matching retained request exactly once with original argv and classified I/O under `CompilerEnvironment`.
+- [ ] Remove raw-environment recovery, environment-driven `CannotCache`, legacy unhandled execution, EOF/IPC fallback, server auto-start, and request rebinding.
 
-```rust
-#[tokio::test]
-async fn read_only_miss_never_calls_put() {
-    let storage = CountingStorage::read_only_miss();
-    let result = compile_with(storage.clone(), CacheMode::ReadOnly).await;
-    assert_eq!(result.retcode, Some(0));
-    assert_eq!(storage.put_calls(), 0);
-}
+**Evidence:** Rust and C raw-environment/key tests; procedural-macro environment fixture; absent/empty/value tests; request/snapshot digest mismatch and replay tests; exactly-once client-execution tests; EOF/server-death/error negatives.
 
-#[tokio::test]
-async fn read_write_put_failure_invalidates_success() {
-    let storage = CountingStorage::read_write_put_error();
-    let result = compile_with(storage, CacheMode::ReadWrite).await;
-    assert_ne!(result.retcode, Some(0));
-}
-```
+### Task 4: Centralize compiler selection, classification, and child launch
 
-- [ ] **Step 8: Thread cache mode and governed write timeout through the server**
+**Files:** patch and upstream Rust behavior tests.
 
-Add `cache_mode` and `cache_write_timeout` to `SccacheService`. On a read-only miss, drop the unpolled write future and return the compiler result. On a read-write miss, await the future inside `tokio::time::timeout`; on timeout or error, set a nonzero result and append a stable strict-cache failure message. Do not return success before a completed write.
+- [ ] Reject compiler-named-symlink dispatch and require an absolute byte-exact configured selector before lookup, canonicalization, filesystem inspection, connection, or client execution. Server independently validates the same selector/family.
+- [ ] Probe only the configured executable with fixed family arguments and the purpose-tagged empty `IdentityProbeEnvironment`. Cover Rust, GCC, Clang with `--no-default-config`, mismatch, poisoned search/interposition state, and the transparent-wrapper residual.
+- [ ] Complete the byte-oriented pre-parse argument table and first-match reason precedence for response files, Clang config/defaults, GCC specs/wrappers/tool/plugin indirection, unknown flags, compile-and-link, preprocessing, and genuine non-compilation.
+- [ ] Run Rust output discovery as the first request-specific subprocess under the shared classification deadline/ceiling, then complete destination classification before `CompileStarted`, hashing, storage, or compilation.
+- [ ] Make `StrictChildLauncher` the only constructible governed compiler spawn path. Its sealed capability accepts only empty `IdentityProbeEnvironment` or `CompilerEnvironment`, typed argv/cwd, and classified I/O.
+- [ ] The launcher uses `env_clear`, installs exact canonical entries, configures standard streams explicitly, and closes all other descriptors. It never invokes jobserver configuration or propagates `MAKEFLAGS`, `MFLAGS`, `CARGO_MAKEFLAGS`, or jobserver descriptors; it may retain an opaque scheduling permit.
+- [ ] Vary `CARGO_MAKEFLAGS` values and referenced descriptor numbers between otherwise identical jobs. Prove the wrapper accepts and discards it without parsing/logging, child descriptors are closed, keys are identical, and the second invocation is a genuine hit.
 
-- [ ] **Step 9: Complete direct strict-boundary behavior tests**
+**Evidence:** selector/path/family tests; raw-byte argument matrix and precedence tests; command-order logs; launcher capability tests for every child class; `/proc/self/fd` child census; jobserver variation/key/hit test; representative Rust and C `Cacheable` paths.
 
-Use the upstream library harness and counting mock storage to prove: a refused S3 capability check is fatal; disk and multilevel redirects are rejected; a cache-read error stops before compiler execution; read-only misses make zero `put` calls; required read-write errors and timeouts set a nonzero compile result; forced no-cache/recache inputs fail; corrupt stdout, stderr, required outputs, and optional outputs fail; and only typed classifications authorize the unchanged client command path. Build the debug binary before the library suite because the upstream `test_server_port_in_use` test resolves that binary from the target directory.
+### Task 5: Bound process groups and linearize transport poison
 
-- [ ] **Step 10: Run the complete patched-tree behavior suite**
+**Files:** patch, strict TOML, and upstream Linux behavior tests.
 
-Run inside the pinned container:
+- [ ] Put identity probes, Rust output discovery, dep-info, preprocessing, and server compilation into launcher-owned dedicated process groups with one absolute classification deadline, shared output-byte reservation, termination grace, cleanup deadline, and exact-child reap.
+- [ ] Test hangs, combined exact-limit/limit-plus-one output, cancellation, leader-exits-first, descendants retaining pipes, ignored `SIGTERM`, group `SIGKILL`, zombie members, vanished processes, PGID reuse fencing, `/proc` ambiguity, cleanup exhaustion, and server reuse only after confirmed quiescence.
+- [ ] Implement one atomic poison-pending transition that blocks new response commits, closes the listener, cancels accepted/in-flight requests, and proceeds to terminal nonzero daemon poison on cleanup uncertainty.
+- [ ] Put response-gate acquisition, bounded frame serialization/write, socket abort, and terminal transition under the same existing absolute cleanup deadline. Only a frame whose final framed byte reaches the transport before terminal poison succeeds.
+- [ ] Test two clients with one accepted and one in flight, barriers before each authority frame, partial writes, full writes just before poison, poison while the gate is held, and a real Unix-stream slow reader with a reduced send buffer.
+- [ ] On deadline expiry, terminate nonzero immediately without waiting for gate ownership, cooperation, destructors, or a second timeout. Prove the poisoned daemon accepts no later work and emits no later complete authority.
 
-```bash
-cargo fmt --all -- --check
-cargo build --locked --offline --no-default-features --features "$features" --target "$target"
-cargo test --locked --no-default-features --features "$features" --target "$target" --lib
-cargo build --locked --offline --profile "$profile" --no-default-features --features "$features" --target "$target"
-```
+**Evidence:** deterministic process-group fixtures; no-zombie/no-live-member assertions; bounded wall-clock results; two-client and slow-reader frame tests; full-versus-partial commit results; daemon exit status and no-later-authority tests.
 
-The shell values above must be emitted from the validated TOML configuration; they are not independent workflow or documentation defaults.
+### Task 6: Reconcile strict storage, output, and deadline semantics
 
-Expected: formatting clean; all upstream and strict tests PASS; release build succeeds.
+**Files:** patch, strict TOML, and upstream Rust behavior tests.
 
-- [ ] **Step 11: Regenerate and commit the complete one-file patch**
+- [ ] Require exactly one governed S3 backend and configured mode at startup. Reject missing/alternate/multilevel/disk/direct modes, capability failures, rate limiting, and read-write demotion.
+- [ ] Treat only authoritative S3 `NotFound` as a miss. Make read errors/timeouts, corrupt members, missing stdout/stderr, IPC errors, and unexpected responses fatal before alternate execution.
+- [ ] Include the strict cache-format token in both governed compiler hashers. Always write named stdout and stderr members, including empty payloads.
+- [ ] In read-only mode compile a genuine miss without any `put`; in read-write mode withhold success until the required write succeeds. Required write failure/timeout returns nonzero.
+- [ ] Classify nontransactional destinations before `CompileStarted`. Stage every hit output through pinned parent descriptors, validate all members before mutation, perform descriptor-relative same-directory commit/rollback, and make every operational or rollback uncertainty fatal and quiescent.
+- [ ] Route startup, IPC frame, cache read, required write, classification, termination, cleanup, response commit, and retry arithmetic through the opaque checked deadline API and TOML-owned ceilings. Reject zero, malformed, overflow, and out-of-range values.
 
-Regenerate `ci/sccache-strict/sccache-v0.16.0-strict.patch` from the disposable upstream repository and verify it applies to a second clean extraction with `git apply --check`.
+**Evidence:** storage capability/mode tests; genuine hit/miss tests; empty-member round trip; corrupt/missing member negatives; read-only zero-put and read-write completion tests; output destination/staging/rollback matrix; deadline and overflow tests on both Linux architectures.
 
-```bash
-git add ci/sccache-strict/sccache-v0.16.0-strict.patch
-git commit -m "feat(ci): make sccache storage fail closed"
-```
+### Task 7: Reconcile the canonical build, verifier, and immutable publisher
 
-### Task 4: Reproducible Builders and Immutable Publisher
+**Files:** strict TOML, verifier, Python tests, build recipe, release workflow, runner registry.
 
-**Files:**
-- Create: `.github/workflows/sccache-strict-release.yml`
-- Create: `scripts/build_strict_sccache.sh`
-- Modify: `ci/github-actions-runners.toml`
-- Modify: `scripts/test_sccache_strict.py`
+- [ ] Make strict TOML the sole owner of source/patch/toolchain/executor/feature/target/replica/build/runtime-ceiling/publisher/retry values. Strictly reject missing, duplicate, unknown, malformed, unpinned, or internally inconsistent configuration.
+- [ ] Make the canonical build recipe extract outside the repository, verify source digest, require a non-empty zero-context patch file list, prove forward/reverse application, build the debug test binary, run the complete patched library suite, then build network-disabled with fresh cacheless state.
+- [ ] Produce two isolated native replicas per ARM64/X64 architecture. Bind manifests to exact head, run, attempt, architecture, replica, source, patch, workflow, recipe, executor, toolchain, settings, and binary digest; require per-architecture byte equality.
+- [ ] Verify ELF architecture, static/no-interpreter/no-shared-library properties, host execution, strict startup negatives, abstract-socket lifecycle, and no filesystem socket.
+- [ ] Keep builders and verification unprivileged. Publisher receives write permission only inside the configured protected environment and executes no repository-controlled code with its token present.
+- [ ] Verify and invoke only the TOML-pinned absolute GitHub CLI. Atomically reserve the content-derived tag; create/upload/verify an owned draft; publish only from exact-current `main`; require immutable readback, attestation, exact assets/digests, and current-main recheck.
+- [ ] Implement bounded known-ID cleanup and unknown-ID release census with same-origin unvisited continuation URLs, configured or repository-ID-bound canonical paths, decoded exact query validation, uniqueness, and permanent tag preservation. Never automatically delete an immutable result or tag.
+- [ ] Preserve both #1495 and #1497 entries in `ci/github-actions-runners.toml` after the post-#1495 mechanical rebase.
 
-**Interfaces:**
-- Consumes: config/verifier CLI and complete upstream patch.
-- Produces jobs `preflight`, `build-arm64`, `build-x64`, `verify`, and `publish`.
-- Uses `actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd`, `actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405`, `actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`, and `actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c`.
+**Evidence:** Python configuration/manifest/publisher tests; actionlint; shell syntax/format checks; live read-only releases pagination probe; four-candidate workflow artifacts; byte equality; host/ELF/static checks; exact-head verified bundle; publisher negative matrix.
 
-- [ ] **Step 1: Add failing workflow-context and manifest tests**
+### Task 8: Resolve findings and gather exact-head evidence
 
-Test publish refusal for PR events, non-main refs, stale requested SHA, cross-run artifacts, duplicate replicas, wrong architecture, wrong container/toolchain, pre-existing release namespace, absent environment marker, mutable release cleanup, and mismatched API digest.
+**Files:** only authoritative implementation files unless a review identifies an in-scope defect.
 
-Run: `python3.12 -m unittest scripts/test_sccache_strict.py -v`
+- [ ] Run targeted Python tests, Ruff, actionlint, TOML parsing, shell checks, patch forward/reverse checks, and `git diff --check` locally.
+- [ ] Run the complete patched upstream Rust suite in the pristine tree for each governed target through the canonical build path, or use the repository's remote-first workflow when local execution is economically inappropriate.
+- [ ] Obtain four cacheless native replica results, exact byte equality per architecture, positive Rust/C cacheability and genuine second/cross-job hits, transport/process/storage negatives, and publisher verification at the exact branch head.
+- [ ] Perform an internal adversarial review of the complete diff against the requirement ledger. Every unique substantive issue is a finding; fix or obtain explicit in-scope risk acceptance, then rerun affected evidence.
+- [ ] Inspect thread-level PR review state and resolve every applicable thread. Commit and push fixes before further review discussion.
 
-Expected: new cases FAIL until the verifier exposes every required gate.
+**Evidence:** exact commands/results and artifact/run IDs recorded outside the stable PR body; updated ledger with no unresolved row; clean worktree; exact head SHA.
 
-- [ ] **Step 2: Complete the verifier gates**
+### Task 9: Integrate governance, remove scaffolding, and hand off review
 
-Make the pure functions return canonical JSON on success and a single nonzero CLI exit on any mismatch. Secrets and token values must never be included in errors or manifests.
+- [ ] Wait for native approval of PR #1495. Merge it only through native controls; never use admin merge.
+- [ ] Rebase #1497 mechanically onto the resulting `main`, resolve only the runner-registry overlap, preserve both mappings, and rerun every affected check.
+- [ ] When all implementation findings and evidence are resolved, delete this plan and the temporary design in one behavior-neutral commit. Compare the code/config/workflow diff with the last reviewed implementation head.
+- [ ] Rerun all exact-head native/static evidence and obtain fresh independent code-only review. Resolve and rerun until no substantive finding remains.
+- [ ] Push with plain `git push`, report the exact head SHA, request the reviewer resolved from node ID `U_kgDOEZMFhA`, and detach without waiting on advisory CI.
+- [ ] Merge only after native approval and live ruleset verification. Then dispatch publication for exact-current `main`, verify the immutable release, attestation, asset IDs, asset digests, tag target, and archive continuation behavior.
+- [ ] Only after immutable assets are proven may PR #1494 resume and pin them. Missing or ambiguous publication evidence keeps #1494 blocked.
 
-- [ ] **Step 3: Add workflow triggers, permissions, and exact-main preflight**
+## Completion boundary
 
-Use this shape:
-
-```yaml
-name: Strict sccache release
-
-on:
-  pull_request:
-  workflow_dispatch:
-    inputs:
-      sha:
-        description: Full exact-current main SHA for a publication run
-        required: true
-        type: string
-      publish:
-        description: Publish immutable release assets
-        required: true
-        default: false
-        type: boolean
-
-permissions: {}
-
-jobs:
-  preflight:
-    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
-    permissions:
-      actions: read
-      contents: read
-```
-
-For PRs, preflight binds builders to `github.event.pull_request.head.sha`, asserts that exact checkout, and forces `publish=false`. For dispatch, `publish=true` requires a 40-character lowercase SHA equal to `github.sha`, `refs/heads/main`, and the SHA returned by `GET /repos/{repository}/branches/{default_branch}` using API version `2026-03-10`. With `actions: read`, preflight also reads `GET /repos/{repository}/environments/strict-sccache-publisher`; it emits `publisher_ready=true` only after `validate-publish-context` accepts the live document. The publish job's `if` condition requires that output, preventing a missing environment from being implicitly created by the honest workflow.
-
-- [ ] **Step 4: Add two replicas for each native architecture**
-
-`build-arm64` uses `${{ vars.CI_RUNNER_MANAGED_HEAVY }}` and `build-x64` uses `${{ vars.CI_RUNNER_MANAGED_LIGHT }}`. Both obtain their replica matrix from `ci/sccache-strict.toml`. Each job invokes the same identity-hashed `scripts/build_strict_sccache.sh` recipe, which:
-
-1. checks out the bound SHA with `persist-credentials: false`;
-2. resolves its target from `sccache_strict.py show-target`;
-3. downloads and digest-verifies the source archive;
-4. extracts under `RUNNER_TEMP`, outside the enclosing repository, requires a non-empty zero-context patch file list, runs `git apply --unidiff-zero --check`, applies it, and proves exact reverse applicability against the digest-pinned source;
-5. verifies the pinned container's exact Rust release and commit, then starts it once with network to run `cargo fetch --locked --target <triple>` into a fresh mounted `CARGO_HOME`;
-6. starts the same container with `--network none`, read-only `CARGO_HOME`, fresh target directory, `CARGO_NET_OFFLINE=true`, `CARGO_INCREMENTAL=0`, empty `RUSTC_WRAPPER`, fixed locale/timezone/umask and mount paths, and the TOML-owned `SOURCE_DATE_EPOCH`;
-7. runs the complete upstream library suite and the TOML-owned feature/profile release build (the legacy integration harnesses that require local-disk startup are inapplicable to the strict derivative);
-8. verifies ELF machine, absence of a runtime interpreter and shared-library dependencies, and the TOML-owned sccache version on the host outside the container, then uses separate isolated environments to prove both missing S3 configuration and an injected disk backend fail with their expected diagnoses;
-9. creates a candidate manifest and uploads exactly one binary plus one manifest.
-
-- [ ] **Step 5: Verify replicas on every workflow run**
-
-An unprivileged `verify` job depends on all configured builders, downloads their run-ID- and attempt-qualified artifacts, recomputes every manifest and binary digest, requires byte equality per architecture, and uploads one verified bundle containing the candidates plus canonical verification and provenance records. This job runs for pull requests and dispatches, so reproducibility evidence does not depend on entering the protected publication environment.
-
-- [ ] **Step 6: Add protected publisher with exact input/output predicates**
-
-The publisher has:
-
-```yaml
-  publish:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && needs.preflight.outputs.publisher_ready == 'true' }}
-    needs: [preflight, verify]
-    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
-    environment: strict-sccache-publisher
-    permissions:
-      actions: read
-      attestations: read
-      contents: write
-```
-
-A tokenless preparation step downloads only the verified bundle from its own `needs` graph, reruns the same candidate verifier, requires identical verification and provenance records, and prepares exact publisher inputs. The narrowly token-bearing release step refuses an existing tag/ref/release/draft, checks current main and the protected environment, arms cleanup immediately, creates the draft, and uploads the two agreed binaries and canonical provenance manifest. It rechecks current main and the environment immediately before publication. If the response is mutable, it deletes only that exact newly created release and tag and fails. Otherwise it downloads and byte-compares the published assets, polls GitHub's cryptographic release verification, and verifies each asset cryptographically. A following tokenless step runs the exact release/tag/asset API predicate.
-
-- [ ] **Step 7: Register the workflow's sole runner mapping**
-
-Append:
-
-```toml
-[workflows.sccache_strict_release]
-preflight = "github_hosted"
-build-arm64 = "managed_heavy"
-build-x64 = "managed_light"
-verify = "github_hosted"
-publish = "github_hosted"
-```
-
-No `.github/actionlint.yaml` change is needed because the workflow uses only already-allowlisted variables and runner classes.
-
-- [ ] **Step 8: Run targeted static verification**
-
-Run:
-
-```bash
-python3.12 -m unittest scripts/test_sccache_strict.py -v
-actionlint -config-file .github/actionlint.yaml .github/workflows/sccache-strict-release.yml
-git diff --check
-```
-
-Expected: all Python tests PASS, actionlint emits no errors, and diff check is clean.
-
-- [ ] **Step 8: Commit the workflow unit**
-
-```bash
-git add .github/workflows/sccache-strict-release.yml ci/github-actions-runners.toml scripts/build_strict_sccache.sh scripts/sccache_strict.py scripts/test_sccache_strict.py
-git commit -m "feat(ci): publish strict sccache assets"
-```
-
-### Task 5: Exact-Head Evidence and Review Handoff
-
-**Files:**
-- Modify only if review finds a defect: files introduced in Tasks 1-4
-- Do not modify: `.github/actions/sccache-setup/action.yml`, `ci/sccache-location.toml`, `.github/workflows/advisory.yml`, `.github/workflows/rust-probe.yml`
-
-**Interfaces:**
-- Produces: one standalone prerequisite PR whose lasting body names #1494 as the remaining adoption scope.
-- Does not publish a release or mutate repository settings.
-
-- [ ] **Step 1: Recreate the source and prove patch identity from scratch**
-
-Use a new temporary directory, download the archive, verify its digest, run `git apply --check`, apply the patch, and confirm the patched tree has no uncommitted generator residue after its tests.
-
-- [ ] **Step 2: Run all local non-heavy checks fresh**
-
-```bash
-python3.12 -m unittest scripts/test_sccache_strict.py -v
-actionlint -config-file .github/actionlint.yaml .github/workflows/sccache-strict-release.yml
-git diff --check 27b6d20e1520956d721312b8f865fa0e2d31ffbf..HEAD
-git status --short
-```
-
-Expected: Python tests PASS; actionlint and diff check emit no errors; status is clean.
-
-- [ ] **Step 3: Perform an internal adversarial exact-diff review**
-
-Review the complete base-to-head diff against every behavior-matrix row. Explicitly attempt to find: a client spawn reachable from an error, auto-start or empty-stats recovery, non-S3/multilevel/disk selection, RW-to-RO demotion, RO `put`, write success before completion, corrupt optional-output suppression, forced mode, ungoverned timeout, second install/publication channel, mutable Action, cross-run artifact acceptance, stale-main publication, or duplicated install pin. Resolve every substantive finding before push.
-
-- [ ] **Step 4: Push the exact branch head without waiting for CI**
-
-Run `git push -u origin fix/ci-strict-sccache-runtime` and record `git rev-parse HEAD`. Advisory workflow results belong to the reviewer; do not wait for them.
-
-- [ ] **Step 5: Open the standalone PR and request the required reviewer**
-
-The PR body must say:
-
-```markdown
-## Scope
-
-Standalone prerequisite for #1494: build and publish the governed strict-sccache derivative. This PR does not adopt the binary in existing compile workflows.
-
-## Remaining accepted scope
-
-#1494 remains responsible for immutable release/asset/digest adoption, runtime timeout values, direct installation, fail-closed setup, governed wrapper routing, and exact-head negative controls. #1495, #1496, and Rust Probe are unchanged.
-
-## Operator prerequisites
-
-Before the first publication dispatch, the repository owner must enable immutable releases and create the `strict-sccache-publisher` environment restricted to `main`. A missing environment prevents publication. Disabled immutability causes the exact mutable release and tag created by the attempted dispatch to be removed before the workflow fails.
-```
-
-Resolve node ID `U_kgDOEZMFhA` to its current login, request that reviewer, and verify the live main ruleset has no missing required control. Do not merge.
-
-- [ ] **Step 6: Hand off exact-head review evidence**
-
-Provide reviewers the base SHA, head SHA, complete changed-file list, source/archive/container/toolchain pins, local command outputs, and the dedicated workflow run IDs once available. Ask them to review the complete diff and live immutable-release/environment state. CI is evidence, never merge authority.
+PR #1497 is complete only when the code-only exact head has clean static/native evidence, four verified cacheless replicas, required native approval, and no unresolved findings. The roadmap remains incomplete until #1497 is merged, its immutable assets are published and verified, and PR #1494 completes its separate adoption evidence.

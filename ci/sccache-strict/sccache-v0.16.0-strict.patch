@@ -1244,7 +1244,7 @@ index f639396..f591763 100644
 +                        })
 +                    }
 diff --git a/src/commands.rs b/src/commands.rs
-index 8d8406a..5e4d050 100644
+index 8d8406a..c49289e 100644
 --- a/src/commands.rs
 +++ b/src/commands.rs
 @@ -15,2 +15 @@
@@ -1599,7 +1599,16 @@ index 8d8406a..5e4d050 100644
 +        environment,
 +        stdout,
 +        stderr,
-@@ -617,4 +569,57 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -615,0 +568,8 @@ where
++fn reject_legacy_cache_mode_selector(value: Option<&OsStr>) -> Result<()> {
++    ensure!(
++        value.is_none(),
++        "legacy environment cache-mode policy is unavailable in strict mode"
++    );
++    Ok(())
++}
++
+@@ -617,4 +577,57 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -    // Config isn't required for all commands, but if it's broken then we should flag
 -    // it early and loudly.
 -    let config = &Config::load()?;
@@ -1661,7 +1670,7 @@ index 8d8406a..5e4d050 100644
 +    let timeouts = controls.timeouts()?;
 +    let identity = controls.server_identity();
 +    let address = controls.address()?;
-@@ -625,10 +630,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -625,10 +638,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let stats = match connect_to_server(&get_addr()) {
 -                Ok(srv) => request_stats(srv).context("failed to get stats from server")?,
 -                // If there is no server, spawning a new server would start with zero stats
@@ -1674,7 +1683,7 @@ index 8d8406a..5e4d050 100644
 -            };
 +            let stats = request_stats(connect_required(&address, timeouts.ipc, &identity)?)
 +                .context("failed to get stats from server")?;
-@@ -641,16 +638 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -641,16 +646 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            trace!("Command::DebugPreprocessorCacheEntries");
 -            let entries_dir = default_disk_cache_dir().join("preprocessor");
 -            for entry in WalkDir::new(entries_dir).sort_by_file_name() {
@@ -1692,7 +1701,7 @@ index 8d8406a..5e4d050 100644
 -                println!("=========================");
 -            }
 +            bail!("preprocessor-cache inspection is unavailable in strict mode");
-@@ -660,10 +642,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -660,10 +650,3 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            if env::var("SCCACHE_ERROR_LOG").is_ok() {
 -                let f = create_error_log()?;
 -                // Can't report failure here, we're already daemonized.
@@ -1703,19 +1712,20 @@ index 8d8406a..5e4d050 100644
 -                daemonize()?;
 -            }
 -            server::start_server(config, &get_addr())?;
++            reject_legacy_cache_mode_selector(env::var_os("SCCACHE_S3_RW_MODE").as_deref())?;
 +            let config = Config::load()?;
 +            server::start_server(&config, &address, identity, timeouts)?;
-@@ -675 +649 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -675 +658 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -                run_server_process(startup_timeout).context("failed to start server process")?;
 +                run_server_process(timeouts.startup).context("failed to start server process")?;
-@@ -688 +662,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -688 +671,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let server = connect_to_server(&get_addr()).context("couldn't connect to server")?;
 +            let server = connect_required(&address, timeouts.ipc, &identity)
 +                .context("couldn't connect to governed server")?;
-@@ -694 +669 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -694 +678 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
 +            let conn = connect_required(&address, timeouts.ipc, &identity)?;
-@@ -698,56 +673 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -698,56 +682 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -        #[cfg(feature = "dist-client")]
 -        Command::DistAuth => {
 -            use crate::config;
@@ -1773,10 +1783,10 @@ index 8d8406a..5e4d050 100644
 -            "Distributed compilation not compiled in, please rebuild with the dist-client feature"
 -        ),
 +        Command::DistAuth => bail!("distributed authentication is unavailable in strict mode"),
-@@ -756 +676 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -756 +685 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let srv = connect_or_start_server(&get_addr(), startup_timeout)?;
 +            let srv = connect_required(&address, timeouts.ipc, &identity)?;
-@@ -762,3 +682,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -762,3 +691,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -        #[cfg(feature = "dist-client")]
 -        Command::PackageToolchain(executable, out) => {
 -            use crate::compiler;
@@ -1788,7 +1798,7 @@ index 8d8406a..5e4d050 100644
 +            unreachable!("handled before runtime config")
 +        }
 +    }
-@@ -766,16 +691,121 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -766,16 +700,132 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            trace!("Command::PackageToolchain({})", executable.display());
 -            let runtime = new_client_runtime()?;
 -            let jobserver = Client::new();
@@ -1812,6 +1822,17 @@ index 8d8406a..5e4d050 100644
 +mod strict_test {
 +    use super::*;
 +    use crate::mock_command::{MockChild, exit_status};
++
++    #[test]
++    fn strict_server_rejects_legacy_environment_cache_mode_policy() {
++        assert!(reject_legacy_cache_mode_selector(None).is_ok());
++        let error = reject_legacy_cache_mode_selector(Some(OsStr::new("READ_WRITE"))).unwrap_err();
++        assert!(
++            error
++                .to_string()
++                .contains("legacy environment cache-mode policy")
++        );
++    }
 +
 +    #[test]
 +    fn strict_materialize_command_runs_without_legacy_runtime_configuration() {
@@ -1926,7 +1947,7 @@ index 8d8406a..5e4d050 100644
 +            max_frame_bytes: 1024 * 1024,
 +            max_child_output_bytes: 1024 * 1024,
 +            compilers: Vec::new(),
-@@ -783,25 +813 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -783,25 +833 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -        #[cfg(not(feature = "dist-client"))]
 -        Command::PackageToolchain(_executable, _out) => bail!(
 -            "Toolchain packaging not compiled in, please rebuild with the dist-client feature"
@@ -1953,7 +1974,7 @@ index 8d8406a..5e4d050 100644
 -                    _ => (),
 -                });
 +    }
-@@ -809,16 +815,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -809,16 +835,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let jobserver = Client::new();
 -            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
 -            let mut runtime = new_client_runtime()?;
@@ -1978,7 +1999,7 @@ index 8d8406a..5e4d050 100644
 +        StrictResponseBinding {
 +            request_digest: [7; 32],
 +            snapshot_digest: "strict-test".to_owned(),
-@@ -828 +826,233 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -828 +846,233 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -    Ok(0)
 +    #[test]
 +    fn strict_cannot_cache_reason_authorizes_one_client_command() {

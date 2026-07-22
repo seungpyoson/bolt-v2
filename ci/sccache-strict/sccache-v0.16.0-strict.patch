@@ -4800,7 +4800,7 @@ index cef32b2..5979b1c 100644
 +}
 +
 diff --git a/src/mock_command.rs b/src/mock_command.rs
-index d7ffa03..9847608 100644
+index d7ffa03..54f72b9 100644
 --- a/src/mock_command.rs
 +++ b/src/mock_command.rs
 @@ -49,0 +50 @@ use crate::jobserver::{Acquired, Client};
@@ -5052,7 +5052,7 @@ index d7ffa03..9847608 100644
 +    }
 +}
 +
-@@ -145 +386,52 @@ pub struct Child {
+@@ -145 +386,140 @@ pub struct Child {
 -    token: Acquired,
 +    _token: Acquired,
 +    policy: StrictChildPolicy,
@@ -5078,6 +5078,94 @@ index d7ffa03..9847608 100644
 +fn process_group_exists(process_group: i32) -> bool {
 +    let result = unsafe { libc::kill(-process_group, 0) };
 +    result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
++}
++
++#[cfg(target_os = "linux")]
++fn parse_linux_proc_stat(bytes: &[u8]) -> Option<(u8, i32)> {
++    let close = bytes.iter().rposition(|byte| *byte == b')')?;
++    let mut fields = bytes
++        .get(close + 1..)?
++        .split(|byte| byte.is_ascii_whitespace());
++    let state = fields.find(|field| !field.is_empty())?.first().copied()?;
++    let _parent = fields.find(|field| !field.is_empty())?;
++    let process_group = std::str::from_utf8(fields.find(|field| !field.is_empty())?)
++        .ok()?
++        .parse()
++        .ok()?;
++    Some((state, process_group))
++}
++
++#[cfg(target_os = "linux")]
++fn linux_process_record(pid: i32) -> io::Result<Option<(u8, i32)>> {
++    match std::fs::read(format!("/proc/{pid}/stat")) {
++        Ok(bytes) => parse_linux_proc_stat(&bytes)
++            .map(Some)
++            .ok_or_else(|| io::Error::other("strict child /proc stat is malformed")),
++        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
++        Err(error) => Err(error),
++    }
++}
++
++#[cfg(target_os = "linux")]
++fn linux_process_group_has_member(process_group: i32, leader: i32) -> io::Result<bool> {
++    for entry in std::fs::read_dir("/proc")? {
++        let entry = entry?;
++        let Some(pid) = entry
++            .file_name()
++            .to_str()
++            .and_then(|name| name.parse::<i32>().ok())
++        else {
++            continue;
++        };
++        if pid != leader
++            && linux_process_record(pid)?
++                .is_some_and(|(_, member_group)| member_group == process_group)
++        {
++            return Ok(true);
++        }
++    }
++    Ok(false)
++}
++
++#[cfg(target_os = "linux")]
++async fn wait_for_linux_leader_exit(pid: i32, deadline: tokio::time::Instant) -> io::Result<()> {
++    loop {
++        match linux_process_record(pid)? {
++            Some((b'Z', _)) => return Ok(()),
++            Some(_) => {}
++            None => {
++                return Err(io::Error::other(
++                    "strict child leader disappeared before governed reap",
++                ));
++            }
++        }
++        if tokio::time::Instant::now() >= deadline {
++            return Err(io::Error::new(
++                io::ErrorKind::TimedOut,
++                "strict child leader deadline expired",
++            ));
++        }
++        tokio::task::yield_now().await;
++    }
++}
++
++#[cfg(target_os = "linux")]
++async fn wait_for_linux_process_group_exit(
++    process_group: i32,
++    leader: i32,
++    timeout: std::time::Duration,
++) -> io::Result<()> {
++    let deadline = tokio::time::Instant::now() + timeout;
++    while linux_process_group_has_member(process_group, leader)? {
++        if tokio::time::Instant::now() >= deadline {
++            return Err(io::Error::new(
++                io::ErrorKind::TimedOut,
++                "strict child process group did not quiesce",
++            ));
++        }
++        tokio::task::yield_now().await;
++    }
++    Ok(())
 +}
 +
 +#[cfg(unix)]
@@ -5106,7 +5194,7 @@ index d7ffa03..9847608 100644
 +        tokio::task::yield_now().await;
 +    }
 +    Ok(())
-@@ -165,5 +457,5 @@ impl CommandChild for Child {
+@@ -165,5 +545,5 @@ impl CommandChild for Child {
 -    async fn wait(self) -> io::Result<ExitStatus> {
 -        let Child { mut inner, token } = self;
 -        inner.wait().await.inspect(|_ret| {
@@ -5117,59 +5205,110 @@ index d7ffa03..9847608 100644
 +    }
 +    fn strict_poison(&self) -> StrictPoison {
 +        self.policy.poison.clone()
-@@ -172,4 +464,67 @@ impl CommandChild for Child {
+@@ -172,4 +552,118 @@ impl CommandChild for Child {
 -    async fn wait_with_output(self) -> io::Result<Output> {
 -        let Child { inner, token } = self;
 -        inner.wait_with_output().await.inspect(|_ret| {
 -            drop(token);
 +    async fn wait(mut self) -> io::Result<ExitStatus> {
-+        let status = match tokio::time::timeout_at(self.deadline, self.inner.wait()).await {
-+            Ok(status) => status?,
-+            Err(_) => {
-+                self.policy.poison.poison();
-+                #[cfg(unix)]
-+                signal_process_group(self.process_group, libc::SIGTERM)?;
-+                tokio::time::sleep(self.policy.termination_grace).await;
-+                #[cfg(unix)]
-+                signal_process_group(self.process_group, libc::SIGKILL)?;
-+                tokio::time::timeout(self.policy.cleanup_timeout, self.inner.wait())
-+                    .await
-+                    .map_err(|_| {
-+                        io::Error::new(
-+                            io::ErrorKind::TimedOut,
-+                            "strict child leader cleanup timed out",
-+                        )
-+                    })??;
-+                #[cfg(unix)]
-+                wait_for_process_group_exit(self.process_group, self.policy.cleanup_timeout)
-+                    .await?;
-+                #[cfg(unix)]
-+                {
++        #[cfg(target_os = "linux")]
++        {
++            let leader = self.process_group;
++            let timed_out = match wait_for_linux_leader_exit(leader, self.deadline).await {
++                Ok(()) => false,
++                Err(error) if error.kind() == io::ErrorKind::TimedOut => true,
++                Err(error) => {
++                    self.policy.poison.poison();
 +                    self.process_group_armed = false;
++                    return Err(error);
 +                }
++            };
++            if timed_out {
++                self.policy.poison.poison();
++                signal_process_group(leader, libc::SIGTERM)?;
++                tokio::time::sleep(self.policy.termination_grace).await;
++                signal_process_group(leader, libc::SIGKILL)?;
++                let cleanup_deadline = tokio::time::Instant::now() + self.policy.cleanup_timeout;
++                wait_for_linux_leader_exit(leader, cleanup_deadline).await?;
++                wait_for_linux_process_group_exit(leader, leader, self.policy.cleanup_timeout)
++                    .await?;
++                self.process_group_armed = false;
++                self.inner.wait().await?;
 +                return Err(io::Error::new(
 +                    io::ErrorKind::TimedOut,
 +                    self.purpose.deadline_error(),
 +                ));
 +            }
-+        };
-+        #[cfg(unix)]
-+        if process_group_exists(self.process_group) {
-+            self.policy.poison.poison();
-+            signal_process_group(self.process_group, libc::SIGTERM)?;
-+            tokio::time::sleep(self.policy.termination_grace).await;
-+            signal_process_group(self.process_group, libc::SIGKILL)?;
-+            wait_for_process_group_exit(self.process_group, self.policy.cleanup_timeout).await?;
++
++            if linux_process_group_has_member(leader, leader)? {
++                self.policy.poison.poison();
++                signal_process_group(leader, libc::SIGTERM)?;
++                tokio::time::sleep(self.policy.termination_grace).await;
++                signal_process_group(leader, libc::SIGKILL)?;
++                wait_for_linux_process_group_exit(leader, leader, self.policy.cleanup_timeout)
++                    .await?;
++                self.process_group_armed = false;
++                self.inner.wait().await?;
++                return Err(io::Error::other(
++                    "strict child left a live process-group member",
++                ));
++            }
 +            self.process_group_armed = false;
-+            return Err(io::Error::other(
-+                "strict child left a live process-group member",
-+            ));
++            let status = self.inner.wait().await?;
++            return Ok(status);
 +        }
-+        #[cfg(unix)]
++
++        #[cfg(not(target_os = "linux"))]
 +        {
-+            self.process_group_armed = false;
++            let status = match tokio::time::timeout_at(self.deadline, self.inner.wait()).await {
++                Ok(status) => status?,
++                Err(_) => {
++                    self.policy.poison.poison();
++                    #[cfg(unix)]
++                    signal_process_group(self.process_group, libc::SIGTERM)?;
++                    tokio::time::sleep(self.policy.termination_grace).await;
++                    #[cfg(unix)]
++                    signal_process_group(self.process_group, libc::SIGKILL)?;
++                    tokio::time::timeout(self.policy.cleanup_timeout, self.inner.wait())
++                        .await
++                        .map_err(|_| {
++                            io::Error::new(
++                                io::ErrorKind::TimedOut,
++                                "strict child leader cleanup timed out",
++                            )
++                        })??;
++                    #[cfg(unix)]
++                    wait_for_process_group_exit(self.process_group, self.policy.cleanup_timeout)
++                        .await?;
++                    #[cfg(unix)]
++                    {
++                        self.process_group_armed = false;
++                    }
++                    return Err(io::Error::new(
++                        io::ErrorKind::TimedOut,
++                        self.purpose.deadline_error(),
++                    ));
++                }
++            };
++            #[cfg(unix)]
++            if process_group_exists(self.process_group) {
++                self.policy.poison.poison();
++                signal_process_group(self.process_group, libc::SIGTERM)?;
++                tokio::time::sleep(self.policy.termination_grace).await;
++                signal_process_group(self.process_group, libc::SIGKILL)?;
++                wait_for_process_group_exit(self.process_group, self.policy.cleanup_timeout)
++                    .await?;
++                self.process_group_armed = false;
++                return Err(io::Error::other(
++                    "strict child left a live process-group member",
++                ));
++            }
++            #[cfg(unix)]
++            {
++                self.process_group_armed = false;
++            }
++            Ok(status)
 +        }
-+        Ok(status)
 +    }
 +
 +    async fn wait_with_output(mut self) -> io::Result<Output> {
@@ -5189,12 +5328,12 @@ index d7ffa03..9847608 100644
 +            status: status?,
 +            stdout: stdout?,
 +            stderr: stderr?,
-@@ -182,0 +538,4 @@ pub struct AsyncCommand {
+@@ -182,0 +677,4 @@ pub struct AsyncCommand {
 +    environment_cleared: bool,
 +    policy: StrictChildPolicy,
 +    deadline: tokio::time::Instant,
 +    purpose: StrictChildPurpose,
-@@ -186 +545,24 @@ impl AsyncCommand {
+@@ -186 +684,24 @@ impl AsyncCommand {
 -    pub fn new<S: AsRef<OsStr>>(program: S, jobserver: Client) -> AsyncCommand {
 +    pub fn new<S: AsRef<OsStr>>(
 +        program: S,
@@ -5220,14 +5359,14 @@ index d7ffa03..9847608 100644
 +        deadline: tokio::time::Instant,
 +        purpose: StrictChildPurpose,
 +    ) -> AsyncCommand {
-@@ -189,0 +572,4 @@ impl AsyncCommand {
+@@ -189,0 +711,4 @@ impl AsyncCommand {
 +            environment_cleared: false,
 +            policy,
 +            deadline,
 +            purpose,
-@@ -229,0 +616 @@ impl RunCommand for AsyncCommand {
+@@ -229,0 +755 @@ impl RunCommand for AsyncCommand {
 +        self.environment_cleared = true;
-@@ -249,7 +636,4 @@ impl RunCommand for AsyncCommand {
+@@ -249,7 +775,4 @@ impl RunCommand for AsyncCommand {
 -    async fn spawn(&mut self) -> Result<Child> {
 -        let mut inner = self.inner.take().unwrap();
 -        inner.env_remove("MAKEFLAGS");
@@ -5239,20 +5378,20 @@ index d7ffa03..9847608 100644
 +        self.environment_cleared
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<Child> {
-@@ -256,0 +641,6 @@ impl RunCommand for AsyncCommand {
+@@ -256,0 +780,6 @@ impl RunCommand for AsyncCommand {
 +        let mut inner = self.inner.take().unwrap();
 +        #[cfg(unix)]
 +        {
 +            use std::os::unix::process::CommandExt;
 +            inner.process_group(0);
 +        }
-@@ -257,0 +648 @@ impl RunCommand for AsyncCommand {
+@@ -257,0 +787 @@ impl RunCommand for AsyncCommand {
 +        inner.kill_on_drop(true);
-@@ -261,0 +653,3 @@ impl RunCommand for AsyncCommand {
+@@ -261,0 +792,3 @@ impl RunCommand for AsyncCommand {
 +        #[cfg(unix)]
 +        let process_group = i32::try_from(child.id().context("strict child PID is unavailable")?)
 +            .context("strict child PID exceeds process-group range")?;
-@@ -264 +658,8 @@ impl RunCommand for AsyncCommand {
+@@ -264 +797,8 @@ impl RunCommand for AsyncCommand {
 -            token,
 +            _token: token,
 +            policy: self.policy.clone(),
@@ -5262,10 +5401,10 @@ index d7ffa03..9847608 100644
 +            process_group,
 +            #[cfg(unix)]
 +            process_group_armed: true,
-@@ -278,0 +680,2 @@ pub struct ProcessCommandCreator {
+@@ -278,0 +819,2 @@ pub struct ProcessCommandCreator {
 +    policy: StrictChildPolicy,
 +    classification_deadline: Option<tokio::time::Instant>,
-@@ -286,2 +689,12 @@ impl CommandCreator for ProcessCommandCreator {
+@@ -286,2 +828,12 @@ impl CommandCreator for ProcessCommandCreator {
 -        ProcessCommandCreator {
 -            jobserver: client.clone(),
 +        #[cfg(test)]
@@ -5280,7 +5419,7 @@ index d7ffa03..9847608 100644
 +        {
 +            let _ = client;
 +            panic!("strict child policy is required")
-@@ -292 +705,10 @@ impl CommandCreator for ProcessCommandCreator {
+@@ -292 +844,10 @@ impl CommandCreator for ProcessCommandCreator {
 -        AsyncCommand::new(program, self.jobserver.clone())
 +        match self.classification_deadline {
 +            Some(deadline) => AsyncCommand::new_with_deadline(
@@ -5292,7 +5431,7 @@ index d7ffa03..9847608 100644
 +            ),
 +            None => AsyncCommand::new(program, self.jobserver.clone(), self.policy.clone()),
 +        }
-@@ -303,0 +726,18 @@ impl CommandCreatorSync for ProcessCommandCreator {
+@@ -303,0 +865,18 @@ impl CommandCreatorSync for ProcessCommandCreator {
 +    fn new_strict(client: &Client, policy: StrictChildPolicy) -> ProcessCommandCreator {
 +        ProcessCommandCreator {
 +            jobserver: client.clone(),
@@ -5311,20 +5450,27 @@ index d7ffa03..9847608 100644
 +        classification
 +    }
 +
-@@ -383,0 +824,6 @@ impl CommandChild for MockChild {
+@@ -383,0 +963,6 @@ impl CommandChild for MockChild {
 +    fn strict_output_limit(&self) -> u64 {
 +        u64::MAX
 +    }
 +    fn strict_poison(&self) -> StrictPoison {
 +        StrictPoison::new()
 +    }
-@@ -470 +916,4 @@ impl RunCommand for MockCommand {
+@@ -470 +1055,4 @@ impl RunCommand for MockCommand {
 -    async fn spawn(&mut self) -> Result<MockChild> {
 +    fn strict_environment_is_sealed(&self) -> bool {
 +        true
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<MockChild> {
-@@ -548,0 +998,232 @@ mod test {
+@@ -548,0 +1137,239 @@ mod test {
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn strict_linux_proc_stat_parser_handles_parentheses_in_command_name() {
++        let stat = b"123 (strict ) helper) Z 1 123 123 0";
++        assert_eq!(parse_linux_proc_stat(stat), Some((b'Z', 123)));
++    }
++
 +    #[test]
 +    fn strict_spawn_does_not_inject_jobserver_environment_after_classification() {
 +        let runtime = tokio::runtime::Builder::new_current_thread()
@@ -5557,16 +5703,16 @@ index d7ffa03..9847608 100644
 +        assert!(!poisoned.is_healthy());
 +    }
 +
-@@ -553 +1234,2 @@ mod test {
+@@ -553 +1380,2 @@ mod test {
 -        creator.new_command(program).spawn().wait()
 +        let mut command = creator.new_command(program);
 +        StrictChildLauncher::spawn_prepared(&mut command).wait()
-@@ -576,2 +1258,2 @@ mod test {
+@@ -576,2 +1404,2 @@ mod test {
 -                t.new_command_sync("foo")
 -                    .spawn()
 +                let mut command = t.new_command_sync("foo");
 +                StrictChildLauncher::spawn_prepared(&mut command)
-@@ -612 +1294,4 @@ mod test {
+@@ -612 +1440,4 @@ mod test {
 -        creator.new_command("foo").spawn().wait().unwrap();
 +        let mut command = creator.new_command("foo");
 +        StrictChildLauncher::spawn_prepared(&mut command)

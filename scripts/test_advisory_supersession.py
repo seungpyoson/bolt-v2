@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import urllib.parse
 import dataclasses
+from unittest import mock
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
@@ -26,14 +27,22 @@ class FakeClient:
         *,
         current_shas: list[str],
         runs: list[advisory_supersession.WorkflowRun] | None = None,
+        run_sweeps: list[list[advisory_supersession.WorkflowRun]] | None = None,
         cancellation_error: RuntimeError | None = None,
+        max_rounds: int = 3,
+        run_attempt: int = 1,
     ) -> None:
         self.current_shas = current_shas
         self.current_sha_index = 0
         self.runs = runs or []
+        self.run_sweeps = iter(run_sweeps) if run_sweeps is not None else None
         self.cancellation_error = cancellation_error
         self.cancelled: list[int] = []
         self.listed = False
+        self.discovery_calls = 0
+        self.rounds = 0
+        self.max_rounds = max_rounds
+        self.run_attempt = run_attempt
 
     def capture_context(
         self,
@@ -48,6 +57,7 @@ class FakeClient:
                 run_sha,
                 "push",
                 "in_progress",
+                run_attempt=self.run_attempt,
             ),
             repository_id=456,
             repository_full_name="owner/repository",
@@ -68,40 +78,119 @@ class FakeClient:
         context: advisory_supersession.ReconciliationContext,
         freshness_guard: object,
     ) -> list[advisory_supersession.WorkflowRun]:
+        self.discovery_calls += 1
+        if callable(freshness_guard):
+            freshness_guard()
+            freshness_guard()
         self.listed = True
-        return self.runs
+        if self.run_sweeps is not None:
+            return next(self.run_sweeps)
+        return [
+            run
+            for run in self.runs
+            if run.run_id not in self.cancelled
+            and run.event == "push"
+            and run.status != "completed"
+        ]
 
-    def cancel_self(self, run_id: int) -> None:
-        self.cancelled.append(run_id)
+    def begin_reconciliation_round(self) -> None:
+        if self.rounds + 1 > self.max_rounds:
+            raise RuntimeError("reconciliation-round budget exhausted")
+        self.rounds += 1
 
-    def cancel_and_confirm(self, run_id: int, freshness_guard: object) -> None:
+    def cancel_and_confirm(
+        self,
+        target: advisory_supersession.WorkflowRun,
+        context: advisory_supersession.ReconciliationContext,
+        freshness_guard: object,
+    ) -> None:
         if self.cancellation_error is not None:
             raise self.cancellation_error
-        self.cancelled.append(run_id)
+        if callable(freshness_guard):
+            freshness_guard()
+        self.cancelled.append(target.run_id)
 
 
 class CancellationClient(advisory_supersession.GitHubActionsClient):
-    def __init__(self, statuses: list[str]) -> None:
+    def __init__(
+        self,
+        observations: list[str | tuple[int, str] | Exception],
+        *,
+        cancel_outcomes: list[int | Exception] | None = None,
+        poll_attempts: int = 1,
+    ) -> None:
         self.config = dataclasses.replace(
             GOVERNED_CONFIG,
-            cancel_poll_attempts=1,
+            cancel_poll_attempts=poll_attempts,
             cancel_poll_interval_seconds=1,
         )
-        self.statuses = iter(statuses)
+        self.observations = iter(observations)
+        self.cancel_outcomes = iter(cancel_outcomes or [])
         self.requests: list[bool] = []
+        self._ledger = advisory_supersession.ReconciliationLedger(
+            config=self.config,
+            deadline=600.0,
+            monotonic_now=lambda: 0.0,
+        )
+        self._ledger.latest_primary_remaining = 5000
+        self._sleep = lambda _seconds: None
 
     def _request_cancel(self, run_id: int, *, force: bool) -> int:
+        assert self._ledger is not None
+        self._ledger.charge_request("POST")
         self.requests.append(force)
-        return 202
+        outcome = next(self.cancel_outcomes, 202)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
-    def _run_status(self, run_id: int) -> str:
-        return next(self.statuses)
+    def _exact_target(
+        self,
+        target: advisory_supersession.WorkflowRun,
+        context: advisory_supersession.ReconciliationContext,
+    ) -> advisory_supersession.WorkflowRun:
+        assert self._ledger is not None
+        self._ledger.charge_request("GET")
+        observation = next(self.observations)
+        if isinstance(observation, Exception):
+            raise observation
+        if isinstance(observation, tuple):
+            attempt, status = observation
+        else:
+            attempt, status = target.run_attempt, observation
+        if attempt <= 0:
+            raise ValueError("exact target run attempt must be positive")
+        return dataclasses.replace(
+            target,
+            run_attempt=attempt,
+            status=status,
+        )
+
+
+class FailingOpener:
+    def __init__(
+        self,
+        ledger: advisory_supersession.ReconciliationLedger,
+    ) -> None:
+        self.ledger = ledger
+        self.dispatch_state: tuple[int, int, int, float] | None = None
+
+    def open(self, request: object, *, timeout: float) -> object:
+        self.dispatch_state = (
+            self.ledger.requests,
+            self.ledger.secondary_points,
+            self.ledger.mutations,
+            timeout,
+        )
+        raise TimeoutError("dispatch timed out")
 
 
 class DiscoveryClient(advisory_supersession.GitHubActionsClient):
     def __init__(
         self,
-        sweeps: list[list[advisory_supersession.WorkflowRun]],
+        sweeps: list[
+            list[advisory_supersession.WorkflowRun] | Exception
+        ],
     ) -> None:
         self.config = dataclasses.replace(
             GOVERNED_CONFIG,
@@ -115,7 +204,10 @@ class DiscoveryClient(advisory_supersession.GitHubActionsClient):
     def _workflow_run_sweep(
         self, context: advisory_supersession.ReconciliationContext
     ) -> list[advisory_supersession.WorkflowRun]:
-        return next(self.sweeps)
+        sweep = next(self.sweeps)
+        if isinstance(sweep, Exception):
+            raise sweep
+        return sweep
 
 
 class ExactRunClient(advisory_supersession.GitHubActionsClient):
@@ -234,47 +326,6 @@ def next_link(url: str) -> str:
     return f'<{url}>; rel="next"'
 
 
-class GuardedCancellationClient(CancellationClient):
-    def __init__(
-        self,
-        *,
-        current_shas: list[str],
-        runs: list[advisory_supersession.WorkflowRun],
-    ) -> None:
-        super().__init__(["in_progress"])
-        self.current_shas = iter(current_shas)
-        self.runs = runs
-        self.self_cancellations: list[int] = []
-
-    def capture_context(
-        self,
-        *,
-        run_id: int,
-        run_sha: str,
-        monotonic_now: object = None,
-    ) -> advisory_supersession.ReconciliationContext:
-        return FakeClient(current_shas=[run_sha]).capture_context(
-            run_id=run_id,
-            run_sha=run_sha,
-        )
-
-    def current_branch_sha(self) -> str:
-        return next(self.current_shas)
-
-    def active_push_runs(
-        self,
-        context: advisory_supersession.ReconciliationContext,
-        freshness_guard: object,
-    ) -> list[advisory_supersession.WorkflowRun]:
-        assert callable(freshness_guard)
-        freshness_guard()
-        freshness_guard()
-        return self.runs
-
-    def cancel_self(self, run_id: int) -> None:
-        self.self_cancellations.append(run_id)
-
-
 class ReconcileTests(unittest.TestCase):
     def discovery_context(self) -> advisory_supersession.ReconciliationContext:
         return FakeClient(current_shas=["current"]).capture_context(
@@ -296,6 +347,7 @@ class ReconcileTests(unittest.TestCase):
 
         self.assertEqual(runs, [queued])
         self.assertEqual(guard_calls, 4)
+        self.assertEqual(client.sleeps, [5])
 
     def test_discovery_repeats_when_a_run_arrives_between_sweeps(self) -> None:
         first = advisory_supersession.WorkflowRun(8, "old", "push", "queued")
@@ -305,6 +357,104 @@ class ReconcileTests(unittest.TestCase):
         runs = client.active_push_runs(self.discovery_context(), lambda: None)
 
         self.assertEqual(runs, [first, second])
+        self.assertEqual(client.sleeps, [5, 5])
+
+    def test_discovery_retries_incomplete_sentinel_visibility_with_pacing(
+        self,
+    ) -> None:
+        sentinel = advisory_supersession.WorkflowRun(
+            1, "current", "push", "in_progress"
+        )
+        client = DiscoveryClient(
+            [
+                advisory_supersession.IncompleteCensus("sentinel missing"),
+                [sentinel],
+                [sentinel],
+            ]
+        )
+
+        runs = client.active_push_runs(self.discovery_context(), lambda: None)
+
+        self.assertEqual(runs, [sentinel])
+        self.assertEqual(client.sleeps, [5, 5])
+
+    def test_discovery_fails_after_permanently_incomplete_census(self) -> None:
+        client = DiscoveryClient(
+            [
+                advisory_supersession.IncompleteCensus("sentinel missing")
+                for _ in range(4)
+            ]
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "sentinel missing"):
+            client.active_push_runs(self.discovery_context(), lambda: None)
+
+        self.assertEqual(client.sleeps, [5, 5, 5])
+
+    def test_discovery_membership_change_resets_stability(self) -> None:
+        active = advisory_supersession.WorkflowRun(
+            2, "old", "push", "in_progress"
+        )
+        completed = dataclasses.replace(active, status="completed")
+        client = DiscoveryClient([[active], [], []])
+
+        runs = client.active_push_runs(self.discovery_context(), lambda: None)
+
+        self.assertEqual(runs, [])
+        self.assertEqual(client.sleeps, [5, 5])
+        self.assertEqual(completed.status, "completed")
+
+    def test_discovery_exhausts_unstable_signatures(self) -> None:
+        client = DiscoveryClient(
+            [
+                [advisory_supersession.WorkflowRun(i, "old", "push", "queued")]
+                for i in range(1, 5)
+            ]
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "did not stabilize"):
+            client.active_push_runs(self.discovery_context(), lambda: None)
+
+        self.assertEqual(client.sleeps, [5, 5, 5])
+
+    def test_discovery_refuses_sweep_interval_past_deadline(self) -> None:
+        client = DiscoveryClient(
+            [advisory_supersession.IncompleteCensus("sentinel missing")]
+        )
+        client._ledger = advisory_supersession.ReconciliationLedger(
+            config=client.config,
+            deadline=4.0,
+            monotonic_now=lambda: 0.0,
+        )
+        context = dataclasses.replace(self.discovery_context(), deadline=4.0)
+
+        with self.assertRaisesRegex(RuntimeError, "sweep interval"):
+            client.active_push_runs(context, lambda: None)
+
+        self.assertEqual(client.sleeps, [])
+
+    def test_main_movement_during_complete_sweep_stops_discovery(self) -> None:
+        sentinel = advisory_supersession.WorkflowRun(
+            1, "current", "push", "in_progress"
+        )
+        client = DiscoveryClient([[sentinel]])
+        guard_calls = 0
+
+        def freshness_guard() -> None:
+            nonlocal guard_calls
+            guard_calls += 1
+            if guard_calls == 2:
+                raise advisory_supersession.SupersededRun("main moved")
+
+        with self.assertRaisesRegex(
+            advisory_supersession.SupersededRun, "main moved"
+        ):
+            client.active_push_runs(
+                self.discovery_context(),
+                freshness_guard,
+            )
+
+        self.assertEqual(client.sleeps, [])
 
     def test_stale_rerun_cancels_only_itself(self) -> None:
         client = FakeClient(current_shas=["current"])
@@ -316,7 +466,7 @@ class ReconcileTests(unittest.TestCase):
                 run_sha="old",
             )
 
-        self.assertEqual(client.cancelled, [22])
+        self.assertEqual(client.cancelled, [])
         self.assertFalse(client.listed)
 
     def test_current_run_cancels_only_active_different_sha_pushes(self) -> None:
@@ -391,7 +541,7 @@ class ReconcileTests(unittest.TestCase):
                 run_sha="current",
             )
 
-        self.assertEqual(client.cancelled, [33])
+        self.assertEqual(client.cancelled, [])
 
     def test_main_movement_before_cancellation_cancels_only_current_run(self) -> None:
         runs = [
@@ -409,7 +559,7 @@ class ReconcileTests(unittest.TestCase):
                 run_sha="current",
             )
 
-        self.assertEqual(client.cancelled, [34])
+        self.assertEqual(client.cancelled, [])
 
     def test_final_main_movement_prevents_admission(self) -> None:
         client = FakeClient(current_shas=["current", "current", "newer"])
@@ -421,7 +571,7 @@ class ReconcileTests(unittest.TestCase):
                 run_sha="current",
             )
 
-        self.assertEqual(client.cancelled, [36])
+        self.assertEqual(client.cancelled, [])
 
     def test_unconfirmed_cancellation_fails_admission(self) -> None:
         runs = [
@@ -440,49 +590,70 @@ class ReconcileTests(unittest.TestCase):
                 run_sha="current",
             )
 
-    def test_watchdog_cancels_a_legacy_stale_rerun(self) -> None:
-        client = FakeClient(current_shas=["current", "current"])
+    def test_watchdog_cancels_stale_first_attempt_and_rerun(self) -> None:
+        for run_attempt in (1, 2):
+            with self.subTest(run_attempt=run_attempt):
+                client = FakeClient(
+                    current_shas=["current", "current"],
+                    run_attempt=run_attempt,
+                )
 
-        result = advisory_supersession.cancel_superseded_target(
-            client,
-            run_id=39,
-            run_sha="old",
-        )
+                result = advisory_supersession.cancel_superseded_target(
+                    client,
+                    run_id=39,
+                    run_sha="old",
+                )
 
-        self.assertEqual(result.cancelled_run_ids, (39,))
-        self.assertEqual(client.cancelled, [39])
+                self.assertEqual(result.cancelled_run_ids, (39,))
+                self.assertEqual(client.cancelled, [39])
 
     def test_watchdog_preserves_current_main_run(self) -> None:
-        client = FakeClient(current_shas=["current"])
+        for run_attempt in (1, 2):
+            with self.subTest(run_attempt=run_attempt):
+                client = FakeClient(
+                    current_shas=["current"],
+                    run_attempt=run_attempt,
+                )
 
-        result = advisory_supersession.cancel_superseded_target(
-            client,
-            run_id=40,
-            run_sha="current",
-        )
+                result = advisory_supersession.cancel_superseded_target(
+                    client,
+                    run_id=40,
+                    run_sha="current",
+                )
 
-        self.assertEqual(result.cancelled_run_ids, ())
-        self.assertEqual(client.cancelled, [])
+                self.assertEqual(result.cancelled_run_ids, ())
+                self.assertEqual(client.cancelled, [])
 
     def test_client_force_cancels_when_normal_cancellation_stays_active(self) -> None:
-        client = CancellationClient(["in_progress", "completed"])
+        client = CancellationClient(
+            ["in_progress", "in_progress", "in_progress", "completed"]
+        )
+        target = advisory_supersession.WorkflowRun(
+            42, "old", "push", "in_progress"
+        )
 
-        client.cancel_and_confirm(42, lambda: None)
+        client.cancel_and_confirm(target, census_context(), lambda: None)
 
         self.assertEqual(client.requests, [False, True])
 
     def test_client_fails_when_force_cancellation_stays_active(self) -> None:
-        client = CancellationClient(["in_progress", "in_progress"])
+        client = CancellationClient(["in_progress"] * 4)
+        target = advisory_supersession.WorkflowRun(
+            43, "old", "push", "in_progress"
+        )
 
         with self.assertRaisesRegex(RuntimeError, "remained active"):
-            client.cancel_and_confirm(43, lambda: None)
+            client.cancel_and_confirm(target, census_context(), lambda: None)
 
         self.assertEqual(client.requests, [False, True])
 
     def test_client_refuses_force_cancel_when_freshness_changes_during_poll(
         self,
     ) -> None:
-        client = CancellationClient(["in_progress"])
+        client = CancellationClient(["in_progress", "in_progress"])
+        target = advisory_supersession.WorkflowRun(
+            44, "old", "push", "in_progress"
+        )
         guard_calls = 0
 
         def freshness_guard() -> None:
@@ -492,58 +663,159 @@ class ReconcileTests(unittest.TestCase):
                 raise advisory_supersession.SupersededRun("main moved")
 
         with self.assertRaises(advisory_supersession.SupersededRun):
-            client.cancel_and_confirm(44, freshness_guard)
+            client.cancel_and_confirm(target, census_context(), freshness_guard)
 
         self.assertEqual(client.requests, [False])
 
     def test_client_treats_unknown_status_as_unconfirmed(self) -> None:
-        client = CancellationClient(["new-active-state", "new-active-state"])
+        client = CancellationClient(["new-active-state"] * 4)
+        target = advisory_supersession.WorkflowRun(
+            45, "old", "push", "in_progress"
+        )
 
         with self.assertRaisesRegex(RuntimeError, "remained active"):
-            client.cancel_and_confirm(45, lambda: None)
+            client.cancel_and_confirm(target, census_context(), lambda: None)
 
         self.assertEqual(client.requests, [False, True])
 
-    def test_controller_does_not_force_cancel_after_main_moves_during_poll(
-        self,
-    ) -> None:
-        stale = advisory_supersession.WorkflowRun(50, "old", "push", "in_progress")
-        client = GuardedCancellationClient(
-            current_shas=[
-                "current",
-                "current",
-                "current",
-                "current",
-                "current",
-                "current",
-                "newer",
-            ],
-            runs=[stale],
+    def test_first_same_attempt_observation_releases_reservation(self) -> None:
+        client = CancellationClient(["in_progress", "completed"])
+        target = advisory_supersession.WorkflowRun(
+            46, "old", "push", "in_progress"
         )
 
-        with self.assertRaises(advisory_supersession.SupersededRun):
-            advisory_supersession.reconcile(client, run_id=51, run_sha="current")
+        client.cancel_and_confirm(target, census_context(), lambda: None)
 
+        assert client._ledger is not None
         self.assertEqual(client.requests, [False])
-        self.assertEqual(client.self_cancellations, [51])
+        self.assertEqual(client._ledger.reservations_released, 1)
+        self.assertEqual(client._ledger.reservations_consumed, 0)
 
-    def test_watchdog_does_not_force_cancel_after_main_moves_during_poll(
-        self,
-    ) -> None:
-        client = GuardedCancellationClient(
-            current_shas=["current", "current", "current", "newer"],
-            runs=[],
+    def test_first_immediate_successor_observation_consumes_reservation(self) -> None:
+        client = CancellationClient(["in_progress", (2, "completed")])
+        target = advisory_supersession.WorkflowRun(
+            47, "old", "push", "in_progress"
         )
 
-        with self.assertRaisesRegex(RuntimeError, "main moved"):
-            advisory_supersession.cancel_superseded_target(
-                client,
-                run_id=52,
-                run_sha="old",
-            )
+        client.cancel_and_confirm(target, census_context(), lambda: None)
 
+        assert client._ledger is not None
         self.assertEqual(client.requests, [False])
-        self.assertEqual(client.self_cancellations, [])
+        self.assertIn((47, 2), client._ledger.episodes)
+        self.assertEqual(client._ledger.reservations_consumed, 1)
+
+    def test_non_adjacent_decreased_and_malformed_first_observations_poison(
+        self,
+    ) -> None:
+        cases: dict[str, str | tuple[int, str] | Exception] = {
+            "non-adjacent": (3, "in_progress"),
+            "decreased": (0, "in_progress"),
+            "malformed": ValueError("malformed attempt"),
+        }
+        for label, observation in cases.items():
+            with self.subTest(label=label):
+                client = CancellationClient(["in_progress", observation])
+                target = advisory_supersession.WorkflowRun(
+                    48, "old", "push", "in_progress"
+                )
+                with self.assertRaises((RuntimeError, ValueError)):
+                    client.cancel_and_confirm(
+                        target,
+                        census_context(),
+                        lambda: None,
+                    )
+                assert client._ledger is not None
+                self.assertTrue(client._ledger.poisoned)
+                self.assertEqual(client._ledger.reservations_consumed, 1)
+                with self.assertRaisesRegex(RuntimeError, "poisoned"):
+                    client._exact_target(target, census_context())
+
+    def test_timeout_or_lost_cancel_response_consumes_reservation(self) -> None:
+        client = CancellationClient(
+            ["in_progress"],
+            cancel_outcomes=[TimeoutError("lost response")],
+        )
+        target = advisory_supersession.WorkflowRun(
+            49, "old", "push", "in_progress"
+        )
+
+        with self.assertRaisesRegex(TimeoutError, "lost response"):
+            client.cancel_and_confirm(target, census_context(), lambda: None)
+
+        assert client._ledger is not None
+        self.assertEqual(client.requests, [False])
+        self.assertEqual(client._ledger.mutations, 1)
+        self.assertTrue(client._ledger.poisoned)
+        self.assertEqual(client._ledger.reservations_consumed, 1)
+
+    def test_accepted_and_conflict_cancel_responses_both_require_confirmation(
+        self,
+    ) -> None:
+        for response in (202, 409):
+            with self.subTest(response=response):
+                client = CancellationClient(
+                    ["in_progress", "completed"],
+                    cancel_outcomes=[response],
+                )
+                target = advisory_supersession.WorkflowRun(
+                    53, "old", "push", "in_progress"
+                )
+                client.cancel_and_confirm(
+                    target,
+                    census_context(),
+                    lambda: None,
+                )
+                self.assertEqual(client.requests, [False])
+
+    def test_attempt_change_before_normal_cancel_restarts_as_new_episode(self) -> None:
+        client = CancellationClient(
+            [(2, "in_progress"), (2, "in_progress"), (2, "completed")]
+        )
+        target = advisory_supersession.WorkflowRun(
+            54, "old", "push", "in_progress"
+        )
+
+        client.cancel_and_confirm(target, census_context(), lambda: None)
+
+        assert client._ledger is not None
+        self.assertEqual(client.requests, [False])
+        self.assertEqual(client._ledger.episodes, {(54, 1), (54, 2)})
+
+    def test_attempt_change_before_force_cancel_restarts_with_normal_cancel(
+        self,
+    ) -> None:
+        client = CancellationClient(
+            [
+                "in_progress",
+                "in_progress",
+                (2, "in_progress"),
+                (2, "in_progress"),
+                (2, "completed"),
+            ]
+        )
+        target = advisory_supersession.WorkflowRun(
+            55, "old", "push", "in_progress"
+        )
+
+        client.cancel_and_confirm(target, census_context(), lambda: None)
+
+        self.assertEqual(client.requests, [False, False])
+
+    def test_attempt_change_after_binding_cannot_rebind_on_later_poll(self) -> None:
+        client = CancellationClient(
+            ["in_progress", "in_progress", (2, "in_progress")],
+            poll_attempts=2,
+        )
+        target = advisory_supersession.WorkflowRun(
+            56, "old", "push", "in_progress"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "one-read"):
+            client.cancel_and_confirm(target, census_context(), lambda: None)
+
+        assert client._ledger is not None
+        self.assertTrue(client._ledger.poisoned)
+        self.assertEqual(client.requests, [False])
 
     def test_watchdog_refuses_cancellation_when_main_moves(self) -> None:
         client = FakeClient(current_shas=["current", "newer"])
@@ -574,6 +846,215 @@ class ReconcileTests(unittest.TestCase):
 
         self.assertEqual(result.cancelled_run_ids, ())
         self.assertEqual(client.cancelled, [])
+
+    def test_reconciliation_repeats_census_for_stale_arrivals(self) -> None:
+        first = advisory_supersession.WorkflowRun(
+            60, "old", "push", "in_progress"
+        )
+        second = advisory_supersession.WorkflowRun(
+            61, "older", "push", "queued"
+        )
+        client = FakeClient(
+            current_shas=["current"],
+            run_sweeps=[[first], [second], []],
+        )
+
+        result = advisory_supersession.reconcile(
+            client,
+            run_id=62,
+            run_sha="current",
+        )
+
+        self.assertEqual(result.cancelled_run_ids, (60, 61))
+        self.assertEqual(client.cancelled, [60, 61])
+        self.assertEqual(client.discovery_calls, 3)
+        self.assertEqual(client.rounds, 2)
+
+    def test_later_attempt_of_same_run_consumes_another_round(self) -> None:
+        first = advisory_supersession.WorkflowRun(
+            63, "old", "push", "in_progress", run_attempt=1
+        )
+        rerun = dataclasses.replace(first, run_attempt=2)
+        client = FakeClient(
+            current_shas=["current"],
+            run_sweeps=[[first], [rerun], []],
+        )
+
+        result = advisory_supersession.reconcile(
+            client,
+            run_id=64,
+            run_sha="current",
+        )
+
+        self.assertEqual(result.cancelled_run_ids, (63, 63))
+        self.assertEqual(client.rounds, 2)
+
+    def test_reconciliation_round_exhaustion_prevents_fourth_mutation(self) -> None:
+        stale_sweeps = [
+            [
+                advisory_supersession.WorkflowRun(
+                    70 + index,
+                    f"old-{index}",
+                    "push",
+                    "in_progress",
+                )
+            ]
+            for index in range(4)
+        ]
+        client = FakeClient(
+            current_shas=["current"],
+            run_sweeps=stale_sweeps,
+            max_rounds=3,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "round budget"):
+            advisory_supersession.reconcile(
+                client,
+                run_id=80,
+                run_sha="current",
+            )
+
+        self.assertEqual(client.cancelled, [70, 71, 72])
+        self.assertEqual(client.rounds, 3)
+
+    def test_no_stale_attempt_admits_without_consuming_a_round(self) -> None:
+        client = FakeClient(
+            current_shas=["current"],
+            run_sweeps=[[]],
+        )
+
+        result = advisory_supersession.reconcile(
+            client,
+            run_id=81,
+            run_sha="current",
+        )
+
+        self.assertEqual(result.cancelled_run_ids, ())
+        self.assertEqual(client.rounds, 0)
+        self.assertEqual(client.discovery_calls, 1)
+
+
+class MainTests(unittest.TestCase):
+    def args(self, *, watch_only: bool = False) -> list[str]:
+        args = [
+            "--config",
+            "ci/advisory-supersession.toml",
+            "--repository",
+            "owner/repository",
+            "--run-id",
+            "123",
+            "--run-sha",
+            "current",
+        ]
+        if watch_only:
+            args.append("--watch-only")
+        return args
+
+    def test_controller_success_and_superseded_exit_codes(self) -> None:
+        client = object()
+        with (
+            mock.patch.object(
+                advisory_supersession,
+                "load_config",
+                return_value=GOVERNED_CONFIG,
+            ),
+            mock.patch.object(
+                advisory_supersession,
+                "GitHubActionsClient",
+                return_value=client,
+            ),
+            mock.patch.object(
+                advisory_supersession,
+                "reconcile",
+                return_value=advisory_supersession.ReconcileResult(()),
+            ),
+            mock.patch("builtins.print"),
+            mock.patch.dict(advisory_supersession.os.environ, {"GITHUB_TOKEN": "token"}),
+        ):
+            self.assertEqual(advisory_supersession.main(self.args()), 0)
+
+        with (
+            mock.patch.object(
+                advisory_supersession,
+                "load_config",
+                return_value=GOVERNED_CONFIG,
+            ),
+            mock.patch.object(
+                advisory_supersession,
+                "GitHubActionsClient",
+                return_value=client,
+            ),
+            mock.patch.object(
+                advisory_supersession,
+                "reconcile",
+                side_effect=advisory_supersession.SupersededRun("main moved"),
+            ),
+            mock.patch("builtins.print"),
+            mock.patch.dict(advisory_supersession.os.environ, {"GITHUB_TOKEN": "token"}),
+        ):
+            self.assertEqual(advisory_supersession.main(self.args()), 78)
+
+    def test_watchdog_success_and_failure_exit_codes(self) -> None:
+        client = object()
+        common = (
+            mock.patch.object(
+                advisory_supersession,
+                "load_config",
+                return_value=GOVERNED_CONFIG,
+            ),
+            mock.patch.object(
+                advisory_supersession,
+                "GitHubActionsClient",
+                return_value=client,
+            ),
+            mock.patch("builtins.print"),
+            mock.patch.dict(advisory_supersession.os.environ, {"GITHUB_TOKEN": "token"}),
+        )
+        with (
+            common[0],
+            common[1],
+            common[2],
+            common[3],
+            mock.patch.object(
+                advisory_supersession,
+                "cancel_superseded_target",
+                return_value=advisory_supersession.ReconcileResult((123,)),
+            ),
+        ):
+            self.assertEqual(
+                advisory_supersession.main(self.args(watch_only=True)),
+                0,
+            )
+
+        common = (
+            mock.patch.object(
+                advisory_supersession,
+                "load_config",
+                return_value=GOVERNED_CONFIG,
+            ),
+            mock.patch.object(
+                advisory_supersession,
+                "GitHubActionsClient",
+                return_value=client,
+            ),
+            mock.patch("builtins.print"),
+            mock.patch.dict(advisory_supersession.os.environ, {"GITHUB_TOKEN": "token"}),
+        )
+        with (
+            common[0],
+            common[1],
+            common[2],
+            common[3],
+            mock.patch.object(
+                advisory_supersession,
+                "cancel_superseded_target",
+                side_effect=RuntimeError("failed closed"),
+            ),
+        ):
+            self.assertEqual(
+                advisory_supersession.main(self.args(watch_only=True)),
+                1,
+            )
 
 
 class ConfigTests(unittest.TestCase):
@@ -792,6 +1273,206 @@ class ExactRunTests(unittest.TestCase):
                 client = ExactRunClient(document=exact_run_document(**overrides))
                 with self.assertRaisesRegex(ValueError, message):
                     client.capture_context(run_id=123, run_sha="current")
+
+
+class LedgerTests(unittest.TestCase):
+    def ledger(
+        self,
+        *,
+        config: advisory_supersession.Config = GOVERNED_CONFIG,
+        now: float = 0.0,
+    ) -> advisory_supersession.ReconciliationLedger:
+        return advisory_supersession.ReconciliationLedger(
+            config=config,
+            deadline=600.0,
+            monotonic_now=lambda: now,
+        )
+
+    def test_charges_reads_and_mutations_before_dispatch(self) -> None:
+        ledger = self.ledger()
+
+        ledger.charge_request("GET")
+        ledger.charge_request("POST")
+
+        self.assertEqual(ledger.requests, 2)
+        self.assertEqual(ledger.secondary_points, 6)
+        self.assertEqual(ledger.mutations, 1)
+
+    def test_rejects_request_and_secondary_point_exhaustion(self) -> None:
+        request_ledger = self.ledger(
+            config=dataclasses.replace(GOVERNED_CONFIG, max_total_requests=1)
+        )
+        request_ledger.charge_request("GET")
+
+        with self.assertRaisesRegex(RuntimeError, "request budget"):
+            request_ledger.charge_request("GET")
+
+        point_ledger = self.ledger(
+            config=dataclasses.replace(GOVERNED_CONFIG, max_secondary_points=4)
+        )
+        with self.assertRaisesRegex(RuntimeError, "secondary-point"):
+            point_ledger.charge_request("POST")
+        self.assertEqual(point_ledger.requests, 0)
+        self.assertEqual(point_ledger.mutations, 0)
+
+    def test_same_attempt_releases_successor_reservation(self) -> None:
+        ledger = self.ledger()
+        ledger.latest_primary_remaining = 5000
+        episode = ledger.begin_episode(7, 3)
+        ledger.reserve_successor(
+            episode,
+            advisory_supersession.cancellation_episode_capacity(
+                GOVERNED_CONFIG
+            ),
+        )
+
+        bound = ledger.bind_first_observation(3)
+
+        self.assertEqual(bound, (7, 3))
+        self.assertEqual(ledger.reservations_released, 1)
+        self.assertEqual(ledger.reservations_consumed, 0)
+        self.assertIsNone(ledger.pending_reservation)
+
+    def test_immediate_successor_consumes_reservation_as_episode(self) -> None:
+        ledger = self.ledger()
+        ledger.latest_primary_remaining = 5000
+        episode = ledger.begin_episode(7, 3)
+        ledger.reserve_successor(
+            episode,
+            advisory_supersession.cancellation_episode_capacity(
+                GOVERNED_CONFIG
+            ),
+        )
+
+        bound = ledger.bind_first_observation(4)
+
+        self.assertEqual(bound, (7, 4))
+        self.assertIn((7, 4), ledger.episodes)
+        self.assertEqual(ledger.reservations_consumed, 1)
+
+    def test_non_adjacent_observation_consumes_and_poisons(self) -> None:
+        ledger = self.ledger()
+        ledger.latest_primary_remaining = 5000
+        episode = ledger.begin_episode(7, 3)
+        ledger.reserve_successor(
+            episode,
+            advisory_supersession.cancellation_episode_capacity(
+                GOVERNED_CONFIG
+            ),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "immediate successor"):
+            ledger.bind_first_observation(5)
+
+        self.assertTrue(ledger.poisoned)
+        self.assertEqual(ledger.reservations_consumed, 1)
+        with self.assertRaisesRegex(RuntimeError, "poisoned"):
+            ledger.charge_request("GET")
+
+    def test_reservation_requires_rate_request_point_and_deadline_capacity(self) -> None:
+        full = advisory_supersession.cancellation_episode_capacity(GOVERNED_CONFIG)
+        cases = {
+            "rate": self.ledger(),
+            "request": self.ledger(
+                config=dataclasses.replace(
+                    GOVERNED_CONFIG,
+                    max_total_requests=(2 * full.requests) - 1,
+                )
+            ),
+            "points": self.ledger(
+                config=dataclasses.replace(
+                    GOVERNED_CONFIG,
+                    max_secondary_points=(2 * full.secondary_points) - 1,
+                )
+            ),
+            "deadline": advisory_supersession.ReconciliationLedger(
+                config=GOVERNED_CONFIG,
+                deadline=(2 * full.pacing_seconds) - 1,
+                monotonic_now=lambda: 0.0,
+            ),
+        }
+        for label, ledger in cases.items():
+            with self.subTest(label=label):
+                if label != "rate":
+                    ledger.latest_primary_remaining = 5000
+                episode = ledger.begin_episode(7, 3)
+                with self.assertRaises(RuntimeError):
+                    ledger.reserve_successor(episode, full)
+
+    def test_episode_and_reservation_share_target_ceiling(self) -> None:
+        config = dataclasses.replace(
+            GOVERNED_CONFIG,
+            max_cancellation_targets=2,
+        )
+        ledger = self.ledger(config=config)
+        ledger.latest_primary_remaining = 5000
+        episode = ledger.begin_episode(7, 3)
+        ledger.reserve_successor(
+            episode,
+            advisory_supersession.cancellation_episode_capacity(config),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "episode budget"):
+            ledger.begin_episode(8, 1)
+
+    def test_ambiguous_outcome_consumes_reservation_and_prevents_rebinding(self) -> None:
+        ledger = self.ledger()
+        ledger.latest_primary_remaining = 5000
+        episode = ledger.begin_episode(7, 3)
+        ledger.reserve_successor(
+            episode,
+            advisory_supersession.cancellation_episode_capacity(
+                GOVERNED_CONFIG
+            ),
+        )
+
+        ledger.consume_ambiguous_reservation()
+
+        self.assertTrue(ledger.poisoned)
+        self.assertEqual(ledger.reservations_consumed, 1)
+        with self.assertRaisesRegex(RuntimeError, "no immediate-successor"):
+            ledger.bind_first_observation(3)
+
+    def test_http_dispatch_charges_mutation_before_lost_response(self) -> None:
+        client = advisory_supersession.GitHubActionsClient(
+            config=GOVERNED_CONFIG,
+            repository="owner/repository",
+            token="test-token",
+        )
+        ledger = advisory_supersession.ReconciliationLedger(
+            config=GOVERNED_CONFIG,
+            deadline=5.0,
+            monotonic_now=lambda: 0.0,
+        )
+        opener = FailingOpener(ledger)
+        client._ledger = ledger
+        client._opener = opener
+
+        with self.assertRaisesRegex(TimeoutError, "dispatch timed out"):
+            client._request_json(
+                "POST",
+                "repos/owner/repository/actions/runs/7/cancel",
+                expected_statuses=(202, 409),
+            )
+
+        self.assertEqual(opener.dispatch_state, (1, 5, 1, 5.0))
+        self.assertEqual(ledger.requests, 1)
+        self.assertEqual(ledger.secondary_points, 5)
+        self.assertEqual(ledger.mutations, 1)
+
+    def test_missing_latest_rate_header_removes_mutation_authority(self) -> None:
+        ledger = self.ledger()
+        ledger.observe_headers({"x-ratelimit-remaining": "5000"})
+        ledger.observe_headers({})
+        episode = ledger.begin_episode(7, 1)
+
+        with self.assertRaisesRegex(RuntimeError, "rate-limit authority"):
+            ledger.reserve_successor(
+                episode,
+                advisory_supersession.cancellation_episode_capacity(
+                    GOVERNED_CONFIG
+                ),
+            )
 
 
 class CensusTests(unittest.TestCase):

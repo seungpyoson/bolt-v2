@@ -63,7 +63,7 @@
 - [x] Add behavior tests for configured and numeric-repository next links, decoded query order/encoding, duplicate/dropped/changed filters, foreign origins or repository IDs, repeated URLs, empty intermediate pages, duplicate run IDs, missing/extra links, exact page multiples, total-count drift, thresholds immediately below/at 900, and page-bound exhaustion.
 - [x] Validate decoded query multimaps: exactly one governed branch, event, cutoff, and page size; exactly one positive page cursor may vary; reject every other key.
 - [x] Require non-negative stable `total_count`, unique positive run IDs, matching branch/event, exact fetched count, sentinel presence, and no continuation mismatch.
-- [ ] Charge each page request and its secondary point before dispatch; cap pages at `ceil(max_search_results / runs_per_page)`.
+- [x] Charge each page request and its secondary point before dispatch; cap pages at `ceil(max_search_results / runs_per_page)`.
 - [x] Run the pagination/census test group; expect malformed and incomplete sweeps to fail closed before mutation.
 
 ### Task 4: Stabilize discovery under one fixed cutoff and current-main fence
@@ -76,10 +76,10 @@
 - Consumes: complete sweeps from Task 3.
 - Produces: two identical active-subset signatures within four attempts, paced by the TOML sweep interval.
 
-- [ ] Add behavior tests for queued/in-progress status transitions, arrivals, completions, delayed sentinel visibility, paced retry, permanent absence, stabilization exhaustion, and `main` movement before/during discovery.
-- [ ] Read exact `main` before and after every sweep, reuse the fixed cutoff, and count incomplete sweeps against the configured maximum without mutation.
-- [ ] Sleep only between attempts and cap sleep/request timeouts by the absolute reconciliation deadline.
-- [ ] Run the stabilization tests; expect admission only after the configured stable signature count.
+- [x] Add behavior tests for queued/in-progress status transitions, arrivals, completions, delayed sentinel visibility, paced retry, permanent absence, stabilization exhaustion, and `main` movement before/during discovery.
+- [x] Read exact `main` before and after every sweep, reuse the fixed cutoff, and count incomplete sweeps against the configured maximum without mutation.
+- [x] Sleep only between attempts and cap sleep/request timeouts by the absolute reconciliation deadline.
+- [x] Run the stabilization tests; expect admission only after the configured stable signature count.
 
 ### Task 5: Implement the cancellation-episode ledger and one-read successor binding
 
@@ -91,13 +91,13 @@
 - Produces: cumulative ledger for requests, mutations, cancellation episodes, consumed/released immediate-successor reservations, secondary points, rounds, and elapsed deadline.
 - Produces: episode cancellation accepting only a freshness-verified `(run_id, attempt N)` and returning only after that bound attempt is exactly terminal.
 
-- [ ] Add behavior tests for reservation capacity, release on the first post-mutation observation of N, consumption by exactly N+1, N+2/larger, decreased, zero, malformed, timeout, 202, 409, lost response, normal cancel, force-cancel, exhaustion, and no later rebinding.
-- [ ] Before each normal/force mutation, charge and fetch current `main`, fetch and exactly validate the target, and ensure the episode plus a complete immediate-successor reservation fits every cumulative ceiling and deadline.
-- [ ] Charge the mutation request and five secondary points before dispatch, including ambiguous/error outcomes.
-- [ ] Permit only the first post-mutation status read to bind: N releases the reservation, N+1 consumes it as its own episode, every other observation consumes and poisons authority.
-- [ ] After same-N release, route any later attempt change through a fresh episode without inherited observations, budget, or terminal state.
-- [ ] Escalate to force-cancel only after a fresh main/target preflight and a new successor reservation; require exact terminal confirmation for the currently bound episode.
-- [ ] Run the episode-ledger tests; expect ambiguous outcomes to prevent admission and every later mutation.
+- [x] Add behavior tests for reservation capacity, release on the first post-mutation observation of N, consumption by exactly N+1, N+2/larger, decreased, zero, malformed, timeout, 202, 409, lost response, normal cancel, force-cancel, exhaustion, and no later rebinding.
+- [x] Before each normal/force mutation, charge and fetch current `main`, fetch and exactly validate the target, and ensure the episode plus a complete immediate-successor reservation fits every cumulative ceiling and deadline.
+- [x] Charge the mutation request and five secondary points before dispatch, including ambiguous/error outcomes.
+- [x] Permit only the first post-mutation status read to bind: N releases the reservation, N+1 consumes it as its own episode, every other observation consumes and poisons authority.
+- [x] After same-N release, route any later attempt change through a fresh episode without inherited observations, budget, or terminal state.
+- [x] Escalate to force-cancel only after a fresh main/target preflight and a new successor reservation; require exact terminal confirmation for the currently bound episode.
+- [x] Run the episode-ledger tests; expect ambiguous outcomes to prevent admission and every later mutation.
 
 ### Task 6: Reconcile rounds and final admission
 
@@ -109,11 +109,11 @@
 - Consumes: stable censuses and episode cancellation from Tasks 4–5.
 - Produces: admission only after all stale attempts are terminal and a final stable census contains no different-SHA active attempt.
 
-- [ ] Add behavior tests for stale attempts arriving after initial stabilization and during cancellation, later attempts of an existing run ID, round exhaustion, request/point/rate/deadline exhaustion, and `main` movement before normal cancel, force-cancel, and final admission.
-- [ ] Iterate at most three TOML-governed reconciliation rounds while sharing the single cumulative ledger and cutoff.
-- [ ] Preserve the invoking run, current-main attempts, and same-SHA reruns; cancel only active different-SHA push attempts.
-- [ ] On invoking-run staleness, request self-cancellation under the same charged episode rules and return the existing superseded exit code only after the bounded mutation result.
-- [ ] Run controller behavior tests; expect every exhausted or uncertain path to return non-admission.
+- [x] Add behavior tests for stale attempts arriving after initial stabilization and during cancellation, later attempts of an existing run ID, round exhaustion, request/point/rate/deadline exhaustion, and `main` movement before normal cancel, force-cancel, and final admission.
+- [x] Iterate at most three TOML-governed reconciliation rounds while sharing the single cumulative ledger and cutoff.
+- [x] Preserve the invoking run, current-main attempts, and same-SHA reruns; cancel only active different-SHA push attempts.
+- [x] On invoking-run staleness or later `main` movement, fail without self-cancellation or another mutation and return the existing superseded exit code.
+- [x] Run controller behavior tests; expect every exhausted or uncertain path to return non-admission.
 
 ### Task 7: Apply the same episode authority to the all-attempt watchdog
 
@@ -126,10 +126,10 @@
 - Consumes: exact-run validation and episode cancellation without census/round logic.
 - Produces: preservation of current-main/same-SHA attempts and bounded terminal cancellation of every stale first attempt or rerun.
 
-- [ ] Add behavior tests for stale attempt 1, stale rerun, current-main attempt 1, same-SHA rerun, main movement, immediate successors, force escalation, budget exhaustion, and exit codes.
-- [ ] Remove the `run_attempt > 1` workflow condition while retaining workflow event/SHA/run identity validation in the controller.
-- [ ] Reuse the exact same request, point, deadline, reservation, and terminal-confirmation components as the admission controller.
-- [ ] Run watchdog behavior tests; expect no recursion and no mutation of a newly current target.
+- [x] Add behavior tests for stale attempt 1, stale rerun, current-main attempt 1, same-SHA rerun, main movement, immediate successors, force escalation, budget exhaustion, and exit codes.
+- [x] Remove the `run_attempt > 1` workflow condition while retaining workflow event/SHA/run identity validation in the controller.
+- [x] Reuse the exact same request, point, deadline, reservation, and terminal-confirmation components as the admission controller.
+- [x] Run watchdog behavior tests; expect no recursion and no mutation of a newly current target.
 
 ### Task 8: Align workflow/config wiring and run exact-head static evidence
 

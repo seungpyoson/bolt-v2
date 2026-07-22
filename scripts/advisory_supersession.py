@@ -60,6 +60,37 @@ class ReconciliationTopology:
     minimum_pacing_seconds: int
 
 
+@dataclasses.dataclass(frozen=True)
+class EpisodeCapacity:
+    requests: int
+    secondary_points: int
+    pacing_seconds: int
+
+    def __add__(self, other: EpisodeCapacity) -> EpisodeCapacity:
+        return EpisodeCapacity(
+            requests=self.requests + other.requests,
+            secondary_points=self.secondary_points + other.secondary_points,
+            pacing_seconds=self.pacing_seconds + other.pacing_seconds,
+        )
+
+
+def cancellation_episode_capacity(config: Config) -> EpisodeCapacity:
+    reads = 4 + (2 * config.cancel_poll_attempts)
+    mutations = 2
+    return EpisodeCapacity(
+        requests=reads + mutations,
+        secondary_points=(
+            reads * config.secondary_read_points
+            + mutations * config.secondary_mutation_points
+        ),
+        pacing_seconds=(
+            2
+            * (config.cancel_poll_attempts - 1)
+            * config.cancel_poll_interval_seconds
+        ),
+    )
+
+
 def reconciliation_topology(config: Config) -> ReconciliationTopology:
     pages_per_sweep = math.ceil(
         config.max_search_results / config.runs_per_page
@@ -67,13 +98,11 @@ def reconciliation_topology(config: Config) -> ReconciliationTopology:
     census_count = config.max_reconciliation_rounds + 1
     sweep_count = census_count * config.discovery_max_sweeps
     sweep_reads = pages_per_sweep + 2
-    episode_reads = 4 + (2 * config.cancel_poll_attempts)
-    episode_mutations = 2
-    episode_requests = episode_reads + episode_mutations
+    episode = cancellation_episode_capacity(config)
     requests = (
         1
         + (sweep_count * sweep_reads)
-        + (config.max_cancellation_targets * episode_requests)
+        + (config.max_cancellation_targets * episode.requests)
         + 1
     )
     secondary_points = (
@@ -85,10 +114,7 @@ def reconciliation_topology(config: Config) -> ReconciliationTopology:
         )
         + (
             config.max_cancellation_targets
-            * (
-                episode_reads * config.secondary_read_points
-                + episode_mutations * config.secondary_mutation_points
-            )
+            * episode.secondary_points
         )
         + config.secondary_read_points
     )
@@ -97,9 +123,7 @@ def reconciliation_topology(config: Config) -> ReconciliationTopology:
         * (config.discovery_max_sweeps - 1)
         * config.sweep_interval_seconds
         + config.max_cancellation_targets
-        * 2
-        * (config.cancel_poll_attempts - 1)
-        * config.cancel_poll_interval_seconds
+        * episode.pacing_seconds
     )
     return ReconciliationTopology(
         requests=requests,
@@ -127,6 +151,149 @@ class ReconciliationContext:
     github_now: datetime.datetime
     created_filter: str
     deadline: float
+
+
+@dataclasses.dataclass(frozen=True)
+class SuccessorReservation:
+    current: tuple[int, int]
+    successor: tuple[int, int]
+
+
+@dataclasses.dataclass
+class ReconciliationLedger:
+    config: Config
+    deadline: float
+    monotonic_now: Callable[[], float] = time.monotonic
+    requests: int = 0
+    secondary_points: int = 0
+    mutations: int = 0
+    rounds: int = 0
+    reservations_released: int = 0
+    reservations_consumed: int = 0
+    poisoned: bool = False
+    latest_primary_remaining: int | None = None
+    episodes: set[tuple[int, int]] = dataclasses.field(default_factory=set)
+    pending_reservation: SuccessorReservation | None = None
+
+    def remaining_seconds(self) -> float:
+        remaining = self.deadline - self.monotonic_now()
+        if remaining <= 0:
+            raise RuntimeError("reconciliation deadline exhausted")
+        return remaining
+
+    def charge_request(self, method: str) -> None:
+        if self.poisoned:
+            raise RuntimeError("reconciliation authority is poisoned")
+        self.remaining_seconds()
+        if method == "GET":
+            points = self.config.secondary_read_points
+        elif method == "POST":
+            points = self.config.secondary_mutation_points
+        else:
+            raise ValueError(f"unsupported GitHub request method: {method}")
+        if self.requests + 1 > self.config.max_total_requests:
+            raise RuntimeError("GitHub request budget exhausted")
+        if self.secondary_points + points > self.config.max_secondary_points:
+            raise RuntimeError("GitHub secondary-point budget exhausted")
+        self.requests += 1
+        self.secondary_points += points
+        if method == "POST":
+            self.mutations += 1
+
+    def observe_headers(self, headers: Mapping[str, str]) -> None:
+        raw_remaining = headers.get("x-ratelimit-remaining")
+        if raw_remaining is None:
+            self.latest_primary_remaining = None
+            return
+        try:
+            remaining = int(raw_remaining)
+        except ValueError as error:
+            raise RuntimeError(
+                "GitHub x-ratelimit-remaining header is malformed"
+            ) from error
+        if remaining < 0:
+            raise RuntimeError("GitHub x-ratelimit-remaining header is negative")
+        self.latest_primary_remaining = remaining
+
+    def begin_episode(self, run_id: int, run_attempt: int) -> tuple[int, int]:
+        if self.poisoned:
+            raise RuntimeError("reconciliation authority is poisoned")
+        if run_id <= 0 or run_attempt <= 0:
+            raise ValueError("cancellation episode identity must be positive")
+        episode = (run_id, run_attempt)
+        if episode in self.episodes:
+            return episode
+        occupied = len(self.episodes) + int(self.pending_reservation is not None)
+        if occupied + 1 > self.config.max_cancellation_targets:
+            raise RuntimeError("cancellation-episode budget exhausted")
+        self.episodes.add(episode)
+        return episode
+
+    def reserve_successor(
+        self,
+        episode: tuple[int, int],
+        current_remaining: EpisodeCapacity,
+    ) -> SuccessorReservation:
+        if self.poisoned:
+            raise RuntimeError("reconciliation authority is poisoned")
+        if episode not in self.episodes:
+            raise RuntimeError("cannot reserve for an uncharged cancellation episode")
+        if self.pending_reservation is not None:
+            raise RuntimeError("an immediate-successor reservation is already pending")
+        successor = (episode[0], episode[1] + 1)
+        if successor in self.episodes:
+            raise RuntimeError("immediate successor was already observed")
+        if len(self.episodes) + 1 > self.config.max_cancellation_targets:
+            raise RuntimeError("immediate-successor reservation budget exhausted")
+        required = current_remaining + cancellation_episode_capacity(self.config)
+        if self.requests + required.requests > self.config.max_total_requests:
+            raise RuntimeError("request capacity cannot cover immediate successor")
+        if (
+            self.secondary_points + required.secondary_points
+            > self.config.max_secondary_points
+        ):
+            raise RuntimeError(
+                "secondary-point capacity cannot cover immediate successor"
+            )
+        if self.latest_primary_remaining is None:
+            raise RuntimeError("primary rate-limit authority is unavailable")
+        if (
+            self.latest_primary_remaining - required.requests
+            < self.config.api_rate_limit_reserve
+        ):
+            raise RuntimeError("primary rate-limit reserve cannot cover cancellation")
+        if self.monotonic_now() + required.pacing_seconds > self.deadline:
+            raise RuntimeError("deadline cannot cover immediate successor")
+        reservation = SuccessorReservation(
+            current=episode,
+            successor=successor,
+        )
+        self.pending_reservation = reservation
+        return reservation
+
+    def bind_first_observation(self, run_attempt: int) -> tuple[int, int]:
+        reservation = self.pending_reservation
+        if reservation is None:
+            raise RuntimeError("no immediate-successor reservation is pending")
+        if run_attempt == reservation.current[1]:
+            self.pending_reservation = None
+            self.reservations_released += 1
+            return reservation.current
+        if run_attempt == reservation.successor[1]:
+            self.pending_reservation = None
+            self.reservations_consumed += 1
+            self.episodes.add(reservation.successor)
+            return reservation.successor
+        self.consume_ambiguous_reservation()
+        raise RuntimeError(
+            "first post-mutation observation was not the bound attempt or immediate successor"
+        )
+
+    def consume_ambiguous_reservation(self) -> None:
+        if self.pending_reservation is not None:
+            self.pending_reservation = None
+            self.reservations_consumed += 1
+        self.poisoned = True
 
 
 @dataclasses.dataclass(frozen=True)
@@ -172,10 +339,13 @@ class ActionsClient(Protocol):
         freshness_guard: Callable[[], None],
     ) -> list[WorkflowRun]: ...
 
-    def cancel_self(self, run_id: int) -> None: ...
+    def begin_reconciliation_round(self) -> None: ...
 
     def cancel_and_confirm(
-        self, run_id: int, freshness_guard: Callable[[], None]
+        self,
+        target: WorkflowRun,
+        context: ReconciliationContext,
+        freshness_guard: Callable[[], None],
     ) -> None: ...
 
 
@@ -360,6 +530,7 @@ class GitHubActionsClient:
         }
         self._opener = urllib.request.build_opener(_NoRedirectHandler())
         self._sleep = time.sleep
+        self._ledger: ReconciliationLedger | None = None
 
     def capture_context(
         self,
@@ -370,6 +541,14 @@ class GitHubActionsClient:
     ) -> ReconciliationContext:
         if run_id <= 0:
             raise ValueError("run_id must be positive")
+        if getattr(self, "_ledger", None) is not None:
+            raise RuntimeError("reconciliation context was already captured")
+        deadline = monotonic_now() + self.config.reconciliation_timeout_seconds
+        self._ledger = ReconciliationLedger(
+            config=self.config,
+            deadline=deadline,
+            monotonic_now=monotonic_now,
+        )
         _, document, headers = self._request_json(
             "GET",
             f"repos/{self.repository}/actions/runs/{run_id}",
@@ -444,7 +623,7 @@ class GitHubActionsClient:
             repository_full_name=repository_full_name,
             github_now=github_now,
             created_filter=created_filter,
-            deadline=monotonic_now() + self.config.reconciliation_timeout_seconds,
+            deadline=deadline,
         )
 
     def _request_json(
@@ -463,11 +642,20 @@ class GitHubActionsClient:
             url = f"{url}?{urllib.parse.urlencode(query)}"
         if not url.startswith(f"{GITHUB_API_ORIGIN}/"):
             raise ValueError("refusing to send GITHUB_TOKEN outside the GitHub API")
+        ledger = getattr(self, "_ledger", None)
+        if ledger is not None:
+            ledger.charge_request(method)
+            timeout = min(
+                self.config.request_timeout_seconds,
+                ledger.remaining_seconds(),
+            )
+        else:
+            timeout = self.config.request_timeout_seconds
         request = urllib.request.Request(url, headers=self._headers, method=method)
         try:
             with self._opener.open(
                 request,
-                timeout=self.config.request_timeout_seconds,
+                timeout=timeout,
             ) as response:
                 if response.status not in expected_statuses:
                     raise RuntimeError(
@@ -475,17 +663,27 @@ class GitHubActionsClient:
                     )
                 body = response.read()
                 document = json.loads(body) if body else None
+                response_headers = {
+                    key.lower(): value for key, value in response.headers.items()
+                }
+                if ledger is not None:
+                    ledger.observe_headers(response_headers)
                 return (
                     response.status,
                     document,
-                    {key.lower(): value for key, value in response.headers.items()},
+                    response_headers,
                 )
         except urllib.error.HTTPError as error:
+            error_headers = {
+                key.lower(): value for key, value in error.headers.items()
+            }
+            if ledger is not None:
+                ledger.observe_headers(error_headers)
             if error.code in expected_statuses:
                 return (
                     error.code,
                     None,
-                    {key.lower(): value for key, value in error.headers.items()},
+                    error_headers,
                 )
             raise RuntimeError(
                 f"GitHub API returned HTTP {error.code} for {method} {url}"
@@ -705,7 +903,7 @@ class GitHubActionsClient:
                 previous_signature = None
                 stable_sweeps = 0
                 if sweep_index + 1 < self.config.discovery_max_sweeps:
-                    self._sleep(self.config.sweep_interval_seconds)
+                    self._sleep_between_sweeps(context)
                 continue
             freshness_guard()
             signature = tuple(
@@ -720,19 +918,88 @@ class GitHubActionsClient:
             if stable_sweeps >= self.config.discovery_stable_sweeps:
                 return runs
             if sweep_index + 1 < self.config.discovery_max_sweeps:
-                self._sleep(self.config.sweep_interval_seconds)
+                self._sleep_between_sweeps(context)
         message = "active workflow-run discovery did not stabilize"
         if last_incomplete is not None:
             message = f"{message}: {last_incomplete}"
         raise RuntimeError(message)
 
-    def _run_status(self, run_id: int) -> str:
+    def _sleep_between_sweeps(self, context: ReconciliationContext) -> None:
+        ledger = getattr(self, "_ledger", None)
+        if ledger is not None:
+            if ledger.monotonic_now() + self.config.sweep_interval_seconds > context.deadline:
+                raise RuntimeError("reconciliation deadline cannot cover sweep interval")
+        self._sleep(self.config.sweep_interval_seconds)
+
+    def begin_reconciliation_round(self) -> None:
+        ledger = self._ledger
+        if ledger is None:
+            raise RuntimeError("reconciliation round requires a ledger")
+        if ledger.rounds + 1 > self.config.max_reconciliation_rounds:
+            raise RuntimeError("reconciliation-round budget exhausted")
+        ledger.rounds += 1
+
+    def _exact_target(
+        self,
+        target: WorkflowRun,
+        context: ReconciliationContext,
+    ) -> WorkflowRun:
         _, document, _ = self._request_json(
             "GET",
-            f"repos/{self.repository}/actions/runs/{run_id}",
+            f"repos/{self.repository}/actions/runs/{target.run_id}",
         )
         root = _require_mapping(document, "workflow run response")
-        return _require_string(root, "status")
+        run_id = root.get("id")
+        if (
+            isinstance(run_id, bool)
+            or not isinstance(run_id, int)
+            or run_id != target.run_id
+        ):
+            raise ValueError("exact target run id changed")
+        run_attempt = root.get("run_attempt")
+        if (
+            isinstance(run_attempt, bool)
+            or not isinstance(run_attempt, int)
+            or run_attempt <= 0
+        ):
+            raise ValueError("exact target run attempt must be positive")
+        repository = _require_mapping(
+            root.get("repository"), "exact target repository"
+        )
+        repository_id = repository.get("id")
+        if (
+            isinstance(repository_id, bool)
+            or not isinstance(repository_id, int)
+            or repository_id != context.repository_id
+            or _require_string(repository, "full_name")
+            != context.repository_full_name
+        ):
+            raise ValueError("exact target repository identity changed")
+        workflow_path = _require_string(root, "path").split("@", maxsplit=1)[0]
+        if workflow_path != f".github/workflows/{self.config.workflow}":
+            raise ValueError("exact target workflow changed")
+        event = _require_string(root, "event")
+        if event != self.config.event:
+            raise ValueError("exact target event changed")
+        branch = _require_string(root, "head_branch")
+        if branch != self.config.branch:
+            raise ValueError("exact target branch changed")
+        head_sha = _require_string(root, "head_sha")
+        if head_sha != target.head_sha:
+            raise ValueError("exact target SHA changed")
+        created_at = _require_timestamp(root, "created_at").strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        _require_timestamp(root, "run_started_at")
+        return WorkflowRun(
+            run_id=run_id,
+            head_sha=head_sha,
+            event=event,
+            status=_require_string(root, "status"),
+            run_attempt=run_attempt,
+            created_at=created_at,
+            head_branch=branch,
+        )
 
     def _request_cancel(self, run_id: int, *, force: bool) -> int:
         operation = "force-cancel" if force else "cancel"
@@ -745,29 +1012,142 @@ class GitHubActionsClient:
             print(f"::warning::GitHub returned 409 while cancelling run {run_id}")
         return status
 
-    def _wait_until_terminal(self, run_id: int) -> bool:
-        for attempt in range(self.config.cancel_poll_attempts):
-            if self._run_status(run_id) == self.config.terminal_status:
-                return True
-            if attempt + 1 < self.config.cancel_poll_attempts:
-                time.sleep(self.config.cancel_poll_interval_seconds)
-        return False
-
-    def cancel_self(self, run_id: int) -> None:
-        self._request_cancel(run_id, force=False)
-
     def cancel_and_confirm(
-        self, run_id: int, freshness_guard: Callable[[], None]
+        self,
+        target: WorkflowRun,
+        context: ReconciliationContext,
+        freshness_guard: Callable[[], None],
     ) -> None:
-        freshness_guard()
-        self._request_cancel(run_id, force=False)
-        if self._wait_until_terminal(run_id):
-            return
-        freshness_guard()
-        self._request_cancel(run_id, force=True)
-        if self._wait_until_terminal(run_id):
-            return
-        raise RuntimeError(f"run {run_id} remained active after force-cancellation")
+        ledger = getattr(self, "_ledger", None)
+        if ledger is None:
+            raise RuntimeError("cancellation requires a reconciliation ledger")
+        current = target
+        while True:
+            episode = ledger.begin_episode(current.run_id, current.run_attempt)
+            freshness_guard()
+            observed = self._exact_target(current, context)
+            if observed.status == self.config.terminal_status:
+                return
+            if observed.run_attempt != current.run_attempt:
+                current = self._advance_before_mutation(ledger, current, observed)
+                continue
+            current, terminal = self._mutate_and_poll(
+                current,
+                context,
+                episode,
+                force=False,
+            )
+            if terminal:
+                return
+            freshness_guard()
+            observed = self._exact_target(current, context)
+            if observed.status == self.config.terminal_status:
+                return
+            if observed.run_attempt != current.run_attempt:
+                current = self._advance_before_mutation(ledger, current, observed)
+                continue
+            current, terminal = self._mutate_and_poll(
+                current,
+                context,
+                (current.run_id, current.run_attempt),
+                force=True,
+            )
+            if terminal:
+                return
+            raise RuntimeError(
+                f"run {current.run_id} attempt {current.run_attempt} "
+                "remained active after force-cancellation"
+            )
+
+    def _advance_before_mutation(
+        self,
+        ledger: ReconciliationLedger,
+        previous: WorkflowRun,
+        observed: WorkflowRun,
+    ) -> WorkflowRun:
+        if observed.run_attempt <= previous.run_attempt:
+            ledger.consume_ambiguous_reservation()
+            raise RuntimeError("exact target attempt decreased before mutation")
+        ledger.begin_episode(observed.run_id, observed.run_attempt)
+        return observed
+
+    def _mutate_and_poll(
+        self,
+        target: WorkflowRun,
+        context: ReconciliationContext,
+        episode: tuple[int, int],
+        *,
+        force: bool,
+    ) -> tuple[WorkflowRun, bool]:
+        ledger = self._ledger
+        if ledger is None:
+            raise RuntimeError("cancellation requires a reconciliation ledger")
+        ledger.reserve_successor(
+            episode,
+            self._remaining_stage_capacity(force=force),
+        )
+        try:
+            self._request_cancel(target.run_id, force=force)
+        except Exception:
+            ledger.consume_ambiguous_reservation()
+            raise
+        try:
+            observed = self._exact_target(target, context)
+            bound_episode = ledger.bind_first_observation(observed.run_attempt)
+        except Exception:
+            ledger.consume_ambiguous_reservation()
+            raise
+        current = observed
+        if (current.run_id, current.run_attempt) != bound_episode:
+            raise AssertionError("bound cancellation episode does not match target")
+        if current.status == self.config.terminal_status:
+            return current, True
+        for _ in range(1, self.config.cancel_poll_attempts):
+            self._sleep_for_poll(context)
+            observed = self._exact_target(current, context)
+            if observed.run_attempt != current.run_attempt:
+                ledger.consume_ambiguous_reservation()
+                raise RuntimeError(
+                    "attempt changed after the one-read mutation binding"
+                )
+            current = observed
+            if current.status == self.config.terminal_status:
+                return current, True
+        return current, False
+
+    def _remaining_stage_capacity(self, *, force: bool) -> EpisodeCapacity:
+        polls = self.config.cancel_poll_attempts
+        if force:
+            reads = polls
+            mutations = 1
+            pacing = (polls - 1) * self.config.cancel_poll_interval_seconds
+        else:
+            reads = polls + 2 + polls
+            mutations = 2
+            pacing = (
+                2
+                * (polls - 1)
+                * self.config.cancel_poll_interval_seconds
+            )
+        return EpisodeCapacity(
+            requests=reads + mutations,
+            secondary_points=(
+                reads * self.config.secondary_read_points
+                + mutations * self.config.secondary_mutation_points
+            ),
+            pacing_seconds=pacing,
+        )
+
+    def _sleep_for_poll(self, context: ReconciliationContext) -> None:
+        ledger = self._ledger
+        if ledger is None:
+            raise RuntimeError("polling requires a reconciliation ledger")
+        if (
+            ledger.monotonic_now() + self.config.cancel_poll_interval_seconds
+            > context.deadline
+        ):
+            raise RuntimeError("reconciliation deadline cannot cover poll interval")
+        self._sleep(self.config.cancel_poll_interval_seconds)
 
 
 def _next_link(header: str | None) -> str | None:
@@ -794,40 +1174,26 @@ def reconcile(
 ) -> ReconcileResult:
     context = client.capture_context(run_id=run_id, run_sha=run_sha)
 
-    def supersede(message: str) -> None:
-        client.cancel_self(run_id)
-        raise SupersededRun(message)
-
-    current_sha = client.current_branch_sha()
-    if run_sha != current_sha:
-        supersede(f"run {run_id} is not exact-current main")
-
     def require_current_main() -> None:
         if client.current_branch_sha() != run_sha:
-            supersede(f"run {run_id} ceased to be exact-current main")
+            raise SupersededRun(f"run {run_id} ceased to be exact-current main")
 
     active_runs = client.active_push_runs(context, require_current_main)
-    if client.current_branch_sha() != run_sha:
-        supersede(f"run {run_id} ceased to be exact-current main")
-
     cancelled: list[int] = []
-    for run in active_runs:
-        if (
-            run.run_id == run_id
-            or run.event != "push"
-            or run.status == "completed"
-            or run.head_sha == current_sha
-        ):
-            continue
-        if client.current_branch_sha() != run_sha:
-            supersede(f"run {run_id} ceased to be exact-current main")
-        client.cancel_and_confirm(run.run_id, require_current_main)
-        cancelled.append(run.run_id)
-
-    if client.current_branch_sha() != run_sha:
-        supersede(f"run {run_id} ceased to be exact-current main")
-
-    return ReconcileResult(cancelled_run_ids=tuple(cancelled))
+    while True:
+        stale_runs = [
+            run
+            for run in active_runs
+            if run.run_id != run_id and run.head_sha != run_sha
+        ]
+        if not stale_runs:
+            require_current_main()
+            return ReconcileResult(cancelled_run_ids=tuple(cancelled))
+        client.begin_reconciliation_round()
+        for run in stale_runs:
+            client.cancel_and_confirm(run, context, require_current_main)
+            cancelled.append(run.run_id)
+        active_runs = client.active_push_runs(context, require_current_main)
 
 
 def cancel_superseded_target(
@@ -836,18 +1202,20 @@ def cancel_superseded_target(
     run_id: int,
     run_sha: str,
 ) -> ReconcileResult:
-    client.capture_context(run_id=run_id, run_sha=run_sha)
+    context = client.capture_context(run_id=run_id, run_sha=run_sha)
     current_sha = client.current_branch_sha()
     if run_sha == current_sha:
         return ReconcileResult(cancelled_run_ids=())
-    if client.current_branch_sha() != current_sha:
-        raise RuntimeError("main moved while the watchdog was evaluating a rerun")
 
     def require_stable_main() -> None:
         if client.current_branch_sha() != current_sha:
             raise RuntimeError("main moved while the watchdog was cancelling a rerun")
 
-    client.cancel_and_confirm(run_id, require_stable_main)
+    client.cancel_and_confirm(
+        context.invoking_run,
+        context,
+        require_stable_main,
+    )
     return ReconcileResult(cancelled_run_ids=(run_id,))
 
 

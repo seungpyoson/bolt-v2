@@ -4000,7 +4000,7 @@ impl BinaryOracleEdgeTaker {
         reason: &'static str,
     ) -> Result<()> {
         let reason_category = entry_skip_reason_category_from_str(reason)
-            .unwrap_or(BoltV3EntrySkipReasonCategory::Unclassified);
+            .expect("entry skip reason category should be classified correctly");
         let unclassified_context = (reason_category == BoltV3EntrySkipReasonCategory::Unclassified)
             .then(|| reason.to_string());
         // WARN keyed on the same evidence dedupe as record_entry_skip_once.
@@ -4747,7 +4747,7 @@ impl BinaryOracleEdgeTaker {
                 .position
                 .as_ref()
                 .map(|managed| managed.origin)
-                .unwrap_or(ManagedPositionOrigin::RecoveryBootstrap);
+                .expect("managed position origin should be known on exit");
             let pending_entry = exit_pending
                 .position
                 .as_ref()

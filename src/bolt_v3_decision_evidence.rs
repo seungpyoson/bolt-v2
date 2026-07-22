@@ -25,6 +25,9 @@ use crate::bolt_v3_timestamp_domain::LocalReceiveMs;
 use crate::bolt_v3_venue_truth::VenueTruthDivergenceAlarmClass;
 use crate::bolt_v3_venue_truth::{VenueTruthCaptureFailureEvidence, VenueTruthDivergenceEvidence};
 
+pub mod contract_generator;
+pub(crate) mod generated_contract;
+
 fn serialize_optional_local_receive_ms<S>(
     value: &Option<LocalReceiveMs>,
     serializer: S,

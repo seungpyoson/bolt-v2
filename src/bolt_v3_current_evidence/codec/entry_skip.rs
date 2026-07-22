@@ -91,7 +91,7 @@ pub(super) struct EntryRealizedVolatilitySnapshotV1Wire {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RealizedVolatilitySourceDiagnosticV1Wire {
+pub(super) struct RealizedVolatilitySourceDiagnosticV1Wire {
     source_id: String,
     source_class: RealizedVolSourceClassV1,
     sample_kind: RealizedVolSampleKindV1,
@@ -229,7 +229,7 @@ pub(super) enum RvGateResultV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RealizedVolPricingComponentV1 {
+pub(super) enum RealizedVolPricingComponentV1 {
     Measured,
     NoiseRobust,
     Continuous,
@@ -238,7 +238,7 @@ enum RealizedVolPricingComponentV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RealizedVolAggregationV1 {
+pub(super) enum RealizedVolAggregationV1 {
     UpperQuantile,
     Median,
     TrimmedMean,
@@ -247,7 +247,7 @@ enum RealizedVolAggregationV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RealizedVolSourceClassV1 {
+pub(super) enum RealizedVolSourceClassV1 {
     SpotQuote,
     Trade,
     Mark,
@@ -256,7 +256,7 @@ enum RealizedVolSourceClassV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RealizedVolSampleKindV1 {
+pub(super) enum RealizedVolSampleKindV1 {
     Midpoint,
     Trade,
     Mark,
@@ -265,7 +265,7 @@ enum RealizedVolSampleKindV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RealizedVolSourceStatusV1 {
+pub(super) enum RealizedVolSourceStatusV1 {
     Ready,
     Blocked,
     DiagnosticOnly,
@@ -274,7 +274,7 @@ enum RealizedVolSourceStatusV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RealizedVolSourceRejectReasonV1 {
+pub(super) enum RealizedVolSourceRejectReasonV1 {
     DisabledSource,
     InvalidPrice,
     SourceClassMismatch,
@@ -288,7 +288,7 @@ enum RealizedVolSourceRejectReasonV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RealizedVolBlockReasonV1 {
+pub(super) enum RealizedVolBlockReasonV1 {
     InvalidConfig,
     QuorumNotReady,
     SourceStale,

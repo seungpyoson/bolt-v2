@@ -117,7 +117,7 @@ enum StrategyInputRvStateWireV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SubmissionLinkageWireV1 {
+pub(super) struct SubmissionLinkageWireV1 {
     instrument_id: String,
     order_side: String,
     price: String,

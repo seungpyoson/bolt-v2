@@ -741,6 +741,156 @@ pub struct SubmitLinkedStrategyInputSnapshotFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitTriggerSource {
+    SignalQuote,
+    ReferenceUpdate,
+    SelectionUpdate,
+    BookDelta,
+    Unknown,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitBlockedReason {
+    NoOpenPosition,
+    ExitAlreadyPending,
+    EntryOrderStillWorking,
+    ExitDecisionUnavailable,
+    ExitHold,
+    PositionIntervalEnded,
+    PositionIntervalUnknown,
+    OpenPositionMissing,
+    ExitOrderConfigInvalid,
+    ExitQuoteQuantityUnsupported,
+    ExitPriceMissing,
+    ExitQuantityNotPositive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitDecisionDetails {
+    pub strategy_id: String,
+    pub market_id: Option<String>,
+    pub position_id: Option<String>,
+    pub position_instrument_id: Option<String>,
+    pub position_outcome_side: Option<OutcomeSide>,
+    pub forced_flat_reasons: Vec<ForcedFlatReason>,
+    pub spot_price: Option<String>,
+    pub spot_venue_name: Option<String>,
+    pub fast_venue_available: bool,
+    pub reference_current_price: Option<String>,
+    pub reference_current_price_available: bool,
+    pub interval_open: Option<String>,
+    pub fair_probability_up: Option<String>,
+    pub fair_probability_down: Option<String>,
+    pub uncertainty_band_probability: Option<String>,
+    pub up_fee_bps: Option<String>,
+    pub down_fee_bps: Option<String>,
+    pub hold_ev_bps: Option<String>,
+    pub exit_ev_bps: Option<String>,
+    pub realized_vol: Option<String>,
+    pub realized_vol_source_venue: Option<String>,
+    pub realized_vol_source_ts_ms: Option<u64>,
+    pub exit_eval_now_ms: u64,
+    pub exit_trigger_source: ExitTriggerSource,
+    pub trigger_ts_event_ms: u64,
+    pub trigger_ts_init_ms: Option<u64>,
+    pub rv_surface_id: String,
+    pub rv_snapshot_as_of_ms: Option<u64>,
+    pub rv_snapshot_ready: bool,
+    pub rv_snapshot_has_ready_realized_vol: Option<bool>,
+    pub rv_snapshot_receive_watermark_ms: Option<u64>,
+    pub rv_max_source_age_ms: Option<u64>,
+    pub rv_snapshot_blockers: Vec<RealizedVolBlockReason>,
+    pub rv_source_diagnostics: Vec<RealizedVolatilitySourceDiagnosticFact>,
+    pub rv_gate_result: RvGateResult,
+    pub rv_future_dating_delta_ms: Option<u64>,
+    pub exit_hysteresis_bps: String,
+    pub seconds_to_market_end: Option<u64>,
+    pub ts_ms: u64,
+    pub stale_reference_after_ms: Option<u64>,
+    pub last_reference_ts_ms: Option<u64>,
+    pub min_liquidity_required: Option<String>,
+    pub liquidity_available: Option<String>,
+    pub frozen: bool,
+    pub metadata_matches_selection: bool,
+    pub fast_venue_incoherent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitSubmissionOutcome {
+    Exit,
+    ExitFailClosed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitSubmissionDecisionFact {
+    pub details: ExitDecisionDetails,
+    pub outcome: ExitSubmissionOutcome,
+    pub submission: SubmissionLinkage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitHoldOutcome {
+    Hold,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitHoldDecisionFact {
+    pub details: ExitDecisionDetails,
+    pub outcome: ExitHoldOutcome,
+    pub blocked_reason: Option<ExitBlockedReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExitEvaluationDecision {
+    Submission {
+        outcome: ExitSubmissionOutcome,
+        submission: SubmissionLinkage,
+    },
+    Hold {
+        outcome: ExitHoldOutcome,
+        blocked_reason: Option<ExitBlockedReason>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitEvaluationFact {
+    pub position_id: Option<String>,
+    pub market_id: Option<String>,
+    pub instrument_id: Option<String>,
+    pub client_order_id: Option<String>,
+    pub exit_eval_now_ms: i64,
+    pub exit_trigger_source: ExitTriggerSource,
+    pub trigger_ts_event_ms: Option<i64>,
+    pub trigger_ts_init_ms: Option<i64>,
+    pub rv_surface_id: String,
+    pub rv_as_of_ms: Option<i64>,
+    pub rv_ready: bool,
+    pub rv_snapshot_receive_watermark_ms: Option<i64>,
+    pub rv_max_source_age_ms: Option<u64>,
+    pub rv_blockers: Vec<String>,
+    pub rv_source_diagnostics: Vec<String>,
+    pub rv_gate_result: RvGateResult,
+    pub rv_as_of_minus_now_ms: Option<i64>,
+    pub spot_price: Option<String>,
+    pub spot_venue_name: Option<String>,
+    pub fast_venue_available: bool,
+    pub reference_current_price: Option<String>,
+    pub reference_current_price_available: bool,
+    pub interval_open: Option<String>,
+    pub fair_probability_up: Option<String>,
+    pub fair_probability_down: Option<String>,
+    pub uncertainty_band_probability: Option<String>,
+    pub up_fee_bps: Option<String>,
+    pub down_fee_bps: Option<String>,
+    pub hold_ev_bps: Option<String>,
+    pub exit_ev_bps: Option<String>,
+    pub decision: ExitEvaluationDecision,
+    pub forced_flat_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,
     Down,

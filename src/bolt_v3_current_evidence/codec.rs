@@ -1,6 +1,7 @@
 mod admission;
 mod basket_admission;
 mod entry_skip;
+mod exit;
 mod lifecycle;
 mod loss;
 mod order_intent;
@@ -18,8 +19,9 @@ use super::{
     facts::{
         AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
         BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, EntryOrderIntentFact,
-        EntrySkipFact, ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact,
-        OrderRejectFact, RecoveryFact, RejectedEntryAdmissionFact, RequoteThrottleObservationFact,
+        EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitSubmissionDecisionFact,
+        ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
+        RecoveryFact, RejectedEntryAdmissionFact, RequoteThrottleObservationFact,
         RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact, SettlementBookingErrorFact,
         SettlementFact, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
         SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
@@ -351,6 +353,54 @@ impl CodecFor<identities::SubmitLinkedStrategyInputSnapshotV1> for CurrentCodecs
     }
 }
 
+impl CodecFor<identities::ExitSubmissionDecisionV1> for CurrentCodecs {
+    type Input = ExitSubmissionDecisionFact;
+    type Fact = ExitSubmissionDecisionFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        exit::encode_submission(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        exit::decode_submission(line, line_number)
+    }
+}
+
+impl CodecFor<identities::ExitHoldDecisionV1> for CurrentCodecs {
+    type Input = ExitHoldDecisionFact;
+    type Fact = ExitHoldDecisionFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        exit::encode_hold(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        exit::decode_hold(line, line_number)
+    }
+}
+
+impl CodecFor<identities::ExitEvaluationV1> for CurrentCodecs {
+    type Input = ExitEvaluationFact;
+    type Fact = ExitEvaluationFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        exit::encode_evaluation(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        exit::decode_evaluation(line, line_number)
+    }
+}
+
 impl CodecFor<identities::AdmittedEntryAdmissionV1> for CurrentCodecs {
     type Input = AdmittedEntryAdmissionFact;
     type Fact = AdmittedEntryAdmissionFact;
@@ -565,6 +615,27 @@ pub(crate) fn encode_submit_linked_strategy_input_snapshot(
     )
 }
 
+pub(crate) fn encode_exit_submission_decision(
+    fact: ExitSubmissionDecisionFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::ExitSubmissionDecisionV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
+}
+
+pub(crate) fn encode_exit_hold_decision(
+    fact: ExitHoldDecisionFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::ExitHoldDecisionV1>>::encode(&fact, current_utc_ns()?)
+}
+
+pub(crate) fn encode_exit_evaluation(
+    fact: ExitEvaluationFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::ExitEvaluationV1>>::encode(&fact, current_utc_ns()?)
+}
+
 pub(crate) fn encode_reservation_metadata(
     fact: SubmitReservationMetadataFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
@@ -764,11 +835,12 @@ fn validate_envelope(
 #[cfg(test)]
 mod tests {
     use super::super::facts::{
-        AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason, LossHaltReason,
-        LossSnapshotSource, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
-        OrderIntentDetails, OrderIntentOrderFields, OrderRejectFact, OrderRejectReason,
-        OrderRejectSource, RvGateResult, StrategyInputDetails, StrategyInputRvState,
-        SubmissionLinkage,
+        AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason, ExitDecisionDetails,
+        ExitEvaluationDecision, ExitHoldOutcome, ExitSubmissionOutcome, ExitTriggerSource,
+        LossHaltReason, LossSnapshotSource, OrderIntentClampNotEvaluatedReason,
+        OrderIntentClampOutcome, OrderIntentDetails, OrderIntentOrderFields, OrderRejectFact,
+        OrderRejectReason, OrderRejectSource, RvGateResult, StrategyInputDetails,
+        StrategyInputRvState, SubmissionLinkage,
     };
     use super::*;
 
@@ -1130,6 +1202,57 @@ mod tests {
             lead_agreement_corr: Some("1".to_string()),
             fee_rate_basis_points: "0".to_string(),
             selected_side: None,
+        }
+    }
+
+    fn exit_decision_details() -> ExitDecisionDetails {
+        ExitDecisionDetails {
+            strategy_id: "strategy-1".to_string(),
+            market_id: Some("market-1".to_string()),
+            position_id: Some("position-1".to_string()),
+            position_instrument_id: Some("YES-USD.POLYMARKET".to_string()),
+            position_outcome_side: Some(super::super::facts::OutcomeSide::Up),
+            forced_flat_reasons: vec![],
+            spot_price: Some("100".to_string()),
+            spot_venue_name: Some("binance".to_string()),
+            fast_venue_available: true,
+            reference_current_price: Some("100".to_string()),
+            reference_current_price_available: true,
+            interval_open: Some("100".to_string()),
+            fair_probability_up: Some("0.5".to_string()),
+            fair_probability_down: Some("0.5".to_string()),
+            uncertainty_band_probability: Some("0.01".to_string()),
+            up_fee_bps: Some("0".to_string()),
+            down_fee_bps: Some("0".to_string()),
+            hold_ev_bps: Some("1".to_string()),
+            exit_ev_bps: Some("2".to_string()),
+            realized_vol: None,
+            realized_vol_source_venue: None,
+            realized_vol_source_ts_ms: None,
+            exit_eval_now_ms: 34,
+            exit_trigger_source: ExitTriggerSource::SignalQuote,
+            trigger_ts_event_ms: 34,
+            trigger_ts_init_ms: Some(34),
+            rv_surface_id: "surface-1".to_string(),
+            rv_snapshot_as_of_ms: None,
+            rv_snapshot_ready: false,
+            rv_snapshot_has_ready_realized_vol: Some(false),
+            rv_snapshot_receive_watermark_ms: None,
+            rv_max_source_age_ms: Some(1_000),
+            rv_snapshot_blockers: vec![super::super::facts::RealizedVolBlockReason::NotWarm],
+            rv_source_diagnostics: vec![],
+            rv_gate_result: RvGateResult::MissingSnapshot,
+            rv_future_dating_delta_ms: None,
+            exit_hysteresis_bps: "1".to_string(),
+            seconds_to_market_end: Some(60),
+            ts_ms: 34,
+            stale_reference_after_ms: Some(5_000),
+            last_reference_ts_ms: Some(34),
+            min_liquidity_required: Some("1".to_string()),
+            liquidity_available: Some("2".to_string()),
+            frozen: false,
+            metadata_matches_selection: true,
+            fast_venue_incoherent: false,
         }
     }
 
@@ -1606,6 +1729,111 @@ mod tests {
                 1,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn exit_identities_are_role_pure_and_round_trip() {
+        let submission = ExitSubmissionDecisionFact {
+            details: exit_decision_details(),
+            outcome: ExitSubmissionOutcome::Exit,
+            submission: SubmissionLinkage {
+                instrument_id: "YES-USD.POLYMARKET".to_string(),
+                order_side: "sell".to_string(),
+                price: "0.6".to_string(),
+                quantity: "1".to_string(),
+                client_order_id: "exit-1".to_string(),
+            },
+        };
+        let submission_record =
+            <CurrentCodecs as CodecFor<identities::ExitSubmissionDecisionV1>>::encode(
+                &submission,
+                35,
+            )
+            .expect("valid exit submission must encode");
+        let submission_line = std::str::from_utf8(submission_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::ExitSubmissionDecisionV1>>::decode(
+                submission_line,
+                1,
+            )
+            .expect("exit submission must decode"),
+            submission
+        );
+
+        let hold = ExitHoldDecisionFact {
+            details: exit_decision_details(),
+            outcome: ExitHoldOutcome::Hold,
+            blocked_reason: None,
+        };
+        let hold_record =
+            <CurrentCodecs as CodecFor<identities::ExitHoldDecisionV1>>::encode(&hold, 36)
+                .expect("valid exit hold must encode");
+        let hold_line = std::str::from_utf8(hold_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::ExitHoldDecisionV1>>::decode(hold_line, 1)
+                .expect("exit hold must decode"),
+            hold
+        );
+        assert!(
+            <CurrentCodecs as CodecFor<identities::ExitHoldDecisionV1>>::decode(
+                submission_line,
+                1,
+            )
+            .is_err()
+        );
+
+        let evaluation = ExitEvaluationFact {
+            position_id: Some("position-1".to_string()),
+            market_id: Some("market-1".to_string()),
+            instrument_id: Some("YES-USD.POLYMARKET".to_string()),
+            client_order_id: Some("exit-1".to_string()),
+            exit_eval_now_ms: 37,
+            exit_trigger_source: ExitTriggerSource::SignalQuote,
+            trigger_ts_event_ms: Some(37),
+            trigger_ts_init_ms: Some(37),
+            rv_surface_id: "surface-1".to_string(),
+            rv_as_of_ms: None,
+            rv_ready: false,
+            rv_snapshot_receive_watermark_ms: None,
+            rv_max_source_age_ms: Some(1_000),
+            rv_blockers: vec!["not_warm".to_string()],
+            rv_source_diagnostics: vec!["source_waiting".to_string()],
+            rv_gate_result: RvGateResult::MissingSnapshot,
+            rv_as_of_minus_now_ms: None,
+            spot_price: Some("100".to_string()),
+            spot_venue_name: Some("binance".to_string()),
+            fast_venue_available: true,
+            reference_current_price: Some("100".to_string()),
+            reference_current_price_available: true,
+            interval_open: Some("100".to_string()),
+            fair_probability_up: Some("0.5".to_string()),
+            fair_probability_down: Some("0.5".to_string()),
+            uncertainty_band_probability: Some("0.01".to_string()),
+            up_fee_bps: Some("0".to_string()),
+            down_fee_bps: Some("0".to_string()),
+            hold_ev_bps: Some("1".to_string()),
+            exit_ev_bps: Some("2".to_string()),
+            decision: ExitEvaluationDecision::Hold {
+                outcome: ExitHoldOutcome::Hold,
+                blocked_reason: None,
+            },
+            forced_flat_reasons: vec![],
+        };
+        let evaluation_record =
+            <CurrentCodecs as CodecFor<identities::ExitEvaluationV1>>::encode(&evaluation, 38)
+                .expect("valid exit evaluation must encode");
+        let evaluation_line = std::str::from_utf8(evaluation_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::ExitEvaluationV1>>::decode(evaluation_line, 1)
+                .expect("exit evaluation must decode"),
+            evaluation
         );
     }
 }

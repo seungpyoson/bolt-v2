@@ -12,6 +12,7 @@ use super::codec::{
     encode_admitted_entry_admission, encode_basket_admission_granted,
     encode_basket_admission_rejected, encode_blocked_strategy_input_observation,
     encode_capital_admission_rebuild, encode_entry_order_intent, encode_entry_skip_observation,
+    encode_exit_evaluation, encode_exit_hold_decision, encode_exit_submission_decision,
     encode_forced_reduction_admission, encode_loss_governor_halt, encode_order_lifecycle,
     encode_order_reject, encode_rejected_entry_admission, encode_requote_throttle_observation,
     encode_reservation_fill, encode_reservation_metadata, encode_risk_reducing_exit_admission,
@@ -22,10 +23,11 @@ use super::codec::{
 use super::facts::{
     AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
     BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, EntryOrderIntentFact,
-    EntrySkipFact, ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact,
-    OrderRejectFact, RejectedEntryAdmissionFact, RequoteThrottleObservationFact,
-    RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact, SettlementBookingErrorFact,
-    SettlementFact, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
+    EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitSubmissionDecisionFact,
+    ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
+    RejectedEntryAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
+    RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
+    SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
     SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
     VenueTruthDivergenceFact,
 };
@@ -316,6 +318,33 @@ impl DecisionEvidenceRecorder {
         fact: SubmitLinkedStrategyInputSnapshotFact,
     ) -> Result<AppendReceipt, RecordFailure> {
         self.record_blocking(encode_submit_linked_strategy_input_snapshot(fact)?)
+    }
+
+    pub fn record_exit_submission_decision(
+        &self,
+        fact: ExitSubmissionDecisionFact,
+    ) -> NonBlockingRecordOutcome {
+        match encode_exit_submission_decision(fact) {
+            Ok(record) => self.record_nonblocking(record),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
+    }
+
+    pub fn record_exit_hold_decision(
+        &self,
+        fact: ExitHoldDecisionFact,
+    ) -> ObservationRecordOutcome {
+        match encode_exit_hold_decision(fact) {
+            Ok(record) => self.record_observation(record),
+            Err(error) => self.report_observation_failure(KnownPurpose::ExitHoldDecision, error),
+        }
+    }
+
+    pub fn record_exit_evaluation(&self, fact: ExitEvaluationFact) -> ObservationRecordOutcome {
+        match encode_exit_evaluation(fact) {
+            Ok(record) => self.record_observation(record),
+            Err(error) => self.report_observation_failure(KnownPurpose::ExitEvaluation, error),
+        }
     }
 
     pub fn record_settlement(&self, fact: SettlementFact) -> Result<AppendReceipt, RecordFailure> {

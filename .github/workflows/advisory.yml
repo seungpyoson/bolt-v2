@@ -4,9 +4,9 @@ name: Advisory Check
 # contexts exist, and GitHub code-owner review is the only merge gate.
 #
 # Four parallel jobs (fmt / clippy / test / build) each surface one ✓/✗ line
-# per PR. Every job runs its cargo command directly: a red check shows the raw
-# cargo command and its raw output, reproducible locally by running the same
-# command from the repo root.
+# per PR. Every Rust lane runs its cargo command directly; the test lane also
+# runs focused repository behavior checks before Cargo. A red check shows the
+# raw command and output, reproducible locally from the repo root.
 on:
   pull_request:
   push:
@@ -130,6 +130,11 @@ jobs:
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
           write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
+
+      - name: merge-queue behavior
+        run: |
+          set -x
+          bash scripts/test_merge_queue.sh
 
       - name: test
         env:

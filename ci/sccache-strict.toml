@@ -34,6 +34,10 @@ compiler_family = "gcc"
 s3_bucket = "bolt-sccache-verifier"
 s3_region = "us-east-1"
 s3_key_prefix = "strict-verifier"
+s3_endpoint_prefix = "http://127.0.0.1:"
+s3_no_credentials = true
+s3_use_ssl = false
+s3_enable_virtual_host_style = false
 
 [runtime_contract]
 max_runtime_timeout_ms = 3600000

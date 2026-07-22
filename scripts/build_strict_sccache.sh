@@ -37,6 +37,10 @@ consumer_compiler_family="$(jq -r '.verification_consumer.compiler_family' "$tar
 s3_bucket="$(jq -r '.verification_consumer.s3_bucket' "$target_json")"
 s3_region="$(jq -r '.verification_consumer.s3_region' "$target_json")"
 s3_key_prefix="$(jq -r '.verification_consumer.s3_key_prefix' "$target_json")"
+s3_endpoint_prefix="$(jq -r '.verification_consumer.s3_endpoint_prefix' "$target_json")"
+s3_no_credentials="$(jq -r '.verification_consumer.s3_no_credentials' "$target_json")"
+s3_use_ssl="$(jq -r '.verification_consumer.s3_use_ssl' "$target_json")"
+s3_enable_virtual_host_style="$(jq -r '.verification_consumer.s3_enable_virtual_host_style' "$target_json")"
 derivative_identity="$(jq -r '.derivative_identity' "$target_json")"
 machine="$(jq -r '.elf_machine' "$target_json")"
 [[ "$default_features" == "false" ]]
@@ -133,9 +137,45 @@ if grep -Fq '(NEEDED)' "$build_root/dynamic-section.txt"; then
 fi
 [[ "$("$binary" --version)" == "sccache $source_version" ]]
 
+endpoint_file="$build_root/s3-endpoint"
+python3.12 -c '
+import http.server
+import pathlib
+import sys
+import urllib.parse
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+    do_HEAD = do_GET
+    def do_PUT(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+    def log_message(self, format, *args):
+        pass
+
+endpoint_prefix = sys.argv[2]
+endpoint = urllib.parse.urlsplit(f"{endpoint_prefix}1")
+server = http.server.ThreadingHTTPServer((endpoint.hostname, 0), Handler)
+pathlib.Path(sys.argv[1]).write_text(f"{endpoint_prefix}{server.server_port}")
+server.serve_forever()
+' "$endpoint_file" "$s3_endpoint_prefix" &
+s3_server_pid=$!
+trap 'kill "$s3_server_pid" 2>/dev/null || true; wait "$s3_server_pid" 2>/dev/null || true' EXIT
+# The inner shell expands its positional parameter.
+# shellcheck disable=SC2016
+timeout "${verification_timeout}ms" sh -ceu 'while [ ! -s "$1" ]; do :; done' sh "$endpoint_file"
+s3_endpoint="$(< "$endpoint_file")"
+
 consumer_config="$build_root/consumer.toml"
 python3.12 scripts/sccache_strict.py write-verification-consumer \
-  --config ci/sccache-strict.toml --output "$consumer_config" > "$build_root/consumer-config.json"
+  --config ci/sccache-strict.toml --output "$consumer_config" \
+  --s3-endpoint "$s3_endpoint" > "$build_root/consumer-config.json"
 grep -F "abstract_socket_template = \"$consumer_socket_template\"" "$consumer_config"
 grep -F "path = \"$consumer_compiler_path\"" "$consumer_config"
 grep -F "family = \"$consumer_compiler_family\"" "$consumer_config"
@@ -182,46 +222,25 @@ run_startup_negative missing-s3 'strict sccache requires the governed S3 cache b
 run_startup_negative disk-backend 'strict sccache permits exactly one S3 cache backend' \
   SCCACHE_DIR="$build_root/smoke-disk-backend/cache"
 
-endpoint_file="$build_root/s3-endpoint"
-python3.12 -c '
-import http.server
-import pathlib
-import sys
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(404)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-    do_HEAD = do_GET
-    def do_PUT(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        self.rfile.read(length)
-        self.send_response(200)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-    def log_message(self, format, *args):
-        pass
-
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-pathlib.Path(sys.argv[1]).write_text(f"http://127.0.0.1:{server.server_port}")
-server.serve_forever()
-' "$endpoint_file" &
-s3_server_pid=$!
-trap 'kill "$s3_server_pid" 2>/dev/null || true; wait "$s3_server_pid" 2>/dev/null || true' EXIT
-# The inner shell expands its positional parameter.
-# shellcheck disable=SC2016
-timeout "${verification_timeout}ms" sh -ceu 'while [ ! -s "$1" ]; do :; done' sh "$endpoint_file"
-s3_endpoint="$(< "$endpoint_file")"
 backend_environment=(
   SCCACHE_BUCKET="$s3_bucket"
   SCCACHE_REGION="$s3_region"
   SCCACHE_ENDPOINT="$s3_endpoint"
   SCCACHE_S3_KEY_PREFIX="$s3_key_prefix"
-  SCCACHE_S3_NO_CREDENTIALS=true
-  SCCACHE_S3_USE_SSL=false
-  SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE=false
+  SCCACHE_S3_NO_CREDENTIALS="$s3_no_credentials"
+  SCCACHE_S3_USE_SSL="$s3_use_ssl"
+  SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE="$s3_enable_virtual_host_style"
 )
+
+run_startup_negative storage-identity \
+  'effective S3 configuration does not match the consumer snapshot' \
+  SCCACHE_BUCKET="$s3_bucket" \
+  SCCACHE_REGION="$s3_region" \
+  SCCACHE_ENDPOINT="$s3_endpoint" \
+  SCCACHE_S3_KEY_PREFIX="$s3_key_prefix-mismatch" \
+  SCCACHE_S3_NO_CREDENTIALS="$s3_no_credentials" \
+  SCCACHE_S3_USE_SSL="$s3_use_ssl" \
+  SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE="$s3_enable_virtual_host_style"
 
 run_server_control() {
   local smoke_home="$1"

@@ -65,6 +65,10 @@ def valid_document() -> dict[str, object]:
                 "s3_bucket": "bolt-sccache-verifier",
                 "s3_region": "us-east-1",
                 "s3_key_prefix": "strict-verifier",
+                "s3_endpoint_prefix": "http://127.0.0.1:",
+                "s3_no_credentials": True,
+                "s3_use_ssl": False,
+                "s3_enable_virtual_host_style": False,
             },
         },
         "runtime_contract": {
@@ -785,6 +789,8 @@ class CliTests(unittest.TestCase):
                     str(REPO_ROOT / "ci/sccache-strict.toml"),
                     "--output",
                     str(output),
+                    "--s3-endpoint",
+                    "http://127.0.0.1:43127",
                 ]
             )
 
@@ -796,6 +802,22 @@ class CliTests(unittest.TestCase):
             )
             self.assertIn('path = "/usr/bin/cc"', document)
             self.assertIn("startup_timeout_ms = 1000", document)
+            self.assertIn('bucket = "bolt-sccache-verifier"', document)
+            self.assertIn('endpoint = "http://127.0.0.1:43127"', document)
+
+    def test_rejects_verification_consumer_endpoint_outside_governed_prefix(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = pathlib.Path(temporary) / "consumer.toml"
+            with self.assertRaisesRegex(ValueError, "governed prefix"):
+                sccache_strict.write_verification_consumer(
+                    output_path=output,
+                    config=sccache_strict.load_config(
+                        REPO_ROOT / "ci/sccache-strict.toml"
+                    ),
+                    s3_endpoint="http://127.0.0.2:43127",
+                )
 
     def test_show_target_emits_governed_json(self) -> None:
         stdout = io.StringIO()

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import hashlib
+import ipaddress
 import json
 import pathlib
 import re
@@ -37,6 +38,10 @@ class VerificationConsumerConfig:
     s3_bucket: str
     s3_region: str
     s3_key_prefix: str
+    s3_endpoint_prefix: str
+    s3_no_credentials: bool
+    s3_use_ssl: bool
+    s3_enable_virtual_host_style: bool
 
 
 @dataclasses.dataclass(frozen=True)
@@ -397,6 +402,10 @@ def load_document(
                 "s3_bucket",
                 "s3_region",
                 "s3_key_prefix",
+                "s3_endpoint_prefix",
+                "s3_no_credentials",
+                "s3_use_ssl",
+                "s3_enable_virtual_host_style",
             }
         ),
         "verification.consumer",
@@ -433,6 +442,34 @@ def load_document(
         for value in (s3_bucket, s3_region, s3_key_prefix)
     ):
         raise ValueError("verification consumer S3 values must be portable identifiers")
+    s3_endpoint_prefix = _string(
+        consumer["s3_endpoint_prefix"],
+        "verification.consumer.s3_endpoint_prefix",
+    )
+    endpoint_probe = urllib.parse.urlsplit(f"{s3_endpoint_prefix}1")
+    try:
+        endpoint_address = ipaddress.ip_address(endpoint_probe.hostname or "")
+    except ValueError as error:
+        raise ValueError("verification consumer S3 endpoint prefix is invalid") from error
+    if (
+        endpoint_probe.scheme != "http"
+        or not endpoint_address.is_loopback
+        or endpoint_probe.port != 1
+        or endpoint_probe.path
+        or endpoint_probe.query
+        or endpoint_probe.fragment
+    ):
+        raise ValueError("verification consumer S3 endpoint prefix is invalid")
+    for value, name in (
+        (consumer["s3_no_credentials"], "s3_no_credentials"),
+        (consumer["s3_use_ssl"], "s3_use_ssl"),
+        (
+            consumer["s3_enable_virtual_host_style"],
+            "s3_enable_virtual_host_style",
+        ),
+    ):
+        if not isinstance(value, bool):
+            raise ValueError(f"verification.consumer.{name} must be a boolean")
     replicas_value = verification["replicas"]
     if (
         not isinstance(replicas_value, list)
@@ -568,6 +605,12 @@ def load_document(
             s3_bucket=s3_bucket,
             s3_region=s3_region,
             s3_key_prefix=s3_key_prefix,
+            s3_endpoint_prefix=s3_endpoint_prefix,
+            s3_no_credentials=consumer["s3_no_credentials"],
+            s3_use_ssl=consumer["s3_use_ssl"],
+            s3_enable_virtual_host_style=consumer[
+                "s3_enable_virtual_host_style"
+            ],
         ),
         publisher=PublisherConfig(
             environment=publisher_environment,
@@ -660,9 +703,14 @@ def _candidate_binary_name(config: StrictBuildConfig, architecture: str) -> str:
 
 
 def write_verification_consumer(
-    *, output_path: pathlib.Path, config: StrictBuildConfig
+    *, output_path: pathlib.Path, config: StrictBuildConfig, s3_endpoint: str
 ) -> None:
     consumer = config.verification_consumer
+    if not s3_endpoint.startswith(consumer.s3_endpoint_prefix):
+        raise ValueError("verification S3 endpoint does not match the governed prefix")
+    port = s3_endpoint.removeprefix(consumer.s3_endpoint_prefix)
+    if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
+        raise ValueError("verification S3 endpoint port is invalid")
 
     def quote(value: str) -> str:
         return json.dumps(value, ensure_ascii=True)
@@ -683,6 +731,15 @@ cleanup_timeout_ms = {timeout}
 max_frame_bytes = {config.max_frame_bytes}
 max_child_output_bytes = {config.max_frame_bytes}
 cache_mode = {quote(config.verification_cache_mode)}
+
+[consumer.storage]
+bucket = {quote(consumer.s3_bucket)}
+region = {quote(consumer.s3_region)}
+key_prefix = {quote(consumer.s3_key_prefix)}
+no_credentials = {str(consumer.s3_no_credentials).lower()}
+endpoint = {quote(s3_endpoint)}
+use_ssl = {str(consumer.s3_use_ssl).lower()}
+enable_virtual_host_style = {str(consumer.s3_enable_virtual_host_style).lower()}
 
 [[consumer.compilers]]
 path = {quote(consumer.compiler_path)}
@@ -1327,6 +1384,7 @@ def _parser() -> argparse.ArgumentParser:
     consumer = subparsers.add_parser("write-verification-consumer")
     consumer.add_argument("--config", required=True, type=pathlib.Path)
     consumer.add_argument("--output", required=True, type=pathlib.Path)
+    consumer.add_argument("--s3-endpoint", required=True)
 
     candidate = subparsers.add_parser("candidate-manifest")
     candidate.add_argument("--config", required=True, type=pathlib.Path)
@@ -1460,7 +1518,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "write-verification-consumer":
             config = load_config(args.config)
-            write_verification_consumer(output_path=args.output, config=config)
+            write_verification_consumer(
+                output_path=args.output,
+                config=config,
+                s3_endpoint=args.s3_endpoint,
+            )
             _emit_json({"consumer_config": str(args.output)})
             return 0
         if args.command == "candidate-manifest":

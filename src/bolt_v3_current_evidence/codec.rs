@@ -12,38 +12,142 @@ use super::{
     generated_contract::{
         ConsumerDisposition, IdentityDescriptor, KnownConsumer, KnownIdentity, KnownPurpose,
         current_identity_for_purpose, descriptor_for_identity, disposition_for, fact_for_identity,
+        identities,
     },
     record::{EncodedEvidenceRecord, RecordFailure},
 };
 
+pub(crate) struct CurrentCodecs;
+
+pub(crate) trait CodecFor<I> {
+    type Input;
+    type Fact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure>;
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact>;
+}
+
+impl CodecFor<identities::SubmitReservationMetadataV1> for CurrentCodecs {
+    type Input = SubmitReservationMetadataFact;
+    type Fact = SubmitReservationMetadataFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        reservation::encode_metadata(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        reservation::decode_metadata(line, line_number)
+    }
+}
+
+impl CodecFor<identities::SubmitReservationFillV1> for CurrentCodecs {
+    type Input = SubmitReservationFillFact;
+    type Fact = SubmitReservationFillFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        reservation::encode_fill(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        reservation::decode_fill(line, line_number)
+    }
+}
+
+impl CodecFor<identities::SettlementV1> for CurrentCodecs {
+    type Input = SettlementFact;
+    type Fact = SettlementFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        settlement::encode_settlement(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        settlement::decode_settlement(line, line_number)
+    }
+}
+
+impl CodecFor<identities::SettlementBookingErrorV1> for CurrentCodecs {
+    type Input = SettlementBookingErrorFact;
+    type Fact = SettlementBookingErrorFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        settlement::encode_booking_error(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        settlement::decode_booking_error(line, line_number)
+    }
+}
+
+impl CodecFor<identities::TerminalSettlementV1> for CurrentCodecs {
+    type Input = TerminalSettlementFact;
+    type Fact = TerminalSettlementFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        settlement::encode_terminal(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        settlement::decode_terminal(line, line_number)
+    }
+}
+
 pub(crate) fn encode_reservation_metadata(
     fact: SubmitReservationMetadataFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    reservation::encode_metadata(fact)
+    <CurrentCodecs as CodecFor<identities::SubmitReservationMetadataV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
 }
 
 pub(crate) fn encode_reservation_fill(
     fact: SubmitReservationFillFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    reservation::encode_fill(fact)
+    <CurrentCodecs as CodecFor<identities::SubmitReservationFillV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
 }
 
 pub(crate) fn encode_settlement(
     fact: SettlementFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    settlement::encode_settlement(fact)
+    <CurrentCodecs as CodecFor<identities::SettlementV1>>::encode(&fact, current_utc_ns()?)
 }
 
 pub(crate) fn encode_settlement_booking_error(
     fact: SettlementBookingErrorFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    settlement::encode_booking_error(fact)
+    <CurrentCodecs as CodecFor<identities::SettlementBookingErrorV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
 }
 
 pub(crate) fn encode_terminal_settlement(
     fact: TerminalSettlementFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    settlement::encode_terminal(fact)
+    <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::encode(&fact, current_utc_ns()?)
 }
 
 pub(crate) fn decode_startup_recovery_fact(
@@ -56,14 +160,30 @@ pub(crate) fn decode_startup_recovery_fact(
     }
     let fact = match identity {
         KnownIdentity::SubmitReservationMetadataV1 => {
-            reservation::decode_metadata(line, line_number)?
+            RecoveryFact::ReservationMetadata(<CurrentCodecs as CodecFor<
+                identities::SubmitReservationMetadataV1,
+            >>::decode(line, line_number)?)
         }
-        KnownIdentity::SubmitReservationFillV1 => reservation::decode_fill(line, line_number)?,
-        KnownIdentity::SettlementV1 => settlement::decode_settlement(line, line_number)?,
+        KnownIdentity::SubmitReservationFillV1 => {
+            RecoveryFact::ReservationFill(<CurrentCodecs as CodecFor<
+                identities::SubmitReservationFillV1,
+            >>::decode(line, line_number)?)
+        }
+        KnownIdentity::SettlementV1 => {
+            RecoveryFact::Settlement(
+                <CurrentCodecs as CodecFor<identities::SettlementV1>>::decode(line, line_number)?,
+            )
+        }
         KnownIdentity::SettlementBookingErrorV1 => {
-            settlement::decode_booking_error(line, line_number)?
+            RecoveryFact::BookingError(<CurrentCodecs as CodecFor<
+                identities::SettlementBookingErrorV1,
+            >>::decode(line, line_number)?)
         }
-        KnownIdentity::TerminalSettlementV1 => settlement::decode_terminal(line, line_number)?,
+        KnownIdentity::TerminalSettlementV1 => {
+            RecoveryFact::TerminalSettlement(<CurrentCodecs as CodecFor<
+                identities::TerminalSettlementV1,
+            >>::decode(line, line_number)?)
+        }
         KnownIdentity::BlockedStrategyInputObservationV1
         | KnownIdentity::SubmitLinkedStrategyInputSnapshotV1
         | KnownIdentity::EntryOrderIntentV1
@@ -148,6 +268,15 @@ fn validate_nonempty<'a>(
     Ok(())
 }
 
+fn validate_recorded_at(recorded_at_utc_ns: i64) -> Result<(), RecordFailure> {
+    if recorded_at_utc_ns <= 0 {
+        return Err(RecordFailure::Rejected(anyhow::anyhow!(
+            "recorded_at_utc_ns must be positive"
+        )));
+    }
+    Ok(())
+}
+
 fn decode<'a, T: Deserialize<'a>>(line: &'a str, line_number: usize) -> Result<T> {
     serde_json::from_str(line).with_context(|| {
         format!("malformed relevant payload at machine evidence line {line_number}")
@@ -176,4 +305,172 @@ fn validate_envelope(
         "recorded_at_utc_ns must be positive at machine evidence line {line_number}"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metadata() -> SubmitReservationMetadataFact {
+        SubmitReservationMetadataFact {
+            client_order_id: "client-1".to_string(),
+            submit_reservation_id: "reservation-1".to_string(),
+            venue_id: "POLYMARKET".to_string(),
+            account_id: "POLYMARKET-001".to_string(),
+            product_kind: "binary".to_string(),
+            collateral_currency: "USDC".to_string(),
+            capital_pool_id: "pool-1".to_string(),
+            collateral_group_id: "group-1".to_string(),
+            instrument_id: "YES-USD.POLYMARKET".to_string(),
+            side: "buy".to_string(),
+            submitted_quantity: "1".to_string(),
+            liability_factor: "1".to_string(),
+            additive_liability: "0".to_string(),
+            reserved_liability: "1".to_string(),
+            observed_at_ns: 1,
+            source: "submit_admission".to_string(),
+        }
+    }
+
+    fn settlement() -> SettlementFact {
+        SettlementFact {
+            strategy_id: "strategy-1".to_string(),
+            settlement_key: "settlement-1".to_string(),
+            market_id: "market-1".to_string(),
+            position_id: "position-1".to_string(),
+            instrument_id: "YES-USD.POLYMARKET".to_string(),
+            product_id: "product-1".to_string(),
+            outcome_side: super::super::facts::OutcomeSide::Up,
+            entry_order_side: "buy".to_string(),
+            quantity: "1".to_string(),
+            entry_price: "0.4".to_string(),
+            family_key: "family-1".to_string(),
+            strike_price: "100".to_string(),
+            resolution_instrument_id: "BTC-USD".to_string(),
+            resolution_ts_event_ns: 2,
+            reference_close_price: "101".to_string(),
+            payout_per_share: "1".to_string(),
+            terminal_value: "1".to_string(),
+            realized_pnl: "0.6".to_string(),
+            settlement_currency: "USDC".to_string(),
+        }
+    }
+
+    fn booking_error() -> SettlementBookingErrorFact {
+        SettlementBookingErrorFact {
+            strategy_id: "strategy-1".to_string(),
+            settlement_key: "settlement-1".to_string(),
+            market_id: Some("market-1".to_string()),
+            position_id: Some("position-1".to_string()),
+            instrument_id: Some("YES-USD.POLYMARKET".to_string()),
+            resolution_instrument_id: Some("BTC-USD".to_string()),
+            reason: super::super::facts::SettlementBookingErrorReason::SettlementBlocked,
+            detail: "blocked".to_string(),
+            observed_at_ns: 3,
+        }
+    }
+
+    fn terminal() -> TerminalSettlementFact {
+        TerminalSettlementFact {
+            settlement_key: "settlement-1".to_string(),
+            booking_error: Some(booking_error()),
+            lifecycle: super::super::facts::OrderLifecycleFact {
+                strategy_id: "strategy-1".to_string(),
+                transition:
+                    super::super::facts::OrderLifecycleTransition::SettlementBookingTerminal,
+                outcome: super::super::facts::OrderLifecycleOutcome::Flat,
+                source: "settlement_booking".to_string(),
+                market_id: Some("market-1".to_string()),
+                instrument_id: Some("YES-USD.POLYMARKET".to_string()),
+                position_id: Some("position-1".to_string()),
+                client_order_id: None,
+                prior_client_order_id: None,
+                raw_reason_text: Some("terminal".to_string()),
+                order_side: Some("buy".to_string()),
+                filled_quantity: Some("1".to_string()),
+                residual_quantity: Some("0".to_string()),
+                ts_event_ns: Some(4),
+            },
+        }
+    }
+
+    #[test]
+    fn reservation_identity_binding_is_deterministic_and_round_trips() {
+        let expected = metadata();
+        let encoded = <CurrentCodecs as CodecFor<identities::SubmitReservationMetadataV1>>::encode(
+            &expected, 7,
+        )
+        .expect("valid metadata must encode");
+        let line = std::str::from_utf8(encoded.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        let decoded =
+            <CurrentCodecs as CodecFor<identities::SubmitReservationMetadataV1>>::decode(line, 1)
+                .expect("encoded metadata must decode");
+
+        assert_eq!(decoded, expected);
+        assert!(line.contains("\"recorded_at_utc_ns\":7"));
+        assert!(matches!(
+            <CurrentCodecs as CodecFor<identities::SubmitReservationMetadataV1>>::encode(
+                &metadata(),
+                0,
+            ),
+            Err(RecordFailure::Rejected(_))
+        ));
+    }
+
+    #[test]
+    fn settlement_identity_binding_is_deterministic_and_round_trips() {
+        let expected = settlement();
+        let encoded = <CurrentCodecs as CodecFor<identities::SettlementV1>>::encode(&expected, 11)
+            .expect("valid settlement must encode");
+        let line = std::str::from_utf8(encoded.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        let decoded = <CurrentCodecs as CodecFor<identities::SettlementV1>>::decode(line, 1)
+            .expect("encoded settlement must decode");
+
+        assert_eq!(decoded, expected);
+        assert!(line.contains("\"recorded_at_utc_ns\":11"));
+    }
+
+    #[test]
+    fn settlement_error_identities_preserve_complete_semantic_facts() {
+        let expected_error = booking_error();
+        let error_record =
+            <CurrentCodecs as CodecFor<identities::SettlementBookingErrorV1>>::encode(
+                &expected_error,
+                12,
+            )
+            .expect("valid booking error must encode");
+        let error_line = std::str::from_utf8(error_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::SettlementBookingErrorV1>>::decode(
+                error_line, 1,
+            )
+            .expect("encoded booking error must decode"),
+            expected_error
+        );
+
+        let expected_terminal = terminal();
+        let terminal_record =
+            <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::encode(
+                &expected_terminal,
+                13,
+            )
+            .expect("valid terminal settlement must encode");
+        let terminal_line = std::str::from_utf8(terminal_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::decode(
+                terminal_line,
+                1,
+            )
+            .expect("encoded terminal settlement must decode"),
+            expected_terminal
+        );
+    }
 }

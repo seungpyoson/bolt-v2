@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::bolt_v3_current_evidence::{
     facts::{
         OrderLifecycleFact, OrderLifecycleOutcome, OrderLifecycleTransition, OutcomeSide,
-        RecoveryFact, SettlementBookingErrorFact, SettlementBookingErrorReason, SettlementFact,
+        SettlementBookingErrorFact, SettlementBookingErrorReason, SettlementFact,
         TerminalSettlementFact,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
@@ -12,13 +12,15 @@ use crate::bolt_v3_current_evidence::{
 };
 
 use super::{
-    current_line_descriptor, current_utc_ns, decode, encode_line, validate_envelope,
-    validate_nonempty,
+    current_line_descriptor, decode, encode_line, validate_envelope, validate_nonempty,
+    validate_recorded_at,
 };
 
 pub(super) fn encode_settlement(
     fact: SettlementFact,
+    recorded_at_utc_ns: i64,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    validate_recorded_at(recorded_at_utc_ns)?;
     validate_nonempty(
         "settlement",
         [
@@ -48,7 +50,7 @@ pub(super) fn encode_settlement(
         purpose,
         &SettlementLineV1 {
             schema_version: descriptor.schema_version,
-            recorded_at_utc_ns: current_utc_ns()?,
+            recorded_at_utc_ns,
             gate_id: descriptor.gate_id.to_string(),
             gate_version: env!("CARGO_PKG_VERSION").to_string(),
             kind: descriptor.kind.to_string(),
@@ -59,7 +61,9 @@ pub(super) fn encode_settlement(
 
 pub(super) fn encode_booking_error(
     fact: SettlementBookingErrorFact,
+    recorded_at_utc_ns: i64,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    validate_recorded_at(recorded_at_utc_ns)?;
     validate_booking_error(&fact)?;
     let purpose = KnownPurpose::SettlementBookingError;
     let descriptor = current_line_descriptor(purpose);
@@ -67,7 +71,7 @@ pub(super) fn encode_booking_error(
         purpose,
         &BookingErrorLineV1 {
             schema_version: descriptor.schema_version,
-            recorded_at_utc_ns: current_utc_ns()?,
+            recorded_at_utc_ns,
             gate_id: descriptor.gate_id.to_string(),
             gate_version: env!("CARGO_PKG_VERSION").to_string(),
             kind: descriptor.kind.to_string(),
@@ -78,7 +82,9 @@ pub(super) fn encode_booking_error(
 
 pub(super) fn encode_terminal(
     fact: TerminalSettlementFact,
+    recorded_at_utc_ns: i64,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    validate_recorded_at(recorded_at_utc_ns)?;
     validate_terminal(&fact)?;
     let purpose = KnownPurpose::TerminalSettlement;
     let descriptor = current_line_descriptor(purpose);
@@ -86,7 +92,7 @@ pub(super) fn encode_terminal(
         purpose,
         &TerminalLineV1 {
             schema_version: descriptor.schema_version,
-            recorded_at_utc_ns: current_utc_ns()?,
+            recorded_at_utc_ns,
             gate_id: descriptor.gate_id.to_string(),
             gate_version: env!("CARGO_PKG_VERSION").to_string(),
             kind: descriptor.kind.to_string(),
@@ -95,7 +101,7 @@ pub(super) fn encode_terminal(
     )
 }
 
-pub(super) fn decode_settlement(line: &str, line_number: usize) -> Result<RecoveryFact> {
+pub(super) fn decode_settlement(line: &str, line_number: usize) -> Result<SettlementFact> {
     let decoded: SettlementLineV1 = decode(line, line_number)?;
     validate_envelope(
         KnownIdentity::SettlementV1,
@@ -105,10 +111,13 @@ pub(super) fn decode_settlement(line: &str, line_number: usize) -> Result<Recove
         decoded.recorded_at_utc_ns,
         line_number,
     )?;
-    Ok(RecoveryFact::Settlement(decoded.settlement.into_fact()))
+    Ok(decoded.settlement.into_fact())
 }
 
-pub(super) fn decode_booking_error(line: &str, line_number: usize) -> Result<RecoveryFact> {
+pub(super) fn decode_booking_error(
+    line: &str,
+    line_number: usize,
+) -> Result<SettlementBookingErrorFact> {
     let decoded: BookingErrorLineV1 = decode(line, line_number)?;
     validate_envelope(
         KnownIdentity::SettlementBookingErrorV1,
@@ -118,12 +127,12 @@ pub(super) fn decode_booking_error(line: &str, line_number: usize) -> Result<Rec
         decoded.recorded_at_utc_ns,
         line_number,
     )?;
-    Ok(RecoveryFact::BookingError {
-        settlement_key: decoded.booking_error.settlement_key,
-    })
+    let fact = decoded.booking_error.into_fact();
+    validate_booking_error(&fact).map_err(anyhow::Error::new)?;
+    Ok(fact)
 }
 
-pub(super) fn decode_terminal(line: &str, line_number: usize) -> Result<RecoveryFact> {
+pub(super) fn decode_terminal(line: &str, line_number: usize) -> Result<TerminalSettlementFact> {
     let decoded: TerminalLineV1 = decode(line, line_number)?;
     validate_envelope(
         KnownIdentity::TerminalSettlementV1,
@@ -139,10 +148,9 @@ pub(super) fn decode_terminal(line: &str, line_number: usize) -> Result<Recovery
             "terminal settlement booking-error key mismatch at machine evidence line {line_number}"
         );
     }
-    Ok(RecoveryFact::TerminalSettlement {
-        settlement_key: decoded.terminal_settlement.settlement_key,
-        has_booking_error: decoded.terminal_settlement.booking_error.is_some(),
-    })
+    let fact = decoded.terminal_settlement.into_fact();
+    validate_terminal(&fact).map_err(anyhow::Error::new)?;
+    Ok(fact)
 }
 
 fn validate_booking_error(fact: &SettlementBookingErrorFact) -> Result<(), RecordFailure> {
@@ -343,6 +351,20 @@ impl BookingErrorV1 {
             observed_at_ns: fact.observed_at_ns,
         }
     }
+
+    fn into_fact(self) -> SettlementBookingErrorFact {
+        SettlementBookingErrorFact {
+            strategy_id: self.strategy_id,
+            settlement_key: self.settlement_key,
+            market_id: self.market_id,
+            position_id: self.position_id,
+            instrument_id: self.instrument_id,
+            resolution_instrument_id: self.resolution_instrument_id,
+            reason: self.reason.into_fact(),
+            detail: self.detail,
+            observed_at_ns: self.observed_at_ns,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -361,6 +383,15 @@ impl BookingErrorReasonV1 {
             SettlementBookingErrorReason::SettlementAlreadyBooked => Self::SettlementAlreadyBooked,
             SettlementBookingErrorReason::SettlementInputInvalid => Self::SettlementInputInvalid,
             SettlementBookingErrorReason::SettlementBlocked => Self::SettlementBlocked,
+        }
+    }
+
+    fn into_fact(self) -> SettlementBookingErrorReason {
+        match self {
+            Self::ResolutionFeedMissing => SettlementBookingErrorReason::ResolutionFeedMissing,
+            Self::SettlementAlreadyBooked => SettlementBookingErrorReason::SettlementAlreadyBooked,
+            Self::SettlementInputInvalid => SettlementBookingErrorReason::SettlementInputInvalid,
+            Self::SettlementBlocked => SettlementBookingErrorReason::SettlementBlocked,
         }
     }
 }
@@ -392,6 +423,14 @@ impl TerminalV1 {
             lifecycle: TerminalLifecycleV1::from_fact(fact.lifecycle),
         }
     }
+
+    fn into_fact(self) -> TerminalSettlementFact {
+        TerminalSettlementFact {
+            settlement_key: self.settlement_key,
+            booking_error: self.booking_error.map(TerminalBookingErrorV1::into_fact),
+            lifecycle: self.lifecycle.into_fact(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -420,6 +459,20 @@ impl TerminalBookingErrorV1 {
             reason: BookingErrorReasonV1::from_fact(fact.reason),
             detail: fact.detail,
             observed_at_ns: fact.observed_at_ns,
+        }
+    }
+
+    fn into_fact(self) -> SettlementBookingErrorFact {
+        SettlementBookingErrorFact {
+            strategy_id: self.strategy_id,
+            settlement_key: self.settlement_key,
+            market_id: self.market_id,
+            position_id: self.position_id,
+            instrument_id: self.instrument_id,
+            resolution_instrument_id: self.resolution_instrument_id,
+            reason: self.reason.into_fact(),
+            detail: self.detail,
+            observed_at_ns: self.observed_at_ns,
         }
     }
 }
@@ -460,6 +513,25 @@ impl TerminalLifecycleV1 {
             filled_quantity: fact.filled_quantity,
             residual_quantity: fact.residual_quantity,
             ts_event_ns: fact.ts_event_ns,
+        }
+    }
+
+    fn into_fact(self) -> OrderLifecycleFact {
+        OrderLifecycleFact {
+            strategy_id: self.strategy_id,
+            transition: self.transition.into_fact(),
+            outcome: self.outcome.into_fact(),
+            source: self.source,
+            market_id: self.market_id,
+            instrument_id: self.instrument_id,
+            position_id: self.position_id,
+            client_order_id: self.client_order_id,
+            prior_client_order_id: self.prior_client_order_id,
+            raw_reason_text: self.raw_reason_text,
+            order_side: self.order_side,
+            filled_quantity: self.filled_quantity,
+            residual_quantity: self.residual_quantity,
+            ts_event_ns: self.ts_event_ns,
         }
     }
 }
@@ -512,6 +584,33 @@ impl LifecycleTransitionV1 {
             OrderLifecycleTransition::ReconcileQueryFailed => Self::ReconcileQueryFailed,
         }
     }
+
+    fn into_fact(self) -> OrderLifecycleTransition {
+        match self {
+            Self::BoundaryReclassification => OrderLifecycleTransition::BoundaryReclassification,
+            Self::EntryFillMaterialized => OrderLifecycleTransition::EntryFillMaterialized,
+            Self::EntryReconcilePending => OrderLifecycleTransition::EntryReconcilePending,
+            Self::PositionTruthRematerialized => {
+                OrderLifecycleTransition::PositionTruthRematerialized
+            }
+            Self::PositionClosed => OrderLifecycleTransition::PositionClosed,
+            Self::ResidualRemanaged => OrderLifecycleTransition::ResidualRemanaged,
+            Self::RestartOpenOrderAdopted => OrderLifecycleTransition::RestartOpenOrderAdopted,
+            Self::RestartOpenOrderRecoveryBlocked => {
+                OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked
+            }
+            Self::SettlementEvidenceRecoveryBlocked => {
+                OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked
+            }
+            Self::SettlementBookingTerminal => OrderLifecycleTransition::SettlementBookingTerminal,
+            Self::OrderDenied => OrderLifecycleTransition::OrderDenied,
+            Self::OrderRejected => OrderLifecycleTransition::OrderRejected,
+            Self::OrderCanceled => OrderLifecycleTransition::OrderCanceled,
+            Self::OrderExpired => OrderLifecycleTransition::OrderExpired,
+            Self::OrderFilled => OrderLifecycleTransition::OrderFilled,
+            Self::ReconcileQueryFailed => OrderLifecycleTransition::ReconcileQueryFailed,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -536,6 +635,18 @@ impl LifecycleOutcomeV1 {
             OrderLifecycleOutcome::UnsupportedObserved => Self::UnsupportedObserved,
             OrderLifecycleOutcome::BlindRecovery => Self::BlindRecovery,
             OrderLifecycleOutcome::Flat => Self::Flat,
+        }
+    }
+
+    fn into_fact(self) -> OrderLifecycleOutcome {
+        match self {
+            Self::PendingEntry => OrderLifecycleOutcome::PendingEntry,
+            Self::Managed => OrderLifecycleOutcome::Managed,
+            Self::ExitPending => OrderLifecycleOutcome::ExitPending,
+            Self::EntryReconcilePending => OrderLifecycleOutcome::EntryReconcilePending,
+            Self::UnsupportedObserved => OrderLifecycleOutcome::UnsupportedObserved,
+            Self::BlindRecovery => OrderLifecycleOutcome::BlindRecovery,
+            Self::Flat => OrderLifecycleOutcome::Flat,
         }
     }
 }

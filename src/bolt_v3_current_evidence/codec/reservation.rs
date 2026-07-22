@@ -2,19 +2,21 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
-    facts::{RecoveryFact, SubmitReservationFillFact, SubmitReservationMetadataFact},
+    facts::{SubmitReservationFillFact, SubmitReservationMetadataFact},
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
 };
 
 use super::{
-    current_line_descriptor, current_utc_ns, decode, encode_line, validate_envelope,
-    validate_nonempty,
+    current_line_descriptor, decode, encode_line, validate_envelope, validate_nonempty,
+    validate_recorded_at,
 };
 
 pub(super) fn encode_metadata(
     fact: SubmitReservationMetadataFact,
+    recorded_at_utc_ns: i64,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    validate_recorded_at(recorded_at_utc_ns)?;
     validate_nonempty(
         "submit reservation metadata",
         [
@@ -42,7 +44,7 @@ pub(super) fn encode_metadata(
         purpose,
         &MetadataLineV1 {
             schema_version: descriptor.schema_version,
-            recorded_at_utc_ns: current_utc_ns()?,
+            recorded_at_utc_ns,
             gate_id: descriptor.gate_id.to_string(),
             gate_version: env!("CARGO_PKG_VERSION").to_string(),
             kind: descriptor.kind.to_string(),
@@ -53,7 +55,9 @@ pub(super) fn encode_metadata(
 
 pub(super) fn encode_fill(
     fact: SubmitReservationFillFact,
+    recorded_at_utc_ns: i64,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    validate_recorded_at(recorded_at_utc_ns)?;
     validate_nonempty(
         "submit reservation fill",
         [
@@ -73,7 +77,7 @@ pub(super) fn encode_fill(
         purpose,
         &FillLineV1 {
             schema_version: descriptor.schema_version,
-            recorded_at_utc_ns: current_utc_ns()?,
+            recorded_at_utc_ns,
             gate_id: descriptor.gate_id.to_string(),
             gate_version: env!("CARGO_PKG_VERSION").to_string(),
             kind: descriptor.kind.to_string(),
@@ -82,7 +86,10 @@ pub(super) fn encode_fill(
     )
 }
 
-pub(super) fn decode_metadata(line: &str, line_number: usize) -> Result<RecoveryFact> {
+pub(super) fn decode_metadata(
+    line: &str,
+    line_number: usize,
+) -> Result<SubmitReservationMetadataFact> {
     let decoded: MetadataLineV1 = decode(line, line_number)?;
     validate_envelope(
         KnownIdentity::SubmitReservationMetadataV1,
@@ -92,12 +99,10 @@ pub(super) fn decode_metadata(line: &str, line_number: usize) -> Result<Recovery
         decoded.recorded_at_utc_ns,
         line_number,
     )?;
-    Ok(RecoveryFact::ReservationMetadata(
-        decoded.metadata.into_fact(),
-    ))
+    Ok(decoded.metadata.into_fact())
 }
 
-pub(super) fn decode_fill(line: &str, line_number: usize) -> Result<RecoveryFact> {
+pub(super) fn decode_fill(line: &str, line_number: usize) -> Result<SubmitReservationFillFact> {
     let decoded: FillLineV1 = decode(line, line_number)?;
     validate_envelope(
         KnownIdentity::SubmitReservationFillV1,
@@ -107,7 +112,7 @@ pub(super) fn decode_fill(line: &str, line_number: usize) -> Result<RecoveryFact
         decoded.recorded_at_utc_ns,
         line_number,
     )?;
-    Ok(RecoveryFact::ReservationFill(decoded.fill.into_fact()))
+    Ok(decoded.fill.into_fact())
 }
 
 #[derive(Serialize, Deserialize)]

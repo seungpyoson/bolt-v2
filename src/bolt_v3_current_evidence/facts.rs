@@ -193,17 +193,16 @@ impl StartupRecoveryFacts {
                 self.settlements
                     .insert(settlement.settlement_key.clone(), settlement);
             }
-            RecoveryFact::BookingError { settlement_key } => {
-                self.booking_error_keys.insert(settlement_key);
+            RecoveryFact::BookingError(booking_error) => {
+                self.booking_error_keys.insert(booking_error.settlement_key);
             }
-            RecoveryFact::TerminalSettlement {
-                settlement_key,
-                has_booking_error,
-            } => {
-                if has_booking_error {
-                    self.booking_error_keys.insert(settlement_key.clone());
+            RecoveryFact::TerminalSettlement(terminal) => {
+                if terminal.booking_error.is_some() {
+                    self.booking_error_keys
+                        .insert(terminal.settlement_key.clone());
                 }
-                self.terminal_settlement_keys.insert(settlement_key);
+                self.terminal_settlement_keys
+                    .insert(terminal.settlement_key);
             }
         }
         Ok(())
@@ -233,11 +232,6 @@ pub(super) enum RecoveryFact {
     ReservationMetadata(SubmitReservationMetadataFact),
     ReservationFill(SubmitReservationFillFact),
     Settlement(SettlementFact),
-    BookingError {
-        settlement_key: String,
-    },
-    TerminalSettlement {
-        settlement_key: String,
-        has_booking_error: bool,
-    },
+    BookingError(SettlementBookingErrorFact),
+    TerminalSettlement(TerminalSettlementFact),
 }

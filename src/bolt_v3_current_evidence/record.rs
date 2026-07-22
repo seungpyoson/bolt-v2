@@ -77,6 +77,11 @@ impl EncodedEvidenceRecord {
         }
         Ok(Self { purpose, line })
     }
+
+    #[cfg(test)]
+    pub(crate) fn line(&self) -> &[u8] {
+        &self.line
+    }
 }
 
 #[derive(Debug)]

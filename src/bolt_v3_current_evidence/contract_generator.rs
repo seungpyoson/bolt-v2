@@ -510,6 +510,14 @@ pub fn render_contract(contract: &ContractRegistry) -> String {
         "KnownIdentity",
         wire.identities.iter().map(|row| row.id.as_str()),
     );
+    output.push_str("pub(crate) mod identities {\n");
+    for identity in &wire.identities {
+        output.push_str(&format!(
+            "    #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n    pub(crate) struct {};\n",
+            rust_variant(&identity.id)
+        ));
+    }
+    output.push_str("}\n\n");
     render_enum(
         &mut output,
         "KnownFact",

@@ -91,6 +91,61 @@ pub(crate) enum KnownIdentity {
     VenueTruthDivergenceV1,
 }
 
+pub(crate) mod identities {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct BlockedStrategyInputObservationV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct SubmitLinkedStrategyInputSnapshotV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct EntryOrderIntentV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct RiskReducingExitOrderIntentV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct AdmittedEntryAdmissionV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct RejectedEntryAdmissionV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct RiskReducingExitAdmissionV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct ForcedReductionAdmissionV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct BasketAdmissionGrantedV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct BasketAdmissionRejectedV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct CapitalAdmissionRebuildV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct SubmitReservationMetadataV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct SubmitReservationFillV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct EntrySkipObservationV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct ExitSubmissionDecisionV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct ExitHoldDecisionV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct ExitEvaluationV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct LossGovernorHaltV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct OrderRejectV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct OrderLifecycleV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct RequoteThrottleObservationV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct SettlementV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct SettlementBookingErrorV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct TerminalSettlementV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct VenueTruthCaptureFailureV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct VenueTruthDivergenceV1;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum KnownFact {
     BlockedStrategyInputObservationV1,

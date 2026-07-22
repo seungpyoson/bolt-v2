@@ -177,121 +177,6 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct NoopDecisionEvidenceWriter;
-
-    impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
-        fn record_strategy_input_snapshot(
-            &self,
-            _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_intent(
-            &self,
-            _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_capital_admission_rebuild_audit(
-            &self,
-            _audit: &crate::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(
-            &self,
-            _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("registry noop writer received entry-skip evidence")
-        }
-
-        fn record_exit_decision(
-            &self,
-            _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("registry noop writer received exit-decision evidence")
-        }
-
-        fn record_exit_evaluation(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_loss_governor_halt(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_reject(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_requote_throttle(
-            &self,
-            _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("registry noop writer received requote-throttle evidence")
-        }
-
-        fn record_settlement(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("registry noop writer received settlement evidence")
-        }
-
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("registry noop writer received settlement booking-error evidence")
-        }
-
-        fn drain_shutdown(&self) -> Result<()> {
-            // Deliberate no-op: this registry fixture never owns durable evidence.
-            Ok(())
-        }
-    }
-
-    #[derive(Debug)]
     struct TestStrategy {
         core: StrategyCore,
     }
@@ -356,12 +241,12 @@ mod tests {
     }
 
     fn test_context() -> StrategyBuildContext {
+        let decision_evidence =
+            Arc::new(crate::bolt_v3_current_evidence::DecisionEvidenceRecorder::recording());
         StrategyBuildContext::new(
             Arc::new(NoopFeeProvider),
-            Arc::new(NoopDecisionEvidenceWriter),
-            Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-                NoopDecisionEvidenceWriter,
-            ))),
+            decision_evidence.clone(),
+            Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence)),
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             // Fixture venue for registry tests. These exercise strategy registration, not
             // venue-scoped market selection, so the value is inert here; production resolves the

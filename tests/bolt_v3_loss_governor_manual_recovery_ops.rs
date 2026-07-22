@@ -61,6 +61,7 @@ fn loaded_with_enabled_loss_governor(
     let temp = support::TempCaseDir::new("bolt-v3-loss-governor-manual-recovery");
     loaded.root_path = temp.path().join("root.toml");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
     loaded.root.risk.kill_switch = Some(enabled_kill_switch_config(state_path));
     loaded.root.risk.live_submit_governance = Some(LiveSubmitGovernanceBlock {
         mode: LiveSubmitGovernanceMode::SupervisedDepositCapped,

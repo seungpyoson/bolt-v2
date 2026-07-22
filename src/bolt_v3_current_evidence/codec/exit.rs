@@ -136,7 +136,7 @@ struct ExitEvaluationWireV1 {
     rv_ready: bool,
     rv_snapshot_receive_watermark_ms: Option<i64>,
     rv_max_source_age_ms: Option<u64>,
-    rv_blockers: Vec<String>,
+    rv_blockers: Vec<RealizedVolBlockReasonV1>,
     rv_source_diagnostics: Vec<String>,
     rv_gate_result: RvGateResultV1,
     rv_as_of_minus_now_ms: Option<i64>,
@@ -566,7 +566,7 @@ impl TryFrom<ExitEvaluationFact> for ExitEvaluationWireV1 {
             rv_ready: value.rv_ready,
             rv_snapshot_receive_watermark_ms: value.rv_snapshot_receive_watermark_ms,
             rv_max_source_age_ms: value.rv_max_source_age_ms,
-            rv_blockers: canonical_texts(value.rv_blockers, "rv_blockers")?,
+            rv_blockers: value.rv_blockers.into_iter().map(Into::into).collect(),
             rv_source_diagnostics: canonical_texts(
                 value.rv_source_diagnostics,
                 "rv_source_diagnostics",
@@ -619,7 +619,7 @@ impl TryFrom<ExitEvaluationWireV1> for ExitEvaluationFact {
             rv_ready: value.rv_ready,
             rv_snapshot_receive_watermark_ms: value.rv_snapshot_receive_watermark_ms,
             rv_max_source_age_ms: value.rv_max_source_age_ms,
-            rv_blockers: canonical_texts(value.rv_blockers, "rv_blockers")?,
+            rv_blockers: value.rv_blockers.into_iter().map(Into::into).collect(),
             rv_source_diagnostics: canonical_texts(
                 value.rv_source_diagnostics,
                 "rv_source_diagnostics",

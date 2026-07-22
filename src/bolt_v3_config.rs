@@ -389,11 +389,9 @@ pub struct DecisionEvidenceBlock {
     pub machine_relative_path: String,
     pub observation_relative_path: String,
     pub retired_relative_paths: Vec<String>,
-    /// Byte cap applied when startup validates and decodes the machine stream.
-    /// `None` opts startup reservation recovery out: capital admission then
-    /// fails closed if any open orders exist at boot because their reservation
-    /// attribution cannot be reconstructed.
-    pub recovery_evidence_max_bytes: Option<u64>,
+    pub reject_episode_max_count: usize,
+    /// Mandatory byte cap applied when startup validates and decodes the machine stream.
+    pub recovery_evidence_max_bytes: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

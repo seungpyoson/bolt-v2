@@ -19,11 +19,15 @@ Shadow mode is global. Every loaded strategy must disable NautilusTrader-managed
 This managed-action safety is enforced by config validation during load. Source integrity covers the
 reviewed strategy source; operator TOML knobs are guarded by the fail-closed validator instead.
 
-Run the normal bolt-v3 live process. Evaluation, sizing, order-intent evidence, and submit-admission evidence still write to:
+Run the normal bolt-v3 live process. Recovery-bearing and join evidence used by the
+Shadow-PnL projection write to:
 
 ```text
-<catalog_directory>/<persistence.decision_evidence.order_intents_relative_path>
+<catalog_directory>/<persistence.decision_evidence.machine_relative_path>
 ```
+
+Observation evidence writes to the separately configured `observation_relative_path` and is not an
+input to Shadow PnL.
 
 Submit admission still evaluates before the final submit gate and records admission evidence. Shadow
 mode does not consume live submit admission capacity, so repeated would-be entries remain observable
@@ -46,7 +50,7 @@ Run:
 
 ```bash
 cargo run --locked --bin shadow_pnl_report -- \
-  --evidence-jsonl /var/lib/bolt/catalog/bolt-v3/decision-evidence/order-intents.jsonl \
+  --evidence-jsonl /var/lib/bolt/catalog/bolt-v3/decision-evidence/current/machine.jsonl \
   --settlements-jsonl /var/lib/bolt/catalog/shadow-settlements.jsonl
 ```
 

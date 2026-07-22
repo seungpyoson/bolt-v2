@@ -7,7 +7,7 @@ use crate::bolt_v3_current_evidence::{
         AdmittedEntryAdmissionFact, CapitalAdmissionRebuildFact, CapitalAdmissionRebuildOutcome,
         CapitalAdmissionRejectionReason, ForcedReductionAdmissionFact, LossHaltReason,
         LossSnapshotSource, LossSnapshotStaleReason, RejectedEntryAdmissionFact,
-        RiskReducingExitAdmissionFact,
+        ReplaceAdmissionFact, RiskReducingExitAdmissionFact,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -346,6 +346,48 @@ pub(super) fn decode_risk_reducing_exit(
     let (details, outcome) = decoded.decision.into_parts();
     validate_admission_details(&details).map_err(anyhow::Error::new)?;
     Ok(RiskReducingExitAdmissionFact {
+        details,
+        outcome: outcome.into_fact(),
+    })
+}
+
+pub(super) fn encode_replace(
+    fact: ReplaceAdmissionFact,
+    recorded_at_utc_ns: i64,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    validate_recorded_at(recorded_at_utc_ns)?;
+    validate_admission_details(&fact.details)?;
+    let purpose = KnownPurpose::ReplaceAdmission;
+    let descriptor = current_line_descriptor(purpose);
+    encode_line(
+        purpose,
+        &ReplaceAdmissionLineV1 {
+            schema_version: descriptor.schema_version,
+            recorded_at_utc_ns,
+            gate_id: descriptor.gate_id.to_string(),
+            gate_version: env!("CARGO_PKG_VERSION").to_string(),
+            kind: descriptor.kind.to_string(),
+            decision: ReplaceAdmissionDecisionV1::from_parts(
+                fact.details,
+                ReplaceAdmissionOutcomeV1::from_fact(fact.outcome),
+            ),
+        },
+    )
+}
+
+pub(super) fn decode_replace(line: &str, line_number: usize) -> Result<ReplaceAdmissionFact> {
+    let decoded: ReplaceAdmissionLineV1 = decode(line, line_number)?;
+    validate_envelope(
+        KnownIdentity::ReplaceAdmissionV1,
+        &decoded.kind,
+        decoded.schema_version,
+        &decoded.gate_id,
+        decoded.recorded_at_utc_ns,
+        line_number,
+    )?;
+    let (details, outcome) = decoded.decision.into_parts();
+    validate_admission_details(&details).map_err(anyhow::Error::new)?;
+    Ok(ReplaceAdmissionFact {
         details,
         outcome: outcome.into_fact(),
     })
@@ -698,6 +740,14 @@ define_admission_wire!(
     RiskReducingExitStaleReasonV1
 );
 define_admission_wire!(
+    ReplaceAdmissionLineV1,
+    ReplaceAdmissionDecisionV1,
+    ReplaceAdmissionOutcomeV1,
+    ReplaceAdmissionLossHaltReasonV1,
+    ReplaceAdmissionSnapshotSourceV1,
+    ReplaceAdmissionStaleReasonV1
+);
+define_admission_wire!(
     ForcedReductionLineV1,
     ForcedReductionDecisionV1,
     ForcedReductionOutcomeV1,
@@ -813,6 +863,8 @@ macro_rules! define_decision_outcome {
 }
 
 define_rejection_outcome!(RiskReducingExitRejectionV1);
+define_rejection_outcome!(ReplaceAdmissionRejectionV1);
 define_rejection_outcome!(ForcedReductionRejectionV1);
 define_decision_outcome!(RiskReducingExitOutcomeV1, RiskReducingExitRejectionV1);
+define_decision_outcome!(ReplaceAdmissionOutcomeV1, ReplaceAdmissionRejectionV1);
 define_decision_outcome!(ForcedReductionOutcomeV1, ForcedReductionRejectionV1);

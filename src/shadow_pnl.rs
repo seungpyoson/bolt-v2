@@ -11,12 +11,9 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-use crate::bolt_v3_decision_evidence::{
-    BOLT_V3_ADMISSION_DECISION_RECORD_KIND, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-    BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_ORDER_INTENT_RECORD_KIND,
-    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
-    BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionOutcome, BoltV3OrderIntentKind,
-    BoltV3SubmitIntentKind,
+use crate::bolt_v3_current_evidence::{
+    EntryOrderIntentFact, ShadowPnlEvent, SubmitLinkedStrategyInputSnapshotFact,
+    read_shadow_pnl_events,
 };
 use crate::bolt_v3_market_families::OutcomeSide;
 use crate::bolt_v3_taker_updown_signal::outcome_side_evidence_label;
@@ -102,41 +99,6 @@ struct TradeAccumulator {
     realized_edge_bps: Decimal,
 }
 
-#[derive(Debug, Deserialize)]
-struct EvidenceEnvelope {
-    schema_version: u32,
-    gate_id: String,
-    kind: String,
-    snapshot: Option<StrategyInputSnapshotEvidence>,
-    intent: Option<OrderIntentEvidence>,
-    decision: Option<AdmissionDecisionEvidence>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct StrategyInputSnapshotEvidence {
-    market_id: Option<String>,
-    selected_side: Option<String>,
-    expected_edge_basis_points: String,
-    fee_rate_basis_points: String,
-    client_order_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct OrderIntentEvidence {
-    intent_kind: BoltV3OrderIntentKind,
-    instrument_id: String,
-    client_order_id: String,
-    price: String,
-    quantity: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct AdmissionDecisionEvidence {
-    client_order_id: String,
-    intent_kind: BoltV3SubmitIntentKind,
-    outcome: BoltV3AdmissionOutcome,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct ShadowSettlementEvidence {
     pub settlement_date: NaiveDate,
@@ -149,8 +111,8 @@ pub struct ShadowSettlementEvidence {
 
 #[derive(Debug, Clone)]
 struct TradeEvidence {
-    snapshot: StrategyInputSnapshotEvidence,
-    intent: OrderIntentEvidence,
+    snapshot: SubmitLinkedStrategyInputSnapshotFact,
+    intent: EntryOrderIntentFact,
 }
 
 pub fn build_shadow_pnl_report(
@@ -163,22 +125,29 @@ pub fn build_shadow_pnl_report(
 
     for trade in chains {
         let settlement = settlement_for_trade(&settlements, &trade)?;
-        let selected_side =
-            trade.snapshot.selected_side.as_deref().ok_or_else(|| {
-                anyhow!("missing selected_side for {}", trade.intent.client_order_id)
+        let selected_side = trade
+            .snapshot
+            .details
+            .selected_side
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow!(
+                    "missing selected_side for {}",
+                    trade.intent.details.client_order_id
+                )
             })?;
         if !outcome_side_is_recognized(selected_side) {
             return Err(anyhow!(
                 "evidence selected_side {:?} for {} is invalid: not a recognized binary outcome side",
                 selected_side,
-                trade.intent.client_order_id
+                trade.intent.details.client_order_id
             ));
         }
-        let entry_price = parse_decimal(&trade.intent.price)?;
-        let quantity = parse_decimal(&trade.intent.quantity)?;
+        let entry_price = parse_decimal(&trade.intent.details.price)?;
+        let quantity = parse_decimal(&trade.intent.details.quantity)?;
         let settlement_price = parse_decimal(&settlement.settlement_price)?;
-        let fee_bps = parse_decimal(&trade.snapshot.fee_rate_basis_points)?;
-        let claimed_edge = parse_decimal(&trade.snapshot.expected_edge_basis_points)?;
+        let fee_bps = parse_decimal(&trade.snapshot.details.fee_rate_basis_points)?;
+        let claimed_edge = parse_decimal(&trade.snapshot.details.expected_edge_basis_points)?;
         let notional = entry_price * quantity;
         let gross = (settlement_price - entry_price) * quantity;
         let fees = notional * fee_bps / Decimal::from(SHADOW_PNL_BASIS_POINTS_DENOMINATOR);
@@ -196,7 +165,7 @@ pub fn build_shadow_pnl_report(
             return Err(anyhow!(
                 "settlement winning_side {:?} for {} is invalid: not a recognized binary outcome side",
                 settlement.winning_side,
-                trade.intent.client_order_id
+                trade.intent.details.client_order_id
             ));
         }
         let won = selected_side.eq_ignore_ascii_case(settlement.winning_side.as_str());
@@ -207,14 +176,14 @@ pub fn build_shadow_pnl_report(
         if won && settlement_price < entry_price {
             return Err(anyhow!(
                 "settlement inconsistency for {}: winning_side {} marks a win but settlement_price {settlement_price} is below entry_price {entry_price}",
-                trade.intent.client_order_id,
+                trade.intent.details.client_order_id,
                 settlement.winning_side
             ));
         }
         if !won && settlement_price > entry_price {
             return Err(anyhow!(
                 "settlement inconsistency for {}: winning_side {} marks a loss but settlement_price {settlement_price} is above entry_price {entry_price}",
-                trade.intent.client_order_id,
+                trade.intent.details.client_order_id,
                 settlement.winning_side
             ));
         }
@@ -260,64 +229,42 @@ fn write_shadow_pnl_csv_header(writer: &mut impl Write) -> Result<()> {
 }
 
 fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
-    let mut snapshots = HashMap::<String, StrategyInputSnapshotEvidence>::new();
-    let mut intents = HashMap::<String, OrderIntentEvidence>::new();
-    let mut admitted_entries = HashMap::<String, AdmissionDecisionEvidence>::new();
+    let mut snapshots = HashMap::<String, SubmitLinkedStrategyInputSnapshotFact>::new();
+    let mut intents = HashMap::<String, EntryOrderIntentFact>::new();
+    let mut admitted_entries = HashMap::<String, ()>::new();
 
-    for (line_number, line) in read_jsonl_lines(path)? {
-        let envelope: EvidenceEnvelope = serde_json::from_str(&line).with_context(|| {
-            format!(
-                "failed to parse decision evidence line {line_number} in {}",
-                path.display()
-            )
-        })?;
-        validate_evidence_header(&envelope, line_number)?;
-        match envelope.kind.as_str() {
-            BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND => {
-                let snapshot = envelope.snapshot.ok_or_else(|| {
-                    anyhow!("missing snapshot payload at decision evidence line {line_number}")
-                })?;
+    for (event_index, event) in read_shadow_pnl_events(path)?.into_iter().enumerate() {
+        match event {
+            ShadowPnlEvent::SubmitLinkedStrategyInputSnapshot(snapshot) => {
+                let client_order_id = snapshot.submission.client_order_id.clone();
                 insert_unique_evidence(
                     &mut snapshots,
-                    snapshot.client_order_id.clone(),
-                    snapshot,
-                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
-                    line_number,
+                    client_order_id,
+                    *snapshot,
+                    "submit-linked strategy-input snapshot",
+                    event_index + SHADOW_PNL_LINE_NUMBER_BASE,
                 )?;
             }
-            BOLT_V3_ORDER_INTENT_RECORD_KIND => {
-                let intent = envelope.intent.ok_or_else(|| {
-                    anyhow!("missing intent payload at decision evidence line {line_number}")
-                })?;
-                if intent.intent_kind == BoltV3OrderIntentKind::Entry {
-                    insert_unique_evidence(
-                        &mut intents,
-                        intent.client_order_id.clone(),
-                        intent,
-                        BOLT_V3_ORDER_INTENT_RECORD_KIND,
-                        line_number,
-                    )?;
-                }
+            ShadowPnlEvent::EntryOrderIntent(intent) => {
+                let client_order_id = intent.details.client_order_id.clone();
+                insert_unique_evidence(
+                    &mut intents,
+                    client_order_id,
+                    intent,
+                    "entry order intent",
+                    event_index + SHADOW_PNL_LINE_NUMBER_BASE,
+                )?;
             }
-            BOLT_V3_ADMISSION_DECISION_RECORD_KIND => {
-                let decision = envelope.decision.ok_or_else(|| {
-                    anyhow!(
-                        "missing admission decision payload at decision evidence line {line_number}"
-                    )
-                })?;
-                if decision.intent_kind == BoltV3SubmitIntentKind::Entry
-                    && decision.outcome == BoltV3AdmissionOutcome::Admitted
-                {
-                    insert_unique_evidence(
-                        &mut admitted_entries,
-                        decision.client_order_id.clone(),
-                        decision,
-                        BOLT_V3_ADMISSION_DECISION_RECORD_KIND,
-                        line_number,
-                    )?;
-                }
+            ShadowPnlEvent::AdmittedEntryAdmission(admission) => {
+                let client_order_id = admission.details.client_order_id;
+                insert_unique_evidence(
+                    &mut admitted_entries,
+                    client_order_id,
+                    (),
+                    "admitted entry admission",
+                    event_index + SHADOW_PNL_LINE_NUMBER_BASE,
+                )?;
             }
-            _ => {}
         }
     }
 
@@ -338,8 +285,9 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
     }
     chains.sort_by(|left, right| {
         left.intent
+            .details
             .client_order_id
-            .cmp(&right.intent.client_order_id)
+            .cmp(&right.intent.details.client_order_id)
     });
     Ok(chains)
 }
@@ -399,36 +347,16 @@ fn read_jsonl_lines(path: &Path) -> Result<Vec<(usize, String)>> {
         .collect()
 }
 
-fn validate_evidence_header(envelope: &EvidenceEnvelope, line_number: usize) -> Result<()> {
-    if envelope.schema_version != BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
-        return Err(anyhow!(
-            "invalid decision evidence schema_version at line {line_number}"
-        ));
-    }
-    let expected_gate_id = match envelope.kind.as_str() {
-        BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND => BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
-        BOLT_V3_ORDER_INTENT_RECORD_KIND => BOLT_V3_ORDER_INTENT_GATE_ID,
-        BOLT_V3_ADMISSION_DECISION_RECORD_KIND => BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
-        _ => return Ok(()),
-    };
-    if envelope.gate_id != expected_gate_id {
-        return Err(anyhow!(
-            "invalid decision evidence gate_id at line {line_number}"
-        ));
-    }
-    Ok(())
-}
-
 fn settlement_for_trade<'a>(
     settlements: &'a [ShadowSettlementEvidence],
     trade: &TradeEvidence,
 ) -> Result<&'a ShadowSettlementEvidence> {
     let instrument_matches = settlements
         .iter()
-        .filter(|settlement| settlement.instrument_id == trade.intent.instrument_id)
+        .filter(|settlement| settlement.instrument_id == trade.intent.details.instrument_id)
         .collect::<Vec<_>>();
-    let client_order_id = trade.intent.client_order_id.as_str();
-    let Some(market_id) = trade.snapshot.market_id.as_ref() else {
+    let client_order_id = trade.intent.details.client_order_id.as_str();
+    let Some(market_id) = trade.snapshot.details.market_id.as_ref() else {
         return single_settlement_match(
             instrument_matches,
             format!("ambiguous settlement for {client_order_id}: missing trade market_id"),

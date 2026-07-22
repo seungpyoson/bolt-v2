@@ -20,7 +20,55 @@ use super::{
 #[derive(Debug)]
 pub struct DecisionEvidenceRuntime {
     recorder: Arc<DecisionEvidenceRecorder>,
-    startup_recovery: StartupRecoveryFacts,
+    startup_recovery: Arc<StartupRecoveryFacts>,
+}
+
+/// File-backed current-evidence runtime exposed only to the separately resolved backtesting
+/// workspace. The live package does not enable this feature, so production append capability still
+/// has exactly one constructor: [`DecisionEvidenceRuntime::open`].
+#[cfg(feature = "offline-current-evidence")]
+#[derive(Debug)]
+pub struct OfflineDecisionEvidenceRuntime {
+    recorder: Arc<DecisionEvidenceRecorder>,
+}
+
+#[cfg(feature = "offline-current-evidence")]
+impl OfflineDecisionEvidenceRuntime {
+    /// Opens two fresh isolated files through the production recorder and sink implementation.
+    pub fn from_fresh_files(
+        mut machine: File,
+        observation: File,
+        reject_episode_max_count: usize,
+    ) -> Result<Self> {
+        ensure!(
+            reject_episode_max_count > 0,
+            "reject_episode_max_count must be positive"
+        );
+        ensure!(
+            machine.metadata()?.len() == 0 && observation.metadata()?.len() == 0,
+            "offline current-evidence streams must be fresh"
+        );
+        ensure_distinct_files(&machine, &observation)?;
+        let recovery = validate_machine_stream(&mut machine, Some(0))?;
+        ensure!(
+            recovery.is_empty(),
+            "fresh offline current-evidence stream produced recovery state"
+        );
+        machine.seek(SeekFrom::End(0))?;
+        Ok(Self {
+            recorder: Arc::new(DecisionEvidenceRecorder::from_files(
+                machine,
+                observation,
+                reject_episode_max_count,
+            )),
+        })
+    }
+
+    /// Returns the same concrete recorder type used by live strategy construction.
+    #[must_use]
+    pub fn recorder(&self) -> Arc<DecisionEvidenceRecorder> {
+        Arc::clone(&self.recorder)
+    }
 }
 
 impl DecisionEvidenceRuntime {
@@ -76,18 +124,21 @@ impl DecisionEvidenceRuntime {
 
         let mut machine = open_retained_stream(&machine_path)
             .with_context(|| format!("open machine evidence `{}`", machine_path.display()))?;
+        let startup_recovery =
+            validate_machine_stream(&mut machine, Some(config.recovery_evidence_max_bytes))?;
+        machine.seek(SeekFrom::End(0))?;
         let observation = open_retained_stream(&observation_path).with_context(|| {
             format!("open observation evidence `{}`", observation_path.display())
         })?;
         ensure_distinct_files(&machine, &observation)?;
 
-        let startup_recovery =
-            validate_machine_stream(&mut machine, config.recovery_evidence_max_bytes)?;
-        machine.seek(SeekFrom::End(0))?;
-
         Ok(Self {
-            recorder: Arc::new(DecisionEvidenceRecorder::new(machine, observation)),
-            startup_recovery,
+            recorder: Arc::new(DecisionEvidenceRecorder::from_files(
+                machine,
+                observation,
+                config.reject_episode_max_count,
+            )),
+            startup_recovery: Arc::new(startup_recovery),
         })
     }
 
@@ -97,8 +148,8 @@ impl DecisionEvidenceRuntime {
     }
 
     #[must_use]
-    pub fn startup_recovery(&self) -> &StartupRecoveryFacts {
-        &self.startup_recovery
+    pub fn startup_recovery(&self) -> Arc<StartupRecoveryFacts> {
+        Arc::clone(&self.startup_recovery)
     }
 }
 

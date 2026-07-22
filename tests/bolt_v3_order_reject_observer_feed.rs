@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use bolt_v2::bolt_v3_decision_evidence::{BoltV3OrderRejectReason, BoltV3RejectSource};
+use bolt_v2::bolt_v3_current_evidence::{OrderRejectReason, OrderRejectSource};
 use bolt_v2::bolt_v3_order_reject_observer_feed::{
     BoltV3OrderRejectObserverFeed, subscribe_order_reject_observer_feed,
 };
@@ -27,9 +27,9 @@ use ustr::Ustr;
 #[test]
 #[should_panic(expected = "order reject observer order-event feed lock poisoned")]
 fn subscribed_order_reject_event_panics_on_poisoned_feed_lock() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let feed = Arc::new(Mutex::new(BoltV3OrderRejectObserverFeed::new(
-        writer,
+        writer.recorder(),
         AccountId::from("ACCOUNT-001"),
     )));
     poison_lock(&feed);
@@ -49,9 +49,9 @@ fn subscribed_order_reject_event_panics_on_poisoned_feed_lock() {
 
 #[test]
 fn rejected_event_for_configured_account_records_venue_precision_reject_evidence() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let mut feed =
-        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+        BoltV3OrderRejectObserverFeed::new(writer.recorder(), AccountId::from("ACCOUNT-001"));
     let reason = "maker amount precision exceeds venue precision";
 
     feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
@@ -65,11 +65,8 @@ fn rejected_event_for_configured_account_records_venue_precision_reject_evidence
     let records = writer.order_rejects();
     assert_eq!(records.len(), 1);
     let record = &records[0];
-    assert_eq!(record.reject_source, BoltV3RejectSource::Venue);
-    assert_eq!(
-        record.reject_reason,
-        BoltV3OrderRejectReason::PrecisionRejected
-    );
+    assert_eq!(record.reject_source, OrderRejectSource::Venue);
+    assert_eq!(record.reject_reason, OrderRejectReason::PrecisionRejected);
     assert_eq!(record.instrument_id, "instrument-yes.VENUE-A");
     assert_eq!(record.client_order_id, "client-order-1");
     assert_eq!(record.raw_reason_text.as_deref(), Some(reason));
@@ -91,9 +88,9 @@ fn rejected_event_for_configured_account_records_venue_precision_reject_evidence
 
 #[test]
 fn reject_observer_snapshot_renders_active_episode_state() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let mut feed =
-        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+        BoltV3OrderRejectObserverFeed::new(writer.recorder(), AccountId::from("ACCOUNT-001"));
 
     feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
         "client-order-1",
@@ -123,9 +120,9 @@ fn reject_observer_snapshot_renders_active_episode_state() {
 
 #[test]
 fn rejected_event_for_different_account_is_not_recorded() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let mut feed =
-        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+        BoltV3OrderRejectObserverFeed::new(writer.recorder(), AccountId::from("ACCOUNT-001"));
 
     feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
         "client-order-1",
@@ -140,9 +137,9 @@ fn rejected_event_for_different_account_is_not_recorded() {
 
 #[test]
 fn denied_event_without_account_records_nt_execution_reject_evidence() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let mut feed =
-        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+        BoltV3OrderRejectObserverFeed::new(writer.recorder(), AccountId::from("ACCOUNT-001"));
     let reason = "duplicate client order id denied by NT";
 
     feed.on_order_event(&OrderEventAny::Denied(order_denied_event(
@@ -155,10 +152,10 @@ fn denied_event_without_account_records_nt_execution_reject_evidence() {
     let records = writer.order_rejects();
     assert_eq!(records.len(), 1);
     let record = &records[0];
-    assert_eq!(record.reject_source, BoltV3RejectSource::NtExecution);
+    assert_eq!(record.reject_source, OrderRejectSource::NtExecution);
     assert_eq!(
         record.reject_reason,
-        BoltV3OrderRejectReason::DuplicateClientOrderId
+        OrderRejectReason::DuplicateClientOrderId
     );
     assert_eq!(record.raw_reason_text.as_deref(), Some(reason));
     assert_eq!(record.instrument_id, "instrument-yes.VENUE-A");
@@ -167,9 +164,9 @@ fn denied_event_without_account_records_nt_execution_reject_evidence() {
 
 #[test]
 fn submitted_accepted_and_filled_events_are_not_recorded() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let mut feed =
-        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+        BoltV3OrderRejectObserverFeed::new(writer.recorder(), AccountId::from("ACCOUNT-001"));
 
     feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
         "client-order-1",
@@ -195,9 +192,9 @@ fn submitted_accepted_and_filled_events_are_not_recorded() {
 
 #[test]
 fn same_episode_rejects_emit_exponential_samples_with_previous_client_order_id() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let mut feed =
-        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+        BoltV3OrderRejectObserverFeed::new(writer.recorder(), AccountId::from("ACCOUNT-001"));
 
     for attempt in 1_u64..=9 {
         feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
@@ -242,36 +239,10 @@ fn same_episode_rejects_emit_exponential_samples_with_previous_client_order_id()
 }
 
 #[test]
-fn order_reject_evidence_write_failure_is_swallowed() {
-    // FIX 3b: the observer's record_order_reject path is swallow-on-error. A writer
-    // that errors on record_order_reject must leave on_order_event returning
-    // normally with no panic.
-    let writer = Arc::new(support::OrderRejectFailingDecisionEvidenceWriter::default());
-    let mut feed =
-        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
-
-    // The first reject has retry_count == 1 (a power of two), so the sink is
-    // attempted; the error must be swallowed rather than propagated/panicking.
-    feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
-        "client-order-1",
-        "instrument-yes.VENUE-A",
-        AccountId::from("ACCOUNT-001"),
-        "maker amount precision exceeds venue precision",
-        1_000,
-    )));
-
-    assert_eq!(
-        writer.order_reject_attempts(),
-        1,
-        "the order-reject sink must have been attempted exactly once"
-    );
-}
-
-#[test]
 fn recorded_raw_reason_text_redacts_address_and_long_digit_run() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let mut feed =
-        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+        BoltV3OrderRejectObserverFeed::new(writer.recorder(), AccountId::from("ACCOUNT-001"));
     let reason = "insufficient balance for 0xABCDEF0123456789 holding 123456789012345 units";
 
     feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
@@ -311,9 +282,9 @@ fn recorded_raw_reason_text_redacts_address_and_long_digit_run() {
 
 #[test]
 fn recorded_raw_reason_text_is_truncated_to_cap() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let mut feed =
-        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+        BoltV3OrderRejectObserverFeed::new(writer.recorder(), AccountId::from("ACCOUNT-001"));
     // 600 ASCII chars, well over the 256-char cap, with no redactable runs.
     let reason = "z".repeat(600);
 

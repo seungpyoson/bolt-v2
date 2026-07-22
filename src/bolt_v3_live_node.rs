@@ -164,17 +164,7 @@ use crate::{
         DataClientReadinessProbeQuoteTargetSource, LiveSubmitGovernanceMode, LoadedBoltV3Config,
         LoadedStrategy, nautilus_startup_bound_secs, resolve_root_relative_path,
     },
-    bolt_v3_decision_evidence::{
-        BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-        BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-        BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-        BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence,
-        BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
-        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
-        read_submit_reservation_recovery_evidence,
-    },
+    bolt_v3_current_evidence::{DecisionEvidenceRuntime, StartupRecoveryFacts},
     bolt_v3_iv::{
         config::IvRootConfig,
         health::IvSourceHealth,
@@ -237,8 +227,8 @@ use crate::{
         resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
     },
     bolt_v3_settlement_runtime::{
-        BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSink,
-        BoltV3SettlementRuntimeSinkBackends, BoltV3SettlementRuntimeSinkHandle,
+        BoltV3SettlementRuntimeSink, BoltV3SettlementRuntimeSinkBackends,
+        BoltV3SettlementRuntimeSinkHandle,
     },
     bolt_v3_strategy_registration::{
         BoltV3StrategyExecutionControls, BoltV3StrategyRegistrationError,
@@ -258,6 +248,9 @@ use crate::{
     },
     secrets::SsmResolverSession,
 };
+
+#[cfg(test)]
+use crate::bolt_v3_current_evidence::DecisionEvidenceRecorder;
 
 mod data_client_probe;
 mod iv;
@@ -292,17 +285,16 @@ pub use live_node_config::{
 use risk_admission_loss::capital_admission_venue_spendability_snapshot_from_source_config;
 use risk_admission_loss::{
     BoltV3CapitalAdmissionVenueSpendabilitySourceConfig, BoltV3LossProtectionRuntimeGuards,
-    BoltV3SubmitReservationRecoveryConfig, BoltV3VenueTruthRuntimeGuard,
-    capital_admission_config_from_loaded, capital_admission_runtime_feed_config_from_loaded,
+    BoltV3VenueTruthRuntimeGuard, capital_admission_config_from_loaded,
+    capital_admission_runtime_feed_config_from_loaded,
     capital_admission_venue_spendability_source_config_from_loaded,
     configure_bolt_v3_kill_switch_loss_protection, loss_governor_halt_action_handler_from_node,
     loss_governor_halt_action_policy_from_loaded, loss_governor_policy_from_loaded,
     loss_governor_runtime_feed_config_from_loaded, order_reject_observer_account_id_from_loaded,
     recover_kill_switch_state_before_live_node_build,
-    refresh_capital_admission_venue_spendability_from_source,
-    settlement_recovery_config_from_loaded, spawn_venue_truth_runtime,
-    submit_reservation_recovery_config_from_loaded, sync_nt_trading_state_for_kill_switch,
-    venue_truth_runtime_config_from_loaded, wire_bolt_v3_loss_protection_runtime,
+    refresh_capital_admission_venue_spendability_from_source, spawn_venue_truth_runtime,
+    sync_nt_trading_state_for_kill_switch, venue_truth_runtime_config_from_loaded,
+    wire_bolt_v3_loss_protection_runtime,
 };
 #[cfg(test)]
 pub(crate) use secrets_builders::build_bolt_v3_strategy_free_live_node_for_data_clients_with_summary;
@@ -344,7 +336,6 @@ const OPERATOR_HEALTH_INPUT_SOURCE_UNOBSERVED_REASON: &str =
 pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     registration_summary: BoltV3RegistrationSummary,
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     loss_protection: Option<Rc<RefCell<KillSwitchLossProtection>>>,
     loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
@@ -357,7 +348,7 @@ pub struct BoltV3LiveNodeRuntime {
     venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
     capital_admission_venue_spendability_source:
         Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>,
-    submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
+    submit_reservation_recovery: Option<Arc<StartupRecoveryFacts>>,
     iv_runtime: Option<IvRuntimeEngine>,
     iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
@@ -399,94 +390,6 @@ use strategy_free_probe::*;
 impl BoltV3StrategyFreeReferenceCacheEvidence {
     pub fn cached_instrument_ids(&self) -> &[String] {
         &self.cached_instrument_ids
-    }
-}
-
-#[derive(Debug)]
-struct NoStrategyDecisionEvidenceWriter;
-
-impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(&self, _evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> Result<()> {
-        // Deliberate no-op: strategy-free live nodes do not create decision evidence.
-        Ok(())
     }
 }
 
@@ -560,7 +463,6 @@ fn settlement_runtime_sink_handle(
 }
 
 struct BoltV3LiveNodeRuntimeFeeds {
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     loss_protection: Option<Rc<RefCell<KillSwitchLossProtection>>>,
     loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
@@ -572,7 +474,7 @@ struct BoltV3LiveNodeRuntimeFeeds {
     venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
     capital_admission_venue_spendability_source:
         Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>,
-    submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
+    submit_reservation_recovery: Option<Arc<StartupRecoveryFacts>>,
 }
 
 #[derive(Clone)]
@@ -939,7 +841,6 @@ impl BoltV3LiveNodeRuntime {
         Self {
             node,
             registration_summary,
-            decision_evidence: feeds.decision_evidence,
             submit_admission,
             loss_protection: feeds.loss_protection,
             loss_halt_action_policy: feeds.loss_halt_action_policy,
@@ -1494,11 +1395,9 @@ impl BoltV3LiveNodeRuntime {
     where
         P: BoltV3DecisionEvidenceProducerStopper,
     {
-        drain_after_stopping_decision_evidence_producers(producer_guards, || {
-            self.decision_evidence.drain_shutdown()
-        })
-        .await
-        .map_err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain)
+        drain_after_stopping_decision_evidence_producers(producer_guards, || Ok(()))
+            .await
+            .map_err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain)
     }
 
     pub fn nt_risk_trading_state(&self) -> TradingState {
@@ -1702,20 +1601,7 @@ impl BoltV3LiveNodeRuntime {
         let recovered_reservations = if open_order_snapshots.is_empty() {
             None
         } else {
-            self.submit_reservation_recovery
-                .as_ref()
-                .and_then(|config| {
-                    match read_submit_reservation_recovery_evidence(&config.path, config.max_bytes)
-                    {
-                        Ok(recovery) => Some(recovery),
-                        Err(error) => {
-                            log::warn!(
-                                "bolt-v3 submit admission could not recover Bolt reservation metadata from decision evidence: {error:#}"
-                            );
-                            None
-                        }
-                    }
-                })
+            self.submit_reservation_recovery.as_ref()
         };
         let mut reservations = Vec::with_capacity(open_order_snapshots.len());
         let mut all_open_orders_attributed =
@@ -1729,16 +1615,26 @@ impl BoltV3LiveNodeRuntime {
                 all_open_orders_attributed = false;
                 break;
             };
-            let Some(recovered) = recovered_reservations
-                .metadata_by_client_order_id
-                .get(&evidence.client_order_id)
+            let Some(metadata) =
+                recovered_reservations.reservation_metadata(&evidence.client_order_id)
             else {
                 all_open_orders_attributed = false;
                 break;
             };
+            let fill_trade_ids = recovered_reservations
+                .reservation_fill_trade_ids(
+                    &evidence.client_order_id,
+                    &metadata.submit_reservation_id,
+                )
+                .cloned()
+                .unwrap_or_default();
             let Some(reservation) = self
                 .submit_admission
-                .capital_admission_open_order_reservation_from_known_metadata(evidence, recovered)
+                .capital_admission_open_order_reservation_from_known_metadata(
+                    evidence,
+                    metadata,
+                    &fill_trade_ids,
+                )
             else {
                 all_open_orders_attributed = false;
                 break;
@@ -3034,6 +2930,13 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     adapters: BoltV3AdapterConfigs,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    let evidence_runtime = DecisionEvidenceRuntime::open(loaded).map_err(|error| {
+        BoltV3LiveNodeError::StrategyRegistration(BoltV3StrategyRegistrationError::Evidence {
+            message: error.to_string(),
+        })
+    })?;
+    let decision_evidence = evidence_runtime.recorder();
+    let startup_recovery = evidence_runtime.startup_recovery();
     // Enabled kill-switch boot must fail closed on an unresolved/corrupt/missing
     // durable record before constructing NT clients or registering
     // submit-capable strategy runtime. A clean recovery returns the latched
@@ -3060,31 +2963,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             },
         ));
     }
-    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = if loaded.strategies.is_empty() {
-        if loss_policy.is_none() && capital_admission.is_none() {
-            Arc::new(NoStrategyDecisionEvidenceWriter)
-        } else {
-            Arc::new(
-                JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
-                    BoltV3LiveNodeError::StrategyRegistration(
-                        BoltV3StrategyRegistrationError::Evidence {
-                            message: error.to_string(),
-                        },
-                    )
-                })?,
-            )
-        }
-    } else {
-        Arc::new(
-            JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
-                BoltV3LiveNodeError::StrategyRegistration(
-                    BoltV3StrategyRegistrationError::Evidence {
-                        message: error.to_string(),
-                    },
-                )
-            })?,
-        )
-    };
     let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
     let capital_admission_runtime_feed_config =
         capital_admission_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
@@ -3100,7 +2978,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         .as_ref()
         .map(|config| config.order_event_mapper.clone());
     let submit_reservation_recovery = if capital_admission_runtime_feed_config.is_some() {
-        submit_reservation_recovery_config_from_loaded(loaded)?
+        Some(Arc::clone(&startup_recovery))
     } else {
         None
     };
@@ -3269,8 +3147,9 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         settlement_runtime_sink.is_some(),
         settlement_runtime_sink_backends.will_configure_runtime_sink()
     );
-    let settlement_recovery =
-        settlement_recovery_config_from_loaded(loaded, settlement_runtime_sink.is_some())?;
+    let settlement_recovery = settlement_runtime_sink
+        .is_some()
+        .then(|| Arc::clone(&startup_recovery));
     let strategy_execution_controls = BoltV3StrategyExecutionControls {
         submit_admission: submit_admission.clone(),
         order_execution_policy,
@@ -3432,7 +3311,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         summary.clone(),
         submit_admission,
         BoltV3LiveNodeRuntimeFeeds {
-            decision_evidence,
             loss_protection,
             loss_halt_action_policy,
             loss_runtime_feed,

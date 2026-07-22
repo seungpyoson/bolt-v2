@@ -221,7 +221,7 @@ fn retired_evidence_gate_runtime_surface_is_deleted() {
 #[test]
 fn retired_readiness_gate_identity_is_not_part_of_strategy_evidence() {
     assert_absent(
-        "src/bolt_v3_decision_evidence.rs",
+        "src/bolt_v3_current_evidence/facts.rs",
         &[
             retired(&["BoltV3", "Readiness", "Gate", "Evidence", "Snapshot"]),
             retired(&["BoltV3", "Gate", "Evidence", "Identity"]),

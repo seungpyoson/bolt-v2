@@ -493,9 +493,8 @@ fn try_assembly_context<'a>(
     resolved: &'a ResolvedBoltV3Secrets,
     capabilities: StrategyRuntimeCapabilities,
 ) -> Result<StrategyRegistrationContext<'a>, BoltV3StrategyRegistrationError> {
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let decision_evidence = writer.recorder();
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
     let realized_volatility_runtime = Arc::new(Mutex::new(
         bolt_v2::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
@@ -745,7 +744,7 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
     assert_field_type(
         context_tokens,
         "decision_evidence",
-        &["Arc", "<", "dyn", "BoltV3DecisionEvidenceWriter", ">"],
+        &["Arc", "<", "DecisionEvidenceRecorder", ">"],
     );
     assert_field_type(
         context_tokens,
@@ -847,7 +846,7 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
     assert_field_type(
         runtime_resources,
         "decision_evidence",
-        &["Arc", "<", "dyn", "BoltV3DecisionEvidenceWriter", ">"],
+        &["Arc", "<", "DecisionEvidenceRecorder", ">"],
     );
     assert_field_type(
         runtime_resources,
@@ -903,7 +902,7 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
     assert_field_type(
         execution_controls,
         "settlement_recovery",
-        &["Option", "<", "BoltV3SettlementRecoveryConfig", ">"],
+        &["Option", "<", "Arc", "<", "StartupRecoveryFacts", ">", ">"],
     );
     assert_field_type(
         execution_controls,
@@ -963,7 +962,7 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
     assert_field_type(
         settlement_resource_tokens,
         "recovery",
-        &["Option", "<", "BoltV3SettlementRecoveryConfig", ">"],
+        &["Option", "<", "Arc", "<", "StartupRecoveryFacts", ">", ">"],
     );
     assert_field_type(
         settlement_resource_tokens,

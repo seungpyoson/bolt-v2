@@ -49,7 +49,7 @@ Expected: compilation fails because `bolt_v3_current_evidence` and the parser do
 
 - [x] **Step 2: Implement the registry parser and validator**
 
-Use closed serde rows with `#[serde(deny_unknown_fields)]`. Register these current purposes, each with at least one structural producer and exactly one fresh identity. Register both structurally distinct `order_reject` producers, for 27 producer rows total:
+Use closed serde rows with `#[serde(deny_unknown_fields)]`. Register these current purposes, each with at least one structural producer and exactly one fresh identity. Register both structurally distinct `order_reject` producers, for 28 producer rows total:
 
 ```text
 blocked_strategy_input_observation
@@ -59,6 +59,7 @@ risk_reducing_exit_order_intent
 admitted_entry_admission
 rejected_entry_admission
 risk_reducing_exit_admission
+replace_admission
 forced_reduction_admission
 basket_admission_granted
 basket_admission_rejected
@@ -90,7 +91,7 @@ Generate enums deriving `Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Has
 
 Run the focused test twice and compare a fresh render with the committed bytes. Expected: PASS with byte-identical output.
 
-- [ ] **Step 5: Commit the closed contract**
+- [x] **Step 5: Commit the closed contract**
 
 ```bash
 git add config/decision-evidence-contract.toml src/bolt_v3_current_evidence src/bin/generate_decision_evidence_contract.rs src/lib.rs tests/bolt_v3_current_evidence_contract.rs
@@ -122,7 +123,7 @@ Expected RED: no `DecisionEvidenceRuntime` exists.
 
 - [x] **Step 2: Replace the config schema**
 
-Replace `order_intents_relative_path` with required `machine_relative_path`, `observation_relative_path`, and `retired_relative_paths`. Preserve `recovery_evidence_max_bytes`. Validate every relative path beneath `catalog_directory`, reject empty/absolute/parent traversal, and reject duplicate configured paths.
+Replace `order_intents_relative_path` with required `machine_relative_path`, `observation_relative_path`, and `retired_relative_paths`. Make `recovery_evidence_max_bytes` mandatory and positive; there is no unbounded or recovery-disabled alternate mode. Validate every relative path beneath `catalog_directory`, reject empty/absolute/parent traversal, and reject duplicate configured paths.
 
 - [x] **Step 3: Implement the only runtime constructor**
 
@@ -205,17 +206,17 @@ git commit -m "feat(#1354): seal current evidence runtime"
 - Produces: `EncodedEvidenceRecord`, `DecodedFact`, identity-specific `CodecFor<IdentityMarker>` implementations, and typed consumer events.
 - Consumes: semantic input/fact values and generated identity markers.
 
-- [ ] **Step 1: Write the failing codec conformance harness**
+- [x] **Step 1: Write the failing codec conformance harness**
 
 For every current identity, require byte-exact encode/decode fixtures. For every admitted payload, remove each required field and substitute a wrong JSON type; both must reject. Cover every frozen enum variant exhaustively and every optional field's admitted absent/null/present states. Reject unknown envelope/payload fields, wrong gate, wrong exact pair, unknown enum, and contradictory semantic combinations.
 
 Expected RED: identity codec bindings and fixtures do not exist.
 
-- [ ] **Step 2: Define neutral semantic facts**
+- [x] **Step 2: Define neutral semantic facts**
 
 Move the producer/consumer semantic vocabulary out of the old evidence module into `facts.rs`. These types do not derive serde solely for persistence. Runtime-only IDs and enums remain semantic types; frozen codecs convert them explicitly.
 
-- [ ] **Step 3: Implement dedicated identity modules**
+- [x] **Step 3: Implement dedicated identity modules**
 
 Within each domain file, define a distinct private `LineV1` and `PayloadV1` for every identity in that domain. Blocked/submit and exit-submit/exit-hold must have separate top-level payload structs even when fields match. Frozen V1 enums must not alias or contain serde-derived runtime enums.
 
@@ -233,11 +234,11 @@ impl CodecFor<generated_contract::SubmitReservationMetadataV1> for CurrentCodecs
 
 Conversions use exhaustive `TryFrom`; no `serde_json::Value` projection is allowed.
 
-- [ ] **Step 4: Complete raw positive and rejection corpora**
+- [x] **Step 4: Complete raw positive and rejection corpora**
 
 Fixtures must originate from valid semantic builders, then be committed as raw bytes. The entry-skip unknown-reason case serializes `unclassified` with its context rather than inventing an enum variant. Machine facts receive exhaustive field/domain coverage; observations receive every enum branch and representative boundary/optionality coverage declared by their codec tests.
 
-- [ ] **Step 5: Verify and commit codecs**
+- [x] **Step 5: Verify and commit codecs**
 
 Run codec and contract tests. Expected: PASS, including deterministic bytes and exhaustive conversions.
 
@@ -261,29 +262,34 @@ git commit -m "feat(#1354): add frozen current evidence codecs"
 - Consumes: `DecisionEvidenceRuntime`, concrete recorder, frozen codecs, startup recovery facts, and generated consumer routes.
 - Produces: one production write/read path with no old writer or reader invocation.
 
-- [ ] **Step 1: Write failing vertical integration tests**
+- [x] **Step 1: Write failing vertical integration tests**
 
 Assert each registered producer emits exactly one exact identity to its configured sink. Assert new-risk failure blocks the action; risk reduction proceeds with `Failed`; reconciliation failure enters the existing unreconciled path; observations preserve trading results and report only the first continuous failure.
 
-- [ ] **Step 2: Construct one runtime during live-node startup**
+- [x] **Step 2: Construct one runtime during live-node startup**
 
 Replace conditional/no-op writer construction with one `DecisionEvidenceRuntime::open`. Pass cloned concrete recorder handles to producers. Feed reservation and settlement startup from `startup_recovery()` rather than reopening the path.
 
-- [ ] **Step 3: Rewire every producer purpose**
+- [x] **Step 3: Rewire every producer purpose**
 
 Split shared producer calls by semantic purpose before encoding. In particular, blocked strategy snapshots cannot call the submit-linked method; entry and exit intents/admissions cannot select identity from payload fields; exit hold and exit submission use distinct methods.
 
 Every call site must exhaustively handle its policy-specific return type. Remove duplicate caller error logs for observation failures because the recorder owns the bounded episode report.
 
-- [ ] **Step 4: Rewire consumers to typed events**
+- [x] **Step 4: Rewire consumers to typed events**
 
-Reservation recovery, unified settlement recovery, entry-chain analysis, and Shadow PnL consume generated typed routes over `DecodedFact`. Known irrelevant observations skip only after exact envelope validation; malformed relevant machine records fail closed.
+Reservation recovery, unified settlement recovery, entry-chain analysis, and Shadow PnL consume generated typed routes over `DecodedFact`. Startup fully decodes every machine record before applying generated consumer dispositions, so malformed current machine payloads fail closed even when no startup consumer uses that fact.
 
-- [ ] **Step 5: Verify restart and separation behavior**
+Migrate the separately resolved backtesting workspace from its private generic writer to the
+feature-isolated `OfflineDecisionEvidenceRuntime`. It must write through the same concrete recorder,
+durable sinks, codecs, receipts, and effect policies, then derive its run-guard report from decoded
+current facts.
+
+- [x] **Step 5: Verify restart and separation behavior**
 
 Test current-only reservation/fill restart, settlement/booking-error/terminal reconstruction in all relevant orders, blocked observations excluded from entry/shadow joins, and an observation flood leaving machine bytes and recovery output unchanged.
 
-- [ ] **Step 6: Commit the cutover**
+- [x] **Step 6: Commit the cutover**
 
 Run all focused producer and consumer suites. Expected: PASS.
 
@@ -306,19 +312,19 @@ git commit -m "feat(#1354): cut over current evidence producers and consumers"
 - Produces: one current evidence module and an operator-only archival runbook.
 - Consumes: fully cut-over production paths from Task 4.
 
-- [ ] **Step 1: Delete the old write/read/migration authority**
+- [x] **Step 1: Delete the old write/read/migration authority**
 
 Remove schema-v15 encoders, the wide/default writer trait, generic target-kind readers, version-order predicates, dead query readers, Shadow PnL's private parser, and the Python migration path. Retain no compatibility adapter or fallback.
 
-- [ ] **Step 2: Add the hard-cutover runbook**
+- [x] **Step 2: Add the hard-cutover runbook**
 
 Document stop/mask, independent venue/account quiescence, archive-by-rename with checksum/fsync/read-only retention, fresh configured paths, first-boot verification, and pause/forward-fix after the first current machine record. State explicitly that the repository does not yet provide the independent fill/settlement barrier needed for live authorization.
 
-- [ ] **Step 3: Verify no behavioral dual path remains**
+- [x] **Step 3: Verify no behavioral dual path remains**
 
 Use compilation and behavior tests, not a Rust source-scanning test. Build all targets so stale imports/callers fail. Exercise the single live startup and offline reader entry points.
 
-- [ ] **Step 4: Commit deletion**
+- [x] **Step 4: Commit deletion**
 
 ```bash
 git add -A
@@ -334,30 +340,40 @@ git commit -m "refactor(#1354): retire legacy decision evidence path"
 - Produces: exact-head evidence for replacement PR publication.
 - Consumes: completed Tasks 1-5.
 
-- [ ] **Step 1: Run cheap local checks**
+- [x] **Step 1: Run cheap local checks**
 
 ```bash
-cargo fmt --check
-git diff --check origin/main...HEAD
-just source-fence
+just fmt
+git diff --check
+rg '<retired writer, reader, migration, and config symbols>' src crates config scripts tests
 ```
 
-Expected: all succeed.
+Expected: formatting and diff checks succeed, and the authority scan returns no active-code match.
+The repository currently exposes no `source-fence` just recipe; `just --list` and a repository search
+confirmed that governance/tooling drift, so no unavailable check is represented as passing.
 
-- [ ] **Step 2: Run focused local Rust checks with compact artifacts**
+- [x] **Step 2: Run focused local Rust checks with compact artifacts**
 
 ```bash
 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --test bolt_v3_current_evidence_contract
 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --test bolt_v3_current_evidence_runtime
-CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --test bolt_v3_current_evidence_codec
-CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --test bolt_v3_current_evidence_integration
+CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --lib bolt_v3_current_evidence
+CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --test wiring_registration
 ```
 
 Expected: all succeed. If disk prevents a check, record that environmental blocker and rely on exact-head advisory CI rather than claiming a local pass.
 
-- [ ] **Step 3: Conduct an internal adversarial review**
+- [x] **Step 3: Conduct an internal adversarial review**
 
 Review exact-head startup authority, receipt construction, identity ownership, fact-consumer totality, observation bounds, remaining call sites, and claimed fixture coverage. Resolve every substantive finding before publication.
+
+Resolved findings were boundary defects rather than per-call-site exceptions:
+
+- the backtesting workspace's private generic writer was replaced by the feature-isolated production recorder and current-fact reader;
+- all readers now share strict newline and blank-line framing;
+- the recovery byte cap is mandatory and positive, removing an unbounded alternate mode;
+- startup fully decodes every current machine payload before applying generated consumer dispositions;
+- active schema and Shadow-PnL documentation now name only the current streams and retired-path fence.
 
 - [ ] **Step 4: Push and open the replacement draft PR**
 

@@ -22,7 +22,7 @@ use super::{
         EntryOrderIntentFact, EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact,
         ExitSubmissionDecisionFact, ForcedReductionAdmissionFact, LossGovernorHaltFact,
         OrderLifecycleFact, OrderRejectFact, RecoveryFact, RejectedEntryAdmissionFact,
-        RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
+        ReplaceAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
         RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
         SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
         SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
@@ -450,6 +450,22 @@ impl CodecFor<identities::RiskReducingExitAdmissionV1> for CurrentCodecs {
     }
 }
 
+impl CodecFor<identities::ReplaceAdmissionV1> for CurrentCodecs {
+    type Input = ReplaceAdmissionFact;
+    type Fact = ReplaceAdmissionFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        admission::encode_replace(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        admission::decode_replace(line, line_number)
+    }
+}
+
 impl CodecFor<identities::ForcedReductionAdmissionV1> for CurrentCodecs {
     type Input = ForcedReductionAdmissionFact;
     type Fact = ForcedReductionAdmissionFact;
@@ -497,6 +513,12 @@ pub(crate) fn encode_risk_reducing_exit_admission(
         &fact,
         current_utc_ns()?,
     )
+}
+
+pub(crate) fn encode_replace_admission(
+    fact: ReplaceAdmissionFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::ReplaceAdmissionV1>>::encode(&fact, current_utc_ns()?)
 }
 
 pub(crate) fn encode_forced_reduction_admission(
@@ -681,10 +703,11 @@ pub(crate) fn decode_startup_recovery_fact(
     line: &str,
     line_number: usize,
 ) -> Result<Option<RecoveryFact>> {
+    let decoded = decode_current_fact(identity, line, line_number)?;
     if !is_startup_relevant(identity) {
         return Ok(None);
     }
-    let fact = match decode_current_fact(identity, line, line_number)? {
+    let fact = match decoded {
         CurrentFact::SubmitReservationMetadata(value) => RecoveryFact::ReservationMetadata(value),
         CurrentFact::SubmitReservationFill(value) => RecoveryFact::ReservationFill(value),
         CurrentFact::Settlement(value) => RecoveryFact::Settlement(value),
@@ -697,6 +720,7 @@ pub(crate) fn decode_startup_recovery_fact(
         | CurrentFact::AdmittedEntryAdmission(_)
         | CurrentFact::RejectedEntryAdmission(_)
         | CurrentFact::RiskReducingExitAdmission(_)
+        | CurrentFact::ReplaceAdmission(_)
         | CurrentFact::ForcedReductionAdmission(_)
         | CurrentFact::BasketAdmissionGranted(_)
         | CurrentFact::BasketAdmissionRejected(_)
@@ -763,6 +787,11 @@ pub(super) fn decode_current_fact(
             >>::decode(
                 line, line_number
             )?))
+        }
+        KnownIdentity::ReplaceAdmissionV1 => {
+            CurrentFact::ReplaceAdmission(Box::new(<CurrentCodecs as CodecFor<
+                identities::ReplaceAdmissionV1,
+            >>::decode(line, line_number)?))
         }
         KnownIdentity::ForcedReductionAdmissionV1 => {
             CurrentFact::ForcedReductionAdmission(Box::new(<CurrentCodecs as CodecFor<
@@ -932,7 +961,7 @@ fn validate_recorded_at(recorded_at_utc_ns: i64) -> Result<(), RecordFailure> {
 
 fn decode<'a, T: Deserialize<'a>>(line: &'a str, line_number: usize) -> Result<T> {
     serde_json::from_str(line).with_context(|| {
-        format!("malformed relevant payload at machine evidence line {line_number}")
+        format!("malformed current payload at machine evidence line {line_number}")
     })
 }
 
@@ -967,8 +996,9 @@ mod tests {
         ExitEvaluationDecision, ExitHoldOutcome, ExitSubmissionOutcome, ExitTriggerSource,
         LossHaltReason, LossSnapshotSource, OrderIntentClampNotEvaluatedReason,
         OrderIntentClampOutcome, OrderIntentDetails, OrderIntentOrderFields, OrderRejectFact,
-        OrderRejectReason, OrderRejectSource, RvGateResult, StrategyInputDetails,
-        StrategyInputRvState, SubmissionLinkage,
+        OrderRejectReason, OrderRejectSource, RealizedVolBlockReason, RvGateResult,
+        StrategyInputDetails, StrategyInputMarketSelectionOutcome, StrategyInputRvState,
+        SubmissionLinkage,
     };
     use super::*;
 
@@ -1001,6 +1031,10 @@ mod tests {
             KnownIdentity::RiskReducingExitAdmissionV1 => include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/fixtures/bolt_v3/current_evidence/positive/risk_reducing_exit_admission.jsonl"
+            )),
+            KnownIdentity::ReplaceAdmissionV1 => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/replace_admission.jsonl"
             )),
             KnownIdentity::ForcedReductionAdmissionV1 => include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -1123,6 +1157,11 @@ mod tests {
             >>::encode(
                 value.as_ref(), recorded_at_utc_ns
             ),
+            CurrentFact::ReplaceAdmission(value) => <CurrentCodecs as CodecFor<
+                identities::ReplaceAdmissionV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
             CurrentFact::ForcedReductionAdmission(value) => <CurrentCodecs as CodecFor<
                 identities::ForcedReductionAdmissionV1,
             >>::encode(
@@ -1223,6 +1262,79 @@ mod tests {
             decode_current_fact(identity, &line, 1).is_err(),
             "{identity:?} accepted malformed fixture: {line}"
         );
+    }
+
+    #[derive(Clone, Debug)]
+    enum JsonPathStep {
+        Field(String),
+        Index(usize),
+    }
+
+    fn collect_object_field_paths(
+        value: &serde_json::Value,
+        prefix: &mut Vec<JsonPathStep>,
+        paths: &mut Vec<Vec<JsonPathStep>>,
+    ) {
+        match value {
+            serde_json::Value::Object(object) => {
+                for (field, child) in object {
+                    prefix.push(JsonPathStep::Field(field.clone()));
+                    paths.push(prefix.clone());
+                    collect_object_field_paths(child, prefix, paths);
+                    prefix.pop();
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for (index, child) in values.iter().enumerate() {
+                    prefix.push(JsonPathStep::Index(index));
+                    collect_object_field_paths(child, prefix, paths);
+                    prefix.pop();
+                }
+            }
+            serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::String(_) => {}
+        }
+    }
+
+    fn value_at_path_mut<'a>(
+        mut value: &'a mut serde_json::Value,
+        path: &[JsonPathStep],
+    ) -> &'a mut serde_json::Value {
+        for step in path {
+            value = match step {
+                JsonPathStep::Field(field) => value
+                    .as_object_mut()
+                    .and_then(|object| object.get_mut(field))
+                    .expect("fixture path must name an object field"),
+                JsonPathStep::Index(index) => value
+                    .as_array_mut()
+                    .and_then(|array| array.get_mut(*index))
+                    .expect("fixture path must name an array element"),
+            };
+        }
+        value
+    }
+
+    fn remove_field_at_path(value: &mut serde_json::Value, path: &[JsonPathStep]) {
+        let (last, parent_path) = path.split_last().expect("field path must be nonempty");
+        let JsonPathStep::Field(field) = last else {
+            unreachable!("collected paths always end at an object field")
+        };
+        value_at_path_mut(value, parent_path)
+            .as_object_mut()
+            .expect("fixture field parent must be an object")
+            .remove(field)
+            .expect("fixture field must exist");
+    }
+
+    fn incompatible_json_type(value: &serde_json::Value) -> serde_json::Value {
+        if value.is_object() {
+            serde_json::Value::Array(Vec::new())
+        } else {
+            serde_json::json!({})
+        }
     }
 
     fn metadata() -> SubmitReservationMetadataFact {
@@ -1374,6 +1486,7 @@ mod tests {
             now_ms: 6,
             observed_at_ns: 7,
             action_cost_class: super::super::facts::RequoteActionCostClass::CancelResubmit,
+            block_reason: super::super::facts::RequoteThrottleBlockReason::RequoteBudgetExhausted,
             bound_by: super::super::facts::RequoteThrottleBound::RestCallWindow,
             submit_commands_in_window: 2,
             submit_command_cap: 3,
@@ -1539,7 +1652,7 @@ mod tests {
             strategy_id: "strategy-1".to_string(),
             configured_target_id: "target-1".to_string(),
             market_selection_ruleset_id: "ruleset-1".to_string(),
-            market_selection_outcome: "selected".to_string(),
+            market_selection_outcome: StrategyInputMarketSelectionOutcome::Current,
             market_id: Some("market-1".to_string()),
             polymarket_condition_id: Some("condition-1".to_string()),
             polymarket_market_slug: Some("market-slug".to_string()),
@@ -1735,6 +1848,42 @@ mod tests {
                 .expect("fixture payload must be an object")
                 .insert("unexpected_payload_field".to_string(), true.into());
             mutation_is_rejected(identity, &extra_payload_field);
+
+            let mut field_paths = Vec::new();
+            collect_object_field_paths(
+                object.get(payload_key).expect("fixture payload must exist"),
+                &mut vec![JsonPathStep::Field(payload_key.to_string())],
+                &mut field_paths,
+            );
+            for path in field_paths {
+                let original = value_at_path_mut(&mut value.clone(), &path).clone();
+
+                let mut wrong_type = value.clone();
+                *value_at_path_mut(&mut wrong_type, &path) = incompatible_json_type(&original);
+                mutation_is_rejected(identity, &wrong_type);
+
+                let mut missing = value.clone();
+                remove_field_at_path(&mut missing, &path);
+                let missing_line =
+                    serde_json::to_string(&missing).expect("missing-field mutation must serialize");
+                if let Ok(missing_fact) = decode_current_fact(identity, &missing_line, 1) {
+                    let mut explicit_null = value.clone();
+                    *value_at_path_mut(&mut explicit_null, &path) = serde_json::Value::Null;
+                    let null_line = serde_json::to_string(&explicit_null)
+                        .expect("null-field mutation must serialize");
+                    let null_fact = decode_current_fact(identity, &null_line, 1).unwrap_or_else(
+                        |error| {
+                            panic!(
+                                "{identity:?} accepts an absent field but rejects the equivalent null at {path:?}: {error:#}"
+                            )
+                        },
+                    );
+                    assert_eq!(
+                        null_fact, missing_fact,
+                        "{identity:?} absent and null field semantics drifted at {path:?}"
+                    );
+                }
+            }
         }
     }
 
@@ -2309,7 +2458,7 @@ mod tests {
             rv_ready: false,
             rv_snapshot_receive_watermark_ms: None,
             rv_max_source_age_ms: Some(1_000),
-            rv_blockers: vec!["not_warm".to_string()],
+            rv_blockers: vec![RealizedVolBlockReason::NotWarm],
             rv_source_diagnostics: vec!["source_waiting".to_string()],
             rv_gate_result: RvGateResult::MissingSnapshot,
             rv_as_of_minus_now_ms: None,

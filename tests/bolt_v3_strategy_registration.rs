@@ -67,15 +67,14 @@ fn strategy_registration_test_runtime(
     LiveNode,
     bolt_v2::bolt_v3_secrets::ResolvedBoltV3Secrets,
     bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls,
-    Arc<dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    Arc<bolt_v2::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
 ) {
     let mut empty_loaded = loaded.clone();
     empty_loaded.strategies.clear();
     let resolved = resolve_bolt_v3_secrets_with(loaded, support::fake_bolt_v3_resolver)
         .expect("fixture secrets should resolve");
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let evidence_writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let decision_evidence = evidence_writer.recorder();
     let execution_controls =
         bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
             submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
@@ -192,11 +191,11 @@ fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &st
         }),
         "{label} entry runtime table should reject unsupported executable entry shape: {errors:?}"
     );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        writer.recorder(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
@@ -771,11 +770,11 @@ fn surfaced_runtime_config_builds_without_legacy_realized_volatility_fields() {
         "surfaced runtime config should validate without legacy RV fields: {errors:?}"
     );
 
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        writer.recorder(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
@@ -826,13 +825,13 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-binding-decision-evidence");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
     let mut empty_loaded = loaded.clone();
     empty_loaded.strategies.clear();
     let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
         .expect("fixture secrets should resolve");
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let evidence_writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let decision_evidence = evidence_writer.recorder();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
     let execution_controls =
         bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
@@ -1004,9 +1003,8 @@ fn assert_invalid_second_execution_route_fails_before_binding_preparation(
     empty_loaded.strategies.clear();
     let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
         .expect("fixture secrets should resolve");
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let evidence_writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let decision_evidence = evidence_writer.recorder();
     let execution_controls =
         bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
             submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
@@ -1411,9 +1409,8 @@ fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
         schema_version: 1,
         profiles: Vec::new(),
     });
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let evidence_writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let decision_evidence = evidence_writer.recorder();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
     let execution_controls =
         bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls {
@@ -1554,6 +1551,7 @@ fn complete_set_runtime_fixture() -> (
         .expect("complete-set strategy file should be written");
     let mut loaded = load_bolt_v3_config(&root_path).expect("complete-set fixture should load");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
     (temp, loaded)
 }
 
@@ -2224,11 +2222,11 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
         errors.is_empty(),
         "MarketIfTouched exit runtime table should validate: {errors:?}"
     );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        writer.recorder(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
@@ -2386,11 +2384,11 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
         errors.is_empty(),
         "TrailingStopMarket exit runtime table should validate: {errors:?}"
     );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        writer.recorder(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
@@ -2622,11 +2620,11 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
         errors.is_empty(),
         "StopLimit exit runtime table should validate: {errors:?}"
     );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        writer.recorder(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
@@ -2694,11 +2692,11 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
         errors.is_empty(),
         "LimitIfTouched exit runtime table should validate: {errors:?}"
     );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        writer.recorder(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
     );
@@ -3184,6 +3182,7 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-decision-evidence");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
 
     let (node, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
@@ -3207,6 +3206,7 @@ fn strategy_registration_resolves_fee_provider_through_shared_provider_boundary(
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-fee-provider-boundary");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
 
     let (node, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
@@ -3239,6 +3239,7 @@ fn binary_oracle_data_only_client_fails_settlement_identity_before_fee_provider(
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-decision-evidence-data-only-exec-client");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
     let mut polymarket_data_only = loaded
         .root
         .clients

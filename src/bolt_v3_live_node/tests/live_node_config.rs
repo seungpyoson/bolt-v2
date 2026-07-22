@@ -820,40 +820,6 @@ fn venue_spendability_source_config_fails_closed_on_sha_mismatch() {
 }
 
 #[test]
-fn settlement_recovery_config_uses_decision_evidence_store_when_settlement_sink_exists() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let mut loaded = fixture_loaded_config();
-    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
-    loaded
-        .root
-        .persistence
-        .decision_evidence
-        .recovery_evidence_max_bytes = Some(123_456);
-
-    let config = settlement_recovery_config_from_loaded(&loaded, true)
-        .expect("settlement recovery config should build")
-        .expect("settlement sink plus decision-evidence bound should enable recovery");
-
-    assert_eq!(
-        config.path,
-        temp.path().join(
-            loaded
-                .root
-                .persistence
-                .decision_evidence
-                .machine_relative_path
-                .trim()
-        )
-    );
-    assert_eq!(config.max_bytes, 123_456);
-    assert_eq!(
-        settlement_recovery_config_from_loaded(&loaded, false)
-            .expect("disabled settlement sink should still parse cleanly"),
-        None
-    );
-}
-
-#[test]
 fn live_node_config_maps_log_levels_from_uppercase_strings() {
     let loaded = fixture_loaded_config();
     let cfg = make_live_node_config(&loaded);

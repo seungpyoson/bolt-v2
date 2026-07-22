@@ -1,5 +1,3 @@
-use crate::bolt_v3_decision_evidence::BoltV3StaleLossReason;
-
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -273,17 +271,17 @@ pub fn loss_snapshot_stale_reason(
     policy: &LossGovernorPolicy,
     snapshot: &LossSnapshot,
     now_ns: u64,
-) -> Option<BoltV3StaleLossReason> {
+) -> Option<LossSnapshotStaleReason> {
     if snapshot.source.trim().is_empty() {
-        return Some(BoltV3StaleLossReason::SourceEmpty);
+        return Some(LossSnapshotStaleReason::SourceEmpty);
     }
     if snapshot.observed_at_ns > now_ns {
-        return Some(BoltV3StaleLossReason::FutureDated);
+        return Some(LossSnapshotStaleReason::FutureDated);
     }
 
     let age = now_ns - snapshot.observed_at_ns;
     if age > policy.max_snapshot_age_ns {
-        return Some(BoltV3StaleLossReason::AgeExceeded);
+        return Some(LossSnapshotStaleReason::AgeExceeded);
     }
 
     if (policy.max_per_trade_loss.is_some() && snapshot.per_trade_pnl.is_none())
@@ -292,7 +290,7 @@ pub fn loss_snapshot_stale_reason(
         || (policy.max_drawdown.is_some()
             && (snapshot.current_equity.is_none() || snapshot.peak_equity.is_none()))
     {
-        return Some(BoltV3StaleLossReason::MissingRequiredField);
+        return Some(LossSnapshotStaleReason::MissingRequiredField);
     }
 
     None
@@ -314,8 +312,6 @@ fn drawdown_breaches(current_equity: Decimal, peak_equity: Decimal, limit: Decim
 #[cfg(test)]
 mod tests {
     use rust_decimal::Decimal;
-
-    use crate::bolt_v3_decision_evidence::BoltV3StaleLossReason;
 
     use super::{
         LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSnapshotStaleReason,
@@ -409,42 +405,42 @@ mod tests {
             (
                 "source empty",
                 source_empty,
-                Some(BoltV3StaleLossReason::SourceEmpty),
+                Some(LossSnapshotStaleReason::SourceEmpty),
             ),
             (
                 "future dated",
                 future_dated,
-                Some(BoltV3StaleLossReason::FutureDated),
+                Some(LossSnapshotStaleReason::FutureDated),
             ),
             (
                 "age exceeded",
                 age_exceeded,
-                Some(BoltV3StaleLossReason::AgeExceeded),
+                Some(LossSnapshotStaleReason::AgeExceeded),
             ),
             (
                 "missing per trade pnl",
                 missing_per_trade,
-                Some(BoltV3StaleLossReason::MissingRequiredField),
+                Some(LossSnapshotStaleReason::MissingRequiredField),
             ),
             (
                 "missing daily pnl",
                 missing_daily,
-                Some(BoltV3StaleLossReason::MissingRequiredField),
+                Some(LossSnapshotStaleReason::MissingRequiredField),
             ),
             (
                 "missing rolling pnl",
                 missing_rolling,
-                Some(BoltV3StaleLossReason::MissingRequiredField),
+                Some(LossSnapshotStaleReason::MissingRequiredField),
             ),
             (
                 "missing current equity",
                 missing_current_equity,
-                Some(BoltV3StaleLossReason::MissingRequiredField),
+                Some(LossSnapshotStaleReason::MissingRequiredField),
             ),
             (
                 "missing peak equity",
                 missing_peak_equity,
-                Some(BoltV3StaleLossReason::MissingRequiredField),
+                Some(LossSnapshotStaleReason::MissingRequiredField),
             ),
             ("fresh", fresh, None),
         ];

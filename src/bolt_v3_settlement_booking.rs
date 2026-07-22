@@ -13,12 +13,9 @@ use crate::{
     bolt_v3_binary_settlement_runtime::{
         BinaryRuntimeSettlementInput, settle_binary_runtime_reference_prices,
     },
-    bolt_v3_decision_evidence::{
-        BoltV3OrderLifecycleOutcome, BoltV3OrderLifecycleTransition,
-        BoltV3SettlementBookingErrorReason, BoltV3SettlementEvidence,
-        read_settlement_booking_error_keys_for_recovery_scope,
-        read_settlement_evidence_for_recovery_scope, read_settlement_keys_for_recovery_scope,
-        read_terminal_settlement_keys_for_recovery_scope,
+    bolt_v3_current_evidence::{
+        OrderLifecycleOutcome, OrderLifecycleTransition, SettlementBookingErrorReason,
+        SettlementFact,
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_strategy_context::SettlementCapability,
@@ -117,7 +114,7 @@ pub struct SettlementTerminalKeyDelta {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettlementBookingErrorTransition {
     pub eligibility: TerminalSettlementEligibility,
-    pub reason: BoltV3SettlementBookingErrorReason,
+    pub reason: SettlementBookingErrorReason,
     pub detail: String,
     pub key_delta: SettlementTerminalKeyDelta,
 }
@@ -125,7 +122,7 @@ pub struct SettlementBookingErrorTransition {
 pub fn record_settlement_booking_error(
     position: &SettlementPositionKey,
     origin: SettlementPositionOrigin,
-    reason: BoltV3SettlementBookingErrorReason,
+    reason: SettlementBookingErrorReason,
     detail: String,
     observed_at_ns: u64,
     existing_booking_error_keys: &BTreeSet<String>,
@@ -178,7 +175,7 @@ pub struct ResolutionSettlementBooking {
 pub enum ResolutionSettlementDecision {
     Skip(SettlementBookingSkipReason),
     BookingError {
-        reason: BoltV3SettlementBookingErrorReason,
+        reason: SettlementBookingErrorReason,
         detail: String,
     },
     Book(ResolutionSettlementBooking),
@@ -193,7 +190,7 @@ pub fn try_book_resolution_settlement(
     let resolution_ts_ms = input.resolution_ts_ns / NANOS_PER_MILLI_U64;
     let Some(interval_end_ms) = input.position.interval_end_ms else {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing interval end",
         );
     };
@@ -209,13 +206,13 @@ pub fn try_book_resolution_settlement(
     }
     let Some(lot) = input.lot else {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing outcome side",
         );
     };
     let Some(strike_price) = input.strike_price else {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing strike price",
         );
     };
@@ -227,13 +224,13 @@ pub fn try_book_resolution_settlement(
     });
     let Some(result) = decision.result else {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementBlocked,
+            SettlementBookingErrorReason::SettlementBlocked,
             format!("settlement blocked by {:?}", decision.blocked_by),
         );
     };
     let Some(payout) = decision.payout else {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementBlocked,
+            SettlementBookingErrorReason::SettlementBlocked,
             "settlement output missing payout",
         );
     };
@@ -243,13 +240,13 @@ pub fn try_book_resolution_settlement(
         .is_none()
     {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing configured settlement currency",
         );
     }
     if !input.market_id_present {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing market id",
         );
     }
@@ -263,7 +260,7 @@ pub fn try_book_resolution_settlement(
             .is_none()
     {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing configured settlement account id",
         );
     }
@@ -282,7 +279,7 @@ pub fn try_book_resolution_settlement(
 }
 
 fn booking_error(
-    reason: BoltV3SettlementBookingErrorReason,
+    reason: SettlementBookingErrorReason,
     detail: impl Into<String>,
 ) -> ResolutionSettlementDecision {
     ResolutionSettlementDecision::BookingError {
@@ -296,7 +293,7 @@ pub struct SettlementRecoveryDelta {
     pub settled_position_keys: BTreeSet<String>,
     pub booking_error_keys: BTreeSet<String>,
     pub terminal_settlement_keys: BTreeSet<String>,
-    pub settled_evidence: Vec<BoltV3SettlementEvidence>,
+    pub settled_evidence: Vec<SettlementFact>,
 }
 
 pub fn recover_settlement_bootstrap(
@@ -312,26 +309,28 @@ pub fn recover_settlement_bootstrap(
         });
     };
     Ok(SettlementRecoveryDelta {
-        settled_position_keys: read_settlement_keys_for_recovery_scope(
-            &recovery.path,
-            recovery.max_bytes,
-            recovery_scope_settlement_keys,
-        )?,
-        booking_error_keys: read_settlement_booking_error_keys_for_recovery_scope(
-            &recovery.path,
-            recovery.max_bytes,
-            recovery_scope_settlement_keys,
-        )?,
-        terminal_settlement_keys: read_terminal_settlement_keys_for_recovery_scope(
-            &recovery.path,
-            recovery.max_bytes,
-            recovery_scope_settlement_keys,
-        )?,
-        settled_evidence: read_settlement_evidence_for_recovery_scope(
-            &recovery.path,
-            recovery.max_bytes,
-            recovery_scope_settlement_keys,
-        )?,
+        settled_position_keys: recovery
+            .settlements()
+            .keys()
+            .filter(|key| recovery_scope_settlement_keys.contains(*key))
+            .cloned()
+            .collect(),
+        booking_error_keys: recovery
+            .booking_error_keys()
+            .intersection(recovery_scope_settlement_keys)
+            .cloned()
+            .collect(),
+        terminal_settlement_keys: recovery
+            .terminal_settlement_keys()
+            .intersection(recovery_scope_settlement_keys)
+            .cloned()
+            .collect(),
+        settled_evidence: recovery
+            .settlements()
+            .iter()
+            .filter(|(key, _)| recovery_scope_settlement_keys.contains(*key))
+            .map(|(_, fact)| fact.clone())
+            .collect(),
     })
 }
 
@@ -348,8 +347,8 @@ pub enum SettlementRecoveryEntryDecision {
         canonical_evidence_already_durable: bool,
     },
     EnterBlindSettlementRecovery {
-        transition: BoltV3OrderLifecycleTransition,
-        outcome: BoltV3OrderLifecycleOutcome,
+        transition: OrderLifecycleTransition,
+        outcome: OrderLifecycleOutcome,
         detail: String,
     },
 }
@@ -393,8 +392,8 @@ pub fn enter_blind_settlement_recovery(
     error: impl std::fmt::Display,
 ) -> SettlementRecoveryEntryDecision {
     SettlementRecoveryEntryDecision::EnterBlindSettlementRecovery {
-        transition: BoltV3OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
-        outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+        transition: OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
+        outcome: OrderLifecycleOutcome::BlindRecovery,
         detail: error.to_string(),
     }
 }
@@ -413,7 +412,7 @@ mod tests {
         let transition = record_settlement_booking_error(
             &position,
             SettlementPositionOrigin::Live,
-            BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+            SettlementBookingErrorReason::ResolutionFeedMissing,
             "missing".to_string(),
             20 * NANOS_PER_MILLI_U64,
             &BTreeSet::new(),
@@ -432,7 +431,7 @@ mod tests {
             record_settlement_booking_error(
                 &position,
                 SettlementPositionOrigin::Live,
-                BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+                SettlementBookingErrorReason::ResolutionFeedMissing,
                 "duplicate".to_string(),
                 20 * NANOS_PER_MILLI_U64,
                 &existing,
@@ -451,8 +450,8 @@ mod tests {
         assert!(matches!(
             enter_blind_settlement_recovery("durable evidence unreadable"),
             SettlementRecoveryEntryDecision::EnterBlindSettlementRecovery {
-                transition: BoltV3OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
-                outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+                transition: OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
+                outcome: OrderLifecycleOutcome::BlindRecovery,
                 ..
             }
         ));

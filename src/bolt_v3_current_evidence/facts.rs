@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+pub use crate::bolt_v3_fair_value_pricing::RvGateResult;
+
 use anyhow::{Context, Result, ensure};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +181,11 @@ pub enum RequoteThrottleBound {
     Overflow,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequoteThrottleBlockReason {
+    RequoteBudgetExhausted,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequoteThrottleObservationFact {
     pub strategy_id: String,
@@ -188,6 +195,7 @@ pub struct RequoteThrottleObservationFact {
     pub now_ms: u64,
     pub observed_at_ns: u64,
     pub action_cost_class: RequoteActionCostClass,
+    pub block_reason: RequoteThrottleBlockReason,
     pub bound_by: RequoteThrottleBound,
     pub submit_commands_in_window: usize,
     pub submit_command_cap: u64,
@@ -360,6 +368,12 @@ pub struct RiskReducingExitAdmissionFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaceAdmissionFact {
+    pub details: AdmissionDetails,
+    pub outcome: AdmissionDecisionOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForcedReductionAdmissionFact {
     pub details: AdmissionDetails,
     pub outcome: AdmissionDecisionOutcome,
@@ -496,16 +510,6 @@ pub enum EntryPricingBlockReason {
     ExecutableEntryCostUnavailable(OutcomeSide),
     ExecutableEdgeUnavailable(OutcomeSide, BinaryOutcomeEdgeBlockReason),
     SizedNotionalUnsupported(OutcomeSide),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RvGateResult {
-    Accepted,
-    MissingSnapshot,
-    MissingEvaluationEventTime,
-    RejectedFutureDated,
-    RejectedStale,
-    RejectedNotReady,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -666,11 +670,17 @@ pub enum StrategyInputRvState {
         gate_result: RvGateResult,
     },
     Present {
-        selected_annualized_decimal: String,
+        selected_annualized_decimal: Option<String>,
         gate_result: RvGateResult,
         receive_watermark_ms: Option<u64>,
-        snapshot: EntryRealizedVolatilitySnapshotFact,
+        snapshot: Box<EntryRealizedVolatilitySnapshotFact>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrategyInputMarketSelectionOutcome {
+    Current,
+    Next,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -678,7 +688,7 @@ pub struct StrategyInputDetails {
     pub strategy_id: String,
     pub configured_target_id: String,
     pub market_selection_ruleset_id: String,
-    pub market_selection_outcome: String,
+    pub market_selection_outcome: StrategyInputMarketSelectionOutcome,
     pub market_id: Option<String>,
     pub polymarket_condition_id: Option<String>,
     pub polymarket_market_slug: Option<String>,
@@ -869,7 +879,7 @@ pub struct ExitEvaluationFact {
     pub rv_ready: bool,
     pub rv_snapshot_receive_watermark_ms: Option<i64>,
     pub rv_max_source_age_ms: Option<u64>,
-    pub rv_blockers: Vec<String>,
+    pub rv_blockers: Vec<RealizedVolBlockReason>,
     pub rv_source_diagnostics: Vec<String>,
     pub rv_gate_result: RvGateResult,
     pub rv_as_of_minus_now_ms: Option<i64>,
@@ -1020,6 +1030,36 @@ impl StartupRecoveryFacts {
         &self.settlements
     }
 
+    #[must_use]
+    pub fn reservation_metadata(
+        &self,
+        client_order_id: &str,
+    ) -> Option<&SubmitReservationMetadataFact> {
+        self.reservation_metadata.get(client_order_id)
+    }
+
+    #[must_use]
+    pub fn reservation_fill_trade_ids(
+        &self,
+        client_order_id: &str,
+        submit_reservation_id: &str,
+    ) -> Option<&BTreeSet<String>> {
+        self.reservation_fill_trade_ids.get(&(
+            client_order_id.to_string(),
+            submit_reservation_id.to_string(),
+        ))
+    }
+
+    #[must_use]
+    pub fn booking_error_keys(&self) -> &BTreeSet<String> {
+        &self.booking_error_keys
+    }
+
+    #[must_use]
+    pub fn terminal_settlement_keys(&self) -> &BTreeSet<String> {
+        &self.terminal_settlement_keys
+    }
+
     pub(super) fn apply(&mut self, fact: RecoveryFact) -> Result<()> {
         match fact {
             RecoveryFact::ReservationMetadata(metadata) => {
@@ -1083,7 +1123,8 @@ impl StartupRecoveryFacts {
     }
 }
 
-pub(super) enum CurrentFact {
+#[derive(Debug, Clone, PartialEq)]
+pub enum CurrentFact {
     BlockedStrategyInputObservation(Box<BlockedStrategyInputObservationFact>),
     SubmitLinkedStrategyInputSnapshot(Box<SubmitLinkedStrategyInputSnapshotFact>),
     EntryOrderIntent(EntryOrderIntentFact),
@@ -1091,6 +1132,7 @@ pub(super) enum CurrentFact {
     AdmittedEntryAdmission(Box<AdmittedEntryAdmissionFact>),
     RejectedEntryAdmission(Box<RejectedEntryAdmissionFact>),
     RiskReducingExitAdmission(Box<RiskReducingExitAdmissionFact>),
+    ReplaceAdmission(Box<ReplaceAdmissionFact>),
     ForcedReductionAdmission(Box<ForcedReductionAdmissionFact>),
     BasketAdmissionGranted(BasketAdmissionGrantedFact),
     BasketAdmissionRejected(BasketAdmissionRejectedFact),

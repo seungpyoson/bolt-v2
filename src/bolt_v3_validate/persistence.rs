@@ -66,6 +66,12 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
                 .to_string(),
         );
     }
+    if evidence.reject_episode_max_count == 0 {
+        errors.push(
+            "persistence.decision_evidence.reject_episode_max_count must be a positive integer"
+                .to_string(),
+        );
+    }
     for retired in &evidence.retired_relative_paths {
         if let Err(message) =
             validate_decision_evidence_relative_path("retired_relative_paths", retired)
@@ -89,52 +95,9 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
             ));
         }
     }
-    if block
-        .decision_evidence
-        .recovery_evidence_max_bytes
-        .is_some_and(|max_bytes| max_bytes == 0)
-    {
+    if block.decision_evidence.recovery_evidence_max_bytes == 0 {
         errors.push(
             "persistence.decision_evidence.recovery_evidence_max_bytes must be a positive integer"
-                .to_string(),
-        );
-    }
-    errors
-}
-
-pub(super) fn validate_capital_admission_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
-    let mut errors = Vec::new();
-    let enforced_submit_admission =
-        crate::bolt_v3_settlement_runtime::capital_admission_runtime_feed_pool(root).is_some();
-    if enforced_submit_admission
-        && root
-            .persistence
-            .decision_evidence
-            .recovery_evidence_max_bytes
-            .is_none()
-    {
-        errors.push(
-            "persistence.decision_evidence.recovery_evidence_max_bytes must be configured when risk.capital_pools enables submit admission enforcement"
-                .to_string(),
-        );
-    }
-    errors
-}
-
-pub(super) fn validate_settlement_sink_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
-    let mut errors = Vec::new();
-    let settlement_sink_configured =
-        crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkBackends::from_root(root)
-            .will_configure_runtime_sink();
-    if settlement_sink_configured
-        && root
-            .persistence
-            .decision_evidence
-            .recovery_evidence_max_bytes
-            .is_none()
-    {
-        errors.push(
-            "persistence.decision_evidence.recovery_evidence_max_bytes must be configured when a settlement runtime sink is configured"
                 .to_string(),
         );
     }

@@ -1,4 +1,4 @@
-use std::{path::PathBuf, rc::Rc};
+use std::rc::Rc;
 
 use anyhow::Result;
 
@@ -7,12 +7,6 @@ use crate::{
     bolt_v3_loss_protection::PositionRealizedPnlObservation,
     bolt_v3_venue_truth::VenueTruthSettlementExplanation,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3SettlementRecoveryConfig {
-    pub path: PathBuf,
-    pub max_bytes: u64,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BoltV3SettlementRuntimeSinkBackends {

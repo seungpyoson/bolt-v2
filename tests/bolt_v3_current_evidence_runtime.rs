@@ -320,7 +320,7 @@ fn open_strictly_decodes_current_recovery_facts() {
     let error = DecisionEvidenceRuntime::open(&loaded)
         .expect_err("unknown relevant payload field must fail closed");
     assert!(
-        format!("{error:#}").contains("malformed relevant payload"),
+        format!("{error:#}").contains("malformed current payload"),
         "unexpected error: {error:#}"
     );
 }
@@ -381,7 +381,7 @@ fn open_refuses_oversized_or_malformed_machine_stream() {
         .root
         .persistence
         .decision_evidence
-        .recovery_evidence_max_bytes = Some(8);
+        .recovery_evidence_max_bytes = 8;
     fs::write(machine_path(&loaded), b"123456789").expect("oversized stream must be written");
     let error = DecisionEvidenceRuntime::open(&loaded)
         .expect_err("oversized machine stream must block activation");
@@ -391,7 +391,7 @@ fn open_refuses_oversized_or_malformed_machine_stream() {
         .root
         .persistence
         .decision_evidence
-        .recovery_evidence_max_bytes = Some(64);
+        .recovery_evidence_max_bytes = 64;
     fs::write(machine_path(&loaded), b"{not-json}\n").expect("malformed stream must be written");
     let error = DecisionEvidenceRuntime::open(&loaded)
         .expect_err("malformed machine stream must block activation");
@@ -399,6 +399,36 @@ fn open_refuses_oversized_or_malformed_machine_stream() {
         error
             .to_string()
             .contains("malformed machine evidence line 1")
+    );
+}
+
+#[test]
+fn open_refuses_malformed_startup_irrelevant_machine_payload() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let loaded = loaded_in(&temp);
+    let machine = machine_path(&loaded);
+    let runtime = DecisionEvidenceRuntime::open(&loaded).expect("fresh current streams must open");
+    assert!(matches!(
+        runtime.recorder().record_order_lifecycle(lifecycle_fact()),
+        bolt_v2::bolt_v3_current_evidence::NonBlockingRecordOutcome::Appended(_)
+    ));
+    drop(runtime);
+
+    let mut line: serde_json::Value =
+        serde_json::from_slice(&fs::read(&machine).expect("machine stream must read"))
+            .expect("recorded lifecycle line must decode as JSON");
+    line.as_object_mut()
+        .expect("lifecycle line must be an object")
+        .remove("lifecycle");
+    let mut malformed = serde_json::to_vec(&line).expect("malformed line must serialize");
+    malformed.push(b'\n');
+    fs::write(&machine, malformed).expect("malformed lifecycle line must be written");
+
+    let error = DecisionEvidenceRuntime::open(&loaded)
+        .expect_err("malformed startup-irrelevant machine payload must block activation");
+    assert!(
+        format!("{error:#}").contains("malformed current payload"),
+        "unexpected error: {error:#}"
     );
 }
 
@@ -435,7 +465,7 @@ fn open_accepts_the_exact_byte_cap_and_refuses_one_byte_over() {
         .root
         .persistence
         .decision_evidence
-        .recovery_evidence_max_bytes = Some(current.len() as u64);
+        .recovery_evidence_max_bytes = current.len() as u64;
     let runtime = DecisionEvidenceRuntime::open(&loaded).expect("exact byte cap must be accepted");
     drop(runtime);
 
@@ -443,7 +473,7 @@ fn open_accepts_the_exact_byte_cap_and_refuses_one_byte_over() {
         .root
         .persistence
         .decision_evidence
-        .recovery_evidence_max_bytes = Some(current.len() as u64 - 1);
+        .recovery_evidence_max_bytes = current.len() as u64 - 1;
     let error = DecisionEvidenceRuntime::open(&loaded).expect_err("one byte over must fail closed");
     assert!(error.to_string().contains("exceeds configured byte cap"));
 }
@@ -463,7 +493,26 @@ fn open_refuses_blank_torn_unknown_and_non_regular_machine_streams() {
     assert!(
         error
             .to_string()
-            .contains("malformed machine evidence line")
+            .contains("non-newline-terminated final record")
+    );
+
+    fs::write(&machine, b"").expect("machine stream must be reset");
+    let runtime = DecisionEvidenceRuntime::open(&loaded).expect("current stream must open");
+    runtime
+        .recorder()
+        .record_submit_reservation_metadata(reservation_metadata_command())
+        .expect("current record must append");
+    drop(runtime);
+    let mut complete_without_newline = fs::read(&machine).expect("current stream must read");
+    assert_eq!(complete_without_newline.pop(), Some(b'\n'));
+    fs::write(&machine, complete_without_newline)
+        .expect("complete non-newline record must be written");
+    let error = DecisionEvidenceRuntime::open(&loaded)
+        .expect_err("complete non-newline record must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("non-newline-terminated final record")
     );
 
     fs::write(

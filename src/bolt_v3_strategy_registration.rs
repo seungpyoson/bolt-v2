@@ -7,7 +7,7 @@
 use crate::bolt_v3_config::{
     BoltV3RootConfig, ClientBlock, LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey,
 };
-use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
+use crate::bolt_v3_current_evidence::{DecisionEvidenceRecorder, StartupRecoveryFacts};
 use crate::bolt_v3_iv::{
     config::IvProfile,
     query::{IvQueryHandle, IvStrategyQueryHandle},
@@ -18,9 +18,7 @@ use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
 use crate::bolt_v3_providers::{FeeProvider, resolve_fee_provider};
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
-use crate::bolt_v3_settlement_runtime::{
-    BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSinkHandle,
-};
+use crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle;
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_common::{actor::DataActorNative, component::Component};
@@ -193,13 +191,13 @@ pub struct BoltV3StrategyExecutionControls {
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
     pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
-    pub settlement_recovery: Option<BoltV3SettlementRecoveryConfig>,
+    pub settlement_recovery: Option<Arc<StartupRecoveryFacts>>,
     pub settlement_health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
 }
 
 #[derive(Clone)]
 pub struct StrategyRegistrationRuntimeResources {
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<DecisionEvidenceRecorder>,
     iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
     realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
     execution_controls: BoltV3StrategyExecutionControls,
@@ -207,7 +205,7 @@ pub struct StrategyRegistrationRuntimeResources {
 
 impl StrategyRegistrationRuntimeResources {
     pub fn new(
-        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        decision_evidence: Arc<DecisionEvidenceRecorder>,
         iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
         realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
         execution_controls: BoltV3StrategyExecutionControls,
@@ -226,7 +224,7 @@ pub struct StrategyRegistrationContext<'a> {
     pub strategy: &'a LoadedStrategy,
     pub strategy_kind: &'static str,
     pub capabilities: StrategyRuntimeCapabilities,
-    pub decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    pub decision_evidence: Arc<DecisionEvidenceRecorder>,
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
@@ -333,7 +331,7 @@ struct StrategyRegistrationSettlementResources {
     settlement_account_id: String,
     settlement_currency: Currency,
     runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
-    recovery: Option<BoltV3SettlementRecoveryConfig>,
+    recovery: Option<Arc<StartupRecoveryFacts>>,
     health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
 }
 
@@ -522,7 +520,7 @@ fn resolve_settlement_capability(
     execution_client: &ClientBlock,
     execution_venue: Venue,
     runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
-    recovery: Option<BoltV3SettlementRecoveryConfig>,
+    recovery: Option<Arc<StartupRecoveryFacts>>,
     health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
 ) -> Result<StrategyRegistrationSettlementResources, StrategyRegistrationSettlementIdentityError> {
     let execution_client_id = strategy.config.execution_client_id.as_str();
@@ -903,7 +901,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<DecisionEvidenceRecorder>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     if loaded.strategies.is_empty() {
         return Ok(BoltV3StrategyRegistrationSummary::empty());
@@ -932,7 +930,7 @@ pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<DecisionEvidenceRecorder>,
     iv_runtime: &IvRuntimeEngine,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     if loaded.strategies.is_empty() {
@@ -960,7 +958,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<DecisionEvidenceRecorder>,
     iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     let mut summary = BoltV3StrategyRegistrationSummary::empty();

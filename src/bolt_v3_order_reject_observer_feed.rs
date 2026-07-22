@@ -7,11 +7,11 @@ use nautilus_common::msgbus::{TypedHandler, subscribe_order_events, unsubscribe_
 use nautilus_model::{events::OrderEventAny, identifiers::AccountId};
 
 use crate::{
-    bolt_v3_decision_evidence::{
-        BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES, BoltV3DecisionEvidenceWriter,
-        BoltV3OrderRejectEvidence, BoltV3OrderRejectReason, BoltV3RejectSource, EpisodeFirstNs,
-        evict_oldest_episodes_over_cap,
+    bolt_v3_current_evidence::{
+        DecisionEvidenceRecorder, NonBlockingRecordOutcome, OrderRejectFact, OrderRejectReason,
+        OrderRejectSource,
     },
+    bolt_v3_evidence_sampling::{EpisodeFirstNs, evict_oldest_episodes_over_cap},
     bolt_v3_operator_health::BoltV3OperatorHealthTransitionEmitter,
     nt_runtime_capture::order_events_pattern,
 };
@@ -121,7 +121,7 @@ impl Drop for OrderRejectObserverFeedSubscription {
 }
 
 pub struct BoltV3OrderRejectObserverFeed {
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<DecisionEvidenceRecorder>,
     account_id: AccountId,
     episodes: BTreeMap<String, RejectObserverEpisode>,
 }
@@ -136,10 +136,7 @@ pub struct BoltV3OrderRejectObserverHealthSnapshot {
 
 impl BoltV3OrderRejectObserverFeed {
     #[must_use]
-    pub fn new(
-        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
-        account_id: AccountId,
-    ) -> Self {
+    pub fn new(decision_evidence: Arc<DecisionEvidenceRecorder>, account_id: AccountId) -> Self {
         Self {
             decision_evidence,
             account_id,
@@ -174,7 +171,7 @@ impl BoltV3OrderRejectObserverFeed {
                 if event.account_id() != Some(self.account_id) {
                     return false;
                 }
-                (BoltV3RejectSource::Venue, rejected.reason.as_str())
+                (OrderRejectSource::Venue, rejected.reason.as_str())
             }
             OrderEventAny::Denied(denied) => {
                 // scope: Denied is an NT-execution-level reject (tagged NtExecution) and
@@ -182,7 +179,7 @@ impl BoltV3OrderRejectObserverFeed {
                 // exposes trader_id()) is deferred: this feed is constructed in live_node
                 // with only an account_id, and threading a TraderId would require new
                 // construction params through the live_node wiring (#885 minor item [14]).
-                (BoltV3RejectSource::NtExecution, denied.reason.as_str())
+                (OrderRejectSource::NtExecution, denied.reason.as_str())
             }
             _ => return false,
         };
@@ -243,7 +240,7 @@ impl BoltV3OrderRejectObserverFeed {
             return true;
         }
 
-        let evidence = BoltV3OrderRejectEvidence {
+        let evidence = OrderRejectFact {
             reject_source,
             reject_reason,
             admission_outcome: None,
@@ -268,7 +265,10 @@ impl BoltV3OrderRejectObserverFeed {
             stable_episode_key,
             elapsed_ns,
         };
-        if let Err(err) = self.decision_evidence.record_order_reject(&evidence) {
+        if let NonBlockingRecordOutcome::Failed(err) = self
+            .decision_evidence
+            .record_observed_order_reject(evidence.clone())
+        {
             log::error!(
                 "bolt-v3 order-reject evidence write failed: source={:?} reason={:?} instrument_id={} client_order_id={} raw_reason_text={:?} err={err}",
                 evidence.reject_source,
@@ -287,7 +287,10 @@ impl BoltV3OrderRejectObserverFeed {
     /// re-starts its episode; no trading state is touched. Delegates to the shared
     /// `evict_oldest_episodes_over_cap` helper so the bound lives in one place.
     fn evict_oldest_episodes_over_cap(&mut self) {
-        evict_oldest_episodes_over_cap(&mut self.episodes, BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES);
+        evict_oldest_episodes_over_cap(
+            &mut self.episodes,
+            self.decision_evidence.reject_episode_max_count(),
+        );
     }
 }
 
@@ -403,27 +406,27 @@ fn cap_reason_length(raw: &str) -> String {
     capped
 }
 
-fn classify_reject_reason(raw_reason_text: &str) -> BoltV3OrderRejectReason {
+fn classify_reject_reason(raw_reason_text: &str) -> OrderRejectReason {
     let lowercased = raw_reason_text.to_lowercase();
     if lowercased.contains(REJECT_REASON_PRECISION_NEEDLE) {
-        BoltV3OrderRejectReason::PrecisionRejected
+        OrderRejectReason::PrecisionRejected
     } else if lowercased.contains(REJECT_REASON_MIN_NEEDLE)
         && lowercased.contains(REJECT_REASON_NOTIONAL_NEEDLE)
     {
-        BoltV3OrderRejectReason::MinNotionalRejected
+        OrderRejectReason::MinNotionalRejected
     } else if (lowercased.contains(REJECT_REASON_MIN_NEEDLE)
         && lowercased.contains(REJECT_REASON_SIZE_NEEDLE))
         || lowercased.contains(REJECT_REASON_TOO_SMALL_NEEDLE)
     {
-        BoltV3OrderRejectReason::MinSizeRejected
+        OrderRejectReason::MinSizeRejected
     } else if lowercased.contains(REJECT_REASON_INSUFFICIENT_NEEDLE)
         || lowercased.contains(REJECT_REASON_BALANCE_NEEDLE)
     {
-        BoltV3OrderRejectReason::InsufficientBalance
+        OrderRejectReason::InsufficientBalance
     } else if lowercased.contains(REJECT_REASON_DUPLICATE_NEEDLE) {
-        BoltV3OrderRejectReason::DuplicateClientOrderId
+        OrderRejectReason::DuplicateClientOrderId
     } else {
-        BoltV3OrderRejectReason::Other
+        OrderRejectReason::Other
     }
 }
 
@@ -435,38 +438,38 @@ mod tests {
     fn classify_reject_reason_covers_every_arm_and_precedence() {
         assert_eq!(
             classify_reject_reason("maker amount precision exceeds venue precision"),
-            BoltV3OrderRejectReason::PrecisionRejected
+            OrderRejectReason::PrecisionRejected
         );
         assert_eq!(
             classify_reject_reason("minimum notional not met"),
-            BoltV3OrderRejectReason::MinNotionalRejected
+            OrderRejectReason::MinNotionalRejected
         );
         // The MinSize arm parses as `(min && size) || too_small`: pin both the
         // `min`+`size` conjunction and the `too small` disjunct independently.
         assert_eq!(
             classify_reject_reason("order size below minimum"),
-            BoltV3OrderRejectReason::MinSizeRejected
+            OrderRejectReason::MinSizeRejected
         );
         assert_eq!(
             classify_reject_reason("order too small"),
-            BoltV3OrderRejectReason::MinSizeRejected
+            OrderRejectReason::MinSizeRejected
         );
         assert_eq!(
             classify_reject_reason("insufficient balance"),
-            BoltV3OrderRejectReason::InsufficientBalance
+            OrderRejectReason::InsufficientBalance
         );
         assert_eq!(
             classify_reject_reason("duplicate client order id denied by NT"),
-            BoltV3OrderRejectReason::DuplicateClientOrderId
+            OrderRejectReason::DuplicateClientOrderId
         );
         assert_eq!(
             classify_reject_reason("unrecognized venue error"),
-            BoltV3OrderRejectReason::Other
+            OrderRejectReason::Other
         );
         // Precedence: precision wins over a message that also matches min+notional.
         assert_eq!(
             classify_reject_reason("precision exceeds minimum notional"),
-            BoltV3OrderRejectReason::PrecisionRejected
+            OrderRejectReason::PrecisionRejected
         );
     }
 
@@ -541,7 +544,8 @@ mod tests {
         let mut episodes: BTreeMap<String, RejectObserverEpisode> = BTreeMap::new();
         // Insert one past the cap, with strictly increasing first_ns so the oldest
         // (first_ns == 0) is unambiguous.
-        let over_cap = BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES + 1;
+        let cap = 3;
+        let over_cap = cap + 1;
         for index in 0..over_cap {
             episodes.insert(
                 format!("instrument-{index}/venue/other"),
@@ -556,9 +560,9 @@ mod tests {
         let oldest_key = "instrument-0/venue/other".to_string();
         assert!(episodes.contains_key(&oldest_key));
 
-        evict_oldest_episodes_over_cap(&mut episodes, BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES);
+        evict_oldest_episodes_over_cap(&mut episodes, cap);
 
-        assert_eq!(episodes.len(), BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES);
+        assert_eq!(episodes.len(), cap);
         assert!(
             !episodes.contains_key(&oldest_key),
             "the oldest episode (smallest first_ns) must be evicted first"
@@ -566,25 +570,23 @@ mod tests {
     }
 }
 
-fn reject_source_key(reject_source: BoltV3RejectSource) -> &'static str {
+fn reject_source_key(reject_source: OrderRejectSource) -> &'static str {
     match reject_source {
-        BoltV3RejectSource::SubmitAdmission => REJECT_SOURCE_SUBMIT_ADMISSION_KEY,
-        BoltV3RejectSource::Venue => REJECT_SOURCE_VENUE_KEY,
-        BoltV3RejectSource::NtExecution => REJECT_SOURCE_NT_EXECUTION_KEY,
-        BoltV3RejectSource::Internal => REJECT_SOURCE_INTERNAL_KEY,
+        OrderRejectSource::SubmitAdmission => REJECT_SOURCE_SUBMIT_ADMISSION_KEY,
+        OrderRejectSource::Venue => REJECT_SOURCE_VENUE_KEY,
+        OrderRejectSource::NtExecution => REJECT_SOURCE_NT_EXECUTION_KEY,
+        OrderRejectSource::Internal => REJECT_SOURCE_INTERNAL_KEY,
     }
 }
 
-fn reject_reason_key(reject_reason: BoltV3OrderRejectReason) -> &'static str {
+fn reject_reason_key(reject_reason: OrderRejectReason) -> &'static str {
     match reject_reason {
-        BoltV3OrderRejectReason::AdmissionRejected => REJECT_REASON_ADMISSION_REJECTED_KEY,
-        BoltV3OrderRejectReason::PrecisionRejected => REJECT_REASON_PRECISION_REJECTED_KEY,
-        BoltV3OrderRejectReason::MinSizeRejected => REJECT_REASON_MIN_SIZE_REJECTED_KEY,
-        BoltV3OrderRejectReason::MinNotionalRejected => REJECT_REASON_MIN_NOTIONAL_REJECTED_KEY,
-        BoltV3OrderRejectReason::InsufficientBalance => REJECT_REASON_INSUFFICIENT_BALANCE_KEY,
-        BoltV3OrderRejectReason::DuplicateClientOrderId => {
-            REJECT_REASON_DUPLICATE_CLIENT_ORDER_ID_KEY
-        }
-        BoltV3OrderRejectReason::Other => REJECT_REASON_OTHER_KEY,
+        OrderRejectReason::AdmissionRejected => REJECT_REASON_ADMISSION_REJECTED_KEY,
+        OrderRejectReason::PrecisionRejected => REJECT_REASON_PRECISION_REJECTED_KEY,
+        OrderRejectReason::MinSizeRejected => REJECT_REASON_MIN_SIZE_REJECTED_KEY,
+        OrderRejectReason::MinNotionalRejected => REJECT_REASON_MIN_NOTIONAL_REJECTED_KEY,
+        OrderRejectReason::InsufficientBalance => REJECT_REASON_INSUFFICIENT_BALANCE_KEY,
+        OrderRejectReason::DuplicateClientOrderId => REJECT_REASON_DUPLICATE_CLIENT_ORDER_ID_KEY,
+        OrderRejectReason::Other => REJECT_REASON_OTHER_KEY,
     }
 }

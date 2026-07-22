@@ -510,7 +510,7 @@ pub fn render_contract(contract: &ContractRegistry) -> String {
         "KnownIdentity",
         wire.identities.iter().map(|row| row.id.as_str()),
     );
-    output.push_str("pub(crate) const ALL_IDENTITIES: &[KnownIdentity] = &[\n");
+    output.push_str("#[cfg(test)]\npub(crate) const ALL_IDENTITIES: &[KnownIdentity] = &[\n");
     for identity in &wire.identities {
         output.push_str(&format!(
             "    KnownIdentity::{},\n",

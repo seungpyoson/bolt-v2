@@ -1,5 +1,6 @@
 use std::fs;
-use std::sync::Arc;
+
+use crate::support;
 
 use bolt_v2::{
     bolt_v3_basket_execution::{
@@ -16,7 +17,6 @@ use bolt_v2::{
     bolt_v3_basket_store::{
         BoltV3BasketRecoveryReason, BoltV3BasketRecoveryState, BoltV3BasketStore,
     },
-    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
     bolt_v3_kill_switch::{KillSwitchHaltTriggerKind, KillSwitchState, KillSwitchStateKind},
     bolt_v3_kill_switch_store::KillSwitchStore,
     bolt_v3_submit_admission::{
@@ -1231,7 +1231,7 @@ fn stuck_basket_trips_dedicated_kill_switch_and_blocks_new_admission() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let writer = Arc::new(NoopDecisionEvidenceWriter);
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new().recorder();
     let submit_admission = BoltV3SubmitAdmissionState::new(writer);
     let mut basket = reserved_basket();
     basket
@@ -1276,7 +1276,7 @@ fn stuck_basket_kill_switch_preserves_existing_non_armed_state() {
     kill_store
         .write_state(&existing)
         .expect("existing state should persist");
-    let writer = Arc::new(NoopDecisionEvidenceWriter);
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new().recorder();
     let submit_admission = BoltV3SubmitAdmissionState::new(writer);
     let mut basket = reserved_basket();
     basket
@@ -1313,7 +1313,7 @@ fn stuck_basket_kill_switch_latches_failed_manual_intervention_on_store_failure(
         blocked_dir.join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let writer = Arc::new(NoopDecisionEvidenceWriter);
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new().recorder();
     let submit_admission = BoltV3SubmitAdmissionState::new(writer);
     let mut basket = reserved_basket();
     basket
@@ -1491,120 +1491,5 @@ fn repair_leg(
         observed_unix_ms,
         slippage_bps: 10,
         depth_levels: 1,
-    }
-}
-
-#[derive(Debug)]
-struct NoopDecisionEvidenceWriter;
-
-impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &bolt_v2::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(
-        &self,
-        _intent: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(
-        &self,
-        _skip: &bolt_v2::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("basket execution noop writer received entry-skip evidence")
-    }
-
-    fn record_exit_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("basket execution noop writer received exit-decision evidence")
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &bolt_v2::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("basket execution noop writer received requote-throttle evidence")
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("basket execution noop writer received settlement evidence")
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("basket execution noop writer received settlement booking-error evidence")
-    }
-
-    fn drain_shutdown(&self) -> anyhow::Result<()> {
-        // Deliberate no-op: this basket execution fixture never owns durable evidence.
-        Ok(())
     }
 }

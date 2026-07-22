@@ -3,21 +3,16 @@ use crate::support;
 use bolt_v2::bolt_v3_capital_admission::{CapitalAdmissionPolicy, FeeSlippagePolicy, ProductKind};
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
-use bolt_v2::bolt_v3_decision_evidence::{
-    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
-    BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-    BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-    BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-    BoltV3OrderRejectEvidence, BoltV3OrderRejectReason, BoltV3RejectSource,
-    BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence, BoltV3SettlementEvidence,
-    BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
-    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+use bolt_v2::bolt_v3_current_evidence::{
+    AdmissionDecisionOutcome, AdmissionRejectionReason, DecisionEvidenceRecorder,
+    OrderRejectReason, OrderRejectSource, StaleLossReason,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_loss_governor::{
     LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
 };
+use bolt_v2::bolt_v3_order_execution::order_intent_details_from_compiled_order;
 use bolt_v2::bolt_v3_providers::FeeProvider;
 use bolt_v2::bolt_v3_strategy_context::StrategyBuildContext;
 use bolt_v2::bolt_v3_submit_admission::{
@@ -41,12 +36,7 @@ use nautilus_model::instruments::{BinaryOption, InstrumentAny};
 use nautilus_model::orders::{LimitOrder, MarketOrder, MarketToLimitOrder, OrderAny};
 use nautilus_model::types::{Currency, Price, Quantity};
 use rust_decimal::Decimal;
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Condvar, Mutex, mpsc},
-    thread,
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc};
 use ustr::Ustr;
 
 fn binary_option_with_max_price(instrument_id: InstrumentId) -> InstrumentAny {
@@ -146,9 +136,8 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
         )
         .expect("limit order should be valid"),
     );
-    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = order_intent_details_from_compiled_order(
         "strategy-a".to_string(),
-        BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -157,6 +146,7 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
         BoltV3SubmitAdmissionRequestInput {
             execution_client_id: "hyperliquid_perps",
             intent: &intent,
+            intent_kind: BoltV3SubmitIntentKind::Entry,
             order: &order,
             valuation: OrderValuationContext::empty(),
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
@@ -210,9 +200,8 @@ fn build_submit_admission_request_from_order_checks_fee_before_market_ceiling() 
         )
         .expect("market order should be valid"),
     );
-    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = order_intent_details_from_compiled_order(
         "strategy-a".to_string(),
-        BoltV3OrderIntentKind::Entry,
         fallback_price.to_string(),
         &order,
     );
@@ -221,6 +210,7 @@ fn build_submit_admission_request_from_order_checks_fee_before_market_ceiling() 
         BoltV3SubmitAdmissionRequestInput {
             execution_client_id: "hyperliquid_perps",
             intent: &intent,
+            intent_kind: BoltV3SubmitIntentKind::Entry,
             order: &order,
             valuation: OrderValuationContext::empty(),
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
@@ -553,9 +543,8 @@ fn unsided_quote_quantity_market_style_orders_fail_full_admission() {
     );
 
     for order in [&market, &market_to_limit] {
-        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        let intent = order_intent_details_from_compiled_order(
             "strategy-a".to_string(),
-            BoltV3OrderIntentKind::Entry,
             "0.50".to_string(),
             order,
         );
@@ -567,6 +556,7 @@ fn unsided_quote_quantity_market_style_orders_fail_full_admission() {
                 BoltV3SubmitAdmissionRequestInput {
                     execution_client_id: "hyperliquid_perps",
                     intent: &intent,
+                    intent_kind: BoltV3SubmitIntentKind::Entry,
                     order,
                     valuation: OrderValuationContext {
                         last_quote,
@@ -666,9 +656,8 @@ fn sided_quote_quantity_market_style_orders_pass_full_admission() {
     );
 
     for order in [&market, &market_to_limit] {
-        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        let intent = order_intent_details_from_compiled_order(
             "strategy-a".to_string(),
-            BoltV3OrderIntentKind::Entry,
             "0.50".to_string(),
             order,
         );
@@ -680,6 +669,7 @@ fn sided_quote_quantity_market_style_orders_pass_full_admission() {
                 BoltV3SubmitAdmissionRequestInput {
                     execution_client_id: "hyperliquid_perps",
                     intent: &intent,
+                    intent_kind: BoltV3SubmitIntentKind::Entry,
                     order,
                     valuation: OrderValuationContext {
                         last_quote,
@@ -728,9 +718,8 @@ fn non_polymarket_market_order_uses_shared_structural_ceiling_valuation() {
         )
         .expect("market order should be valid"),
     );
-    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = order_intent_details_from_compiled_order(
         "strategy-a".to_string(),
-        BoltV3OrderIntentKind::Entry,
         "0.50".to_string(),
         &order,
     );
@@ -739,6 +728,7 @@ fn non_polymarket_market_order_uses_shared_structural_ceiling_valuation() {
         BoltV3SubmitAdmissionRequestInput {
             execution_client_id: "hyperliquid_perps",
             intent: &intent,
+            intent_kind: BoltV3SubmitIntentKind::Entry,
             order: &order,
             valuation: OrderValuationContext {
                 instrument: Some(&instrument),
@@ -812,9 +802,8 @@ fn live_node_runner_does_not_require_evidence_gate_admission_before_nt_run() {
 
 #[test]
 fn ungated_submit_admission_allows_production_submit() {
-    let admission = BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = BoltV3SubmitAdmissionState::new(writer.recorder());
     let request = submit_request(Decimal::new(1, 0));
 
     let result = admission.admit(&request);
@@ -876,8 +865,9 @@ fn dropped_uncommitted_permit_rolls_back_live_submit_count_slot() {
 
 #[test]
 fn live_submit_approval_limits_bound_provider_submit_before_nt_submit() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = BoltV3SubmitAdmissionState::new_with_live_submit_limits(
-        Arc::new(support::RecordingDecisionEvidenceWriter::default()),
+        writer.recorder(),
         BTreeMap::from([(
             "hyperliquid_perps".to_string(),
             BoltV3LiveSubmitApprovalLimits {
@@ -922,14 +912,15 @@ fn live_submit_approval_limits_bound_provider_submit_before_nt_submit() {
 #[test]
 fn enabled_but_unfed_loss_governor_rejects_where_unconfigured_governor_admits() {
     let request = submit_request(Decimal::new(1, 0));
-    BoltV3SubmitAdmissionState::new(Arc::new(support::RecordingDecisionEvidenceWriter::default()))
+    let ungated_writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    BoltV3SubmitAdmissionState::new(ungated_writer.recorder())
         .admit_at(&request, 5_000)
         .expect("without a loss governor, admission is decided by the remaining gates")
         .commit_submitted();
 
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer.clone(),
+        writer.recorder(),
         LossGovernorPolicy {
             max_snapshot_age_ns: 1_000,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
@@ -949,15 +940,12 @@ fn enabled_but_unfed_loss_governor_rejects_where_unconfigured_governor_admits() 
     ));
     assert_eq!(
         writer.admission_decisions()[0].outcome,
-        BoltV3AdmissionOutcome::RejectedLossGovernorHalted
+        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::LossGovernorHalted)
     );
     let halts = writer.loss_governor_halts();
     assert_eq!(halts.len(), 1);
     assert!(!halts[0].snapshot_present);
-    assert_eq!(
-        halts[0].stale_reason,
-        BoltV3StaleLossReason::MissingSnapshot
-    );
+    assert_eq!(halts[0].stale_reason, StaleLossReason::MissingSnapshot);
 }
 
 #[test]
@@ -988,7 +976,7 @@ fn sustained_rejects_over_distinct_keys_bound_the_reject_episode_map() {
     // Without the bound this asserts `len() == cap + margin` (every key retained)
     // and fails; with the bound it asserts `len() == cap`.
     let admission = limited_admission(u32::MAX, Decimal::new(1, 0));
-    let cap = BoltV3SubmitAdmissionState::reject_episode_capacity();
+    let cap = admission.reject_episode_capacity();
     let margin = 5usize;
     let inserted = cap + margin;
 
@@ -1405,6 +1393,26 @@ fn fresh_live_node_build_keeps_submit_admission_internal() {
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-submit-admission-build");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    for relative in [
+        &loaded
+            .root
+            .persistence
+            .decision_evidence
+            .machine_relative_path,
+        &loaded
+            .root
+            .persistence
+            .decision_evidence
+            .observation_relative_path,
+    ] {
+        let parent = temp
+            .path()
+            .join(relative)
+            .parent()
+            .expect("configured evidence path must have a parent")
+            .to_path_buf();
+        std::fs::create_dir_all(parent).expect("current evidence generation path must create");
+    }
 
     let _runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
         .expect("fixture v3 LiveNode should build");
@@ -1412,12 +1420,11 @@ fn fresh_live_node_build_keeps_submit_admission_internal() {
 
 #[test]
 fn strategy_build_context_carries_shared_submit_admission_handle() {
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        Arc::new(support::RecordingDecisionEvidenceWriter::default()),
+        writer.recorder(),
         admission.clone(),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         support::fixture_execution_venue(),
@@ -1532,15 +1539,12 @@ fn valid_risk_reducing_exit_proof() -> BoltV3RiskReducingExitProof {
 }
 
 fn limited_admission(max_order_count: u32, max_notional: Decimal) -> BoltV3SubmitAdmissionState {
-    limited_admission_with_writer(
-        Arc::new(support::RecordingDecisionEvidenceWriter::default()),
-        max_order_count,
-        max_notional,
-    )
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    limited_admission_with_writer(writer.recorder(), max_order_count, max_notional)
 }
 
 fn limited_admission_with_writer(
-    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    writer: Arc<DecisionEvidenceRecorder>,
     max_order_count: u32,
     max_notional: Decimal,
 ) -> BoltV3SubmitAdmissionState {
@@ -1557,7 +1561,7 @@ fn limited_admission_with_writer(
 }
 
 fn capital_admission_configured_admission_with_writer(
-    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    writer: Arc<DecisionEvidenceRecorder>,
 ) -> BoltV3SubmitAdmissionState {
     BoltV3SubmitAdmissionState::new_with_capital_admission(
         writer,
@@ -1682,608 +1686,13 @@ fn forced_reduction_policy_and_claim_expose_proof_metadata() {
     );
 }
 
-#[derive(Debug)]
-struct FailingDecisionEvidenceWriter;
-
-impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!(
-            "synthetic admission-decision write failure"
-        ))
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("synthetic entry-skip write failure"))
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("synthetic exit-decision write failure"))
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("synthetic requote-throttle write failure"))
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Debug, Default)]
-struct BlockingFirstAdmissionDecisionWriter {
-    state: Mutex<BlockingFirstAdmissionDecisionWriterState>,
-    entered: Condvar,
-    released: Condvar,
-}
-
-#[derive(Debug, Default)]
-struct BlockingFirstAdmissionDecisionWriterState {
-    first_call_entered: bool,
-    release_first_call: bool,
-    admission_decisions: Vec<BoltV3AdmissionDecisionEvidence>,
-}
-
-impl BlockingFirstAdmissionDecisionWriter {
-    fn wait_until_first_call_entered(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("blocking writer mutex should not be poisoned");
-        while !state.first_call_entered {
-            state = self
-                .entered
-                .wait(state)
-                .expect("blocking writer condvar should not be poisoned");
-        }
-    }
-
-    fn release_first_call(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("blocking writer mutex should not be poisoned");
-        state.release_first_call = true;
-        self.released.notify_all();
-    }
-
-    fn admission_decisions(&self) -> Vec<BoltV3AdmissionDecisionEvidence> {
-        self.state
-            .lock()
-            .expect("blocking writer mutex should not be poisoned")
-            .admission_decisions
-            .clone()
-    }
-}
-
-impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .expect("blocking writer mutex should not be poisoned");
-        if !state.first_call_entered {
-            state.first_call_entered = true;
-            self.entered.notify_all();
-            while !state.release_first_call {
-                state = self
-                    .released
-                    .wait(state)
-                    .expect("blocking writer condvar should not be poisoned");
-            }
-        }
-        state.admission_decisions.push(decision.clone());
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!(
-            "blocking admission writer received entry-skip evidence"
-        ))
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!(
-            "blocking admission writer received exit-decision evidence"
-        ))
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!(
-            "blocking admission writer received requote-throttle evidence"
-        ))
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct OrderRejectFailingDecisionEvidenceWriter {
-    admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
-    order_reject_attempts: Mutex<Vec<BoltV3OrderRejectEvidence>>,
-}
-
-impl OrderRejectFailingDecisionEvidenceWriter {
-    fn new() -> Self {
-        Self {
-            admission_decisions: Mutex::new(Vec::new()),
-            order_reject_attempts: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn admission_decisions(&self) -> Vec<BoltV3AdmissionDecisionEvidence> {
-        self.admission_decisions
-            .lock()
-            .expect("order-reject failing writer mutex should not be poisoned")
-            .clone()
-    }
-
-    fn order_reject_attempts(&self) -> Vec<BoltV3OrderRejectEvidence> {
-        self.order_reject_attempts
-            .lock()
-            .expect("order-reject failing writer mutex should not be poisoned")
-            .clone()
-    }
-}
-
-impl BoltV3DecisionEvidenceWriter for OrderRejectFailingDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.admission_decisions
-            .lock()
-            .expect("order-reject failing writer mutex should not be poisoned")
-            .push(decision.clone());
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        self.order_reject_attempts
-            .lock()
-            .expect("order-reject failing writer mutex should not be poisoned")
-            .push(evidence.clone());
-        Err(anyhow::anyhow!("synthetic order-reject write failure"))
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-/// Records admission decisions but errors on `record_loss_governor_halt`, so a
-/// test can prove the trading-side admission outcome is unaffected when the
-/// loss-halt evidence sink fails.
-#[derive(Debug)]
-struct LossHaltFailingDecisionEvidenceWriter {
-    admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
-    loss_halt_attempts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,
-}
-
-impl LossHaltFailingDecisionEvidenceWriter {
-    fn new() -> Self {
-        Self {
-            admission_decisions: Mutex::new(Vec::new()),
-            loss_halt_attempts: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn admission_decisions(&self) -> Vec<BoltV3AdmissionDecisionEvidence> {
-        self.admission_decisions
-            .lock()
-            .expect("loss-halt failing writer mutex should not be poisoned")
-            .clone()
-    }
-
-    fn loss_halt_attempts(&self) -> Vec<BoltV3LossGovernorHaltEvidence> {
-        self.loss_halt_attempts
-            .lock()
-            .expect("loss-halt failing writer mutex should not be poisoned")
-            .clone()
-    }
-}
-
-impl BoltV3DecisionEvidenceWriter for LossHaltFailingDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.admission_decisions
-            .lock()
-            .expect("loss-halt failing writer mutex should not be poisoned")
-            .push(decision.clone());
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        self.loss_halt_attempts
-            .lock()
-            .expect("loss-halt failing writer mutex should not be poisoned")
-            .push(evidence.clone());
-        Err(anyhow::anyhow!(
-            "synthetic loss-governor-halt write failure"
-        ))
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-#[test]
-fn loss_halt_evidence_write_failure_does_not_change_admission_outcome() {
-    // FIX 3b: a failing loss-governor-halt sink must not change the trading-side
-    // admission outcome. Pair a recording writer (control) with a writer that
-    // errors only on record_loss_governor_halt and assert identical admission
-    // outcome + reasons.
-    let policy = LossGovernorPolicy {
-        max_snapshot_age_ns: 1_000,
-        max_per_trade_loss: Some(Decimal::new(10, 0)),
-        max_daily_loss: Some(Decimal::new(25, 0)),
-        max_rolling_loss: Some(Decimal::new(30, 0)),
-        max_drawdown: Some(Decimal::new(40, 0)),
-    };
-    let stale_snapshot = || LossSnapshot {
-        source: "nt_loss_runtime_feed".to_string(),
-        observed_at_ns: 1_000,
-        per_trade_pnl: Some(Decimal::ZERO),
-        daily_pnl: Some(Decimal::ZERO),
-        rolling_pnl: Some(Decimal::ZERO),
-        current_equity: Some(Decimal::new(1_000, 0)),
-        peak_equity: Some(Decimal::new(1_000, 0)),
-        source_observations: LossSourceObservationTimestamps::unobserved(),
-    };
-
-    let control_writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
-    let control_admission =
-        BoltV3SubmitAdmissionState::new_with_loss_governor(control_writer.clone(), policy.clone());
-    control_admission.update_loss_snapshot(stale_snapshot());
-    let control_error = control_admission
-        .admit_at(&submit_request(Decimal::new(1, 0)), 2_101)
-        .expect_err("stale loss snapshot should reject through the loss governor");
-
-    let failing_writer = Arc::new(LossHaltFailingDecisionEvidenceWriter::new());
-    let failing_admission =
-        BoltV3SubmitAdmissionState::new_with_loss_governor(failing_writer.clone(), policy);
-    failing_admission.update_loss_snapshot(stale_snapshot());
-    let failing_error = failing_admission
-        .admit_at(&submit_request(Decimal::new(1, 0)), 2_101)
-        .expect_err("a failing loss-halt sink must not change the loss-governor rejection");
-
-    // The trading-side error (outcome + reasons) is identical with and without the sink failure.
-    match (&control_error, &failing_error) {
-        (
-            BoltV3SubmitAdmissionError::LossGovernorHalted {
-                reasons: control_reasons,
-            },
-            BoltV3SubmitAdmissionError::LossGovernorHalted {
-                reasons: failing_reasons,
-            },
-        ) => assert_eq!(control_reasons, failing_reasons),
-        other => panic!("expected loss-governor halt on both paths, got {other:?}"),
-    }
-    assert_eq!(
-        failing_writer.admission_decisions()[0].outcome,
-        BoltV3AdmissionOutcome::RejectedLossGovernorHalted
-    );
-    // The sink was reached and did error (proving the swallow path is exercised).
-    assert_eq!(failing_writer.loss_halt_attempts().len(), 1);
-}
-
 #[test]
 fn stale_loss_halt_records_missing_snapshot_reason_with_no_age() {
     // FIX 3c: a None snapshot yields MissingSnapshot, a stable_halt_key prefixed
     // "missing_snapshot:", and no snapshot age.
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer.clone(),
+        writer.recorder(),
         LossGovernorPolicy {
             max_snapshot_age_ns: 1_000,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
@@ -2305,7 +1714,7 @@ fn stale_loss_halt_records_missing_snapshot_reason_with_no_age() {
     let halts = writer.loss_governor_halts();
     assert_eq!(halts.len(), 1);
     let halt = &halts[0];
-    assert_eq!(halt.stale_reason, BoltV3StaleLossReason::MissingSnapshot);
+    assert_eq!(halt.stale_reason, StaleLossReason::MissingSnapshot);
     assert!(
         halt.stable_halt_key.starts_with("missing_snapshot:"),
         "stable_halt_key should be prefixed with the stale reason: {}",
@@ -2320,9 +1729,9 @@ fn stale_loss_halt_records_missing_snapshot_reason_with_no_age() {
 fn stale_loss_halt_records_future_dated_reason_with_no_age() {
     // FIX 3c: a future-dated snapshot (observed_at_ns > now_ns) yields FutureDated
     // and snapshot_age_ns == None (the observed_at_ns > now_ns branch).
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer.clone(),
+        writer.recorder(),
         LossGovernorPolicy {
             max_snapshot_age_ns: 1_000,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
@@ -2354,7 +1763,7 @@ fn stale_loss_halt_records_future_dated_reason_with_no_age() {
     let halts = writer.loss_governor_halts();
     assert_eq!(halts.len(), 1);
     let halt = &halts[0];
-    assert_eq!(halt.stale_reason, BoltV3StaleLossReason::FutureDated);
+    assert_eq!(halt.stale_reason, StaleLossReason::FutureDated);
     assert!(
         halt.stable_halt_key.starts_with("future_dated:"),
         "stable_halt_key should be prefixed with the stale reason: {}",
@@ -2367,8 +1776,8 @@ fn stale_loss_halt_records_future_dated_reason_with_no_age() {
 
 #[test]
 fn admit_records_admission_decision_evidence_on_admit_outcome() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(1, 0));
 
     let request = submit_request(Decimal::new(1, 0));
     admission
@@ -2381,7 +1790,7 @@ fn admit_records_admission_decision_evidence_on_admit_outcome() {
         1,
         "exactly one admission decision recorded"
     );
-    assert_eq!(decisions[0].outcome, BoltV3AdmissionOutcome::Admitted);
+    assert_eq!(decisions[0].outcome, AdmissionDecisionOutcome::Admitted);
     assert_eq!(decisions[0].strategy_id, request.strategy_id);
     assert_eq!(
         decisions[0].execution_client_id,
@@ -2395,8 +1804,8 @@ fn admit_records_admission_decision_evidence_on_admit_outcome() {
 
 #[test]
 fn single_order_reject_records_order_reject_evidence_on_reject_outcome() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 0, Decimal::new(1, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 0, Decimal::new(1, 0));
 
     let request = submit_request(Decimal::new(1, 0));
     let error = admission
@@ -2419,14 +1828,13 @@ fn single_order_reject_records_order_reject_evidence_on_reject_outcome() {
     let rejects = writer.order_rejects();
     assert_eq!(rejects.len(), 1);
     let reject = &rejects[0];
-    assert_eq!(reject.reject_source, BoltV3RejectSource::SubmitAdmission);
-    assert_eq!(
-        reject.reject_reason,
-        BoltV3OrderRejectReason::AdmissionRejected
-    );
+    assert_eq!(reject.reject_source, OrderRejectSource::SubmitAdmission);
+    assert_eq!(reject.reject_reason, OrderRejectReason::AdmissionRejected);
     assert_eq!(
         reject.admission_outcome,
-        Some(BoltV3AdmissionOutcome::RejectedCountCapExhausted)
+        Some(AdmissionDecisionOutcome::Rejected(
+            AdmissionRejectionReason::CountCapExhausted
+        ))
     );
     assert_eq!(reject.raw_reason_text, None);
     assert_eq!(reject.instrument_id, request.instrument_id);
@@ -2455,9 +1863,9 @@ fn single_order_reject_records_order_reject_evidence_on_reject_outcome() {
 
 #[test]
 fn loss_governor_halt_is_mece_with_order_reject_evidence() {
-    let loss_writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let loss_writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let loss_admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
-        loss_writer.clone(),
+        loss_writer.recorder(),
         LossGovernorPolicy {
             max_snapshot_age_ns: 1_000,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
@@ -2489,16 +1897,16 @@ fn loss_governor_halt_is_mece_with_order_reject_evidence() {
     assert_eq!(loss_writer.admission_decisions().len(), 1);
     assert_eq!(
         loss_writer.admission_decisions()[0].outcome,
-        BoltV3AdmissionOutcome::RejectedLossGovernorHalted
+        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::LossGovernorHalted)
     );
     assert!(
         loss_writer.order_rejects().is_empty(),
         "loss-governor halts are recorded by loss-halt evidence, not order-reject evidence"
     );
 
-    let count_cap_writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let count_cap_writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let count_cap_admission =
-        limited_admission_with_writer(count_cap_writer.clone(), 0, Decimal::new(1, 0));
+        limited_admission_with_writer(count_cap_writer.recorder(), 0, Decimal::new(1, 0));
 
     let count_cap_error = count_cap_admission
         .admit_at(&submit_request(Decimal::new(1, 0)), 1_000)
@@ -2513,14 +1921,16 @@ fn loss_governor_halt_is_mece_with_order_reject_evidence() {
     assert_eq!(count_cap_rejects.len(), 1);
     assert_eq!(
         count_cap_rejects[0].admission_outcome,
-        Some(BoltV3AdmissionOutcome::RejectedCountCapExhausted)
+        Some(AdmissionDecisionOutcome::Rejected(
+            AdmissionRejectionReason::CountCapExhausted
+        ))
     );
 }
 
 #[test]
 fn single_order_reject_evidence_samples_power_of_two_attempts_and_links_churn() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 0, Decimal::new(1, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 0, Decimal::new(1, 0));
 
     for attempt in 1_u32..=8 {
         let mut request = submit_request(Decimal::new(1, 0));
@@ -2554,8 +1964,8 @@ fn single_order_reject_evidence_samples_power_of_two_attempts_and_links_churn() 
 
 #[test]
 fn single_order_reject_episode_resets_after_admitted_submit() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(1, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 2, Decimal::new(1, 0));
 
     for attempt in 1_u32..=3 {
         let mut request = submit_request(Decimal::new(2, 0));
@@ -2599,41 +2009,6 @@ fn single_order_reject_episode_resets_after_admitted_submit() {
 }
 
 #[test]
-fn order_reject_evidence_write_failure_preserves_admission_behavior() {
-    let request = submit_request(Decimal::new(1, 0));
-    let normal_writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let normal_admission =
-        limited_admission_with_writer(normal_writer.clone(), 0, Decimal::new(1, 0));
-    let failing_writer = Arc::new(OrderRejectFailingDecisionEvidenceWriter::new());
-    let failing_admission =
-        limited_admission_with_writer(failing_writer.clone(), 0, Decimal::new(1, 0));
-
-    let normal_error = normal_admission
-        .admit_at(&request, 1_000)
-        .expect_err("baseline zero live-order cap should reject");
-    let failing_error = failing_admission
-        .admit_at(&request, 1_000)
-        .expect_err("order-reject write failure must not mask admission rejection");
-
-    assert!(matches!(
-        normal_error,
-        BoltV3SubmitAdmissionError::CountCapExhausted
-    ));
-    assert!(matches!(
-        failing_error,
-        BoltV3SubmitAdmissionError::CountCapExhausted
-    ));
-    assert_eq!(
-        normal_writer.admission_decisions(),
-        failing_writer.admission_decisions()
-    );
-    assert_eq!(
-        normal_writer.order_rejects(),
-        failing_writer.order_reject_attempts()
-    );
-}
-
-#[test]
 fn entry_replace_and_exit_submit_intents_are_classified_before_admission() {
     let policy = BoltV3SubmitLifecyclePolicy::new(false);
 
@@ -2669,8 +2044,8 @@ fn submit_lifecycle_policy_source_removes_dead_risk_reducing_exit_flag() {
 
 #[test]
 fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_entry_slot() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(5, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 2, Decimal::new(5, 0));
 
     admission
         .admit(&submit_request_with_kind(
@@ -2688,7 +2063,7 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
         ))
         .expect("verified risk-reducing exit should admit within provider limits")
         .commit_submitted();
-    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+    let outcomes: Vec<AdmissionDecisionOutcome> = writer
         .admission_decisions()
         .into_iter()
         .map(|decision| decision.outcome)
@@ -2696,8 +2071,8 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
     assert_eq!(
         outcomes,
         vec![
-            BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::Admitted,
+            AdmissionDecisionOutcome::Admitted,
+            AdmissionDecisionOutcome::Admitted,
         ]
     );
     assert_eq!(admission.admitted_order_count(), 2);
@@ -2705,8 +2080,8 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
 
 #[test]
 fn unproven_risk_reducing_exit_fails_closed_before_notional_bypass() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(5, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 2, Decimal::new(5, 0));
 
     admission
         .admit(&submit_request_with_kind(
@@ -2727,7 +2102,7 @@ fn unproven_risk_reducing_exit_fails_closed_before_notional_bypass() {
         exit,
         BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
     ));
-    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+    let outcomes: Vec<AdmissionDecisionOutcome> = writer
         .admission_decisions()
         .into_iter()
         .map(|d| d.outcome)
@@ -2735,8 +2110,10 @@ fn unproven_risk_reducing_exit_fails_closed_before_notional_bypass() {
     assert_eq!(
         outcomes,
         vec![
-            BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
+            AdmissionDecisionOutcome::Admitted,
+            AdmissionDecisionOutcome::Rejected(
+                AdmissionRejectionReason::InvalidRiskReducingExitProof
+            ),
         ]
     );
     assert_eq!(admission.admitted_order_count(), 1);
@@ -2744,8 +2121,8 @@ fn unproven_risk_reducing_exit_fails_closed_before_notional_bypass() {
 
 #[test]
 fn malformed_risk_reducing_exit_proof_fails_closed() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(5, 0));
 
     let mut proof = valid_risk_reducing_exit_proof();
     proof.exit_order_side = OrderSide::Buy;
@@ -2761,22 +2138,24 @@ fn malformed_risk_reducing_exit_proof_fails_closed() {
         error,
         BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
     ));
-    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+    let outcomes: Vec<AdmissionDecisionOutcome> = writer
         .admission_decisions()
         .into_iter()
         .map(|d| d.outcome)
         .collect();
     assert_eq!(
         outcomes,
-        vec![BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof]
+        vec![AdmissionDecisionOutcome::Rejected(
+            AdmissionRejectionReason::InvalidRiskReducingExitProof
+        )]
     );
     assert_eq!(admission.admitted_order_count(), 0);
 }
 
 #[test]
 fn risk_reducing_exit_proof_must_match_actual_order_side() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(5, 0));
 
     let mut request = submit_request_with_kind_and_exit_proof(
         Decimal::new(264, 2),
@@ -2798,8 +2177,8 @@ fn risk_reducing_exit_proof_must_match_actual_order_side() {
 
 #[test]
 fn risk_reducing_exit_proof_must_match_actual_order_quantity() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(5, 0));
 
     let mut request = submit_request_with_kind_and_exit_proof(
         Decimal::new(264, 2),
@@ -2821,8 +2200,8 @@ fn risk_reducing_exit_proof_must_match_actual_order_quantity() {
 
 #[test]
 fn risk_reducing_exit_proof_rejects_over_position_quantity() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(5, 0));
 
     let mut proof = valid_risk_reducing_exit_proof();
     proof.position_quantity = Decimal::new(1, 0);
@@ -2843,8 +2222,8 @@ fn risk_reducing_exit_proof_rejects_over_position_quantity() {
 
 #[test]
 fn second_entry_exhausts_entry_slot_even_when_exit_slot_is_unused() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(1, 0));
 
     admission
         .admit(&submit_request_with_kind(
@@ -2865,7 +2244,7 @@ fn second_entry_exhausts_entry_slot_even_when_exit_slot_is_unused() {
         second_entry,
         BoltV3SubmitAdmissionError::CountCapExhausted
     ));
-    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+    let outcomes: Vec<AdmissionDecisionOutcome> = writer
         .admission_decisions()
         .into_iter()
         .map(|d| d.outcome)
@@ -2873,8 +2252,8 @@ fn second_entry_exhausts_entry_slot_even_when_exit_slot_is_unused() {
     assert_eq!(
         outcomes,
         vec![
-            BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+            AdmissionDecisionOutcome::Admitted,
+            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CountCapExhausted),
         ]
     );
     assert_eq!(admission.admitted_order_count(), 1);
@@ -2882,8 +2261,8 @@ fn second_entry_exhausts_entry_slot_even_when_exit_slot_is_unused() {
 
 #[test]
 fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(5, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 2, Decimal::new(5, 0));
 
     admission
         .admit(&submit_request_with_kind(
@@ -2913,7 +2292,7 @@ fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
         second_exit,
         BoltV3SubmitAdmissionError::CountCapExhausted
     ));
-    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+    let outcomes: Vec<AdmissionDecisionOutcome> = writer
         .admission_decisions()
         .into_iter()
         .map(|d| d.outcome)
@@ -2921,9 +2300,9 @@ fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
     assert_eq!(
         outcomes,
         vec![
-            BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+            AdmissionDecisionOutcome::Admitted,
+            AdmissionDecisionOutcome::Admitted,
+            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CountCapExhausted),
         ]
     );
     assert_eq!(admission.admitted_order_count(), 2);
@@ -2931,8 +2310,8 @@ fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
 
 #[test]
 fn replace_submit_uses_replace_slot_after_entry_and_exit_slots_are_consumed() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 3, Decimal::new(5, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 3, Decimal::new(5, 0));
 
     admission
         .admit(&submit_request_with_kind(
@@ -2963,8 +2342,8 @@ fn replace_submit_uses_replace_slot_after_entry_and_exit_slots_are_consumed() {
 
 #[test]
 fn configured_capital_admission_rejects_replace_submit_before_admission() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = capital_admission_configured_admission_with_writer(writer.clone());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = capital_admission_configured_admission_with_writer(writer.recorder());
 
     let error = admission
         .admit(&submit_request_with_kind(
@@ -2984,7 +2363,7 @@ fn configured_capital_admission_rejects_replace_submit_before_admission() {
     assert_eq!(decisions.len(), 1);
     assert_eq!(
         decisions[0].outcome,
-        BoltV3AdmissionOutcome::RejectedCapitalAdmission
+        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CapitalAdmission)
     );
     assert_eq!(
         decisions[0].intent_kind,
@@ -2994,8 +2373,8 @@ fn configured_capital_admission_rejects_replace_submit_before_admission() {
 
 #[test]
 fn replace_submit_rejects_when_lifecycle_policy_disables_replace() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(1, 0));
 
     let replace = admission
         .admit(&submit_request_with_kind_and_policy(
@@ -3015,7 +2394,7 @@ fn replace_submit_rejects_when_lifecycle_policy_disables_replace() {
     assert_eq!(decisions.len(), 1);
     assert_eq!(
         decisions[0].outcome,
-        BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed
+        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::SubmitLifecycleDisallowed)
     );
     assert_eq!(
         decisions[0].intent_kind,
@@ -3043,8 +2422,8 @@ fn armed_kill_switch_preserves_existing_entry_admission_behavior() {
 #[test]
 fn latched_kill_switch_states_block_entry_and_replace_before_nt_submit_without_consuming_count() {
     for state in latched_kill_switch_states() {
-        let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-        let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
+        let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+        let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(1, 0));
         admission.replace_kill_switch_state(state);
 
         for intent_kind in [
@@ -3063,12 +2442,8 @@ fn latched_kill_switch_states_block_entry_and_replace_before_nt_submit_without_c
         assert_eq!(admission.admitted_order_count(), 0);
         let decisions = writer.admission_decisions();
         assert_eq!(decisions.len(), 2);
-        assert!(
-            decisions
-                .iter()
-                .all(|decision| decision.outcome
-                    == BoltV3AdmissionOutcome::RejectedKillSwitchLatched)
-        );
+        assert!(decisions.iter().all(|decision| decision.outcome
+            == AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::KillSwitchLatched)));
     }
 }
 
@@ -3094,8 +2469,8 @@ fn latched_kill_switch_blocks_replace_submit_even_when_lifecycle_policy_allows_r
 
 #[test]
 fn latched_kill_switch_blocks_risk_reducing_exit_before_normal_admission() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(5, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 2, Decimal::new(5, 0));
     admission
         .admit(&submit_request_with_kind(
             Decimal::new(1, 1),
@@ -3117,7 +2492,7 @@ fn latched_kill_switch_blocks_risk_reducing_exit_before_normal_admission() {
         exit,
         BoltV3SubmitAdmissionError::KillSwitchLatched { .. }
     ));
-    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+    let outcomes: Vec<AdmissionDecisionOutcome> = writer
         .admission_decisions()
         .into_iter()
         .map(|decision| decision.outcome)
@@ -3125,8 +2500,8 @@ fn latched_kill_switch_blocks_risk_reducing_exit_before_normal_admission() {
     assert_eq!(
         outcomes,
         vec![
-            BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::RejectedKillSwitchLatched,
+            AdmissionDecisionOutcome::Admitted,
+            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::KillSwitchLatched),
         ]
     );
     assert_eq!(admission.admitted_order_count(), 1);
@@ -3134,8 +2509,8 @@ fn latched_kill_switch_blocks_risk_reducing_exit_before_normal_admission() {
 
 #[test]
 fn venue_truth_latch_blocks_all_normal_submit_classes() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 10, Decimal::new(10, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 10, Decimal::new(10, 0));
     admission.replace_kill_switch_state(venue_truth_halted_kill_switch_state());
 
     for request in [
@@ -3161,7 +2536,8 @@ fn venue_truth_latch_blocks_all_normal_submit_classes() {
         writer
             .admission_decisions()
             .iter()
-            .all(|decision| decision.outcome == BoltV3AdmissionOutcome::RejectedKillSwitchLatched)
+            .all(|decision| decision.outcome
+                == AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::KillSwitchLatched))
     );
 }
 
@@ -3208,8 +2584,8 @@ fn forced_reduction_is_only_admissible_while_kill_switch_is_latched() {
 
 #[test]
 fn valid_forced_reduction_while_latched_bypasses_normal_count_and_notional_caps() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(1, 0));
     admission
         .admit(&submit_request_with_kind(
             Decimal::new(1, 1),
@@ -3235,15 +2611,15 @@ fn valid_forced_reduction_while_latched_bypasses_normal_count_and_notional_caps(
     );
     assert_eq!(
         decisions.last().map(|decision| decision.outcome.clone()),
-        Some(BoltV3AdmissionOutcome::Admitted)
+        Some(AdmissionDecisionOutcome::Admitted)
     );
     assert_eq!(admission.admitted_order_count(), 2);
 }
 
 #[test]
 fn valid_forced_reduction_while_flattening_uses_matching_halt_policy_proof() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(1, 0));
     admission
         .admit(&submit_request_with_kind(
             Decimal::new(1, 1),
@@ -3271,7 +2647,7 @@ fn valid_forced_reduction_while_flattening_uses_matching_halt_policy_proof() {
     );
     assert_eq!(
         decisions.last().map(|decision| decision.outcome.clone()),
-        Some(BoltV3AdmissionOutcome::Admitted)
+        Some(AdmissionDecisionOutcome::Admitted)
     );
     assert_eq!(admission.admitted_order_count(), 2);
 }
@@ -3362,8 +2738,8 @@ fn plain_cancel_lifecycle_intent_is_not_a_submit_candidate() {
 
 #[test]
 fn admit_records_admission_decision_evidence_for_each_rejection_path() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(1, 0));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 2, Decimal::new(1, 0));
 
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
@@ -3383,7 +2759,7 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
         .admit(&submit_request(Decimal::new(1, 0)))
         .expect_err("second submit must exhaust count cap");
 
-    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+    let outcomes: Vec<AdmissionDecisionOutcome> = writer
         .admission_decisions()
         .into_iter()
         .map(|d| d.outcome)
@@ -3391,109 +2767,12 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
     assert_eq!(
         outcomes,
         vec![
-            BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
-            BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
-            BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+            AdmissionDecisionOutcome::Admitted,
+            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::NonPositiveNotional),
+            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::NotionalCapExceeded),
+            AdmissionDecisionOutcome::Admitted,
+            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CountCapExhausted),
         ],
         "every admit return path must record evidence with the correct outcome"
     );
-}
-
-#[test]
-fn admit_surfaces_evidence_write_failure_as_typed_error_and_does_not_consume_count() {
-    let admission = limited_admission_with_writer(
-        Arc::new(FailingDecisionEvidenceWriter),
-        1,
-        Decimal::new(1, 0),
-    );
-
-    let error = admission
-        .admit(&submit_request(Decimal::new(1, 0)))
-        .expect_err("evidence-write failure must surface as a typed error");
-
-    match error {
-        BoltV3SubmitAdmissionError::EvidenceWriteFailed { reason } => {
-            assert!(
-                reason.contains("synthetic admission-decision write failure"),
-                "wrapped reason must propagate the underlying writer error; got `{reason}`"
-            );
-        }
-        other => panic!("expected EvidenceWriteFailed, got {other:?}"),
-    }
-    assert_eq!(
-        admission.admitted_order_count(),
-        0,
-        "evidence-write failure must not consume an admission slot — the decision is not finalized until audit is durable"
-    );
-}
-
-#[test]
-fn admit_serializes_while_admission_evidence_is_in_flight() {
-    let writer = Arc::new(BlockingFirstAdmissionDecisionWriter::default());
-    let admission = Arc::new(limited_admission_with_writer(
-        writer.clone(),
-        1,
-        Decimal::new(1, 0),
-    ));
-
-    let first_admission = admission.clone();
-    let first_handle =
-        thread::spawn(move || first_admission.admit(&submit_request(Decimal::new(1, 0))));
-    writer.wait_until_first_call_entered();
-
-    let (second_started_tx, second_started_rx) = mpsc::channel();
-    let (second_result_tx, second_result_rx) = mpsc::channel();
-    let second_admission = admission.clone();
-    let second_handle = thread::spawn(move || {
-        second_started_tx
-            .send(())
-            .expect("second admission start signal should send");
-        let result = second_admission.admit(&submit_request(Decimal::new(1, 0)));
-        second_result_tx
-            .send(result)
-            .expect("second admission result should send");
-    });
-
-    second_started_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("second admission thread should start before first evidence write is released");
-    assert!(matches!(
-        second_result_rx.recv_timeout(Duration::from_millis(100)),
-        Err(mpsc::RecvTimeoutError::Timeout)
-    ));
-
-    writer.release_first_call();
-    first_handle
-        .join()
-        .expect("first admission thread should not panic")
-        .expect("first admission should pass")
-        .commit_submitted();
-    let second = second_result_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("second admission should complete after first evidence write is released");
-    let second_error = second.expect_err("second admission must observe the consumed count slot");
-    second_handle
-        .join()
-        .expect("second admission thread should not panic");
-
-    assert!(matches!(
-        second_error,
-        BoltV3SubmitAdmissionError::CountCapExhausted
-    ));
-    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
-        .admission_decisions()
-        .into_iter()
-        .map(|d| d.outcome)
-        .collect();
-    assert_eq!(
-        outcomes,
-        vec![
-            BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
-        ],
-        "admission must serialize evaluate -> durable decision evidence -> counter mutation"
-    );
-    assert_eq!(admission.admitted_order_count(), 1);
 }

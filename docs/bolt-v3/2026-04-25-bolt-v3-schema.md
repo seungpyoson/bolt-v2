@@ -196,7 +196,11 @@ runtime_capture_start_poll_interval_ms = 50
 data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
-order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+machine_relative_path = "bolt-v3/decision-evidence/current/machine.jsonl"
+observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl"
+retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
+reject_episode_max_count = 4096
+recovery_evidence_max_bytes = 1048576
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
@@ -644,26 +648,20 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 
 ### `[persistence.decision_evidence]`
 
-#### `order_intents_relative_path`
+#### Current streams and cutover fence
 
-- type: relative path string
-- required: yes
-- local decision-evidence JSONL path under `catalog_directory`
-- must remain relative so a root catalog move changes only one config location
+- `machine_relative_path`: required relative JSONL path containing recovery, join, action, and reconciliation evidence.
+- `observation_relative_path`: required relative JSONL path containing observations that startup recovery never reads.
+- `retired_relative_paths`: required list of pre-cutover paths whose presence makes startup fail closed.
+- `reject_episode_max_count`: positive bound for retained semantic-key rejection diagnostics.
+- `recovery_evidence_max_bytes`: positive mandatory byte cap for validating and decoding the complete machine stream at startup.
 
-Decision-evidence JSONL records use `schema_version = 15` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `capital_admission_rebuild`, `submit_reservation_metadata`, `submit_reservation_fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, `requote_throttle`, `settlement`, `settlement_booking_error`, `venue_truth_capture_failure`, and `venue_truth_divergence` envelopes.
-The additive optional strategy-input fields `realized_volatility_gate_result` and `realized_volatility_receive_watermark_ms`, plus the entry-skip fields `realized_vol_gate_result`, `realized_vol_receive_watermark_ms`, and `realized_vol_snapshot`, remain within schema 15. Explicit JSON `null` is treated like omission: receive watermarks and the entry-skip snapshot deserialize as `None`, while both gate-result fields follow the same legacy fallback and infer `Accepted` only when complete, valid legacy realized-volatility provenance supports that inference; otherwise the gate result remains `None`. Older serde readers accept and ignore these unknown keys. No evidence migration or schema-version bump is required for this additive extension.
-Legacy inferred `Accepted` reflects the pre-fix event-domain gate and must not be pooled or interpreted as equivalent to explicit post-fix receive-domain gate results.
-The additive optional exit-replay inputs also remain within schema 15. `exit_decision` carries `rv_snapshot_receive_watermark_ms: Option<u64>`, `rv_max_source_age_ms: Option<u64>`, and `rv_snapshot_has_ready_realized_vol: Option<bool>`; `exit_evaluation` carries `rv_snapshot_receive_watermark_ms: Option<i64>` and `rv_max_source_age_ms: Option<u64>`, matching each record family's existing timestamp convention, and retains its existing `rv_ready` usable-readiness projection. A record is legacy-unreplayable only when `rv_max_source_age_ms` is omitted, `null`, or nonpositive, or, for `exit_decision`, when the independent `rv_snapshot_has_ready_realized_vol` marker is omitted or `null`. Once those markers are present, an omitted or `null` snapshot/as-of input, evaluation receive input, or receive-watermark input is a legitimate classifier input rather than a legacy marker and reconstructs `MissingSnapshot`, `MissingEvaluationEventTime`, or `RejectedNotReady`, respectively, in the normative classifier precedence. New `exit_evaluation` records use checked conversion for all five outbound absolute timestamps (`trigger_ts_event_ms`, `trigger_ts_init_ms`, `exit_eval_now_ms`, `rv_as_of_ms`, and `rv_snapshot_receive_watermark_ms`); a conversion failure logs one field-specific error, skips the entire evidence record without a partial write or substituted value, and does not abort or alter the exit callback. Evaluation `trigger_ts_init_ms` and `rv_snapshot_receive_watermark_ms` are non-negative receive-domain millisecond integers, with negative values rejected during decoding and encoding. The historical `rv_as_of_minus_now_ms` field name and wire semantics are preserved: it remains the checked signed difference between the RV snapshot as-of time and the trigger venue-event time. Replay never consults the stored gate result or gate-filtered realized-volatility value. These fields are additive and optional, so pre-extension records remain readable and no schema-version bump or migration is required.
-Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, `fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, `requote_throttle`, `settlement`, `booking_error`, `capture_failure`, or `divergence`.
-The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `capital_admission_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, `submit_reservation_fill` for fill metadata, `entry_skip` for entry skip rationale, `exit_decision` for exit rationale, `loss_governor_halt` for loss-governor halt transitions, `requote_throttle` for maker requote budget throttle transitions, `settlement` for successful hold-to-resolution settlement bookings, `settlement_booking_error` for accepted fail-closed settlement booking errors, `venue_truth_capture_failure` for degraded venue REST capture authority evidence, and `venue_truth_divergence` for durable venue-truth halt evidence.
-`order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
-`order_intent.clamp_outcome` is `null` for orders that do not enter the venue-position clamp. Clamp-eligible risk-reducing exits and kill-switch forced reductions record one of: `within_bounds` when the order quantity is already no larger than venue truth, `clamped` with `original_quantity` when the order is resized before submit, `rejected` when the clamp refuses the submit, or `not_evaluated` with `no_venue_truth` / `foreign_instrument` when venue truth cannot authoritatively size that instrument.
-`admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id` and the `execution_client_id` whose submit-admission limits were evaluated.
-`strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
-`exit_decision` and `exit_evaluation` payloads carry optional observed exit inputs when available: `spot_price`, `spot_venue_name`, `fast_venue_available`, `reference_current_price`, `reference_current_price_available`, `interval_open`, `fair_probability_up`, `fair_probability_down`, `uncertainty_band_probability`, `up_fee_bps`, and `down_fee_bps`. `exit_decision` also carries optional `submission_order_side`, `submission_price`, and `submission_quantity`. Numeric observed-input fields are serialized as decimal strings. Pre-extension schema-14 records may omit these keys; readers treat omitted optional fields as absent and omitted availability flags as `false`.
-`capital_admission_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-14 reservation records.
-Schema 11 added reference-current-price provenance fields in strategy-input snapshots; schema 13 added durable state-change rationale for entry skips, exit decisions, loss-governor halts, and maker requote throttles; schema 14 renamed the rebuild audit kind to `capital_admission_rebuild`; schema 15 added position-interval exit block reasons.
+All configured paths are distinct, relative to `catalog_directory`, and may not traverse parent directories.
+The trading runtime has one current-format path: exact `(kind, schema_version)` plus exact `gate_id`
+selects one registered codec from `config/decision-evidence-contract.toml`. Old, unknown, mixed,
+malformed, blank, or torn machine records fail closed. There is no schema ordering, compatibility
+decoder, fallback, migration, or runtime path for pre-cutover evidence. The hard-cutover runbook is
+`docs/runbooks/current-decision-evidence-hard-cutover.md`.
 
 `order_intent.order_fields` fields:
 
@@ -1790,7 +1788,11 @@ runtime_capture_start_poll_interval_ms = 50
 data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
-order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+machine_relative_path = "bolt-v3/decision-evidence/current/machine.jsonl"
+observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl"
+retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
+reject_episode_max_count = 4096
+recovery_evidence_max_bytes = 1048576
 
 [persistence.streaming]
 catalog_fs_protocol = "file"

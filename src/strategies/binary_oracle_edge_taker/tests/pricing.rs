@@ -140,7 +140,7 @@ fn rv_clock_domain_amendment_set_snapshot(
                 Some(LocalReceiveMs::new(snapshot_receive_ms)),
                 Some(strategy.config.realized_volatility_max_source_age_ms),
             ),
-            BoltV3RvGateResult::RejectedNotReady,
+            RvGateResult::RejectedNotReady,
             "the negative fixture must be a present RejectedNotReady snapshot"
         );
     }
@@ -263,7 +263,7 @@ fn rv_clock_domain_amendment_resized_fee_regate_uses_entry_receive_stamp_before_
         calibration_evaluation
             .realized_volatility_receipt
             .gate_result,
-        BoltV3RvGateResult::Accepted,
+        RvGateResult::Accepted,
         "fresh receive time must admit the RV snapshot during calibration"
     );
     assert_eq!(
@@ -312,7 +312,7 @@ fn rv_clock_domain_amendment_resized_fee_regate_uses_entry_receive_stamp_before_
 
     assert_eq!(
         evaluation.realized_volatility_receipt.gate_result,
-        BoltV3RvGateResult::Accepted,
+        RvGateResult::Accepted,
         "fresh receive time must keep the RV snapshot admitted through resized pricing"
     );
     assert!(
@@ -394,7 +394,7 @@ fn rv_clock_domain_amendment_submit_evidence_uses_entry_receive_stamp() {
 
 #[test]
 fn rv_clock_domain_amendment_durable_skip_route_uses_entry_receive_context() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -417,10 +417,11 @@ fn rv_clock_domain_amendment_durable_skip_route_uses_entry_receive_context() {
 
     assert_eq!(result.expect("blocked entry must persist its skip"), None);
     let skips = evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            CurrentFact::EntrySkipObservation(skip) => Some(skip),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -435,7 +436,7 @@ fn rv_clock_domain_amendment_durable_skip_route_uses_entry_receive_context() {
 
 #[test]
 fn rv_clock_domain_amendment_actual_submit_route_uses_entry_receive_context() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -460,17 +461,25 @@ fn rv_clock_domain_amendment_actual_submit_route_uses_entry_receive_context() {
     let client_order_id = submit_result
         .expect("entry route must preserve the trigger receive context")
         .expect("fresh evaluation receive time must admit a shadow submit");
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(events.iter().any(|event| matches!(
         event,
-        RecordedDecisionEvidenceEvent::StrategyInput(snapshot)
-            if snapshot.client_order_id == client_order_id.to_string()
-                && snapshot.realized_volatility == "1.5"
+        CurrentFact::SubmitLinkedStrategyInputSnapshot(snapshot)
+            if snapshot.submission.client_order_id == client_order_id.to_string()
+                && matches!(
+                    &snapshot.details.realized_volatility,
+                    StrategyInputRvState::Present {
+                        selected_annualized_decimal: Some(value),
+                        ..
+                    } if value == "1.5"
+                )
     )));
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_)))
+            .any(|event| matches!(event, CurrentFact::EntryOrderIntent(_)))
     );
     assert!(logs.iter().any(|(_, message)| {
         message.contains("binary_oracle_edge_taker entry evaluation:")
@@ -481,7 +490,7 @@ fn rv_clock_domain_amendment_actual_submit_route_uses_entry_receive_context() {
 
 #[test]
 fn rv_clock_domain_amendment_book_route_uses_init_stamp_for_entry_gate() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -513,22 +522,32 @@ fn rv_clock_domain_amendment_book_route_uses_init_stamp_for_entry_gate() {
         .expect("unequal-stamped book deltas must stay inside the actor loop");
 
     let snapshots = evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some(snapshot),
+            CurrentFact::SubmitLinkedStrategyInputSnapshot(snapshot) => Some(snapshot),
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(snapshots.len(), 1);
     assert_eq!(
-        snapshots[0].realized_volatility_gate_result,
-        Some(BoltV3RvGateResult::Accepted),
+        match &snapshots[0].details.realized_volatility {
+            StrategyInputRvState::Present { gate_result, .. } => *gate_result,
+            StrategyInputRvState::Absent { .. } => panic!("book route must capture present RV"),
+        },
+        RvGateResult::Accepted,
         "entry must use OrderBookDeltas.ts_init; the venue event stamp is deliberately stale"
     );
     assert_eq!(
-        snapshots[0].realized_volatility_receive_watermark_ms,
-        Some(LocalReceiveMs::new(book_receive_ms))
+        match &snapshots[0].details.realized_volatility {
+            StrategyInputRvState::Present {
+                receive_watermark_ms,
+                ..
+            } => *receive_watermark_ms,
+            StrategyInputRvState::Absent { .. } => panic!("book route must capture present RV"),
+        },
+        Some(book_receive_ms)
     );
 }
 

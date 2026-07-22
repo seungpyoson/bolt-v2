@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crate::bolt_v3_decision_evidence::{
-    BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
-    BoltV3DecisionEvidenceWriter,
+use crate::bolt_v3_current_evidence::{
+    BasketAdmissionDetails, BasketAdmissionRejectedFact, BasketAdmissionRejectionReason,
+    DecisionEvidenceRecorder, NonBlockingRecordOutcome,
 };
 use crate::bolt_v3_outcome_group_scanner::OutcomeGroupScanEvidence;
 use crate::bolt_v3_outcome_group_sources::outcome_group_observation_is_fresh;
@@ -113,7 +113,7 @@ pub enum BoltV3BasketAdmissionReleaseReason {
 pub struct BoltV3BasketAdmissionState {
     limits: BoltV3BasketAdmissionLimits,
     inner: Arc<Mutex<BoltV3BasketAdmissionInner>>,
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<DecisionEvidenceRecorder>,
 }
 
 #[derive(Debug)]
@@ -162,7 +162,7 @@ impl Drop for BoltV3BasketAdmissionPermit {
 
 impl BoltV3BasketAdmissionState {
     pub fn new(
-        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        decision_evidence: Arc<DecisionEvidenceRecorder>,
         limits: BoltV3BasketAdmissionLimits,
     ) -> Self {
         Self {
@@ -180,19 +180,19 @@ impl BoltV3BasketAdmissionState {
         submit_admission: &BoltV3SubmitAdmissionState,
     ) -> Result<BoltV3BasketAdmissionPermit, BoltV3BasketAdmissionError> {
         if let Err(error) = self.evaluate_basket_request(request) {
-            self.record_basket_decision(request, basket_outcome_from_error(&error))?;
+            self.record_basket_rejection(request, basket_rejection_reason(&error))?;
             return Err(error);
         }
-        let evidence = basket_decision_evidence(request, BoltV3BasketAdmissionOutcome::Admitted)?;
+        let details = basket_admission_details(request)?;
         if let Err(error) = self.reserve_open_basket(request) {
-            self.record_basket_decision(request, basket_outcome_from_error(&error))?;
+            self.record_basket_rejection(request, basket_rejection_reason(&error))?;
             return Err(error);
         }
 
         let submit_permit = match submit_admission.reserve_basket_submit_slots(
             request.execution_client_id,
             &request.submit_claims,
-            &evidence,
+            &details,
         ) {
             Ok(permit) => permit,
             Err(error) => {
@@ -379,30 +379,31 @@ impl BoltV3BasketAdmissionState {
         inner.open_baskets.remove(basket_id);
     }
 
-    fn record_basket_decision(
+    fn record_basket_rejection(
         &self,
         request: &BoltV3BasketAdmissionRequest<'_>,
-        outcome: BoltV3BasketAdmissionOutcome,
+        reason: BasketAdmissionRejectionReason,
     ) -> Result<(), BoltV3BasketAdmissionError> {
-        let evidence = basket_decision_evidence(request, outcome)?;
-        self.decision_evidence
-            .record_basket_admission_decision(&evidence)
-            .map_err(|err| BoltV3BasketAdmissionError::EvidenceWriteFailed {
-                reason: format!("{err:#}"),
-            })
+        let details = basket_admission_details(request)?;
+        if let NonBlockingRecordOutcome::Failed(error) = self
+            .decision_evidence
+            .record_basket_admission_rejected(BasketAdmissionRejectedFact { details, reason })
+        {
+            log::error!("basket admission rejection evidence failed: {error}");
+        }
+        Ok(())
     }
 }
 
-fn basket_decision_evidence(
+fn basket_admission_details(
     request: &BoltV3BasketAdmissionRequest<'_>,
-    outcome: BoltV3BasketAdmissionOutcome,
-) -> Result<BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionError> {
+) -> Result<BasketAdmissionDetails, BoltV3BasketAdmissionError> {
     let leg_order_count = u32::try_from(request.submit_claims.len()).map_err(|_| {
         BoltV3BasketAdmissionError::SubmitAdmissionFailed(
             BoltV3SubmitAdmissionError::CountCapExhausted,
         )
     })?;
-    Ok(BoltV3BasketAdmissionDecisionEvidence {
+    Ok(BasketAdmissionDetails {
         strategy_id: request.strategy_id.to_string(),
         execution_client_id: request.execution_client_id.to_string(),
         basket_id: request.basket_id.to_string(),
@@ -414,54 +415,51 @@ fn basket_decision_evidence(
             .collect(),
         total_notional: request.scanner_evidence.total_adjusted_cost.to_string(),
         leg_order_count,
-        outcome,
     })
 }
 
-fn basket_outcome_from_error(error: &BoltV3BasketAdmissionError) -> BoltV3BasketAdmissionOutcome {
+fn basket_rejection_reason(error: &BoltV3BasketAdmissionError) -> BasketAdmissionRejectionReason {
     match error {
         BoltV3BasketAdmissionError::BasketNotionalCapExceeded => {
-            BoltV3BasketAdmissionOutcome::RejectedBasketNotionalCapExceeded
+            BasketAdmissionRejectionReason::BasketNotionalCapExceeded
         }
         BoltV3BasketAdmissionError::MaxOpenBasketCapExceeded => {
-            BoltV3BasketAdmissionOutcome::RejectedMaxOpenBasketCapExceeded
+            BasketAdmissionRejectionReason::MaxOpenBasketCapExceeded
         }
         BoltV3BasketAdmissionError::StaleScannerEvidence => {
-            BoltV3BasketAdmissionOutcome::RejectedStaleScannerEvidence
+            BasketAdmissionRejectionReason::StaleScannerEvidence
         }
         BoltV3BasketAdmissionError::StaleSubmitRecheck => {
-            BoltV3BasketAdmissionOutcome::RejectedStaleSubmitRecheck
+            BasketAdmissionRejectionReason::StaleSubmitRecheck
         }
         BoltV3BasketAdmissionError::NonPositiveCandidateCost => {
-            BoltV3BasketAdmissionOutcome::RejectedNonPositiveCandidateCost
+            BasketAdmissionRejectionReason::NonPositiveCandidateCost
         }
         BoltV3BasketAdmissionError::NonPositiveEdge => {
-            BoltV3BasketAdmissionOutcome::RejectedNonPositiveEdge
+            BasketAdmissionRejectionReason::NonPositiveEdge
         }
-        BoltV3BasketAdmissionError::EdgeThreshold => {
-            BoltV3BasketAdmissionOutcome::RejectedEdgeThreshold
-        }
+        BoltV3BasketAdmissionError::EdgeThreshold => BasketAdmissionRejectionReason::EdgeThreshold,
         BoltV3BasketAdmissionError::SubmitClaimsMismatch => {
-            BoltV3BasketAdmissionOutcome::RejectedSubmitSlots
+            BasketAdmissionRejectionReason::SubmitSlots
         }
         BoltV3BasketAdmissionError::MissingGroupingProof => {
-            BoltV3BasketAdmissionOutcome::RejectedMissingGroupingProof
+            BasketAdmissionRejectionReason::MissingGroupingProof
         }
         BoltV3BasketAdmissionError::GroupingProofMismatch => {
-            BoltV3BasketAdmissionOutcome::RejectedSubmitSlots
+            BasketAdmissionRejectionReason::SubmitSlots
         }
         BoltV3BasketAdmissionError::MissingSettlementRules => {
-            BoltV3BasketAdmissionOutcome::RejectedMissingSettlementRules
+            BasketAdmissionRejectionReason::MissingSettlementRules
         }
         BoltV3BasketAdmissionError::RetryBudgetExceeded => {
-            BoltV3BasketAdmissionOutcome::RejectedRetryBudgetExceeded
+            BasketAdmissionRejectionReason::RetryBudgetExceeded
         }
         BoltV3BasketAdmissionError::BasketAlreadyOpen
         | BoltV3BasketAdmissionError::BasketReservationMissing
         | BoltV3BasketAdmissionError::StuckReservationHeld
         | BoltV3BasketAdmissionError::SubmitAdmissionFailed(_)
         | BoltV3BasketAdmissionError::EvidenceWriteFailed { .. } => {
-            BoltV3BasketAdmissionOutcome::RejectedSubmitSlots
+            BasketAdmissionRejectionReason::SubmitSlots
         }
     }
 }

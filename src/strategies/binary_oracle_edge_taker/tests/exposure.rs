@@ -678,7 +678,7 @@ fn untracked_position_close_keeps_recovery_fail_closed() {
 
 #[test]
 fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -730,13 +730,13 @@ fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
     assert_eq!(decision.instrument_id, Some(instrument_a));
     assert_eq!(decision.order_side, Some(OrderSide::Sell));
     assert!(
-        evidence.events().into_iter().any(|event| matches!(
+        evidence.recorded_facts().expect("recorded current evidence must decode").into_iter().any(|event| matches!(
             event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+            CurrentFact::OrderLifecycle(record)
                 if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::EntryFillMaterialized
+                    == crate::bolt_v3_current_evidence::OrderLifecycleTransition::EntryFillMaterialized
                     && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Managed
+                        == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::Managed
                     && record.client_order_id.as_deref() == Some("ENTRY-A")
                     && record.position_id.as_deref() == Some("P-A")
         )),
@@ -894,13 +894,13 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
     for instrument_id in configured_instruments {
         let submit_admission = submit_admission_with_provider_cap(
             Decimal::new(10_000, 0),
-            Arc::new(RecordingDecisionEvidenceWriter),
+            recording_decision_evidence(),
         );
         let (mut strategy, fee_provider) =
             ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.context = StrategyBuildContext::new(
             fee_provider,
-            Arc::new(RecordingDecisionEvidenceWriter),
+            recording_decision_evidence(),
             submit_admission,
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
@@ -1107,7 +1107,7 @@ fn entry_fill_without_position_id_stays_fail_closed_until_position_event_arrives
 
 #[test]
 fn late_zero_fill_entry_terminal_events_resolve_entry_reconcile_to_flat() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut canceled = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -1129,15 +1129,19 @@ fn late_zero_fill_entry_terminal_events_resolve_entry_reconcile_to_flat() {
     ));
     assert!(matches!(canceled.exposure, ExposureState::Flat));
     assert!(
-        evidence.events().into_iter().any(|event| matches!(
-            event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
-                if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderCanceled
-                    && record.client_order_id.as_deref() == Some("ENTRY-ZERO-FILL-CANCEL")
-                    && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
-        )),
+        evidence
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
+            .into_iter()
+            .any(|event| matches!(
+                event,
+                CurrentFact::OrderLifecycle(record)
+                    if record.transition
+                        == crate::bolt_v3_current_evidence::OrderLifecycleTransition::OrderCanceled
+                        && record.client_order_id.as_deref() == Some("ENTRY-ZERO-FILL-CANCEL")
+                        && record.outcome
+                            == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::Flat
+            )),
         "zero-fill cancel must record a Flat terminal lifecycle outcome"
     );
 
@@ -1256,7 +1260,7 @@ fn runtime_reconcile_waits_until_pending_entry_order_is_stale() {
 
 #[test]
 fn runtime_reconcile_canceled_pending_entry_flattens_with_reconcile_source() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -1287,23 +1291,27 @@ fn runtime_reconcile_canceled_pending_entry_flattens_with_reconcile_source() {
 
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert!(
-        evidence.events().into_iter().any(|event| matches!(
-            event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
-                if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderCanceled
-                    && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
-                    && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
-                    && record.client_order_id.as_deref() == Some("ENTRY-RECONCILE-CANCELED")
-        )),
+        evidence
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
+            .into_iter()
+            .any(|event| matches!(
+                event,
+                CurrentFact::OrderLifecycle(record)
+                    if record.transition
+                        == crate::bolt_v3_current_evidence::OrderLifecycleTransition::OrderCanceled
+                        && record.outcome
+                            == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::Flat
+                        && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
+                        && record.client_order_id.as_deref() == Some("ENTRY-RECONCILE-CANCELED")
+            )),
         "terminal cache truth must flatten pending entry with reconcile_pass source"
     );
 }
 
 #[test]
 fn runtime_reconcile_cached_position_materializes_managed_with_reconcile_source() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -1344,13 +1352,13 @@ fn runtime_reconcile_cached_position_materializes_managed_with_reconcile_source(
         }) if managed_position_id == position_id
     ));
     assert!(
-        evidence.events().into_iter().any(|event| matches!(
+        evidence.recorded_facts().expect("recorded current evidence must decode").into_iter().any(|event| matches!(
             event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+            CurrentFact::OrderLifecycle(record)
                 if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::EntryFillMaterialized
+                    == crate::bolt_v3_current_evidence::OrderLifecycleTransition::EntryFillMaterialized
                     && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Managed
+                        == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::Managed
                     && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
                     && record.client_order_id.as_deref() == Some("ENTRY-RECONCILE-FILLED")
                     && record.position_id.as_deref() == Some("P-RECONCILE-FILLED")
@@ -1361,7 +1369,7 @@ fn runtime_reconcile_cached_position_materializes_managed_with_reconcile_source(
 
 #[test]
 fn runtime_reconcile_filled_exit_terminal_frees_slot_with_reconcile_source() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -1449,23 +1457,27 @@ fn runtime_reconcile_filled_exit_terminal_frees_slot_with_reconcile_source() {
 
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert!(
-        evidence.events().into_iter().any(|event| matches!(
-            event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
-                if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderFilled
-                    && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
-                    && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
-                    && record.client_order_id.as_deref() == Some("EXIT-RECONCILE-FILLED")
-        )),
+        evidence
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
+            .into_iter()
+            .any(|event| matches!(
+                event,
+                CurrentFact::OrderLifecycle(record)
+                    if record.transition
+                        == crate::bolt_v3_current_evidence::OrderLifecycleTransition::OrderFilled
+                        && record.outcome
+                            == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::Flat
+                        && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
+                        && record.client_order_id.as_deref() == Some("EXIT-RECONCILE-FILLED")
+            )),
         "filled exit terminal cache truth must free the slot with reconcile_pass evidence"
     );
 }
 
 #[test]
 fn runtime_reconcile_filled_exit_terminal_waits_without_closed_position_cache() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -1537,7 +1549,7 @@ fn runtime_reconcile_filled_exit_terminal_waits_without_closed_position_cache() 
 
 #[test]
 fn runtime_reconcile_query_failure_writes_evidence_and_retries_without_state_change() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -1559,16 +1571,15 @@ fn runtime_reconcile_query_failure_writes_evidence_and_retries_without_state_cha
             if client_order_id == entry_client_order_id
     ));
     let instrument_id_text = instrument_id.to_string();
-    let failures = evidence
-        .events()
+    let failures = evidence.recorded_facts().expect("recorded current evidence must decode")
         .into_iter()
         .filter(|event| matches!(
             event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+            CurrentFact::OrderLifecycle(record)
                 if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::ReconcileQueryFailed
+                    == crate::bolt_v3_current_evidence::OrderLifecycleTransition::ReconcileQueryFailed
                     && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::PendingEntry
+                        == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::PendingEntry
                     && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
                     && record.instrument_id.as_deref() == Some(instrument_id_text.as_str())
                     && record.client_order_id.as_deref() == Some("ENTRY-RECONCILE-MISSING-ORDER")
@@ -1582,7 +1593,7 @@ fn runtime_reconcile_query_failure_writes_evidence_and_retries_without_state_cha
 
 #[test]
 fn runtime_reconcile_closed_unsupported_observed_position_flattens_with_reconcile_source() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -1639,23 +1650,27 @@ fn runtime_reconcile_closed_unsupported_observed_position_flattens_with_reconcil
 
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert!(
-        evidence.events().into_iter().any(|event| matches!(
-            event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
-                if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::PositionClosed
-                    && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
-                    && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
-                    && record.position_id.as_deref() == Some(observed_position_id.as_str())
-        )),
+        evidence
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
+            .into_iter()
+            .any(|event| matches!(
+                event,
+                CurrentFact::OrderLifecycle(record)
+                    if record.transition
+                        == crate::bolt_v3_current_evidence::OrderLifecycleTransition::PositionClosed
+                        && record.outcome
+                            == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::Flat
+                        && record.source == ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS
+                        && record.position_id.as_deref() == Some(observed_position_id.as_str())
+            )),
         "closed unsupported observed position must flatten with reconcile_pass source"
     );
 }
 
 #[test]
 fn runtime_reconcile_unsupported_observed_position_waits_without_closed_position_cache() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -1686,7 +1701,7 @@ fn runtime_reconcile_unsupported_observed_position_waits_without_closed_position
 
 #[test]
 fn late_fill_observed_entry_cancel_or_expire_preserves_entry_reconcile_fail_closed_state() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
 
     let mut canceled = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -1744,30 +1759,32 @@ fn late_fill_observed_entry_cancel_or_expire_preserves_entry_reconcile_fail_clos
         } if quantity == Quantity::new(3.0, 2)
     ));
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(
         events.iter().any(|event| matches!(
             event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+            CurrentFact::OrderLifecycle(record)
                 if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderCanceled
+                    == crate::bolt_v3_current_evidence::OrderLifecycleTransition::OrderCanceled
                     && record.raw_reason_text.as_deref()
                         == Some(ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON)
                     && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
+                        == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::EntryReconcilePending
         )),
         "fill-observed cancel must record preserved fail-closed lifecycle evidence"
     );
     assert!(
         events.into_iter().any(|event| matches!(
             event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+            CurrentFact::OrderLifecycle(record)
                 if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderExpired
+                    == crate::bolt_v3_current_evidence::OrderLifecycleTransition::OrderExpired
                     && record.raw_reason_text.as_deref()
                         == Some(ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON)
                     && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
+                        == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::EntryReconcilePending
         )),
         "fill-observed expiry must record preserved fail-closed lifecycle evidence"
     );
@@ -1801,7 +1818,7 @@ fn malformed_entry_reject_stops_same_instrument_entry_decisions() {
 
 #[test]
 fn order_denied_clears_matching_pending_entry_and_records_lifecycle_evidence() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -1830,22 +1847,26 @@ fn order_denied_clears_matching_pending_entry_and_records_lifecycle_evidence() {
         "a local denial must not fall through to immediate resubmit"
     );
     assert!(
-        evidence.events().into_iter().any(|event| matches!(
-            event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
-                if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::OrderDenied
-                    && record.client_order_id.as_deref() == Some("ENTRY-DENIED")
-                    && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
-        )),
+        evidence
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
+            .into_iter()
+            .any(|event| matches!(
+                event,
+                CurrentFact::OrderLifecycle(record)
+                    if record.transition
+                        == crate::bolt_v3_current_evidence::OrderLifecycleTransition::OrderDenied
+                        && record.client_order_id.as_deref() == Some("ENTRY-DENIED")
+                        && record.outcome
+                            == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::Flat
+            )),
         "denial handling must write distinguishable lifecycle evidence"
     );
 }
 
 #[test]
 fn selection_rotation_reclassifies_unresolved_pending_entry_and_records_lifecycle_evidence() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -1870,15 +1891,15 @@ fn selection_rotation_reclassifies_unresolved_pending_entry_and_records_lifecycl
     ));
     let instrument_id_text = instrument_id.to_string();
     assert!(
-        evidence.events().into_iter().any(|event| matches!(
+        evidence.recorded_facts().expect("recorded current evidence must decode").into_iter().any(|event| matches!(
             event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+            CurrentFact::OrderLifecycle(record)
                 if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::BoundaryReclassification
+                    == crate::bolt_v3_current_evidence::OrderLifecycleTransition::BoundaryReclassification
                     && record.client_order_id.as_deref() == Some("ENTRY-BOUNDARY-NO-TERMINAL")
                     && record.instrument_id.as_deref() == Some(instrument_id_text.as_str())
                     && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
+                        == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::EntryReconcilePending
         )),
         "selection-boundary recovery must write distinguishable lifecycle evidence"
     );
@@ -2046,7 +2067,7 @@ fn book_delta_entry_reconcile_pending_does_not_try_new_entry() {
 
 #[test]
 fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -2071,16 +2092,20 @@ fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert!(strategy.pending_entry().is_none());
     assert!(
-        evidence.events().into_iter().any(|event| matches!(
-            event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
-                if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::PositionClosed
-                    && record.client_order_id.as_deref() == Some("ENTRY-CLOSED-BEFORE-OPEN")
-                    && record.position_id.as_deref() == Some("P-CLOSED-BEFORE-OPEN")
-                    && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Flat
-        )),
+        evidence
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
+            .into_iter()
+            .any(|event| matches!(
+                event,
+                CurrentFact::OrderLifecycle(record)
+                    if record.transition
+                        == crate::bolt_v3_current_evidence::OrderLifecycleTransition::PositionClosed
+                        && record.client_order_id.as_deref() == Some("ENTRY-CLOSED-BEFORE-OPEN")
+                        && record.position_id.as_deref() == Some("P-CLOSED-BEFORE-OPEN")
+                        && record.outcome
+                            == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::Flat
+            )),
         "position-closed release must write lifecycle evidence"
     );
 }
@@ -2166,13 +2191,13 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
     for instrument_id in configured_instruments {
         let submit_admission = submit_admission_with_provider_cap(
             Decimal::new(10_000, 0),
-            Arc::new(RecordingDecisionEvidenceWriter),
+            recording_decision_evidence(),
         );
         let (mut strategy, fee_provider) =
             ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.context = StrategyBuildContext::new(
             fee_provider,
-            Arc::new(RecordingDecisionEvidenceWriter),
+            recording_decision_evidence(),
             submit_admission,
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
@@ -2502,7 +2527,7 @@ fn sell_fill_enters_recovery_without_materializing_position() {
 
 #[test]
 fn entry_fill_reconcile_branches_record_lifecycle_evidence() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
 
     let mut awaiting = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -2562,33 +2587,35 @@ fn entry_fill_reconcile_branches_record_lifecycle_evidence() {
         } if quantity == Quantity::new(3.0, 2)
     ));
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(
         events.iter().any(|event| matches!(
             event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+            CurrentFact::OrderLifecycle(record)
                 if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::EntryReconcilePending
+                    == crate::bolt_v3_current_evidence::OrderLifecycleTransition::EntryReconcilePending
                     && record.client_order_id.as_deref() == Some("ENTRY-FILL-AWAITING-POSITION")
                     && record.position_id.is_none()
                     && record.filled_quantity.is_some()
                     && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
+                        == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::EntryReconcilePending
         )),
         "awaiting-position entry fill must write lifecycle evidence"
     );
     assert!(
         events.into_iter().any(|event| matches!(
             event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+            CurrentFact::OrderLifecycle(record)
                 if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::EntryReconcilePending
+                    == crate::bolt_v3_current_evidence::OrderLifecycleTransition::EntryReconcilePending
                     && record.client_order_id.as_deref() == Some("ENTRY-FILL-UNSUPPORTED-SIDE")
                     && record.position_id.as_deref() == Some("P-FILL-UNSUPPORTED-SIDE")
                     && record.order_side.as_deref() == Some("Sell")
                     && record.filled_quantity.is_some()
                     && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
+                        == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::EntryReconcilePending
         )),
         "unsupported-side entry fill must write lifecycle evidence"
     );
@@ -2761,7 +2788,7 @@ fn order_fill_entry_quarantines_foreign_venue_position() {
 
 #[test]
 fn pending_entry_unknown_position_side_stays_fail_closed_without_materializing_position() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -2792,16 +2819,16 @@ fn pending_entry_unknown_position_side_stays_fail_closed_without_materializing_p
         Some(entry_client_order_id)
     );
     assert!(
-        evidence.events().into_iter().any(|event| matches!(
+        evidence.recorded_facts().expect("recorded current evidence must decode").into_iter().any(|event| matches!(
             event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+            CurrentFact::OrderLifecycle(record)
                 if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::EntryReconcilePending
+                    == crate::bolt_v3_current_evidence::OrderLifecycleTransition::EntryReconcilePending
                     && record.source == ORDER_LIFECYCLE_SOURCE_POSITION_EVENT
                     && record.client_order_id.as_deref() == Some("ENTRY-BAD-SIDE")
                     && record.position_id.as_deref() == Some("P-BAD-SIDE")
                     && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::EntryReconcilePending
+                        == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::EntryReconcilePending
         )),
         "invalid observed position side must write lifecycle evidence"
     );
@@ -3684,7 +3711,7 @@ fn exposure_managed_recovery_origin_is_explicit_without_recovery_boolean() {
 
 #[test]
 fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidence() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         Arc::new(
@@ -3724,13 +3751,13 @@ fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidenc
     ));
 
     assert!(
-        evidence.events().into_iter().any(|event| matches!(
+        evidence.recorded_facts().expect("recorded current evidence must decode").into_iter().any(|event| matches!(
             event,
-            RecordedDecisionEvidenceEvent::OrderLifecycle(record)
+            CurrentFact::OrderLifecycle(record)
                 if record.transition
-                    == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleTransition::PositionTruthRematerialized
+                    == crate::bolt_v3_current_evidence::OrderLifecycleTransition::PositionTruthRematerialized
                     && record.outcome
-                        == crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleOutcome::Managed
+                        == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::Managed
                     && record.source == "position_event"
                     && record.client_order_id.as_deref() == Some("ENTRY-REMATERIALIZED-001")
                     && record.position_id.as_deref() == Some("P-REMATERIALIZED-001")

@@ -18,6 +18,8 @@ This is one atomic #1354 implementation slice:
 - preserve purpose-specific durability and action policies as typed outcomes;
 - bound observation write-failure reporting;
 - remove the old writer, readers, private Shadow-PnL parser, migration script, and old config key.
+- migrate the separately resolved backtesting workspace from its private generic evidence writer to
+  the same typed current codecs, recorder, durable sinks, and fact reader.
 
 The slice does not implement the #1385 capacity, rotation, retirement, durable-ordinal, or restart-exact-once work. Live activation remains prohibited until independent order/fill/settlement quiescence can be proven and the repository's deployment gates are satisfied.
 
@@ -41,9 +43,18 @@ The rebuild accepts a stronger criterion: invalid runtime paths must be unconstr
 8. Reject identical paths or identical underlying files.
 9. Return a runtime containing the immutable startup recovery facts and the only append-capable recorder.
 
-There is no public writer constructor and no separately callable startup preflight. The bytes validated for startup and the file later appended are the same open file description.
+There is no public writer constructor in the default live package and no separately callable startup preflight. The bytes validated for startup and the file later appended are the same open file description.
 
-Offline readers use a read-only `DecisionEvidenceReader::open_current` path with the same exact-identity decoder. They cannot construct append capability. Shadow PnL consumes typed events from this reader and owns no envelope parser or kind dispatch.
+Offline readers use `read_current_evidence_facts` or a typed consumer projection such as
+`read_shadow_pnl_events`; both share the same exact-identity decoder and JSONL framing check. They
+cannot construct append capability. Shadow PnL owns no envelope parser or kind dispatch.
+
+The backtesting vertical slice is a separate Cargo workspace and enables the
+`offline-current-evidence` feature on its `bolt-v2` dependency. That feature alone exposes
+`OfflineDecisionEvidenceRuntime::from_fresh_files`, which accepts only two empty, distinct file
+descriptors and returns the same concrete recorder used by live strategy construction. The default
+live build does not compile this constructor. Backtest run-guard projections read the resulting
+current facts; they do not implement a writer trait or maintain a second payload contract.
 
 ## Typed Write Boundary
 

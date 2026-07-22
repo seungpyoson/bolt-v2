@@ -11,8 +11,9 @@ use super::{
 };
 use crate::bolt_v3_current_evidence::{
     facts::{
-        BlockedStrategyInputObservationFact, StrategyInputDetails, StrategyInputRvState,
-        SubmissionLinkage, SubmitLinkedStrategyInputSnapshotFact,
+        BlockedStrategyInputObservationFact, StrategyInputDetails,
+        StrategyInputMarketSelectionOutcome, StrategyInputRvState, SubmissionLinkage,
+        SubmitLinkedStrategyInputSnapshotFact,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -59,7 +60,7 @@ struct StrategyInputDetailsWireV1 {
     strategy_id: String,
     configured_target_id: String,
     market_selection_ruleset_id: String,
-    market_selection_outcome: String,
+    market_selection_outcome: StrategyInputMarketSelectionOutcomeV1,
     market_id: Option<String>,
     polymarket_condition_id: Option<String>,
     polymarket_market_slug: Option<String>,
@@ -102,16 +103,23 @@ struct StrategyInputDetailsWireV1 {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StrategyInputMarketSelectionOutcomeV1 {
+    Current,
+    Next,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum StrategyInputRvStateWireV1 {
     Absent {
         gate_result: RvGateResultV1,
     },
     Present {
-        selected_annualized_decimal: String,
+        selected_annualized_decimal: Option<String>,
         gate_result: RvGateResultV1,
         receive_watermark_ms: Option<u64>,
-        snapshot: EntryRealizedVolatilitySnapshotV1Wire,
+        snapshot: Box<EntryRealizedVolatilitySnapshotV1Wire>,
     },
 }
 
@@ -232,10 +240,7 @@ impl TryFrom<StrategyInputDetails> for StrategyInputDetailsWireV1 {
                 value.market_selection_ruleset_id,
                 "market_selection_ruleset_id",
             )?,
-            market_selection_outcome: required_text(
-                value.market_selection_outcome,
-                "market_selection_outcome",
-            )?,
+            market_selection_outcome: value.market_selection_outcome.into(),
             market_id: optional_text(value.market_id, "market_id")?,
             polymarket_condition_id: optional_text(
                 value.polymarket_condition_id,
@@ -340,10 +345,7 @@ impl TryFrom<StrategyInputDetailsWireV1> for StrategyInputDetails {
                 value.market_selection_ruleset_id,
                 "market_selection_ruleset_id",
             )?,
-            market_selection_outcome: required_text(
-                value.market_selection_outcome,
-                "market_selection_outcome",
-            )?,
+            market_selection_outcome: value.market_selection_outcome.into(),
             market_id: optional_text(value.market_id, "market_id")?,
             polymarket_condition_id: optional_text(
                 value.polymarket_condition_id,
@@ -430,6 +432,24 @@ impl TryFrom<StrategyInputDetailsWireV1> for StrategyInputDetails {
     }
 }
 
+impl From<StrategyInputMarketSelectionOutcome> for StrategyInputMarketSelectionOutcomeV1 {
+    fn from(value: StrategyInputMarketSelectionOutcome) -> Self {
+        match value {
+            StrategyInputMarketSelectionOutcome::Current => Self::Current,
+            StrategyInputMarketSelectionOutcome::Next => Self::Next,
+        }
+    }
+}
+
+impl From<StrategyInputMarketSelectionOutcomeV1> for StrategyInputMarketSelectionOutcome {
+    fn from(value: StrategyInputMarketSelectionOutcomeV1) -> Self {
+        match value {
+            StrategyInputMarketSelectionOutcomeV1::Current => Self::Current,
+            StrategyInputMarketSelectionOutcomeV1::Next => Self::Next,
+        }
+    }
+}
+
 impl TryFrom<StrategyInputRvState> for StrategyInputRvStateWireV1 {
     type Error = anyhow::Error;
 
@@ -444,13 +464,15 @@ impl TryFrom<StrategyInputRvState> for StrategyInputRvStateWireV1 {
                 receive_watermark_ms,
                 snapshot,
             } => Self::Present {
-                selected_annualized_decimal: required_number(
+                selected_annualized_decimal: optional_number(
                     selected_annualized_decimal,
                     "realized_volatility.selected_annualized_decimal",
                 )?,
                 gate_result: gate_result.into(),
                 receive_watermark_ms,
-                snapshot: EntryRealizedVolatilitySnapshotV1Wire::try_from(&snapshot)?,
+                snapshot: Box::new(EntryRealizedVolatilitySnapshotV1Wire::try_from(
+                    snapshot.as_ref(),
+                )?),
             },
         })
     }
@@ -470,13 +492,13 @@ impl TryFrom<StrategyInputRvStateWireV1> for StrategyInputRvState {
                 receive_watermark_ms,
                 snapshot,
             } => Self::Present {
-                selected_annualized_decimal: required_number(
+                selected_annualized_decimal: optional_number(
                     selected_annualized_decimal,
                     "realized_volatility.selected_annualized_decimal",
                 )?,
                 gate_result: gate_result.into(),
                 receive_watermark_ms,
-                snapshot: snapshot.try_into()?,
+                snapshot: Box::new((*snapshot).try_into()?),
             },
         })
     }

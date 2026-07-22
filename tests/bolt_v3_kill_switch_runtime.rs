@@ -62,6 +62,7 @@ fn loaded_with_enabled_kill_switch(
     loaded.root.risk.live_submit_governance = Some(LiveSubmitGovernanceBlock {
         mode: LiveSubmitGovernanceMode::SupervisedDepositCapped,
     });
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
     (loaded, temp)
 }
 

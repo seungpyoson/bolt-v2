@@ -7,15 +7,13 @@ use nautilus_model::{
 };
 
 use crate::{
-    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_current_evidence::{DecisionEvidenceRecorder, StartupRecoveryFacts},
     bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter,
     bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_providers::FeeProvider,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
-    bolt_v3_settlement_runtime::{
-        BoltV3SettlementRecoveryConfig, BoltV3SettlementRuntimeSinkHandle,
-    },
+    bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     bolt_v3_timestamp_domain::NtStrategyClockMs,
 };
@@ -34,7 +32,7 @@ impl RealizedVolatilityCapability {
 #[derive(Clone, Default)]
 pub struct SettlementCapability {
     runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
-    recovery: Option<BoltV3SettlementRecoveryConfig>,
+    recovery: Option<Arc<StartupRecoveryFacts>>,
     account_id: Option<String>,
     currency: Option<Currency>,
     health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
@@ -45,8 +43,8 @@ impl SettlementCapability {
         self.runtime_sink.clone()
     }
 
-    pub fn recovery(&self) -> Option<&BoltV3SettlementRecoveryConfig> {
-        self.recovery.as_ref()
+    pub fn recovery(&self) -> Option<&StartupRecoveryFacts> {
+        self.recovery.as_deref()
     }
 
     pub fn account_id(&self) -> Option<&str> {
@@ -65,7 +63,7 @@ impl SettlementCapability {
 #[derive(Clone)]
 pub struct StrategyBuildContext {
     fee_provider: Arc<dyn FeeProvider>,
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<DecisionEvidenceRecorder>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     order_execution_policy: BoltV3OrderExecutionPolicy,
     execution_venue: Venue,
@@ -82,7 +80,7 @@ impl StrategyBuildContext {
     /// would otherwise be possible once a second venue's instruments coexist in the cache).
     pub fn new(
         fee_provider: Arc<dyn FeeProvider>,
-        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        decision_evidence: Arc<DecisionEvidenceRecorder>,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
         order_execution_policy: BoltV3OrderExecutionPolicy,
         execution_venue: Venue,
@@ -128,10 +126,7 @@ impl StrategyBuildContext {
         self
     }
 
-    pub fn with_settlement_recovery(
-        mut self,
-        recovery: Option<BoltV3SettlementRecoveryConfig>,
-    ) -> Self {
+    pub fn with_settlement_recovery(mut self, recovery: Option<Arc<StartupRecoveryFacts>>) -> Self {
         self.settlement.get_or_insert_default().recovery = recovery;
         self
     }
@@ -164,11 +159,11 @@ impl StrategyBuildContext {
         self.fee_provider.clone()
     }
 
-    pub fn decision_evidence(&self) -> &dyn BoltV3DecisionEvidenceWriter {
+    pub fn decision_evidence(&self) -> &DecisionEvidenceRecorder {
         self.decision_evidence.as_ref()
     }
 
-    pub fn decision_evidence_arc(&self) -> Arc<dyn BoltV3DecisionEvidenceWriter> {
+    pub fn decision_evidence_arc(&self) -> Arc<DecisionEvidenceRecorder> {
         self.decision_evidence.clone()
     }
 
@@ -210,10 +205,10 @@ impl StrategyBuildContext {
             .and_then(|capability| capability.runtime_sink.clone())
     }
 
-    pub fn settlement_recovery(&self) -> Option<&BoltV3SettlementRecoveryConfig> {
+    pub fn settlement_recovery(&self) -> Option<&StartupRecoveryFacts> {
         self.settlement
             .as_ref()
-            .and_then(|capability| capability.recovery.as_ref())
+            .and_then(|capability| capability.recovery.as_deref())
     }
 
     pub fn settlement_account_id(&self) -> Option<&str> {

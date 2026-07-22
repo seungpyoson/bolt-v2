@@ -62,6 +62,7 @@ fn load_logger_probe_config(label: &str) -> (support::TempCaseDir, LoadedBoltV3C
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new(label);
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
     (temp, loaded)
 }
 
@@ -313,6 +314,7 @@ fn v3_livenode_build_does_not_emit_nt_credential_info_logs_to_standard_streams()
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-credential-log-suppression");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
 
     // Build the v3 LiveNode. This is the first thing in this test
     // binary's process to call NT's logger init, so the bolt-v3

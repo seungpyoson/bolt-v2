@@ -684,7 +684,7 @@ fn registration_rejects_rv_source_missing_from_node_transport() {
         .expect("test LiveNodeBuilder should construct")
         .build()
         .expect("test LiveNode should build");
-    let writer: Arc<dyn BoltV3DecisionEvidenceWriter> = Arc::new(NoStrategyDecisionEvidenceWriter);
+    let writer: Arc<DecisionEvidenceRecorder> = Arc::new(DecisionEvidenceRecorder::recording());
 
     let error = register_bolt_v3_strategies_on_node_with_bindings(
         &mut node,
@@ -716,7 +716,7 @@ fn registration_with_iv_runtime_rejects_rv_source_missing_from_node_transport() 
         .expect("test LiveNodeBuilder should construct")
         .build()
         .expect("test LiveNode should build");
-    let writer: Arc<dyn BoltV3DecisionEvidenceWriter> = Arc::new(NoStrategyDecisionEvidenceWriter);
+    let writer: Arc<DecisionEvidenceRecorder> = Arc::new(DecisionEvidenceRecorder::recording());
     let iv_runtime = IvRuntimeEngine::from_iv_root(&IvRootConfig {
         schema_version: 1,
         profiles: Vec::new(),

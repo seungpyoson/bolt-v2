@@ -23,7 +23,7 @@ pub(super) fn loaded_config_with_submit_sizer_recovery(
         .root
         .persistence
         .decision_evidence
-        .recovery_evidence_max_bytes = Some(100_000);
+        .recovery_evidence_max_bytes = 100_000;
     loaded
 }
 
@@ -57,8 +57,8 @@ pub(super) fn fixture_submit_reservation_metadata(
     liability_factor: &str,
     additive_liability: &str,
     reserved_liability: &str,
-) -> BoltV3SubmitReservationMetadataEvidence {
-    BoltV3SubmitReservationMetadataEvidence {
+) -> crate::bolt_v3_current_evidence::SubmitReservationMetadataFact {
+    crate::bolt_v3_current_evidence::SubmitReservationMetadataFact {
         client_order_id: client_order_id.to_string(),
         submit_reservation_id: format!("{client_order_id}#submit"),
         venue_id: "POLYMARKET".to_string(),
@@ -80,12 +80,12 @@ pub(super) fn fixture_submit_reservation_metadata(
 
 pub(super) fn write_submit_reservation_metadata(
     loaded: &LoadedBoltV3Config,
-    metadata: &BoltV3SubmitReservationMetadataEvidence,
+    metadata: &crate::bolt_v3_current_evidence::SubmitReservationMetadataFact,
 ) {
-    let writer = JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded)
-        .expect("decision evidence writer should open");
-    writer
-        .record_submit_reservation_metadata(metadata)
+    crate::bolt_v3_current_evidence::DecisionEvidenceRuntime::open(loaded)
+        .expect("current decision evidence runtime should open")
+        .recorder()
+        .record_submit_reservation_metadata(metadata.clone())
         .expect("submit reservation metadata should write");
 }
 
@@ -489,7 +489,7 @@ pub(super) fn loaded_config_with_rv_only_source() -> LoadedBoltV3Config {
 }
 
 pub(super) fn test_registration_controls(
-    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    writer: Arc<DecisionEvidenceRecorder>,
 ) -> BoltV3StrategyExecutionControls {
     BoltV3StrategyExecutionControls {
         submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(writer)),

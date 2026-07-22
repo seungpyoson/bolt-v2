@@ -34,21 +34,30 @@ use crate::{
     bolt_v3_book_sizing::{
         OutcomeBookState, OutcomeBookSubscriptions, should_replace_book_subscriptions,
     },
-    bolt_v3_decision_evidence::{
-        BOLT_V3_SETTLEMENT_RECORD_KIND, BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory,
-        BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult,
-        BoltV3ExitTriggerSource, BoltV3ExposureOccupancy, BoltV3ForcedFlatReason,
-        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderLifecycleEvidence,
-        BoltV3OrderLifecycleOutcome, BoltV3OrderLifecycleTransition, BoltV3OutcomeSide,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
-        BoltV3SettlementBookingErrorEvidence, BoltV3SettlementBookingErrorReason,
-        BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3TerminalSettlementEvidence, number_evidence as evidence_number,
-        option_number_evidence as option_evidence_number,
-        option_probability_evidence as option_evidence_probability, probability_evidence,
-        realized_vol_blocker_to_exit_evidence, realized_volatility_aggregation_evidence_label,
-        realized_volatility_block_reason_evidence_label,
-        realized_volatility_pricing_component_evidence_label,
+    bolt_v3_current_evidence::{
+        BlockedStrategyInputObservationFact, EntrySkipReason as EvidenceEntrySkipReason,
+        ExitEvaluationDecision, ExitEvaluationFact, ExitHoldDecisionFact, ExitHoldOutcome,
+        ExitSubmissionDecisionFact, ExitSubmissionOutcome,
+        ExitTriggerSource as EvidenceExitTriggerSource,
+        ExposureOccupancy as EvidenceExposureOccupancy,
+        ForcedFlatReason as EvidenceForcedFlatReason, NonBlockingRecordOutcome,
+        ObservationRecordOutcome, OrderIntentDetails, OrderLifecycleFact, OrderLifecycleOutcome,
+        OrderLifecycleTransition, OutcomeSide as EvidenceOutcomeSide,
+        RealizedVolAggregation as EvidenceRealizedVolAggregation,
+        RealizedVolBlockReason as EvidenceRealizedVolBlockReason,
+        RealizedVolPricingComponent as EvidenceRealizedVolPricingComponent,
+        RealizedVolSampleKind as EvidenceRealizedVolSampleKind,
+        RealizedVolSourceClass as EvidenceRealizedVolSourceClass,
+        RealizedVolSourceRejectReason as EvidenceRealizedVolSourceRejectReason,
+        RealizedVolSourceStatus as EvidenceRealizedVolSourceStatus,
+        RealizedVolatilitySourceDiagnosticFact, RvGateResult as EvidenceRvGateResult,
+        SettlementBookingErrorFact, SettlementBookingErrorReason, SettlementFact,
+        StrategyInputDetails, StrategyInputRvState, SubmissionLinkage,
+        SubmitLinkedStrategyInputSnapshotFact, TerminalSettlementFact, settlement_kind,
+    },
+    bolt_v3_evidence_values::{
+        number as evidence_number, optional_number as option_evidence_number,
+        optional_probability as option_evidence_probability, probability as probability_evidence,
     },
     bolt_v3_executable_cost::{
         ExactSizeVwap, ExecutableBookQuote, ExecutableCostBreakdown, executable_cost_breakdown,
@@ -65,6 +74,7 @@ use crate::{
     bolt_v3_operator_health::BoltV3SettlementHealthTransition,
     bolt_v3_order_execution::{
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
+        order_intent_details_from_compiled_order,
     },
     bolt_v3_order_intent::{
         MarketQuoteBuyQuantityError, make_market_quote_buy_quantity, normalize_base_order_quantity,
@@ -107,8 +117,9 @@ use crate::{
     bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
-        BoltV3SubmitAdmissionRequestInput, BoltV3SubmitLifecyclePolicy, OrderValuationContext,
-        build_submit_admission_request_from_order, limit_notional_exceeds_sized_notional,
+        BoltV3SubmitAdmissionRequestInput, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+        OrderValuationContext, build_submit_admission_request_from_order,
+        limit_notional_exceeds_sized_notional,
     },
     bolt_v3_taker_pricing::{
         FastSpotObservation, TakerPricingConfig, TakerPricingRequest,
@@ -131,12 +142,9 @@ use nautilus_model::enums::{
 
 #[cfg(test)]
 use crate::{
-    bolt_v3_decision_evidence::{
-        BoltV3EntryPricingBlockReason, BoltV3ExitBlockedReason, BoltV3ExitDecisionOutcome,
-    },
     bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity},
     bolt_v3_providers::FeeProvider,
-    bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
+    bolt_v3_submit_admission::BoltV3RiskReducingExitProof,
     bolt_v3_taker_pricing::VenueTimingState,
     bolt_v3_taker_updown_signal::{price_agreement_corr, price_gap_probability},
 };
@@ -183,16 +191,17 @@ use self::entry_decision::{
     EntryPricingBlockReason, EntryPricingInputs, EntryRealizedVolatilityReceipt,
     EntrySkipDedupeKey, EntrySkipDedupeState, EntrySubmissionDecision, ForcedFlatEvidenceInputs,
     RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
-    entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence,
+    entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence, entry_skip_fact,
     entry_skip_reason_category_from_str, push_executable_edge_pricing_block, rv_gate_novelty_bit,
 };
 
 mod exit_decision;
 
 use self::exit_decision::{
-    ExitDecision, ExitDecisionDedupeKey, ExitEvaluation, ExitEvaluationLogFields,
-    ExitEvaluationTriggerContext, ExitOutcomeKey, ExitRealizedVolatilityGateReceipt,
-    ExitSubmissionDecision, evaluate_exit_decision, exit_decision_evidence_from_optional,
+    ExitDecision, ExitDecisionDedupeKey, ExitDecisionDisposition, ExitEvaluation,
+    ExitEvaluationLogFields, ExitEvaluationTriggerContext, ExitOutcomeKey,
+    ExitRealizedVolatilityGateReceipt, ExitSubmissionDecision, evaluate_exit_decision,
+    exit_block_reason_to_evidence, exit_decision_details, exit_decision_evidence_from_optional,
 };
 
 mod orders;
@@ -253,8 +262,8 @@ const ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON: &str =
 
 #[derive(Debug, Clone)]
 struct OrderLifecycleEvidenceInput {
-    transition: BoltV3OrderLifecycleTransition,
-    outcome: BoltV3OrderLifecycleOutcome,
+    transition: OrderLifecycleTransition,
+    outcome: OrderLifecycleOutcome,
     source: &'static str,
     market_id: Option<String>,
     instrument_id: Option<InstrumentId>,
@@ -271,8 +280,8 @@ struct OrderLifecycleEvidenceInput {
 #[derive(Debug, Clone)]
 struct PendingEntryTerminalEvidenceInput {
     pending: PendingEntryState,
-    transition: BoltV3OrderLifecycleTransition,
-    outcome: BoltV3OrderLifecycleOutcome,
+    transition: OrderLifecycleTransition,
+    outcome: OrderLifecycleOutcome,
     source: &'static str,
     raw_reason_text: Option<String>,
     filled_quantity: Option<Quantity>,
@@ -283,7 +292,7 @@ struct PendingEntryTerminalEvidenceInput {
 struct PendingEntryTerminalEventInput {
     client_order_id: ClientOrderId,
     event_instrument_id: InstrumentId,
-    transition: BoltV3OrderLifecycleTransition,
+    transition: OrderLifecycleTransition,
     source: &'static str,
     raw_reason_text: Option<String>,
     ts_event_ns: u64,
@@ -527,19 +536,6 @@ fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingCon
             .reference_current_price
             .as_ref()
             .map(|reference_price| reference_price.max_source_age_ms),
-    }
-}
-
-fn exit_rv_gate_result_from_shared(result: BoltV3RvGateResult) -> BoltV3ExitRvGateResult {
-    match result {
-        BoltV3RvGateResult::Accepted => BoltV3ExitRvGateResult::Accepted,
-        BoltV3RvGateResult::MissingSnapshot => BoltV3ExitRvGateResult::MissingSnapshot,
-        BoltV3RvGateResult::MissingEvaluationEventTime => {
-            BoltV3ExitRvGateResult::MissingEvaluationEventTime
-        }
-        BoltV3RvGateResult::RejectedFutureDated => BoltV3ExitRvGateResult::RejectedFutureDated,
-        BoltV3RvGateResult::RejectedStale => BoltV3ExitRvGateResult::RejectedStale,
-        BoltV3RvGateResult::RejectedNotReady => BoltV3ExitRvGateResult::RejectedNotReady,
     }
 }
 
@@ -988,7 +984,7 @@ impl BinaryOracleEdgeTaker {
             self.record_settlement_booking_error(
                 position,
                 settlement_key,
-                BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+                SettlementBookingErrorReason::ResolutionFeedMissing,
                 "resolution feed missing after settlement close fetch attempts exhausted; settlement not booked".to_string(),
                 now_ms.saturating_mul(NANOS_PER_MILLI_U64),
             )?;
@@ -1008,7 +1004,7 @@ impl BinaryOracleEdgeTaker {
                     self.record_settlement_booking_error(
                         position,
                         settlement_key,
-                        BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+                        SettlementBookingErrorReason::ResolutionFeedMissing,
                         "resolution feed route unavailable for settlement close fetch; settlement not booked".to_string(),
                         now_ms.saturating_mul(NANOS_PER_MILLI_U64),
                     )?;
@@ -1017,7 +1013,7 @@ impl BinaryOracleEdgeTaker {
                     self.record_settlement_booking_error(
                         position,
                         settlement_key,
-                        BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+                        SettlementBookingErrorReason::ResolutionFeedMissing,
                         "resolution feed asset binding rejected settlement close fetch; settlement not booked".to_string(),
                         now_ms.saturating_mul(NANOS_PER_MILLI_U64),
                     )?;
@@ -1126,7 +1122,7 @@ impl BinaryOracleEdgeTaker {
         }
         self.context
             .decision_evidence()
-            .record_settlement(&evidence)?;
+            .record_settlement(evidence.clone())?;
         self.settled_position_keys
             .insert(booking.settlement_key.clone());
         if booking.key_delta.remove_close_fetch_attempt {
@@ -1156,7 +1152,7 @@ impl BinaryOracleEdgeTaker {
         &mut self,
         position: &OpenPositionState,
         settlement_key: String,
-        reason: BoltV3SettlementBookingErrorReason,
+        reason: SettlementBookingErrorReason,
         detail: String,
         observed_at_ns: u64,
     ) -> Result<()> {
@@ -1209,15 +1205,15 @@ impl BinaryOracleEdgeTaker {
         position: &OpenPositionState,
         eligibility: TerminalSettlementEligibility,
         key_delta: SettlementTerminalKeyDelta,
-        booking_error: Option<BoltV3SettlementBookingErrorEvidence>,
+        booking_error: Option<SettlementBookingErrorFact>,
         reason_detail: String,
         evidence_state: TerminalEvidenceState,
     ) -> Result<()> {
         let settlement_key = eligibility.settlement_key.clone();
         let health_emitter = self.context.settlement_health_transition_emitter().cloned();
         let lifecycle = self.order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-            transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
-            outcome: BoltV3OrderLifecycleOutcome::Flat,
+            transition: OrderLifecycleTransition::SettlementBookingTerminal,
+            outcome: OrderLifecycleOutcome::Flat,
             source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL,
             market_id: position.lifecycle.market_id_owned(),
             instrument_id: Some(position.instrument_id),
@@ -1233,7 +1229,7 @@ impl BinaryOracleEdgeTaker {
             residual_quantity: Some(position.quantity),
             ts_event_ns: Some(eligibility.observed_at_ns),
         });
-        let terminal_evidence = BoltV3TerminalSettlementEvidence {
+        let terminal_evidence = TerminalSettlementFact {
             settlement_key: settlement_key.clone(),
             booking_error,
             lifecycle,
@@ -1241,7 +1237,7 @@ impl BinaryOracleEdgeTaker {
         if evidence_state == TerminalEvidenceState::PersistCanonical {
             self.context
                 .decision_evidence()
-                .record_terminal_settlement(&terminal_evidence)
+                .record_terminal_settlement(terminal_evidence)
                 .context("failed to persist canonical terminal settlement evidence")?;
         }
         if key_delta.insert_terminal_key {
@@ -1302,7 +1298,7 @@ impl BinaryOracleEdgeTaker {
         self.record_settlement_booking_error(
             position,
             settlement_key,
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing interval end".to_string(),
             observed_at_ns,
         )
@@ -1315,8 +1311,8 @@ impl BinaryOracleEdgeTaker {
         update: &IndexPriceUpdate,
         settlement_currency: Currency,
         computation: SettlementEvidenceComputation,
-    ) -> BoltV3SettlementEvidence {
-        BoltV3SettlementEvidence {
+    ) -> SettlementFact {
+        SettlementFact {
             strategy_id: self.config.strategy_id.clone(),
             settlement_key: ids.settlement_key,
             market_id: ids.market_id,
@@ -1343,11 +1339,11 @@ impl BinaryOracleEdgeTaker {
         &self,
         position: &OpenPositionState,
         settlement_key: String,
-        reason: BoltV3SettlementBookingErrorReason,
+        reason: SettlementBookingErrorReason,
         detail: String,
         observed_at_ns: u64,
-    ) -> BoltV3SettlementBookingErrorEvidence {
-        BoltV3SettlementBookingErrorEvidence {
+    ) -> SettlementBookingErrorFact {
+        SettlementBookingErrorFact {
             strategy_id: self.config.strategy_id.clone(),
             settlement_key,
             market_id: position.lifecycle.market_id_owned(),
@@ -1359,7 +1355,6 @@ impl BinaryOracleEdgeTaker {
             reason,
             detail,
             observed_at_ns,
-            terminal_lifecycle: None,
         }
     }
 
@@ -1419,7 +1414,7 @@ impl BinaryOracleEdgeTaker {
             && let Err(error) = self.try_submit_exit_order_for_trigger(
                 lifecycle_now_ms,
                 ExitEvaluationTriggerContext::from_market_data(
-                    BoltV3ExitTriggerSource::SignalQuote,
+                    EvidenceExitTriggerSource::SignalQuote,
                     observed_ts_ms,
                     evaluation_receive_ms,
                 ),
@@ -1454,7 +1449,7 @@ impl BinaryOracleEdgeTaker {
             && let Err(error) = self.try_submit_exit_order_for_trigger(
                 receive_ms.value(),
                 ExitEvaluationTriggerContext::from_market_data(
-                    BoltV3ExitTriggerSource::ReferenceUpdate,
+                    EvidenceExitTriggerSource::ReferenceUpdate,
                     snapshot.ts_ms,
                     receive_ms,
                 ),
@@ -1971,7 +1966,7 @@ impl BinaryOracleEdgeTaker {
                 self.record_pending_entry_terminal_evidence(PendingEntryTerminalEvidenceInput {
                     pending,
                     transition: input.transition,
-                    outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
+                    outcome: OrderLifecycleOutcome::EntryReconcilePending,
                     source: input.source,
                     raw_reason_text: Some(
                         ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON.to_string(),
@@ -1991,7 +1986,7 @@ impl BinaryOracleEdgeTaker {
             self.record_pending_entry_terminal_evidence(PendingEntryTerminalEvidenceInput {
                 pending,
                 transition: input.transition,
-                outcome: BoltV3OrderLifecycleOutcome::Flat,
+                outcome: OrderLifecycleOutcome::Flat,
                 source: input.source,
                 raw_reason_text: input.raw_reason_text,
                 filled_quantity: None,
@@ -2052,7 +2047,7 @@ impl BinaryOracleEdgeTaker {
                 instrument_id: pending.instrument_id,
                 market_id: pending.lifecycle.market_id_owned(),
                 position_id: None,
-                failure_outcome: BoltV3OrderLifecycleOutcome::PendingEntry,
+                failure_outcome: OrderLifecycleOutcome::PendingEntry,
             }),
             ExposureState::EntryReconcilePending { pending, .. } => Some(RuntimeReconcileOrder {
                 client_order_id: pending.client_order_id,
@@ -2060,7 +2055,7 @@ impl BinaryOracleEdgeTaker {
                 instrument_id: pending.instrument_id,
                 market_id: pending.lifecycle.market_id_owned(),
                 position_id: None,
-                failure_outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
+                failure_outcome: OrderLifecycleOutcome::EntryReconcilePending,
             }),
             ExposureState::ExitPending(exit) => Some(RuntimeReconcileOrder {
                 client_order_id: exit.pending_exit.client_order_id,
@@ -2079,7 +2074,7 @@ impl BinaryOracleEdgeTaker {
                         .as_ref()
                         .map(|position| position.position.position_id)
                 }),
-                failure_outcome: BoltV3OrderLifecycleOutcome::ExitPending,
+                failure_outcome: OrderLifecycleOutcome::ExitPending,
             }),
             _ => None,
         }
@@ -2087,7 +2082,7 @@ impl BinaryOracleEdgeTaker {
 
     fn reconcile_runtime_order_query(&mut self, query: IssueVenueOrderQuery, now_ms: u64) {
         let ts_event_ns = now_ms.saturating_mul(NANOS_PER_MILLI_U64);
-        if query.failure_outcome == BoltV3OrderLifecycleOutcome::ExitPending
+        if query.failure_outcome == OrderLifecycleOutcome::ExitPending
             && self.apply_cached_terminal_order_for_reconcile(&query, ts_event_ns)
         {
             return;
@@ -2165,8 +2160,8 @@ impl BinaryOracleEdgeTaker {
                     observed_fill_quantity: Some(filled_quantity),
                 };
                 self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                    transition: BoltV3OrderLifecycleTransition::EntryReconcilePending,
-                    outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
+                    transition: OrderLifecycleTransition::EntryReconcilePending,
+                    outcome: OrderLifecycleOutcome::EntryReconcilePending,
                     source: ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
                     market_id: pending.lifecycle.market_id_owned(),
                     instrument_id: Some(pending.instrument_id),
@@ -2300,7 +2295,7 @@ impl BinaryOracleEdgeTaker {
         ts_event_ns: u64,
     ) {
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-            transition: BoltV3OrderLifecycleTransition::ReconcileQueryFailed,
+            transition: OrderLifecycleTransition::ReconcileQueryFailed,
             outcome: query.failure_outcome,
             source: ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
             market_id: query.market_id,
@@ -2333,8 +2328,8 @@ impl BinaryOracleEdgeTaker {
         let ts_event_ns = now_ms.saturating_mul(NANOS_PER_MILLI_U64);
         self.exposure = ExposureState::Flat;
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-            transition: BoltV3OrderLifecycleTransition::PositionClosed,
-            outcome: BoltV3OrderLifecycleOutcome::Flat,
+            transition: OrderLifecycleTransition::PositionClosed,
+            outcome: OrderLifecycleOutcome::Flat,
             source: ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
             market_id: observed_position.lifecycle.market_id_owned(),
             instrument_id: Some(observed_position.instrument_id),
@@ -2742,8 +2737,8 @@ impl BinaryOracleEdgeTaker {
                     reason: BlindRecoveryReason::CacheProbeFailed,
                 });
                 self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                    transition: BoltV3OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
-                    outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+                    transition: OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
+                    outcome: OrderLifecycleOutcome::BlindRecovery,
                     source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
                     market_id: position.lifecycle.market_id_owned(),
                     instrument_id: Some(position.instrument_id),
@@ -2776,8 +2771,8 @@ impl BinaryOracleEdgeTaker {
                 },
             });
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: BoltV3OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
-                outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+                transition: OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
+                outcome: OrderLifecycleOutcome::BlindRecovery,
                 source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
                 market_id: position.lifecycle.market_id_owned(),
                 instrument_id: Some(position.instrument_id),
@@ -2803,8 +2798,8 @@ impl BinaryOracleEdgeTaker {
                 },
             });
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: BoltV3OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
-                outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+                transition: OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
+                outcome: OrderLifecycleOutcome::BlindRecovery,
                 source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
                 market_id: position.lifecycle.market_id_owned(),
                 instrument_id: Some(position.instrument_id),
@@ -2838,8 +2833,8 @@ impl BinaryOracleEdgeTaker {
             },
         });
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-            transition: BoltV3OrderLifecycleTransition::RestartOpenOrderAdopted,
-            outcome: BoltV3OrderLifecycleOutcome::ExitPending,
+            transition: OrderLifecycleTransition::RestartOpenOrderAdopted,
+            outcome: OrderLifecycleOutcome::ExitPending,
             source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
             market_id: position.lifecycle.market_id_owned(),
             instrument_id: Some(position.instrument_id),
@@ -2947,19 +2942,17 @@ impl BinaryOracleEdgeTaker {
         self.exposure.occupancy()
     }
 
-    fn lifecycle_outcome_for_exposure(exposure: &ExposureState) -> BoltV3OrderLifecycleOutcome {
+    fn lifecycle_outcome_for_exposure(exposure: &ExposureState) -> OrderLifecycleOutcome {
         match exposure {
-            ExposureState::Flat => BoltV3OrderLifecycleOutcome::Flat,
-            ExposureState::PendingEntry(_) => BoltV3OrderLifecycleOutcome::PendingEntry,
+            ExposureState::Flat => OrderLifecycleOutcome::Flat,
+            ExposureState::PendingEntry(_) => OrderLifecycleOutcome::PendingEntry,
             ExposureState::EntryReconcilePending { .. } => {
-                BoltV3OrderLifecycleOutcome::EntryReconcilePending
+                OrderLifecycleOutcome::EntryReconcilePending
             }
-            ExposureState::Managed(_) => BoltV3OrderLifecycleOutcome::Managed,
-            ExposureState::ExitPending(_) => BoltV3OrderLifecycleOutcome::ExitPending,
-            ExposureState::UnsupportedObserved(_) => {
-                BoltV3OrderLifecycleOutcome::UnsupportedObserved
-            }
-            ExposureState::BlindRecovery(_) => BoltV3OrderLifecycleOutcome::BlindRecovery,
+            ExposureState::Managed(_) => OrderLifecycleOutcome::Managed,
+            ExposureState::ExitPending(_) => OrderLifecycleOutcome::ExitPending,
+            ExposureState::UnsupportedObserved(_) => OrderLifecycleOutcome::UnsupportedObserved,
+            ExposureState::BlindRecovery(_) => OrderLifecycleOutcome::BlindRecovery,
         }
     }
 
@@ -2977,11 +2970,8 @@ impl BinaryOracleEdgeTaker {
         self.persist_order_lifecycle_record(&evidence)
     }
 
-    fn order_lifecycle_evidence(
-        &self,
-        input: OrderLifecycleEvidenceInput,
-    ) -> BoltV3OrderLifecycleEvidence {
-        BoltV3OrderLifecycleEvidence {
+    fn order_lifecycle_evidence(&self, input: OrderLifecycleEvidenceInput) -> OrderLifecycleFact {
+        OrderLifecycleFact {
             strategy_id: self.config.strategy_id.clone(),
             transition: input.transition,
             outcome: input.outcome,
@@ -3005,19 +2995,21 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn persist_order_lifecycle_record(
-        &self,
-        evidence: &BoltV3OrderLifecycleEvidence,
-    ) -> Result<()> {
-        self.context
+    fn persist_order_lifecycle_record(&self, evidence: &OrderLifecycleFact) -> Result<()> {
+        match self
+            .context
             .decision_evidence()
-            .record_order_lifecycle(evidence)
-            .with_context(|| {
-                format!(
-                    "order lifecycle evidence write failed: transition={:?} source={}",
-                    evidence.transition, evidence.source
-                )
-            })
+            .record_order_lifecycle(evidence.clone())
+        {
+            NonBlockingRecordOutcome::Appended(_) => Ok(()),
+            NonBlockingRecordOutcome::Failed(error) => Err(anyhow::Error::from(error))
+                .with_context(|| {
+                    format!(
+                        "order lifecycle evidence write failed: transition={:?} source={}",
+                        evidence.transition, evidence.source
+                    )
+                }),
+        }
     }
 
     fn clear_pending_entry_state(&mut self) {
@@ -3043,8 +3035,8 @@ impl BinaryOracleEdgeTaker {
             observed_fill_quantity: None,
         };
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-            transition: BoltV3OrderLifecycleTransition::BoundaryReclassification,
-            outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
+            transition: OrderLifecycleTransition::BoundaryReclassification,
+            outcome: OrderLifecycleOutcome::EntryReconcilePending,
             source: ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY,
             market_id: pending.lifecycle.market_id_owned(),
             instrument_id: Some(pending.instrument_id),
@@ -3918,8 +3910,7 @@ impl BinaryOracleEdgeTaker {
         &mut self,
         now_ms: u64,
         decision: &EntrySubmissionDecision,
-        reason_category: BoltV3EntrySkipReasonCategory,
-        unclassified_context: Option<String>,
+        reason_category: EvidenceEntrySkipReason,
     ) -> Result<bool> {
         let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
         let forced_flat_inputs = self.entry_forced_flat_evidence_inputs();
@@ -3964,21 +3955,20 @@ impl BinaryOracleEdgeTaker {
                 rv_seen_mask: rv_bit,
             },
         };
-        let evidence = BoltV3EntrySkipEvidence::from_entry_skip(
+        let evidence = entry_skip_fact(
             self.config.strategy_id.clone(),
             now_ms,
             reason_category,
-            unclassified_context,
             &fields,
             forced_flat_inputs,
         );
         // Preserve the existing mark-before-swallowed-writer-error contract: a
         // telemetry failure must not spin on the same semantic skip state.
         self.last_recorded_entry_skip = Some(next_state);
-        if let Err(error) = self
+        if let ObservationRecordOutcome::FailureReported(error) = self
             .context
             .decision_evidence()
-            .record_entry_skip(&evidence)
+            .record_entry_skip_observation(evidence)
         {
             // An entry skip is declining new risk: a telemetry-write failure
             // must never abort the strategy callback (which would skip
@@ -4000,11 +3990,9 @@ impl BinaryOracleEdgeTaker {
         reason: &'static str,
     ) -> Result<()> {
         let reason_category = entry_skip_reason_category_from_str(reason)
-            .unwrap_or(BoltV3EntrySkipReasonCategory::Unclassified);
-        let unclassified_context = (reason_category == BoltV3EntrySkipReasonCategory::Unclassified)
-            .then(|| reason.to_string());
+            .with_context(|| format!("unregistered entry skip reason `{reason}`"))?;
         // WARN keyed on the same evidence dedupe as record_entry_skip_once.
-        if self.record_entry_skip_once(now_ms, decision, reason_category, unclassified_context)? {
+        if self.record_entry_skip_once(now_ms, decision, reason_category)? {
             log::warn!(
                 "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
                 self.config.strategy_id,
@@ -4024,7 +4012,8 @@ impl BinaryOracleEdgeTaker {
             && decision.instrument_id.is_some()
             && decision.order_side.is_some()
             && decision.price.is_some()
-            && decision.quantity.is_some();
+            && decision.quantity.is_some()
+            && decision.client_order_id.is_some();
         if !action_chosen
             && decision.forced_flat_reasons.is_empty()
             && decision.blocked_reason.is_none()
@@ -4038,27 +4027,90 @@ impl BinaryOracleEdgeTaker {
         }
 
         let fields = self.exit_evaluation_log_fields_at(now_ms, trigger_context, decision);
-        let evidence = BoltV3ExitDecisionEvidence::from_exit_decision(
+        let details = exit_decision_details(
             self.config.strategy_id.clone(),
             now_ms,
             &fields,
             self.exit_forced_flat_evidence_inputs(),
         );
+        let blocked_reason = fields
+            .submission_blocked_reason
+            .map(exit_block_reason_to_evidence);
+        let disposition = if action_chosen {
+            if details.forced_flat_reasons.is_empty() {
+                ExitDecisionDisposition::Exit
+            } else {
+                ExitDecisionDisposition::ExitFailClosed
+            }
+        } else if blocked_reason.is_some() {
+            ExitDecisionDisposition::Blocked
+        } else {
+            ExitDecisionDisposition::Hold
+        };
         let key = ExitDecisionDedupeKey {
-            market_id: evidence.market_id.clone(),
-            position_id: evidence.position_id.clone(),
-            forced_flat_reasons: evidence.forced_flat_reasons.clone(),
-            exit_decision: evidence.exit_decision,
-            blocked_reason: evidence.blocked_reason,
+            market_id: details.market_id.clone(),
+            position_id: details.position_id.clone(),
+            forced_flat_reasons: details.forced_flat_reasons.clone(),
+            exit_decision: disposition,
+            blocked_reason,
         };
         if self.last_recorded_exit_decision.as_ref() == Some(&key) {
             return Ok(());
         }
-        if let Err(error) = self
-            .context
-            .decision_evidence()
-            .record_exit_decision(&evidence)
-        {
+        let failure = if action_chosen {
+            let submission = SubmissionLinkage {
+                instrument_id: decision
+                    .instrument_id
+                    .expect("action chosen has instrument")
+                    .to_string(),
+                order_side: decision
+                    .order_side
+                    .expect("action chosen has order side")
+                    .to_string(),
+                price: evidence_number(decision.price.expect("action chosen has price")),
+                quantity: decision
+                    .quantity
+                    .expect("action chosen has quantity")
+                    .to_string(),
+                client_order_id: decision
+                    .client_order_id
+                    .expect("action chosen has client order id")
+                    .to_string(),
+            };
+            match self
+                .context
+                .decision_evidence()
+                .record_exit_submission_decision(ExitSubmissionDecisionFact {
+                    details,
+                    outcome: if disposition == ExitDecisionDisposition::ExitFailClosed {
+                        ExitSubmissionOutcome::ExitFailClosed
+                    } else {
+                        ExitSubmissionOutcome::Exit
+                    },
+                    submission,
+                }) {
+                NonBlockingRecordOutcome::Appended(_) => None,
+                NonBlockingRecordOutcome::Failed(error) => Some(error),
+            }
+        } else {
+            match self
+                .context
+                .decision_evidence()
+                .record_exit_hold_decision(ExitHoldDecisionFact {
+                    details,
+                    outcome: if disposition == ExitDecisionDisposition::Blocked {
+                        ExitHoldOutcome::Blocked
+                    } else {
+                        ExitHoldOutcome::Hold
+                    },
+                    blocked_reason,
+                }) {
+                ObservationRecordOutcome::Appended(_)
+                | ObservationRecordOutcome::FailureSuppressed => None,
+                ObservationRecordOutcome::FailureReported(error) => Some(error),
+            }
+        };
+        if let Some(error) = failure {
             // A telemetry-write failure must NEVER block a risk-reducing exit:
             // record_exit_decision_once is called immediately before the exit
             // order is built and submitted. Surface the lost write at the
@@ -4547,8 +4599,8 @@ impl BinaryOracleEdgeTaker {
                     observed_fill_quantity: entry_reconcile_observed_fill_quantity,
                 };
                 self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                    transition: BoltV3OrderLifecycleTransition::EntryReconcilePending,
-                    outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
+                    transition: OrderLifecycleTransition::EntryReconcilePending,
+                    outcome: OrderLifecycleOutcome::EntryReconcilePending,
                     source,
                     market_id,
                     instrument_id: Some(instrument_id),
@@ -4671,7 +4723,7 @@ impl BinaryOracleEdgeTaker {
         };
         if reconcile_entry_materialization && let Some(pending) = pending_context.as_ref() {
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: BoltV3OrderLifecycleTransition::EntryFillMaterialized,
+                transition: OrderLifecycleTransition::EntryFillMaterialized,
                 outcome: Self::lifecycle_outcome_for_exposure(&self.exposure),
                 source,
                 market_id: pending.lifecycle.market_id_owned(),
@@ -4690,8 +4742,8 @@ impl BinaryOracleEdgeTaker {
         }
         if let Some(terminal_override) = position_truth_rematerialization_override {
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: BoltV3OrderLifecycleTransition::PositionTruthRematerialized,
-                outcome: BoltV3OrderLifecycleOutcome::Managed,
+                transition: OrderLifecycleTransition::PositionTruthRematerialized,
+                outcome: OrderLifecycleOutcome::Managed,
                 source,
                 market_id: terminal_override.market_id.or(rematerialized_market_id),
                 instrument_id: Some(instrument_id),
@@ -4713,7 +4765,7 @@ impl BinaryOracleEdgeTaker {
         &mut self,
         client_order_id: ClientOrderId,
         event_instrument_id: InstrumentId,
-        transition: BoltV3OrderLifecycleTransition,
+        transition: OrderLifecycleTransition,
         source: &'static str,
         raw_reason_text: Option<String>,
         ts_event_ns: u64,
@@ -4758,8 +4810,8 @@ impl BinaryOracleEdgeTaker {
                 pending_entry,
             });
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: BoltV3OrderLifecycleTransition::ResidualRemanaged,
-                outcome: BoltV3OrderLifecycleOutcome::Managed,
+                transition: OrderLifecycleTransition::ResidualRemanaged,
+                outcome: OrderLifecycleOutcome::Managed,
                 source,
                 market_id: residual_position.lifecycle.market_id_owned(),
                 instrument_id: Some(residual_position.instrument_id),
@@ -5165,7 +5217,7 @@ impl BinaryOracleEdgeTaker {
             .and_then(|snapshot| snapshot.ready_realized_vol())
             .map(|value| value.get());
         let snapshot_has_ready_realized_vol = ready_realized_vol.is_some();
-        let accepted = gate_result == BoltV3RvGateResult::Accepted;
+        let accepted = gate_result == EvidenceRvGateResult::Accepted;
         let realized_vol = if accepted { ready_realized_vol } else { None };
         let realized_vol_source_venue = if accepted {
             snapshot.and_then(|snapshot| snapshot.sources_used.first().cloned())
@@ -5181,9 +5233,7 @@ impl BinaryOracleEdgeTaker {
                 snapshot
                     .source_diagnostics
                     .iter()
-                    .map(
-                        BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic,
-                    )
+                    .map(realized_vol_diagnostic_fact)
                     .collect()
             })
             .unwrap_or_default();
@@ -5441,7 +5491,7 @@ impl BinaryOracleEdgeTaker {
             .raw_snapshot_blockers
             .iter()
             .copied()
-            .map(realized_vol_blocker_to_exit_evidence)
+            .map(realized_vol_block_reason_fact)
             .collect();
         let rv_future_dating_delta_ms = receipt
             .snapshot_as_of_minus_trigger_event_ms
@@ -5480,7 +5530,7 @@ impl BinaryOracleEdgeTaker {
             rv_max_source_age_ms: Some(receipt.max_source_age_ms),
             rv_snapshot_blockers,
             rv_source_diagnostics: receipt.source_diagnostics.clone(),
-            rv_gate_result: exit_rv_gate_result_from_shared(receipt.gate_result),
+            rv_gate_result: receipt.gate_result,
             rv_future_dating_delta_ms,
             exit_eval_now_ms: now_ms,
             exit_trigger_source: trigger_context.source,
@@ -5648,7 +5698,8 @@ impl BinaryOracleEdgeTaker {
 
     fn submit_order_with_decision_evidence(
         &mut self,
-        intent: BoltV3OrderIntentEvidence,
+        intent: OrderIntentDetails,
+        intent_kind: BoltV3SubmitIntentKind,
         order: nautilus_model::orders::OrderAny,
         submit_context: BoltV3SubmitContext,
     ) -> Result<BoltV3SubmitRoutingOutcome> {
@@ -5661,7 +5712,7 @@ impl BinaryOracleEdgeTaker {
         // order that was never submitted. Recording after the build keeps the
         // evidence chain truthful: an order-intent line exists only once the
         // order is fully valued and about to enter admission.
-        let request = self.submit_admission_request_from_order(&intent, &order)?;
+        let request = self.submit_admission_request_from_order(&intent, intent_kind, &order)?;
         let policy = self.context.order_execution_policy();
         let decision_evidence = self.context.decision_evidence_arc();
         let submit_admission = self.context.submit_admission_arc();
@@ -5690,7 +5741,8 @@ impl BinaryOracleEdgeTaker {
 
     fn submit_admission_request_from_order(
         &self,
-        intent: &BoltV3OrderIntentEvidence,
+        intent: &OrderIntentDetails,
+        intent_kind: BoltV3SubmitIntentKind,
         order: &nautilus_model::orders::OrderAny,
     ) -> Result<BoltV3SubmitAdmissionRequest> {
         let client_order_id = order.client_order_id().to_string();
@@ -5716,10 +5768,7 @@ impl BinaryOracleEdgeTaker {
         } else {
             (None, None)
         };
-        let risk_reducing_exit_position_context = if matches!(
-            intent.intent_kind,
-            BoltV3OrderIntentKind::Exit
-        ) {
+        let risk_reducing_exit_position_context = if intent_kind != BoltV3SubmitIntentKind::Entry {
             let managed_position = self.managed_position().ok_or_else(|| {
                 anyhow::anyhow!(
                     "bolt-v3 submit admission risk-reducing exit requires managed position state for client_order_id={client_order_id}"
@@ -5757,6 +5806,7 @@ impl BinaryOracleEdgeTaker {
             BoltV3SubmitAdmissionRequestInput {
                 execution_client_id: &self.config.client_id,
                 intent,
+                intent_kind,
                 order,
                 valuation: OrderValuationContext {
                     last_quote,
@@ -5807,28 +5857,22 @@ impl BinaryOracleEdgeTaker {
                 forecast_annualized_decimal: snapshot
                     .forecast_annualized_realized_vol_decimal
                     .map_or_else(String::new, evidence_number),
-                pricing_component: realized_volatility_pricing_component_evidence_label(
+                pricing_component: Some(realized_vol_pricing_component_fact(
                     snapshot.pricing_component,
-                )
-                .to_string(),
+                )),
                 seconds_per_annum: evidence_number(snapshot.seconds_per_annum),
-                aggregation: realized_volatility_aggregation_evidence_label(snapshot.aggregate_method)
-                    .to_string(),
+                aggregation: Some(realized_vol_aggregation_fact(snapshot.aggregate_method)),
                 sources_used: snapshot.sources_used.clone(),
                 source_diagnostics: snapshot
                     .source_diagnostics
                     .iter()
-                    .map(
-                        BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic,
-                    )
+                    .map(realized_vol_diagnostic_fact)
                     .collect(),
                 unknown_source_rejections: snapshot.unknown_source_rejections.clone(),
                 blockers: snapshot
                     .blocked_reasons
                     .iter()
-                    .map(|reason| {
-                        realized_volatility_block_reason_evidence_label(*reason).to_string()
-                    })
+                    .map(|reason| realized_vol_block_reason_fact(*reason))
                     .collect(),
                 config_fingerprint: snapshot.config_fingerprint.clone(),
             },
@@ -5841,9 +5885,9 @@ impl BinaryOracleEdgeTaker {
                 continuous_annualized_decimal: String::new(),
                 jump_annualized_decimal: String::new(),
                 forecast_annualized_decimal: String::new(),
-                pricing_component: String::new(),
+                pricing_component: None,
                 seconds_per_annum: String::new(),
-                aggregation: String::new(),
+                aggregation: None,
                 sources_used: Vec::new(),
                 source_diagnostics: Vec::new(),
                 unknown_source_rejections: BTreeMap::new(),
@@ -5867,7 +5911,7 @@ impl BinaryOracleEdgeTaker {
                 let evidence = self
                     .realized_volatility_evidence_fields_from_snapshot(Some(&accepted.snapshot));
                 EntryRealizedVolatilityReceipt {
-                    gate_result: BoltV3RvGateResult::Accepted,
+                    gate_result: EvidenceRvGateResult::Accepted,
                     receive_watermark_ms: Some(accepted.receive_watermark_ms),
                     realized_vol: Some(accepted.ready_realized_vol),
                     source_venue: accepted.source_venue,
@@ -5896,12 +5940,25 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    fn strategy_input_rv_state(receipt: &EntryRealizedVolatilityReceipt) -> StrategyInputRvState {
+        match receipt.evidence.to_durable_snapshot() {
+            Some(snapshot) => StrategyInputRvState::Present {
+                selected_annualized_decimal: receipt.realized_vol.map(evidence_number),
+                gate_result: receipt.gate_result,
+                receive_watermark_ms: receipt.receive_watermark_ms.map(LocalReceiveMs::value),
+                snapshot: Box::new(snapshot),
+            },
+            None => StrategyInputRvState::Absent {
+                gate_result: receipt.gate_result,
+            },
+        }
+    }
+
     fn blocked_entry_strategy_input_evidence_snapshot_at(
         &self,
         now_ms: u64,
         decision: &EntrySubmissionDecision,
-    ) -> Result<BoltV3StrategyInputEvidenceSnapshot> {
-        let realized_volatility = &decision.evaluation.realized_volatility_receipt.evidence;
+    ) -> Result<BlockedStrategyInputObservationFact> {
         let market_selection_outcome =
             strategy_input_market_selection_outcome(self.active.market_selection_outcome);
         let reference_quote_ts_event = self.active.last_reference_ts_ms.ok_or_else(|| {
@@ -5927,152 +5984,119 @@ impl BinaryOracleEdgeTaker {
         let reference_current_price_available =
             self.pricing.last_reference_current_price().is_some();
 
-        Ok(BoltV3StrategyInputEvidenceSnapshot {
-            strategy_id: self.config.strategy_id.clone(),
-            configured_target_id: self.config.configured_target_id.clone(),
-            market_selection_ruleset_id: self.config.configured_target_id.clone(),
-            market_selection_outcome: market_selection_outcome.to_string(),
-            market_id: self.active.market_id.clone(),
-            polymarket_condition_id: self
-                .active
-                .source_identity
-                .as_ref()
-                .map(|identity| identity.condition_id.clone()),
-            polymarket_market_slug: self
-                .active
-                .source_identity
-                .as_ref()
-                .map(|identity| identity.market_slug.clone()),
-            polymarket_question_id: self
-                .active
-                .source_identity
-                .as_ref()
-                .map(|identity| identity.question_id.clone()),
-            up_instrument_id: self
-                .active
-                .books
-                .up
-                .instrument_id
-                .map(|instrument_id| instrument_id.to_string()),
-            down_instrument_id: self
-                .active
-                .books
-                .down
-                .instrument_id
-                .map(|instrument_id| instrument_id.to_string()),
-            market_selection_timestamp_ms: self.active.selection_published_at_ms,
-            selected_market_observed_timestamp_ms: self.active.selection_published_at_ms,
-            polymarket_market_start_timestamp_ms: self.active.interval_start_ms,
-            polymarket_market_end_timestamp_ms: self.active.interval_end_ms,
-            price_to_beat_source: self.config.price_to_beat_source.clone(),
-            price_to_beat_value: self
-                .active
-                .price_to_beat
-                .filter(|value| is_positive_finite(*value))
-                .map_or_else(String::new, evidence_number),
-            reference_quote_ts_event,
-            spot_price: self
-                .evidence_spot_price()
-                .map_or_else(String::new, evidence_number),
-            fast_venue_available,
-            reference_current_price: reference_current_price.map(evidence_number),
-            reference_current_price_available,
-            reference_current_price_source_id: self.evidence_reference_current_price_source_id(),
-            reference_current_price_failed_over: self
-                .evidence_reference_current_price_failed_over(),
-            realized_volatility: String::new(),
-            realized_volatility_surface_id: realized_volatility.surface_id.clone(),
-            realized_volatility_as_of_ms: realized_volatility.as_of_ms,
-            realized_volatility_gate_result: Some(
-                decision.evaluation.realized_volatility_receipt.gate_result,
-            ),
-            realized_volatility_receive_watermark_ms: decision
-                .evaluation
-                .realized_volatility_receipt
-                .receive_watermark_ms,
-            realized_volatility_annualized_decimal: realized_volatility.annualized_decimal.clone(),
-            realized_volatility_measured_annualized_decimal: realized_volatility
-                .measured_annualized_decimal
-                .clone(),
-            realized_volatility_noise_robust_annualized_decimal: realized_volatility
-                .noise_robust_annualized_decimal
-                .clone(),
-            realized_volatility_continuous_annualized_decimal: realized_volatility
-                .continuous_annualized_decimal
-                .clone(),
-            realized_volatility_jump_annualized_decimal: realized_volatility
-                .jump_annualized_decimal
-                .clone(),
-            realized_volatility_forecast_annualized_decimal: realized_volatility
-                .forecast_annualized_decimal
-                .clone(),
-            realized_volatility_pricing_component: realized_volatility.pricing_component.clone(),
-            realized_volatility_seconds_per_annum: realized_volatility.seconds_per_annum.clone(),
-            realized_volatility_aggregation: realized_volatility.aggregation.clone(),
-            realized_volatility_sources_used: realized_volatility.sources_used.clone(),
-            realized_volatility_source_diagnostics: realized_volatility.source_diagnostics.clone(),
-            realized_volatility_unknown_source_rejections: realized_volatility
-                .unknown_source_rejections
-                .clone(),
-            realized_volatility_blockers: realized_volatility.blockers.clone(),
-            realized_volatility_config_fingerprint: realized_volatility.config_fingerprint.clone(),
-            seconds_to_market_end,
-            pricing_kurtosis: evidence_number(self.config.pricing_kurtosis),
-            theta_decay_factor: evidence_number(self.config.theta_decay_factor),
-            theta_scaled_min_edge_bps: decision
-                .evaluation
-                .min_worst_case_ev_bps
-                .filter(|value| value.is_finite())
-                .map_or_else(String::new, evidence_number),
-            fair_probability_up: decision
-                .evaluation
-                .fair_probability_up
-                .map_or_else(String::new, probability_evidence),
-            uncertainty_band_probability: decision
-                .evaluation
-                .uncertainty_band_probability
-                .map_or_else(String::new, probability_evidence),
-            expected_edge_basis_points: expected_edge_basis_points
-                .filter(|value| value.is_finite())
-                .map_or_else(String::new, evidence_number),
-            worst_case_edge_basis_points: worst_case_edge_basis_points
-                .filter(|value| value.is_finite())
-                .map_or_else(String::new, evidence_number),
-            up_worst_case_edge_basis_points: option_evidence_number(
-                decision.evaluation.up_worst_case_ev_bps,
-            ),
-            down_worst_case_edge_basis_points: option_evidence_number(
-                decision.evaluation.down_worst_case_ev_bps,
-            ),
-            gate_blocked_by: decision
-                .evaluation
-                .gate
-                .blocked_by
-                .iter()
-                .map(entry_block_reason_to_evidence)
-                .collect(),
-            pricing_blocked_by: decision
-                .evaluation
-                .pricing_blocked_by
-                .iter()
-                .map(entry_pricing_block_reason_to_evidence)
-                .collect(),
-            fast_venue_name: self.evidence_spot_venue_name(),
-            fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
-            fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
-            fast_venue_incoherent: self.pricing.fast_venue_incoherent,
-            lead_agreement_corr: option_evidence_probability(self.pricing.last_lead_agreement_corr),
-            fee_rate_basis_points: String::new(),
-            selected_side: decision
-                .evaluation
-                .selected_side
-                .map(outcome_side_evidence_label)
-                .map(str::to_string),
-            submission_instrument_id: String::new(),
-            submission_order_side: String::new(),
-            submission_price: String::new(),
-            submission_quantity: String::new(),
-            client_order_id: String::new(),
+        Ok(BlockedStrategyInputObservationFact {
+            details: StrategyInputDetails {
+                strategy_id: self.config.strategy_id.clone(),
+                configured_target_id: self.config.configured_target_id.clone(),
+                market_selection_ruleset_id: self.config.configured_target_id.clone(),
+                market_selection_outcome,
+                market_id: self.active.market_id.clone(),
+                polymarket_condition_id: self
+                    .active
+                    .source_identity
+                    .as_ref()
+                    .map(|identity| identity.condition_id.clone()),
+                polymarket_market_slug: self
+                    .active
+                    .source_identity
+                    .as_ref()
+                    .map(|identity| identity.market_slug.clone()),
+                polymarket_question_id: self
+                    .active
+                    .source_identity
+                    .as_ref()
+                    .map(|identity| identity.question_id.clone()),
+                up_instrument_id: self
+                    .active
+                    .books
+                    .up
+                    .instrument_id
+                    .map(|instrument_id| instrument_id.to_string()),
+                down_instrument_id: self
+                    .active
+                    .books
+                    .down
+                    .instrument_id
+                    .map(|instrument_id| instrument_id.to_string()),
+                market_selection_timestamp_ms: self.active.selection_published_at_ms,
+                selected_market_observed_timestamp_ms: self.active.selection_published_at_ms,
+                polymarket_market_start_timestamp_ms: self.active.interval_start_ms,
+                polymarket_market_end_timestamp_ms: self.active.interval_end_ms,
+                price_to_beat_source: self.config.price_to_beat_source.clone(),
+                price_to_beat_value: self
+                    .active
+                    .price_to_beat
+                    .filter(|value| is_positive_finite(*value))
+                    .map_or_else(String::new, evidence_number),
+                reference_quote_ts_event,
+                spot_price: self
+                    .evidence_spot_price()
+                    .map_or_else(String::new, evidence_number),
+                fast_venue_available,
+                reference_current_price: reference_current_price.map(evidence_number),
+                reference_current_price_available,
+                reference_current_price_source_id: self
+                    .evidence_reference_current_price_source_id(),
+                reference_current_price_failed_over: self
+                    .evidence_reference_current_price_failed_over(),
+                realized_volatility: Self::strategy_input_rv_state(
+                    &decision.evaluation.realized_volatility_receipt,
+                ),
+                seconds_to_market_end,
+                pricing_kurtosis: evidence_number(self.config.pricing_kurtosis),
+                theta_decay_factor: evidence_number(self.config.theta_decay_factor),
+                theta_scaled_min_edge_bps: decision
+                    .evaluation
+                    .min_worst_case_ev_bps
+                    .filter(|value| value.is_finite())
+                    .map_or_else(String::new, evidence_number),
+                fair_probability_up: decision
+                    .evaluation
+                    .fair_probability_up
+                    .map_or_else(String::new, probability_evidence),
+                uncertainty_band_probability: decision
+                    .evaluation
+                    .uncertainty_band_probability
+                    .map_or_else(String::new, probability_evidence),
+                expected_edge_basis_points: expected_edge_basis_points
+                    .filter(|value| value.is_finite())
+                    .map_or_else(String::new, evidence_number),
+                worst_case_edge_basis_points: worst_case_edge_basis_points
+                    .filter(|value| value.is_finite())
+                    .map_or_else(String::new, evidence_number),
+                up_worst_case_edge_basis_points: option_evidence_number(
+                    decision.evaluation.up_worst_case_ev_bps,
+                ),
+                down_worst_case_edge_basis_points: option_evidence_number(
+                    decision.evaluation.down_worst_case_ev_bps,
+                ),
+                gate_blocked_by: decision
+                    .evaluation
+                    .gate
+                    .blocked_by
+                    .iter()
+                    .map(entry_block_reason_to_evidence)
+                    .collect(),
+                pricing_blocked_by: decision
+                    .evaluation
+                    .pricing_blocked_by
+                    .iter()
+                    .map(entry_pricing_block_reason_to_evidence)
+                    .collect(),
+                fast_venue_name: self.evidence_spot_venue_name(),
+                fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
+                fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
+                fast_venue_incoherent: self.pricing.fast_venue_incoherent,
+                lead_agreement_corr: option_evidence_probability(
+                    self.pricing.last_lead_agreement_corr,
+                ),
+                fee_rate_basis_points: String::new(),
+                selected_side: decision
+                    .evaluation
+                    .selected_side
+                    .map(outcome_side_evidence_label)
+                    .map(str::to_string),
+            },
         })
     }
 
@@ -6106,9 +6130,13 @@ impl BinaryOracleEdgeTaker {
                 rv_seen_mask: rv_bit,
             },
         };
-        self.context
+        if let ObservationRecordOutcome::FailureReported(error) = self
+            .context
             .decision_evidence()
-            .record_strategy_input_snapshot(&snapshot)?;
+            .record_blocked_strategy_input_observation(snapshot)
+        {
+            log::error!("blocked strategy-input observation failed: {error}");
+        }
         self.last_recorded_blocked_strategy_input = Some(next_state);
         Ok(())
     }
@@ -6120,7 +6148,7 @@ impl BinaryOracleEdgeTaker {
         client_order_id: ClientOrderId,
         price: &Price,
         quantity: &Quantity,
-    ) -> Result<BoltV3StrategyInputEvidenceSnapshot> {
+    ) -> Result<SubmitLinkedStrategyInputSnapshotFact> {
         let price_to_beat = self
             .active
             .price_to_beat
@@ -6211,7 +6239,12 @@ impl BinaryOracleEdgeTaker {
         })?;
         let market_selection_outcome =
             strategy_input_market_selection_outcome(self.active.market_selection_outcome);
-        let realized_volatility_fields = &decision.evaluation.realized_volatility_receipt.evidence;
+        let realized_volatility_snapshot = decision
+            .evaluation
+            .realized_volatility_receipt
+            .evidence
+            .to_durable_snapshot()
+            .context("entry strategy input evidence requires a complete RV snapshot")?;
         let instrument_id = decision.instrument_id.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission instrument id")
         })?;
@@ -6222,138 +6255,109 @@ impl BinaryOracleEdgeTaker {
         let fast_venue_available = self.pricing.selected_pricing_spot().is_some();
         let reference_current_price_available =
             self.pricing.last_reference_current_price().is_some();
-        Ok(BoltV3StrategyInputEvidenceSnapshot {
-            strategy_id: self.config.strategy_id.clone(),
-            configured_target_id: self.config.configured_target_id.clone(),
-            market_selection_ruleset_id: self.config.configured_target_id.clone(),
-            market_selection_outcome: market_selection_outcome.to_string(),
-            market_id: self.active.market_id.clone(),
-            polymarket_condition_id: self
-                .active
-                .source_identity
-                .as_ref()
-                .map(|identity| identity.condition_id.clone()),
-            polymarket_market_slug: self
-                .active
-                .source_identity
-                .as_ref()
-                .map(|identity| identity.market_slug.clone()),
-            polymarket_question_id: self
-                .active
-                .source_identity
-                .as_ref()
-                .map(|identity| identity.question_id.clone()),
-            up_instrument_id: self
-                .active
-                .books
-                .up
-                .instrument_id
-                .map(|instrument_id| instrument_id.to_string()),
-            down_instrument_id: self
-                .active
-                .books
-                .down
-                .instrument_id
-                .map(|instrument_id| instrument_id.to_string()),
-            market_selection_timestamp_ms: Some(market_selection_timestamp_ms),
-            selected_market_observed_timestamp_ms: Some(market_selection_timestamp_ms),
-            polymarket_market_start_timestamp_ms: Some(market_start_timestamp_ms),
-            polymarket_market_end_timestamp_ms: Some(market_end_timestamp_ms),
-            price_to_beat_source: self.config.price_to_beat_source.clone(),
-            price_to_beat_value: evidence_number(price_to_beat),
-            reference_quote_ts_event,
-            spot_price: evidence_number(spot_price),
-            fast_venue_available,
-            reference_current_price: reference_current_price.map(evidence_number),
-            reference_current_price_available,
-            reference_current_price_source_id: self.evidence_reference_current_price_source_id(),
-            reference_current_price_failed_over: self
-                .evidence_reference_current_price_failed_over(),
-            realized_volatility: evidence_number(realized_volatility),
-            realized_volatility_surface_id: realized_volatility_fields.surface_id.clone(),
-            realized_volatility_as_of_ms: realized_volatility_fields.as_of_ms,
-            realized_volatility_gate_result: Some(
-                decision.evaluation.realized_volatility_receipt.gate_result,
-            ),
-            realized_volatility_receive_watermark_ms: decision
-                .evaluation
-                .realized_volatility_receipt
-                .receive_watermark_ms,
-            realized_volatility_annualized_decimal: realized_volatility_fields
-                .annualized_decimal
-                .clone(),
-            realized_volatility_measured_annualized_decimal: realized_volatility_fields
-                .measured_annualized_decimal
-                .clone(),
-            realized_volatility_noise_robust_annualized_decimal: realized_volatility_fields
-                .noise_robust_annualized_decimal
-                .clone(),
-            realized_volatility_continuous_annualized_decimal: realized_volatility_fields
-                .continuous_annualized_decimal
-                .clone(),
-            realized_volatility_jump_annualized_decimal: realized_volatility_fields
-                .jump_annualized_decimal
-                .clone(),
-            realized_volatility_forecast_annualized_decimal: realized_volatility_fields
-                .forecast_annualized_decimal
-                .clone(),
-            realized_volatility_pricing_component: realized_volatility_fields
-                .pricing_component
-                .clone(),
-            realized_volatility_seconds_per_annum: realized_volatility_fields
-                .seconds_per_annum
-                .clone(),
-            realized_volatility_aggregation: realized_volatility_fields.aggregation.clone(),
-            realized_volatility_sources_used: realized_volatility_fields.sources_used.clone(),
-            realized_volatility_source_diagnostics: realized_volatility_fields
-                .source_diagnostics
-                .clone(),
-            realized_volatility_unknown_source_rejections: realized_volatility_fields
-                .unknown_source_rejections
-                .clone(),
-            realized_volatility_blockers: realized_volatility_fields.blockers.clone(),
-            realized_volatility_config_fingerprint: realized_volatility_fields
-                .config_fingerprint
-                .clone(),
-            seconds_to_market_end,
-            pricing_kurtosis: evidence_number(self.config.pricing_kurtosis),
-            theta_decay_factor: evidence_number(self.config.theta_decay_factor),
-            theta_scaled_min_edge_bps: evidence_number(theta_scaled_min_edge_bps),
-            fair_probability_up: probability_evidence(fair_probability_up),
-            uncertainty_band_probability: probability_evidence(uncertainty_band_probability),
-            expected_edge_basis_points: evidence_number(expected_edge_basis_points),
-            worst_case_edge_basis_points: evidence_number(worst_case_edge_basis_points),
-            up_worst_case_edge_basis_points: option_evidence_number(
-                decision.evaluation.up_worst_case_ev_bps,
-            ),
-            down_worst_case_edge_basis_points: option_evidence_number(
-                decision.evaluation.down_worst_case_ev_bps,
-            ),
-            gate_blocked_by: decision
-                .evaluation
-                .gate
-                .blocked_by
-                .iter()
-                .map(entry_block_reason_to_evidence)
-                .collect(),
-            pricing_blocked_by: decision
-                .evaluation
-                .pricing_blocked_by
-                .iter()
-                .map(entry_pricing_block_reason_to_evidence)
-                .collect(),
-            fast_venue_name: self.evidence_spot_venue_name(),
-            fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
-            fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
-            fast_venue_incoherent: self.pricing.fast_venue_incoherent,
-            lead_agreement_corr: option_evidence_probability(self.pricing.last_lead_agreement_corr),
-            fee_rate_basis_points: evidence_number(fee_rate_basis_points),
-            selected_side: Some(outcome_side_evidence_label(selected_side).to_string()),
-            submission_instrument_id: instrument_id.to_string(),
-            submission_order_side: order_side.to_string(),
-            submission_price: price.to_string(),
-            submission_quantity: quantity.to_string(),
-            client_order_id: client_order_id.to_string(),
+        Ok(SubmitLinkedStrategyInputSnapshotFact {
+            details: StrategyInputDetails {
+                strategy_id: self.config.strategy_id.clone(),
+                configured_target_id: self.config.configured_target_id.clone(),
+                market_selection_ruleset_id: self.config.configured_target_id.clone(),
+                market_selection_outcome,
+                market_id: self.active.market_id.clone(),
+                polymarket_condition_id: self
+                    .active
+                    .source_identity
+                    .as_ref()
+                    .map(|identity| identity.condition_id.clone()),
+                polymarket_market_slug: self
+                    .active
+                    .source_identity
+                    .as_ref()
+                    .map(|identity| identity.market_slug.clone()),
+                polymarket_question_id: self
+                    .active
+                    .source_identity
+                    .as_ref()
+                    .map(|identity| identity.question_id.clone()),
+                up_instrument_id: self
+                    .active
+                    .books
+                    .up
+                    .instrument_id
+                    .map(|instrument_id| instrument_id.to_string()),
+                down_instrument_id: self
+                    .active
+                    .books
+                    .down
+                    .instrument_id
+                    .map(|instrument_id| instrument_id.to_string()),
+                market_selection_timestamp_ms: Some(market_selection_timestamp_ms),
+                selected_market_observed_timestamp_ms: Some(market_selection_timestamp_ms),
+                polymarket_market_start_timestamp_ms: Some(market_start_timestamp_ms),
+                polymarket_market_end_timestamp_ms: Some(market_end_timestamp_ms),
+                price_to_beat_source: self.config.price_to_beat_source.clone(),
+                price_to_beat_value: evidence_number(price_to_beat),
+                reference_quote_ts_event,
+                spot_price: evidence_number(spot_price),
+                fast_venue_available,
+                reference_current_price: reference_current_price.map(evidence_number),
+                reference_current_price_available,
+                reference_current_price_source_id: self
+                    .evidence_reference_current_price_source_id(),
+                reference_current_price_failed_over: self
+                    .evidence_reference_current_price_failed_over(),
+                realized_volatility: StrategyInputRvState::Present {
+                    selected_annualized_decimal: Some(evidence_number(realized_volatility)),
+                    gate_result: decision.evaluation.realized_volatility_receipt.gate_result,
+                    receive_watermark_ms: decision
+                        .evaluation
+                        .realized_volatility_receipt
+                        .receive_watermark_ms
+                        .map(LocalReceiveMs::value),
+                    snapshot: Box::new(realized_volatility_snapshot),
+                },
+                seconds_to_market_end,
+                pricing_kurtosis: evidence_number(self.config.pricing_kurtosis),
+                theta_decay_factor: evidence_number(self.config.theta_decay_factor),
+                theta_scaled_min_edge_bps: evidence_number(theta_scaled_min_edge_bps),
+                fair_probability_up: probability_evidence(fair_probability_up),
+                uncertainty_band_probability: probability_evidence(uncertainty_band_probability),
+                expected_edge_basis_points: evidence_number(expected_edge_basis_points),
+                worst_case_edge_basis_points: evidence_number(worst_case_edge_basis_points),
+                up_worst_case_edge_basis_points: option_evidence_number(
+                    decision.evaluation.up_worst_case_ev_bps,
+                ),
+                down_worst_case_edge_basis_points: option_evidence_number(
+                    decision.evaluation.down_worst_case_ev_bps,
+                ),
+                gate_blocked_by: decision
+                    .evaluation
+                    .gate
+                    .blocked_by
+                    .iter()
+                    .map(entry_block_reason_to_evidence)
+                    .collect(),
+                pricing_blocked_by: decision
+                    .evaluation
+                    .pricing_blocked_by
+                    .iter()
+                    .map(entry_pricing_block_reason_to_evidence)
+                    .collect(),
+                fast_venue_name: self.evidence_spot_venue_name(),
+                fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
+                fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
+                fast_venue_incoherent: self.pricing.fast_venue_incoherent,
+                lead_agreement_corr: option_evidence_probability(
+                    self.pricing.last_lead_agreement_corr,
+                ),
+                fee_rate_basis_points: evidence_number(fee_rate_basis_points),
+                selected_side: Some(outcome_side_evidence_label(selected_side).to_string()),
+            },
+            submission: SubmissionLinkage {
+                instrument_id: instrument_id.to_string(),
+                order_side: order_side.to_string(),
+                price: price.to_string(),
+                quantity: quantity.to_string(),
+                client_order_id: client_order_id.to_string(),
+            },
         })
     }
 
@@ -6495,15 +6499,15 @@ impl BinaryOracleEdgeTaker {
             client_order_id,
         );
 
-        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        let intent = order_intent_details_from_compiled_order(
             self.config.strategy_id.clone(),
-            BoltV3OrderIntentKind::Exit,
             price.to_string(),
             &order,
         );
 
         match self.submit_order_with_decision_evidence(
             intent,
+            BoltV3SubmitIntentKind::RiskReducingExit,
             order,
             BoltV3SubmitContext::with_client_id_and_position_id(
                 client_id,
@@ -6527,7 +6531,7 @@ impl BinaryOracleEdgeTaker {
         decision: &ExitSubmissionDecision,
         trigger_context: ExitEvaluationTriggerContext,
         log_fields: &ExitEvaluationLogFields,
-    ) -> Result<BoltV3ExitEvaluationEvidence> {
+    ) -> Result<ExitEvaluationFact> {
         let receipt = &decision.evaluation.realized_volatility_receipt;
         let checked_timestamp = |field: &'static str, value: u64| {
             i64::try_from(value).with_context(|| {
@@ -6565,7 +6569,50 @@ impl BinaryOracleEdgeTaker {
             .transpose()?;
         let reference_current_price = option_evidence_number(log_fields.reference_current_price);
 
-        Ok(BoltV3ExitEvaluationEvidence {
+        let evaluation_decision =
+            if matches!(decision.evaluation.exit_decision, Some(ExitDecision::Exit)) {
+                let submission = SubmissionLinkage {
+                    instrument_id: decision
+                        .instrument_id
+                        .context("exit evaluation submission is missing instrument id")?
+                        .to_string(),
+                    order_side: decision
+                        .order_side
+                        .context("exit evaluation submission is missing order side")?
+                        .to_string(),
+                    price: option_evidence_number(decision.price)
+                        .context("exit evaluation submission is missing price")?,
+                    quantity: decision
+                        .quantity
+                        .context("exit evaluation submission is missing quantity")?
+                        .to_string(),
+                    client_order_id: decision
+                        .client_order_id
+                        .context("exit evaluation submission is missing client order id")?
+                        .to_string(),
+                };
+                ExitEvaluationDecision::Submission {
+                    outcome: if log_fields.forced_flat_reasons.is_empty() {
+                        ExitSubmissionOutcome::Exit
+                    } else {
+                        ExitSubmissionOutcome::ExitFailClosed
+                    },
+                    submission,
+                }
+            } else {
+                ExitEvaluationDecision::Hold {
+                    outcome: if log_fields.submission_blocked_reason.is_some() {
+                        ExitHoldOutcome::Blocked
+                    } else {
+                        ExitHoldOutcome::Hold
+                    },
+                    blocked_reason: log_fields
+                        .submission_blocked_reason
+                        .map(exit_block_reason_to_evidence),
+                }
+            };
+
+        Ok(ExitEvaluationFact {
             position_id: log_fields.position_id.map(|id| id.to_string()),
             market_id: log_fields.market_id.clone(),
             instrument_id: log_fields.position_instrument_id.map(|id| id.to_string()),
@@ -6582,12 +6629,12 @@ impl BinaryOracleEdgeTaker {
             rv_blockers: receipt
                 .raw_snapshot_blockers
                 .iter()
-                .map(|reason| realized_volatility_block_reason_evidence_label(*reason).to_string())
+                .map(|reason| realized_vol_block_reason_fact(*reason))
                 .collect(),
             rv_source_diagnostics: receipt
                 .source_diagnostics
                 .iter()
-                .map(|diagnostic| format!("{}:{}", diagnostic.source_id, diagnostic.status))
+                .map(|diagnostic| format!("{}:{:?}", diagnostic.source_id, diagnostic.status))
                 .collect(),
             rv_gate_result: receipt.gate_result,
             rv_as_of_minus_now_ms,
@@ -6606,20 +6653,12 @@ impl BinaryOracleEdgeTaker {
             down_fee_bps: option_evidence_number(log_fields.down_fee_bps),
             hold_ev_bps: option_evidence_number(log_fields.hold_ev_bps),
             exit_ev_bps: option_evidence_number(log_fields.exit_ev_bps),
-            exit_decision: exit_decision_evidence_from_optional(decision.evaluation.exit_decision),
+            decision: evaluation_decision,
             forced_flat_reasons: log_fields
                 .forced_flat_reasons
                 .iter()
                 .map(|reason| format!("{reason:?}"))
                 .collect(),
-            submission_order_side: log_fields
-                .submission_order_side
-                .map(|side| side.to_string()),
-            submission_price: option_evidence_number(log_fields.submission_price),
-            submission_quantity: log_fields
-                .submission_quantity
-                .map(|quantity| quantity.to_string()),
-            submission_blocked_reason: log_fields.submission_blocked_reason.map(str::to_string),
         })
     }
 
@@ -6679,10 +6718,10 @@ impl BinaryOracleEdgeTaker {
             }
         };
 
-        if let Err(error) = self
+        if let ObservationRecordOutcome::FailureReported(error) = self
             .context
             .decision_evidence()
-            .record_exit_evaluation(&evidence)
+            .record_exit_evaluation(evidence.clone())
         {
             log::error!(
                 "binary_oracle_edge_taker exit evidence write failed: strategy_id={} position_id={:?} error={:#}",
@@ -6903,8 +6942,7 @@ impl BinaryOracleEdgeTaker {
             let newly_recorded = self.record_entry_skip_once(
                 now_ms,
                 &decision,
-                BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation,
-                None,
+                EvidenceEntrySkipReason::OnePositionInvariantViolation,
             )?;
             // Keep WARN on the same dedupe as evidence (not per-tick), then
             // propagate the invariant failure so admission fails closed.
@@ -6979,24 +7017,26 @@ impl BinaryOracleEdgeTaker {
             client_order_id,
         );
 
-        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        let intent = order_intent_details_from_compiled_order(
             self.config.strategy_id.clone(),
-            BoltV3OrderIntentKind::Entry,
             price.to_string(),
             &order,
         );
 
-        match self
+        if let Err(error) = self
             .context
             .decision_evidence()
-            .record_strategy_input_snapshot(&strategy_input_snapshot)
-            .and_then(|()| {
-                self.submit_order_with_decision_evidence(
-                    intent,
-                    order,
-                    BoltV3SubmitContext::with_client_id(client_id),
-                )
-            }) {
+            .record_submit_linked_strategy_input_snapshot(strategy_input_snapshot)
+        {
+            self.clear_pending_entry_state();
+            return Err(anyhow::Error::from(error));
+        }
+        match self.submit_order_with_decision_evidence(
+            intent,
+            BoltV3SubmitIntentKind::Entry,
+            order,
+            BoltV3SubmitContext::with_client_id(client_id),
+        ) {
             Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}
             Ok(BoltV3SubmitRoutingOutcome::SkippedByPolicy) => {
                 self.clear_pending_entry_state();
@@ -7529,7 +7569,7 @@ impl DataActor for BinaryOracleEdgeTaker {
             && let Err(error) = self.try_submit_exit_order_for_trigger(
                 now_ms,
                 ExitEvaluationTriggerContext::from_market_data(
-                    BoltV3ExitTriggerSource::BookDelta,
+                    EvidenceExitTriggerSource::BookDelta,
                     deltas.ts_event.as_u64() / NANOS_PER_MILLI_U64,
                     LocalReceiveMs::new(deltas.ts_init.as_u64() / NANOS_PER_MILLI_U64),
                 ),
@@ -7649,8 +7689,8 @@ impl BinaryOracleEdgeTaker {
                 self.refresh_book_subscriptions_for_current_state();
                 if entry_reconcile_materialization {
                     self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                        transition: BoltV3OrderLifecycleTransition::EntryFillMaterialized,
-                        outcome: BoltV3OrderLifecycleOutcome::Managed,
+                        transition: OrderLifecycleTransition::EntryFillMaterialized,
+                        outcome: OrderLifecycleOutcome::Managed,
                         source: ORDER_LIFECYCLE_SOURCE_ENTRY_FILL,
                         market_id: pending_context
                             .as_ref()
@@ -7686,8 +7726,8 @@ impl BinaryOracleEdgeTaker {
                         observed_fill_quantity: Some(observed_fill_quantity),
                     };
                     self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                        transition: BoltV3OrderLifecycleTransition::EntryReconcilePending,
-                        outcome: BoltV3OrderLifecycleOutcome::EntryReconcilePending,
+                        transition: OrderLifecycleTransition::EntryReconcilePending,
+                        outcome: OrderLifecycleOutcome::EntryReconcilePending,
                         source: ORDER_LIFECYCLE_SOURCE_ENTRY_FILL,
                         market_id: pending.lifecycle.market_id_owned(),
                         instrument_id: Some(event.instrument_id),
@@ -7761,7 +7801,7 @@ impl BinaryOracleEdgeTaker {
         self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
             client_order_id: event.client_order_id,
             event_instrument_id: event.instrument_id,
-            transition: BoltV3OrderLifecycleTransition::OrderCanceled,
+            transition: OrderLifecycleTransition::OrderCanceled,
             source: ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED,
             raw_reason_text: None,
             ts_event_ns: event.ts_event.as_u64(),
@@ -7770,7 +7810,7 @@ impl BinaryOracleEdgeTaker {
         self.mark_exit_order_terminal(
             event.client_order_id,
             event.instrument_id,
-            BoltV3OrderLifecycleTransition::OrderCanceled,
+            OrderLifecycleTransition::OrderCanceled,
             ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED,
             None,
             event.ts_event.as_u64(),
@@ -7793,7 +7833,7 @@ crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker
         self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
             client_order_id: event.client_order_id,
             event_instrument_id: event.instrument_id,
-            transition: BoltV3OrderLifecycleTransition::OrderRejected,
+            transition: OrderLifecycleTransition::OrderRejected,
             source: ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED,
             raw_reason_text: Some(event.reason.to_string()),
             ts_event_ns: event.ts_event.as_u64(),
@@ -7802,7 +7842,7 @@ crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker
         self.mark_exit_order_terminal(
             event.client_order_id,
             event.instrument_id,
-            BoltV3OrderLifecycleTransition::OrderRejected,
+            OrderLifecycleTransition::OrderRejected,
             ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED,
             Some(event.reason.to_string()),
             event.ts_event.as_u64(),
@@ -7819,7 +7859,7 @@ crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker
         self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
             client_order_id: event.client_order_id,
             event_instrument_id: event.instrument_id,
-            transition: BoltV3OrderLifecycleTransition::OrderDenied,
+            transition: OrderLifecycleTransition::OrderDenied,
             source: ORDER_LIFECYCLE_SOURCE_ORDER_DENIED,
             raw_reason_text: Some(event.reason.to_string()),
             ts_event_ns: event.ts_event.as_u64(),
@@ -7828,7 +7868,7 @@ crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker
         self.mark_exit_order_terminal(
             event.client_order_id,
             event.instrument_id,
-            BoltV3OrderLifecycleTransition::OrderDenied,
+            OrderLifecycleTransition::OrderDenied,
             ORDER_LIFECYCLE_SOURCE_ORDER_DENIED,
             Some(event.reason.to_string()),
             event.ts_event.as_u64(),
@@ -7840,7 +7880,7 @@ crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker
         self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
             client_order_id: event.client_order_id,
             event_instrument_id: event.instrument_id,
-            transition: BoltV3OrderLifecycleTransition::OrderExpired,
+            transition: OrderLifecycleTransition::OrderExpired,
             source: ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED,
             raw_reason_text: None,
             ts_event_ns: event.ts_event.as_u64(),
@@ -7849,7 +7889,7 @@ crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker
         self.mark_exit_order_terminal(
             event.client_order_id,
             event.instrument_id,
-            BoltV3OrderLifecycleTransition::OrderExpired,
+            OrderLifecycleTransition::OrderExpired,
             ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED,
             None,
             event.ts_event.as_u64(),
@@ -7966,8 +8006,8 @@ crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker
             if let Some((pending, observed_fill_quantity)) = entry_reconcile_close {
                 self.exposure = ExposureState::Flat;
                 self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                    transition: BoltV3OrderLifecycleTransition::PositionClosed,
-                    outcome: BoltV3OrderLifecycleOutcome::Flat,
+                    transition: OrderLifecycleTransition::PositionClosed,
+                    outcome: OrderLifecycleOutcome::Flat,
                     source: ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
                     market_id: pending.lifecycle.market_id_owned(),
                     instrument_id: Some(event.instrument_id),
@@ -8234,10 +8274,156 @@ fn best_healthy_oracle_price(snapshot: &ReferenceSnapshot) -> Option<f64> {
         .and_then(|venue| venue.observed_price)
 }
 
-fn outcome_side_to_evidence(side: OutcomeSide) -> BoltV3OutcomeSide {
+fn realized_vol_pricing_component_fact(
+    value: crate::bolt_v3_realized_volatility::RealizedVolPricingComponent,
+) -> EvidenceRealizedVolPricingComponent {
+    use crate::bolt_v3_realized_volatility::RealizedVolPricingComponent as Source;
+    match value {
+        Source::Measured => EvidenceRealizedVolPricingComponent::Measured,
+        Source::NoiseRobust => EvidenceRealizedVolPricingComponent::NoiseRobust,
+        Source::Continuous => EvidenceRealizedVolPricingComponent::Continuous,
+        Source::Forecast => EvidenceRealizedVolPricingComponent::Forecast,
+    }
+}
+
+fn realized_vol_aggregation_fact(
+    value: crate::bolt_v3_realized_volatility::RealizedVolAggregation,
+) -> EvidenceRealizedVolAggregation {
+    use crate::bolt_v3_realized_volatility::RealizedVolAggregation as Source;
+    match value {
+        Source::UpperQuantile { .. } => EvidenceRealizedVolAggregation::UpperQuantile,
+        Source::Median => EvidenceRealizedVolAggregation::Median,
+        Source::TrimmedMean { .. } => EvidenceRealizedVolAggregation::TrimmedMean,
+        Source::MedianWithUpperQuantileGuard { .. } => {
+            EvidenceRealizedVolAggregation::MedianWithUpperQuantileGuard
+        }
+    }
+}
+
+fn realized_vol_block_reason_fact(
+    value: crate::bolt_v3_realized_volatility::RealizedVolBlockReason,
+) -> EvidenceRealizedVolBlockReason {
+    use crate::bolt_v3_realized_volatility::RealizedVolBlockReason as Source;
+    match value {
+        Source::InvalidConfig => EvidenceRealizedVolBlockReason::InvalidConfig,
+        Source::QuorumNotReady => EvidenceRealizedVolBlockReason::QuorumNotReady,
+        Source::SourceStale => EvidenceRealizedVolBlockReason::SourceStale,
+        Source::CoverageBelowMinimum => EvidenceRealizedVolBlockReason::CoverageBelowMinimum,
+        Source::InterSampleGapExceeded => EvidenceRealizedVolBlockReason::InterSampleGapExceeded,
+        Source::SourceClassMismatch => EvidenceRealizedVolBlockReason::SourceClassMismatch,
+        Source::SampleKindMismatch => EvidenceRealizedVolBlockReason::SampleKindMismatch,
+        Source::CrossSourceDispersion => EvidenceRealizedVolBlockReason::CrossSourceDispersion,
+        Source::AnnualizationBasisInvalid => {
+            EvidenceRealizedVolBlockReason::AnnualizationBasisInvalid
+        }
+        Source::NotWarm => EvidenceRealizedVolBlockReason::NotWarm,
+    }
+}
+
+fn realized_vol_source_class_fact(
+    value: crate::bolt_v3_realized_volatility::RealizedVolSourceClass,
+) -> EvidenceRealizedVolSourceClass {
+    use crate::bolt_v3_realized_volatility::RealizedVolSourceClass as Source;
+    match value {
+        Source::SpotQuote => EvidenceRealizedVolSourceClass::SpotQuote,
+        Source::Trade => EvidenceRealizedVolSourceClass::Trade,
+        Source::Mark => EvidenceRealizedVolSourceClass::Mark,
+        Source::Index => EvidenceRealizedVolSourceClass::Index,
+    }
+}
+
+fn realized_vol_sample_kind_fact(
+    value: crate::bolt_v3_realized_volatility::RealizedVolSampleKind,
+) -> EvidenceRealizedVolSampleKind {
+    use crate::bolt_v3_realized_volatility::RealizedVolSampleKind as Source;
+    match value {
+        Source::Midpoint => EvidenceRealizedVolSampleKind::Midpoint,
+        Source::Trade => EvidenceRealizedVolSampleKind::Trade,
+        Source::Mark => EvidenceRealizedVolSampleKind::Mark,
+        Source::Index => EvidenceRealizedVolSampleKind::Index,
+    }
+}
+
+fn realized_vol_source_status_fact(
+    value: crate::bolt_v3_realized_volatility::RealizedVolSourceStatus,
+) -> EvidenceRealizedVolSourceStatus {
+    use crate::bolt_v3_realized_volatility::RealizedVolSourceStatus as Source;
+    match value {
+        Source::Ready => EvidenceRealizedVolSourceStatus::Ready,
+        Source::Blocked => EvidenceRealizedVolSourceStatus::Blocked,
+        Source::DiagnosticOnly => EvidenceRealizedVolSourceStatus::DiagnosticOnly,
+        Source::Waiting => EvidenceRealizedVolSourceStatus::Waiting,
+    }
+}
+
+fn realized_vol_reject_reason_fact(
+    value: crate::bolt_v3_realized_volatility::RealizedVolSourceRejectReason,
+) -> EvidenceRealizedVolSourceRejectReason {
+    use crate::bolt_v3_realized_volatility::RealizedVolSourceRejectReason as Source;
+    match value {
+        Source::DisabledSource => EvidenceRealizedVolSourceRejectReason::DisabledSource,
+        Source::InvalidPrice => EvidenceRealizedVolSourceRejectReason::InvalidPrice,
+        Source::SourceClassMismatch => EvidenceRealizedVolSourceRejectReason::SourceClassMismatch,
+        Source::SampleKindMismatch => EvidenceRealizedVolSourceRejectReason::SampleKindMismatch,
+        Source::EventTimeRegression => EvidenceRealizedVolSourceRejectReason::EventTimeRegression,
+        Source::DuplicateTimestamp => EvidenceRealizedVolSourceRejectReason::DuplicateTimestamp,
+        Source::StaleSameEventUpdate => EvidenceRealizedVolSourceRejectReason::StaleSameEventUpdate,
+        Source::ReceiveBeforeEvent => EvidenceRealizedVolSourceRejectReason::ReceiveBeforeEvent,
+        Source::EventReceiveLagExceeded => {
+            EvidenceRealizedVolSourceRejectReason::EventReceiveLagExceeded
+        }
+    }
+}
+
+fn realized_vol_diagnostic_fact(
+    value: &crate::bolt_v3_realized_volatility::RealizedVolSourceDiagnostic,
+) -> RealizedVolatilitySourceDiagnosticFact {
+    RealizedVolatilitySourceDiagnosticFact {
+        source_id: value.source_id.clone(),
+        source_class: realized_vol_source_class_fact(value.source_class),
+        sample_kind: realized_vol_sample_kind_fact(value.sample_kind),
+        enabled: value.enabled,
+        counts_toward_quorum: value.counts_toward_quorum,
+        status: realized_vol_source_status_fact(value.status),
+        annualized_realized_volatility_decimal: value
+            .annualized_realized_vol_decimal
+            .map(evidence_number),
+        measured_annualized_realized_volatility_decimal: value
+            .measured_annualized_realized_vol_decimal
+            .map(evidence_number),
+        noise_robust_annualized_realized_volatility_decimal: value
+            .noise_robust_annualized_realized_vol_decimal
+            .map(evidence_number),
+        continuous_annualized_realized_volatility_decimal: value
+            .continuous_annualized_realized_vol_decimal
+            .map(evidence_number),
+        jump_annualized_realized_volatility_decimal: value
+            .jump_annualized_realized_vol_decimal
+            .map(evidence_number),
+        first_sample_ts_ms: value.first_sample_ts_ms,
+        last_sample_ts_ms: value.last_sample_ts_ms,
+        raw_sample_count: value.raw_sample_count,
+        grid_sample_count: value.grid_sample_count,
+        coverage_ratio: evidence_number(value.coverage_ratio),
+        max_inter_sample_gap_ms: value.max_inter_sample_gap_ms,
+        last_rejected_reason: value
+            .last_rejected_reason
+            .map(realized_vol_reject_reason_fact),
+        last_rejected_event_ts_ms: value.last_rejected_event_ts_ms,
+        last_rejected_recv_ts_ms: value.last_rejected_recv_ts_ms,
+        rejection_counters: value
+            .rejection_counters
+            .iter()
+            .map(|(reason, count)| (realized_vol_reject_reason_fact(*reason), *count))
+            .collect(),
+        block_reason: value.block_reason.map(realized_vol_block_reason_fact),
+    }
+}
+
+fn outcome_side_to_evidence(side: OutcomeSide) -> EvidenceOutcomeSide {
     match side {
-        OutcomeSide::Up => BoltV3OutcomeSide::Up,
-        OutcomeSide::Down => BoltV3OutcomeSide::Down,
+        OutcomeSide::Up => EvidenceOutcomeSide::Up,
+        OutcomeSide::Down => EvidenceOutcomeSide::Down,
     }
 }
 
@@ -8250,7 +8436,7 @@ fn settlement_leg_for_outcome(side: OutcomeSide) -> Leg {
 
 fn settlement_position_realized_pnl_observation(
     account_id: &str,
-    evidence: &BoltV3SettlementEvidence,
+    evidence: &SettlementFact,
     settlement_currency: Currency,
 ) -> Result<PositionRealizedPnlObservation> {
     Ok(PositionRealizedPnlObservation {
@@ -8259,7 +8445,7 @@ fn settlement_position_realized_pnl_observation(
         position_id: evidence.position_id.clone(),
         event_id: Some(evidence.settlement_key.clone()),
         observed: RealizedPnlObservation {
-            source: BOLT_V3_SETTLEMENT_RECORD_KIND,
+            source: settlement_kind(),
             observed_at_unix_nanos: evidence.resolution_ts_event_ns,
             realized_pnl: Decimal::from_str(&evidence.realized_pnl).with_context(|| {
                 format!(
@@ -8275,7 +8461,7 @@ fn settlement_position_realized_pnl_observation(
 }
 
 fn venue_truth_settlement_explanation_from_evidence(
-    evidence: &BoltV3SettlementEvidence,
+    evidence: &SettlementFact,
 ) -> Result<VenueTruthSettlementExplanation> {
     let entry_order_side = settlement_order_side_from_evidence(&evidence.entry_order_side)
         .with_context(|| {
@@ -8356,24 +8542,26 @@ fn settlement_product_id(instrument_id: InstrumentId) -> Result<String> {
     })
 }
 
-fn forced_flat_reason_to_evidence(reason: &ForcedFlatReason) -> BoltV3ForcedFlatReason {
+fn forced_flat_reason_to_evidence(reason: &ForcedFlatReason) -> EvidenceForcedFlatReason {
     match reason {
-        ForcedFlatReason::Freeze => BoltV3ForcedFlatReason::Freeze,
-        ForcedFlatReason::StaleReference => BoltV3ForcedFlatReason::StaleReference,
-        ForcedFlatReason::ThinBook => BoltV3ForcedFlatReason::ThinBook,
-        ForcedFlatReason::MetadataMismatch => BoltV3ForcedFlatReason::MetadataMismatch,
-        ForcedFlatReason::FastVenueIncoherent => BoltV3ForcedFlatReason::FastVenueIncoherent,
+        ForcedFlatReason::Freeze => EvidenceForcedFlatReason::Freeze,
+        ForcedFlatReason::StaleReference => EvidenceForcedFlatReason::StaleReference,
+        ForcedFlatReason::ThinBook => EvidenceForcedFlatReason::ThinBook,
+        ForcedFlatReason::MetadataMismatch => EvidenceForcedFlatReason::MetadataMismatch,
+        ForcedFlatReason::FastVenueIncoherent => EvidenceForcedFlatReason::FastVenueIncoherent,
     }
 }
 
-fn exposure_occupancy_to_evidence(occupancy: ExposureOccupancy) -> BoltV3ExposureOccupancy {
+fn exposure_occupancy_to_evidence(occupancy: ExposureOccupancy) -> EvidenceExposureOccupancy {
     match occupancy {
-        ExposureOccupancy::PendingEntry => BoltV3ExposureOccupancy::PendingEntry,
-        ExposureOccupancy::EntryReconcilePending => BoltV3ExposureOccupancy::EntryReconcilePending,
-        ExposureOccupancy::ManagedPosition => BoltV3ExposureOccupancy::ManagedPosition,
-        ExposureOccupancy::ExitPending => BoltV3ExposureOccupancy::ExitPending,
-        ExposureOccupancy::UnsupportedObserved => BoltV3ExposureOccupancy::UnsupportedObserved,
-        ExposureOccupancy::BlindRecovery => BoltV3ExposureOccupancy::BlindRecovery,
+        ExposureOccupancy::PendingEntry => EvidenceExposureOccupancy::PendingEntry,
+        ExposureOccupancy::EntryReconcilePending => {
+            EvidenceExposureOccupancy::EntryReconcilePending
+        }
+        ExposureOccupancy::ManagedPosition => EvidenceExposureOccupancy::ManagedPosition,
+        ExposureOccupancy::ExitPending => EvidenceExposureOccupancy::ExitPending,
+        ExposureOccupancy::UnsupportedObserved => EvidenceExposureOccupancy::UnsupportedObserved,
+        ExposureOccupancy::BlindRecovery => EvidenceExposureOccupancy::BlindRecovery,
     }
 }
 

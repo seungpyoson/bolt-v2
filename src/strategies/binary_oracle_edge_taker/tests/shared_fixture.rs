@@ -3,6 +3,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use super::*;
+pub(super) use crate::bolt_v3_current_evidence::{
+    AdmissionRejectionReason, CurrentFact, EntrySkipReason, ExitBlockedReason, ExitTriggerSource,
+    RealizedVolAggregation, RealizedVolPricingComponent, RvGateResult,
+};
 use nautilus_common::{
     actor::DataActorNative,
     messages::data::DataCommand,
@@ -263,660 +267,35 @@ impl FeeProvider for RecordingFeeProvider {
     }
 }
 
-#[derive(Debug)]
-pub(super) struct RecordingDecisionEvidenceWriter;
-
-impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
-    for RecordingDecisionEvidenceWriter
-{
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(
-        &self,
-        _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &crate::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(
-        &self,
-        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> Result<()> {
-        Ok(())
-    }
+pub(super) fn recording_decision_evidence()
+-> Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder> {
+    Arc::new(crate::bolt_v3_current_evidence::DecisionEvidenceRecorder::recording())
 }
 
-#[derive(Debug)]
-pub(super) struct FailingDecisionEvidenceWriter;
-
-impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
-    for FailingDecisionEvidenceWriter
-{
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
-    ) -> Result<()> {
-        anyhow::bail!("strategy input snapshot write failed")
-    }
-
-    fn record_order_intent(
-        &self,
-        _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("intent write failed")
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("admission decision write failed")
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("basket admission decision write failed")
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &crate::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("capital admission rebuild audit write failed")
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("submit reservation metadata write failed")
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("submit reservation fill write failed")
-    }
-
-    fn record_entry_skip(
-        &self,
-        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("entry skip write failed")
-    }
-
-    fn record_exit_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("exit decision write failed")
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("exit evaluation write failed")
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("loss governor halt write failed")
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("order reject write failed")
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("requote throttle write failed")
-    }
-
-    fn record_settlement(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("settlement write failed")
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("settlement booking-error write failed")
-    }
-
-    fn drain_shutdown(&self) -> Result<()> {
-        Ok(())
-    }
+pub(super) fn failing_decision_evidence()
+-> Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder> {
+    let recorder = recording_decision_evidence();
+    recorder.fail_machine_writes();
+    recorder.fail_observation_writes();
+    recorder
 }
 
-/// Fails ONLY `record_exit_evaluation` (returning `Ok` for intent, admission, and
-/// every other sink) so a test can prove the trading-side exit path is unchanged
-/// when the exit-evaluation evidence sink errors. Counts exit-evaluation attempts
-/// so the test can assert the swallow path was actually exercised.
-#[derive(Debug, Default)]
-pub(super) struct ExitEvaluationFailingDecisionEvidenceWriter {
-    exit_evaluation_attempts: Mutex<usize>,
+pub(super) fn failing_observation_evidence()
+-> Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder> {
+    let recorder = recording_decision_evidence();
+    recorder.fail_observation_writes();
+    recorder
 }
 
-impl ExitEvaluationFailingDecisionEvidenceWriter {
-    pub(super) fn exit_evaluation_attempts(&self) -> usize {
-        *self
-            .exit_evaluation_attempts
-            .lock()
-            .expect("exit-evaluation failing writer mutex poisoned")
-    }
-}
-
-impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
-    for ExitEvaluationFailingDecisionEvidenceWriter
-{
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(
-        &self,
-        _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &crate::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(
-        &self,
-        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> Result<()> {
-        *self
-            .exit_evaluation_attempts
-            .lock()
-            .expect("exit-evaluation failing writer mutex poisoned") += 1;
-        anyhow::bail!("exit evaluation write failed")
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum RecordedDecisionEvidenceEvent {
-    StrategyInput(Box<crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot>),
-    OrderIntent(Box<crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>),
-    AdmissionDecision(crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence),
-    EntrySkip(crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence),
-    ExitDecision(crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence),
-    ExitEvaluation(Box<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence>),
-    LossGovernorHalt(crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence),
-    OrderLifecycle(crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleEvidence),
-    RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
-    /// Production settlement evidence (Lane 3, #1179) must map into this
-    /// variant carrying realized_pnl; until that mapping exists this variant is
-    /// intentionally unconstructed and hold_to_resolution stays red. The
-    /// harness compares with f64::EPSILON as an exact oracle-pass-through
-    /// contract: production must record the realized_pnl produced by the shared
-    /// settlement oracle, not a separately rounded recomputation.
-    Settlement(RecordedSettlementEvidenceEvent),
-    SettlementBookingError(RecordedSettlementBookingErrorEvidenceEvent),
-    TerminalSettlement(crate::bolt_v3_decision_evidence::BoltV3TerminalSettlementEvidence),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct RecordedSettlementEvidenceEvent {
-    pub(super) realized_pnl: f64,
-    pub(super) product_id: String,
-    pub(super) market_id: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct RecordedSettlementBookingErrorEvidenceEvent {
-    pub(super) reason: crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorReason,
-}
-
-#[derive(Debug, Default)]
-pub(super) struct RecordingSequencedDecisionEvidenceWriter {
-    events: Mutex<Vec<RecordedDecisionEvidenceEvent>>,
-    fail_standalone_order_lifecycle: bool,
-    strategy_input_attempts: Mutex<usize>,
-    fail_strategy_input_attempt: Option<usize>,
-}
-
-impl RecordingSequencedDecisionEvidenceWriter {
-    pub(super) fn with_failing_standalone_order_lifecycle() -> Self {
-        Self {
-            fail_standalone_order_lifecycle: true,
-            ..Self::default()
-        }
-    }
-
-    pub(super) fn with_failing_strategy_input_attempt(attempt: usize) -> Self {
-        Self {
-            fail_strategy_input_attempt: Some(attempt),
-            ..Self::default()
-        }
-    }
-
-    pub(super) fn strategy_input_attempts(&self) -> usize {
-        *self
-            .strategy_input_attempts
-            .lock()
-            .expect("recording evidence writer strategy-input counter poisoned")
-    }
-
-    pub(super) fn events(&self) -> Vec<RecordedDecisionEvidenceEvent> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .clone()
-    }
-
-    pub(super) fn push_settlement(&self, settlement: RecordedSettlementEvidenceEvent) {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::Settlement(settlement));
-    }
-}
-
-impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
-    for RecordingSequencedDecisionEvidenceWriter
-{
-    fn record_strategy_input_snapshot(
-        &self,
-        snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
-    ) -> Result<()> {
-        let attempt = {
-            let mut attempts = self
-                .strategy_input_attempts
-                .lock()
-                .expect("recording evidence writer strategy-input counter poisoned");
-            *attempts += 1;
-            *attempts
-        };
-        if self.fail_strategy_input_attempt == Some(attempt) {
-            anyhow::bail!("strategy input snapshot write failed on attempt {attempt}");
-        }
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::StrategyInput(Box::new(
-                snapshot.clone(),
-            )));
-        Ok(())
-    }
-
-    fn record_order_intent(
-        &self,
-        intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::OrderIntent(Box::new(
-                intent.clone(),
-            )));
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::AdmissionDecision(
-                decision.clone(),
-            ));
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &crate::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(
-        &self,
-        skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::EntrySkip(skip.clone()));
-        Ok(())
-    }
-
-    fn record_exit_decision(
-        &self,
-        decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::ExitDecision(
-                decision.clone(),
-            ));
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::ExitEvaluation(Box::new(
-                evidence.clone(),
-            )));
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_lifecycle(
-        &self,
-        evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleEvidence,
-    ) -> Result<()> {
-        if self.fail_standalone_order_lifecycle {
-            anyhow::bail!("standalone order lifecycle write failed");
-        }
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::OrderLifecycle(
-                evidence.clone(),
-            ));
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::RequoteThrottle(
-                throttle.clone(),
-            ));
-        Ok(())
-    }
-
-    fn record_settlement(
-        &self,
-        evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> Result<()> {
-        let realized_pnl = evidence
-            .realized_pnl
-            .parse::<f64>()
-            .map_err(|error| anyhow::anyhow!("settlement realized_pnl did not parse: {error}"))?;
-        self.push_settlement(RecordedSettlementEvidenceEvent {
-            realized_pnl,
-            product_id: evidence.product_id.clone(),
-            market_id: evidence.market_id.clone(),
-        });
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::SettlementBookingError(
-                RecordedSettlementBookingErrorEvidenceEvent {
-                    reason: evidence.reason,
-                },
-            ));
-        Ok(())
-    }
-
-    fn record_terminal_settlement(
-        &self,
-        evidence: &crate::bolt_v3_decision_evidence::BoltV3TerminalSettlementEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::TerminalSettlement(
-                evidence.clone(),
-            ));
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> Result<()> {
-        Ok(())
-    }
+pub(super) fn recording_evidence_failing_blocked_attempt(
+    attempt: usize,
+) -> Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder> {
+    let recorder = recording_decision_evidence();
+    recorder.fail_purpose_on_attempt(
+        crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::BlockedStrategyInputObservation,
+        attempt,
+    );
+    recorder
 }
 
 #[derive(Debug, Default)]
@@ -1225,33 +604,33 @@ pub(super) fn test_strategy_with_fee_provider(
 ) -> BinaryOracleEdgeTaker {
     test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         fee_provider,
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-                RecordingDecisionEvidenceWriter,
-            )),
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(
+                recording_decision_evidence(),
+            ),
         ),
     )
 }
 
 pub(super) fn test_strategy_with_fee_provider_and_decision_evidence(
     fee_provider: Arc<dyn FeeProvider>,
-    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
 ) -> BinaryOracleEdgeTaker {
     test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         fee_provider,
         decision_evidence,
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-                RecordingDecisionEvidenceWriter,
-            )),
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(
+                recording_decision_evidence(),
+            ),
         ),
     )
 }
 
 pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
     fee_provider: Arc<dyn FeeProvider>,
-    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
     submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
 ) -> BinaryOracleEdgeTaker {
     let mut strategy = BinaryOracleEdgeTaker::new(
@@ -1486,7 +865,7 @@ pub(super) fn test_identifier_token(raw: &str) -> String {
 
 pub(super) fn submit_admission_with_provider_cap(
     max_notional_per_order: Decimal,
-    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
 ) -> Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState> {
     let mut limits = BTreeMap::new();
     limits.insert(
@@ -1660,7 +1039,7 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
 }
 
 pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
-    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
     submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
 ) -> BinaryOracleEdgeTaker {
     let (mut strategy, fee_provider) =

@@ -74,7 +74,7 @@ use fixtures::*;
 
 #[test]
 fn live_operator_health_surface_renders_poisoned_reject_feed_as_degraded() {
-    let writer = Arc::new(NoStrategyDecisionEvidenceWriter);
+    let writer = Arc::new(DecisionEvidenceRecorder::recording());
     let feed = Arc::new(Mutex::new(BoltV3OrderRejectObserverFeed::new(
         writer.clone(),
         AccountId::from("ACCOUNT-POISON"),
@@ -109,7 +109,7 @@ fn live_operator_health_surface_renders_poisoned_reject_feed_as_degraded() {
 
 #[test]
 fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth_read_error() {
-    let writer = Arc::new(NoStrategyDecisionEvidenceWriter);
+    let writer = Arc::new(DecisionEvidenceRecorder::recording());
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
     let capital_admission = capital_admission_config_from_loaded(&loaded)

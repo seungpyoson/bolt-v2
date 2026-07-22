@@ -18,6 +18,7 @@ use bolt_v2::bolt_v3_capital_admission_state::{
     PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
 };
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
+use bolt_v2::bolt_v3_current_evidence::DecisionEvidenceRecorder;
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use bolt_v2::bolt_v3_providers::polymarket::{
     PolymarketVenueTruthInput, build_polymarket_venue_truth_snapshot,
@@ -475,9 +476,9 @@ fn polymarket_venue_truth_allowance_is_not_min_clamped_by_nt_account_free_collat
 
 #[test]
 fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let admission = Arc::new(capital_admission_configured_admission_with_writer(
-        writer.clone(),
+        writer.recorder(),
     ));
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
@@ -2945,26 +2946,23 @@ fn poison_lock<T>(lock: &Arc<Mutex<T>>) {
 }
 
 fn capital_admission_configured_admission() -> BoltV3SubmitAdmissionState {
-    capital_admission_configured_admission_with_writer(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ))
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    capital_admission_configured_admission_with_writer(writer.recorder())
 }
 
 fn capital_admission_configured_admission_with_writer(
-    writer: Arc<dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    writer: Arc<DecisionEvidenceRecorder>,
 ) -> BoltV3SubmitAdmissionState {
     capital_admission_configured_admission_with_writer_and_venue(writer, "VENUE-A")
 }
 
 fn polymarket_capital_admission_configured_admission() -> BoltV3SubmitAdmissionState {
-    capital_admission_configured_admission_with_writer_and_venue(
-        Arc::new(support::RecordingDecisionEvidenceWriter::default()),
-        "POLYMARKET",
-    )
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    capital_admission_configured_admission_with_writer_and_venue(writer.recorder(), "POLYMARKET")
 }
 
 fn capital_admission_configured_admission_with_writer_and_venue(
-    writer: Arc<dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    writer: Arc<DecisionEvidenceRecorder>,
     venue_id: &str,
 ) -> BoltV3SubmitAdmissionState {
     BoltV3SubmitAdmissionState::new_with_capital_admission(

@@ -39,7 +39,7 @@ fn decision_evidence_failure_rejects_before_nt_submit() {
     // the order before NT submit — the behavior this test pins.
     let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
-        Arc::new(FailingDecisionEvidenceWriter),
+        failing_decision_evidence(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
@@ -75,9 +75,8 @@ fn decision_evidence_failure_rejects_before_nt_submit() {
         )
         .expect("limit order should be valid"),
     );
-    let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -85,6 +84,7 @@ fn decision_evidence_failure_rejects_before_nt_submit() {
     let error = strategy
         .submit_order_with_decision_evidence(
             intent,
+            BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
@@ -103,13 +103,13 @@ fn effective_stale_bound_uses_gate_freshness_as_single_source_when_armed() {
     // forced-flat stale check as the STRICTER of (gate bound, strategy
     // config bound) so arming can only tighten, never loosen.
     let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-            RecordingDecisionEvidenceWriter,
-        )),
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(
+            recording_decision_evidence(),
+        ),
     );
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::cold(),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         submit_admission.clone(),
     );
 
@@ -201,12 +201,10 @@ fn production_strategy_has_no_offline_readiness_seed_arming() {
 
 #[test]
 fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
-    let rejecting_submit_admission = submit_admission_with_provider_cap(
-        Decimal::new(1, 2),
-        Arc::new(RecordingDecisionEvidenceWriter),
-    );
+    let rejecting_submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(1, 2), recording_decision_evidence());
     let mut direct = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         rejecting_submit_admission.clone(),
     );
     register_test_strategy_with_active_instruments(&mut direct);
@@ -224,12 +222,10 @@ fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
         "test setup must prove submit-admission failure path: {direct_error:#}"
     );
 
-    let rejecting_submit_admission = submit_admission_with_provider_cap(
-        Decimal::new(1, 2),
-        Arc::new(RecordingDecisionEvidenceWriter),
-    );
+    let rejecting_submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(1, 2), recording_decision_evidence());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         rejecting_submit_admission,
     );
     register_test_strategy_with_active_instruments(&mut strategy);
@@ -262,12 +258,10 @@ fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
 
 #[test]
 fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
-    let rejecting_submit_admission = submit_admission_with_provider_cap(
-        Decimal::new(1, 0),
-        Arc::new(RecordingDecisionEvidenceWriter),
-    );
+    let rejecting_submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(1, 0), recording_decision_evidence());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         rejecting_submit_admission.clone(),
     );
     strategy.active.phase = SelectionPhase::Freeze;
@@ -421,11 +415,11 @@ fn book_delta_refreshes_fee_readiness_after_warm_populates_provider() {
     let mut strategy = ready_to_trade_strategy();
     strategy.context = StrategyBuildContext::new(
         fee_provider.clone(),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-                RecordingDecisionEvidenceWriter,
-            )),
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(
+                recording_decision_evidence(),
+            ),
         ),
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),

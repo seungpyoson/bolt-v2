@@ -7081,25 +7081,6 @@ fn fixture_root_without_decision_evidence_recovery_bound() -> String {
         .join("\n")
 }
 
-fn fixture_root_loss_governor_block() -> &'static str {
-    r#"[risk.loss_governor]
-enabled = true
-account_id = "POLYMARKET-001"
-max_snapshot_age_ns = 5000000000
-rolling_window_ns = 300000000000
-active_position_pnl_max_entries = 64
-on_loss_breach_trading_state = "reducing"
-on_untrusted_snapshot_trading_state = "reducing"
-recovery_mode = "manual"
-manual_recovery_evidence_max_path_bytes = 256
-max_per_trade_loss = "2.50"
-max_daily_loss = "7.50"
-max_rolling_loss = "10.00"
-max_drawdown = "15.00"
-
-"#
-}
-
 fn fixture_polymarket_execution_block() -> String {
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
@@ -7471,110 +7452,15 @@ fn enforced_submit_admission_uses_nt_account_spendability_without_source_binding
 }
 
 #[test]
-fn enforced_submit_admission_rejects_missing_recovery_evidence_max_bytes() {
-    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+fn decision_evidence_rejects_missing_recovery_evidence_max_bytes() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 
-    let source = fixture_root_without_decision_evidence_recovery_bound().replace(
-        "enforce_submit_admission = false",
-        "enforce_submit_admission = true",
-    );
-    let root: BoltV3RootConfig =
-        toml::from_str(&source).expect("enforced submit-admission fixture should parse");
-    let messages = validate_root_only(&root);
-
+    let source = fixture_root_without_decision_evidence_recovery_bound();
+    let error = toml::from_str::<BoltV3RootConfig>(&source)
+        .expect_err("decision evidence without a recovery byte cap must not parse");
     assert!(
-        messages.iter().any(|message| {
-            message.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
-                && message.contains("must be configured")
-        }),
-        "enforced submit admission should require bounded recovery evidence reads: {messages:#?}"
-    );
-}
-
-#[test]
-fn configured_settlement_sink_rejects_missing_recovery_evidence_max_bytes() {
-    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
-
-    let temp = tempfile::tempdir().expect("config-load tempdir should create");
-    let strategies_dir = temp.path().join("strategies");
-    fs::create_dir(&strategies_dir).expect("strategy fixture dir should create");
-    fs::copy(
-        support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-        strategies_dir.join("binary_oracle.toml"),
-    )
-    .expect("strategy fixture should copy");
-    let source = fixture_root_without_decision_evidence_recovery_bound()
-        .replace(
-            "enforce_submit_admission = false",
-            "enforce_submit_admission = true",
-        )
-        .replace(fixture_root_loss_governor_block(), "");
-    assert!(
-        source.contains("[risk.kill_switch]\nenabled = false"),
-        "pools-only fixture must not rely on the kill-switch sink backend"
-    );
-    assert!(
-        !source.contains("[risk.loss_governor]"),
-        "pools-only fixture must not rely on loss-governor sink detection"
-    );
-    assert!(
-        source.contains("enforce_submit_admission = true")
-            && source.contains("[risk.capital_pools.prediction_market_binary]"),
-        "pools-only fixture must configure the capital-admission feed backend"
-    );
-    let root_path = temp.path().join("root.toml");
-    fs::write(&root_path, source).expect("mutated root fixture should write");
-    let error = load_bolt_v3_config(&root_path)
-        .expect_err("configured settlement sink without recovery bound should fail at load");
-    let rendered = error.to_string();
-
-    assert!(
-        rendered.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
-            && rendered.contains("settlement runtime sink"),
-        "configured settlement sink should require bounded recovery evidence reads at load: {rendered}"
-    );
-}
-
-#[test]
-fn kill_switch_only_settlement_sink_rejects_missing_recovery_evidence_max_bytes() {
-    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
-
-    let temp = tempfile::tempdir().expect("config-load tempdir should create");
-    let strategies_dir = temp.path().join("strategies");
-    fs::create_dir(&strategies_dir).expect("strategy fixture dir should create");
-    fs::copy(
-        support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-        strategies_dir.join("binary_oracle.toml"),
-    )
-    .expect("strategy fixture should copy");
-    let source = fixture_root_without_decision_evidence_recovery_bound()
-        .replace(
-            "enabled = false\nstate_path = \"state/kill-switch.json\"",
-            "enabled = true\nstate_path = \"state/kill-switch.json\"",
-        )
-        .replace(
-            "account_ids = [\"POLYMARKET-001\"]\ninstrument_ids = []",
-            "account_ids = [\"POLYMARKET-001\"]\ninstrument_ids = [\"condition-fixture-yes.POLYMARKET\"]",
-        )
-        .replace(fixture_root_loss_governor_block(), "");
-    assert!(
-        source.contains("[risk.kill_switch]\nenabled = true"),
-        "fixture must configure kill switch as the only settlement sink backend"
-    );
-    assert!(
-        !source.contains("[risk.loss_governor]"),
-        "fixture must not rely on loss-governor sink detection"
-    );
-    let root_path = temp.path().join("root.toml");
-    fs::write(&root_path, source).expect("mutated root fixture should write");
-    let error = load_bolt_v3_config(&root_path)
-        .expect_err("kill-switch-only settlement sink without recovery bound should fail at load");
-    let rendered = error.to_string();
-
-    assert!(
-        rendered.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
-            && rendered.contains("settlement runtime sink"),
-        "kill-switch-only settlement sink should require bounded recovery evidence reads at load: {rendered}"
+        error.to_string().contains("recovery_evidence_max_bytes"),
+        "missing mandatory recovery byte cap must be explicit: {error}"
     );
 }
 

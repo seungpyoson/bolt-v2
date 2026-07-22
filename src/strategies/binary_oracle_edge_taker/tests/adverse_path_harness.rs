@@ -6,15 +6,9 @@ use crate::{
     bolt_v3_binary_settlement_runtime::{
         BinaryRuntimeSettlementInput, settle_binary_runtime_reference_prices,
     },
-    bolt_v3_decision_evidence::{
-        BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        BOLT_V3_SETTLEMENT_GATE_ID, BOLT_V3_SETTLEMENT_RECORD_KIND, BoltV3OrderLifecycleOutcome,
-        BoltV3OrderLifecycleTransition, BoltV3OutcomeSide, BoltV3SettlementEvidence,
-    },
     bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::QuoteSide,
-    bolt_v3_settlement_runtime::BoltV3SettlementRecoveryConfig,
     bolt_v3_venue_truth::{VenueTruthReconciler, VenueTruthReconciliation},
 };
 use nautilus_model::{
@@ -43,7 +37,6 @@ const SETTLEMENT_PINNED_FAILURE: &str = "hold-to-resolution must close exposure 
 const POSITION_MARKET_LIFECYCLE_PINNED_FAILURE: &str =
     "managed position must own its market lifecycle across active-market roll";
 const TEST_LOSS_STATE_MAX_BYTES: u64 = 65_536;
-const TEST_RECOVERY_EVIDENCE_MAX_BYTES: u64 = 1_048_576;
 const TEST_LOSS_ACTION_RETRY_INTERVAL_MS: u64 = 250;
 const TEST_LOSS_ACTION_RETRY_TIMEOUT_MS: u64 = 5_000;
 
@@ -385,7 +378,7 @@ fn hold_to_resolution_books_realized_cash_and_settlement_evidence() {
 fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budget_exhausted() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -411,7 +404,9 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
         .check_resolution_feed_outage_at_market_end(close_ms)
         .expect("feed outage check should dispatch the first close fetch");
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         settlement_evidence_count(&events) == 0
@@ -424,7 +419,9 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
 
     emit_settlement_close_retry_budget_events(&mut strategy, close_ms);
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         settlement_evidence_count(&events) == 0
@@ -440,7 +437,9 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
     );
 
     emit_resolution_update(&mut strategy, 3_101.0);
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 1
@@ -454,7 +453,7 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
 fn position_market_lifecycle_books_settlement_at_its_own_interval_end() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -480,7 +479,9 @@ fn position_market_lifecycle_books_settlement_at_its_own_interval_end() {
     emit_resolution_update_at(&mut strategy, 3_101.0, position_interval_end_ms);
 
     let expected = expected_hold_to_resolution_settlement(Leg::Yes, 0.45, 3_101.0);
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(
         matches!(strategy.exposure, ExposureState::Flat)
             && settlement_evidence_count(&events) == 1
@@ -497,7 +498,7 @@ fn position_market_lifecycle_books_settlement_at_its_own_interval_end() {
 fn position_market_lifecycle_new_active_boundary_tick_does_not_settle_old_position() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -526,7 +527,9 @@ fn position_market_lifecycle_new_active_boundary_tick_does_not_settle_old_positi
         .expect("fixture should configure next interval end");
     emit_resolution_update_at(&mut strategy, 3_201.0, new_active_interval_end_ms);
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 0
@@ -544,7 +547,7 @@ fn position_market_lifecycle_new_active_boundary_tick_does_not_settle_old_positi
 fn position_market_lifecycle_same_instrument_sync_preserves_captured_lifecycle() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -632,7 +635,9 @@ fn position_market_lifecycle_same_instrument_sync_preserves_captured_lifecycle()
     emit_resolution_update_at(&mut strategy, 3_101.0, position_interval_end_ms);
 
     let expected = expected_hold_to_resolution_settlement(Leg::Yes, 0.45, 3_101.0);
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(
         settlement_evidence_count(&events) == 1
             && settlement_booking_error_count(&events) == 0
@@ -647,7 +652,7 @@ fn position_market_lifecycle_same_instrument_sync_does_not_repair_missing_lifecy
  {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -720,7 +725,7 @@ fn position_market_lifecycle_same_instrument_sync_does_not_repair_missing_lifecy
 fn position_market_lifecycle_expired_book_deltas_do_not_submit_exits_after_roll() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -784,7 +789,7 @@ fn position_market_lifecycle_expired_book_deltas_do_not_submit_exits_after_roll(
 fn position_market_lifecycle_feed_outage_records_after_close_fetch_retry_budget_exhausted() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -809,13 +814,15 @@ fn position_market_lifecycle_feed_outage_records_after_close_fetch_retry_budget_
     roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
     emit_settlement_close_retry_budget_events(&mut strategy, position_interval_end_ms);
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 1
             && settlement_booking_error_reasons(&events)
-                == vec![BoltV3SettlementBookingErrorReason::ResolutionFeedMissing]
+                == vec![SettlementBookingErrorReason::ResolutionFeedMissing]
             && close_fetch_count == strategy.config.market_exit_max_attempts as usize,
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: old-position feed outage must be recorded only after close-fetch retry budget exhaustion; exposure={:?} close_fetch_count={close_fetch_count} events={events:?}",
         strategy.exposure,
@@ -826,7 +833,7 @@ fn position_market_lifecycle_feed_outage_records_after_close_fetch_retry_budget_
 fn position_market_lifecycle_unroutable_close_fetch_records_terminal_booking_error() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -853,13 +860,15 @@ fn position_market_lifecycle_unroutable_close_fetch_records_terminal_booking_err
     roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
     emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 1
             && settlement_booking_error_reasons(&events)
-                == vec![BoltV3SettlementBookingErrorReason::ResolutionFeedMissing]
+                == vec![SettlementBookingErrorReason::ResolutionFeedMissing]
             && close_fetch_count == 0,
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: an unroutable settlement-close fetch must fail loud instead of retrying forever; exposure={:?} close_fetch_count={close_fetch_count} events={events:?}",
         strategy.exposure,
@@ -870,7 +879,7 @@ fn position_market_lifecycle_unroutable_close_fetch_records_terminal_booking_err
 fn position_market_lifecycle_close_fetch_retry_waits_for_retry_interval() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -896,7 +905,9 @@ fn position_market_lifecycle_close_fetch_retry_waits_for_retry_interval() {
     emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
     emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(2));
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         close_fetch_count == 1 && settlement_booking_error_count(&events) == 0,
@@ -908,7 +919,7 @@ fn position_market_lifecycle_close_fetch_retry_waits_for_retry_interval() {
 fn position_market_lifecycle_close_fetch_exhaustion_waits_for_retry_interval() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -935,7 +946,9 @@ fn position_market_lifecycle_close_fetch_exhaustion_waits_for_retry_interval() {
     emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
     emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(2));
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         close_fetch_count == 1 && settlement_booking_error_count(&events) == 0,
@@ -947,7 +960,7 @@ fn position_market_lifecycle_close_fetch_exhaustion_waits_for_retry_interval() {
 fn position_market_lifecycle_selection_blocked_issues_own_settlement_close_fetch() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -972,7 +985,9 @@ fn position_market_lifecycle_selection_blocked_issues_own_settlement_close_fetch
     strategy.active = ActiveMarketState::idle();
     emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let close_events = settlement_close_fetch_events(&strategy);
     assert!(
         close_events.len() == 1
@@ -991,7 +1006,7 @@ fn position_market_lifecycle_selection_blocked_issues_own_settlement_close_fetch
 fn position_market_lifecycle_close_and_open_fetches_use_boundary_scoped_durable_slots() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1044,7 +1059,7 @@ fn position_market_lifecycle_close_and_open_fetches_use_boundary_scoped_durable_
 fn position_market_lifecycle_late_matching_resolution_tick_after_watchdog_books_settlement() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1070,7 +1085,9 @@ fn position_market_lifecycle_late_matching_resolution_tick_after_watchdog_books_
     emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
     emit_resolution_update_at(&mut strategy, 3_200.0, position_interval_end_ms);
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         settlement_evidence_count(&events) == 1
@@ -1087,7 +1104,7 @@ fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_b
  {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1146,7 +1163,9 @@ fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_b
     roll_active_to_next_interval(&mut strategy, position_interval_end_ms, 3_200.0);
     emit_settlement_close_retry_budget_events(&mut strategy, position_interval_end_ms);
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         settlement_evidence_count(&events) == 0
@@ -1173,7 +1192,7 @@ fn position_market_lifecycle_recovered_position_missing_instrument_records_termi
 {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1228,12 +1247,14 @@ fn position_market_lifecycle_recovered_position_missing_instrument_records_termi
     strategy.bootstrap_recovery_from_cache();
     emit_time_event_at(&mut strategy, position_interval_end_ms.saturating_add(1));
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 1
             && settlement_booking_error_reasons(&events)
-                == vec![BoltV3SettlementBookingErrorReason::SettlementInputInvalid]
+                == vec![SettlementBookingErrorReason::SettlementInputInvalid]
             && strategy
                 .settlement_booking_error_keys
                 .contains(&settlement_key)
@@ -1254,7 +1275,7 @@ fn position_market_lifecycle_recovered_position_missing_instrument_records_termi
 fn position_market_lifecycle_recovered_missing_interval_book_delta_records_error_not_exit() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1333,12 +1354,14 @@ fn position_market_lifecycle_recovered_missing_interval_book_delta_records_error
         ))
         .expect("book delta should not escape the actor loop");
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 1
             && settlement_booking_error_reasons(&events)
-                == vec![BoltV3SettlementBookingErrorReason::SettlementInputInvalid]
+                == vec![SettlementBookingErrorReason::SettlementInputInvalid]
             && strategy
                 .settlement_booking_error_keys
                 .contains(&settlement_key)
@@ -1358,7 +1381,7 @@ fn position_market_lifecycle_recovered_missing_interval_book_delta_records_error
 fn terminal_after_settlement_stays_flat_and_does_not_double_book() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1389,7 +1412,9 @@ fn terminal_after_settlement_stays_flat_and_does_not_double_book() {
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert_eq!(settlement_evidence_count(&events), 1);
     assert_eq!(settlement_booking_error_count(&events), 0);
     assert!(matches!(strategy.exposure, ExposureState::Flat));
@@ -1399,7 +1424,7 @@ fn terminal_after_settlement_stays_flat_and_does_not_double_book() {
 fn terminal_before_settlement_remanages_residual_then_books_residual_settlement() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1437,7 +1462,9 @@ fn terminal_before_settlement_remanages_residual_then_books_residual_settlement(
     emit_resolution_update(&mut strategy, 3_101.0);
     let expected =
         expected_hold_to_resolution_settlement_for_quantity(Leg::Yes, 0.45, 3_101.0, 6.0);
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(
         matches!(strategy.exposure, ExposureState::Flat)
             && settlement_evidence_matches(&events, expected.realized_pnl)
@@ -1452,7 +1479,7 @@ fn terminal_before_settlement_remanages_residual_then_books_residual_settlement(
 fn booked_settlement_routes_to_runtime_sink_and_flattening() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1474,7 +1501,9 @@ fn booked_settlement_routes_to_runtime_sink_and_flattening() {
 
     emit_resolution_update(&mut strategy, 3_101.0);
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let loss_observations = sink.loss_observations();
     let venue_explanations = sink.venue_explanations();
     assert_eq!(settlement_evidence_count(&events), 1);
@@ -1488,7 +1517,10 @@ fn booked_settlement_routes_to_runtime_sink_and_flattening() {
 
     emit_resolution_update(&mut strategy, 3_101.0);
     assert_eq!(
-        evidence.events().len(),
+        evidence
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
+            .len(),
         events.len(),
         "same settlement key must suppress duplicate booking after runtime calls"
     );
@@ -1500,7 +1532,7 @@ fn booked_settlement_routes_to_runtime_sink_and_flattening() {
 fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1531,7 +1563,9 @@ fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
     try_emit_resolution_update(&mut strategy, 3_101.0)
         .expect("post-evidence venue-truth sink failure should fail closed without bubbling");
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert_eq!(settlement_evidence_count(&events), 1);
     assert_eq!(settlement_booking_error_count(&events), 0);
     assert!(strategy.settled_position_keys.contains(&settlement_key));
@@ -1539,10 +1573,10 @@ fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
         events.iter().any(|event| {
             matches!(
                 event,
-                RecordedDecisionEvidenceEvent::OrderLifecycle(evidence)
+                CurrentFact::OrderLifecycle(evidence)
                     if evidence.transition
-                        == BoltV3OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked
-                        && evidence.outcome == BoltV3OrderLifecycleOutcome::BlindRecovery
+                        == OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked
+                        && evidence.outcome == OrderLifecycleOutcome::BlindRecovery
                         && evidence.position_id.as_deref() == Some(position_id.as_str())
             )
         }),
@@ -1565,7 +1599,7 @@ fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
 fn booked_settlement_explains_shared_product_id_venue_truth_snapshot() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1589,11 +1623,13 @@ fn booked_settlement_explains_shared_product_id_venue_truth_snapshot() {
 
     emit_resolution_update(&mut strategy, 3_101.0);
 
-    let settlement_events = evidence.events();
+    let settlement_events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let settlement = settlement_events
         .iter()
         .find_map(|event| match event {
-            RecordedDecisionEvidenceEvent::Settlement(settlement) => Some(settlement),
+            CurrentFact::Settlement(settlement) => Some(settlement),
             _ => None,
         })
         .expect("strategy should record settlement evidence");
@@ -1638,7 +1674,7 @@ fn booked_settlement_explains_shared_product_id_venue_truth_snapshot() {
 fn losing_settlement_moves_durable_loss_governor() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1702,7 +1738,7 @@ fn losing_settlement_moves_durable_loss_governor() {
 fn missing_settlement_currency_records_booking_error_from_config_derived_fixture() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1732,7 +1768,9 @@ fn missing_settlement_currency_records_booking_error_from_config_derived_fixture
 
     emit_resolution_update(&mut strategy, 3_101.0);
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert_eq!(settlement_evidence_count(&events), 0);
     assert_eq!(settlement_booking_error_count(&events), 1);
     // #1349: terminal booking-error releases single-exposure occupancy.
@@ -1744,7 +1782,7 @@ fn missing_settlement_currency_records_booking_error_from_config_derived_fixture
 fn missing_settlement_account_records_booking_error_from_config_derived_fixture() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1776,7 +1814,9 @@ fn missing_settlement_account_records_booking_error_from_config_derived_fixture(
 
     emit_resolution_update(&mut strategy, 3_101.0);
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert_eq!(settlement_evidence_count(&events), 0);
     assert_eq!(settlement_booking_error_count(&events), 1);
     assert!(sink.loss_observations().is_empty());
@@ -1790,7 +1830,7 @@ fn missing_settlement_account_records_booking_error_from_config_derived_fixture(
 fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposure() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1819,7 +1859,7 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
         .record_settlement_booking_error(
             &first_position,
             first_key.clone(),
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "first distinct terminal booking error".to_string(),
             first_terminal_ns,
         )
@@ -1846,20 +1886,22 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
         .record_settlement_booking_error(
             &second_position,
             second_key.clone(),
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "second distinct terminal booking error".to_string(),
             second_terminal_ns,
         )
         .expect("second terminal booking error should be recorded");
     assert!(matches!(strategy.exposure, ExposureState::Flat));
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let terminal_position_ids = events
         .iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::TerminalSettlement(evidence)
+            CurrentFact::TerminalSettlement(evidence)
                 if evidence.lifecycle.transition
-                    == BoltV3OrderLifecycleTransition::SettlementBookingTerminal =>
+                    == OrderLifecycleTransition::SettlementBookingTerminal =>
             {
                 evidence.lifecycle.position_id.clone()
             }
@@ -1887,12 +1929,19 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
         .record_settlement_booking_error(
             &second_position,
             recorded_health_transitions[1].settlement_key.clone(),
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "duplicate terminal booking error".to_string(),
             second_terminal_ns,
         )
         .expect("duplicate terminal booking error should be idempotent");
-    assert_eq!(settlement_booking_error_count(&evidence.events()), 2);
+    assert_eq!(
+        settlement_booking_error_count(
+            &evidence
+                .recorded_facts()
+                .expect("recorded current evidence must decode")
+        ),
+        2
+    );
     assert_eq!(
         health_transitions
             .lock()
@@ -1907,9 +1956,7 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
 fn terminal_settlement_uses_one_canonical_durable_event() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(
-        RecordingSequencedDecisionEvidenceWriter::with_failing_standalone_order_lifecycle(),
-    );
+    let evidence = failing_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1938,13 +1985,15 @@ fn terminal_settlement_uses_one_canonical_durable_event() {
         .record_settlement_booking_error(
             &position,
             settlement_key,
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "terminal evidence must use one durable append".to_string(),
             terminal_ns,
         )
         .expect("standalone lifecycle failure must be irrelevant to terminal settlement");
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert_eq!(settlement_booking_error_count(&events), 1);
     assert_eq!(terminal_settlement_lifecycle_count(&events), 1);
     assert_eq!(
@@ -1961,7 +2010,7 @@ fn terminal_settlement_uses_one_canonical_durable_event() {
 fn health_emitter_failure_cannot_park_exposure_or_duplicate_terminal_evidence() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1999,7 +2048,7 @@ fn health_emitter_failure_cannot_park_exposure_or_duplicate_terminal_evidence() 
             .record_settlement_booking_error(
                 &position,
                 settlement_key.clone(),
-                BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+                SettlementBookingErrorReason::SettlementInputInvalid,
                 "health failure must follow durable release".to_string(),
                 terminal_ns,
             )
@@ -2007,15 +2056,20 @@ fn health_emitter_failure_cannot_park_exposure_or_duplicate_terminal_evidence() 
     }
 
     assert!(matches!(strategy.exposure, ExposureState::Flat));
-    assert_eq!(settlement_booking_error_count(&evidence.events()), 1);
+    assert_eq!(
+        settlement_booking_error_count(
+            &evidence
+                .recorded_facts()
+                .expect("recorded current evidence must decode")
+        ),
+        1
+    );
     assert_eq!(health_attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[test]
 fn lifecycle_write_failure_preserves_transition_and_source_context() {
-    let evidence = Arc::new(
-        RecordingSequencedDecisionEvidenceWriter::with_failing_standalone_order_lifecycle(),
-    );
+    let evidence = failing_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -2026,8 +2080,8 @@ fn lifecycle_write_failure_preserves_transition_and_source_context() {
 
     let error = strategy
         .persist_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-            transition: BoltV3OrderLifecycleTransition::SettlementBookingTerminal,
-            outcome: BoltV3OrderLifecycleOutcome::Flat,
+            transition: OrderLifecycleTransition::SettlementBookingTerminal,
+            outcome: OrderLifecycleOutcome::Flat,
             source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL,
             market_id: Some("MKT-LIFECYCLE-FAILURE".to_string()),
             instrument_id: None,
@@ -2050,7 +2104,7 @@ fn lifecycle_write_failure_preserves_transition_and_source_context() {
 fn live_manageable_nonterminal_position_cannot_enter_terminal_settlement_transition() {
     assert_reality_fixtures();
 
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -2080,7 +2134,7 @@ fn live_manageable_nonterminal_position_cannot_enter_terminal_settlement_transit
         .record_settlement_booking_error(
             &position,
             settlement_key,
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "nonterminal position must not release".to_string(),
             before_expiry_ns,
         )
@@ -2088,7 +2142,9 @@ fn live_manageable_nonterminal_position_cannot_enter_terminal_settlement_transit
 
     assert!(error.to_string().contains("ineligible"));
     assert!(matches!(strategy.exposure, ExposureState::Managed(_)));
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert_eq!(settlement_booking_error_count(&events), 0);
     assert_eq!(terminal_settlement_lifecycle_count(&events), 0);
     assert!(
@@ -2103,14 +2159,7 @@ fn live_manageable_nonterminal_position_cannot_enter_terminal_settlement_transit
 fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error() {
     assert_reality_fixtures();
 
-    let temp = tempfile::tempdir().expect("settlement recovery tempdir should create");
-    let evidence_path = temp.path().join("decision-evidence.jsonl");
-    let evidence = Arc::new(
-        crate::bolt_v3_decision_evidence::JsonlBoltV3DecisionEvidenceWriter::from_test_path(
-            &evidence_path,
-        )
-        .expect("production JSONL evidence writer should open"),
-    );
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -2119,14 +2168,6 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
         submit_admission,
     );
     let health_transitions = attach_recording_settlement_health_transitions(&mut strategy);
-    strategy.context =
-        strategy
-            .context
-            .clone()
-            .with_settlement_recovery(Some(BoltV3SettlementRecoveryConfig {
-                path: evidence_path.clone(),
-                max_bytes: 100_000,
-            }));
     let (cache, clock) = register_test_strategy_with_clock(&mut strategy);
     let instrument_id = held_instrument_id(&strategy, Leg::Yes);
     let instrument = updown_binary_option(
@@ -2173,34 +2214,42 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
     };
     let settlement_key = settlement_key_for_position(&recovered_position)
         .expect("recovered position should derive settlement key");
-    write_settlement_booking_error_line(
-        &evidence_path,
-        BoltV3SettlementBookingErrorEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            settlement_key: settlement_key.clone(),
-            market_id: recovered_position.lifecycle.market_id_owned(),
-            position_id: Some(position_id.to_string()),
-            instrument_id: Some(instrument_id.to_string()),
-            resolution_instrument_id: strategy
-                .resolution_instrument_id()
-                .map(|instrument_id| instrument_id.to_string()),
-            reason: BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
-            detail: "durable terminal booking error".to_string(),
-            observed_at_ns: 2_000_u64.saturating_mul(NANOS_PER_MILLI_U64),
-            terminal_lifecycle: None,
-        },
+    evidence
+        .record_settlement_booking_error(
+            crate::bolt_v3_current_evidence::SettlementBookingErrorFact {
+                strategy_id: strategy.config.strategy_id.clone(),
+                settlement_key: settlement_key.clone(),
+                market_id: recovered_position.lifecycle.market_id_owned(),
+                position_id: Some(position_id.to_string()),
+                instrument_id: Some(instrument_id.to_string()),
+                resolution_instrument_id: strategy
+                    .resolution_instrument_id()
+                    .map(|instrument_id| instrument_id.to_string()),
+                reason: SettlementBookingErrorReason::SettlementInputInvalid,
+                detail: "durable terminal booking error".to_string(),
+                observed_at_ns: 2_000_u64.saturating_mul(NANOS_PER_MILLI_U64),
+            },
+        )
+        .expect("current booking-error evidence should append");
+    let recovery = Arc::new(
+        evidence
+            .startup_recovery_facts(Some(100_000))
+            .expect("current booking-error evidence should reconstruct"),
     );
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_settlement_recovery(Some(recovery));
 
     strategy.bootstrap_recovery_from_cache();
 
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert_eq!(
-        crate::bolt_v3_decision_evidence::read_terminal_settlement_evidence(
-            &evidence_path,
-            100_000,
-        )
-        .expect("canonical terminal settlement should be readable")
-        .len(),
+        terminal_settlement_lifecycle_count(
+            &evidence
+                .recorded_facts()
+                .expect("current evidence should decode"),
+        ),
         1
     );
     let transitions = health_transitions
@@ -2210,12 +2259,11 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
     assert_eq!(transitions[0].settlement_key, settlement_key);
     assert_eq!(transitions[0].reason, "market_expired");
     assert_eq!(
-        crate::bolt_v3_decision_evidence::read_settlement_booking_error_evidence(
-            &evidence_path,
-            100_000,
-        )
-        .expect("durable booking error should remain readable")
-        .len(),
+        settlement_booking_error_count(
+            &evidence
+                .recorded_facts()
+                .expect("current evidence should decode"),
+        ),
         1,
         "restart must not append a parallel booking-error record"
     );
@@ -2224,12 +2272,11 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
     strategy.bootstrap_recovery_from_cache();
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert_eq!(
-        crate::bolt_v3_decision_evidence::read_terminal_settlement_evidence(
-            &evidence_path,
-            100_000,
-        )
-        .expect("canonical evidence count should remain stable after another bootstrap")
-        .len(),
+        terminal_settlement_lifecycle_count(
+            &evidence
+                .recorded_facts()
+                .expect("current evidence should decode"),
+        ),
         1,
         "restart must not append duplicate canonical terminal evidence"
     );
@@ -2239,13 +2286,12 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
 fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
     assert_reality_fixtures();
 
-    let temp = tempfile::tempdir().expect("settlement recovery tempdir should create");
-    let evidence_path = temp.path().join("decision-evidence.jsonl");
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-    let submit_admission =
-        Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence));
+    let evidence = recording_decision_evidence();
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
-        Arc::new(RecordingSequencedDecisionEvidenceWriter::default()),
+        evidence.clone(),
         submit_admission,
     );
     let sink = Rc::new(RecordingSettlementRuntimeSink::default());
@@ -2254,11 +2300,7 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
     strategy.context = strategy
         .context
         .clone()
-        .with_settlement_runtime_sink(Some(sink_handle))
-        .with_settlement_recovery(Some(BoltV3SettlementRecoveryConfig {
-            path: evidence_path.clone(),
-            max_bytes: 100_000,
-        }));
+        .with_settlement_runtime_sink(Some(sink_handle));
     let cache = register_test_strategy(&mut strategy);
     let instrument_id = held_instrument_id(&strategy, Leg::Yes);
     let instrument = updown_binary_option(
@@ -2300,9 +2342,8 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
     };
     let settlement_key = settlement_key_for_position(&scope_position)
         .expect("fixture cache position should derive settlement key");
-    write_settlement_evidence_line(
-        &evidence_path,
-        BoltV3SettlementEvidence {
+    evidence
+        .record_settlement(crate::bolt_v3_current_evidence::SettlementFact {
             strategy_id: strategy.config.strategy_id.clone(),
             settlement_key: settlement_key.clone(),
             market_id: "settlement-recovery-market".to_string(),
@@ -2310,7 +2351,7 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
             instrument_id: instrument_id.to_string(),
             product_id: prediction_market_product_id_from_instrument_id(&instrument_id)
                 .expect("fixture instrument id should derive product id"),
-            outcome_side: BoltV3OutcomeSide::Up,
+            outcome_side: crate::bolt_v3_current_evidence::OutcomeSide::Up,
             entry_order_side: OrderSide::Buy.to_string(),
             quantity: "10".to_string(),
             entry_price: "0.45".to_string(),
@@ -2323,8 +2364,17 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
             terminal_value: "10".to_string(),
             realized_pnl: "5.5".to_string(),
             settlement_currency: "PUSD".to_string(),
-        },
+        })
+        .expect("current settlement evidence should append");
+    let recovery = Arc::new(
+        evidence
+            .startup_recovery_facts(Some(100_000))
+            .expect("current settlement evidence should reconstruct"),
     );
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_settlement_recovery(Some(recovery));
 
     strategy.bootstrap_recovery_from_cache();
 
@@ -2332,94 +2382,6 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
     assert_eq!(explanations.len(), 1);
     assert_eq!(explanations[0].settlement_key, settlement_key);
     assert!(strategy.settled_position_keys.contains(&settlement_key));
-}
-
-fn restart_strategy_with_open_position_at_recovery_path(
-    evidence_path: &std::path::Path,
-) -> BinaryOracleEdgeTaker {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
-    );
-    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
-        evidence,
-        submit_admission,
-    );
-    strategy.context =
-        strategy
-            .context
-            .clone()
-            .with_settlement_recovery(Some(BoltV3SettlementRecoveryConfig {
-                path: evidence_path.to_path_buf(),
-                max_bytes: TEST_RECOVERY_EVIDENCE_MAX_BYTES,
-            }));
-    let cache = register_test_strategy(&mut strategy);
-    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
-    let instrument = updown_binary_option(
-        instrument_id.to_string().as_str(),
-        "recovery-boundary-market",
-        "recovery-boundary-market",
-        "Up",
-        1_000,
-        2_000,
-    );
-    let fill = order_filled_event_with_details(
-        ClientOrderId::from("RECOVERY-BOUNDARY-ORDER"),
-        instrument.id(),
-        Some(PositionId::from("P-RECOVERY-BOUNDARY")),
-        OrderSide::Buy,
-    );
-    let position = Position::new(&instrument, fill);
-    {
-        let mut cache = cache.borrow_mut();
-        cache
-            .add_instrument(instrument)
-            .expect("test cache should accept recovery-boundary instrument");
-        cache
-            .add_position(&position, NtOmsType::Netting)
-            .expect("test cache should accept recovery-boundary position");
-    }
-    strategy
-}
-
-#[test]
-fn restart_with_open_position_recovers_at_one_mib_boundary() {
-    let temp = tempfile::tempdir().expect("recovery-boundary tempdir should create");
-    let evidence_path = temp.path().join("decision-evidence.jsonl");
-    std::fs::write(
-        &evidence_path,
-        vec![b'\n'; TEST_RECOVERY_EVIDENCE_MAX_BYTES as usize],
-    )
-    .expect("one-MiB valid empty-line evidence fixture should write");
-    let mut strategy = restart_strategy_with_open_position_at_recovery_path(&evidence_path);
-
-    strategy.bootstrap_recovery_from_cache();
-
-    assert!(
-        matches!(strategy.exposure, ExposureState::Managed(_)),
-        "an open position must recover when the whole evidence file is exactly one MiB"
-    );
-}
-
-#[test]
-fn restart_with_open_position_enters_blind_recovery_above_one_mib_boundary() {
-    let temp = tempfile::tempdir().expect("recovery-boundary tempdir should create");
-    let evidence_path = temp.path().join("decision-evidence.jsonl");
-    std::fs::write(
-        &evidence_path,
-        vec![b'\n'; TEST_RECOVERY_EVIDENCE_MAX_BYTES as usize + 1],
-    )
-    .expect("over-one-MiB valid empty-line evidence fixture should write");
-    let mut strategy = restart_strategy_with_open_position_at_recovery_path(&evidence_path);
-
-    strategy.bootstrap_recovery_from_cache();
-
-    assert!(matches!(
-        strategy.exposure,
-        ExposureState::BlindRecovery(BlindRecoveryState {
-            reason: BlindRecoveryReason::SettlementEvidenceRecoveryFailed
-        })
-    ));
 }
 
 fn settlement_loss_config(
@@ -2442,7 +2404,7 @@ struct SettlementCaseObservation {
     exposure_is_flat: bool,
     settlement_evidence_matches_expected: bool,
     exposure: ExposureState,
-    evidence_events: Vec<RecordedDecisionEvidenceEvent>,
+    evidence_events: Vec<CurrentFact>,
 }
 
 fn hold_to_resolution_case(
@@ -2453,7 +2415,7 @@ fn hold_to_resolution_case(
     expected_realized_pnl: f64,
     position_id: PositionId,
 ) -> SettlementCaseObservation {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -2494,7 +2456,9 @@ fn hold_to_resolution_case(
     DataActor::on_index_price(&mut strategy, &resolution_update)
         .expect("resolution index price should route through the strategy handler");
 
-    let evidence_events = evidence.events();
+    let evidence_events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     // For this harness, the Settlement evidence record is the booking record
     // being asserted. The durable cash-surface pin (loss-governor accumulator /
     // venue-truth balance) is owned by PR-D acceptance on #1179.
@@ -2811,68 +2775,62 @@ fn expected_hold_to_resolution_settlement_for_quantity(
     .expect("fixture payout should settle the held lot")
 }
 
-fn settlement_evidence_count(events: &[RecordedDecisionEvidenceEvent]) -> usize {
+fn settlement_evidence_count(events: &[CurrentFact]) -> usize {
     events
         .iter()
-        .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::Settlement(_)))
+        .filter(|event| matches!(event, CurrentFact::Settlement(_)))
         .count()
 }
 
-fn settlement_market_ids(events: &[RecordedDecisionEvidenceEvent]) -> Vec<String> {
+fn settlement_market_ids(events: &[CurrentFact]) -> Vec<String> {
     events
         .iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::Settlement(evidence) => Some(evidence.market_id.clone()),
+            CurrentFact::Settlement(evidence) => Some(evidence.market_id.clone()),
             _ => None,
         })
         .collect()
 }
 
-fn settlement_booking_error_count(events: &[RecordedDecisionEvidenceEvent]) -> usize {
+fn settlement_booking_error_count(events: &[CurrentFact]) -> usize {
     events
         .iter()
         .filter(|event| {
-            matches!(
-                event,
-                RecordedDecisionEvidenceEvent::SettlementBookingError(_)
-            ) || matches!(
-                event,
-                RecordedDecisionEvidenceEvent::TerminalSettlement(evidence)
-                    if evidence.booking_error.is_some()
-            )
+            matches!(event, CurrentFact::SettlementBookingError(_))
+                || matches!(
+                    event,
+                    CurrentFact::TerminalSettlement(evidence)
+                        if evidence.booking_error.is_some()
+                )
         })
         .count()
 }
 
-fn terminal_settlement_lifecycle_count(events: &[RecordedDecisionEvidenceEvent]) -> usize {
+fn terminal_settlement_lifecycle_count(events: &[CurrentFact]) -> usize {
     events
         .iter()
         .filter(|event| {
             matches!(
                 event,
-                RecordedDecisionEvidenceEvent::OrderLifecycle(evidence)
+                CurrentFact::OrderLifecycle(evidence)
                     if evidence.transition
-                        == BoltV3OrderLifecycleTransition::SettlementBookingTerminal
+                        == OrderLifecycleTransition::SettlementBookingTerminal
             ) || matches!(
                 event,
-                RecordedDecisionEvidenceEvent::TerminalSettlement(evidence)
+                CurrentFact::TerminalSettlement(evidence)
                     if evidence.lifecycle.transition
-                        == BoltV3OrderLifecycleTransition::SettlementBookingTerminal
+                        == OrderLifecycleTransition::SettlementBookingTerminal
             )
         })
         .count()
 }
 
-fn settlement_booking_error_reasons(
-    events: &[RecordedDecisionEvidenceEvent],
-) -> Vec<BoltV3SettlementBookingErrorReason> {
+fn settlement_booking_error_reasons(events: &[CurrentFact]) -> Vec<SettlementBookingErrorReason> {
     events
         .iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::SettlementBookingError(evidence) => {
-                Some(evidence.reason)
-            }
-            RecordedDecisionEvidenceEvent::TerminalSettlement(evidence) => {
+            CurrentFact::SettlementBookingError(evidence) => Some(evidence.reason),
+            CurrentFact::TerminalSettlement(evidence) => {
                 evidence.booking_error.as_ref().map(|error| error.reason)
             }
             _ => None,
@@ -2880,15 +2838,14 @@ fn settlement_booking_error_reasons(
         .collect()
 }
 
-fn settlement_evidence_matches(
-    events: &[RecordedDecisionEvidenceEvent],
-    expected_realized_pnl: f64,
-) -> bool {
+fn settlement_evidence_matches(events: &[CurrentFact], expected_realized_pnl: f64) -> bool {
     events.iter().any(|event| {
         matches!(
             event,
-            RecordedDecisionEvidenceEvent::Settlement(evidence)
-                if (evidence.realized_pnl - expected_realized_pnl).abs() <= f64::EPSILON
+            CurrentFact::Settlement(evidence)
+                if evidence.realized_pnl.parse::<f64>().is_ok_and(|realized_pnl|
+                    (realized_pnl - expected_realized_pnl).abs() <= f64::EPSILON
+                )
         )
     })
 }
@@ -2914,47 +2871,6 @@ fn venue_truth_snapshot(
         open_orders: BTreeMap::new(),
         positions_by_product_id,
     }
-}
-
-fn write_settlement_evidence_line(path: &std::path::Path, evidence: BoltV3SettlementEvidence) {
-    let line = json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        "recorded_at_utc_ns": 1_000_i64,
-        "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
-        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        "kind": BOLT_V3_SETTLEMENT_RECORD_KIND,
-        "settlement": evidence,
-    });
-    std::fs::write(
-        path,
-        format!(
-            "{}\n",
-            serde_json::to_string(&line).expect("settlement evidence should encode")
-        ),
-    )
-    .expect("settlement evidence fixture should write");
-}
-
-fn write_settlement_booking_error_line(
-    path: &std::path::Path,
-    evidence: BoltV3SettlementBookingErrorEvidence,
-) {
-    let line = json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        "recorded_at_utc_ns": 1_000_i64,
-        "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
-        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        "kind": crate::bolt_v3_decision_evidence::BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
-        "booking_error": evidence,
-    });
-    std::fs::write(
-        path,
-        format!(
-            "{}\n",
-            serde_json::to_string(&line).expect("settlement booking error should encode")
-        ),
-    )
-    .expect("settlement booking-error fixture should write");
 }
 
 fn assert_incident_lifecycle_counts() {

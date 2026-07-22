@@ -24,15 +24,10 @@ use bolt_v2::{
         BacktestConfigOverrideReport, LoadedStrategy, apply_backtest_config_override,
         load_bolt_v3_config,
     },
-    bolt_v3_decision_evidence::{
-        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
-        BoltV3BasketAdmissionDecisionEvidence, BoltV3CapitalAdmissionRebuildAuditEvidence,
-        BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
-        BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
-        BoltV3OrderRejectEvidence, BoltV3RequoteThrottleEvidence,
-        BoltV3SettlementBookingErrorEvidence, BoltV3SettlementEvidence,
-        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-        BoltV3SubmitReservationMetadataEvidence,
+    bolt_v3_current_evidence::{
+        AdmissionDecisionOutcome, CurrentFact, DecisionEvidenceRecorder,
+        OfflineDecisionEvidenceRuntime, StrategyInputDetails, StrategyInputRvState,
+        read_current_evidence_facts,
     },
     bolt_v3_operator_artifacts::json_artifact_bytes,
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
@@ -101,8 +96,8 @@ use super::{
     run_manifest::{
         BacktestingRunManifest, NtSurfaceClassification, STRATEGY_BINARY_ORACLE_EDGE_TAKER,
         STRATEGY_BINARY_ORACLE_MAKER, STRATEGY_HURST_VPIN_DIRECTIONAL,
-        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_ORDER_EXECUTION_MODE,
-        StrategySource,
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
+        STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategySource,
     },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
 };
@@ -128,28 +123,140 @@ struct BacktestDecisionEvidenceState {
     exit_decision_count: u64,
     loss_governor_halt_count: u64,
     requote_throttle_count: u64,
-    latest_strategy_input_snapshot: Option<BoltV3StrategyInputEvidenceSnapshot>,
+    latest_strategy_input_snapshot: Option<StrategyInputDetails>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct BacktestDecisionEvidenceWriter {
-    state: Mutex<BacktestDecisionEvidenceState>,
+    runtime: OfflineDecisionEvidenceRuntime,
+    machine: tempfile::NamedTempFile,
+    observation: tempfile::NamedTempFile,
 }
 
 impl BacktestDecisionEvidenceWriter {
+    fn new(reject_episode_max_count: usize) -> Result<Self> {
+        ensure!(
+            reject_episode_max_count > 0,
+            "strategy parameter {STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT} must be positive"
+        );
+        let machine = tempfile::NamedTempFile::new()
+            .context("create isolated backtest machine-evidence stream")?;
+        let observation = tempfile::NamedTempFile::new()
+            .context("create isolated backtest observation-evidence stream")?;
+        let runtime = OfflineDecisionEvidenceRuntime::from_fresh_files(
+            machine
+                .reopen()
+                .context("open isolated backtest machine-evidence stream")?,
+            observation
+                .reopen()
+                .context("open isolated backtest observation-evidence stream")?,
+            reject_episode_max_count,
+        )?;
+        Ok(Self {
+            runtime,
+            machine,
+            observation,
+        })
+    }
+
+    fn recorder(&self) -> Arc<DecisionEvidenceRecorder> {
+        self.runtime.recorder()
+    }
+
+    fn state(&self) -> Result<BacktestDecisionEvidenceState> {
+        let mut state = BacktestDecisionEvidenceState::default();
+        for stream in [&self.machine, &self.observation] {
+            let max_bytes = stream
+                .as_file()
+                .metadata()
+                .context("inspect isolated backtest evidence stream")?
+                .len();
+            for fact in read_current_evidence_facts(stream.path(), max_bytes)? {
+                match fact {
+                    CurrentFact::BlockedStrategyInputObservation(fact) => {
+                        state.strategy_input_snapshot_count += 1;
+                        state.latest_strategy_input_snapshot = Some(fact.details);
+                    }
+                    CurrentFact::SubmitLinkedStrategyInputSnapshot(fact) => {
+                        state.strategy_input_snapshot_count += 1;
+                        state.latest_strategy_input_snapshot = Some(fact.details);
+                    }
+                    CurrentFact::EntryOrderIntent(_) => state.order_intent_count += 1,
+                    CurrentFact::AdmittedEntryAdmission(_) => {
+                        state.admission_decision_count += 1;
+                        state.admitted_order_count += 1;
+                    }
+                    CurrentFact::RejectedEntryAdmission(_) => {
+                        state.admission_decision_count += 1;
+                    }
+                    CurrentFact::RiskReducingExitAdmission(fact) => {
+                        state.admission_decision_count += 1;
+                        if matches!(fact.outcome, AdmissionDecisionOutcome::Admitted) {
+                            state.admitted_order_count += 1;
+                        }
+                    }
+                    CurrentFact::ReplaceAdmission(fact) => {
+                        state.admission_decision_count += 1;
+                        if matches!(fact.outcome, AdmissionDecisionOutcome::Admitted) {
+                            state.admitted_order_count += 1;
+                        }
+                    }
+                    CurrentFact::ForcedReductionAdmission(fact) => {
+                        state.admission_decision_count += 1;
+                        if matches!(fact.outcome, AdmissionDecisionOutcome::Admitted) {
+                            state.admitted_order_count += 1;
+                        }
+                    }
+                    CurrentFact::SubmitReservationMetadata(_) => {
+                        state.submit_reservation_count += 1;
+                    }
+                    CurrentFact::SubmitReservationFill(_) => state.submit_fill_count += 1,
+                    CurrentFact::EntrySkipObservation(_) => state.entry_skip_count += 1,
+                    CurrentFact::ExitSubmissionDecision(_) | CurrentFact::ExitHoldDecision(_) => {
+                        state.exit_decision_count += 1;
+                    }
+                    CurrentFact::LossGovernorHalt(_) => state.loss_governor_halt_count += 1,
+                    CurrentFact::RequoteThrottleObservation(_) => {
+                        state.requote_throttle_count += 1;
+                    }
+                    CurrentFact::RiskReducingExitOrderIntent(_)
+                    | CurrentFact::BasketAdmissionGranted(_)
+                    | CurrentFact::BasketAdmissionRejected(_)
+                    | CurrentFact::CapitalAdmissionRebuild(_)
+                    | CurrentFact::ExitEvaluation(_)
+                    | CurrentFact::OrderReject(_)
+                    | CurrentFact::OrderLifecycle(_)
+                    | CurrentFact::Settlement(_)
+                    | CurrentFact::SettlementBookingError(_)
+                    | CurrentFact::TerminalSettlement(_)
+                    | CurrentFact::VenueTruthCaptureFailure(_)
+                    | CurrentFact::VenueTruthDivergence(_) => {}
+                }
+            }
+        }
+        Ok(state)
+    }
+
     fn run_guard_report(&self, result: &BacktestResult) -> Result<BacktestRunGuardReport> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("backtest decision evidence state mutex poisoned"))?;
+        let state = self.state()?;
         let latest = state.latest_strategy_input_snapshot.as_ref();
         let signal_quote_received =
             latest.is_some_and(|snapshot| positive_decimal_text(&snapshot.spot_price));
-        let realized_volatility_ready = latest.is_some_and(|snapshot| {
-            positive_decimal_text(&snapshot.realized_volatility)
-                && snapshot.realized_volatility_as_of_ms.is_some()
-                && snapshot.realized_volatility_blockers.is_empty()
-        });
+        let realized_volatility_ready =
+            latest.is_some_and(|snapshot| match &snapshot.realized_volatility {
+                StrategyInputRvState::Absent { .. } => false,
+                StrategyInputRvState::Present {
+                    selected_annualized_decimal,
+                    snapshot,
+                    ..
+                } => {
+                    selected_annualized_decimal
+                        .as_deref()
+                        .is_some_and(positive_decimal_text)
+                        && snapshot.as_of_ms.is_some()
+                        && snapshot.blockers.is_empty()
+                }
+            });
         let price_to_beat_received =
             latest.is_some_and(|snapshot| positive_decimal_text(&snapshot.price_to_beat_value));
         let reference_fresh = latest.is_some_and(|snapshot| {
@@ -199,24 +306,30 @@ impl BacktestDecisionEvidenceWriter {
             latest_reference_current_price_source_id: latest
                 .and_then(|snapshot| snapshot.reference_current_price_source_id.clone()),
             latest_price_to_beat_value: latest.map(|snapshot| snapshot.price_to_beat_value.clone()),
-            latest_realized_volatility_as_of_ms: latest
-                .and_then(|snapshot| snapshot.realized_volatility_as_of_ms),
+            latest_realized_volatility_as_of_ms: latest.and_then(|snapshot| {
+                match &snapshot.realized_volatility {
+                    StrategyInputRvState::Absent { .. } => None,
+                    StrategyInputRvState::Present { snapshot, .. } => snapshot.as_of_ms,
+                }
+            }),
             latest_realized_volatility_sources_used: latest.map_or_else(Vec::new, |snapshot| {
-                snapshot.realized_volatility_sources_used.clone()
+                match &snapshot.realized_volatility {
+                    StrategyInputRvState::Absent { .. } => Vec::new(),
+                    StrategyInputRvState::Present { snapshot, .. } => snapshot.sources_used.clone(),
+                }
             }),
             latest_realized_volatility_blockers: latest.map_or_else(Vec::new, |snapshot| {
-                snapshot.realized_volatility_blockers.clone()
+                match &snapshot.realized_volatility {
+                    StrategyInputRvState::Absent { .. } => Vec::new(),
+                    StrategyInputRvState::Present { snapshot, .. } => snapshot
+                        .blockers
+                        .iter()
+                        .map(|blocker| format!("{blocker:?}"))
+                        .collect(),
+                }
             }),
             did_not_arm_reason,
         })
-    }
-
-    fn with_state<R>(&self, f: impl FnOnce(&mut BacktestDecisionEvidenceState) -> R) -> Result<R> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("backtest decision evidence state mutex poisoned"))?;
-        Ok(f(&mut state))
     }
 }
 
@@ -228,7 +341,7 @@ fn positive_decimal_text(value: &str) -> bool {
 }
 
 struct DidNotArmReasonInputs<'a> {
-    latest: Option<&'a BoltV3StrategyInputEvidenceSnapshot>,
+    latest: Option<&'a StrategyInputDetails>,
     signal_quote_received: bool,
     realized_volatility_ready: bool,
     price_to_beat_received: bool,
@@ -261,7 +374,15 @@ fn did_not_arm_reason(inputs: DidNotArmReasonInputs<'_>) -> Option<String> {
         return Some("did NOT arm — feed signal quote missing/stale".to_string());
     }
     if !realized_volatility_ready {
-        let blockers = snapshot.realized_volatility_blockers.join(",");
+        let blockers = match &snapshot.realized_volatility {
+            StrategyInputRvState::Absent { .. } => String::new(),
+            StrategyInputRvState::Present { snapshot, .. } => snapshot
+                .blockers
+                .iter()
+                .map(|blocker| format!("{blocker:?}"))
+                .collect::<Vec<_>>()
+                .join(","),
+        };
         return Some(if blockers.is_empty() {
             "did NOT arm — feed realized volatility missing/stale".to_string()
         } else {
@@ -287,122 +408,6 @@ fn did_not_arm_reason(inputs: DidNotArmReasonInputs<'_>) -> Option<String> {
         return Some("did NOT arm — feed tradable book/fill path missing/stale".to_string());
     }
     None
-}
-
-impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
-        &self,
-        snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-    ) -> Result<()> {
-        self.with_state(|state| {
-            state.strategy_input_snapshot_count += 1;
-            state.latest_strategy_input_snapshot = Some(snapshot.clone());
-        })?;
-        Ok(())
-    }
-
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-        self.with_state(|state| {
-            state.order_intent_count += 1;
-        })?;
-        Ok(())
-    }
-
-    fn record_admission_decision(&self, decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
-        self.with_state(|state| {
-            state.admission_decision_count += 1;
-            if decision.outcome == BoltV3AdmissionOutcome::Admitted {
-                state.admitted_order_count += 1;
-            }
-        })?;
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        self.with_state(|state| {
-            state.submit_reservation_count += 1;
-        })?;
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        self.with_state(|state| {
-            state.submit_fill_count += 1;
-        })?;
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-        self.with_state(|state| {
-            state.entry_skip_count += 1;
-        })?;
-        Ok(())
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-        self.with_state(|state| {
-            state.exit_decision_count += 1;
-        })?;
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(&self, _halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
-        self.with_state(|state| {
-            state.loss_governor_halt_count += 1;
-        })?;
-        Ok(())
-    }
-
-    fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-        self.with_state(|state| {
-            state.requote_throttle_count += 1;
-        })?;
-        Ok(())
-    }
-
-    fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> Result<()> {
-        // Deliberate no-op: the BVS run guard writer keeps in-memory counters only.
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -702,6 +707,25 @@ fn manifest_binary_oracle_execution_controls(
     Ok((fee_bps, order_execution_mode))
 }
 
+fn manifest_evidence_reject_episode_max_count(strategy: &StrategySource) -> Result<usize> {
+    let raw = strategy
+        .parameters
+        .get(STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT)
+        .with_context(|| {
+            format!(
+                "strategy parameter {STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT} is required"
+            )
+        })?;
+    let value = raw.parse::<usize>().with_context(|| {
+        format!("invalid {STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT} {raw:?}")
+    })?;
+    ensure!(
+        value > 0,
+        "strategy parameter {STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT} must be positive"
+    );
+    Ok(value)
+}
+
 fn inline_manifest_strategy_config(strategy: &StrategySource) -> Result<toml::Value> {
     let raw_config = strategy
         .parameters
@@ -720,8 +744,10 @@ fn register_manifest_binary_oracle_strategy(
     order_execution_mode: BoltV3OrderExecutionMode,
     realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
 ) -> Result<Arc<BacktestDecisionEvidenceWriter>> {
-    let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::default());
-    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = run_guard_writer.clone();
+    let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::new(
+        manifest_evidence_reject_episode_max_count(&manifest.strategy)?,
+    )?);
+    let decision_evidence = run_guard_writer.recorder();
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
     let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
     let mut build_context = StrategyBuildContext::new(
@@ -884,9 +910,11 @@ fn add_manifest_strategy(
                     canonical_resolved_taker_config_bytes(&raw_config, None, None)?;
                 (raw_config, None, None, resolved_config_bytes)
             };
-            let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::default());
+            let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::new(
+                manifest_evidence_reject_episode_max_count(strategy)?,
+            )?);
             let resolved_config_hash = sha256_hex(&resolved_config_bytes);
-            let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = run_guard_writer.clone();
+            let decision_evidence = run_guard_writer.recorder();
             let submit_admission =
                 Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
             let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
@@ -2561,13 +2589,12 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, BoltV3DecisionEvidenceWriter,
-        OrderTerminalRecord, Position, StrategyPreparationConfig, apply_backtest_config_override,
-        assert_read_back_matches, canonical_resolved_taker_config_bytes,
-        ensure_settlement_currency_funded, expected_iterations, issue_789_proof_fill,
-        iterations_mismatch, load_bolt_v3_config, prepare_strategy_client_routes, raw_taker_config,
-        replay_executable_book_at_cursor, require_pre_run_configured_account,
-        resolve_existing_input_path, run_nt_backtest_node,
+        BacktestSelectorProvenance, OrderTerminalRecord, Position, StrategyPreparationConfig,
+        apply_backtest_config_override, assert_read_back_matches,
+        canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
+        expected_iterations, issue_789_proof_fill, iterations_mismatch, load_bolt_v3_config,
+        prepare_strategy_client_routes, raw_taker_config, replay_executable_book_at_cursor,
+        require_pre_run_configured_account, resolve_existing_input_path, run_nt_backtest_node,
         run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
         time_window_excludes_all_data,
     };
@@ -2592,9 +2619,9 @@ mod tests {
         ManifestInstrumentSettlementInput, ManifestRealizedVolatilitySourceSelector,
         ManifestReferenceCurrentPriceInput, ManifestVenueConfig, MarketStructureFixture,
         RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_BINARY_ORACLE_MAKER,
-        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_FEE_BPS,
-        STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
-        StrategySourceKind,
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
+        STRATEGY_PARAM_FEE_BPS, STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource,
+        StrategySource, StrategySourceKind,
     };
     use crate::seeded_l2_quotes::{
         SeededL2QuoteAction, SeededL2QuoteMappingConfig, SeededL2QuoteProvenance,
@@ -2669,12 +2696,6 @@ mod tests {
             UnixNanos::from(ts),
             UnixNanos::from(ts),
         )
-    }
-
-    #[test]
-    fn backtest_decision_evidence_writer_drain_shutdown_is_noop() -> Result<()> {
-        let writer = BacktestDecisionEvidenceWriter::default();
-        writer.drain_shutdown()
     }
 
     #[test]
@@ -3189,6 +3210,10 @@ mod tests {
                 registry_key: STRATEGY_BINARY_ORACLE_MAKER.to_string(),
                 parameters: BTreeMap::from([
                     ("config_toml".to_string(), maker_smoke_config_toml()),
+                    (
+                        STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT.to_string(),
+                        "4096".to_string(),
+                    ),
                     (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
                     (
                         STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
@@ -7351,6 +7376,10 @@ mod tests {
                 source_kind: StrategySourceKind::CompiledRustRegistry,
                 registry_key: STRATEGY_BINARY_ORACLE_EDGE_TAKER.to_string(),
                 parameters: BTreeMap::from([
+                    (
+                        STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT.to_string(),
+                        "4096".to_string(),
+                    ),
                     (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
                     (
                         STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),

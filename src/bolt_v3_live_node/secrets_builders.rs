@@ -361,11 +361,6 @@ fn disable_strategy_free_data_client_live_subsystems(loaded: &mut LoadedBoltV3Co
     *risk_reservation_substrate = None;
     *kill_switch = None;
     *basket_execution = None;
-    loaded
-        .root
-        .persistence
-        .decision_evidence
-        .recovery_evidence_max_bytes = None;
 }
 
 fn data_client_scope_requires_secrets(client: &ClientBlock) -> bool {

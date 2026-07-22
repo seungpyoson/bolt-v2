@@ -1539,6 +1539,7 @@ fn live_node_build_path_runs_adapter_mapping_after_secret_resolution() {
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-adapter-mapping-build-path");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
     let _node = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
         .expect("v3 LiveNode should build through the adapter mapping boundary");
 }

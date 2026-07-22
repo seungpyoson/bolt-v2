@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
-    facts::{RequoteActionCostClass, RequoteThrottleBound, RequoteThrottleObservationFact},
+    facts::{
+        RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
+        RequoteThrottleObservationFact,
+    },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
 };
@@ -94,6 +97,7 @@ struct ObservationV1 {
     now_ms: u64,
     observed_at_ns: u64,
     action_cost_class: ActionCostClassV1,
+    block_reason: BlockReasonV1,
     bound_by: BoundV1,
     submit_commands_in_window: u64,
     submit_command_cap: u64,
@@ -114,6 +118,7 @@ impl ObservationV1 {
             now_ms: fact.now_ms,
             observed_at_ns: fact.observed_at_ns,
             action_cost_class: ActionCostClassV1::from_fact(fact.action_cost_class),
+            block_reason: BlockReasonV1::from_fact(fact.block_reason),
             bound_by: BoundV1::from_fact(fact.bound_by),
             submit_commands_in_window: u64::try_from(fact.submit_commands_in_window).map_err(
                 |source| {
@@ -140,6 +145,7 @@ impl ObservationV1 {
             now_ms: self.now_ms,
             observed_at_ns: self.observed_at_ns,
             action_cost_class: self.action_cost_class.into_fact(),
+            block_reason: self.block_reason.into_fact(),
             bound_by: self.bound_by.into_fact(),
             submit_commands_in_window: usize::try_from(self.submit_commands_in_window)
                 .context("submit_commands_in_window does not fit usize")?,
@@ -150,6 +156,26 @@ impl ObservationV1 {
             rest_window_ms: self.rest_window_ms,
             min_interval_ms: self.min_interval_ms,
         })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BlockReasonV1 {
+    RequoteBudgetExhausted,
+}
+
+impl BlockReasonV1 {
+    fn from_fact(value: RequoteThrottleBlockReason) -> Self {
+        match value {
+            RequoteThrottleBlockReason::RequoteBudgetExhausted => Self::RequoteBudgetExhausted,
+        }
+    }
+
+    fn into_fact(self) -> RequoteThrottleBlockReason {
+        match self {
+            Self::RequoteBudgetExhausted => RequoteThrottleBlockReason::RequoteBudgetExhausted,
+        }
     }
 }
 

@@ -11,9 +11,7 @@ use nautilus_model::{
     types::Quantity,
 };
 
-use crate::bolt_v3_decision_evidence::{
-    BoltV3OrderLifecycleOutcome, BoltV3OrderLifecycleTransition,
-};
+use crate::bolt_v3_current_evidence::{OrderLifecycleOutcome, OrderLifecycleTransition};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeReconcileOrder {
@@ -22,7 +20,7 @@ pub struct RuntimeReconcileOrder {
     pub instrument_id: InstrumentId,
     pub market_id: Option<String>,
     pub position_id: Option<PositionId>,
-    pub failure_outcome: BoltV3OrderLifecycleOutcome,
+    pub failure_outcome: OrderLifecycleOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,7 +29,7 @@ pub struct IssueVenueOrderQuery {
     pub instrument_id: InstrumentId,
     pub market_id: Option<String>,
     pub position_id: Option<PositionId>,
-    pub failure_outcome: BoltV3OrderLifecycleOutcome,
+    pub failure_outcome: OrderLifecycleOutcome,
 }
 
 impl From<&RuntimeReconcileOrder> for IssueVenueOrderQuery {
@@ -139,13 +137,13 @@ pub fn materialize_cached_position(
 /// Unknown and non-terminal statuses fail closed by producing no transition.
 pub fn reconcile_transition_for_order_status(
     status: OrderStatus,
-) -> Option<BoltV3OrderLifecycleTransition> {
+) -> Option<OrderLifecycleTransition> {
     match status {
-        OrderStatus::Denied => Some(BoltV3OrderLifecycleTransition::OrderDenied),
-        OrderStatus::Rejected => Some(BoltV3OrderLifecycleTransition::OrderRejected),
-        OrderStatus::Canceled => Some(BoltV3OrderLifecycleTransition::OrderCanceled),
-        OrderStatus::Expired => Some(BoltV3OrderLifecycleTransition::OrderExpired),
-        OrderStatus::Filled => Some(BoltV3OrderLifecycleTransition::OrderFilled),
+        OrderStatus::Denied => Some(OrderLifecycleTransition::OrderDenied),
+        OrderStatus::Rejected => Some(OrderLifecycleTransition::OrderRejected),
+        OrderStatus::Canceled => Some(OrderLifecycleTransition::OrderCanceled),
+        OrderStatus::Expired => Some(OrderLifecycleTransition::OrderExpired),
+        OrderStatus::Filled => Some(OrderLifecycleTransition::OrderFilled),
         _ => None,
     }
 }
@@ -161,7 +159,7 @@ mod tests {
             instrument_id: InstrumentId::from("YES.VENUE"),
             market_id: Some("MKT-1".to_string()),
             position_id: Some(PositionId::from("P-1")),
-            failure_outcome: BoltV3OrderLifecycleOutcome::ExitPending,
+            failure_outcome: OrderLifecycleOutcome::ExitPending,
         }
     }
 

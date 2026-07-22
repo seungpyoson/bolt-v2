@@ -67,6 +67,7 @@ fn chainlink_strike_client_registers_as_data_only_via_provider_binding() {
     let mut loaded = loaded_config_with_chainlink_client();
     let temp = support::TempCaseDir::new("bolt-v3-chainlink-strike-registration");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
 
     let (node, summary) = build_bolt_v3_all_configured_client_mapping_live_node_with_summary(
         &loaded,

@@ -10,6 +10,7 @@ use nautilus_common::{
 use nautilus_model::events::OrderEventAny;
 use tokio::sync::Notify;
 
+use crate::bolt_v3_current_evidence::DecisionEvidenceRecorder;
 use crate::bolt_v3_operator_health::BoltV3OperatorHealthTransitionEmitter;
 use crate::bolt_v3_venue_truth::{
     VenueTruthCaptureFailureEvidence, venue_truth_capture_failure_parts,
@@ -66,16 +67,6 @@ pub(super) struct BoltV3CapitalAdmissionVenueSpendabilitySourceConfig {
     pub(super) venue_id: String,
     pub(super) account_id: String,
     pub(super) collateral_currency: String,
-}
-
-/// Startup reservation-recovery source: the decision-evidence file the
-/// live-node boot driver reads to recover known submit-reservation
-/// metadata after a restart, plus the byte cap from
-/// [`crate::bolt_v3_config::DecisionEvidenceBlock::recovery_evidence_max_bytes`].
-#[derive(Debug, Clone)]
-pub(super) struct BoltV3SubmitReservationRecoveryConfig {
-    pub(super) path: PathBuf,
-    pub(super) max_bytes: u64,
 }
 
 pub(super) struct BoltV3VenueTruthRuntimeConfig {
@@ -796,53 +787,6 @@ pub(super) fn capital_admission_venue_spendability_source_config_from_loaded(
     }))
 }
 
-/// Resolve the startup reservation-recovery source from the loaded config.
-/// The recovery driver reads the decision-evidence file, so the path comes
-/// from [`decision_evidence_path`] and the read bound from
-/// `persistence.decision_evidence.recovery_evidence_max_bytes`. Returns
-/// `None` (recovery disabled) when the byte cap is not configured.
-pub(super) fn submit_reservation_recovery_config_from_loaded(
-    loaded: &LoadedBoltV3Config,
-) -> Result<Option<BoltV3SubmitReservationRecoveryConfig>, BoltV3LiveNodeError> {
-    let Some(max_bytes) = loaded
-        .root
-        .persistence
-        .decision_evidence
-        .recovery_evidence_max_bytes
-    else {
-        return Ok(None);
-    };
-    Ok(Some(BoltV3SubmitReservationRecoveryConfig {
-        path: decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
-        max_bytes,
-    }))
-}
-
-/// Resolve the startup settlement-recovery source from the owning decision
-/// evidence store when the settlement sink exists. The sink replays settled and
-/// booking-error keys from durable evidence, so it must not depend on capital
-/// admission submit-reservation recovery being enabled.
-pub(super) fn settlement_recovery_config_from_loaded(
-    loaded: &LoadedBoltV3Config,
-    settlement_sink_configured: bool,
-) -> Result<Option<BoltV3SettlementRecoveryConfig>, BoltV3LiveNodeError> {
-    if !settlement_sink_configured {
-        return Ok(None);
-    }
-    let Some(max_bytes) = loaded
-        .root
-        .persistence
-        .decision_evidence
-        .recovery_evidence_max_bytes
-    else {
-        return Ok(None);
-    };
-    Ok(Some(BoltV3SettlementRecoveryConfig {
-        path: decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
-        max_bytes,
-    }))
-}
-
 pub(super) fn capital_admission_venue_spendability_snapshot_from_source_config(
     config: &BoltV3CapitalAdmissionVenueSpendabilitySourceConfig,
 ) -> Result<VenueSpendabilitySnapshot, BoltV3LiveNodeError> {
@@ -1173,7 +1117,7 @@ impl KillSwitchLossActionSink for NtReducingLossActionSink {
 fn live_node_kill_switch_flatten_executor(
     loaded: &LoadedBoltV3Config,
     node: &LiveNode,
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<DecisionEvidenceRecorder>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> Result<Option<Rc<dyn KillSwitchFlattenExecutor>>, BoltV3LiveNodeError> {
     let Some(kill_switch) = loaded
@@ -1505,7 +1449,7 @@ fn execution_clients_by_venue(loaded: &LoadedBoltV3Config) -> Result<BTreeMap<Ve
 pub(super) fn configure_bolt_v3_kill_switch_loss_protection(
     loaded: &LoadedBoltV3Config,
     node: &LiveNode,
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    decision_evidence: Arc<DecisionEvidenceRecorder>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> Result<Option<Rc<RefCell<KillSwitchLossProtection>>>, BoltV3LiveNodeError> {
     let Some(kill_switch) = loaded
@@ -1762,15 +1706,6 @@ mod tests {
             VenueSpendabilitySnapshot,
         },
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
-        bolt_v3_decision_evidence::{
-            BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-            BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-            BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentClampOutcome,
-            BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence, BoltV3RequoteThrottleEvidence,
-            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-            BoltV3SubmitReservationMetadataEvidence,
-        },
         bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState, KillSwitchStateKind},
         bolt_v3_kill_switch_store::{KillSwitchRecoveryState, KillSwitchStore},
         bolt_v3_order_execution::{
@@ -1780,12 +1715,12 @@ mod tests {
         bolt_v3_order_intent::NtOrderTemplate,
         bolt_v3_submit_admission::{
             BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
-            BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitIntentKind,
+            BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
             BoltV3SubmitLifecyclePolicy,
         },
         bolt_v3_venue_truth::{
             VenueTruthCaptureEndpointError, VenueTruthDivergence, VenueTruthDivergenceAlarmClass,
-            VenueTruthDivergenceEvidence, VenueTruthDivergenceKind, VenueTruthSnapshot,
+            VenueTruthDivergenceKind, VenueTruthSnapshot,
         },
     };
     use anyhow::Result;
@@ -1827,7 +1762,7 @@ mod tests {
     #[test]
     fn venue_truth_capture_failure_handler_suspends_without_durable_halt() {
         let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(NoStrategyDecisionEvidenceWriter),
+            Arc::new(DecisionEvidenceRecorder::recording()),
             BoltV3SubmitCapitalAdmissionConfig {
                 venue_id: "VENUE-A".to_string(),
                 account_id: "ACCOUNT-001".to_string(),
@@ -1866,7 +1801,7 @@ mod tests {
     #[test]
     fn venue_truth_failure_recovery_repeat_failure_emits_three_health_transitions() {
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(NoStrategyDecisionEvidenceWriter),
+            Arc::new(DecisionEvidenceRecorder::recording()),
             test_capital_admission_config(),
         ));
         let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
@@ -1943,7 +1878,7 @@ mod tests {
             .write_state(&KillSwitchState::Armed)
             .expect("recovered armed state should persist");
         let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(NoStrategyDecisionEvidenceWriter),
+            Arc::new(DecisionEvidenceRecorder::recording()),
             test_capital_admission_config(),
         );
 
@@ -1979,7 +1914,7 @@ mod tests {
         store
             .write_state(&KillSwitchState::Armed)
             .expect("recovered armed state should persist");
-        let writer = Arc::new(TestVenueTruthDivergenceEvidenceWriter::recording());
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
             writer.clone(),
             test_capital_admission_config(),
@@ -1992,7 +1927,17 @@ mod tests {
         );
 
         assert_eq!(state.kind(), KillSwitchStateKind::Halted);
-        let records = writer.records();
+        let records = writer
+            .recorded_facts()
+            .expect("current venue-divergence evidence should decode")
+            .into_iter()
+            .filter_map(|fact| match fact {
+                crate::bolt_v3_current_evidence::CurrentFact::VenueTruthDivergence(record) => {
+                    Some(record)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(records.len(), 1);
         let evidence = &records[0];
         assert_eq!(
@@ -2009,7 +1954,7 @@ mod tests {
         );
         assert_eq!(
             evidence.alarm_class,
-            VenueTruthDivergenceAlarmClass::TrueDivergence
+            crate::bolt_v3_current_evidence::VenueTruthDivergenceAlarmClass::TrueDivergence
         );
     }
 
@@ -2029,7 +1974,7 @@ mod tests {
             .write_state(&existing)
             .expect("existing halted state should persist");
         let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(NoStrategyDecisionEvidenceWriter),
+            Arc::new(DecisionEvidenceRecorder::recording()),
             test_capital_admission_config(),
         );
 
@@ -2059,8 +2004,10 @@ mod tests {
         store
             .write_state(&KillSwitchState::Armed)
             .expect("recovered armed state should persist");
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        writer.fail_machine_writes();
         let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(TestVenueTruthDivergenceEvidenceWriter::failing()),
+            writer,
             test_capital_admission_config(),
         );
 
@@ -2099,7 +2046,7 @@ mod tests {
             .write_state(&KillSwitchState::Armed)
             .expect("recovered armed state should persist");
         let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(NoStrategyDecisionEvidenceWriter),
+            Arc::new(DecisionEvidenceRecorder::recording()),
             test_capital_admission_config(),
         );
 
@@ -2135,7 +2082,7 @@ mod tests {
             .len();
         let constrained_store = KillSwitchStore::new(path, armed_state_bytes);
         let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(NoStrategyDecisionEvidenceWriter),
+            Arc::new(DecisionEvidenceRecorder::recording()),
             test_capital_admission_config(),
         );
 
@@ -2211,7 +2158,7 @@ mod tests {
 
     #[test]
     fn triggered_halt_without_flatten_executor_has_zero_submits_but_wired_sink_submits_clamped() {
-        let pre_wiring_writer = Arc::new(RecordingFlattenDecisionEvidenceWriter::default());
+        let pre_wiring_writer = Arc::new(DecisionEvidenceRecorder::recording());
         let pre_wiring_executor = Rc::new(RoutingFlattenExecutor::new(
             pre_wiring_writer.clone(),
             Decimal::new(3, 0),
@@ -2224,10 +2171,14 @@ mod tests {
 
         assert_eq!(pre_wiring_trading_state.enter_reducing_calls(), 1);
         assert_eq!(pre_wiring_executor.submitted_quantities(), Vec::new());
-        assert_eq!(pre_wiring_writer.records(), Vec::new());
-        assert_eq!(pre_wiring_writer.admission_decisions(), Vec::new());
+        assert!(
+            pre_wiring_writer
+                .recorded_facts()
+                .expect("empty current evidence should decode")
+                .is_empty()
+        );
 
-        let writer = Arc::new(RecordingFlattenDecisionEvidenceWriter::default());
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let wired_executor = Rc::new(RoutingFlattenExecutor::new(
             writer.clone(),
             Decimal::new(3, 0),
@@ -2247,19 +2198,40 @@ mod tests {
             wired_executor.submitted_quantities(),
             vec![Quantity::new(3.0, 2)]
         );
-        let records = writer.records();
+        let facts = writer
+            .recorded_facts()
+            .expect("flatten current evidence should decode");
+        let records = facts
+            .iter()
+            .filter_map(|fact| match fact {
+                crate::bolt_v3_current_evidence::CurrentFact::RiskReducingExitOrderIntent(
+                    record,
+                ) => Some(record),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(records.len(), 1);
         assert_eq!(
-            records[0].clamp_outcome,
-            Some(BoltV3OrderIntentClampOutcome::Clamped {
-                original_quantity: Quantity::new(5.0, 2).as_decimal().to_string(),
-            })
+            records[0].details.clamp_outcome,
+            Some(
+                crate::bolt_v3_current_evidence::OrderIntentClampOutcome::Clamped {
+                    original_quantity: Quantity::new(5.0, 2).as_decimal().to_string(),
+                }
+            )
         );
-        let admission_decisions = writer.admission_decisions();
+        let admission_decisions = facts
+            .iter()
+            .filter_map(|fact| match fact {
+                crate::bolt_v3_current_evidence::CurrentFact::ForcedReductionAdmission(record) => {
+                    Some(record)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(admission_decisions.len(), 1);
         assert_eq!(
-            admission_decisions[0].intent_kind,
-            BoltV3SubmitIntentKind::KillSwitchForcedReduction
+            admission_decisions[0].outcome,
+            crate::bolt_v3_current_evidence::AdmissionDecisionOutcome::Admitted
         );
     }
 
@@ -2297,7 +2269,7 @@ mod tests {
     #[should_panic(expected = "venue truth reconcile feed lock poisoned")]
     fn venue_truth_reconcile_feed_lock_poison_panics() {
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(NoStrategyDecisionEvidenceWriter),
+            Arc::new(DecisionEvidenceRecorder::recording()),
             BoltV3SubmitCapitalAdmissionConfig {
                 venue_id: "VENUE-A".to_string(),
                 account_id: "ACCOUNT-001".to_string(),
@@ -2403,147 +2375,6 @@ mod tests {
         }
     }
 
-    struct TestVenueTruthDivergenceEvidenceWriter {
-        records: Mutex<Vec<VenueTruthDivergenceEvidence>>,
-        fail: bool,
-    }
-
-    impl TestVenueTruthDivergenceEvidenceWriter {
-        fn recording() -> Self {
-            Self {
-                records: Mutex::new(Vec::new()),
-                fail: false,
-            }
-        }
-
-        fn failing() -> Self {
-            Self {
-                records: Mutex::new(Vec::new()),
-                fail: true,
-            }
-        }
-
-        fn records(&self) -> Vec<VenueTruthDivergenceEvidence> {
-            self.records
-                .lock()
-                .expect("test venue truth divergence records mutex should not be poisoned")
-                .clone()
-        }
-    }
-
-    impl std::fmt::Debug for TestVenueTruthDivergenceEvidenceWriter {
-        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter
-                .debug_struct("TestVenueTruthDivergenceEvidenceWriter")
-                .field("fail", &self.fail)
-                .finish_non_exhaustive()
-        }
-    }
-
-    impl BoltV3DecisionEvidenceWriter for TestVenueTruthDivergenceEvidenceWriter {
-        fn record_strategy_input_snapshot(
-            &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            _decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &BoltV3BasketAdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_capital_admission_rebuild_audit(
-            &self,
-            _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_loss_governor_halt(
-            &self,
-            _evidence: &BoltV3LossGovernorHaltEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_venue_truth_divergence(
-            &self,
-            evidence: &VenueTruthDivergenceEvidence,
-        ) -> Result<()> {
-            if self.fail {
-                return Err(anyhow::anyhow!("decision evidence unavailable"));
-            }
-            self.records
-                .lock()
-                .expect("test venue truth divergence records mutex should not be poisoned")
-                .push(evidence.clone());
-            Ok(())
-        }
-
-        fn drain_shutdown(&self) -> Result<()> {
-            Ok(())
-        }
-    }
-
     #[derive(Default)]
     struct RecordingTradingStateController {
         enter_reducing_calls: RefCell<usize>,
@@ -2644,16 +2475,13 @@ mod tests {
     }
 
     struct RoutingFlattenExecutor {
-        writer: Arc<RecordingFlattenDecisionEvidenceWriter>,
+        writer: Arc<DecisionEvidenceRecorder>,
         admission: Arc<BoltV3SubmitAdmissionState>,
         submitted_quantities: Rc<RefCell<Vec<Quantity>>>,
     }
 
     impl RoutingFlattenExecutor {
-        fn new(
-            writer: Arc<RecordingFlattenDecisionEvidenceWriter>,
-            venue_position: Decimal,
-        ) -> Self {
+        fn new(writer: Arc<DecisionEvidenceRecorder>, venue_position: Decimal) -> Self {
             let admission = flatten_admission_with_yes_position(writer.clone(), venue_position);
             admission.configure_kill_switch_forced_reduction_policy(
                 BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 2, Decimal::new(10, 0))
@@ -2749,128 +2577,8 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Default)]
-    struct RecordingFlattenDecisionEvidenceWriter {
-        records: Mutex<Vec<BoltV3OrderIntentEvidence>>,
-        admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
-    }
-
-    impl RecordingFlattenDecisionEvidenceWriter {
-        fn records(&self) -> Vec<BoltV3OrderIntentEvidence> {
-            self.records
-                .lock()
-                .expect("flatten records mutex should not be poisoned")
-                .clone()
-        }
-
-        fn admission_decisions(&self) -> Vec<BoltV3AdmissionDecisionEvidence> {
-            self.admission_decisions
-                .lock()
-                .expect("flatten admission mutex should not be poisoned")
-                .clone()
-        }
-    }
-
-    impl BoltV3DecisionEvidenceWriter for RecordingFlattenDecisionEvidenceWriter {
-        fn record_strategy_input_snapshot(
-            &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_intent(&self, intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-            self.records
-                .lock()
-                .expect("flatten records mutex should not be poisoned")
-                .push(intent.clone());
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            self.admission_decisions
-                .lock()
-                .expect("flatten admission mutex should not be poisoned")
-                .push(decision.clone());
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &BoltV3BasketAdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_capital_admission_rebuild_audit(
-            &self,
-            _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_loss_governor_halt(
-            &self,
-            _evidence: &BoltV3LossGovernorHaltEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn drain_shutdown(&self) -> Result<()> {
-            Ok(())
-        }
-    }
-
     fn flatten_admission_with_yes_position(
-        writer: Arc<RecordingFlattenDecisionEvidenceWriter>,
+        writer: Arc<DecisionEvidenceRecorder>,
         yes_position: Decimal,
     ) -> Arc<BoltV3SubmitAdmissionState> {
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(

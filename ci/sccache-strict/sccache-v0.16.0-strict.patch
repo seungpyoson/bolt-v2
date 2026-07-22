@@ -7345,7 +7345,7 @@ index 8760ba6..5ab6c52 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..64356ed 100644
+index 98cedfb..85a6405 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16,2 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -8612,9 +8612,9 @@ index 98cedfb..64356ed 100644
 +        let _guard = runtime.enter();
 +        let (listener, ownership) =
 +            bind_governed_unix_listener(&path, Duration::from_millis(25)).unwrap();
-+        drop(listener);
 +        fs::remove_file(&path).unwrap();
 +        let replacement = std::os::unix::net::UnixListener::bind(&path).unwrap();
++        drop(listener);
 +
 +        remove_owned_unix_socket(ownership).unwrap();
 +

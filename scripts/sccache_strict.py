@@ -50,7 +50,9 @@ class StrictBuildConfig:
     profile: str
     verification_timeout_ms: int
     max_frame_bytes: int
+    max_runtime_timeout_ms: int
     snapshot_max_bytes: int
+    abstract_name_max_bytes: int
     verification_cache_mode: str
     replicas: tuple[str, ...]
     attestation_attempts: int
@@ -141,7 +143,16 @@ def load_document(
     top = _mapping(document, "document")
     _exact_keys(
         top,
-        frozenset({"schema_version", "source", "build", "verification", "targets"}),
+        frozenset(
+            {
+                "schema_version",
+                "source",
+                "build",
+                "verification",
+                "runtime_contract",
+                "targets",
+            }
+        ),
         "top-level",
     )
     schema_version = top["schema_version"]
@@ -260,7 +271,6 @@ def load_document(
             {
                 "strict_timeout_ms",
                 "max_frame_bytes",
-                "snapshot_max_bytes",
                 "cache_mode",
                 "replicas",
                 "attestation_attempts",
@@ -286,7 +296,29 @@ def load_document(
         raise ValueError(
             "verification.max_frame_bytes must be a positive 32-bit integer"
         )
-    snapshot_max_bytes = verification["snapshot_max_bytes"]
+    runtime_contract = _mapping(top["runtime_contract"], "runtime_contract")
+    _exact_keys(
+        runtime_contract,
+        frozenset(
+            {
+                "max_runtime_timeout_ms",
+                "snapshot_max_bytes",
+                "abstract_name_max_bytes",
+            }
+        ),
+        "runtime_contract",
+    )
+    max_runtime_timeout_ms = runtime_contract["max_runtime_timeout_ms"]
+    snapshot_max_bytes = runtime_contract["snapshot_max_bytes"]
+    abstract_name_max_bytes = runtime_contract["abstract_name_max_bytes"]
+    if (
+        isinstance(max_runtime_timeout_ms, bool)
+        or not isinstance(max_runtime_timeout_ms, int)
+        or max_runtime_timeout_ms < verification_timeout_ms
+    ):
+        raise ValueError(
+            "runtime_contract.max_runtime_timeout_ms must be an integer no smaller than the verification timeout"
+        )
     if (
         isinstance(snapshot_max_bytes, bool)
         or not isinstance(snapshot_max_bytes, int)
@@ -294,7 +326,16 @@ def load_document(
         or snapshot_max_bytes > max_frame_bytes
     ):
         raise ValueError(
-            "verification.snapshot_max_bytes must be a positive integer no larger than max_frame_bytes"
+            "runtime_contract.snapshot_max_bytes must be a positive integer no larger than max_frame_bytes"
+        )
+    if (
+        isinstance(abstract_name_max_bytes, bool)
+        or not isinstance(abstract_name_max_bytes, int)
+        or abstract_name_max_bytes <= 0
+        or abstract_name_max_bytes > 107
+    ):
+        raise ValueError(
+            "runtime_contract.abstract_name_max_bytes must fit Linux sockaddr_un"
         )
     verification_cache_mode = _string(
         verification["cache_mode"], "verification.cache_mode"
@@ -367,7 +408,9 @@ def load_document(
         profile=profile,
         verification_timeout_ms=verification_timeout_ms,
         max_frame_bytes=max_frame_bytes,
+        max_runtime_timeout_ms=max_runtime_timeout_ms,
         snapshot_max_bytes=snapshot_max_bytes,
+        abstract_name_max_bytes=abstract_name_max_bytes,
         verification_cache_mode=verification_cache_mode,
         replicas=tuple(replicas_value),
         attestation_attempts=attestation_attempts,
@@ -418,7 +461,9 @@ def _derivative_identity(config: StrictBuildConfig, architecture: str) -> str:
         "features": list(config.features),
         "default_features": config.default_features,
         "profile": config.profile,
+        "max_runtime_timeout_ms": config.max_runtime_timeout_ms,
         "snapshot_max_bytes": config.snapshot_max_bytes,
+        "abstract_name_max_bytes": config.abstract_name_max_bytes,
         "target": target.triple,
     }
     return hashlib.sha256(_canonical_json(document)).hexdigest()
@@ -501,7 +546,9 @@ def write_candidate_manifest(
         "profile": config.profile,
         "verification_timeout_ms": config.verification_timeout_ms,
         "max_frame_bytes": config.max_frame_bytes,
+        "max_runtime_timeout_ms": config.max_runtime_timeout_ms,
         "snapshot_max_bytes": config.snapshot_max_bytes,
+        "abstract_name_max_bytes": config.abstract_name_max_bytes,
         "verification_cache_mode": config.verification_cache_mode,
         "binary_name": _candidate_binary_name(config, architecture),
         "binary_sha256": _file_sha256(binary_path),
@@ -537,7 +584,9 @@ _CANDIDATE_KEYS = frozenset(
         "profile",
         "verification_timeout_ms",
         "max_frame_bytes",
+        "max_runtime_timeout_ms",
         "snapshot_max_bytes",
+        "abstract_name_max_bytes",
         "verification_cache_mode",
         "binary_name",
         "binary_sha256",
@@ -610,7 +659,9 @@ def verify_candidate_set(
             "profile": config.profile,
             "verification_timeout_ms": config.verification_timeout_ms,
             "max_frame_bytes": config.max_frame_bytes,
+            "max_runtime_timeout_ms": config.max_runtime_timeout_ms,
             "snapshot_max_bytes": config.snapshot_max_bytes,
+            "abstract_name_max_bytes": config.abstract_name_max_bytes,
             "verification_cache_mode": config.verification_cache_mode,
             "binary_name": _candidate_binary_name(config, architecture),
         }
@@ -672,7 +723,9 @@ def verify_candidate_set(
             "profile": config.profile,
             "verification_timeout_ms": config.verification_timeout_ms,
             "max_frame_bytes": config.max_frame_bytes,
+            "max_runtime_timeout_ms": config.max_runtime_timeout_ms,
             "snapshot_max_bytes": config.snapshot_max_bytes,
+            "abstract_name_max_bytes": config.abstract_name_max_bytes,
             "verification_cache_mode": config.verification_cache_mode,
             "replicas": list(config.replicas),
         },
@@ -1058,7 +1111,9 @@ def main(argv: list[str] | None = None) -> int:
                 "profile": config.profile,
                 "verification_timeout_ms": config.verification_timeout_ms,
                 "max_frame_bytes": config.max_frame_bytes,
+                "max_runtime_timeout_ms": config.max_runtime_timeout_ms,
                 "snapshot_max_bytes": config.snapshot_max_bytes,
+                "abstract_name_max_bytes": config.abstract_name_max_bytes,
                 "verification_cache_mode": config.verification_cache_mode,
                 "replicas": list(config.replicas),
                 "attestation_attempts": config.attestation_attempts,

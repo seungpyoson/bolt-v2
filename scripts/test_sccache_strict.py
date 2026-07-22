@@ -54,11 +54,15 @@ def valid_document() -> dict[str, object]:
         "verification": {
             "strict_timeout_ms": 1_000,
             "max_frame_bytes": 16_777_216,
-            "snapshot_max_bytes": 65_536,
             "cache_mode": "READ_WRITE",
             "replicas": ["a", "b"],
             "attestation_attempts": 12,
             "attestation_interval_seconds": 10,
+        },
+        "runtime_contract": {
+            "max_runtime_timeout_ms": 3_600_000,
+            "snapshot_max_bytes": 65_536,
+            "abstract_name_max_bytes": 107,
         },
         "targets": {
             "ARM64": {
@@ -80,6 +84,8 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.verification_timeout_ms, 1_000)
         self.assertEqual(config.max_frame_bytes, 16_777_216)
         self.assertEqual(config.snapshot_max_bytes, 65_536)
+        self.assertEqual(config.max_runtime_timeout_ms, 3_600_000)
+        self.assertEqual(config.abstract_name_max_bytes, 107)
 
     def test_rejects_non_positive_verification_timeout(self) -> None:
         document = valid_document()

@@ -29,6 +29,8 @@ patch="$(jq -r '.patch' "$target_json")"
 verification_timeout="$(jq -r '.verification_timeout_ms' "$target_json")"
 max_frame_bytes="$(jq -r '.max_frame_bytes' "$target_json")"
 snapshot_max_bytes="$(jq -r '.snapshot_max_bytes' "$target_json")"
+max_runtime_timeout_ms="$(jq -r '.max_runtime_timeout_ms' "$target_json")"
+abstract_name_max_bytes="$(jq -r '.abstract_name_max_bytes' "$target_json")"
 verification_cache_mode="$(jq -r '.verification_cache_mode' "$target_json")"
 derivative_identity="$(jq -r '.derivative_identity' "$target_json")"
 machine="$(jq -r '.elf_machine' "$target_json")"
@@ -79,6 +81,8 @@ docker run --rm --network none \
   -e SCCACHE_STRICT_IPC_TIMEOUT_MS="$verification_timeout" \
   -e SCCACHE_STRICT_MAX_FRAME_BYTES="$max_frame_bytes" \
   -e SCCACHE_STRICT_SNAPSHOT_MAX_BYTES="$snapshot_max_bytes" \
+  -e SCCACHE_STRICT_MAX_RUNTIME_TIMEOUT_MS="$max_runtime_timeout_ms" \
+  -e SCCACHE_STRICT_ABSTRACT_NAME_MAX_BYTES="$abstract_name_max_bytes" \
   -e SCCACHE_STRICT_STARTUP_TIMEOUT_MS="$verification_timeout" \
   -e SOURCE_DATE_EPOCH="$source_epoch" \
   -e STRICT_BUILD_FEATURES="$features" \

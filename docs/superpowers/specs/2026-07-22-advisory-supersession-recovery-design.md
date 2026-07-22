@@ -8,9 +8,11 @@ The governed workflow-run census remains scoped to `advisory.yml`, `main`, and `
 
 This PR does not change advisory Cargo jobs, #1497, #1494, merge authority, or Mergify behavior.
 
+This specification is temporary implementation scaffolding. After implementation findings are resolved, it is removed before merge and the resulting code-only head receives fresh exact-head verification and review. Lasting operator facts live as comments beside their governed keys in `ci/advisory-supersession.toml`, with loud controller diagnostics naming the threshold or budget that stopped admission; no permanent design document or duplicate runbook owns those values.
+
 ## Admission invariant
 
-> An advisory push run may admit its evidence jobs only when its SHA is exact-current `main`, a GitHub-time-anchored governed census is complete and stable, the complete reconciliation fits its governed request and mutation budgets, every discovered active push run for a different SHA has reached GitHub's exact terminal state after cancellation, and a final stable census finds no new stale run. Any ref movement, incomplete or oversized census, malformed response, unstable pagination, unknown run state, budget exhaustion, or unconfirmed cancellation fails admission.
+> An advisory push run may admit its evidence jobs only when its SHA is exact-current `main`, a GitHub-time-anchored governed census is complete and stable, cumulative request, mutation, target, point, round, and time budgets remain valid before every mutation, every discovered active push run for a different SHA has reached GitHub's exact terminal state after cancellation, and a final stable census finds no new stale run. Any ref movement, incomplete or oversized census, malformed response, unstable pagination, unknown run state, budget exhaustion, or unconfirmed cancellation fails admission. External failure may leave already-issued cancellations as visible evidence loss, but can never authorize admission or another mutation.
 
 The legacy-rerun watchdog applies the same freshness and confirmed-cancellation rules. Pull-request, schedule, and manual-dispatch runs remain isolated from the push controller.
 
@@ -26,10 +28,10 @@ The controller therefore queries only the configured workflow with these governe
 
 - `branch = "main"`;
 - `event = "push"`;
-- `created` at or after a cutoff derived from the invoking run's validated GitHub `created_at` and captured once for the complete reconciliation;
+- `created` at or after a cutoff derived from the exact-run response's validated GitHub HTTP `Date` header and captured once for the complete reconciliation;
 - `runs_per_page = 100`.
 
-`workflow_run_lifetime_days = 35` and `rerun_request_window_days = 30` record the documented platform limits. `created_lookback_days = 66` covers both limits plus one full day of margin, without depending on the undocumented question of whether a late re-run attempt receives a fresh execution clock. For the admission controller, the current advisory run is fetched by exact run ID; its repository, workflow, event, branch, attempt, head SHA, and `created_at` are validated before `created_at` becomes the clock authority. That exact advisory run ID, attempt, and SHA must then appear in every complete census. The watchdog does not make an admission census; it validates its target run and current `main` directly under the same cancellation and freshness rules. The fixed controller cutoff is reused across all pages, stabilization sweeps, and reconciliation rounds so runner clock skew and a moving search boundary cannot silently exclude a run.
+`workflow_run_lifetime_days = 35` and `rerun_request_window_days = 30` record the documented platform limits. `created_lookback_days = 66` covers both limits plus one full day of margin, without depending on the undocumented question of whether a late re-run attempt receives a fresh execution clock. For the admission controller, the current advisory run is fetched by exact run ID; its repository ID, repository name, workflow, event, branch, attempt, head SHA, `created_at`, and `run_started_at` are validated. The response's HTTP `Date` is parsed once as GitHub server time, must not precede the validated run timestamps, and becomes the cutoff authority. That exact advisory run ID, attempt, and SHA must then appear in every accepted census. A missing sentinel makes the sweep incomplete and non-mutating; it may retry only within the governed sweep, request, interval, and total-deadline budgets, and exhaustion is fatal. The watchdog does not make an admission census; it validates its target run and current `main` directly under the same cancellation and freshness rules. The fixed controller cutoff is reused across all pages, stabilization sweeps, and reconciliation rounds so runner clock skew, an old rerun `created_at`, and a moving search boundary cannot silently distort the window.
 
 `search_result_limit = 1000` records GitHub's documented search ceiling. `max_search_results = 900` is a reviewed fail-closed threshold below it. A response whose `total_count` is at least 900 fails immediately. This is deliberate capacity protection: the repository must revise the window or operating policy before the platform ceiling can make completeness ambiguous.
 
@@ -37,7 +39,7 @@ Each page must satisfy all of these conditions:
 
 1. `total_count` is a non-negative integer and is identical on every page in the sweep.
 2. Every returned run has a unique integer ID and the expected branch and event; the workflow-specific endpoint supplies the workflow boundary.
-3. Pagination follows only a previously unvisited, same-origin `Link: rel="next"` URL whose path is the exact configured workflow-runs endpoint and whose invariant query parameters exactly preserve branch, event, fixed `created` cutoff, and page size; only the page cursor may change.
+3. Pagination follows only a previously unvisited, same-origin `Link: rel="next"` URL whose decoded semantic identity matches the configured workflow and validated repository. The path may be either `/repos/{owner}/{repo}/actions/workflows/{workflow}/runs` or GitHub's canonical `/repositories/{repository_id}/actions/workflows/{workflow}/runs`, with the numeric ID bound to the exact-run sentinel response. Query parameters are parsed as decoded multimaps: branch, event, fixed `created` cutoff, and page size must each occur exactly once with the governed value, and only one positive page cursor may change.
 4. A missing next link while fewer than `total_count` records were fetched is fatal.
 5. A next link after `total_count` records were fetched is fatal.
 6. The final number of unique fetched records equals `total_count` exactly.
@@ -47,13 +49,15 @@ The controller never silently deduplicates a repeated run ID. A duplicate signal
 
 ## Stabilization and cancellation
 
-One complete census signature contains the active subset's run ID, attempt, head SHA, and `created_at` in run-ID order. Branch and event are validated invariants, not signature fields. Status selects membership only: a queued-to-in-progress transition does not destabilize the decision, while an active-to-completed transition, insertion, deletion, attempt change, or SHA change does. Admission requires `discovery_stable_sweeps = 2` identical active-subset signatures within `discovery_max_sweeps = 4`. Total-count drift, duplicate boundaries, malformed pagination, or failure to stabilize is fatal.
+One complete census signature contains the active subset's run ID, attempt, head SHA, and `created_at` in run-ID order. Branch and event are validated invariants, not signature fields. Status selects membership only: a queued-to-in-progress transition does not destabilize the decision, while an active-to-completed transition, insertion, deletion, attempt change, or SHA change does. Admission requires `discovery_stable_sweeps = 2` identical active-subset signatures within `discovery_max_sweeps = 4`, with TOML-governed `sweep_interval_seconds = 5` between attempts. Missing-sentinel, total-count drift, duplicate boundaries, malformed pagination, or another incomplete sweep consumes an attempt without mutation; failure to stabilize is fatal.
 
 The controller reads the live `main` ref before and after every complete sweep, before normal cancellation, before force-cancellation, and immediately before admission. Movement self-cancels the invoking run. The watchdog uses the same guards but fails without touching a newly current target.
 
-Before the first cancellation, the controller calculates the complete reconciliation's worst-case request and mutation count from the discovered targets, governed sweep/round limits, poll attempts, and both cancellation endpoints. It fails before mutation if the target count exceeds `max_cancellation_targets = 10`, the calculated total exceeds `max_reconciliation_requests = 400`, the latest primary-rate-limit response cannot preserve `api_rate_limit_reserve = 100`, or the work cannot complete inside `reconciliation_timeout_seconds = 600`. These bounds apply across the whole reconciliation, not once per round.
+One budget calculator is shared by loader validation and runtime reconciliation. With the shipped values, a full sweep costs at most nine page requests plus two `main` reads; a cancellation target costs one freshness read, one normal-cancel request, up to six status polls, one pre-force freshness read, one force-cancel request, and up to six more polls. The total bound covers one initial exact-run fetch, up to four sweeps for the initial census, up to four sweeps after each of three reconciliation rounds, a cumulative maximum of ten unique cancellation targets across all rounds, and the final admission read. The loader proves the shipped `max_reconciliation_requests = 400` can cover that configured topology; runtime counters, not a duplicate formula, record every actual request, mutation, unique target, documented secondary point, round, and elapsed interval.
 
-Normal cancellation is followed by bounded polling. If the target is not exactly `completed`, the controller rechecks freshness and requests force-cancellation. It then polls again and fails unless the target is exactly `completed`. Unknown or future statuses are non-terminal. The controller then performs another complete stable census. A newly active different-SHA run starts another reconciliation round; admission requires a final stable census with no such run within `max_reconciliation_rounds = 3`. Exhausting the target, request, time, or round budget fails admission.
+Before each mutation, the controller recomputes the known remaining work with the shared calculator. TOML records GitHub's documented `secondary_read_points = 1` and `secondary_mutation_points = 5`; the shipped `max_secondary_points = 500` bounds their cumulative total. The controller fails without that mutation if cumulative targets would exceed `max_cancellation_targets = 10`, counters would exceed the configured request or secondary-point ceilings, the latest primary-rate-limit response cannot preserve `api_rate_limit_reserve = 100`, or the target cannot be cancelled and confirmed within the remaining `reconciliation_timeout_seconds = 600`. Each request timeout is capped by the remaining reconciliation deadline. GitHub exposes no reservation for shared primary capacity and no remaining-secondary-budget endpoint, so this preflight is a local bound, not proof that all future calls will succeed. A timeout, ref movement, 403, 429, or other API failure stops further mutation and fails admission; prior successful cancellations remain visible evidence loss.
+
+Normal cancellation is followed by bounded polling. If the target is not exactly `completed`, the controller rechecks freshness and budgets before requesting force-cancellation. It then polls again and fails unless the target is exactly `completed`. Unknown or future statuses are non-terminal. The controller then performs another complete stable census. A newly active different-SHA run starts another reconciliation round using the same cumulative counters; admission requires a final stable census with no such run within `max_reconciliation_rounds = 3`. Exhausting the target, request, point, time, or round budget fails admission. The watchdog omits census and round logic but applies the same one-target freshness, request-timeout, primary-reserve, secondary-point, total-deadline, mutation, and terminal-confirmation checks.
 
 `terminal_status` and `event` remain in TOML and are validated as the only supported contracts, `completed` and `push`. Reconciliation consumes the validated config and contains no duplicate string literals for either fact.
 
@@ -62,14 +66,14 @@ Normal cancellation is followed by bounded polling. If the target is not exactly
 `ci/advisory-supersession.toml` is the only home for:
 
 - API version, branch, workflow, and event;
-- request timeout, exact page size, total reconciliation deadline, and primary-rate-limit reserve;
+- request timeout, exact page size, sweep interval, total reconciliation deadline, primary-rate-limit reserve, documented secondary read/mutation point weights, and secondary-point ceiling;
 - platform run-lifetime, rerun-window, and search-limit contracts, lookback days, and maximum accepted search results;
 - stable-sweep and maximum-sweep counts;
 - cancellation-target, total-request, and reconciliation-round limits;
 - cancellation poll attempts and interval;
 - terminal status.
 
-The loader rejects unknown keys, unsupported event or terminal values, non-positive durations/counts, any `runs_per_page` other than 100, a lookback not greater than the sum of the governed run lifetime and rerun window, `max_search_results` at or above the governed search limit, a maximum-sweep count smaller than the stable-sweep count, a request budget that cannot cover the configured discovery and polling bounds, and a reconciliation deadline that cannot fit within the workflow's existing 15-minute outer safety timeout with a reviewed margin. The controller's TOML-owned deadline is the operational bound; the workflow timeout remains only an outer platform kill switch.
+The loader rejects unknown keys, unsupported event or terminal values, non-positive durations/counts, any `runs_per_page` other than 100, a lookback not greater than the sum of the governed run lifetime and rerun window, `max_search_results` at or above the governed search limit, a maximum-sweep count smaller than the stable-sweep count, or request/point/time budgets that cannot cover the configured minimum reconciliation topology. The controller's TOML-owned deadline is the only operational time budget. The workflow timeout remains a deliberately generous external runner kill switch and is neither mirrored nor parsed by the controller.
 
 ## Failure behavior
 
@@ -77,7 +81,7 @@ Every uncertainty is fail-closed:
 
 - API errors, redirects, foreign pagination origins, malformed JSON, or missing fields fail the controller;
 - a threshold breach or incomplete/unstable census fails before any evidence job starts;
-- an excessive target count or insufficient primary/secondary request budget fails before the first mutation;
+- an excessive cumulative target count or exhausted local request, point, rate-reserve, or deadline budget fails before the next mutation;
 - a 409 cancellation response is logged, then terminal state is still confirmed;
 - failure to confirm terminal state after force-cancellation fails admission;
 - a new stale run found by the post-cancellation stable census is reconciled only within the governed total round and request budgets;
@@ -91,25 +95,28 @@ The controller continues to use only GitHub's ephemeral `GITHUB_TOKEN`, with `ac
 Behavior tests must cover:
 
 - multi-page success with exact `total_count` accounting;
-- duplicate page boundaries, missing or extra continuation links (including an exact page-multiple boundary), foreign or same-origin altered links, repeated URLs, empty-page cycles, and total-count drift;
+- configured and canonical numeric-repository link forms, wrong numeric repository IDs, decoded query reordering/encoding, duplicate query keys, dropped or changed filters, duplicate page boundaries, missing or extra continuation links (including an exact page-multiple boundary), foreign links, repeated URLs, empty-page cycles, and total-count drift;
 - threshold values immediately below and at `max_search_results`;
-- the 66-day lookback and its cross-field rejection cases, using the invoking run's GitHub `created_at` rather than runner time;
+- the 66-day lookback and its cross-field rejection cases, using the exact-run response's HTTP `Date` rather than runner time or an old rerun `created_at`;
+- delayed sentinel visibility, paced retry, permanent absence, timestamp mismatch, and exhaustion without mutation;
 - active-set convergence during multiple queued/in-progress transitions, and membership changes when a run arrives or completes;
 - stabilization exhaustion;
-- excessive cancellation targets, insufficient rate-limit reserve, worst-case request calculation, total reconciliation timeout, and round exhaustion, all before unauthorized mutation;
+- the single worst-case budget calculator, shipped-config self-validation, cumulative targets across rounds, insufficient rate-limit reserve, request/secondary-point counters, mid-reconciliation 403/429/timeout after a successful cancellation, total reconciliation timeout, and round exhaustion, with no admission or later unauthorized mutation;
 - a stale run arriving after initial stabilization or during cancellation and being found by the final stable census;
 - exact validation of `push` and `completed`, with unknown statuses treated as active;
 - movement of `main` before discovery, during discovery, before normal cancel, during polling before force-cancel, and before admission;
 - 202 and 409 cancellation responses, force-cancel escalation, and unconfirmed cancellation;
+- same-SHA rerun preservation in both controller and watchdog paths;
 - controller and watchdog exit codes;
 - strict TOML key and cross-field validation.
 
-Targeted Python tests, Ruff, actionlint, and the advisory workflow at the exact branch head are required, followed by an internal adversarial review of the exact diff. Push-path admission and the legacy watchdog cannot execute before merge; their first post-merge events remain required live evidence. The first live controller record must also reconcile the observed `total_count`, fetched count, page count, computed request budget, and remaining primary rate limit without logging credentials.
+Targeted Python tests, Ruff, actionlint, and the advisory workflow at the exact branch head are required, followed by an internal adversarial review of the exact diff. A read-only exact-head probe must exercise the real workflow-runs endpoint with a page size small enough to observe GitHub's live `Link` form; this is review evidence, not a permanent alternate workflow path. Push-path admission and the legacy watchdog cannot execute before merge; their first post-merge events remain required live evidence. The first live controller record must also reconcile the observed `total_count`, fetched count, page count, computed request budget, and remaining primary rate limit without logging credentials.
 
 ## Accepted residual risks
 
 - GitHub does not document snapshot isolation or the exactness semantics of `total_count` for paginated workflow-run searches. Two identical incomplete responses or a consistently inaccurate count are theoretically possible. Exact count checks, duplicate rejection, repeated complete signatures, a fixed cutoff, and the sub-ceiling threshold are layered hedges rather than a platform proof.
 - A push can land in the API round trip between the final ref read and a cancellation request. GitHub offers no compare-and-cancel primitive. The repeated freshness checks minimize the window; any resulting loss is visible evidence loss, not stale admission authority.
+- GitHub's primary and secondary limits are shared and cannot be reserved. Cumulative local budgets prevent deliberate overuse but cannot prevent another actor or platform throttling from exhausting capacity after cancellation begins; the controller stops further mutation and never admits.
 - A stale run can appear after the final stable census and before admission. GitHub offers no atomic list-and-admit primitive; the legacy watchdog and next push reconciliation are the asynchronous compensating controls.
 - Sustained volume reaching 900 matching runs within 66 days, more than 10 simultaneous cancellation targets, or an insufficient shared API budget stops advisory admission until the governed policy is revised. This is intentional and loud.
 - The first push-controller and legacy-watchdog executions remain structurally unprovable before merge.
@@ -128,3 +135,4 @@ Targeted Python tests, Ruff, actionlint, and the advisory workflow at the exact 
 - [GitHub Actions limits](https://docs.github.com/en/actions/reference/limits)
 - [Re-running workflows and jobs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
 - [REST API rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
+- [REST API pagination](https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api)

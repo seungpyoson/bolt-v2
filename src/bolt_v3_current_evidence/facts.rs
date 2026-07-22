@@ -366,6 +366,52 @@ pub struct ForcedReductionAdmissionFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderRejectSource {
+    SubmitAdmission,
+    Venue,
+    NtExecution,
+    Internal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderRejectReason {
+    AdmissionRejected,
+    PrecisionRejected,
+    MinSizeRejected,
+    MinNotionalRejected,
+    InsufficientBalance,
+    DuplicateClientOrderId,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderRejectFact {
+    pub reject_source: OrderRejectSource,
+    pub reject_reason: OrderRejectReason,
+    pub admission_outcome: Option<AdmissionDecisionOutcome>,
+    pub raw_reason_text: Option<String>,
+    pub instrument_id: String,
+    pub order_side: Option<String>,
+    pub raw_price: Option<String>,
+    pub raw_quantity: Option<String>,
+    pub raw_maker_amount: Option<String>,
+    pub raw_taker_amount: Option<String>,
+    pub normalized_price: Option<String>,
+    pub normalized_quantity: Option<String>,
+    pub normalized_maker_amount: Option<String>,
+    pub normalized_taker_amount: Option<String>,
+    pub venue_price_precision: Option<u32>,
+    pub venue_size_precision: Option<u32>,
+    pub venue_min_notional: Option<String>,
+    pub prior_client_order_id: Option<String>,
+    pub client_order_id: String,
+    pub retry_count: u32,
+    pub backoff_cooldown_state: Option<String>,
+    pub stable_episode_key: String,
+    pub elapsed_ns: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,
     Down,

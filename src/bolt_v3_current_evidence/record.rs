@@ -12,15 +12,15 @@ use super::codec::{
     encode_admitted_entry_admission, encode_basket_admission_granted,
     encode_basket_admission_rejected, encode_capital_admission_rebuild, encode_entry_order_intent,
     encode_forced_reduction_admission, encode_loss_governor_halt, encode_order_lifecycle,
-    encode_rejected_entry_admission, encode_requote_throttle_observation, encode_reservation_fill,
-    encode_reservation_metadata, encode_risk_reducing_exit_admission,
+    encode_order_reject, encode_rejected_entry_admission, encode_requote_throttle_observation,
+    encode_reservation_fill, encode_reservation_metadata, encode_risk_reducing_exit_admission,
     encode_risk_reducing_exit_order_intent, encode_settlement, encode_settlement_booking_error,
     encode_terminal_settlement, encode_venue_truth_capture_failure, encode_venue_truth_divergence,
 };
 use super::facts::{
     AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
     CapitalAdmissionRebuildFact, EntryOrderIntentFact, ForcedReductionAdmissionFact,
-    LossGovernorHaltFact, OrderLifecycleFact, RejectedEntryAdmissionFact,
+    LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact, RejectedEntryAdmissionFact,
     RequoteThrottleObservationFact, RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact,
     SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
     SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
@@ -276,6 +276,13 @@ impl DecisionEvidenceRecorder {
         fact: LossGovernorHaltFact,
     ) -> NonBlockingRecordOutcome {
         match encode_loss_governor_halt(fact) {
+            Ok(record) => self.record_nonblocking(record),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
+    }
+
+    pub fn record_order_reject(&self, fact: OrderRejectFact) -> NonBlockingRecordOutcome {
+        match encode_order_reject(fact) {
             Ok(record) => self.record_nonblocking(record),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }

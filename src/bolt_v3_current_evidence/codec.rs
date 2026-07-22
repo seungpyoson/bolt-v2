@@ -3,6 +3,7 @@ mod basket_admission;
 mod lifecycle;
 mod loss;
 mod order_intent;
+mod order_reject;
 mod requote;
 mod reservation;
 mod settlement;
@@ -15,8 +16,8 @@ use super::{
     facts::{
         AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
         CapitalAdmissionRebuildFact, EntryOrderIntentFact, ForcedReductionAdmissionFact,
-        LossGovernorHaltFact, OrderLifecycleFact, RecoveryFact, RejectedEntryAdmissionFact,
-        RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
+        LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact, RecoveryFact,
+        RejectedEntryAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
         RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
         SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
         VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
@@ -283,6 +284,22 @@ impl CodecFor<identities::LossGovernorHaltV1> for CurrentCodecs {
     }
 }
 
+impl CodecFor<identities::OrderRejectV1> for CurrentCodecs {
+    type Input = OrderRejectFact;
+    type Fact = OrderRejectFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        order_reject::encode(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        order_reject::decode_fact(line, line_number)
+    }
+}
+
 impl CodecFor<identities::AdmittedEntryAdmissionV1> for CurrentCodecs {
     type Input = AdmittedEntryAdmissionFact;
     type Fact = AdmittedEntryAdmissionFact;
@@ -462,6 +479,12 @@ pub(crate) fn encode_loss_governor_halt(
     fact: LossGovernorHaltFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     <CurrentCodecs as CodecFor<identities::LossGovernorHaltV1>>::encode(&fact, current_utc_ns()?)
+}
+
+pub(crate) fn encode_order_reject(
+    fact: OrderRejectFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::OrderRejectV1>>::encode(&fact, current_utc_ns()?)
 }
 
 pub(crate) fn encode_reservation_metadata(
@@ -665,7 +688,8 @@ mod tests {
     use super::super::facts::{
         AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason, LossHaltReason,
         LossSnapshotSource, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
-        OrderIntentDetails, OrderIntentOrderFields,
+        OrderIntentDetails, OrderIntentOrderFields, OrderRejectFact, OrderRejectReason,
+        OrderRejectSource,
     };
     use super::*;
 
@@ -903,6 +927,34 @@ mod tests {
             stale_reason: None,
             loss_snapshot_observed_at_ns: Some(10),
             loss_eval_now_ns: Some(12),
+        }
+    }
+
+    fn order_reject() -> OrderRejectFact {
+        OrderRejectFact {
+            reject_source: OrderRejectSource::Venue,
+            reject_reason: OrderRejectReason::MinNotionalRejected,
+            admission_outcome: None,
+            raw_reason_text: Some("minimum notional rejected".to_string()),
+            instrument_id: "YES-USD.POLYMARKET".to_string(),
+            order_side: Some("buy".to_string()),
+            raw_price: Some("0.4".to_string()),
+            raw_quantity: Some("1".to_string()),
+            raw_maker_amount: None,
+            raw_taker_amount: None,
+            normalized_price: Some("0.4".to_string()),
+            normalized_quantity: Some("1".to_string()),
+            normalized_maker_amount: None,
+            normalized_taker_amount: None,
+            venue_price_precision: Some(2),
+            venue_size_precision: Some(2),
+            venue_min_notional: Some("1".to_string()),
+            prior_client_order_id: None,
+            client_order_id: "client-1".to_string(),
+            retry_count: 1,
+            backoff_cooldown_state: None,
+            stable_episode_key: "YES-USD.POLYMARKET/venue/min_notional_rejected".to_string(),
+            elapsed_ns: 0,
         }
     }
 
@@ -1281,6 +1333,33 @@ mod tests {
                 1,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn order_reject_identity_round_trips_and_rejects_invalid_admission_shape() {
+        let expected = order_reject();
+        let record = <CurrentCodecs as CodecFor<identities::OrderRejectV1>>::encode(&expected, 28)
+            .expect("valid order reject must encode");
+        let line = std::str::from_utf8(record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::OrderRejectV1>>::decode(line, 1)
+                .expect("order reject must decode"),
+            expected
+        );
+
+        let invalid = OrderRejectFact {
+            reject_source: OrderRejectSource::Venue,
+            reject_reason: OrderRejectReason::AdmissionRejected,
+            admission_outcome: Some(AdmissionDecisionOutcome::Rejected(
+                AdmissionRejectionReason::NotionalCapExceeded,
+            )),
+            ..order_reject()
+        };
+        assert!(
+            <CurrentCodecs as CodecFor<identities::OrderRejectV1>>::encode(&invalid, 29).is_err()
         );
     }
 }

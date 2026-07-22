@@ -6999,7 +6999,7 @@ index 8760ba6..5ab6c52 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..dbbf18b 100644
+index 98cedfb..3ad4c04 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16,2 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -7710,7 +7710,7 @@ index 98cedfb..dbbf18b 100644
 +    }
 +}
 +
-@@ -2145,0 +2624,58 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
+@@ -2145,0 +2624,78 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
 +    poison: StrictPoison,
 +    commit_timeout: Duration,
 +    commit_deadline: Option<Pin<Box<Sleep>>>,
@@ -7718,7 +7718,27 @@ index 98cedfb..dbbf18b 100644
 +}
 +
 +impl<I: AsyncRead + AsyncWrite + Unpin> SccacheTransport<I> {
++    fn poll_commit_deadline(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
++        if self.commit_deadline.is_none() {
++            self.commit_deadline = Some(Box::pin(sleep(self.commit_timeout)));
++        }
++        if self
++            .commit_deadline
++            .as_mut()
++            .is_some_and(|deadline| deadline.as_mut().poll(cx).is_ready())
++        {
++            self.poison.poison();
++            self.release_commit_gate();
++            Poll::Ready(Err(anyhow!("strict response commit deadline expired")))
++        } else {
++            Poll::Pending
++        }
++    }
++
 +    fn poll_commit_gate(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
++        if let Poll::Ready(result) = self.poll_commit_deadline(cx) {
++            return Poll::Ready(result);
++        }
 +        if self.commit_gate_held {
 +            return Poll::Ready(Ok(()));
 +        }
@@ -7769,7 +7789,7 @@ index 98cedfb..dbbf18b 100644
 +            self.release_commit_gate();
 +        }
 +    }
-@@ -2162 +2698,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2162 +2718,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        Pin::new(&mut self.inner).poll_ready(cx)
 +        match self.poll_commit_gate(cx) {
 +            Poll::Ready(Ok(())) => match Pin::new(&mut self.inner).poll_ready(cx) {
@@ -7783,7 +7803,7 @@ index 98cedfb..dbbf18b 100644
 +            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
 +            Poll::Pending => Poll::Pending,
 +        }
-@@ -2166 +2713,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2166 +2733,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        match item {
 +        ensure!(
 +            self.commit_gate_held,
@@ -7793,18 +7813,19 @@ index 98cedfb..dbbf18b 100644
 +            self.release_commit_gate();
 +            bail!("strict response commit blocked by daemon poison");
 +        }
-+        if self.commit_deadline.is_none() {
-+            self.commit_deadline = Some(Box::pin(sleep(self.commit_timeout)));
-+        }
++        ensure!(
++            self.commit_deadline.is_some(),
++            "strict response commit deadline was not armed"
++        );
 +        let result = match item {
-@@ -2169,0 +2728,4 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2169,0 +2749,4 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        };
 +        if result.is_err() {
 +            self.poison.poison();
 +            self.release_commit_gate();
-@@ -2170,0 +2733 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2170,0 +2754 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        result
-@@ -2174 +2737,26 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2174 +2758,22 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        Pin::new(&mut self.inner).poll_flush(cx)
 +        if !self.poison.is_healthy() {
 +            self.release_commit_gate();
@@ -7812,12 +7833,8 @@ index 98cedfb..dbbf18b 100644
 +                "strict response flush blocked by daemon poison"
 +            )));
 +        }
-+        if let Some(deadline) = self.commit_deadline.as_mut()
-+            && deadline.as_mut().poll(cx).is_ready()
-+        {
-+            self.poison.poison();
-+            self.release_commit_gate();
-+            return Poll::Ready(Err(anyhow!("strict response commit deadline expired")));
++        if let Poll::Ready(result) = self.poll_commit_deadline(cx) {
++            return Poll::Ready(result);
 +        }
 +        match Pin::new(&mut self.inner).poll_flush(cx) {
 +            Poll::Ready(Ok(())) => {
@@ -7832,7 +7849,14 @@ index 98cedfb..dbbf18b 100644
 +            }
 +            result => result,
 +        }
-@@ -2284,0 +2873,361 @@ mod tests {
+@@ -2178 +2783,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+-        Pin::new(&mut self.inner).poll_close(cx)
++        match <Self as Sink<Frame<Response, Response>>>::poll_flush(self.as_mut(), cx) {
++            Poll::Ready(Ok(())) => Pin::new(&mut self.inner).poll_close(cx),
++            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
++            Poll::Pending => Poll::Pending,
++        }
+@@ -2284,0 +2894,408 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();
@@ -7997,7 +8021,10 @@ index 98cedfb..dbbf18b 100644
 +            .unwrap();
 +        let waker = futures::task::noop_waker_ref();
 +        let mut context = Context::from_waker(waker);
-+        assert!(Pin::new(&mut second).poll_ready(&mut context).is_pending());
++        {
++            let _runtime_guard = runtime.enter();
++            assert!(Pin::new(&mut second).poll_ready(&mut context).is_pending());
++        }
 +
 +        poison.poison();
 +        let first_error = Pin::new(&mut first)
@@ -8012,6 +8039,50 @@ index 98cedfb..dbbf18b 100644
 +            }))
 +            .unwrap_err();
 +        assert!(second_error.to_string().contains("commit blocked"));
++    }
++
++    #[test]
++    fn strict_commit_gate_acquisition_uses_the_response_deadline() {
++        let runtime = Runtime::new().unwrap();
++        let poison = StrictPoison::new();
++        let (_first_client, first_server) = tokio::io::duplex(4096);
++        let (_second_client, second_server) = tokio::io::duplex(4096);
++        let mut builder = length_delimited::Builder::new();
++        builder.max_frame_length(4096);
++        let mut first = SccacheTransport {
++            inner: Framed::new(
++                builder.new_framed(first_server).sink_err_into().err_into(),
++                BincodeCodec,
++            ),
++            poison: poison.clone(),
++            commit_timeout: Duration::from_secs(1),
++            commit_deadline: None,
++            commit_gate_held: false,
++        };
++        let mut second = SccacheTransport {
++            inner: Framed::new(
++                builder.new_framed(second_server).sink_err_into().err_into(),
++                BincodeCodec,
++            ),
++            poison: poison.clone(),
++            commit_timeout: Duration::from_millis(10),
++            commit_deadline: None,
++            commit_gate_held: false,
++        };
++
++        runtime
++            .block_on(futures::future::poll_fn(|cx| {
++                Pin::new(&mut first).poll_ready(cx)
++            }))
++            .unwrap();
++        let error = runtime
++            .block_on(futures::future::poll_fn(|cx| {
++                Pin::new(&mut second).poll_ready(cx)
++            }))
++            .unwrap_err();
++
++        assert!(error.to_string().contains("deadline expired"));
++        assert!(!poison.is_healthy());
 +    }
 +
 +    #[test]

@@ -4542,7 +4542,7 @@ index d6c2c71..cde6828 100644
 +            .wait()
 +            .unwrap();
 diff --git a/src/config.rs b/src/config.rs
-index cef32b2..f22a567 100644
+index cef32b2..61681ad 100644
 --- a/src/config.rs
 +++ b/src/config.rs
 @@ -17,0 +18 @@ use crate::util::normalize_win_path;
@@ -5598,7 +5598,7 @@ index cef32b2..f22a567 100644
 +    }
 +    Ok(parsed)
 +}
-@@ -1356,0 +2406,243 @@ impl Config {
+@@ -1356,0 +2406,253 @@ impl Config {
 +#[cfg(all(test, unix))]
 +mod strict_snapshot_tests {
 +    use super::*;
@@ -5737,9 +5737,14 @@ index cef32b2..f22a567 100644
 +                OsString::from("--jobserver-auth=31,32"),
 +            ),
 +        ];
++        let mut alternate_jobserver = raw_environment.clone();
++        alternate_jobserver.last_mut().unwrap().1 = OsString::from("--jobserver-auth=41,42");
 +
 +        let classified =
 +            classify_strict_client(&locator, OsStr::new("/usr/bin/rustc"), raw_environment)
++                .unwrap();
++        let alternate =
++            classify_strict_client(&locator, OsStr::new("/usr/bin/rustc"), alternate_jobserver)
 +                .unwrap();
 +
 +        assert!(!classified.controls().snapshot_digest().is_empty());
@@ -5772,6 +5777,11 @@ index cef32b2..f22a567 100644
 +            !keyed
 +                .windows(b"CARGO_MAKEFLAGS".len())
 +                .any(|part| part == b"CARGO_MAKEFLAGS")
++        );
++        assert_eq!(
++            keyed,
++            alternate.environment().canonical_key_component(),
++            "jobserver descriptor numbers changed strict compiler key input"
 +        );
 +    }
 +
@@ -5843,7 +5853,7 @@ index cef32b2..f22a567 100644
 +}
 +
 diff --git a/src/mock_command.rs b/src/mock_command.rs
-index d7ffa03..e310b8a 100644
+index d7ffa03..70f7c83 100644
 --- a/src/mock_command.rs
 +++ b/src/mock_command.rs
 @@ -47,0 +48 @@
@@ -6121,7 +6131,7 @@ index d7ffa03..e310b8a 100644
 +}
 +
 +struct GovernedChild {
-@@ -145 +410,8 @@ pub struct Child {
+@@ -145 +410,165 @@ pub struct Child {
 -    token: Acquired,
 +    _token: Acquired,
 +    policy: StrictChildPolicy,
@@ -6131,8 +6141,8 @@ index d7ffa03..e310b8a 100644
 +    process_group: i32,
 +    #[cfg(unix)]
 +    process_group_armed: bool,
-@@ -148 +420,308 @@ pub struct Child {
--/// Trivial implementation of `CommandChild` for `std::process::Child`.
++}
++
 +#[cfg(unix)]
 +impl Drop for GovernedChild {
 +    fn drop(&mut self) {
@@ -6246,6 +6256,33 @@ index d7ffa03..e310b8a 100644
 +    }
 +}
 +
++#[cfg(target_os = "linux")]
++fn mark_non_stdio_descriptors_close_on_exec() -> io::Result<()> {
++    let result = unsafe {
++        libc::syscall(
++            libc::SYS_close_range,
++            3_u32,
++            u32::MAX,
++            libc::CLOSE_RANGE_CLOEXEC,
++        )
++    };
++    if result == 0 {
++        Ok(())
++    } else {
++        Err(io::Error::last_os_error())
++    }
++}
++
++#[cfg(any(target_os = "linux", test))]
++fn require_strict_descriptor_seal() -> Result<()> {
++    Ok(())
++}
++
++#[cfg(all(not(target_os = "linux"), not(test)))]
++fn require_strict_descriptor_seal() -> Result<()> {
++    anyhow::bail!("strict child descriptor sealing requires Linux")
++}
++
 +#[cfg(unix)]
 +async fn wait_for_process_group_exit(
 +    process_group: i32,
@@ -6261,8 +6298,8 @@ index d7ffa03..e310b8a 100644
 +        tokio::task::yield_now().await;
 +    }
 +    Ok(())
-+}
-+
+@@ -148 +577,178 @@ pub struct Child {
+-/// Trivial implementation of `CommandChild` for `std::process::Child`.
 +async fn wait_for_strict_phase(name: &str, duration: std::time::Duration) -> io::Result<()> {
 +    let deadline = StrictDeadline::from_now(name, duration)
 +        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
@@ -6441,13 +6478,13 @@ index d7ffa03..e310b8a 100644
 +}
 +
 +/// Cancellation-safe handle for one independently supervised compiler process.
-@@ -156 +735 @@ impl CommandChild for Child {
+@@ -156 +762 @@ impl CommandChild for Child {
 -        self.inner.stdin.take()
 +        self.stdin.take()
-@@ -159 +738 @@ impl CommandChild for Child {
+@@ -159 +765 @@ impl CommandChild for Child {
 -        self.inner.stdout.take()
 +        self.stdout.take()
-@@ -162 +741,8 @@ impl CommandChild for Child {
+@@ -162 +768,8 @@ impl CommandChild for Child {
 -        self.inner.stderr.take()
 +        self.stderr.take()
 +    }
@@ -6457,7 +6494,7 @@ index d7ffa03..e310b8a 100644
 +    }
 +    fn strict_poison(&self) -> StrictPoison {
 +        self.policy.poison.clone()
-@@ -166,4 +752,3 @@ impl CommandChild for Child {
+@@ -166,4 +779,3 @@ impl CommandChild for Child {
 -        let Child { mut inner, token } = self;
 -        inner.wait().await.inspect(|_ret| {
 -            drop(token);
@@ -6465,7 +6502,7 @@ index d7ffa03..e310b8a 100644
 +        self.supervisor
 +            .await
 +            .map_err(|error| io::Error::other(format!("strict child supervisor failed: {error}")))?
-@@ -172,4 +757,17 @@ impl CommandChild for Child {
+@@ -172,4 +784,17 @@ impl CommandChild for Child {
 -    async fn wait_with_output(self) -> io::Result<Output> {
 -        let Child { inner, token } = self;
 -        inner.wait_with_output().await.inspect(|_ret| {
@@ -6487,12 +6524,12 @@ index d7ffa03..e310b8a 100644
 +            status: status?,
 +            stdout: stdout?,
 +            stderr: stderr?,
-@@ -182,0 +781,4 @@ pub struct AsyncCommand {
+@@ -182,0 +808,4 @@ pub struct AsyncCommand {
 +    environment_cleared: bool,
 +    policy: StrictChildPolicy,
 +    deadline: StrictDeadline,
 +    purpose: StrictChildPurpose,
-@@ -186 +788,24 @@ impl AsyncCommand {
+@@ -186 +815,24 @@ impl AsyncCommand {
 -    pub fn new<S: AsRef<OsStr>>(program: S, jobserver: Client) -> AsyncCommand {
 +    pub fn new<S: AsRef<OsStr>>(
 +        program: S,
@@ -6518,14 +6555,14 @@ index d7ffa03..e310b8a 100644
 +        deadline: StrictDeadline,
 +        purpose: StrictChildPurpose,
 +    ) -> AsyncCommand {
-@@ -189,0 +815,4 @@ impl AsyncCommand {
+@@ -189,0 +842,4 @@ impl AsyncCommand {
 +            environment_cleared: false,
 +            policy,
 +            deadline,
 +            purpose,
-@@ -229,0 +859 @@ impl RunCommand for AsyncCommand {
+@@ -229,0 +886 @@ impl RunCommand for AsyncCommand {
 +        self.environment_cleared = true;
-@@ -249,7 +879,4 @@ impl RunCommand for AsyncCommand {
+@@ -249,7 +906,5 @@ impl RunCommand for AsyncCommand {
 -    async fn spawn(&mut self) -> Result<Child> {
 -        let mut inner = self.inner.take().unwrap();
 -        inner.env_remove("MAKEFLAGS");
@@ -6537,18 +6574,23 @@ index d7ffa03..e310b8a 100644
 +        self.environment_cleared
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<Child> {
-@@ -256,0 +884,6 @@ impl RunCommand for AsyncCommand {
++        require_strict_descriptor_seal()?;
+@@ -256,0 +912,10 @@ impl RunCommand for AsyncCommand {
 +        let mut inner = self.inner.take().unwrap();
 +        #[cfg(unix)]
 +        {
 +            use std::os::unix::process::CommandExt;
 +            inner.process_group(0);
++            #[cfg(target_os = "linux")]
++            unsafe {
++                inner.pre_exec(mark_non_stdio_descriptors_close_on_exec);
++            }
 +        }
-@@ -258 +891,2 @@ impl RunCommand for AsyncCommand {
+@@ -258 +923,2 @@ impl RunCommand for AsyncCommand {
 -        let child = inner
 +        inner.kill_on_drop(true);
 +        let mut child = inner
-@@ -262 +896,8 @@ impl RunCommand for AsyncCommand {
+@@ -262 +928,8 @@ impl RunCommand for AsyncCommand {
 -        Ok(Child {
 +        #[cfg(unix)]
 +        let process_group = i32::try_from(child.id().context("strict child PID is unavailable")?)
@@ -6558,7 +6600,7 @@ index d7ffa03..e310b8a 100644
 +        let stderr = child.stderr.take();
 +        let policy = self.policy.clone();
 +        let governed = GovernedChild {
-@@ -264 +905,16 @@ impl RunCommand for AsyncCommand {
+@@ -264 +937,16 @@ impl RunCommand for AsyncCommand {
 -            token,
 +            _token: token,
 +            policy: policy.clone(),
@@ -6576,10 +6618,10 @@ index d7ffa03..e310b8a 100644
 +            stderr,
 +            policy,
 +            supervisor,
-@@ -278,0 +935,2 @@ pub struct ProcessCommandCreator {
+@@ -278,0 +967,2 @@ pub struct ProcessCommandCreator {
 +    policy: StrictChildPolicy,
 +    classification_deadline: Option<StrictDeadline>,
-@@ -286,2 +944,12 @@ impl CommandCreator for ProcessCommandCreator {
+@@ -286,2 +976,12 @@ impl CommandCreator for ProcessCommandCreator {
 -        ProcessCommandCreator {
 -            jobserver: client.clone(),
 +        #[cfg(test)]
@@ -6594,7 +6636,7 @@ index d7ffa03..e310b8a 100644
 +        {
 +            let _ = client;
 +            panic!("strict child policy is required")
-@@ -292 +960,10 @@ impl CommandCreator for ProcessCommandCreator {
+@@ -292 +992,10 @@ impl CommandCreator for ProcessCommandCreator {
 -        AsyncCommand::new(program, self.jobserver.clone())
 +        match self.classification_deadline {
 +            Some(deadline) => AsyncCommand::new_with_deadline(
@@ -6606,7 +6648,7 @@ index d7ffa03..e310b8a 100644
 +            ),
 +            None => AsyncCommand::new(program, self.jobserver.clone(), self.policy.clone()),
 +        }
-@@ -303,0 +981,20 @@ impl CommandCreatorSync for ProcessCommandCreator {
+@@ -303,0 +1013,20 @@ impl CommandCreatorSync for ProcessCommandCreator {
 +    fn new_strict(client: &Client, policy: StrictChildPolicy) -> ProcessCommandCreator {
 +        ProcessCommandCreator {
 +            jobserver: client.clone(),
@@ -6627,20 +6669,23 @@ index d7ffa03..e310b8a 100644
 +        classification
 +    }
 +
-@@ -383,0 +1081,6 @@ impl CommandChild for MockChild {
+@@ -383,0 +1113,6 @@ impl CommandChild for MockChild {
 +    fn strict_output_limit(&self) -> u64 {
 +        u64::MAX
 +    }
 +    fn strict_poison(&self) -> StrictPoison {
 +        StrictPoison::new()
 +    }
-@@ -470 +1173,4 @@ impl RunCommand for MockCommand {
+@@ -470 +1205,4 @@ impl RunCommand for MockCommand {
 -    async fn spawn(&mut self) -> Result<MockChild> {
 +    fn strict_environment_is_sealed(&self) -> bool {
 +        true
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<MockChild> {
-@@ -548,0 +1255,285 @@ mod test {
+@@ -544,0 +1283,2 @@ mod test {
++    #[cfg(target_os = "linux")]
++    use std::os::fd::{AsRawFd, FromRawFd};
+@@ -548,0 +1289,352 @@ mod test {
 +    #[cfg(target_os = "linux")]
 +    #[test]
 +    fn strict_linux_proc_stat_parser_handles_parentheses_in_command_name() {
@@ -6797,6 +6842,70 @@ index d7ffa03..e310b8a 100644
 +        assert!(output.stderr.is_empty());
 +    }
 +
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn strict_child_launcher_does_not_inherit_unsealed_descriptors() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let mut descriptors = [-1; 2];
++        assert_eq!(unsafe { libc::pipe(descriptors.as_mut_ptr()) }, 0);
++        let inherited = unsafe { std::fs::File::from_raw_fd(descriptors[0]) };
++        let _peer = unsafe { std::fs::File::from_raw_fd(descriptors[1]) };
++        let inherited_descriptor = inherited.as_raw_fd();
++        let flags = unsafe { libc::fcntl(inherited_descriptor, libc::F_GETFD) };
++        assert!(flags >= 0);
++        assert_eq!(flags & libc::FD_CLOEXEC, 0);
++        let script = format!("test ! -e /dev/fd/{inherited_descriptor}");
++        let client = Client::new_num(1);
++        let mut command = AsyncCommand::new("/bin/sh", client, StrictChildPolicy::for_tests());
++        command
++            .env_clear()
++            .args(&["-c", script.as_str()])
++            .stdin(Stdio::null())
++            .stdout(Stdio::null())
++            .stderr(Stdio::null());
++
++        let status = runtime.block_on(async move {
++            StrictChildLauncher::spawn_prepared(&mut command)
++                .await
++                .unwrap()
++                .wait()
++                .await
++                .unwrap()
++        });
++
++        assert!(status.success());
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn strict_descriptor_seal_preserves_exec_failure_reporting() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let client = Client::new_num(1);
++        let mut command = AsyncCommand::new(
++            "/strict/nonexistent/compiler",
++            client,
++            StrictChildPolicy::for_tests(),
++        );
++        command
++            .env_clear()
++            .stdin(Stdio::null())
++            .stdout(Stdio::null())
++            .stderr(Stdio::null());
++
++        let error = match runtime.block_on(StrictChildLauncher::spawn_prepared(&mut command)) {
++            Ok(_) => panic!("nonexistent strict compiler unexpectedly spawned"),
++            Err(error) => error,
++        };
++
++        assert!(error.to_string().contains("failed to spawn"));
++    }
++
 +    #[cfg(unix)]
 +    #[test]
 +    fn strict_launcher_kills_a_timed_out_process_group() {
@@ -6830,7 +6939,10 @@ index d7ffa03..e310b8a 100644
 +            child.wait().await.unwrap_err()
 +        });
 +
-+        assert!(error.to_string().contains("compiler timeout"));
++        assert!(
++            error.to_string().contains("compiler timeout"),
++            "unexpected compiler failure: {error}"
++        );
 +        assert!(started.elapsed() < std::time::Duration::from_secs(2));
 +        assert!(!poison.is_healthy());
 +    }
@@ -6926,16 +7038,16 @@ index d7ffa03..e310b8a 100644
 +        assert!(!poisoned.is_healthy());
 +    }
 +
-@@ -553 +1544,2 @@ mod test {
+@@ -553 +1645,2 @@ mod test {
 -        creator.new_command(program).spawn().wait()
 +        let mut command = creator.new_command(program);
 +        StrictChildLauncher::spawn_prepared(&mut command).wait()
-@@ -576,2 +1568,2 @@ mod test {
+@@ -576,2 +1669,2 @@ mod test {
 -                t.new_command_sync("foo")
 -                    .spawn()
 +                let mut command = t.new_command_sync("foo");
 +                StrictChildLauncher::spawn_prepared(&mut command)
-@@ -612 +1604,4 @@ mod test {
+@@ -612 +1705,4 @@ mod test {
 -        creator.new_command("foo").spawn().wait().unwrap();
 +        let mut command = creator.new_command("foo");
 +        StrictChildLauncher::spawn_prepared(&mut command)

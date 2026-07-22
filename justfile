@@ -130,29 +130,153 @@ merge-queue *pr_numbers:
         echo "ERROR: could not resolve the origin remote" >&2
         exit 2
     fi
-    if ! queue_repository="$(gh repo view "$origin_url" --json url --jq '.url | ltrimstr("https://")')"; then
+    if ! repository_metadata="$(gh repo view "$origin_url" --json url,nameWithOwner,defaultBranchRef --jq '[(.url | ltrimstr("https://")), .nameWithOwner, .defaultBranchRef.name] | @tsv')"; then
         echo "ERROR: could not resolve the queue repository from origin" >&2
         exit 2
     fi
-    validation_failed=0
-    for pr_number in "${pr_numbers[@]}"; do
-        if ! metadata="$(gh pr view "$pr_number" --repo "$queue_repository" --json number,state,baseRefName --jq '[.number, .state, .baseRefName] | @tsv')"; then
-            echo "ERROR: could not confirm pull request #$pr_number" >&2
-            validation_failed=1
-            continue
+    IFS=$'\t' read -r queue_repository queue_repository_name default_branch <<< "$repository_metadata"
+    if [[ -z "$queue_repository" || -z "$queue_repository_name" || -z "$default_branch" ]]; then
+        echo "ERROR: GitHub returned incomplete queue repository metadata" >&2
+        exit 2
+    fi
+
+    contains_pr() {
+        local needle="$1"
+        shift
+        local item
+        for item in "$@"; do
+            if [[ "$item" == "$needle" ]]; then
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    reject_chain() {
+        echo "ERROR: $1" >&2
+        validation_failed=1
+    }
+
+    claim_chain_member() {
+        local current="$1"
+        local requested="$2"
+        local overlap_target=""
+        local index
+
+        if (( ${#chain_prs[@]} > 0 )) && contains_pr "$current" "${chain_prs[@]}"; then
+            reject_chain "pull request #$requested has a dependency cycle at #$current"
+            return 1
         fi
 
-        IFS=$'\t' read -r returned_number state base_ref <<< "$metadata"
-        if [[ "$returned_number" != "$pr_number" ]]; then
-            echo "ERROR: pull request lookup mismatch for #$pr_number" >&2
-            validation_failed=1
-        elif [[ "$state" != "OPEN" ]]; then
-            echo "ERROR: pull request #$pr_number is not open" >&2
-            validation_failed=1
-        elif [[ "$base_ref" != "main" ]]; then
-            echo "ERROR: pull request #$pr_number targets $base_ref, not main" >&2
-            validation_failed=1
+        for (( index=0; index<${#claimed_prs[@]}; index++ )); do
+            if [[ "${claimed_prs[$index]}" == "$current" ]]; then
+                overlap_target="${claimed_targets[$index]}"
+                break
+            fi
+        done
+        if [[ -n "$overlap_target" ]]; then
+            reject_chain "requested pull request chains #$overlap_target and #$requested overlap at #$current"
+            return 1
         fi
+
+        chain_prs+=("$current")
+        if (( ${#chain_prs[@]} > max_stack_depth )); then
+            reject_chain "pull request #$requested exceeds Mergify's maximum stack depth of $max_stack_depth"
+            return 1
+        fi
+    }
+
+    load_pull_metadata() {
+        local current="$1"
+        local metadata
+
+        if ! metadata="$(gh pr view "$current" --repo "$queue_repository" \
+            --json number,state,isDraft,baseRefName,headRefName,headRepository,body \
+            --jq '
+                def stack_dependency:
+                    ((.body // "") | split("\n") | map(select(startswith("Depends-On:")))) as $markers
+                    | if ($markers | length) != 1 then "invalid"
+                      elif ($markers[0] | startswith("Depends-On: #") | not) then "invalid"
+                      else ($markers[0][13:] | explode) as $digits
+                      | if (($digits | length) > 0
+                            and $digits[0] >= 49
+                            and $digits[0] <= 57
+                            and ($digits | all(. >= 48 and . <= 57)))
+                        then "valid:" + $markers[0][13:]
+                        else "invalid"
+                        end
+                      end;
+                [.number, .state, .isDraft, .baseRefName, .headRefName,
+                 (.headRepository.nameWithOwner // ""), stack_dependency] | @tsv
+            ')"; then
+            reject_chain "could not confirm pull request #$current"
+            return 1
+        fi
+
+        IFS=$'\t' read -r returned_number state is_draft base_ref head_ref head_repository dependency <<< "$metadata"
+    }
+
+    validate_pull_metadata() {
+        local current="$1"
+        local dependent="$2"
+        local expected="$3"
+
+        case "$returned_number:$state:$is_draft" in
+            "$current:OPEN:false") ;;
+            "$current:OPEN:"*)
+                reject_chain "pull request #$current is a draft"
+                return 1
+                ;;
+            "$current:"*)
+                reject_chain "pull request #$current is not open"
+                return 1
+                ;;
+            *)
+                reject_chain "pull request lookup mismatch for #$current"
+                return 1
+                ;;
+        esac
+        if [[ -n "$expected" && ( "$head_repository" != "$queue_repository_name" || "$head_ref" != "$expected" ) ]]; then
+            reject_chain "pull request #$current head $head_repository:$head_ref does not match pull request #$dependent base $expected"
+            return 1
+        fi
+    }
+
+    max_stack_depth=20
+    claimed_prs=()
+    claimed_targets=()
+    validation_failed=0
+    for requested_pr in "${pr_numbers[@]}"; do
+        chain_prs=()
+        current_pr="$requested_pr"
+        dependent_pr=""
+        expected_head=""
+
+        while :; do
+            claim_chain_member "$current_pr" "$requested_pr" || break
+            load_pull_metadata "$current_pr" || break
+            validate_pull_metadata "$current_pr" "$dependent_pr" "$expected_head" || break
+
+            if [[ "$base_ref" == "$default_branch" ]]; then
+                break
+            fi
+            if [[ "$dependency" != valid:* ]]; then
+                reject_chain "pull request #$current_pr lacks one exact Depends-On: #<number> marker; run mergify stack push"
+                break
+            fi
+
+            dependent_pr="$current_pr"
+            expected_head="$base_ref"
+            current_pr="${dependency#valid:}"
+        done
+
+        if (( ${#chain_prs[@]} > 0 )); then
+            for current_pr in "${chain_prs[@]}"; do
+                claimed_prs+=("$current_pr")
+                claimed_targets+=("$requested_pr")
+            done
+        fi
+
     done
 
     if (( validation_failed != 0 )); then

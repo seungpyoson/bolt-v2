@@ -13,13 +13,14 @@ use super::codec::{
     encode_capital_admission_rebuild, encode_entry_order_intent, encode_order_lifecycle,
     encode_requote_throttle_observation, encode_reservation_fill, encode_reservation_metadata,
     encode_risk_reducing_exit_order_intent, encode_settlement, encode_settlement_booking_error,
-    encode_terminal_settlement,
+    encode_terminal_settlement, encode_venue_truth_capture_failure, encode_venue_truth_divergence,
 };
 use super::facts::{
     BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, CapitalAdmissionRebuildFact,
     EntryOrderIntentFact, OrderLifecycleFact, RequoteThrottleObservationFact,
     RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
     SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
+    VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
 };
 use super::generated_contract::{KnownPurpose, KnownSink, sink_for_purpose};
 
@@ -206,6 +207,26 @@ impl DecisionEvidenceRecorder {
             Err(error) => {
                 self.report_observation_failure(KnownPurpose::RequoteThrottleObservation, error)
             }
+        }
+    }
+
+    pub fn record_venue_truth_capture_failure(
+        &self,
+        fact: VenueTruthCaptureFailureFact,
+    ) -> NonBlockingRecordOutcome {
+        match encode_venue_truth_capture_failure(fact) {
+            Ok(record) => self.record_nonblocking(record),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
+    }
+
+    pub fn record_venue_truth_divergence(
+        &self,
+        fact: VenueTruthDivergenceFact,
+    ) -> NonBlockingRecordOutcome {
+        match encode_venue_truth_divergence(fact) {
+            Ok(record) => self.record_nonblocking(record),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
 

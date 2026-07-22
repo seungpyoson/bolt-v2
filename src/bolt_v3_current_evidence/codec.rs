@@ -5,6 +5,7 @@ mod order_intent;
 mod requote;
 mod reservation;
 mod settlement;
+mod venue_truth;
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,8 @@ use super::{
         OrderIntentDetails, OrderIntentOrderFields, OrderLifecycleFact, RecoveryFact,
         RequoteThrottleObservationFact, RiskReducingExitOrderIntentFact,
         SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
-        SubmitReservationMetadataFact, TerminalSettlementFact,
+        SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
+        VenueTruthDivergenceFact,
     },
     generated_contract::{
         ConsumerDisposition, IdentityDescriptor, KnownConsumer, KnownIdentity, KnownPurpose,
@@ -232,6 +234,38 @@ impl CodecFor<identities::RequoteThrottleObservationV1> for CurrentCodecs {
     }
 }
 
+impl CodecFor<identities::VenueTruthCaptureFailureV1> for CurrentCodecs {
+    type Input = VenueTruthCaptureFailureFact;
+    type Fact = VenueTruthCaptureFailureFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        venue_truth::encode_capture_failure(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        venue_truth::decode_capture_failure(line, line_number)
+    }
+}
+
+impl CodecFor<identities::VenueTruthDivergenceV1> for CurrentCodecs {
+    type Input = VenueTruthDivergenceFact;
+    type Fact = VenueTruthDivergenceFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        venue_truth::encode_divergence(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        venue_truth::decode_divergence(line, line_number)
+    }
+}
+
 pub(crate) fn encode_entry_order_intent(
     fact: EntryOrderIntentFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
@@ -284,6 +318,24 @@ pub(crate) fn encode_requote_throttle_observation(
     fact: RequoteThrottleObservationFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     <CurrentCodecs as CodecFor<identities::RequoteThrottleObservationV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
+}
+
+pub(crate) fn encode_venue_truth_capture_failure(
+    fact: VenueTruthCaptureFailureFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::VenueTruthCaptureFailureV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
+}
+
+pub(crate) fn encode_venue_truth_divergence(
+    fact: VenueTruthDivergenceFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::VenueTruthDivergenceV1>>::encode(
         &fact,
         current_utc_ns()?,
     )
@@ -649,6 +701,29 @@ mod tests {
         }
     }
 
+    fn venue_capture_failure() -> VenueTruthCaptureFailureFact {
+        VenueTruthCaptureFailureFact {
+            source: "venue_truth".to_string(),
+            observed_at_ns: 8,
+            endpoint: "venue_snapshot".to_string(),
+            error_class: "timeout".to_string(),
+            captures_missed: 1,
+        }
+    }
+
+    fn venue_divergence() -> VenueTruthDivergenceFact {
+        VenueTruthDivergenceFact {
+            source: "venue_truth".to_string(),
+            observed_at_ns: 9,
+            account_id: "POLYMARKET-001".to_string(),
+            field: "open_orders".to_string(),
+            venue_value: "2".to_string(),
+            prior_accepted_value: "1".to_string(),
+            missing_explanation: "unexplained_open_order_delta".to_string(),
+            alarm_class: super::super::facts::VenueTruthDivergenceAlarmClass::TrueDivergence,
+        }
+    }
+
     #[test]
     fn reservation_identity_binding_is_deterministic_and_round_trips() {
         let expected = metadata();
@@ -869,6 +944,53 @@ mod tests {
             <CurrentCodecs as CodecFor<identities::RequoteThrottleObservationV1>>::decode(line, 1)
                 .expect("requote observation must decode"),
             expected
+        );
+    }
+
+    #[test]
+    fn venue_truth_identities_are_distinct_and_round_trip() {
+        let failure = venue_capture_failure();
+        let failure_record =
+            <CurrentCodecs as CodecFor<identities::VenueTruthCaptureFailureV1>>::encode(
+                &failure, 21,
+            )
+            .expect("valid capture failure must encode");
+        let failure_line = std::str::from_utf8(failure_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::VenueTruthCaptureFailureV1>>::decode(
+                failure_line,
+                1,
+            )
+            .expect("capture failure must decode"),
+            failure
+        );
+
+        let divergence = venue_divergence();
+        let divergence_record =
+            <CurrentCodecs as CodecFor<identities::VenueTruthDivergenceV1>>::encode(
+                &divergence,
+                22,
+            )
+            .expect("valid divergence must encode");
+        let divergence_line = std::str::from_utf8(divergence_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::VenueTruthDivergenceV1>>::decode(
+                divergence_line,
+                1,
+            )
+            .expect("divergence must decode"),
+            divergence
+        );
+        assert!(
+            <CurrentCodecs as CodecFor<identities::VenueTruthCaptureFailureV1>>::decode(
+                divergence_line,
+                1,
+            )
+            .is_err()
         );
     }
 }

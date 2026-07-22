@@ -198,6 +198,34 @@ pub struct RequoteThrottleObservationFact {
     pub min_interval_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VenueTruthCaptureFailureFact {
+    pub source: String,
+    pub observed_at_ns: u64,
+    pub endpoint: String,
+    pub error_class: String,
+    pub captures_missed: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VenueTruthDivergenceAlarmClass {
+    TrueDivergence,
+    OrderingViolation,
+    SilentChannel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VenueTruthDivergenceFact {
+    pub source: String,
+    pub observed_at_ns: u64,
+    pub account_id: String,
+    pub field: String,
+    pub venue_value: String,
+    pub prior_accepted_value: String,
+    pub missing_explanation: String,
+    pub alarm_class: VenueTruthDivergenceAlarmClass,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,

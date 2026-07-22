@@ -1,5 +1,6 @@
 mod admission;
 mod basket_admission;
+mod lifecycle;
 mod order_intent;
 mod reservation;
 mod settlement;
@@ -11,9 +12,9 @@ use super::{
     facts::{
         BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, CapitalAdmissionRebuildFact,
         EntryOrderIntentFact, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
-        OrderIntentDetails, OrderIntentOrderFields, RecoveryFact, RiskReducingExitOrderIntentFact,
-        SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
-        SubmitReservationMetadataFact, TerminalSettlementFact,
+        OrderIntentDetails, OrderIntentOrderFields, OrderLifecycleFact, RecoveryFact,
+        RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
+        SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
     },
     generated_contract::{
         ConsumerDisposition, IdentityDescriptor, KnownConsumer, KnownIdentity, KnownPurpose,
@@ -197,6 +198,22 @@ impl CodecFor<identities::CapitalAdmissionRebuildV1> for CurrentCodecs {
     }
 }
 
+impl CodecFor<identities::OrderLifecycleV1> for CurrentCodecs {
+    type Input = OrderLifecycleFact;
+    type Fact = OrderLifecycleFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        lifecycle::encode(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        lifecycle::decode_fact(line, line_number)
+    }
+}
+
 pub(crate) fn encode_entry_order_intent(
     fact: EntryOrderIntentFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
@@ -237,6 +254,12 @@ pub(crate) fn encode_capital_admission_rebuild(
         &fact,
         current_utc_ns()?,
     )
+}
+
+pub(crate) fn encode_order_lifecycle(
+    fact: OrderLifecycleFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::OrderLifecycleV1>>::encode(&fact, current_utc_ns()?)
 }
 
 pub(crate) fn encode_reservation_metadata(
@@ -763,6 +786,25 @@ mod tests {
             <CurrentCodecs as CodecFor<identities::CapitalAdmissionRebuildV1>>::decode(line, 1)
                 .expect("capital rebuild must decode"),
             expected
+        );
+    }
+
+    #[test]
+    fn order_lifecycle_identity_owns_its_wire_domain() {
+        let expected = terminal().lifecycle;
+        let record =
+            <CurrentCodecs as CodecFor<identities::OrderLifecycleV1>>::encode(&expected, 19)
+                .expect("valid lifecycle must encode");
+        let line = std::str::from_utf8(record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::OrderLifecycleV1>>::decode(line, 1)
+                .expect("lifecycle must decode"),
+            expected
+        );
+        assert!(
+            <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::decode(line, 1).is_err()
         );
     }
 }

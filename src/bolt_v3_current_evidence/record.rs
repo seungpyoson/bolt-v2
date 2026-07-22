@@ -10,15 +10,15 @@ use anyhow::Error;
 
 use super::codec::{
     encode_basket_admission_granted, encode_basket_admission_rejected,
-    encode_capital_admission_rebuild, encode_entry_order_intent, encode_reservation_fill,
-    encode_reservation_metadata, encode_risk_reducing_exit_order_intent, encode_settlement,
-    encode_settlement_booking_error, encode_terminal_settlement,
+    encode_capital_admission_rebuild, encode_entry_order_intent, encode_order_lifecycle,
+    encode_reservation_fill, encode_reservation_metadata, encode_risk_reducing_exit_order_intent,
+    encode_settlement, encode_settlement_booking_error, encode_terminal_settlement,
 };
 use super::facts::{
     BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, CapitalAdmissionRebuildFact,
-    EntryOrderIntentFact, RiskReducingExitOrderIntentFact, SettlementBookingErrorFact,
-    SettlementFact, SubmitReservationFillFact, SubmitReservationMetadataFact,
-    TerminalSettlementFact,
+    EntryOrderIntentFact, OrderLifecycleFact, RiskReducingExitOrderIntentFact,
+    SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
+    SubmitReservationMetadataFact, TerminalSettlementFact,
 };
 use super::generated_contract::{KnownPurpose, KnownSink, sink_for_purpose};
 
@@ -187,6 +187,13 @@ impl DecisionEvidenceRecorder {
         fact: CapitalAdmissionRebuildFact,
     ) -> Result<AppendReceipt, RecordFailure> {
         self.record_blocking(encode_capital_admission_rebuild(fact)?)
+    }
+
+    pub fn record_order_lifecycle(&self, fact: OrderLifecycleFact) -> NonBlockingRecordOutcome {
+        match encode_order_lifecycle(fact) {
+            Ok(record) => self.record_nonblocking(record),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
     }
 
     pub fn record_settlement(&self, fact: SettlementFact) -> Result<AppendReceipt, RecordFailure> {

@@ -50,6 +50,7 @@ class StrictBuildConfig:
     profile: str
     verification_timeout_ms: int
     max_frame_bytes: int
+    snapshot_max_bytes: int
     verification_cache_mode: str
     replicas: tuple[str, ...]
     attestation_attempts: int
@@ -259,6 +260,7 @@ def load_document(
             {
                 "strict_timeout_ms",
                 "max_frame_bytes",
+                "snapshot_max_bytes",
                 "cache_mode",
                 "replicas",
                 "attestation_attempts",
@@ -283,6 +285,16 @@ def load_document(
     ):
         raise ValueError(
             "verification.max_frame_bytes must be a positive 32-bit integer"
+        )
+    snapshot_max_bytes = verification["snapshot_max_bytes"]
+    if (
+        isinstance(snapshot_max_bytes, bool)
+        or not isinstance(snapshot_max_bytes, int)
+        or snapshot_max_bytes <= 0
+        or snapshot_max_bytes > max_frame_bytes
+    ):
+        raise ValueError(
+            "verification.snapshot_max_bytes must be a positive integer no larger than max_frame_bytes"
         )
     verification_cache_mode = _string(
         verification["cache_mode"], "verification.cache_mode"
@@ -355,6 +367,7 @@ def load_document(
         profile=profile,
         verification_timeout_ms=verification_timeout_ms,
         max_frame_bytes=max_frame_bytes,
+        snapshot_max_bytes=snapshot_max_bytes,
         verification_cache_mode=verification_cache_mode,
         replicas=tuple(replicas_value),
         attestation_attempts=attestation_attempts,
@@ -405,6 +418,7 @@ def _derivative_identity(config: StrictBuildConfig, architecture: str) -> str:
         "features": list(config.features),
         "default_features": config.default_features,
         "profile": config.profile,
+        "snapshot_max_bytes": config.snapshot_max_bytes,
         "target": target.triple,
     }
     return hashlib.sha256(_canonical_json(document)).hexdigest()
@@ -487,6 +501,7 @@ def write_candidate_manifest(
         "profile": config.profile,
         "verification_timeout_ms": config.verification_timeout_ms,
         "max_frame_bytes": config.max_frame_bytes,
+        "snapshot_max_bytes": config.snapshot_max_bytes,
         "verification_cache_mode": config.verification_cache_mode,
         "binary_name": _candidate_binary_name(config, architecture),
         "binary_sha256": _file_sha256(binary_path),
@@ -522,6 +537,7 @@ _CANDIDATE_KEYS = frozenset(
         "profile",
         "verification_timeout_ms",
         "max_frame_bytes",
+        "snapshot_max_bytes",
         "verification_cache_mode",
         "binary_name",
         "binary_sha256",
@@ -594,6 +610,7 @@ def verify_candidate_set(
             "profile": config.profile,
             "verification_timeout_ms": config.verification_timeout_ms,
             "max_frame_bytes": config.max_frame_bytes,
+            "snapshot_max_bytes": config.snapshot_max_bytes,
             "verification_cache_mode": config.verification_cache_mode,
             "binary_name": _candidate_binary_name(config, architecture),
         }
@@ -655,6 +672,7 @@ def verify_candidate_set(
             "profile": config.profile,
             "verification_timeout_ms": config.verification_timeout_ms,
             "max_frame_bytes": config.max_frame_bytes,
+            "snapshot_max_bytes": config.snapshot_max_bytes,
             "verification_cache_mode": config.verification_cache_mode,
             "replicas": list(config.replicas),
         },
@@ -1040,6 +1058,7 @@ def main(argv: list[str] | None = None) -> int:
                 "profile": config.profile,
                 "verification_timeout_ms": config.verification_timeout_ms,
                 "max_frame_bytes": config.max_frame_bytes,
+                "snapshot_max_bytes": config.snapshot_max_bytes,
                 "verification_cache_mode": config.verification_cache_mode,
                 "replicas": list(config.replicas),
                 "attestation_attempts": config.attestation_attempts,

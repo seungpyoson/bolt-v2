@@ -1100,27 +1100,70 @@ index 88d93fc..8d312e9 100644
 +        let error = connection.read_one_response().unwrap_err();
 +
 +        assert!(error.to_string().contains("exceeds configured maximum"));
+diff --git a/src/cmdline.rs b/src/cmdline.rs
+index f639396..662c41b 100644
+--- a/src/cmdline.rs
++++ b/src/cmdline.rs
+@@ -70,0 +71,6 @@ pub enum Command {
++    /// Materialize one immutable consumer configuration snapshot.
++    MaterializeConsumerSnapshot {
++        config: PathBuf,
++        job_identity: OsString,
++        output_directory: PathBuf,
++    },
+@@ -157,0 +164,6 @@ fn get_clap_command() -> clap::Command {
++            Arg::new("materialize-consumer-snapshot")
++                .long("materialize-consumer-snapshot")
++                .help("materialize one immutable strict consumer snapshot")
++                .value_parser(clap::value_parser!(OsString))
++                .num_args(3)
++                .value_names(["CONFIG", "JOB_IDENTITY", "OUTPUT_DIRECTORY"]),
+@@ -179,0 +192 @@ fn get_clap_command() -> clap::Command {
++                    "materialize-consumer-snapshot",
+@@ -297,0 +311,16 @@ pub fn try_parse() -> Result<Command> {
++            } else if matches.contains_id("materialize-consumer-snapshot") {
++                let values = matches
++                    .get_many::<OsString>("materialize-consumer-snapshot")
++                    .expect("materialize-consumer-snapshot requires three values")
++                    .cloned()
++                    .collect::<Vec<_>>();
++                match values.as_slice() {
++                    [config, job_identity, output_directory] => {
++                        Ok(Command::MaterializeConsumerSnapshot {
++                            config: PathBuf::from(config),
++                            job_identity: job_identity.clone(),
++                            output_directory: PathBuf::from(output_directory),
++                        })
++                    }
++                    _ => unreachable!("clap should enforce three values"),
++                }
 diff --git a/src/commands.rs b/src/commands.rs
-index 8d8406a..f941db1 100644
+index 8d8406a..ac391b5 100644
 --- a/src/commands.rs
 +++ b/src/commands.rs
 @@ -15,2 +15 @@
 -use crate::cache::storage_from_config;
 -use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 +use crate::client::{ServerConnection, connect_to_server_with_timeout};
-@@ -19 +18 @@ use crate::compiler::ColorMode;
+@@ -19 +18,4 @@ use crate::compiler::ColorMode;
 -use crate::config::{Config, default_disk_cache_dir};
-+use crate::config::{Config, StrictTimeouts, default_disk_cache_dir, strict_server_identity};
-@@ -23,2 +22,2 @@ use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Respon
++use crate::config::{
++    Config, StrictTimeouts, default_disk_cache_dir, materialize_consumer_snapshot_from_path,
++    strict_server_identity,
++};
+@@ -23,2 +25,2 @@ use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Respon
 -use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
 -use crate::util::{daemonize, new_client_runtime};
 +use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 +use crate::util::new_client_runtime;
-@@ -48,3 +46,0 @@ pub const DEFAULT_PORT: u16 = 4226;
+@@ -32,0 +35,2 @@ use std::io::{self, IsTerminal, Write};
++use std::os::unix::ffi::OsStrExt;
++#[cfg(unix)]
+@@ -48,3 +51,0 @@ pub const DEFAULT_PORT: u16 = 4226;
 -/// The number of milliseconds to wait for server startup.
 -const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_millis(10000);
 -
-@@ -66,8 +61,0 @@ fn get_addr() -> crate::net::SocketAddr {
+@@ -66,8 +66,0 @@ fn get_addr() -> crate::net::SocketAddr {
 -/// Check if ignoring all response errors
 -fn ignore_all_server_io_errors() -> bool {
 -    match env::var("SCCACHE_IGNORE_SERVER_IO_ERROR") {
@@ -1129,22 +1172,22 @@ index 8d8406a..f941db1 100644
 -    }
 -}
 -
-@@ -91 +79 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
+@@ -91 +84 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
 -fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
 +fn run_server_process(startup_timeout: Duration) -> Result<ServerStartup> {
-@@ -107 +95 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -107 +100 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    let _child = process::Command::new(&exe_path)
 +    let mut child = process::Command::new(&exe_path)
-@@ -111,0 +100,3 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -111,0 +105,3 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 +        .stdin(process::Stdio::null())
 +        .stdout(process::Stdio::null())
 +        .stderr(process::Stdio::null())
-@@ -120,2 +111,2 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -120,2 +116,2 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    let timeout = startup_timeout.unwrap_or(SERVER_STARTUP_TIMEOUT);
 -    runtime.block_on(async move {
 +    let timeout = startup_timeout;
 +    let result = runtime.block_on(async move {
-@@ -126 +117,8 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -126 +122,8 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    })
 +    });
 +    if !matches!(result, Ok(ServerStartup::Ok { .. })) {
@@ -1154,22 +1197,22 @@ index 8d8406a..f941db1 100644
 +            .context("failed to reap unsuccessful server process")?;
 +    }
 +    result
-@@ -177 +175 @@ fn redirect_error_log(f: File) -> Result<()> {
+@@ -177 +180 @@ fn redirect_error_log(f: File) -> Result<()> {
 -fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
 +fn run_server_process(startup_timeout: Duration) -> Result<ServerStartup> {
-@@ -293 +291 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -293 +296 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    let timeout = startup_timeout.unwrap_or(SERVER_STARTUP_TIMEOUT);
 +    let timeout = startup_timeout;
-@@ -302,2 +300,2 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -302,2 +305,2 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -/// Attempt to connect to an sccache server listening on `addr`, or start one if no server is running.
 -fn connect_or_start_server(
 +/// Connect to the one server explicitly started for this job.
 +fn connect_required(
-@@ -305 +303,2 @@ fn connect_or_start_server(
+@@ -305 +308,2 @@ fn connect_or_start_server(
 -    startup_timeout: Option<Duration>,
 +    timeout: Duration,
 +    expected_identity: &crate::protocol::StrictServerIdentity,
-@@ -307,30 +306,13 @@ fn connect_or_start_server(
+@@ -307,30 +311,13 @@ fn connect_or_start_server(
 -    trace!("connect_or_start_server({addr})");
 -    match connect_to_server(addr) {
 -        Ok(server) => Ok(server),
@@ -1213,16 +1256,16 @@ index 8d8406a..f941db1 100644
 +        Response::ServerIdentity(actual) if actual == *expected_identity => {}
 +        Response::ServerIdentity(_) => {
 +            bail!("governed server identity does not match client policy")
-@@ -338 +320 @@ fn connect_or_start_server(
+@@ -338 +325 @@ fn connect_or_start_server(
 -        Err(e) => Err(e.into()),
 +        _ => bail!("server does not implement the governed strict protocol"),
-@@ -339,0 +322 @@ fn connect_or_start_server(
+@@ -339,0 +327 @@ fn connect_or_start_server(
 +    Ok(server)
-@@ -504,2 +487 @@ fn handle_compile_finished(
+@@ -504,2 +492 @@ fn handle_compile_finished(
 -/// If the server returned `UnhandledCompile`, run the compilation command
 -/// locally using `creator` and return the result.
 +/// Only explicit parser classifications authorize direct client execution.
-@@ -530,22 +512 @@ where
+@@ -530,22 +517 @@ where
 -                Err(e) => {
 -                    match e.downcast_ref::<io::Error>() {
 -                        Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
@@ -1246,7 +1289,7 @@ index 8d8406a..f941db1 100644
 -                    }
 -                }
 +                Err(e) => return Err(e).context("error reading compile response from server"),
-@@ -559 +520,7 @@ where
+@@ -559 +525,7 @@ where
 -            debug!("Server sent UnhandledCompile");
 +            bail!("legacy UnhandledCompile response is forbidden in strict mode");
 +        }
@@ -1255,11 +1298,32 @@ index 8d8406a..f941db1 100644
 +        }
 +        CompileResponse::CannotCache(reason) => {
 +            debug!("Server classified invocation as CannotCache: {reason}");
-@@ -620 +587,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -616,0 +589,20 @@ pub fn run_command(cmd: Command) -> Result<i32> {
++    let cmd = match cmd {
++        Command::MaterializeConsumerSnapshot {
++            config,
++            job_identity,
++            output_directory,
++        } => {
++            #[cfg(unix)]
++            let locator = materialize_consumer_snapshot_from_path(
++                &config,
++                job_identity.as_os_str().as_bytes(),
++                &output_directory,
++            )?;
++            #[cfg(not(unix))]
++            let locator: std::path::PathBuf =
++                bail!("strict consumer snapshots are supported only on Unix");
++            println!("{}", locator.display());
++            return Ok(0);
++        }
++        cmd => cmd,
++    };
+@@ -620 +612,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -    let startup_timeout = config.server_startup_timeout;
 +    let timeouts = StrictTimeouts::from_env()?;
 +    let identity = strict_server_identity(config, timeouts)?;
-@@ -625,10 +593,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -625,10 +618,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let stats = match connect_to_server(&get_addr()) {
 -                Ok(srv) => request_stats(srv).context("failed to get stats from server")?,
 -                // If there is no server, spawning a new server would start with zero stats
@@ -1272,38 +1336,87 @@ index 8d8406a..f941db1 100644
 -            };
 +            let stats = request_stats(connect_required(&get_addr(), timeouts.ipc, &identity)?)
 +                .context("failed to get stats from server")?;
-@@ -662,2 +621,0 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -662,2 +646,0 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -                // Can't report failure here, we're already daemonized.
 -                daemonize()?;
-@@ -665,3 +622,0 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -665,3 +647,0 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            } else {
 -                // We aren't asking for a log file
 -                daemonize()?;
-@@ -669 +624 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -669 +649 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            server::start_server(config, &get_addr())?;
 +            server::start_server(config, &get_addr(), identity, timeouts)?;
-@@ -675 +630 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -675 +655 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -                run_server_process(startup_timeout).context("failed to start server process")?;
 +                run_server_process(timeouts.startup).context("failed to start server process")?;
-@@ -688 +643,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -688 +668,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let server = connect_to_server(&get_addr()).context("couldn't connect to server")?;
 +            let server = connect_required(&get_addr(), timeouts.ipc, &identity)
 +                .context("couldn't connect to governed server")?;
-@@ -694 +650 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -694 +675 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
 +            let conn = connect_required(&get_addr(), timeouts.ipc, &identity)?;
-@@ -756 +712 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -756 +737 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let srv = connect_or_start_server(&get_addr(), startup_timeout)?;
 +            let srv = connect_required(&get_addr(), timeouts.ipc, &identity)?;
-@@ -810 +766 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -810 +791 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
 +            let conn = connect_required(&get_addr(), timeouts.ipc, &identity)?;
-@@ -829,0 +786,247 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -825,0 +807,3 @@ pub fn run_command(cmd: Command) -> Result<i32> {
++        Command::MaterializeConsumerSnapshot { .. } => {
++            unreachable!("handled before runtime config")
++        }
+@@ -829,0 +814,292 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 +
 +#[cfg(all(test, unix))]
 +mod strict_test {
 +    use super::*;
 +    use crate::mock_command::{MockChild, exit_status};
++
++    #[test]
++    fn strict_materialize_command_runs_without_legacy_runtime_configuration() {
++        let directory = tempfile::tempdir().unwrap();
++        let snapshot_directory = directory.path().join("snapshots");
++        std::fs::create_dir(&snapshot_directory).unwrap();
++        let config = directory.path().join("consumer.toml");
++        std::fs::write(
++            &config,
++            r#"
++schema_version = 1
++
++[consumer]
++abstract_socket_template = "bolt-strict-{job_identity}"
++startup_timeout_ms = 101
++ipc_frame_timeout_ms = 102
++cache_read_timeout_ms = 103
++required_write_timeout_ms = 104
++max_frame_bytes = 4096
++cache_mode = "READ_WRITE"
++
++[consumer.routing]
++RUSTC_WRAPPER = "/opt/strict/sccache"
++
++[[consumer.compilers]]
++path = "/usr/bin/rustc"
++family = "rust"
++
++[consumer.compilers.environment]
++SOURCE_DATE_EPOCH = "1781869188"
++"#,
++        )
++        .unwrap();
++
++        assert_eq!(
++            run_command(Command::MaterializeConsumerSnapshot {
++                config,
++                job_identity: OsString::from("run-9-attempt-1"),
++                output_directory: snapshot_directory.clone(),
++            })
++            .unwrap(),
++            0
++        );
++        assert_eq!(std::fs::read_dir(snapshot_directory).unwrap().count(), 1);
++    }
 +    use crate::test::utils::{new_creator, next_command_calls};
 +    use std::io::Read;
 +    use std::os::unix::net::{UnixListener, UnixStream};
@@ -1898,11 +2011,377 @@ index e6f72a7..8ec211c 100644
 -                                .join("x_".to_owned() + &count + extension)
 +                                .join("x_".to_owned() + count.as_str() + extension)
 diff --git a/src/config.rs b/src/config.rs
-index cef32b2..07f19b7 100644
+index cef32b2..2dc7985 100644
 --- a/src/config.rs
 +++ b/src/config.rs
-@@ -38,0 +39,79 @@ use crate::errors::*;
+@@ -17,0 +18 @@ use crate::util::normalize_win_path;
++use anyhow::ensure;
+@@ -30,0 +32,2 @@ use std::io::{Read, Write};
++#[cfg(unix)]
++use std::os::unix::fs::OpenOptionsExt;
+@@ -38,0 +42,444 @@ use crate::errors::*;
 +use crate::protocol::StrictServerIdentity;
++
++const CONSUMER_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub enum ConsumerCompilerFamily {
++    Rust,
++    Gcc,
++    Clang,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct ConsumerEnvironmentEntry {
++    pub name: Vec<u8>,
++    pub value: Vec<u8>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct ConsumerCompiler {
++    pub path: Vec<u8>,
++    pub family: ConsumerCompilerFamily,
++    pub environment: Vec<ConsumerEnvironmentEntry>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct ConsumerTimeouts {
++    pub startup_ms: u64,
++    pub ipc_frame_ms: u64,
++    pub cache_read_ms: u64,
++    pub required_write_ms: u64,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct ConsumerHandshakePolicy {
++    pub protocol_version: u32,
++    pub derivative_identity: String,
++    pub cache_mode: String,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
++pub struct ConsumerConfigSnapshot {
++    pub schema_version: u32,
++    pub abstract_socket_name: Vec<u8>,
++    pub timeouts: ConsumerTimeouts,
++    pub max_frame_bytes: u64,
++    pub compilers: Vec<ConsumerCompiler>,
++    pub routing: Vec<ConsumerEnvironmentEntry>,
++    pub handshake: ConsumerHandshakePolicy,
++}
++
++#[derive(Deserialize)]
++struct ConsumerTomlDocument {
++    schema_version: u32,
++    consumer: ConsumerTomlConfig,
++}
++
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct ConsumerTomlConfig {
++    abstract_socket_template: String,
++    startup_timeout_ms: u64,
++    ipc_frame_timeout_ms: u64,
++    cache_read_timeout_ms: u64,
++    required_write_timeout_ms: u64,
++    max_frame_bytes: u64,
++    cache_mode: String,
++    #[serde(default)]
++    routing: std::collections::BTreeMap<String, String>,
++    compilers: Vec<ConsumerTomlCompiler>,
++}
++
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct ConsumerTomlCompiler {
++    path: String,
++    family: ConsumerCompilerFamily,
++    #[serde(default)]
++    environment: std::collections::BTreeMap<String, String>,
++}
++
++fn consumer_snapshot_max_bytes() -> Result<u64> {
++    governed_positive_u64_from_value(
++        "compiled consumer snapshot byte ceiling",
++        env!("SCCACHE_STRICT_SNAPSHOT_MAX_BYTES"),
++    )
++}
++
++fn validate_environment_entries(entries: &[ConsumerEnvironmentEntry], context: &str) -> Result<()> {
++    let mut names = std::collections::BTreeSet::new();
++    for entry in entries {
++        if entry.name.is_empty()
++            || entry.name.contains(&0)
++            || entry.name.contains(&b'=')
++            || !names.insert(entry.name.as_slice())
++        {
++            bail!("{context} contains a missing, malformed, or duplicate environment name");
++        }
++    }
++    Ok(())
++}
++
++fn validate_consumer_snapshot(snapshot: &ConsumerConfigSnapshot) -> Result<()> {
++    ensure!(
++        snapshot.schema_version == CONSUMER_SNAPSHOT_SCHEMA_VERSION,
++        "unsupported consumer snapshot schema"
++    );
++    ensure!(
++        !snapshot.abstract_socket_name.is_empty() && !snapshot.abstract_socket_name.contains(&0),
++        "consumer snapshot abstract socket name is malformed"
++    );
++    ensure!(
++        snapshot.timeouts.startup_ms > 0
++            && snapshot.timeouts.ipc_frame_ms > 0
++            && snapshot.timeouts.cache_read_ms > 0
++            && snapshot.timeouts.required_write_ms > 0,
++        "consumer snapshot timeouts must be positive"
++    );
++    ensure!(
++        snapshot.max_frame_bytes > 0,
++        "consumer snapshot frame limit must be positive"
++    );
++    ensure!(
++        !snapshot.compilers.is_empty(),
++        "consumer snapshot compiler set is empty"
++    );
++    let mut compiler_paths = std::collections::BTreeSet::new();
++    for compiler in &snapshot.compilers {
++        ensure!(
++            compiler.path.starts_with(b"/") && !compiler.path.contains(&0),
++            "consumer snapshot compiler path must be absolute and canonical"
++        );
++        ensure!(
++            compiler_paths.insert(compiler.path.as_slice()),
++            "consumer snapshot compiler path is duplicated"
++        );
++        validate_environment_entries(&compiler.environment, "consumer compiler environment")?;
++    }
++    validate_environment_entries(&snapshot.routing, "consumer routing environment")?;
++    ensure!(
++        snapshot.handshake.protocol_version > 0,
++        "consumer handshake version must be positive"
++    );
++    ensure!(
++        !snapshot.handshake.derivative_identity.is_empty(),
++        "consumer derivative identity is empty"
++    );
++    ensure!(
++        matches!(
++            snapshot.handshake.cache_mode.as_str(),
++            "READ_ONLY" | "READ_WRITE"
++        ),
++        "consumer cache mode is invalid"
++    );
++    Ok(())
++}
++
++fn canonical_consumer_snapshot(snapshot: &ConsumerConfigSnapshot) -> Result<Vec<u8>> {
++    validate_consumer_snapshot(snapshot)?;
++    let bytes = bincode::serialize(snapshot).context("failed to encode consumer snapshot")?;
++    ensure!(
++        u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= consumer_snapshot_max_bytes()?,
++        "consumer snapshot exceeds the compiled byte ceiling"
++    );
++    Ok(bytes)
++}
++
++fn consumer_snapshot_name(bytes: &[u8]) -> String {
++    format!(
++        "consumer-config-v{}-{}.bin",
++        CONSUMER_SNAPSHOT_SCHEMA_VERSION,
++        blake3::hash(bytes).to_hex()
++    )
++}
++
++pub fn materialize_consumer_snapshot(
++    snapshot: &ConsumerConfigSnapshot,
++    directory: &Path,
++) -> Result<PathBuf> {
++    let bytes = canonical_consumer_snapshot(snapshot)?;
++    let locator = directory.join(consumer_snapshot_name(&bytes));
++    let mut options = std::fs::OpenOptions::new();
++    options.write(true).create_new(true);
++    #[cfg(unix)]
++    options
++        .mode(0o600)
++        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
++    let mut file = options.open(&locator).with_context(|| {
++        format!(
++            "consumer snapshot destination already exists or is unsafe: {}",
++            locator.display()
++        )
++    })?;
++    file.write_all(&bytes)
++        .context("failed to write consumer snapshot")?;
++    file.sync_all()
++        .context("failed to sync consumer snapshot")?;
++    Ok(locator)
++}
++
++fn toml_environment_entries(
++    entries: std::collections::BTreeMap<String, String>,
++) -> Vec<ConsumerEnvironmentEntry> {
++    entries
++        .into_iter()
++        .map(|(name, value)| ConsumerEnvironmentEntry {
++            name: name.into_bytes(),
++            value: value.into_bytes(),
++        })
++        .collect()
++}
++
++pub fn materialize_consumer_snapshot_from_toml(
++    document: &str,
++    job_identity: &[u8],
++    directory: &Path,
++) -> Result<PathBuf> {
++    ensure!(
++        !job_identity.is_empty()
++            && job_identity
++                .iter()
++                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
++        "consumer job identity is malformed"
++    );
++    let input: ConsumerTomlDocument =
++        toml::from_str(document).context("failed to parse consumer snapshot TOML")?;
++    ensure!(
++        input.schema_version == CONSUMER_SNAPSHOT_SCHEMA_VERSION,
++        "consumer TOML schema does not match the snapshot schema"
++    );
++    let placeholder = "{job_identity}";
++    ensure!(
++        input
++            .consumer
++            .abstract_socket_template
++            .matches(placeholder)
++            .count()
++            == 1,
++        "consumer abstract socket template must contain one job identity placeholder"
++    );
++    let job_identity = std::str::from_utf8(job_identity)
++        .context("consumer job identity is not canonical UTF-8")?;
++    let abstract_socket_name = input
++        .consumer
++        .abstract_socket_template
++        .replace(placeholder, job_identity)
++        .into_bytes();
++    let snapshot = ConsumerConfigSnapshot {
++        schema_version: input.schema_version,
++        abstract_socket_name,
++        timeouts: ConsumerTimeouts {
++            startup_ms: input.consumer.startup_timeout_ms,
++            ipc_frame_ms: input.consumer.ipc_frame_timeout_ms,
++            cache_read_ms: input.consumer.cache_read_timeout_ms,
++            required_write_ms: input.consumer.required_write_timeout_ms,
++        },
++        max_frame_bytes: input.consumer.max_frame_bytes,
++        compilers: input
++            .consumer
++            .compilers
++            .into_iter()
++            .map(|compiler| ConsumerCompiler {
++                path: compiler.path.into_bytes(),
++                family: compiler.family,
++                environment: toml_environment_entries(compiler.environment),
++            })
++            .collect(),
++        routing: toml_environment_entries(input.consumer.routing),
++        handshake: ConsumerHandshakePolicy {
++            protocol_version: CONSUMER_SNAPSHOT_SCHEMA_VERSION,
++            derivative_identity: env!("SCCACHE_STRICT_DERIVATIVE_ID").to_owned(),
++            cache_mode: input.consumer.cache_mode,
++        },
++    };
++    materialize_consumer_snapshot(&snapshot, directory)
++}
++
++pub fn materialize_consumer_snapshot_from_path(
++    config_path: &Path,
++    job_identity: &[u8],
++    directory: &Path,
++) -> Result<PathBuf> {
++    let mut options = std::fs::OpenOptions::new();
++    options.read(true);
++    #[cfg(unix)]
++    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
++    let mut file = options.open(config_path).with_context(|| {
++        format!(
++            "consumer config is not a bounded no-follow regular file: {}",
++            config_path.display()
++        )
++    })?;
++    let metadata = file
++        .metadata()
++        .context("failed to inspect consumer config no-follow regular file")?;
++    let max_bytes = consumer_snapshot_max_bytes()?;
++    ensure!(
++        metadata.file_type().is_file() && metadata.len() > 0 && metadata.len() <= max_bytes,
++        "consumer config is not a bounded no-follow regular file"
++    );
++    let mut bytes = Vec::with_capacity(
++        usize::try_from(metadata.len()).context("consumer config size is not addressable")?,
++    );
++    std::io::Read::by_ref(&mut file)
++        .take(max_bytes + 1)
++        .read_to_end(&mut bytes)
++        .context("failed to read consumer config")?;
++    ensure!(
++        u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= max_bytes,
++        "consumer config is oversized"
++    );
++    let document = std::str::from_utf8(&bytes).context("consumer config is not canonical UTF-8")?;
++    materialize_consumer_snapshot_from_toml(document, job_identity, directory)
++}
++
++pub fn load_consumer_snapshot(locator: &Path) -> Result<ConsumerConfigSnapshot> {
++    let mut options = std::fs::OpenOptions::new();
++    options.read(true);
++    #[cfg(unix)]
++    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
++    let mut file = options.open(locator).with_context(|| {
++        format!(
++            "consumer snapshot locator is not a bounded no-follow regular file: {}",
++            locator.display()
++        )
++    })?;
++    let metadata = file
++        .metadata()
++        .context("failed to inspect consumer snapshot no-follow regular file")?;
++    ensure!(
++        metadata.file_type().is_file(),
++        "consumer snapshot locator is not a no-follow regular file"
++    );
++    let max_bytes = consumer_snapshot_max_bytes()?;
++    ensure!(
++        metadata.len() > 0 && metadata.len() <= max_bytes,
++        "consumer snapshot is empty or oversized"
++    );
++    let mut bytes = Vec::with_capacity(
++        usize::try_from(metadata.len()).context("snapshot size is not addressable")?,
++    );
++    std::io::Read::by_ref(&mut file)
++        .take(max_bytes + 1)
++        .read_to_end(&mut bytes)
++        .context("failed to read consumer snapshot")?;
++    ensure!(
++        u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= max_bytes,
++        "consumer snapshot is oversized"
++    );
++    let expected_name = consumer_snapshot_name(&bytes);
++    ensure!(
++        locator.file_name().and_then(|name| name.to_str()) == Some(expected_name.as_str()),
++        "consumer snapshot content digest does not match its locator name"
++    );
++    let snapshot: ConsumerConfigSnapshot =
++        bincode::deserialize(&bytes).context("failed to decode consumer snapshot")?;
++    ensure!(
++        canonical_consumer_snapshot(&snapshot)? == bytes,
++        "consumer snapshot encoding is not canonical"
++    );
++    Ok(snapshot)
++}
 +
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +pub struct StrictTimeouts {
@@ -1960,8 +2439,7 @@ index cef32b2..07f19b7 100644
 +    governed_duration_from_value(name, &value)
 +}
 +
-+pub fn governed_positive_u64_from_env(name: &str) -> Result<u64> {
-+    let value = env::var(name).with_context(|| format!("{name} is required"))?;
++pub fn governed_positive_u64_from_value(name: &str, value: &str) -> Result<u64> {
 +    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
 +        bail!("{name} must be a positive decimal integer");
 +    }
@@ -1974,6 +2452,11 @@ index cef32b2..07f19b7 100644
 +    Ok(parsed)
 +}
 +
++pub fn governed_positive_u64_from_env(name: &str) -> Result<u64> {
++    let value = env::var(name).with_context(|| format!("{name} is required"))?;
++    governed_positive_u64_from_value(name, &value)
++}
++
 +pub fn governed_frame_length_from_env(name: &str) -> Result<u64> {
 +    let length = governed_positive_u64_from_env(name)?;
 +    if length > u64::from(u32::MAX) {
@@ -1981,7 +2464,7 @@ index cef32b2..07f19b7 100644
 +    }
 +    Ok(length)
 +}
-@@ -1356,0 +1436,70 @@ impl Config {
+@@ -1356,0 +1804,194 @@ impl Config {
 +/// Bind the strict protocol to the effective cache and timeout policy.
 +pub fn strict_server_identity(
 +    config: &Config,
@@ -2050,6 +2533,130 @@ index cef32b2..07f19b7 100644
 +        cache_write_timeout_ms,
 +        max_frame_bytes,
 +    })
++}
++
++#[cfg(all(test, unix))]
++mod strict_snapshot_tests {
++    use super::*;
++    use std::os::unix::fs::symlink;
++
++    fn snapshot() -> ConsumerConfigSnapshot {
++        ConsumerConfigSnapshot {
++            schema_version: 1,
++            abstract_socket_name: b"strict-test-socket".to_vec(),
++            timeouts: ConsumerTimeouts {
++                startup_ms: 101,
++                ipc_frame_ms: 102,
++                cache_read_ms: 103,
++                required_write_ms: 104,
++            },
++            max_frame_bytes: 4096,
++            compilers: vec![ConsumerCompiler {
++                path: b"/usr/bin/rustc".to_vec(),
++                family: ConsumerCompilerFamily::Rust,
++                environment: vec![ConsumerEnvironmentEntry {
++                    name: b"CARGO_PKG_NAME".to_vec(),
++                    value: b"fixture".to_vec(),
++                }],
++            }],
++            routing: vec![ConsumerEnvironmentEntry {
++                name: b"RUSTC_WRAPPER".to_vec(),
++                value: b"/opt/strict/sccache".to_vec(),
++            }],
++            handshake: ConsumerHandshakePolicy {
++                protocol_version: 1,
++                derivative_identity: "strict-test".to_owned(),
++                cache_mode: "READ_WRITE".to_owned(),
++            },
++        }
++    }
++
++    fn adoption_toml() -> &'static str {
++        r#"
++schema_version = 1
++
++[consumer]
++abstract_socket_template = "bolt-strict-{job_identity}"
++startup_timeout_ms = 101
++ipc_frame_timeout_ms = 102
++cache_read_timeout_ms = 103
++required_write_timeout_ms = 104
++max_frame_bytes = 4096
++cache_mode = "READ_WRITE"
++
++[consumer.routing]
++RUSTC_WRAPPER = "/opt/strict/sccache"
++
++[[consumer.compilers]]
++path = "/usr/bin/rustc"
++family = "rust"
++
++[consumer.compilers.environment]
++SOURCE_DATE_EPOCH = "1781869188"
++"#
++    }
++
++    #[test]
++    fn strict_snapshot_materializer_owns_toml_schema_and_job_binding() {
++        let directory = tempfile::tempdir().unwrap();
++
++        let locator = materialize_consumer_snapshot_from_toml(
++            adoption_toml(),
++            b"run-7-attempt-2",
++            directory.path(),
++        )
++        .unwrap();
++        let snapshot = load_consumer_snapshot(&locator).unwrap();
++
++        assert_eq!(
++            snapshot.abstract_socket_name,
++            b"bolt-strict-run-7-attempt-2"
++        );
++        assert_eq!(snapshot.compilers[0].path, b"/usr/bin/rustc");
++        assert_eq!(
++            snapshot.compilers[0].environment[0].name,
++            b"SOURCE_DATE_EPOCH"
++        );
++    }
++
++    #[test]
++    fn strict_snapshot_materializer_writes_one_content_addressed_file() {
++        let directory = tempfile::tempdir().unwrap();
++        let expected = snapshot();
++
++        let locator = materialize_consumer_snapshot(&expected, directory.path()).unwrap();
++        let file_name = locator.file_name().unwrap().to_str().unwrap();
++        assert!(file_name.starts_with("consumer-config-v1-"));
++        assert!(file_name.ends_with(".bin"));
++        assert_eq!(load_consumer_snapshot(&locator).unwrap(), expected);
++
++        let error = materialize_consumer_snapshot(&expected, directory.path()).unwrap_err();
++        assert!(error.to_string().contains("already exists"));
++    }
++
++    #[test]
++    fn strict_snapshot_loader_rejects_symlink_locator() {
++        let directory = tempfile::tempdir().unwrap();
++        let locator = materialize_consumer_snapshot(&snapshot(), directory.path()).unwrap();
++        let alias = directory.path().join("consumer-config-v1-alias.bin");
++        symlink(&locator, &alias).unwrap();
++
++        let error = load_consumer_snapshot(&alias).unwrap_err();
++        assert!(error.to_string().contains("no-follow regular file"));
++    }
++
++    #[test]
++    fn strict_snapshot_loader_rejects_digest_name_mismatch() {
++        let directory = tempfile::tempdir().unwrap();
++        let locator = materialize_consumer_snapshot(&snapshot(), directory.path()).unwrap();
++        let wrong = directory.path().join(
++            "consumer-config-v1-0000000000000000000000000000000000000000000000000000000000000000.bin",
++        );
++        std::fs::rename(locator, &wrong).unwrap();
++
++        let error = load_consumer_snapshot(&wrong).unwrap_err();
++        assert!(error.to_string().contains("content digest"));
++    }
 +}
 +
 diff --git a/src/net.rs b/src/net.rs

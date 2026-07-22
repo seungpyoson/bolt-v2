@@ -943,6 +943,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
 
 [[package]]
+name = "arrayref"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1678,6 +1684,7 @@ dependencies = [
  "nautilus-backtest",
  "nautilus-common",
  "nautilus-core",
+ "nautilus-event-store",
  "nautilus-execution",
  "nautilus-model",
  "nautilus-persistence",
@@ -1688,6 +1695,7 @@ dependencies = [
  "object_store",
  "parquet",
  "reqwest 0.13.4",
+ "rmp-serde",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -1787,6 +1795,20 @@ dependencies = [
  "radium",
  "tap",
  "wyz",
+]
+
+[[package]]
+name = "blake3"
+version = "1.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0aa83c34e62843d924f905e0f5c866eb1dd6545fc4d719e803d9ba6030371fce"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+ "cpufeatures 0.3.0",
 ]
 
 [[package]]
@@ -2258,6 +2280,12 @@ dependencies = [
  "quote",
  "unicode-xid",
 ]
+
+[[package]]
+name = "constant_time_eq"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "convert_case"
@@ -4835,6 +4863,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "nautilus-event-store"
+version = "0.61.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "blake3",
+ "bytes",
+ "indexmap 2.14.0",
+ "log",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-execution",
+ "nautilus-model",
+ "nautilus-system",
+ "redb",
+ "rmp-serde",
+ "serde",
+ "thiserror",
+ "ustr",
+]
+
+[[package]]
 name = "nautilus-execution"
 version = "0.61.0"
 source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev=d81be0bcc7a473c45d2dc8a8885638336073a218#d81be0bcc7a473c45d2dc8a8885638336073a218"
@@ -5983,6 +6034,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e48930979c155e2f33aa36ab3119b5ee81332beb6482199a8ecd6029b80b59"
 dependencies = [
  "rustversion",
+]
+
+[[package]]
+name = "redb"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e925444704b5f17d32bf42f5b6e2df050bceebc3dcd6e71cc73dafe8092e839"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

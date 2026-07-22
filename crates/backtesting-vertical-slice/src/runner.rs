@@ -49,23 +49,27 @@ use bolt_v2::{
 use futures_util::future::BoxFuture;
 use nautilus_analysis::analyzer::PortfolioAnalyzer;
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
-use nautilus_core::UnixNanos;
+use nautilus_core::{UUID4, UnixNanos};
 #[cfg(test)]
 use nautilus_model::orderbook::OrderBook;
 use nautilus_model::{
+    accounts::AccountAny,
     data::{
         Bar, BarSpecification, Data, FundingRateUpdate, IndexPriceUpdate, InstrumentClose,
         MarkPriceUpdate, OrderBookDelta, QuoteTick, TradeTick,
     },
     enums::{
-        AggregationSource, AggressorSide, BookAction, InstrumentCloseType, OrderSide, OrderStatus,
-        PriceType,
+        AccountType, AggregationSource, AggressorSide, BookAction, InstrumentCloseType,
+        LiquiditySide, OrderSide, OrderStatus, OrderType, PriceType,
     },
     events::OrderEventAny,
-    identifiers::{ClientId, InstrumentId, Venue},
+    identifiers::{
+        AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId,
+        TraderId, Venue, VenueOrderId,
+    },
     orders::Order,
     position::Position,
-    types::{AccountBalance, Price, Quantity},
+    types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
 use rust_decimal::Decimal;
@@ -1000,18 +1004,85 @@ fn add_manifest_strategy(
 /// state self-documents its denial/rejection/cancel reason in the failure output.
 #[derive(Debug, Clone)]
 pub struct OrderTerminalRecord {
-    pub client_order_id: String,
-    pub order_side: String,
-    pub order_type: String,
+    pub trader_id: TraderId,
+    pub strategy_id: StrategyId,
+    pub instrument_id: InstrumentId,
+    pub client_order_id: ClientOrderId,
+    pub account_id: Option<AccountId>,
+    pub venue_order_id: Option<VenueOrderId>,
+    pub position_id: Option<PositionId>,
+    pub order_side: OrderSide,
+    pub order_type: OrderType,
     pub status: OrderStatus,
-    pub quantity: String,
-    pub filled_qty: String,
+    pub quantity: Quantity,
+    pub filled_qty: Quantity,
+    pub leaves_qty: Quantity,
     pub initialized_quantity: Quantity,
     pub initialized_quote_quantity: bool,
     pub effective_quantity: Quantity,
-    pub submission_timestamp: Option<UnixNanos>,
-    pub fills: Vec<nautilus_model::events::OrderFilled>,
+    pub current_quote_quantity: bool,
+    pub trade_ids: Vec<TradeId>,
+    pub commissions: Vec<(Currency, Money)>,
+    pub fills: Vec<Issue789ProofFill>,
     pub events_debug: Vec<String>,
+}
+
+/// Proof-relevant `OrderFilled` fields. Transport timestamps, capture-time
+/// position attribution, opaque info, and causation metadata are deliberately
+/// outside the economic proof boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Issue789ProofFill {
+    pub trader_id: TraderId,
+    pub strategy_id: StrategyId,
+    pub instrument_id: InstrumentId,
+    pub client_order_id: ClientOrderId,
+    pub venue_order_id: VenueOrderId,
+    pub account_id: AccountId,
+    pub trade_id: TradeId,
+    pub order_side: OrderSide,
+    pub order_type: OrderType,
+    pub quantity: Quantity,
+    pub price: Price,
+    pub currency: Currency,
+    pub liquidity_side: LiquiditySide,
+    pub event_id: UUID4,
+    pub reconciliation: bool,
+    pub commission: Option<Money>,
+}
+
+fn issue_789_proof_fill(fill: &nautilus_model::events::OrderFilled) -> Issue789ProofFill {
+    Issue789ProofFill {
+        trader_id: fill.trader_id,
+        strategy_id: fill.strategy_id,
+        instrument_id: fill.instrument_id,
+        client_order_id: fill.client_order_id,
+        venue_order_id: fill.venue_order_id,
+        account_id: fill.account_id,
+        trade_id: fill.trade_id,
+        order_side: fill.order_side,
+        order_type: fill.order_type,
+        quantity: fill.last_qty,
+        price: fill.last_px,
+        currency: fill.currency,
+        liquidity_side: fill.liquidity_side,
+        event_id: fill.event_id,
+        reconciliation: fill.reconciliation,
+        commission: fill.commission,
+    }
+}
+
+/// Current account state captured directly from the post-run cache.
+///
+/// This is deliberately not built from `AccountAny::last_event`: the final
+/// event-store entry and the live cache are independent completeness surfaces.
+#[derive(Debug, Clone)]
+pub struct AccountTerminalRecord {
+    pub account_id: AccountId,
+    pub account_type: AccountType,
+    pub base_currency: Option<Currency>,
+    pub balances: Vec<AccountBalance>,
+    pub cash_locks: Vec<(InstrumentId, Currency, Money)>,
+    pub margins: Vec<MarginBalance>,
 }
 
 /// Result of one `BacktestNode` run: the NautilusTrader summary plus the
@@ -1022,10 +1093,20 @@ pub struct NtBacktestNodeRun {
     pub config_override_report: Option<BacktestConfigOverrideReport>,
     pub run_guard_report: Option<BacktestRunGuardReport>,
     pub positions: Vec<Position>,
-    pub account_balances: Vec<AccountBalance>,
+    pub configured_execution_account_id: AccountId,
+    pub account_terminals: Vec<AccountTerminalRecord>,
     pub resolved_config_hash: Option<String>,
     pub resolved_config_bytes: Option<Vec<u8>>,
     pub execution_contract_report: Option<crate::execution_contract::ExecutionContractReport>,
+}
+
+fn require_pre_run_configured_account(
+    account_id: Option<AccountId>,
+    venue: Venue,
+) -> Result<AccountId> {
+    account_id.with_context(|| {
+        format!("built backtest engine has no configured execution account for {venue}")
+    })
 }
 
 fn reconstructed_reference_current_price_data(
@@ -1188,6 +1269,18 @@ fn ensure_settlement_currency_funded(
 }
 
 pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<NtBacktestNodeRun> {
+    run_nt_backtest_node_with_hooks(manifest, |_| Ok(()), |_| Ok(())).map(|(output, ())| output)
+}
+
+fn run_nt_backtest_node_with_hooks<C, E, B, A>(
+    manifest: &BacktestingRunManifest,
+    before_run: B,
+    after_run: A,
+) -> Result<(NtBacktestNodeRun, E)>
+where
+    B: FnOnce(&BacktestEngine) -> Result<C>,
+    A: FnOnce(C) -> Result<E>,
+{
     let run_config = manifest
         .to_nt_run_config()
         .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
@@ -1228,7 +1321,34 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
             .add_data(instrument_settlement_data, None, false, true)
             .context("add instrument settlement close events")?;
     }
-    let mut results = node.run().context("run BacktestNode")?;
+    let configured_execution_account_id = {
+        let engine = node
+            .get_engine(&manifest.run_id)
+            .with_context(|| format!("no engine for run id {} before run", manifest.run_id))?;
+        let venue = Venue::from(manifest.venue.nt_venue.as_str());
+        let exec_engine = engine.kernel().exec_engine.borrow();
+        let matching_account_ids = exec_engine
+            .get_all_clients()
+            .into_iter()
+            .filter(|client| client.venue() == venue)
+            .map(|client| client.account_id())
+            .collect::<Vec<_>>();
+        ensure!(
+            matching_account_ids.len() <= 1,
+            "built backtest engine has multiple configured execution accounts for {venue}"
+        );
+        require_pre_run_configured_account(matching_account_ids.first().copied(), venue)?
+    };
+    let capture = {
+        let engine = node
+            .get_engine(&manifest.run_id)
+            .with_context(|| format!("no engine for run id {} before run", manifest.run_id))?;
+        before_run(engine)?
+    };
+    let run_result = node.run();
+    let evidence_result = after_run(capture);
+    let mut results = run_result.context("run BacktestNode")?;
+    let evidence = evidence_result.context("finalize BacktestNode execution evidence")?;
     ensure!(
         results.len() == 1,
         "expected exactly one backtest result, got {}",
@@ -1239,23 +1359,23 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
     // the node is dropped. A run that disposed (NautilusTrader default) would
     // leave this empty and the order-terminal proof would have nothing to check.
     let mut nt_result = results.remove(0);
-    let (order_terminals, positions, account_balances) = {
+    let (order_terminals, positions, account_terminals) = {
         let engine = node
             .get_engine(&manifest.run_id)
             .with_context(|| format!("no engine for run id {} after run", manifest.run_id))?;
-        let (positions, account_balances): (Vec<_>, Vec<_>) = {
+        let (positions, account_terminals): (Vec<_>, Vec<_>) = {
             let cache = engine.kernel().cache.borrow();
             let positions = cache
                 .positions(None, None, None, None, None)
                 .into_iter()
                 .map(|position| position.cloned())
                 .collect();
-            let account_balances = std::iter::once(&manifest.venue)
+            let account_terminals = std::iter::once(&manifest.venue)
                 .chain(manifest.additional_venues.iter())
                 .filter_map(|venue| cache.account_for_venue(&Venue::from(venue.nt_venue.as_str())))
-                .flat_map(|account| account.balances().into_values())
+                .map(|account| capture_account_terminal(account.as_ref()))
                 .collect();
-            (positions, account_balances)
+            (positions, account_terminals)
         };
         domain_analyzer.add_positions(&positions);
         for (name, value) in domain_statistics_from_analyzer(&domain_analyzer, &domain_statistics) {
@@ -1264,7 +1384,7 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
         (
             capture_order_terminals(engine)?,
             positions,
-            account_balances,
+            account_terminals,
         )
     };
     let run_guard_report = added_strategy
@@ -1272,17 +1392,81 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
         .as_ref()
         .map(|writer| writer.run_guard_report(&nt_result))
         .transpose()?;
-    Ok(NtBacktestNodeRun {
-        result: nt_result,
-        order_terminals,
-        config_override_report: added_strategy.config_override_report,
-        run_guard_report,
-        positions,
-        account_balances,
-        resolved_config_hash: added_strategy.resolved_config_hash,
-        resolved_config_bytes: added_strategy.resolved_config_bytes,
-        execution_contract_report: None,
-    })
+    Ok((
+        NtBacktestNodeRun {
+            result: nt_result,
+            order_terminals,
+            config_override_report: added_strategy.config_override_report,
+            run_guard_report,
+            positions,
+            configured_execution_account_id,
+            account_terminals,
+            resolved_config_hash: added_strategy.resolved_config_hash,
+            resolved_config_bytes: added_strategy.resolved_config_bytes,
+            execution_contract_report: None,
+        },
+        evidence,
+    ))
+}
+
+fn capture_account_terminal(account: &AccountAny) -> AccountTerminalRecord {
+    let (account_type, mut cash_locks, mut margins) = match account {
+        AccountAny::Cash(account) => (
+            AccountType::Cash,
+            account
+                .balances_locked
+                .iter()
+                .map(|((instrument_id, currency), money)| (*instrument_id, *currency, *money))
+                .collect(),
+            Vec::new(),
+        ),
+        AccountAny::Margin(account) => (
+            AccountType::Margin,
+            Vec::new(),
+            account
+                .margins
+                .values()
+                .chain(account.account_margins.values())
+                .copied()
+                .collect(),
+        ),
+        AccountAny::Betting(_) => (AccountType::Betting, Vec::new(), Vec::new()),
+    };
+    let mut balances = account.balances().into_values().collect::<Vec<_>>();
+    balances.sort_by_key(|balance| balance.currency.to_string());
+    cash_locks.sort_by_key(|(instrument_id, currency, _)| {
+        (instrument_id.to_string(), currency.to_string())
+    });
+    margins.sort_by_key(|margin| {
+        (
+            margin
+                .instrument_id
+                .map(|instrument_id| instrument_id.to_string()),
+            margin.currency.to_string(),
+        )
+    });
+    AccountTerminalRecord {
+        account_id: account.id(),
+        account_type,
+        base_currency: account.base_currency(),
+        balances,
+        cash_locks,
+        margins,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn run_nt_backtest_node_capturing_evidence(
+    manifest: &BacktestingRunManifest,
+) -> Result<(
+    NtBacktestNodeRun,
+    crate::execution_evidence::ExecutionEvidence,
+)> {
+    run_nt_backtest_node_with_hooks(
+        manifest,
+        |engine| crate::execution_evidence::ExecutionEvidenceCapture::start(engine, manifest),
+        crate::execution_evidence::ExecutionEvidenceCapture::finish,
+    )
 }
 
 /// Capture the terminal state of every order in the engine's post-run cache.
@@ -1301,24 +1485,38 @@ fn capture_order_terminals(engine: &BacktestEngine) -> Result<Vec<OrderTerminalR
                 })
                 .context("cached order has no initialization event")?;
             Ok(OrderTerminalRecord {
-                client_order_id: order.client_order_id().to_string(),
-                order_side: order.order_side().to_string(),
-                order_type: order.order_type().to_string(),
+                trader_id: order.trader_id(),
+                strategy_id: order.strategy_id(),
+                instrument_id: order.instrument_id(),
+                client_order_id: order.client_order_id(),
+                account_id: order.account_id(),
+                venue_order_id: order.venue_order_id(),
+                position_id: order.position_id(),
+                order_side: order.order_side(),
+                order_type: order.order_type(),
                 status: order.status(),
-                quantity: order.quantity().to_string(),
-                filled_qty: order.filled_qty().to_string(),
+                quantity: order.quantity(),
+                filled_qty: order.filled_qty(),
+                leaves_qty: order.leaves_qty(),
                 initialized_quantity: initialized.quantity,
                 initialized_quote_quantity: initialized.quote_quantity,
                 effective_quantity: order.quantity(),
-                submission_timestamp: order.events().iter().find_map(|event| match event {
-                    OrderEventAny::Submitted(submitted) => Some(submitted.ts_event),
-                    _ => None,
-                }),
+                current_quote_quantity: order.is_quote_quantity(),
+                trade_ids: order.trade_ids().into_iter().copied().collect(),
+                commissions: {
+                    let mut commissions = order
+                        .commissions()
+                        .iter()
+                        .map(|(currency, money)| (*currency, *money))
+                        .collect::<Vec<_>>();
+                    commissions.sort_by_key(|(currency, _)| currency.to_string());
+                    commissions
+                },
                 fills: order
                     .events()
                     .iter()
                     .filter_map(|event| match event {
-                        OrderEventAny::Filled(fill) => Some(fill.clone()),
+                        OrderEventAny::Filled(fill) => Some(issue_789_proof_fill(fill)),
                         _ => None,
                     })
                     .collect(),
@@ -1338,27 +1536,33 @@ fn run_nt_backtest_node_with_execution_contract<F>(
     validator: F,
 ) -> Result<NtBacktestNodeRun>
 where
-    F: FnOnce(&NtBacktestNodeRun) -> Result<crate::execution_contract::ExecutionContractReport>,
+    F: FnOnce(
+        &NtBacktestNodeRun,
+        &crate::execution_evidence::ExecutionEvidence,
+    ) -> Result<crate::execution_contract::ExecutionContractReport>,
 {
-    let mut output = run_nt_backtest_node(manifest)?;
-    output.execution_contract_report = Some(validator(&output)?);
+    let (mut output, evidence) =
+        crate::execution_evidence::run_nt_backtest_node_with_evidence(manifest)?;
+    output.execution_contract_report = Some(validator(&output, &evidence)?);
     Ok(output)
 }
 
 #[cfg(test)]
-fn replay_executable_book_at_submission(
+fn replay_executable_book_at_cursor(
     instrument_id: InstrumentId,
     deltas: &[OrderBookDelta],
-    submission_timestamp: UnixNanos,
+    delta_count: usize,
 ) -> Result<OrderBook> {
+    ensure!(
+        delta_count <= deltas.len(),
+        "event-store book cursor {delta_count} exceeds hash-bound catalog length {}",
+        deltas.len()
+    );
     let mut book = OrderBook::new(instrument_id, nautilus_model::enums::BookType::L2_MBP);
-    for delta in deltas
-        .iter()
-        .filter(|delta| delta.ts_init <= submission_timestamp)
-    {
+    for delta in deltas.iter().take(delta_count) {
         book.apply_delta(delta)
             .map_err(|error| anyhow::anyhow!(error))
-            .context("replay executable book with NautilusTrader")?;
+            .context("replay executable book to event-store cursor")?;
     }
     Ok(book)
 }
@@ -2327,20 +2531,28 @@ pub(crate) fn time_window_excludes_all_data(
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, BTreeSet},
         fs,
         path::{Path, PathBuf},
         str::FromStr,
     };
 
-    use anyhow::{Context, Result, ensure};
-    use nautilus_core::{Params, UnixNanos};
+    use anyhow::{Context, Result, bail, ensure};
+    use nautilus_core::{Params, UUID4, UnixNanos};
     use nautilus_model::{
-        data::{OrderBookDelta, TradeTick},
-        enums::{AggressorSide, AssetClass, BookAction, OrderSide},
-        identifiers::{InstrumentId, Symbol, TradeId},
+        data::{BookOrder, InstrumentClose, OrderBookDelta, TradeTick},
+        enums::{
+            AccountType, AggressorSide, AssetClass, BookAction, InstrumentCloseType, OrderSide,
+            OrderStatus, OrderType, PositionAdjustmentType, PositionSide,
+        },
+        events::{AccountState, PositionAdjusted},
+        identifiers::{
+            AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol, TradeId,
+            TraderId, Venue,
+        },
         instruments::{BinaryOption, Instrument, InstrumentAny},
-        types::{Currency, Money, Price, Quantity},
+        position::{PositionFillVoid, PositionReplayEvent},
+        types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
     };
     use nautilus_persistence::backend::catalog::ParquetDataCatalog;
     use nautilus_polymarket::http::models::GammaMarket;
@@ -2350,10 +2562,11 @@ mod tests {
 
     use super::{
         BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, BoltV3DecisionEvidenceWriter,
-        StrategyPreparationConfig, apply_backtest_config_override, assert_read_back_matches,
-        canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
-        expected_iterations, iterations_mismatch, load_bolt_v3_config,
-        prepare_strategy_client_routes, raw_taker_config, replay_executable_book_at_submission,
+        OrderTerminalRecord, Position, StrategyPreparationConfig, apply_backtest_config_override,
+        assert_read_back_matches, canonical_resolved_taker_config_bytes,
+        ensure_settlement_currency_funded, expected_iterations, issue_789_proof_fill,
+        iterations_mismatch, load_bolt_v3_config, prepare_strategy_client_routes, raw_taker_config,
+        replay_executable_book_at_cursor, require_pre_run_configured_account,
         resolve_existing_input_path, run_nt_backtest_node,
         run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
         time_window_excludes_all_data,
@@ -2387,6 +2600,14 @@ mod tests {
         SeededL2QuoteAction, SeededL2QuoteMappingConfig, SeededL2QuoteProvenance,
         normalize_seeded_l2_events, parse_seeded_l2_jsonl, seeded_l2_quote_transform_hash,
     };
+
+    type TerminalOrderMutation = Box<dyn Fn(&mut OrderTerminalRecord)>;
+    type SettlementWitnessMutation = Box<
+        dyn Fn(
+            &mut nautilus_model::events::OrderInitialized,
+            &mut nautilus_model::events::OrderAccepted,
+        ),
+    >;
     use crate::source_proof::{SourceProofFidelityClass, SourceProofUsageScope};
 
     const TEST_INSTRUMENT: &str = "BTCUSDT.BYBIT";
@@ -3060,7 +3281,7 @@ mod tests {
             ("side".to_string(), "buy".to_string()),
         ]);
         manifest.catalog_inputs.truncate(1);
-        let result = run_nt_backtest_node_with_execution_contract(&manifest, |_| {
+        let result = run_nt_backtest_node_with_execution_contract(&manifest, |_, _| {
             anyhow::bail!("execution-contract-validator-sentinel")
         });
         let error = match result {
@@ -3075,48 +3296,27 @@ mod tests {
     }
 
     #[test]
-    fn execution_contract_excludes_late_arriving_book_deltas() -> Result<()> {
-        let instrument_id = InstrumentId::from(MAKER_SMOKE_YES_INSTRUMENT);
-        let timely = OrderBookDelta::new(
-            instrument_id,
-            BookAction::Add,
-            nautilus_model::data::BookOrder::new(
-                OrderSide::Sell,
-                Price::from("0.420"),
-                Quantity::from("21.52"),
-                1,
-            ),
-            0,
-            1,
-            UnixNanos::from(10),
-            UnixNanos::from(100),
-        );
-        let late = OrderBookDelta::new(
-            instrument_id,
-            BookAction::Add,
-            nautilus_model::data::BookOrder::new(
-                OrderSide::Sell,
-                Price::from("0.410"),
-                Quantity::from("50.00"),
-                2,
-            ),
-            0,
-            2,
-            UnixNanos::from(9),
-            UnixNanos::from(101),
-        );
+    fn execution_contract_rejects_followup_delayed_past_next_fill() {
+        let error = ensure_one_causal_followup_per_fill(
+            "position mutation",
+            &[10, 20, 30],
+            &[21, 22, 31],
+            40,
+        )
+        .expect_err("first mutation after the next fill must fail closed");
+        assert!(error.to_string().contains("outside its causal interval"));
+    }
 
-        let book = replay_executable_book_at_submission(
-            instrument_id,
-            &[timely, late],
-            UnixNanos::from(100),
-        )?;
-
-        ensure!(
-            book.best_ask_price() == Some(Price::from("0.420")),
-            "late-arriving delta leaked into the executable book"
-        );
-        Ok(())
+    #[test]
+    fn execution_contract_rejects_terminal_followup_after_settlement_receipt() {
+        let error = ensure_one_causal_followup_per_fill(
+            "AccountState transition",
+            &[10, 20, 30],
+            &[11, 21, 41],
+            40,
+        )
+        .expect_err("terminal account transition after close receipt must fail closed");
+        assert!(error.to_string().contains("outside its causal interval"));
     }
 
     #[test]
@@ -3379,12 +3579,30 @@ mod tests {
             instrument_settlements,
         })?;
 
-        let output = run_nt_backtest_node_with_execution_contract(&manifest, |output| {
+        ensure_issue_789_venue_shape(&manifest.venue)?;
+        let expected_binary_settlements = ensure_issue_789_binary_settlement_domain(
+            &manifest.instrument_settlements,
+            &up_projection.instrument,
+            &down_projection.instrument,
+        )?;
+        validate_issue_789_book_domain(
+            &up_projection.instrument,
+            &up_projection.order_book_deltas,
+        )?;
+        validate_issue_789_book_domain(
+            &down_projection.instrument,
+            &down_projection.order_book_deltas,
+        )?;
+
+        let output = run_nt_backtest_node_with_execution_contract(&manifest, |output, evidence| {
+            evidence.ensure_issue_789_causal_surface(&manifest)?;
             validate_issue_789_execution_contract(
                 output,
+                evidence,
                 &manifest,
                 &up_projection,
                 &down_projection,
+                &expected_binary_settlements,
             )
         })
         .context("run issue #789 first real free-data taker P/L slice")?;
@@ -3458,35 +3676,2652 @@ mod tests {
         Ok(())
     }
 
+    fn issue_789_commission_projection(
+        fills: &[nautilus_model::events::OrderFilled],
+    ) -> Result<Vec<(Currency, Money)>> {
+        let mut totals = BTreeMap::<String, (Currency, Decimal)>::new();
+        for fill in fills {
+            let commission = fill
+                .commission
+                .with_context(|| format!("fill {} has no commission", fill.trade_id))?;
+            let entry = totals
+                .entry(commission.currency.to_string())
+                .or_insert((commission.currency, Decimal::ZERO));
+            entry.1 += commission.as_decimal();
+        }
+        totals
+            .into_values()
+            .map(|(currency, amount)| {
+                Money::from_decimal(amount, currency)
+                    .map_err(anyhow::Error::msg)
+                    .map(|money| (currency, money))
+            })
+            .collect()
+    }
+
+    fn ensure_issue_789_terminal_order_matches(
+        terminal: &super::OrderTerminalRecord,
+        initialized: &nautilus_model::events::OrderInitialized,
+        configured_account_id: AccountId,
+        position_id: PositionId,
+        expected_effective_quantity: Quantity,
+        fills: &[nautilus_model::events::OrderFilled],
+    ) -> Result<()> {
+        let filled_decimal = fills
+            .iter()
+            .map(|fill| fill.last_qty.as_decimal())
+            .sum::<Decimal>();
+        let expected_filled_quantity =
+            Quantity::from_decimal_dp(filled_decimal, expected_effective_quantity.precision)
+                .map_err(anyhow::Error::msg)
+                .context("#789 terminal filled quantity is not representable")?;
+        let first_fill = fills
+            .first()
+            .context("#789 terminal order has no causal fills")?;
+        let expected_trade_ids = fills.iter().map(|fill| fill.trade_id).collect::<Vec<_>>();
+        let expected_commissions = issue_789_commission_projection(fills)?;
+        let expected_fills = fills.iter().map(issue_789_proof_fill).collect::<Vec<_>>();
+        ensure!(
+            expected_filled_quantity == expected_effective_quantity,
+            "terminal order {} is not fully filled",
+            initialized.client_order_id
+        );
+        ensure!(
+            terminal.trader_id == initialized.trader_id
+                && terminal.strategy_id == initialized.strategy_id
+                && terminal.instrument_id == initialized.instrument_id
+                && terminal.client_order_id == initialized.client_order_id
+                && terminal.account_id == Some(configured_account_id)
+                && terminal.venue_order_id == Some(first_fill.venue_order_id)
+                && terminal.position_id == Some(position_id)
+                && terminal.order_side == initialized.order_side
+                && terminal.order_type == initialized.order_type
+                && terminal.status == OrderStatus::Filled
+                && terminal.quantity == expected_effective_quantity
+                && terminal.filled_qty == expected_filled_quantity
+                && terminal.leaves_qty.is_zero()
+                && terminal.initialized_quantity == initialized.quantity
+                && terminal.initialized_quote_quantity == initialized.quote_quantity
+                && terminal.effective_quantity == expected_effective_quantity
+                && !terminal.current_quote_quantity
+                && terminal.trade_ids == expected_trade_ids
+                && terminal.commissions == expected_commissions
+                && terminal
+                    .commissions
+                    .iter()
+                    .all(|(currency, money)| *currency == money.currency)
+                && terminal.fills == expected_fills,
+            "terminal order {} diverges from its complete causal projection",
+            initialized.client_order_id
+        );
+        Ok(())
+    }
+
+    fn ensure_one_causal_followup_per_fill(
+        label: &str,
+        fill_sequences: &[u64],
+        followup_sequences: &[u64],
+        terminal_bound: u64,
+    ) -> Result<()> {
+        ensure!(
+            fill_sequences.len() == followup_sequences.len(),
+            "#789 recorded {} {label} events for {} fills",
+            followup_sequences.len(),
+            fill_sequences.len()
+        );
+        for (index, (&fill_seq, &followup_seq)) in
+            fill_sequences.iter().zip(followup_sequences).enumerate()
+        {
+            let upper_bound = fill_sequences
+                .get(index + 1)
+                .copied()
+                .unwrap_or(terminal_bound);
+            ensure!(
+                fill_seq < followup_seq && followup_seq < upper_bound,
+                "#789 {label} event for fill sequence {fill_seq} is outside its causal interval ({fill_seq}, {upper_bound})"
+            );
+        }
+        Ok(())
+    }
+
+    fn record_issue_789_semantic_identity(
+        seen: &mut Vec<(UUID4, &'static str)>,
+        identity: UUID4,
+        label: &'static str,
+    ) -> Result<()> {
+        if let Some((_, previous_label)) = seen.iter().find(|(seen, _)| *seen == identity) {
+            anyhow::bail!(
+                "duplicate {label} identity {identity} in #789 evidence; already used by {previous_label}"
+            );
+        }
+        seen.push((identity, label));
+        Ok(())
+    }
+
+    fn issue_789_submitted_order_trace(
+        command: &nautilus_common::messages::execution::SubmitOrder,
+        submitted: &nautilus_model::events::OrderSubmitted,
+    ) -> Result<crate::execution_contract::SubmittedOrderTrace> {
+        let initialized = &command.order_init;
+        ensure!(
+            command.trader_id == initialized.trader_id
+                && command.strategy_id == initialized.strategy_id
+                && command.instrument_id == initialized.instrument_id
+                && command.client_order_id == initialized.client_order_id
+                && command.exec_algorithm_id == initialized.exec_algorithm_id,
+            "#789 SubmitOrder envelope diverges from its embedded initialized-order semantics"
+        );
+        ensure!(
+            submitted.trader_id == initialized.trader_id
+                && submitted.strategy_id == initialized.strategy_id
+                && submitted.instrument_id == initialized.instrument_id
+                && submitted.client_order_id == initialized.client_order_id,
+            "#789 OrderSubmitted diverges from its causal SubmitOrder"
+        );
+        Ok(crate::execution_contract::SubmittedOrderTrace {
+            trader_id: initialized.trader_id,
+            strategy_id: initialized.strategy_id,
+            instrument_id: initialized.instrument_id,
+            client_order_id: initialized.client_order_id,
+            account_id: submitted.account_id,
+            order_side: initialized.order_side,
+            order_type: initialized.order_type,
+            quantity: initialized.quantity,
+            quote_quantity: initialized.quote_quantity,
+            post_only: initialized.post_only,
+            reconciliation: initialized.reconciliation,
+        })
+    }
+
+    fn issue_789_bind_normal_submission(
+        submit_seq: u64,
+        command: &nautilus_common::messages::execution::SubmitOrder,
+        initialized: Option<&(u64, nautilus_model::events::OrderInitialized)>,
+        submitted: Option<&(u64, nautilus_model::events::OrderSubmitted)>,
+        accepted: Option<&(u64, nautilus_model::events::OrderAccepted)>,
+        first_fill_seq: u64,
+    ) -> Result<(u64, crate::execution_contract::SubmittedOrderTrace)> {
+        let (initialized_seq, initialized) = initialized.with_context(|| {
+            format!(
+                "#789 normal order {} lacks OrderInitialized evidence",
+                command.client_order_id
+            )
+        })?;
+        let (submitted_seq, submitted) = submitted.with_context(|| {
+            format!(
+                "#789 normal order {} lacks OrderSubmitted evidence",
+                command.client_order_id
+            )
+        })?;
+        ensure!(
+            *initialized_seq < submit_seq
+                && submit_seq < *submitted_seq
+                && *submitted_seq < first_fill_seq,
+            "#789 normal order is outside its Initialized-to-SubmitOrder-to-Submitted-to-fill causal order"
+        );
+        ensure!(
+            initialized == &command.order_init,
+            "#789 OrderInitialized evidence diverges from its embedded SubmitOrder"
+        );
+        ensure!(
+            accepted.is_none(),
+            "#789 normal order {} has unexpected OrderAccepted evidence",
+            command.client_order_id
+        );
+        Ok((
+            *submitted_seq,
+            issue_789_submitted_order_trace(command, submitted)?,
+        ))
+    }
+
+    fn issue_789_quote_conversion_in_interval(
+        submit_seq: u64,
+        first_fill_seq: u64,
+        update: Option<&(u64, nautilus_model::events::OrderUpdated)>,
+    ) -> Result<Option<nautilus_model::events::OrderUpdated>> {
+        update
+            .map(|(update_seq, update)| {
+                ensure!(
+                    submit_seq < *update_seq && *update_seq < first_fill_seq,
+                    "#789 OrderUpdated is outside its SubmitOrder-to-fill causal interval"
+                );
+                Ok(*update)
+            })
+            .transpose()
+    }
+
+    fn record_issue_789_order_update(
+        updates: &mut BTreeMap<String, (u64, nautilus_model::events::OrderUpdated)>,
+        seq: u64,
+        event: nautilus_model::events::OrderUpdated,
+    ) -> Result<()> {
+        ensure!(
+            updates
+                .insert(event.client_order_id.to_string(), (seq, event))
+                .is_none(),
+            "duplicate OrderUpdated client-order identity in #789 event store"
+        );
+        Ok(())
+    }
+
+    fn validate_issue_789_book_domain(
+        instrument: &InstrumentAny,
+        deltas: &[OrderBookDelta],
+    ) -> Result<()> {
+        let instrument_id = instrument.id();
+        let price_increment = instrument.price_increment().as_decimal();
+        let size_increment = instrument.size_increment().as_decimal();
+        for (index, delta) in deltas.iter().enumerate() {
+            ensure!(
+                delta.instrument_id == instrument_id,
+                "#789 book delta {index} instrument {} diverges from {instrument_id}",
+                delta.instrument_id
+            );
+            if delta.action == BookAction::Clear {
+                continue;
+            }
+            ensure!(
+                matches!(delta.order.side, OrderSide::Buy | OrderSide::Sell),
+                "#789 non-Clear book delta {index} has no executable side"
+            );
+
+            let price = delta.order.price;
+            ensure!(
+                price.as_decimal() > Decimal::ZERO
+                    && price.precision == instrument.price_precision()
+                    && (price.as_decimal() % price_increment).is_zero(),
+                "#789 book delta {index} price {price} violates instrument precision/increment"
+            );
+            if let Some(min_price) = instrument.min_price() {
+                ensure!(
+                    price >= min_price,
+                    "#789 book delta {index} price {price} is below instrument minimum {min_price}"
+                );
+            }
+            if let Some(max_price) = instrument.max_price() {
+                ensure!(
+                    price <= max_price,
+                    "#789 book delta {index} price {price} exceeds instrument maximum {max_price}"
+                );
+            }
+
+            let size = delta.order.size;
+            ensure!(
+                size.precision == instrument.size_precision()
+                    && (size.as_decimal() % size_increment).is_zero(),
+                "#789 book delta {index} size {size} violates instrument precision/increment"
+            );
+            if matches!(delta.action, BookAction::Add | BookAction::Update) {
+                ensure!(
+                    size.as_decimal() > Decimal::ZERO,
+                    "#789 book delta {index} executable size must be positive"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_issue_789_venue_shape(venue: &ManifestVenueConfig) -> Result<()> {
+        ensure!(
+            venue.oms_type == "NETTING"
+                && venue.account_type == "CASH"
+                && venue.book_type == "L2_MBP"
+                && venue.liquidity_consumption
+                && !venue.use_market_order_acks
+                && venue.fill_model.is_none()
+                && venue.latency_model.is_none()
+                && venue.fee_model.is_none(),
+            "#789 lifecycle evidence is restricted to NETTING/CASH, L2 liquidity consumption, disabled market-order acknowledgements, and deterministic default fill/latency/fee models"
+        );
+        Ok(())
+    }
+
+    fn ensure_issue_789_binary_settlement_domain(
+        settlements: &[ManifestInstrumentSettlementInput],
+        up_instrument: &InstrumentAny,
+        down_instrument: &InstrumentAny,
+    ) -> Result<BTreeMap<InstrumentId, Price>> {
+        ensure!(
+            matches!(up_instrument, InstrumentAny::BinaryOption(_))
+                && matches!(down_instrument, InstrumentAny::BinaryOption(_)),
+            "#789 settlement projections must both be binary options"
+        );
+        let expected_instruments = BTreeMap::from([
+            (up_instrument.id(), up_instrument),
+            (down_instrument.id(), down_instrument),
+        ]);
+        let expected_ids = expected_instruments
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            expected_ids.len() == 2,
+            "#789 settlement projections must identify two distinct binary legs"
+        );
+        for instrument in expected_instruments.values() {
+            ensure!(
+                instrument.quote_currency() == instrument.settlement_currency(),
+                "#789 projected binary instrument {} has divergent quote and settlement currencies",
+                instrument.id()
+            );
+            ensure!(
+                instrument.taker_fee().is_zero(),
+                "#789 projected binary instrument {} must have zero taker fee before NT runs",
+                instrument.id()
+            );
+        }
+        ensure!(
+            up_instrument.settlement_currency() == down_instrument.settlement_currency(),
+            "#789 projected binary legs must share one lifecycle currency"
+        );
+        let mut bound = BTreeMap::new();
+        let mut payoffs = BTreeSet::new();
+        for settlement in settlements {
+            let instrument_id = InstrumentId::from_str(&settlement.nt_instrument_id)
+                .map_err(|error| anyhow::anyhow!(error))
+                .context("parse #789 binary settlement instrument")?;
+            ensure!(
+                expected_ids.contains(&instrument_id),
+                "#789 settlement instrument {instrument_id} is not one of the two projected binary legs"
+            );
+            let instrument = expected_instruments
+                .get(&instrument_id)
+                .context("resolve #789 projected settlement instrument")?;
+            ensure!(
+                settlement.settlement_currency == instrument.settlement_currency().to_string(),
+                "#789 settlement instrument {instrument_id} currency {} differs from instrument currency {}",
+                settlement.settlement_currency,
+                instrument.settlement_currency()
+            );
+            let payoff = Decimal::from_str(&settlement.close_price)
+                .context("parse #789 binary settlement payoff")?;
+            ensure!(
+                payoff == Decimal::ZERO || payoff == Decimal::ONE,
+                "#789 binary settlement payoff must be exactly 0 or 1"
+            );
+            let price = Price::from_str(&settlement.close_price)
+                .map_err(|error| anyhow::anyhow!(error))
+                .context("parse #789 binary settlement price")?;
+            ensure!(
+                price.precision == settlement.price_precision,
+                "#789 binary settlement price precision diverges from its declaration"
+            );
+            ensure!(
+                bound.insert(instrument_id, price).is_none(),
+                "#789 binary settlement contains a duplicate projected leg"
+            );
+            payoffs.insert(payoff);
+        }
+        ensure!(
+            bound.keys().copied().collect::<BTreeSet<_>>() == expected_ids,
+            "#789 binary settlement must exactly cover both projected legs"
+        );
+        ensure!(
+            payoffs == BTreeSet::from([Decimal::ZERO, Decimal::ONE]),
+            "#789 paired binary settlements must contain complementary 0 and 1 payoffs"
+        );
+        Ok(bound)
+    }
+
+    fn issue_789_terminal_position<'a>(
+        positions: &'a [Position],
+        instrument_id: InstrumentId,
+    ) -> Result<&'a Position> {
+        ensure!(
+            positions.len() == 1 && positions[0].instrument_id == instrument_id,
+            "issue #789 requires exactly one terminal position for {instrument_id}, got {} total",
+            positions.len()
+        );
+        let position = &positions[0];
+        ensure!(
+            position.is_closed()
+                && position.side == PositionSide::Flat
+                && position.quantity.is_zero()
+                && position.signed_decimal_qty().is_zero(),
+            "issue #789 terminal position must be closed, flat, and zero quantity"
+        );
+        Ok(position)
+    }
+
+    fn ensure_issue_789_terminal_position_matches(
+        position: &Position,
+        configured_account_id: AccountId,
+        expected_position_id: PositionId,
+        fills: &[nautilus_model::events::OrderFilled],
+    ) -> Result<()> {
+        let first_fill = fills
+            .first()
+            .context("#789 terminal position has no causal entry fill")?;
+        let last_fill = fills
+            .last()
+            .context("#789 terminal position has no causal settlement fill")?;
+        let expected_fills = fills.iter().map(issue_789_proof_fill).collect::<Vec<_>>();
+        let terminal_fills = position
+            .events
+            .iter()
+            .map(issue_789_proof_fill)
+            .collect::<Vec<_>>();
+        let replay_fills = position
+            .replay_events
+            .iter()
+            .map(|event| match event {
+                PositionReplayEvent::Filled(fill) => Ok(issue_789_proof_fill(fill)),
+                PositionReplayEvent::Adjusted(_) => {
+                    bail!("terminal position replay contains an unsupported adjustment")
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let expected_trade_ids = fills
+            .iter()
+            .map(|fill| fill.trade_id)
+            .collect::<BTreeSet<_>>();
+        let expected_commissions = issue_789_commission_projection(fills)?;
+        let mut terminal_commissions = position
+            .commissions
+            .iter()
+            .map(|(currency, money)| (*currency, *money))
+            .collect::<Vec<_>>();
+        terminal_commissions.sort_by_key(|(currency, _)| currency.to_string());
+
+        ensure!(
+            position.trader_id == first_fill.trader_id
+                && position.strategy_id == first_fill.strategy_id
+                && position.instrument_id == first_fill.instrument_id
+                && position.id == expected_position_id
+                && position.account_id == configured_account_id
+                && position.opening_order_id == first_fill.client_order_id
+                && position.closing_order_id == Some(last_fill.client_order_id)
+                && position.entry == first_fill.order_side,
+            "terminal position causal identity diverges from the lifecycle evidence"
+        );
+        ensure!(
+            position.events.iter().all(|fill| {
+                fill.position_id == Some(expected_position_id)
+                    && fill.account_id == configured_account_id
+            }) && terminal_fills == expected_fills
+                && replay_fills == expected_fills
+                && position.trade_ids.len() == expected_trade_ids.len()
+                && expected_trade_ids
+                    .iter()
+                    .all(|trade_id| position.trade_ids.contains(trade_id)),
+            "terminal position fills or trade identities diverge from causal evidence"
+        );
+        ensure!(
+            position
+                .commissions
+                .iter()
+                .all(|(currency, money)| *currency == money.currency)
+                && terminal_commissions == expected_commissions,
+            "terminal position keyed commissions diverge from causal fill commissions"
+        );
+        ensure!(
+            position.adjustments.is_empty() && position.fill_voids.is_empty(),
+            "terminal position contains unsupported adjustment or fill-void state"
+        );
+        ensure!(
+            position.is_closed()
+                && position.side == PositionSide::Flat
+                && position.quantity.is_zero()
+                && position.signed_decimal_qty().is_zero(),
+            "issue #789 terminal position must be closed, flat, and zero quantity"
+        );
+        Ok(())
+    }
+
+    fn ensure_issue_789_payload_type_is_admitted(payload_type: &str) -> Result<()> {
+        ensure!(
+            matches!(
+                payload_type,
+                "RunStarted"
+                    | "RunEnded"
+                    | "SubscribeCommand"
+                    | "UnsubscribeCommand"
+                    | "TimeEvent"
+                    | "SubmitOrder"
+                    | "OrderInitialized"
+                    | "OrderSubmitted"
+                    | "OrderAccepted"
+                    | "OrderUpdated"
+                    | "OrderFilled"
+                    | "InstrumentClose"
+                    | "AccountState"
+                    | "PositionOpened"
+                    | "PositionChanged"
+                    | "PositionClosed"
+            ),
+            "#789 event store contains unsupported payload type {payload_type:?}"
+        );
+        Ok(())
+    }
+
+    fn ensure_issue_789_run_envelope(entries: &[(u64, &str)]) -> Result<()> {
+        let started = entries
+            .iter()
+            .filter(|(_, payload_type)| *payload_type == "RunStarted")
+            .count();
+        let ended = entries
+            .iter()
+            .filter(|(_, payload_type)| *payload_type == "RunEnded")
+            .count();
+        ensure!(
+            started == 1 && ended == 1,
+            "#789 sealed stream requires exactly one RunStarted and one RunEnded envelope"
+        );
+        ensure!(
+            entries.first().map(|(_, payload_type)| *payload_type) == Some("RunStarted")
+                && entries.last().map(|(_, payload_type)| *payload_type) == Some("RunEnded"),
+            "#789 store lifecycle envelopes do not bound the complete sealed stream"
+        );
+        Ok(())
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    fn ensure_issue_789_settlement_witness(
+        client_order_id: &str,
+        first_fill_seq: u64,
+        fills: &[nautilus_model::events::OrderFilled],
+        close_seq: u64,
+        close: &nautilus_model::data::InstrumentClose,
+        initialized: Option<&(u64, nautilus_model::events::OrderInitialized)>,
+        submitted: Option<&(u64, nautilus_model::events::OrderSubmitted)>,
+        accepted: Option<&(u64, nautilus_model::events::OrderAccepted)>,
+    ) -> Result<()> {
+        let first_fill = fills
+            .first()
+            .with_context(|| format!("#789 settlement order {client_order_id} has no fills"))?;
+        ensure!(
+            close.close_type == InstrumentCloseType::ContractExpired
+                && close.instrument_id == first_fill.instrument_id
+                && close_seq > first_fill_seq,
+            "#789 settlement fill is not followed by its ContractExpired receipt"
+        );
+        let (initialized_seq, initialized) = initialized.with_context(|| {
+            format!(
+                "#789 fill {client_order_id} lacks synthetic expiration OrderInitialized evidence"
+            )
+        })?;
+        let (accepted_seq, accepted) = accepted.with_context(|| {
+            format!("#789 fill {client_order_id} lacks synthetic expiration OrderAccepted evidence")
+        })?;
+        ensure!(
+            submitted.is_none(),
+            "#789 synthetic expiration order {client_order_id} must not have a normal OrderSubmitted path"
+        );
+        ensure!(
+            *initialized_seq < *accepted_seq
+                && *accepted_seq < first_fill_seq
+                && first_fill_seq < close_seq,
+            "#789 synthetic expiration lifecycle is not ordered Initialized -> Accepted -> Filled -> ContractExpired receipt"
+        );
+        let expiration_prefix = format!("EXPIRATION-{}-", first_fill.instrument_id.venue);
+        let expiration_suffix = client_order_id
+            .strip_prefix(&expiration_prefix)
+            .with_context(|| {
+                format!(
+                    "#789 settlement client order ID {client_order_id} lacks prefix {expiration_prefix}"
+                )
+            })?;
+        UUID4::from_str(expiration_suffix)
+            .map_err(anyhow::Error::msg)
+            .context("#789 settlement client order ID suffix is not a UUID4")?;
+        let expected_tag = format!("EXPIRATION_{}_CLOSE", first_fill.instrument_id.venue);
+        let filled_quantity = fills
+            .iter()
+            .map(|fill| fill.last_qty.as_decimal())
+            .sum::<Decimal>();
+        ensure!(
+            initialized.client_order_id == first_fill.client_order_id
+                && initialized.instrument_id == first_fill.instrument_id
+                && initialized.trader_id == first_fill.trader_id
+                && initialized.strategy_id == first_fill.strategy_id
+                && initialized.order_side == first_fill.order_side
+                && initialized.order_type == nautilus_model::enums::OrderType::Market
+                && initialized.time_in_force == nautilus_model::enums::TimeInForce::Gtc
+                && initialized.quantity.as_decimal() == filled_quantity
+                && initialized.quantity.precision == first_fill.last_qty.precision
+                && initialized.reduce_only
+                && !initialized.post_only
+                && !initialized.quote_quantity
+                && !initialized.reconciliation
+                && initialized.price.is_none()
+                && initialized.activation_price.is_none()
+                && initialized.trigger_price.is_none()
+                && initialized.trigger_type == Some(nautilus_model::enums::TriggerType::NoTrigger)
+                && initialized.limit_offset.is_none()
+                && initialized.trailing_offset.is_none()
+                && initialized.trailing_offset_type.is_none()
+                && initialized.expire_time.is_none()
+                && initialized.display_qty.is_none()
+                && initialized.emulation_trigger.is_none()
+                && initialized.trigger_instrument_id.is_none()
+                && initialized.contingency_type.is_none()
+                && initialized.order_list_id.is_none()
+                && initialized.linked_order_ids.is_none()
+                && initialized.parent_order_id.is_none()
+                && initialized.exec_algorithm_id.is_none()
+                && initialized.exec_algorithm_params.is_none()
+                && initialized.exec_spawn_id.is_none()
+                && initialized
+                    .tags
+                    .as_ref()
+                    .is_some_and(|tags| { tags.len() == 1 && tags[0].as_str() == expected_tag }),
+            "#789 fill {client_order_id} does not match the pinned synthetic expiration OrderInitialized shape"
+        );
+        ensure!(
+            accepted.client_order_id == first_fill.client_order_id
+                && accepted.instrument_id == first_fill.instrument_id
+                && accepted.trader_id == first_fill.trader_id
+                && accepted.strategy_id == first_fill.strategy_id
+                && accepted.account_id == first_fill.account_id
+                && accepted.venue_order_id == first_fill.venue_order_id
+                && !accepted.reconciliation,
+            "#789 fill {client_order_id} does not match its synthetic expiration OrderAccepted evidence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn issue_789_rejects_reused_position_event_identity() {
+        let identity = UUID4::new();
+        let mut seen = Vec::new();
+        record_issue_789_semantic_identity(&mut seen, identity, "PositionOpened")
+            .expect("first position event identity is unique");
+
+        let error = record_issue_789_semantic_identity(&mut seen, identity, "PositionChanged")
+            .expect_err("position event identities must be globally unique");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate PositionChanged identity")
+        );
+    }
+
+    fn test_issue_789_submit_order() -> nautilus_common::messages::execution::SubmitOrder {
+        let initialized =
+            nautilus_model::events::order::spec::OrderInitializedSpec::builder().build();
+        nautilus_common::messages::execution::SubmitOrder::new(
+            initialized.trader_id,
+            None,
+            initialized.strategy_id,
+            initialized.instrument_id,
+            initialized.client_order_id,
+            initialized,
+            None,
+            None,
+            None,
+            UUID4::new(),
+            UnixNanos::default(),
+            None,
+        )
+    }
+
+    fn test_issue_789_order_submitted(
+        command: &nautilus_common::messages::execution::SubmitOrder,
+    ) -> nautilus_model::events::OrderSubmitted {
+        nautilus_model::events::OrderSubmitted::new(
+            command.trader_id,
+            command.strategy_id,
+            command.instrument_id,
+            command.client_order_id,
+            AccountId::from("POLYMARKET-001"),
+            UUID4::new(),
+            UnixNanos::default(),
+            UnixNanos::default(),
+        )
+    }
+
+    #[test]
+    fn issue_789_rejects_submit_envelope_identity_drift() {
+        let mut command = test_issue_789_submit_order();
+        let submitted = test_issue_789_order_submitted(&command);
+        command.strategy_id = nautilus_model::identifiers::StrategyId::from("OTHER-001");
+
+        let error = issue_789_submitted_order_trace(&command, &submitted)
+            .expect_err("SubmitOrder envelope drift must fail closed");
+        assert!(error.to_string().contains("envelope diverges"));
+    }
+
+    #[test]
+    fn issue_789_rejects_embedded_submit_identity_drift() {
+        let mut command = test_issue_789_submit_order();
+        let submitted = test_issue_789_order_submitted(&command);
+        command.order_init.instrument_id = InstrumentId::from("OTHER.POLYMARKET");
+
+        let error = issue_789_submitted_order_trace(&command, &submitted)
+            .expect_err("embedded initialized-order drift must fail closed");
+        assert!(error.to_string().contains("envelope diverges"));
+    }
+
+    #[test]
+    fn issue_789_normal_submission_binding_rejects_missing_and_reordered_evidence() {
+        let command = test_issue_789_submit_order();
+        let submitted = test_issue_789_order_submitted(&command);
+        let initialized = command.order_init.clone();
+
+        let missing_initialized =
+            issue_789_bind_normal_submission(10, &command, None, Some(&(15, submitted)), None, 20)
+                .expect_err("a normal order requires OrderInitialized evidence");
+        assert!(
+            missing_initialized
+                .to_string()
+                .contains("lacks OrderInitialized")
+        );
+
+        let missing_submitted = issue_789_bind_normal_submission(
+            10,
+            &command,
+            Some(&(5, initialized.clone())),
+            None,
+            None,
+            20,
+        )
+        .expect_err("a normal order requires OrderSubmitted evidence");
+        assert!(
+            missing_submitted
+                .to_string()
+                .contains("lacks OrderSubmitted")
+        );
+
+        let reordered_initialized = issue_789_bind_normal_submission(
+            10,
+            &command,
+            Some(&(10, initialized.clone())),
+            Some(&(15, submitted)),
+            None,
+            20,
+        )
+        .expect_err("OrderInitialized must precede SubmitOrder");
+        assert!(reordered_initialized.to_string().contains("causal order"));
+
+        for submitted_seq in [10, 20] {
+            let error = issue_789_bind_normal_submission(
+                10,
+                &command,
+                Some(&(5, initialized.clone())),
+                Some(&(submitted_seq, submitted)),
+                None,
+                20,
+            )
+            .expect_err("OrderSubmitted must remain inside its causal interval");
+            assert!(error.to_string().contains("causal order"));
+        }
+    }
+
+    fn ensure_issue_789_order_event_sets(
+        normal_order_ids: &BTreeSet<String>,
+        settlement_order_ids: &BTreeSet<String>,
+        submit_command_ids: &BTreeSet<String>,
+        submitted_event_ids: &BTreeSet<String>,
+        accepted_event_ids: &BTreeSet<String>,
+        initialized_event_ids: &BTreeSet<String>,
+        updated_event_ids: &BTreeSet<String>,
+    ) -> Result<()> {
+        let all_order_ids = normal_order_ids
+            .union(settlement_order_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        ensure!(
+            submit_command_ids == normal_order_ids && submitted_event_ids == normal_order_ids,
+            "#789 normal SubmitOrder, OrderSubmitted, and fill identities are not complete in both directions"
+        );
+        ensure!(
+            accepted_event_ids == settlement_order_ids,
+            "#789 OrderAccepted evidence does not exactly identify the synthetic settlement"
+        );
+        ensure!(
+            initialized_event_ids == &all_order_ids,
+            "#789 OrderInitialized evidence is missing or unrelated to the frozen lifecycle"
+        );
+        ensure!(
+            updated_event_ids.is_subset(normal_order_ids),
+            "#789 OrderUpdated evidence is not bound to a normal submitted order"
+        );
+        Ok(())
+    }
+
+    fn ensure_issue_789_instrument_close_set(
+        closes: &[(u64, InstrumentClose)],
+        expected: &BTreeMap<InstrumentId, Price>,
+    ) -> Result<()> {
+        ensure!(
+            closes.len() == expected.len()
+                && closes.iter().all(|(_, close)| {
+                    close.close_type == InstrumentCloseType::ContractExpired
+                        && expected.get(&close.instrument_id) == Some(&close.close_price)
+                })
+                && closes
+                    .iter()
+                    .map(|(_, close)| close.instrument_id)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == closes.len(),
+            "#789 InstrumentClose evidence does not exactly match configured binary settlements"
+        );
+        Ok(())
+    }
+
+    fn group_issue_789_fills(
+        sequenced_fills: Vec<(u64, nautilus_model::events::OrderFilled)>,
+    ) -> Result<Vec<(String, u64, Vec<nautilus_model::events::OrderFilled>)>> {
+        let mut grouped = Vec::<(String, u64, Vec<nautilus_model::events::OrderFilled>)>::new();
+        for (seq, fill) in sequenced_fills {
+            let client_order_id = fill.client_order_id.to_string();
+            match grouped.last_mut() {
+                Some((current_id, _, fills)) if *current_id == client_order_id => fills.push(fill),
+                Some((_, _, _)) => {
+                    ensure!(
+                        !grouped
+                            .iter()
+                            .any(|(existing, _, _)| *existing == client_order_id),
+                        "#789 event store contains a non-contiguous order fill sequence"
+                    );
+                    grouped.push((client_order_id, seq, vec![fill]));
+                }
+                None => grouped.push((client_order_id, seq, vec![fill])),
+            }
+        }
+        Ok(grouped)
+    }
+
+    #[test]
+    fn issue_789_normal_submission_binding_rejects_identity_drift_and_acceptance() {
+        let command = test_issue_789_submit_order();
+        let mut submitted = test_issue_789_order_submitted(&command);
+        submitted.strategy_id = nautilus_model::identifiers::StrategyId::from("OTHER-001");
+        let drift = issue_789_bind_normal_submission(
+            10,
+            &command,
+            Some(&(5, command.order_init.clone())),
+            Some(&(15, submitted)),
+            None,
+            20,
+        )
+        .expect_err("OrderSubmitted identity drift must fail closed");
+        assert!(drift.to_string().contains("OrderSubmitted diverges"));
+
+        let submitted = test_issue_789_order_submitted(&command);
+        let accepted = nautilus_model::events::order::spec::OrderAcceptedSpec::builder().build();
+        let unexpected = issue_789_bind_normal_submission(
+            10,
+            &command,
+            Some(&(5, command.order_init.clone())),
+            Some(&(15, submitted)),
+            Some(&(16, accepted)),
+            20,
+        )
+        .expect_err("market-order acknowledgements are outside the frozen #789 shape");
+        assert!(unexpected.to_string().contains("unexpected OrderAccepted"));
+    }
+
+    #[test]
+    fn issue_789_quote_conversion_requires_submit_to_fill_interval() {
+        let update = nautilus_model::events::order::spec::OrderUpdatedSpec::builder().build();
+        for update_seq in [9, 20] {
+            let error = issue_789_quote_conversion_in_interval(10, 20, Some(&(update_seq, update)))
+                .expect_err("quote conversion outside the causal interval must fail closed");
+            assert!(error.to_string().contains("causal interval"));
+        }
+    }
+
+    #[test]
+    fn issue_789_quote_conversion_accepts_causal_interval() {
+        let update = nautilus_model::events::order::spec::OrderUpdatedSpec::builder().build();
+        let bound = issue_789_quote_conversion_in_interval(10, 20, Some(&(15, update)))
+            .expect("quote conversion inside the causal interval must bind")
+            .expect("quote conversion must be retained");
+        assert_eq!(bound.event_id, update.event_id);
+    }
+
+    #[test]
+    fn issue_789_rejects_duplicate_quote_conversion_witnesses() {
+        let first = nautilus_model::events::order::spec::OrderUpdatedSpec::builder().build();
+        let mut second = first;
+        second.event_id = UUID4::new();
+        let mut updates = BTreeMap::new();
+        record_issue_789_order_update(&mut updates, 10, first)
+            .expect("first quote-conversion witness must be recorded");
+        let error = record_issue_789_order_update(&mut updates, 11, second)
+            .expect_err("a second witness for one order must fail closed");
+        assert!(error.to_string().contains("duplicate OrderUpdated"));
+    }
+
+    fn issue_789_admission_delta(
+        instrument_id: InstrumentId,
+        action: BookAction,
+        price: &str,
+        size: &str,
+    ) -> OrderBookDelta {
+        OrderBookDelta {
+            instrument_id,
+            action,
+            order: BookOrder::new(OrderSide::Buy, Price::from(price), Quantity::from(size), 1),
+            flags: 0,
+            sequence: 0,
+            ts_event: UnixNanos::from(1),
+            ts_init: UnixNanos::from(1),
+        }
+    }
+
+    fn issue_789_admission_instrument() -> InstrumentAny {
+        let mut instrument = nautilus_model::instruments::stubs::binary_option();
+        instrument.min_price = Some(Price::from("0.001"));
+        instrument.max_price = Some(Price::from("0.999"));
+        InstrumentAny::BinaryOption(instrument)
+    }
+
+    #[test]
+    fn issue_789_static_admission_rejects_invalid_executable_book_values() {
+        let instrument = issue_789_admission_instrument();
+        let instrument_id = instrument.id();
+        let mutations = [
+            (
+                "zero price",
+                issue_789_admission_delta(instrument_id, BookAction::Add, "0.000", "1.00"),
+            ),
+            (
+                "out-of-range price",
+                issue_789_admission_delta(instrument_id, BookAction::Add, "1.500", "1.00"),
+            ),
+            (
+                "price precision",
+                issue_789_admission_delta(instrument_id, BookAction::Add, "0.4210", "1.00"),
+            ),
+            (
+                "size precision",
+                issue_789_admission_delta(instrument_id, BookAction::Add, "0.421", "0.001"),
+            ),
+        ];
+        for (label, delta) in mutations {
+            assert!(
+                validate_issue_789_book_domain(&instrument, std::slice::from_ref(&delta)).is_err(),
+                "{label} must fail before NT runs"
+            );
+        }
+    }
+
+    #[test]
+    fn issue_789_static_admission_accepts_structural_clear_and_zero_size_delete() {
+        let instrument = issue_789_admission_instrument();
+        let instrument_id = instrument.id();
+        let deltas = [
+            OrderBookDelta::clear(instrument_id, 0, UnixNanos::from(1), UnixNanos::from(1)),
+            issue_789_admission_delta(instrument_id, BookAction::Delete, "0.421", "0.00"),
+        ];
+        validate_issue_789_book_domain(&instrument, &deltas)
+            .expect("structural clear and zero-size delete must remain admissible");
+    }
+
+    #[test]
+    fn issue_789_binary_settlement_requires_payoff_endpoints() {
+        let settlement = |close_price: &str| ManifestInstrumentSettlementInput {
+            nt_instrument_id: "YES.POLYMARKET".to_string(),
+            close_price: close_price.to_string(),
+            price_precision: 3,
+            ts_event_ns: 1,
+            ts_init_ns: 1,
+            settlement_currency: "USDC".to_string(),
+        };
+
+        let mut yes = nautilus_model::instruments::stubs::binary_option();
+        yes.id = InstrumentId::from("YES.POLYMARKET");
+        let mut no = yes.clone();
+        no.id = InstrumentId::from("NO.POLYMARKET");
+        let yes = InstrumentAny::BinaryOption(yes);
+        let no = InstrumentAny::BinaryOption(no);
+
+        ensure_issue_789_binary_settlement_domain(
+            &[settlement("0.000"), {
+                let mut row = settlement("1.000");
+                row.nt_instrument_id = "NO.POLYMARKET".to_string();
+                row
+            }],
+            &yes,
+            &no,
+        )
+        .expect("binary settlement endpoints must be admitted");
+        ensure_issue_789_binary_settlement_domain(&[settlement("0.500")], &yes, &no)
+            .expect_err("a fractional binary payoff must fail closed");
+
+        for invalid in [
+            vec![settlement("0.000")],
+            vec![settlement("0.000"), settlement("1.000")],
+            vec![settlement("0.000"), {
+                let mut row = settlement("1.000");
+                row.nt_instrument_id = "OTHER.POLYMARKET".to_string();
+                row
+            }],
+            vec![settlement("1.000"), {
+                let mut row = settlement("1.000");
+                row.nt_instrument_id = "NO.POLYMARKET".to_string();
+                row
+            }],
+        ] {
+            ensure_issue_789_binary_settlement_domain(&invalid, &yes, &no)
+                .expect_err("missing, duplicate, unrelated, or non-complementary legs must fail");
+        }
+    }
+
+    #[test]
+    fn issue_789_binary_settlement_rejects_currency_drift_for_each_leg() {
+        let mut yes = nautilus_model::instruments::stubs::binary_option();
+        yes.id = InstrumentId::from("YES.POLYMARKET");
+        let mut no = yes.clone();
+        no.id = InstrumentId::from("NO.POLYMARKET");
+        let yes = InstrumentAny::BinaryOption(yes);
+        let no = InstrumentAny::BinaryOption(no);
+        let settlements = [
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: yes.id().to_string(),
+                close_price: "0.000".to_string(),
+                price_precision: 3,
+                ts_event_ns: 1,
+                ts_init_ns: 1,
+                settlement_currency: yes.settlement_currency().to_string(),
+            },
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: no.id().to_string(),
+                close_price: "1.000".to_string(),
+                price_precision: 3,
+                ts_event_ns: 1,
+                ts_init_ns: 1,
+                settlement_currency: no.settlement_currency().to_string(),
+            },
+        ];
+
+        for index in 0..settlements.len() {
+            let mut drifted = settlements.clone();
+            drifted[index].settlement_currency = "EUR".to_string();
+            let error = ensure_issue_789_binary_settlement_domain(&drifted, &yes, &no)
+                .expect_err("each settlement row must use its instrument currency");
+            assert!(error.to_string().contains("instrument currency"));
+        }
+    }
+
+    #[test]
+    fn issue_789_binary_settlement_rejects_correlated_instrument_currency_drift() {
+        let mut yes = nautilus_model::instruments::stubs::binary_option();
+        yes.id = InstrumentId::from("YES.POLYMARKET");
+        let mut no = yes.clone();
+        no.id = InstrumentId::from("NO.POLYMARKET");
+
+        for mutate_yes in [true, false] {
+            let mut drifted_yes = yes.clone();
+            let mut drifted_no = no.clone();
+            let drifted_id = if mutate_yes {
+                drifted_yes.currency = Currency::EUR();
+                drifted_yes.id
+            } else {
+                drifted_no.currency = Currency::EUR();
+                drifted_no.id
+            };
+            let settlements = [
+                ManifestInstrumentSettlementInput {
+                    nt_instrument_id: drifted_yes.id.to_string(),
+                    close_price: "0.000".to_string(),
+                    price_precision: 3,
+                    ts_event_ns: 1,
+                    ts_init_ns: 1,
+                    settlement_currency: drifted_yes.currency.to_string(),
+                },
+                ManifestInstrumentSettlementInput {
+                    nt_instrument_id: drifted_no.id.to_string(),
+                    close_price: "1.000".to_string(),
+                    price_precision: 3,
+                    ts_event_ns: 1,
+                    ts_init_ns: 1,
+                    settlement_currency: drifted_no.currency.to_string(),
+                },
+            ];
+
+            let error = ensure_issue_789_binary_settlement_domain(
+                &settlements,
+                &InstrumentAny::BinaryOption(drifted_yes),
+                &InstrumentAny::BinaryOption(drifted_no),
+            )
+            .expect_err("both projected legs must share one lifecycle currency");
+            assert!(error.to_string().contains("one lifecycle currency"));
+            assert!(settlements.iter().any(|row| {
+                row.nt_instrument_id == drifted_id.to_string()
+                    && row.settlement_currency == Currency::EUR().to_string()
+            }));
+        }
+    }
+
+    #[test]
+    fn issue_789_binary_settlement_rejects_nonzero_taker_fee_for_each_leg() {
+        let mut yes = nautilus_model::instruments::stubs::binary_option();
+        yes.id = InstrumentId::from("YES.POLYMARKET");
+        let mut no = yes.clone();
+        no.id = InstrumentId::from("NO.POLYMARKET");
+        let settlements = [
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: yes.id.to_string(),
+                close_price: "0.000".to_string(),
+                price_precision: 3,
+                ts_event_ns: 1,
+                ts_init_ns: 1,
+                settlement_currency: yes.currency.to_string(),
+            },
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: no.id.to_string(),
+                close_price: "1.000".to_string(),
+                price_precision: 3,
+                ts_event_ns: 1,
+                ts_init_ns: 1,
+                settlement_currency: no.currency.to_string(),
+            },
+        ];
+
+        for mutate_yes in [true, false] {
+            let mut drifted_yes = yes.clone();
+            let mut drifted_no = no.clone();
+            if mutate_yes {
+                drifted_yes.taker_fee = Decimal::new(1, 2);
+            } else {
+                drifted_no.taker_fee = Decimal::new(1, 2);
+            }
+            let error = ensure_issue_789_binary_settlement_domain(
+                &settlements,
+                &InstrumentAny::BinaryOption(drifted_yes),
+                &InstrumentAny::BinaryOption(drifted_no),
+            )
+            .expect_err("both projected legs must have zero taker fees before NT runs");
+            assert!(error.to_string().contains("zero taker fee"));
+        }
+    }
+
+    #[test]
+    fn issue_789_terminal_position_requires_complete_closed_flat_projection() {
+        let instrument = issue_789_admission_instrument();
+        let instrument_id = instrument.id();
+        let mut fill = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
+        fill.instrument_id = instrument_id;
+        fill.position_id = Some(PositionId::from("P-789"));
+        fill.commission = Some(Money::from("0.00 USD"));
+        let mut closed = Position::new(&instrument, fill.clone());
+        closed.side = PositionSide::Flat;
+        closed.quantity = Quantity::zero(instrument.size_precision());
+        closed.signed_qty = 0.0;
+        closed.ts_closed = Some(UnixNanos::from(2));
+        closed.closing_order_id = Some(fill.client_order_id);
+
+        issue_789_terminal_position(std::slice::from_ref(&closed), instrument_id)
+            .expect("one closed flat terminal position must be admitted");
+        ensure_issue_789_terminal_position_matches(
+            &closed,
+            fill.account_id,
+            PositionId::from("P-789"),
+            std::slice::from_ref(&fill),
+        )
+        .expect("finite terminal position projection must match causal evidence");
+
+        let mutations: Vec<Box<dyn Fn(&mut Position)>> = vec![
+            Box::new(|position| position.trader_id = TraderId::from("OTHER-001")),
+            Box::new(|position| position.strategy_id = StrategyId::from("OTHER-001")),
+            Box::new(|position| position.opening_order_id = ClientOrderId::from("OTHER-001")),
+            Box::new(|position| position.closing_order_id = Some(ClientOrderId::from("OTHER-001"))),
+            Box::new(|position| position.entry = OrderSide::Sell),
+            Box::new(|position| position.trade_ids.clear()),
+            Box::new(|position| position.events[0].last_px = Price::from("0.990")),
+            Box::new(|position| {
+                let money = *position
+                    .commissions
+                    .values()
+                    .next()
+                    .expect("test commission");
+                position.commissions.clear();
+                position.commissions.insert(Currency::EUR(), money);
+            }),
+            Box::new(|position| {
+                position.adjustments.push(PositionAdjusted::new(
+                    position.trader_id,
+                    position.strategy_id,
+                    position.instrument_id,
+                    position.id,
+                    position.account_id,
+                    PositionAdjustmentType::Funding,
+                    None,
+                    None,
+                    None,
+                    UUID4::new(),
+                    UnixNanos::from(3),
+                    UnixNanos::from(3),
+                ));
+            }),
+            Box::new(|position| {
+                position
+                    .replay_events
+                    .push(PositionReplayEvent::Filled(position.events[0].clone()));
+            }),
+            Box::new(|position| {
+                position.fill_voids.push(PositionFillVoid {
+                    event: nautilus_model::events::order::spec::OrderFillVoidedSpec::builder()
+                        .build(),
+                    voided_qty: Quantity::from("1.00"),
+                    commission_voided: None,
+                });
+            }),
+        ];
+        for mutate in mutations {
+            let mut candidate = closed.clone();
+            mutate(&mut candidate);
+            ensure_issue_789_terminal_position_matches(
+                &candidate,
+                fill.account_id,
+                PositionId::from("P-789"),
+                std::slice::from_ref(&fill),
+            )
+            .expect_err("terminal position projection drift must fail closed");
+        }
+
+        let mut nonflat = closed.clone();
+        nonflat.side = PositionSide::Long;
+        nonflat.quantity = Quantity::from("1.00");
+        nonflat.signed_qty = 1.0;
+        nonflat.ts_closed = None;
+        issue_789_terminal_position(&[nonflat], instrument_id)
+            .expect_err("a nonflat terminal position must fail closed");
+
+        let mut unrelated = closed.clone();
+        unrelated.instrument_id = InstrumentId::from("OTHER.POLYMARKET");
+        issue_789_terminal_position(&[closed, unrelated], instrument_id)
+            .expect_err("an extra terminal position must fail closed");
+    }
+
+    #[test]
+    fn issue_789_static_admission_rejects_correct_precision_wrong_increment() {
+        let mut instrument = nautilus_model::instruments::stubs::binary_option();
+        instrument.price_increment = Price::from("0.002");
+        instrument.size_increment = Quantity::from("0.02");
+        instrument.min_price = Some(Price::from("0.001"));
+        instrument.max_price = Some(Price::from("0.999"));
+        let instrument = InstrumentAny::BinaryOption(instrument);
+        let instrument_id = instrument.id();
+
+        for delta in [
+            issue_789_admission_delta(instrument_id, BookAction::Add, "0.421", "1.00"),
+            issue_789_admission_delta(instrument_id, BookAction::Add, "0.420", "1.01"),
+        ] {
+            validate_issue_789_book_domain(&instrument, &[delta])
+                .expect_err("correct precision with wrong increment must fail before NT runs");
+        }
+    }
+
+    #[test]
+    fn issue_789_static_admission_rejects_unsupported_run_shape() {
+        let mut venue = issue_789_venue("POLYMARKET", "pUSD", "L2_MBP", true, true);
+        ensure_issue_789_venue_shape(&venue).expect("declared #789 venue shape must be admitted");
+
+        venue.oms_type = "HEDGING".to_string();
+        let error = ensure_issue_789_venue_shape(&venue)
+            .expect_err("unsupported run shape must fail before NT runs");
+        assert!(error.to_string().contains("restricted to NETTING/CASH"));
+    }
+
+    #[test]
+    fn issue_789_static_admission_rejects_market_order_acknowledgements() {
+        let mut venue = issue_789_venue("POLYMARKET", "pUSD", "L2_MBP", true, true);
+        venue.use_market_order_acks = true;
+
+        let error = ensure_issue_789_venue_shape(&venue)
+            .expect_err("market-order acknowledgements change the frozen normal-order grammar");
+        assert!(error.to_string().contains("market-order acknowledgements"));
+    }
+
+    #[test]
+    fn issue_789_static_admission_rejects_no_side_non_clear_delta() {
+        let instrument = issue_789_admission_instrument();
+        let mut delta =
+            issue_789_admission_delta(instrument.id(), BookAction::Update, "0.421", "1.00");
+        delta.order.side = OrderSide::NoOrderSide;
+
+        let error = validate_issue_789_book_domain(&instrument, &[delta])
+            .expect_err("non-Clear deltas without an executable side must fail before NT runs");
+        assert!(error.to_string().contains("executable side"));
+    }
+
+    #[test]
+    fn issue_789_requires_configured_execution_account_before_run() {
+        let venue = Venue::from("POLYMARKET");
+        let account_id = AccountId::from("POLYMARKET-001");
+        assert_eq!(
+            require_pre_run_configured_account(Some(account_id), venue)
+                .expect("configured account must be retained"),
+            account_id
+        );
+        require_pre_run_configured_account(None, venue)
+            .expect_err("missing configured account must fail before BacktestNode::run");
+    }
+
+    #[test]
+    fn issue_789_closed_intake_rejects_unknown_payload_type() {
+        let error = ensure_issue_789_payload_type_is_admitted("OrderRejected")
+            .expect_err("out-of-scope lifecycle payload must fail closed");
+        assert!(error.to_string().contains("unsupported payload type"));
+    }
+
+    #[test]
+    fn issue_789_closed_intake_admits_store_lifecycle_envelopes() {
+        for payload_type in [
+            "RunStarted",
+            "RunEnded",
+            "SubscribeCommand",
+            "UnsubscribeCommand",
+            "TimeEvent",
+        ] {
+            ensure_issue_789_payload_type_is_admitted(payload_type)
+                .expect("store lifecycle envelope must be admitted for integrity validation");
+        }
+    }
+
+    #[test]
+    fn issue_789_run_envelope_requires_unique_stream_boundaries() {
+        ensure_issue_789_run_envelope(&[(1, "RunStarted"), (2, "TimeEvent"), (3, "RunEnded")])
+            .expect("unique boundary envelopes must contain the sealed stream");
+
+        for invalid in [
+            vec![(1, "TimeEvent"), (2, "RunEnded")],
+            vec![(1, "RunStarted"), (2, "TimeEvent")],
+            vec![(1, "RunStarted"), (2, "RunStarted"), (3, "RunEnded")],
+            vec![(1, "RunEnded"), (2, "TimeEvent"), (3, "RunStarted")],
+            vec![(1, "TimeEvent"), (2, "RunStarted"), (3, "RunEnded")],
+            vec![(1, "RunStarted"), (2, "RunEnded"), (3, "TimeEvent")],
+        ] {
+            ensure_issue_789_run_envelope(&invalid)
+                .expect_err("missing, duplicate, reversed, or non-boundary envelopes must fail");
+        }
+    }
+
+    #[test]
+    fn issue_789_order_event_sets_reject_missing_and_unexplained_evidence() {
+        let normal = BTreeSet::from(["ENTRY".to_string(), "EXIT".to_string()]);
+        let settlement = BTreeSet::from(["SETTLEMENT".to_string()]);
+        let all = BTreeSet::from([
+            "ENTRY".to_string(),
+            "EXIT".to_string(),
+            "SETTLEMENT".to_string(),
+        ]);
+        let accepted = settlement.clone();
+        let updated = BTreeSet::from(["ENTRY".to_string()]);
+        ensure_issue_789_order_event_sets(
+            &normal,
+            &settlement,
+            &normal,
+            &normal,
+            &accepted,
+            &all,
+            &updated,
+        )
+        .expect("complete frozen order grammar must pass");
+
+        let cases = [
+            (
+                BTreeSet::from(["ENTRY".to_string()]),
+                normal.clone(),
+                accepted.clone(),
+                all.clone(),
+                updated.clone(),
+            ),
+            (
+                normal.clone(),
+                BTreeSet::from(["ENTRY".to_string()]),
+                accepted.clone(),
+                all.clone(),
+                updated.clone(),
+            ),
+            (
+                normal.clone(),
+                normal.clone(),
+                BTreeSet::from(["OTHER".to_string()]),
+                all.clone(),
+                updated.clone(),
+            ),
+            (
+                normal.clone(),
+                normal.clone(),
+                accepted.clone(),
+                BTreeSet::from(["ENTRY".to_string(), "EXIT".to_string()]),
+                updated.clone(),
+            ),
+            (
+                normal.clone(),
+                normal.clone(),
+                accepted,
+                all,
+                BTreeSet::from(["OTHER".to_string()]),
+            ),
+        ];
+        for (submits, submitted, accepted, initialized, updated) in cases {
+            ensure_issue_789_order_event_sets(
+                &normal,
+                &settlement,
+                &submits,
+                &submitted,
+                &accepted,
+                &initialized,
+                &updated,
+            )
+            .expect_err("missing or unexplained order evidence must fail closed");
+        }
+    }
+
+    #[test]
+    fn issue_789_instrument_close_set_binds_both_binary_legs() {
+        let first_id = InstrumentId::from("YES.POLYMARKET");
+        let second_id = InstrumentId::from("NO.POLYMARKET");
+        let expected = BTreeMap::from([
+            (first_id, Price::from("1.000")),
+            (second_id, Price::from("0.000")),
+        ]);
+        let closes = vec![
+            (
+                10,
+                InstrumentClose::new(
+                    first_id,
+                    Price::from("1.000"),
+                    InstrumentCloseType::ContractExpired,
+                    UnixNanos::from(10),
+                    UnixNanos::from(10),
+                ),
+            ),
+            (
+                11,
+                InstrumentClose::new(
+                    second_id,
+                    Price::from("0.000"),
+                    InstrumentCloseType::ContractExpired,
+                    UnixNanos::from(11),
+                    UnixNanos::from(11),
+                ),
+            ),
+        ];
+        ensure_issue_789_instrument_close_set(&closes, &expected)
+            .expect("both configured binary close receipts must be assigned");
+
+        ensure_issue_789_instrument_close_set(&closes[..1], &expected)
+            .expect_err("a missing paired-market close receipt must fail closed");
+    }
+
+    #[test]
+    fn issue_789_rejects_non_contiguous_fill_groups() {
+        let mut first = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
+        first.client_order_id = nautilus_model::identifiers::ClientOrderId::from("ORDER-A");
+        let mut second = first.clone();
+        second.client_order_id = nautilus_model::identifiers::ClientOrderId::from("ORDER-B");
+        let third = first.clone();
+
+        let error = group_issue_789_fills(vec![(1, first), (2, second), (3, third)])
+            .expect_err("an order's fills must form one contiguous causal group");
+        assert!(error.to_string().contains("non-contiguous"));
+    }
+
+    fn test_issue_789_terminal_order() -> (
+        OrderTerminalRecord,
+        nautilus_model::events::OrderInitialized,
+        Vec<nautilus_model::events::OrderFilled>,
+    ) {
+        let mut fill = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
+        fill.position_id = Some(PositionId::from("P-789"));
+        fill.commission = Some(Money::from("0.00 USD"));
+        let mut initialized =
+            nautilus_model::events::order::spec::OrderInitializedSpec::builder().build();
+        initialized.trader_id = fill.trader_id;
+        initialized.strategy_id = fill.strategy_id;
+        initialized.instrument_id = fill.instrument_id;
+        initialized.client_order_id = fill.client_order_id;
+        initialized.order_side = fill.order_side;
+        initialized.order_type = fill.order_type;
+        initialized.quantity = fill.last_qty;
+        initialized.quote_quantity = false;
+        let terminal = OrderTerminalRecord {
+            trader_id: fill.trader_id,
+            strategy_id: fill.strategy_id,
+            instrument_id: fill.instrument_id,
+            client_order_id: fill.client_order_id,
+            account_id: Some(fill.account_id),
+            venue_order_id: Some(fill.venue_order_id),
+            position_id: fill.position_id,
+            order_side: fill.order_side,
+            order_type: fill.order_type,
+            status: OrderStatus::Filled,
+            quantity: fill.last_qty,
+            filled_qty: fill.last_qty,
+            leaves_qty: Quantity::zero(fill.last_qty.precision),
+            initialized_quantity: initialized.quantity,
+            initialized_quote_quantity: initialized.quote_quantity,
+            effective_quantity: fill.last_qty,
+            current_quote_quantity: false,
+            trade_ids: vec![fill.trade_id],
+            commissions: vec![(
+                fill.currency,
+                fill.commission.expect("test fill commission"),
+            )],
+            fills: vec![issue_789_proof_fill(&fill)],
+            events_debug: Vec::new(),
+        };
+        (terminal, initialized, vec![fill])
+    }
+
+    #[test]
+    fn issue_789_terminal_order_accepts_complete_projection() {
+        let (terminal, initialized, fills) = test_issue_789_terminal_order();
+        ensure_issue_789_terminal_order_matches(
+            &terminal,
+            &initialized,
+            fills[0].account_id,
+            fills[0].position_id.expect("test fill position"),
+            initialized.quantity,
+            &fills,
+        )
+        .expect("complete terminal order projection must match");
+    }
+
+    #[test]
+    fn issue_789_canonical_fill_excludes_transport_metadata() {
+        let fill = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
+        let mut transport_variant = fill.clone();
+        transport_variant.position_id = Some(PositionId::from("P-OTHER"));
+        transport_variant.ts_event = UnixNanos::from(99);
+        transport_variant.ts_init = UnixNanos::from(100);
+        transport_variant.info = Some(Default::default());
+        transport_variant.causation_id = Some(UUID4::new());
+
+        assert_eq!(
+            issue_789_proof_fill(&fill),
+            issue_789_proof_fill(&transport_variant)
+        );
+    }
+
+    #[test]
+    fn issue_789_terminal_order_rejects_metadata_and_quantity_drift() {
+        let (terminal, initialized, fills) = test_issue_789_terminal_order();
+        let mutations: Vec<TerminalOrderMutation> = vec![
+            Box::new(|terminal| terminal.trader_id = TraderId::from("OTHER-001")),
+            Box::new(|terminal| terminal.strategy_id = StrategyId::from("OTHER-001")),
+            Box::new(|terminal| terminal.instrument_id = InstrumentId::from("OTHER.POLYMARKET")),
+            Box::new(|terminal| terminal.client_order_id = ClientOrderId::from("OTHER-001")),
+            Box::new(|terminal| terminal.account_id = None),
+            Box::new(|terminal| terminal.venue_order_id = None),
+            Box::new(|terminal| terminal.position_id = None),
+            Box::new(|terminal| terminal.order_side = OrderSide::Sell),
+            Box::new(|terminal| terminal.order_type = OrderType::Limit),
+            Box::new(|terminal| terminal.status = OrderStatus::Canceled),
+            Box::new(|terminal| terminal.quantity = Quantity::from("2.00")),
+            Box::new(|terminal| terminal.filled_qty = Quantity::from("2.00")),
+            Box::new(|terminal| terminal.leaves_qty = Quantity::from("1.00")),
+            Box::new(|terminal| terminal.initialized_quantity = Quantity::from("2.00")),
+            Box::new(|terminal| terminal.initialized_quote_quantity = true),
+            Box::new(|terminal| terminal.effective_quantity = Quantity::from("2.00")),
+            Box::new(|terminal| terminal.current_quote_quantity = true),
+            Box::new(|terminal| terminal.trade_ids.clear()),
+            Box::new(|terminal| {
+                terminal.commissions[0].0 = Currency::EUR();
+            }),
+            Box::new(|terminal| {
+                terminal.fills.clear();
+            }),
+            Box::new(|terminal| {
+                terminal.fills[0].price = Price::from("0.990");
+            }),
+            Box::new(|terminal| terminal.fills[0].event_id = UUID4::new()),
+        ];
+        for mutate in mutations {
+            let mut candidate = terminal.clone();
+            mutate(&mut candidate);
+            ensure_issue_789_terminal_order_matches(
+                &candidate,
+                &initialized,
+                fills[0].account_id,
+                fills[0].position_id.expect("test fill position"),
+                initialized.quantity,
+                &fills,
+            )
+            .expect_err("terminal order projection drift must fail closed");
+        }
+    }
+
+    #[test]
+    fn issue_789_terminal_order_rejects_filled_status_with_partial_quantity() {
+        let (mut terminal, initialized, fills) = test_issue_789_terminal_order();
+        terminal.quantity = Quantity::from("2.00");
+        terminal.effective_quantity = Quantity::from("2.00");
+
+        let error = ensure_issue_789_terminal_order_matches(
+            &terminal,
+            &initialized,
+            fills[0].account_id,
+            fills[0].position_id.expect("test fill position"),
+            terminal.effective_quantity,
+            &fills,
+        )
+        .expect_err("Filled requires the complete effective quantity");
+        assert!(error.to_string().contains("fully filled"));
+    }
+
+    #[test]
+    fn issue_789_rejects_orphan_normal_close_as_settlement() {
+        let fill = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
+        let close = InstrumentClose::new(
+            fill.instrument_id,
+            fill.last_px,
+            InstrumentCloseType::ContractExpired,
+            UnixNanos::from(20),
+            UnixNanos::from(20),
+        );
+        let client_order_id = fill.client_order_id.to_string();
+
+        let error = ensure_issue_789_settlement_witness(
+            &client_order_id,
+            10,
+            &[fill],
+            20,
+            &close,
+            None,
+            None,
+            None,
+        )
+        .expect_err("a fill without synthetic expiration-order evidence is not settlement");
+
+        assert!(error.to_string().contains("synthetic expiration"));
+    }
+
+    fn test_issue_789_settlement_witness() -> (
+        String,
+        nautilus_model::events::OrderFilled,
+        InstrumentClose,
+        nautilus_model::events::OrderInitialized,
+        nautilus_model::events::OrderAccepted,
+    ) {
+        let mut fill = nautilus_model::events::order::spec::OrderFilledSpec::builder().build();
+        let client_order_id = format!("EXPIRATION-{}-{}", fill.instrument_id.venue, UUID4::new());
+        fill.client_order_id =
+            nautilus_model::identifiers::ClientOrderId::from(client_order_id.as_str());
+        let mut initialized =
+            nautilus_model::events::order::spec::OrderInitializedSpec::builder().build();
+        initialized.trader_id = fill.trader_id;
+        initialized.strategy_id = fill.strategy_id;
+        initialized.instrument_id = fill.instrument_id;
+        initialized.client_order_id = fill.client_order_id;
+        initialized.order_side = fill.order_side;
+        initialized.order_type = OrderType::Market;
+        initialized.time_in_force = nautilus_model::enums::TimeInForce::Gtc;
+        initialized.quantity = fill.last_qty;
+        initialized.reduce_only = true;
+        initialized.post_only = false;
+        initialized.quote_quantity = false;
+        initialized.reconciliation = false;
+        initialized.trigger_type = Some(nautilus_model::enums::TriggerType::NoTrigger);
+        initialized.tags = Some(vec![ustr::Ustr::from(
+            format!("EXPIRATION_{}_CLOSE", fill.instrument_id.venue).as_str(),
+        )]);
+        let mut accepted =
+            nautilus_model::events::order::spec::OrderAcceptedSpec::builder().build();
+        accepted.trader_id = fill.trader_id;
+        accepted.strategy_id = fill.strategy_id;
+        accepted.instrument_id = fill.instrument_id;
+        accepted.client_order_id = fill.client_order_id;
+        accepted.venue_order_id = fill.venue_order_id;
+        accepted.account_id = fill.account_id;
+        accepted.reconciliation = false;
+        let close = InstrumentClose::new(
+            fill.instrument_id,
+            fill.last_px,
+            InstrumentCloseType::ContractExpired,
+            UnixNanos::from(20),
+            UnixNanos::from(20),
+        );
+        (client_order_id, fill, close, initialized, accepted)
+    }
+
+    #[test]
+    fn issue_789_accepts_the_pinned_synthetic_settlement_witness() {
+        let (client_order_id, fill, close, initialized, accepted) =
+            test_issue_789_settlement_witness();
+        ensure_issue_789_settlement_witness(
+            &client_order_id,
+            10,
+            &[fill],
+            20,
+            &close,
+            Some(&(5, initialized)),
+            None,
+            Some(&(8, accepted)),
+        )
+        .expect("pinned synthetic expiration evidence must be admitted");
+    }
+
+    #[test]
+    fn issue_789_rejects_settlement_origin_shape_and_account_drift() {
+        let mutations: Vec<SettlementWitnessMutation> = vec![
+            Box::new(|initialized, _| initialized.reduce_only = false),
+            Box::new(|initialized, _| initialized.tags = None),
+            Box::new(|initialized, _| initialized.quantity = Quantity::from("1.00")),
+            Box::new(|initialized, _| initialized.price = Some(Price::from("0.500"))),
+            Box::new(|_, accepted| accepted.account_id = AccountId::from("OTHER-001")),
+            Box::new(|_, accepted| accepted.reconciliation = true),
+        ];
+        for mutate in mutations {
+            let (client_order_id, fill, close, mut initialized, mut accepted) =
+                test_issue_789_settlement_witness();
+            mutate(&mut initialized, &mut accepted);
+            ensure_issue_789_settlement_witness(
+                &client_order_id,
+                10,
+                &[fill],
+                20,
+                &close,
+                Some(&(5, initialized)),
+                None,
+                Some(&(8, accepted)),
+            )
+            .expect_err("synthetic settlement witness drift must fail closed");
+        }
+    }
+
+    fn bind_issue_789_account_states<'a>(
+        fill_sequences: &[u64],
+        position_effect_sequences: &[u64],
+        account_states: &'a [(u64, AccountState)],
+        terminal_bound: u64,
+    ) -> Result<Vec<&'a (u64, AccountState)>> {
+        ensure!(
+            !fill_sequences.is_empty(),
+            "#789 cannot bind AccountState evidence without fills"
+        );
+        ensure_one_causal_followup_per_fill(
+            "position mutation",
+            fill_sequences,
+            position_effect_sequences,
+            terminal_bound,
+        )?;
+        ensure!(
+            account_states
+                .windows(2)
+                .all(|states| states[0].0 < states[1].0),
+            "#789 AccountState evidence is not strictly sequence ordered"
+        );
+
+        let same_projection = |left: &AccountState, right: &AccountState| {
+            left.account_id == right.account_id
+                && left.account_type == right.account_type
+                && left.base_currency == right.base_currency
+                && left.has_same_balances_and_margins(right)
+        };
+        let first_fill = fill_sequences[0];
+        let initial_states = account_states
+            .iter()
+            .take_while(|(seq, _)| *seq < first_fill)
+            .collect::<Vec<_>>();
+        ensure!(
+            !initial_states.is_empty(),
+            "#789 lifecycle has no AccountState before its first fill"
+        );
+        ensure!(
+            initial_states
+                .iter()
+                .all(|state| same_projection(&initial_states[0].1, &state.1)),
+            "#789 has conflicting initial AccountState evidence: {:?}",
+            initial_states
+                .iter()
+                .map(|(seq, state)| (
+                    seq,
+                    state.account_type,
+                    state.base_currency,
+                    state.is_reported,
+                    &state.balances,
+                    &state.margins,
+                ))
+                .collect::<Vec<_>>()
+        );
+
+        let mut bound = vec![
+            *initial_states
+                .last()
+                .context("#789 initial AccountState sequence unexpectedly empty")?,
+        ];
+        let mut assigned_count = initial_states.len();
+        let mut seen_event_ids = initial_states
+            .iter()
+            .map(|(_, state)| state.event_id)
+            .collect::<Vec<_>>();
+        for (index, (&fill_seq, &position_effect_seq)) in fill_sequences
+            .iter()
+            .zip(position_effect_sequences)
+            .enumerate()
+        {
+            let upper_bound = fill_sequences
+                .get(index + 1)
+                .copied()
+                .unwrap_or(terminal_bound);
+            let candidates = account_states
+                .iter()
+                .filter(|(seq, _)| position_effect_seq < *seq && *seq < upper_bound)
+                .collect::<Vec<_>>();
+            ensure!(
+                !candidates.is_empty(),
+                "#789 fill sequence {fill_seq} has no AccountState after its position mutation {position_effect_seq} before {upper_bound}"
+            );
+            ensure!(
+                candidates
+                    .iter()
+                    .all(|state| same_projection(&candidates[0].1, &state.1)),
+                "#789 fill sequence {fill_seq} has conflicting AccountState evidence in its causal interval"
+            );
+            ensure!(
+                candidates
+                    .iter()
+                    .all(|(_, state)| !seen_event_ids.contains(&state.event_id)),
+                "#789 fill sequence {fill_seq} contains a replayed AccountState event identity"
+            );
+            for (_, state) in &candidates {
+                seen_event_ids.push(state.event_id);
+            }
+            assigned_count += candidates.len();
+            bound.push(
+                *candidates
+                    .last()
+                    .context("#789 AccountState causal interval unexpectedly empty")?,
+            );
+        }
+        ensure!(
+            assigned_count == account_states.len(),
+            "#789 contains AccountState evidence outside the ordered fill -> position mutation -> account transition lifecycle"
+        );
+        Ok(bound)
+    }
+
+    fn ensure_issue_789_account_state_scope(
+        account_states: &[(u64, AccountState)],
+        lifecycle_account_id: AccountId,
+        first_submit_seq: u64,
+    ) -> Result<()> {
+        ensure!(
+            account_states.iter().all(|(seq, state)| {
+                state.account_id == lifecycle_account_id || *seq < first_submit_seq
+            }),
+            "#789 event store contains unrelated AccountState evidence outside the pre-submission initialization prefix"
+        );
+        Ok(())
+    }
+
+    fn test_issue_789_account_state(balances: Vec<AccountBalance>) -> AccountState {
+        AccountState::new(
+            AccountId::from("POLYMARKET-001"),
+            AccountType::Cash,
+            balances,
+            Vec::new(),
+            true,
+            UUID4::default(),
+            UnixNanos::from(1),
+            UnixNanos::from(1),
+            Some(Currency::USDC()),
+        )
+    }
+
+    fn test_issue_789_account_state_with_cash(cash: &str) -> AccountState {
+        test_issue_789_account_state(vec![AccountBalance::new(
+            Money::from(cash),
+            Money::from("0.00000000 USDC"),
+            Money::from(cash),
+        )])
+    }
+
+    #[test]
+    fn issue_789_account_binding_preserves_zero_cash_delta_settlement() {
+        let states = vec![
+            (
+                1,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+            (
+                12,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+            (
+                22,
+                test_issue_789_account_state_with_cash("95.00000000 USDC"),
+            ),
+            (
+                32,
+                test_issue_789_account_state_with_cash("95.00000000 USDC"),
+            ),
+        ];
+
+        let bound = bind_issue_789_account_states(&[10, 20, 30], &[11, 21, 31], &states, 40)
+            .expect("zero-value settlement still has a distinct causal AccountState");
+
+        assert_eq!(bound.len(), 4);
+        assert_eq!(bound[3].0, 32);
+    }
+
+    #[test]
+    fn issue_789_account_scope_limits_unrelated_state_to_initialization_prefix() {
+        let lifecycle_account = AccountId::from("POLYMARKET-001");
+        let mut unrelated = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        unrelated.account_id = AccountId::from("OTHER-001");
+        ensure_issue_789_account_state_scope(&[(9, unrelated.clone())], lifecycle_account, 10)
+            .expect("unrelated node-initialization state may precede the first submission");
+        for seq in [10, 11] {
+            let error = ensure_issue_789_account_state_scope(
+                &[(seq, unrelated.clone())],
+                lifecycle_account,
+                10,
+            )
+            .expect_err("unrelated account evidence at or after submission must fail closed");
+            assert!(error.to_string().contains("unrelated AccountState"));
+        }
+    }
+
+    #[test]
+    fn issue_789_account_binding_accepts_reported_to_calculated_initial_republish() {
+        let reported = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let mut calculated = reported.clone();
+        calculated.is_reported = false;
+        let states = vec![
+            (1, reported),
+            (2, calculated),
+            (
+                12,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+        ];
+
+        let bound = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect("NT may republish the same initial map as calculated state");
+
+        assert_eq!(bound.len(), 2);
+        assert_eq!(bound[0].0, 2);
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_account_before_position_effect() {
+        let states = vec![
+            (
+                1,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+            (
+                11,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+            (
+                22,
+                test_issue_789_account_state_with_cash("95.00000000 USDC"),
+            ),
+            (
+                32,
+                test_issue_789_account_state_with_cash("96.00000000 USDC"),
+            ),
+        ];
+
+        let error = bind_issue_789_account_states(&[10, 20, 30], &[12, 21, 31], &states, 40)
+            .expect_err("AccountState before its position effect must fail closed");
+
+        assert!(error.to_string().contains("after its position mutation"));
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_replayed_prior_event_identity() {
+        let initial = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let states = vec![(1, initial.clone()), (12, initial)];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("a replayed pre-fill AccountState is not a post-fill event");
+
+        assert!(
+            error
+                .to_string()
+                .contains("replayed AccountState event identity")
+        );
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_replay_mixed_with_fresh_event() {
+        let initial = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let states = vec![
+            (1, initial.clone()),
+            (12, initial),
+            (
+                13,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+        ];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("every AccountState candidate must have a fresh identity");
+
+        assert!(
+            error
+                .to_string()
+                .contains("replayed AccountState event identity")
+        );
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_missing_transition() {
+        let states = vec![(
+            1,
+            test_issue_789_account_state_with_cash("100.00000000 USDC"),
+        )];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("a fill without AccountState evidence must fail closed");
+
+        assert!(error.to_string().contains("has no AccountState"));
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_conflicting_initial_evidence() {
+        let states = vec![
+            (
+                1,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+            (
+                2,
+                test_issue_789_account_state_with_cash("99.00000000 USDC"),
+            ),
+            (
+                12,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+        ];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("conflicting initial AccountState evidence must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting initial AccountState")
+        );
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_conflicting_interval_evidence() {
+        let states = vec![
+            (
+                1,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+            (
+                12,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+            (
+                13,
+                test_issue_789_account_state_with_cash("91.00000000 USDC"),
+            ),
+        ];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("conflicting AccountStates inside one fill interval must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting AccountState evidence")
+        );
+    }
+
+    #[test]
+    fn issue_789_account_binding_rejects_unexplained_trailing_state() {
+        let states = vec![
+            (
+                1,
+                test_issue_789_account_state_with_cash("100.00000000 USDC"),
+            ),
+            (
+                12,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+            (
+                21,
+                test_issue_789_account_state_with_cash("90.00000000 USDC"),
+            ),
+        ];
+
+        let error = bind_issue_789_account_states(&[10], &[11], &states, 20)
+            .expect_err("AccountState evidence after the terminal bound must fail closed");
+
+        assert!(error.to_string().contains("outside the ordered"));
+    }
+
+    #[test]
+    fn issue_789_account_cash_rejects_extra_currency_balance() {
+        let state = test_issue_789_account_state(vec![
+            AccountBalance::new(
+                Money::from("100.00000000 USDC"),
+                Money::from("0.00000000 USDC"),
+                Money::from("100.00000000 USDC"),
+            ),
+            AccountBalance::new(
+                Money::from("1.00000000 BTC"),
+                Money::from("0.00000000 BTC"),
+                Money::from("1.00000000 BTC"),
+            ),
+        ]);
+
+        let error = issue_789_account_cash(&state, Currency::USDC())
+            .expect_err("#789 must reject an extra account currency");
+        assert!(error.to_string().contains("single-currency"));
+    }
+
+    #[test]
+    fn issue_789_account_cash_rejects_margin_state() {
+        let mut state = test_issue_789_account_state(vec![AccountBalance::new(
+            Money::from("100.00000000 USDC"),
+            Money::from("0.00000000 USDC"),
+            Money::from("100.00000000 USDC"),
+        )]);
+        state.margins.push(MarginBalance::new(
+            Money::from("1.00000000 USDC"),
+            Money::from("1.00000000 USDC"),
+            None,
+        ));
+
+        let error = issue_789_account_cash(&state, Currency::USDC())
+            .expect_err("#789 CASH evidence must reject margin balances");
+        assert!(error.to_string().contains("must not contain margin"));
+    }
+
+    #[test]
+    fn issue_789_account_cash_rejects_locked_cash() {
+        let state = test_issue_789_account_state(vec![AccountBalance::new(
+            Money::from("100.00000000 USDC"),
+            Money::from("1.00000000 USDC"),
+            Money::from("99.00000000 USDC"),
+        )]);
+
+        let error = issue_789_account_cash(&state, Currency::USDC())
+            .expect_err("#789 immediate-market evidence must reject locked cash");
+        assert!(error.to_string().contains("zero locked cash"));
+    }
+
+    #[test]
+    fn issue_789_terminal_account_rejects_complete_map_drift() {
+        let stored = test_issue_789_account_state(vec![AccountBalance::new(
+            Money::from("100.00000000 USDC"),
+            Money::from("0.00000000 USDC"),
+            Money::from("100.00000000 USDC"),
+        )]);
+        let terminal = super::AccountTerminalRecord {
+            account_id: stored.account_id,
+            account_type: stored.account_type,
+            base_currency: stored.base_currency,
+            balances: vec![AccountBalance::new(
+                Money::from("99.00000000 USDC"),
+                Money::from("0.00000000 USDC"),
+                Money::from("99.00000000 USDC"),
+            )],
+            cash_locks: Vec::new(),
+            margins: Vec::new(),
+        };
+
+        let error =
+            ensure_issue_789_terminal_account_matches(&stored, &terminal, stored.base_currency)
+                .expect_err("#789 must reject complete terminal account-map drift");
+        assert!(error.to_string().contains("complete final AccountState"));
+    }
+
+    #[test]
+    fn issue_789_terminal_account_rejects_hidden_locked_cash() {
+        let terminal = super::AccountTerminalRecord {
+            account_id: AccountId::from("POLYMARKET-001"),
+            account_type: AccountType::Cash,
+            base_currency: Some(Currency::USDC()),
+            balances: vec![AccountBalance::new(
+                Money::from("100.00000000 USDC"),
+                Money::from("0.00000000 USDC"),
+                Money::from("100.00000000 USDC"),
+            )],
+            cash_locks: vec![(
+                InstrumentId::from("YES.POLYMARKET"),
+                Currency::USDC(),
+                Money::from("1.00000000 USDC"),
+            )],
+            margins: Vec::new(),
+        };
+
+        let error = issue_789_terminal_account_cash(&terminal, Currency::USDC())
+            .expect_err("current account locks absent from its last event must fail closed");
+        assert!(error.to_string().contains("locked cash"));
+    }
+
+    #[test]
+    fn issue_789_terminal_capture_preserves_cash_account_transient_locks() {
+        let state = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let mut account = nautilus_model::accounts::CashAccount::new(state, true, false);
+        account.balances_locked.insert(
+            (InstrumentId::from("YES.POLYMARKET"), Currency::BTC()),
+            Money::from("0.00000000 BTC"),
+        );
+        let terminal =
+            super::capture_account_terminal(&nautilus_model::accounts::AccountAny::Cash(account));
+
+        assert_eq!(terminal.cash_locks.len(), 1);
+        let error = issue_789_terminal_account_cash(&terminal, Currency::USDC())
+            .expect_err("a stale transient CashAccount lock must fail closed");
+        assert!(error.to_string().contains("locked cash"));
+    }
+
+    #[test]
+    fn issue_789_terminal_account_rejects_extra_locked_currency() {
+        let terminal = super::AccountTerminalRecord {
+            account_id: AccountId::from("POLYMARKET-001"),
+            account_type: AccountType::Cash,
+            base_currency: Some(Currency::USDC()),
+            balances: vec![AccountBalance::new(
+                Money::from("100.00000000 USDC"),
+                Money::from("0.00000000 USDC"),
+                Money::from("100.00000000 USDC"),
+            )],
+            cash_locks: vec![(
+                InstrumentId::from("YES.POLYMARKET"),
+                Currency::BTC(),
+                Money::from("0.00000000 BTC"),
+            )],
+            margins: Vec::new(),
+        };
+
+        let error = issue_789_terminal_account_cash(&terminal, Currency::USDC())
+            .expect_err("an extra current locked-balance currency must fail closed");
+        assert!(error.to_string().contains("locked cash"));
+    }
+
+    #[test]
+    fn issue_789_terminal_account_rejects_base_currency_drift() {
+        let stored = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let terminal = super::AccountTerminalRecord {
+            account_id: stored.account_id,
+            account_type: stored.account_type,
+            base_currency: None,
+            balances: stored.balances.clone(),
+            cash_locks: Vec::new(),
+            margins: Vec::new(),
+        };
+
+        let error =
+            ensure_issue_789_terminal_account_matches(&stored, &terminal, stored.base_currency)
+                .expect_err("current account metadata drift must fail closed");
+        assert!(error.to_string().contains("complete final AccountState"));
+    }
+
+    #[test]
+    fn issue_789_terminal_account_rejects_correlated_manifest_base_currency_drift() {
+        let stored = test_issue_789_account_state_with_cash("100.00000000 USDC");
+        let terminal = super::AccountTerminalRecord {
+            account_id: stored.account_id,
+            account_type: stored.account_type,
+            base_currency: stored.base_currency,
+            balances: stored.balances.clone(),
+            cash_locks: Vec::new(),
+            margins: Vec::new(),
+        };
+
+        let error = ensure_issue_789_terminal_account_matches(&stored, &terminal, None)
+            .expect_err("stored and terminal base currency must match the manifest NONE setting");
+        assert!(error.to_string().contains("manifest base currency"));
+    }
+
+    fn issue_789_account_cash(
+        state: &nautilus_model::events::AccountState,
+        currency: Currency,
+    ) -> Result<Money> {
+        ensure!(
+            state.account_type == AccountType::Cash,
+            "#789 lifecycle AccountState must remain CASH"
+        );
+        ensure!(
+            state.margins.is_empty(),
+            "#789 CASH AccountState must not contain margin balances"
+        );
+        ensure!(
+            state.balances.len() == 1,
+            "#789 lifecycle is restricted to a single-currency AccountState, got {} balances",
+            state.balances.len()
+        );
+        let balance = &state.balances[0];
+        ensure!(
+            balance.currency == currency,
+            "#789 AccountState balance currency {} differs from lifecycle currency {currency}",
+            balance.currency
+        );
+        ensure!(
+            balance.locked == Money::zero(currency) && balance.free == balance.total,
+            "#789 immediate-market CASH lifecycle requires zero locked cash and free cash equal to total"
+        );
+        Ok(balance.total)
+    }
+
+    fn ensure_issue_789_terminal_account_matches(
+        stored: &nautilus_model::events::AccountState,
+        terminal: &super::AccountTerminalRecord,
+        expected_base_currency: Option<Currency>,
+    ) -> Result<()> {
+        let mut stored_balances = stored.balances.clone();
+        stored_balances.sort_by_key(|balance| balance.currency.to_string());
+        let mut stored_margins = stored.margins.clone();
+        stored_margins.sort_by_key(|margin| {
+            (
+                margin
+                    .instrument_id
+                    .map(|instrument_id| instrument_id.to_string()),
+                margin.currency.to_string(),
+            )
+        });
+        ensure!(
+            terminal.account_id == stored.account_id
+                && terminal.account_type == stored.account_type
+                && stored.base_currency == expected_base_currency
+                && terminal.base_currency == expected_base_currency
+                && terminal.balances == stored_balances
+                && terminal.margins == stored_margins,
+            "terminal account projection diverges from the complete final AccountState or manifest base currency"
+        );
+        Ok(())
+    }
+
+    fn issue_789_terminal_account_cash(
+        terminal: &super::AccountTerminalRecord,
+        currency: Currency,
+    ) -> Result<Money> {
+        ensure!(
+            terminal.account_type == AccountType::Cash,
+            "#789 terminal account must remain CASH"
+        );
+        ensure!(
+            terminal.margins.is_empty(),
+            "#789 terminal CASH account must not contain margin balances"
+        );
+        ensure!(
+            terminal.balances.len() == 1,
+            "#789 terminal account is restricted to one currency, got {} balances",
+            terminal.balances.len()
+        );
+        let balance = &terminal.balances[0];
+        ensure!(
+            balance.currency == currency,
+            "#789 terminal account balance currency {} differs from lifecycle currency {currency}",
+            balance.currency
+        );
+        ensure!(
+            balance.locked == Money::zero(currency)
+                && balance.free == balance.total
+                && terminal.cash_locks.is_empty(),
+            "#789 terminal immediate-market CASH account contains locked cash"
+        );
+        Ok(balance.total)
+    }
+
     fn validate_issue_789_execution_contract(
         output: &super::NtBacktestNodeRun,
+        evidence: &crate::execution_evidence::ExecutionEvidence,
         manifest: &BacktestingRunManifest,
         up_projection: &crate::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
         down_projection: &crate::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
+        expected_binary_settlements: &BTreeMap<InstrumentId, Price>,
     ) -> Result<crate::execution_contract::ExecutionContractReport> {
-        let settlement_ts = UnixNanos::from(ISSUE_789_END_NS as u64);
-        let entry_orders: Vec<_> = output
-            .order_terminals
+        let mut submit_orders = BTreeMap::new();
+        let mut order_initializations = BTreeMap::new();
+        let mut order_submissions = BTreeMap::new();
+        let mut order_acceptances = BTreeMap::new();
+        let mut order_updates = BTreeMap::new();
+        let mut closes = Vec::new();
+        let mut sequenced_fills = Vec::new();
+        let mut position_effects = Vec::new();
+        let mut account_states = Vec::new();
+        let mut semantic_identities = Vec::new();
+        let unsupported_payload_types = evidence
+            .entries
             .iter()
-            .filter(|order| order.fills.iter().any(|fill| fill.ts_event < settlement_ts))
-            .collect();
+            .map(|entry| entry.payload_type.as_str())
+            .filter(|payload_type| ensure_issue_789_payload_type_is_admitted(payload_type).is_err())
+            .collect::<BTreeSet<_>>();
         ensure!(
-            entry_orders.len() == 1,
-            "issue #789 requires exactly one pre-settlement entry order, got {}",
-            entry_orders.len()
+            unsupported_payload_types.is_empty(),
+            "#789 event store contains unsupported payload types {unsupported_payload_types:?}"
         );
-        let entry_order = entry_orders[0];
-        let entry_fills: Vec<_> = entry_order
-            .fills
+        let run_envelope = evidence
+            .entries
             .iter()
-            .filter(|fill| fill.ts_event < settlement_ts)
-            .cloned()
-            .collect();
+            .map(|entry| (entry.seq, entry.payload_type.as_str()))
+            .collect::<Vec<_>>();
+        ensure_issue_789_run_envelope(&run_envelope)?;
+        for entry in &evidence.entries {
+            match entry.payload_type.as_str() {
+                "RunStarted" | "RunEnded" => {}
+                "SubmitOrder" => {
+                    let command: nautilus_common::messages::execution::SubmitOrder =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 SubmitOrder evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        command.command_id,
+                        "SubmitOrder command",
+                    )?;
+                    ensure!(
+                        submit_orders
+                            .insert(
+                                command.client_order_id.to_string(),
+                                (entry.seq, entry.ts_init, command),
+                            )
+                            .is_none(),
+                        "duplicate SubmitOrder identity in #789 event store"
+                    );
+                }
+                "OrderInitialized" => {
+                    let event: nautilus_model::events::OrderInitialized =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 OrderInitialized evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        event.event_id,
+                        "OrderInitialized",
+                    )?;
+                    ensure!(
+                        order_initializations
+                            .insert(event.client_order_id.to_string(), (entry.seq, event))
+                            .is_none(),
+                        "duplicate OrderInitialized client-order identity in #789 event store"
+                    );
+                }
+                "OrderSubmitted" => {
+                    let event: nautilus_model::events::OrderSubmitted =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 OrderSubmitted evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        event.event_id,
+                        "OrderSubmitted",
+                    )?;
+                    ensure!(
+                        order_submissions
+                            .insert(event.client_order_id.to_string(), (entry.seq, event))
+                            .is_none(),
+                        "duplicate OrderSubmitted client-order identity in #789 event store"
+                    );
+                }
+                "OrderAccepted" => {
+                    let event: nautilus_model::events::OrderAccepted =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 OrderAccepted evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        event.event_id,
+                        "OrderAccepted",
+                    )?;
+                    ensure!(
+                        order_acceptances
+                            .insert(event.client_order_id.to_string(), (entry.seq, event))
+                            .is_none(),
+                        "duplicate OrderAccepted client-order identity in #789 event store"
+                    );
+                }
+                "OrderUpdated" => {
+                    let event: nautilus_model::events::OrderUpdated =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 OrderUpdated evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        event.event_id,
+                        "OrderUpdated",
+                    )?;
+                    record_issue_789_order_update(&mut order_updates, entry.seq, event)?;
+                }
+                "OrderFilled" => {
+                    let fill: nautilus_model::events::OrderFilled =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 OrderFilled evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        fill.event_id,
+                        "OrderFilled",
+                    )?;
+                    sequenced_fills.push((entry.seq, fill));
+                }
+                "InstrumentClose" => {
+                    let close: nautilus_model::data::InstrumentClose =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 InstrumentClose evidence")?;
+                    closes.push((entry.seq, close));
+                }
+                "AccountState" => {
+                    let state: nautilus_model::events::AccountState =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 AccountState evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        state.event_id,
+                        "AccountState",
+                    )?;
+                    account_states.push((entry.seq, state));
+                }
+                "PositionOpened" => {
+                    let effect: nautilus_model::events::PositionOpened =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 PositionOpened evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        effect.event_id,
+                        "PositionOpened",
+                    )?;
+                    position_effects.push((
+                        entry.seq,
+                        crate::execution_contract::PositionEffectTrace {
+                            kind: crate::execution_contract::PositionEffectKind::Opened,
+                            trader_id: effect.trader_id,
+                            strategy_id: effect.strategy_id,
+                            position_id: effect.position_id,
+                            instrument_id: effect.instrument_id,
+                            account_id: effect.account_id,
+                            opening_order_id: effect.opening_order_id,
+                            closing_order_id: None,
+                            entry: effect.entry,
+                            side: effect.side,
+                            signed_quantity: effect.signed_qty,
+                            quantity: effect.quantity,
+                            last_quantity: effect.last_qty,
+                            last_price: effect.last_px,
+                            currency: effect.currency,
+                            realized_pnl: None,
+                        },
+                    ));
+                }
+                "PositionChanged" => {
+                    let effect: nautilus_model::events::PositionChanged =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 PositionChanged evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        effect.event_id,
+                        "PositionChanged",
+                    )?;
+                    position_effects.push((
+                        entry.seq,
+                        crate::execution_contract::PositionEffectTrace {
+                            kind: crate::execution_contract::PositionEffectKind::Changed,
+                            trader_id: effect.trader_id,
+                            strategy_id: effect.strategy_id,
+                            position_id: effect.position_id,
+                            instrument_id: effect.instrument_id,
+                            account_id: effect.account_id,
+                            opening_order_id: effect.opening_order_id,
+                            closing_order_id: None,
+                            entry: effect.entry,
+                            side: effect.side,
+                            signed_quantity: effect.signed_qty,
+                            quantity: effect.quantity,
+                            last_quantity: effect.last_qty,
+                            last_price: effect.last_px,
+                            currency: effect.currency,
+                            realized_pnl: effect.realized_pnl,
+                        },
+                    ));
+                }
+                "PositionClosed" => {
+                    let effect: nautilus_model::events::PositionClosed =
+                        rmp_serde::from_slice(&entry.payload)
+                            .context("decode #789 PositionClosed evidence")?;
+                    record_issue_789_semantic_identity(
+                        &mut semantic_identities,
+                        effect.event_id,
+                        "PositionClosed",
+                    )?;
+                    position_effects.push((
+                        entry.seq,
+                        crate::execution_contract::PositionEffectTrace {
+                            kind: crate::execution_contract::PositionEffectKind::Closed,
+                            trader_id: effect.trader_id,
+                            strategy_id: effect.strategy_id,
+                            position_id: effect.position_id,
+                            instrument_id: effect.instrument_id,
+                            account_id: effect.account_id,
+                            opening_order_id: effect.opening_order_id,
+                            closing_order_id: effect.closing_order_id,
+                            entry: effect.entry,
+                            side: effect.side,
+                            signed_quantity: effect.signed_qty,
+                            quantity: effect.quantity,
+                            last_quantity: effect.last_qty,
+                            last_price: effect.last_px,
+                            currency: effect.currency,
+                            realized_pnl: effect.realized_pnl,
+                        },
+                    ));
+                }
+                "PositionAdjusted" => {
+                    anyhow::bail!("#789 does not admit position-adjustment evidence")
+                }
+                "SubscribeCommand" | "UnsubscribeCommand" | "TimeEvent" => {
+                    // Explicit control-plane waiver: these records drive data/time
+                    // delivery but carry no order, fill, position, or account claim.
+                    // Their bytes remain covered by the sealed-store verifier.
+                }
+                other => {
+                    ensure_issue_789_payload_type_is_admitted(other)?;
+                    anyhow::bail!(
+                        "#789 admitted payload type {other:?} lacks an explicit lifecycle handler"
+                    )
+                }
+            }
+        }
         ensure!(
-            !entry_fills.is_empty(),
-            "issue #789 entry order has no executable-book fills"
+            !sequenced_fills.is_empty(),
+            "issue #789 event store contains no fills"
         );
-        let instrument_id = entry_fills[0].instrument_id;
+        let instrument_id = sequenced_fills[0].1.instrument_id;
+        ensure!(
+            sequenced_fills
+                .iter()
+                .all(|(_, fill)| fill.instrument_id == instrument_id),
+            "issue #789 event-store fills span multiple instruments"
+        );
+        let fill_sequences = sequenced_fills
+            .iter()
+            .map(|(seq, _)| *seq)
+            .collect::<Vec<_>>();
         let projection = if up_projection.instrument.id() == instrument_id {
             up_projection
         } else if down_projection.instrument.id() == instrument_id {
@@ -3494,40 +6329,237 @@ mod tests {
         } else {
             anyhow::bail!("issue #789 fill instrument {instrument_id} has no PMXT projection")
         };
-        let submission_timestamp = entry_order
-            .submission_timestamp
-            .context("issue #789 entry order has no submission timestamp")?;
-        let executable_book = replay_executable_book_at_submission(
-            instrument_id,
-            &projection.order_book_deltas,
-            submission_timestamp,
-        )?;
-        let positions: Vec<_> = output
-            .positions
+
+        let grouped_fills = group_issue_789_fills(sequenced_fills)?;
+
+        let mut orders = Vec::with_capacity(grouped_fills.len());
+        let mut ordered_fills = Vec::new();
+        let mut settlement_receipt_seq = None;
+        for (client_order_id, first_fill_seq, fills) in grouped_fills {
+            let cause = if let Some((submit_seq, submit_ts_init, submit)) =
+                submit_orders.get(&client_order_id)
+            {
+                ensure!(
+                    *submit_seq < first_fill_seq
+                        && submit.instrument_id == instrument_id
+                        && submit.order_init.client_order_id.to_string() == client_order_id,
+                    "#789 normal fill is not causally preceded by its matching SubmitOrder"
+                );
+                let (submitted_seq, submitted_order) = issue_789_bind_normal_submission(
+                    *submit_seq,
+                    submit,
+                    order_initializations.get(&client_order_id),
+                    order_submissions.get(&client_order_id),
+                    order_acceptances.get(&client_order_id),
+                    first_fill_seq,
+                )?;
+                let delta_count = evidence.book_delta_count_at(
+                    *submit_seq,
+                    *submit_ts_init,
+                    &instrument_id.to_string(),
+                    &projection.order_book_deltas,
+                )?;
+                let executable_book = replay_executable_book_at_cursor(
+                    instrument_id,
+                    &projection.order_book_deltas,
+                    delta_count,
+                )?;
+                crate::execution_contract::ExecutionOrderCause::Submitted {
+                    executable_book: Box::new(executable_book),
+                    submitted_order,
+                    quote_conversion: issue_789_quote_conversion_in_interval(
+                        submitted_seq,
+                        first_fill_seq,
+                        order_updates.get(&client_order_id),
+                    )?
+                    .map(Box::new),
+                }
+            } else {
+                let matching_closes = closes
+                    .iter()
+                    .filter(|(_, close)| close.instrument_id == instrument_id)
+                    .collect::<Vec<_>>();
+                ensure!(
+                    matching_closes.len() == 1,
+                    "#789 fill {client_order_id} has neither SubmitOrder nor exactly one matching InstrumentClose receipt"
+                );
+                let close = matching_closes[0];
+                // BacktestEngine routes InstrumentClose into the exchange before
+                // publishing the same data through DataEngine. Settlement is
+                // therefore generated before the BusTap can record the close.
+                // Pin that observed boundary explicitly so an upstream ordering
+                // change fails closed instead of silently changing the evidence
+                // interpretation. Position effect, not this sequence relation,
+                // classifies the fill as the terminal settlement below.
+                ensure_issue_789_settlement_witness(
+                    &client_order_id,
+                    first_fill_seq,
+                    &fills,
+                    close.0,
+                    &close.1,
+                    order_initializations.get(&client_order_id),
+                    order_submissions.get(&client_order_id),
+                    order_acceptances.get(&client_order_id),
+                )?;
+                ensure!(
+                    settlement_receipt_seq.replace(close.0).is_none(),
+                    "#789 lifecycle contains multiple settlement receipts"
+                );
+                crate::execution_contract::ExecutionOrderCause::Settlement {
+                    declared_price: close.1.close_price,
+                }
+            };
+            ordered_fills.extend(fills.iter().cloned());
+            orders.push(crate::execution_contract::ExecutionOrderTrace { cause, fills });
+        }
+        let settlement_receipt_seq = settlement_receipt_seq
+            .context("#789 lifecycle has no terminal InstrumentClose receipt")?;
+        let position_effect_sequences = position_effects
             .iter()
-            .filter(|position| position.instrument_id == instrument_id)
-            .collect();
+            .map(|(seq, _)| *seq)
+            .collect::<Vec<_>>();
+        let normal_order_ids = orders
+            .iter()
+            .filter(|order| {
+                matches!(
+                    &order.cause,
+                    crate::execution_contract::ExecutionOrderCause::Submitted { .. }
+                )
+            })
+            .map(|order| order.fills[0].client_order_id.to_string())
+            .collect::<BTreeSet<_>>();
+        let settlement_order_ids = orders
+            .iter()
+            .filter(|order| {
+                matches!(
+                    &order.cause,
+                    crate::execution_contract::ExecutionOrderCause::Settlement { .. }
+                )
+            })
+            .map(|order| order.fills[0].client_order_id.to_string())
+            .collect::<BTreeSet<_>>();
+        let submit_command_ids = submit_orders.keys().cloned().collect::<BTreeSet<_>>();
+        let submitted_event_ids = order_submissions.keys().cloned().collect::<BTreeSet<_>>();
+        let accepted_event_ids = order_acceptances.keys().cloned().collect::<BTreeSet<_>>();
+        let initialized_event_ids = order_initializations
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let updated_ids = order_updates.keys().cloned().collect::<BTreeSet<_>>();
+        ensure_issue_789_order_event_sets(
+            &normal_order_ids,
+            &settlement_order_ids,
+            &submit_command_ids,
+            &submitted_event_ids,
+            &accepted_event_ids,
+            &initialized_event_ids,
+            &updated_ids,
+        )?;
+        ensure_issue_789_instrument_close_set(&closes, expected_binary_settlements)?;
         ensure!(
-            positions.len() == 1,
-            "issue #789 requires exactly one position for {instrument_id}, got {}",
-            positions.len()
+            output.result.total_orders == orders.len()
+                && output.order_terminals.len() == orders.len(),
+            "#789 terminal order projections are incomplete for the captured lifecycle"
         );
-        let position = positions[0];
+        ensure!(
+            output.result.total_positions == 1,
+            "#789 lifecycle evidence is restricted to exactly one position"
+        );
+
+        let position = issue_789_terminal_position(&output.positions, instrument_id)?;
+        let configured_account_id = output.configured_execution_account_id;
+        let lifecycle_account_id = orders
+            .iter()
+            .find_map(|order| match &order.cause {
+                crate::execution_contract::ExecutionOrderCause::Submitted {
+                    submitted_order,
+                    ..
+                } => Some(submitted_order.account_id),
+                crate::execution_contract::ExecutionOrderCause::Settlement { .. } => None,
+            })
+            .context("#789 lifecycle has no submitted account anchor")?;
+        ensure!(
+            lifecycle_account_id == configured_account_id,
+            "submitted account anchor diverges from the pre-run configured account"
+        );
+        let expected_position_id = position_effects
+            .first()
+            .map(|(_, effect)| effect.position_id)
+            .context("#789 lifecycle contains no position effects")?;
+        ensure!(
+            position_effects.iter().all(|(_, effect)| {
+                effect.position_id == expected_position_id
+                    && effect.account_id == lifecycle_account_id
+            }),
+            "position effects diverge from the lifecycle position/account identity"
+        );
+        ensure_issue_789_terminal_position_matches(
+            position,
+            lifecycle_account_id,
+            expected_position_id,
+            &ordered_fills,
+        )?;
+        for order in &orders {
+            let client_order_id = order.fills[0].client_order_id;
+            let client_order_id_text = client_order_id.to_string();
+            let terminal = output
+                .order_terminals
+                .iter()
+                .find(|terminal| terminal.client_order_id == client_order_id)
+                .with_context(|| format!("missing terminal order projection {client_order_id}"))?;
+            let (initialized, expected_effective_quantity) = match &order.cause {
+                crate::execution_contract::ExecutionOrderCause::Submitted {
+                    submitted_order,
+                    quote_conversion,
+                    ..
+                } => {
+                    let submit = &submit_orders
+                        .get(&client_order_id_text)
+                        .with_context(|| {
+                            format!("missing SubmitOrder projection {client_order_id}")
+                        })?
+                        .2;
+                    let effective_quantity = quote_conversion
+                        .as_ref()
+                        .map_or(submitted_order.quantity, |update| update.quantity);
+                    (&submit.order_init, effective_quantity)
+                }
+                crate::execution_contract::ExecutionOrderCause::Settlement { .. } => {
+                    let initialized = &order_initializations
+                        .get(&client_order_id_text)
+                        .with_context(|| {
+                            format!("missing settlement OrderInitialized {client_order_id}")
+                        })?
+                        .1;
+                    (initialized, initialized.quantity)
+                }
+            };
+            ensure_issue_789_terminal_order_matches(
+                terminal,
+                initialized,
+                configured_account_id,
+                position.id,
+                expected_effective_quantity,
+                &order.fills,
+            )?;
+        }
         let realized_pnl = position
             .realized_pnl
             .context("issue #789 position has no realized PnL")?;
-        let matching_balances: Vec<_> = output
-            .account_balances
+        let matching_terminal_accounts: Vec<_> = output
+            .account_terminals
             .iter()
-            .filter(|balance| balance.currency == realized_pnl.currency)
+            .filter(|account| account.account_id == position.account_id)
             .collect();
         ensure!(
-            matching_balances.len() == 1,
-            "issue #789 requires exactly one terminal {} balance, got {}",
-            realized_pnl.currency,
-            matching_balances.len()
+            matching_terminal_accounts.len() == 1,
+            "issue #789 requires exactly one terminal account projection for {}, got {}",
+            position.account_id,
+            matching_terminal_accounts.len()
         );
-        let terminal_cash = matching_balances[0].total;
+        let terminal_account = matching_terminal_accounts[0];
+        let terminal_cash =
+            issue_789_terminal_account_cash(terminal_account, realized_pnl.currency)?;
         let initial_balances: Vec<Money> = manifest
             .venue
             .starting_balances
@@ -3538,55 +6570,119 @@ mod tests {
                     .context("parse issue #789 exact initial balance")
             })
             .collect::<Result<_>>()?;
-        let matching_initial_balances: Vec<_> = initial_balances
-            .iter()
-            .filter(|balance| balance.currency == realized_pnl.currency)
-            .collect();
         ensure!(
-            matching_initial_balances.len() == 1,
-            "issue #789 requires exactly one initial {} balance, got {}",
+            initial_balances.len() == 1 && initial_balances[0].currency == realized_pnl.currency,
+            "issue #789 requires exactly one initial {} balance, got {:?}",
             realized_pnl.currency,
-            matching_initial_balances.len()
+            initial_balances
         );
-        let initial_cash = *matching_initial_balances[0];
-        let position_commission = position
-            .commissions
-            .get(&realized_pnl.currency)
-            .copied()
-            .unwrap_or_else(|| Money::zero(realized_pnl.currency));
+        let manifest_initial_cash = initial_balances[0];
+        let expected_base_currency = manifest
+            .to_nt_venue_config()
+            .context("map issue #789 manifest venue configuration")?
+            .base_currency();
+        let first_submit_seq = submit_orders
+            .values()
+            .map(|(seq, _, _)| *seq)
+            .min()
+            .context("#789 lifecycle contains no normal SubmitOrder evidence")?;
+        ensure_issue_789_account_state_scope(
+            &account_states,
+            lifecycle_account_id,
+            first_submit_seq,
+        )?;
+        let raw_lifecycle_account_states = account_states
+            .iter()
+            .filter(|(_, state)| state.account_id == position.account_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        ensure!(
+            !raw_lifecycle_account_states.is_empty(),
+            "issue #789 event store contains no lifecycle AccountState evidence"
+        );
+        ensure!(
+            raw_lifecycle_account_states
+                .iter()
+                .all(|(_, state)| state.base_currency == expected_base_currency),
+            "#789 lifecycle AccountState evidence diverges from the manifest base currency"
+        );
+        let lifecycle_account_states = bind_issue_789_account_states(
+            &fill_sequences,
+            &position_effect_sequences,
+            &raw_lifecycle_account_states,
+            settlement_receipt_seq,
+        )?;
+        let initial_cash =
+            issue_789_account_cash(&lifecycle_account_states[0].1, realized_pnl.currency)?;
+        let stored_terminal_account = &lifecycle_account_states
+            .last()
+            .context("issue #789 AccountState sequence unexpectedly empty")?
+            .1;
+        let stored_terminal_cash =
+            issue_789_account_cash(stored_terminal_account, realized_pnl.currency)?;
+        ensure!(
+            initial_cash == manifest_initial_cash,
+            "initial AccountState does not equal the manifest starting balance"
+        );
+        ensure_issue_789_terminal_account_matches(
+            stored_terminal_account,
+            terminal_account,
+            expected_base_currency,
+        )?;
+        ensure!(
+            stored_terminal_cash == terminal_cash,
+            "terminal account cash diverges from the final AccountState"
+        );
+        let account_cash_after_fills = lifecycle_account_states
+            .iter()
+            .skip(1)
+            .map(|(_, state)| issue_789_account_cash(state, realized_pnl.currency))
+            .collect::<Result<Vec<_>>>()?;
+        let position_commissions = position.commissions.values().copied().collect();
         let settlement = manifest
             .instrument_settlements
             .iter()
             .find(|settlement| settlement.nt_instrument_id == instrument_id.to_string())
             .context("issue #789 fill instrument has no settlement")?;
-        let settlement_price = Price::from_str(&settlement.close_price)
+        let declared_settlement_price = Price::from_str(&settlement.close_price)
             .map_err(|error| anyhow::anyhow!(error))
             .context("parse issue #789 exact settlement price")?;
+        ensure!(
+            orders.iter().any(|order| matches!(
+                &order.cause,
+                crate::execution_contract::ExecutionOrderCause::Settlement { declared_price }
+                    if *declared_price == declared_settlement_price
+            )),
+            "captured InstrumentClose does not equal the manifest settlement"
+        );
         let resolved_config_bytes = output
             .resolved_config_bytes
             .as_deref()
             .context("issue #789 runner omitted resolved config bytes")?;
 
-        crate::execution_contract::validate_execution_contract(
+        let report = crate::execution_contract::validate_execution_contract(
             &crate::execution_contract::ExecutionContractTrace {
                 instrument: &projection.instrument,
-                executable_book: &executable_book,
-                order_side: entry_fills[0].order_side,
-                submitted_quantity: entry_order.initialized_quantity,
-                quote_quantity: entry_order.initialized_quote_quantity,
-                effective_base_quantity: entry_order.effective_quantity,
-                fills: &entry_fills,
-                position_fills: &position.events,
-                settlement_price,
+                configured_account_id,
+                orders,
+                position_effects: position_effects
+                    .into_iter()
+                    .map(|(_, effect)| effect)
+                    .collect(),
                 initial_cash,
-                terminal_cash,
+                account_cash_after_fills,
+                terminal_cash: stored_terminal_cash,
                 realized_pnl,
-                position_commission,
-                expected_fill_commission: Money::zero(realized_pnl.currency),
+                position_commissions,
                 canonical_resolved_config_bytes: resolved_config_bytes,
                 canonical_resolved_config_sha256: &manifest.strategy_config_hash,
             },
-        )
+        )?;
+        ensure!(
+            report.normal_exit_fill_count > 0,
+            "issue #789 lifecycle did not contain a validated normal exit before settlement"
+        );
+        Ok(report)
     }
 
     fn write_issue_789_result_artifact(

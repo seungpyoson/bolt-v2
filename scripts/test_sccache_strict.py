@@ -80,6 +80,8 @@ def valid_document() -> dict[str, object]:
             "gh_archive_url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_linux_amd64.tar.gz",
             "gh_archive_sha256": "83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60",
             "gh_archive_member": "gh_2.96.0_linux_amd64/bin/gh",
+            "releases_per_page": 100,
+            "max_release_pages": 100,
         },
         "targets": {
             "ARM64": {
@@ -647,6 +649,70 @@ class ReleaseCleanupTests(unittest.TestCase):
             head_sha=self.head_sha,
             tag=self.tag,
         )
+
+    def page_response(self, link: str | None) -> str:
+        headers = "HTTP/2.0 200 OK\nContent-Type: application/json\n"
+        if link is not None:
+            headers += f"Link: {link}\n"
+        return headers + "\n[]"
+
+    def test_validates_configured_and_numeric_release_continuations(self) -> None:
+        for path in ("repos/owner/repo/releases", "repositories/123/releases"):
+            link = (
+                f'<https://api.github.com/{path}?per_page=100&page=2>; rel="next", '
+                f'<https://api.github.com/{path}?per_page=100&page=4>; rel="last"'
+            )
+            page = sccache_strict.validate_release_page_response(
+                self.page_response(link),
+                repository="owner/repo",
+                repository_id=123,
+                expected_page=1,
+                per_page=100,
+                visited={"repos/owner/repo/releases?per_page=100&page=1"},
+            )
+
+            self.assertEqual(page["next_endpoint"], f"{path}?per_page=100&page=2")
+
+    def test_rejects_foreign_or_ambiguous_release_continuations(self) -> None:
+        invalid_links = (
+            '<https://example.com/repos/owner/repo/releases?per_page=100&page=2>; rel="next", <https://example.com/repos/owner/repo/releases?per_page=100&page=4>; rel="last"',
+            '<https://api.github.com/repositories/999/releases?per_page=100&page=2>; rel="next", <https://api.github.com/repositories/999/releases?per_page=100&page=4>; rel="last"',
+            '<https://api.github.com/repos/owner/repo/releases?per_page=100&page=3>; rel="next", <https://api.github.com/repos/owner/repo/releases?per_page=100&page=4>; rel="last"',
+            '<https://api.github.com/repos/owner/repo/releases?per_page=100&page=2&extra=1>; rel="next", <https://api.github.com/repos/owner/repo/releases?per_page=100&page=4>; rel="last"',
+        )
+        for link in invalid_links:
+            with self.subTest(link=link), self.assertRaises(ValueError):
+                sccache_strict.validate_release_page_response(
+                    self.page_response(link),
+                    repository="owner/repo",
+                    repository_id=123,
+                    expected_page=1,
+                    per_page=100,
+                    visited=set(),
+                )
+
+    def test_validates_exact_tag_create_and_readback(self) -> None:
+        tag_ref = {
+            "ref": f"refs/tags/{self.tag}",
+            "object": {"type": "commit", "sha": self.head_sha},
+        }
+        response = "HTTP/2.0 201 Created\nContent-Type: application/json\n\n" + json.dumps(
+            tag_ref
+        )
+
+        sccache_strict.validate_tag_create_response(
+            response, tag=self.tag, head_sha=self.head_sha
+        )
+        sccache_strict.validate_release_tag(
+            tag_ref, tag=self.tag, head_sha=self.head_sha
+        )
+
+        wrong = copy.deepcopy(tag_ref)
+        wrong["object"]["sha"] = "c" * 40
+        with self.assertRaisesRegex(ValueError, "exact head commit"):
+            sccache_strict.validate_release_tag(
+                wrong, tag=self.tag, head_sha=self.head_sha
+            )
 
     def release(
         self, *, release_id: int = 77, body: str | None = None

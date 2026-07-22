@@ -58,10 +58,16 @@ jobs:
           gh_bin="$(realpath "$tools_root/$gh_member")"
           [[ -x "$gh_bin" && ! -L "$gh_bin" && "$gh_bin" == "$tools_root"/* ]]
           [[ "$("$gh_bin" --version | head -1)" == "gh version $gh_version "* ]]
+          "$gh_bin" api --help >/dev/null
+          "$gh_bin" release upload --help >/dev/null
+          "$gh_bin" release verify --help >/dev/null
+          "$gh_bin" release verify-asset --help >/dev/null
           {
             echo "gh_bin=$gh_bin"
             echo "api_version=$(jq -r '.publisher.api_version' <<< "$target_json")"
             echo "publisher_environment=$(jq -r '.publisher.environment' <<< "$target_json")"
+            echo "releases_per_page=$(jq -r '.publisher.releases_per_page' <<< "$target_json")"
+            echo "max_release_pages=$(jq -r '.publisher.max_release_pages' <<< "$target_json")"
           } >> "$GITHUB_OUTPUT"
 
       - name: Bind exact source and live controls
@@ -297,10 +303,16 @@ jobs:
           gh_bin="$(realpath "$tools_root/$gh_member")"
           [[ -x "$gh_bin" && ! -L "$gh_bin" && "$gh_bin" == "$tools_root"/* ]]
           [[ "$("$gh_bin" --version | head -1)" == "gh version $gh_version "* ]]
+          "$gh_bin" api --help >/dev/null
+          "$gh_bin" release upload --help >/dev/null
+          "$gh_bin" release verify --help >/dev/null
+          "$gh_bin" release verify-asset --help >/dev/null
           {
             echo "gh_bin=$gh_bin"
             echo "api_version=$(jq -r '.publisher.api_version' <<< "$target_json")"
             echo "publisher_environment=$(jq -r '.publisher.environment' <<< "$target_json")"
+            echo "releases_per_page=$(jq -r '.publisher.releases_per_page' <<< "$target_json")"
+            echo "max_release_pages=$(jq -r '.publisher.max_release_pages' <<< "$target_json")"
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -380,7 +392,10 @@ jobs:
           X64_NAME: ${{ steps.publish-input.outputs.x64_name }}
           PROVENANCE_NAME: ${{ steps.publish-input.outputs.provenance_name }}
           PUBLISHER_ENVIRONMENT: ${{ steps.publish-gh.outputs.publisher_environment }}
+          RELEASES_PER_PAGE: ${{ steps.publish-gh.outputs.releases_per_page }}
+          MAX_RELEASE_PAGES: ${{ steps.publish-gh.outputs.max_release_pages }}
           PUBLISH_ROOT: ${{ steps.publish-input.outputs.publish_root }}
+          REPOSITORY_ID: ${{ github.event.repository.id }}
         run: |
           set -euo pipefail
           cd "$PUBLISH_ROOT"
@@ -392,13 +407,46 @@ jobs:
           github_release() {
             GH_TOKEN="$publish_token" "$GH_BIN" release "$@"
           }
+          census_releases() {
+            local output="$1"
+            local census_name="$2"
+            local page=1
+            local endpoint="repos/$REPOSITORY/releases?per_page=$RELEASES_PER_PAGE&page=1"
+            local census_root="$PUBLISH_ROOT/$census_name"
+            local next page_result response
+            local -a page_files visited_args
+            [[ ! -e "$census_root" ]] || return 1
+            mkdir "$census_root"
+            while (( page <= MAX_RELEASE_PAGES )); do
+              response="$census_root/response-$page.txt"
+              github_api --include -H "X-GitHub-Api-Version: $GH_API_VERSION" \
+                "$endpoint" > "$response" || return 1
+              visited_args+=(--visited "$endpoint")
+              page_result="$census_root/page-$page.json"
+              python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" \
+                validate-release-page \
+                --response "$response" \
+                --repository "$REPOSITORY" \
+                --repository-id "$REPOSITORY_ID" \
+                --expected-page "$page" \
+                --per-page "$RELEASES_PER_PAGE" \
+                "${visited_args[@]}" > "$page_result" || return 1
+              page_files+=("$page_result")
+              next="$(jq -r '.next_endpoint // empty' "$page_result")"
+              [[ -n "$next" ]] || break
+              (( page < MAX_RELEASE_PAGES )) || return 1
+              endpoint="$next"
+              ((page += 1))
+            done
+            jq -s '[.[].releases]' "${page_files[@]}" > "$output"
+          }
           if github_api -H "X-GitHub-Api-Version: $GH_API_VERSION" \
             "repos/$REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
             echo "release tag already exists: $TAG" >&2
             exit 1
           fi
-          releases="$(github_api --paginate --slurp -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-            "repos/$REPOSITORY/releases?per_page=100")"
+          census_releases releases.json initial-release-census
+          releases="$(< releases.json)"
           if jq -e --arg tag "$TAG" 'flatten | any(.tag_name == $tag)' \
             <<< "$releases" >/dev/null; then
             echo "release or draft already exists: $TAG" >&2
@@ -438,9 +486,8 @@ jobs:
               current="$(github_api -H "X-GitHub-Api-Version: $GH_API_VERSION" \
                 "repos/$REPOSITORY/releases/$release_id" 2>/dev/null)" || return
             else
-              current="$(github_api --paginate --slurp \
-                -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-                "repos/$REPOSITORY/releases?per_page=100" 2>/dev/null)" || return
+              census_releases cleanup-release.json cleanup-release-census || return
+              current="$(< cleanup-release.json)"
             fi
             printf '%s\n' "$current" > cleanup-release.json
             cleanup_args=(
@@ -473,6 +520,24 @@ jobs:
             fi
           }
           trap cleanup_mutable_release EXIT
+          github_api --include --method POST \
+            -H "X-GitHub-Api-Version: $GH_API_VERSION" \
+            "repos/$REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" \
+            -f sha="$HEAD_SHA" > tag-create-response.txt
+          python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" \
+            validate-tag-create-response \
+            --response tag-create-response.txt \
+            --tag "$TAG" \
+            --head-sha "$HEAD_SHA"
+          github_api -H "X-GitHub-Api-Version: $GH_API_VERSION" \
+            "repos/$REPOSITORY/git/ref/tags/$TAG" > reserved-tag.json
+          python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" \
+            validate-release-tag \
+            --tag-json reserved-tag.json \
+            --tag "$TAG" \
+            --head-sha "$HEAD_SHA"
+
           release="$(github_api --method POST -H "X-GitHub-Api-Version: $GH_API_VERSION" \
             "repos/$REPOSITORY/releases" \
             -f tag_name="$TAG" \
@@ -484,17 +549,11 @@ jobs:
           jq -e --arg tag "$TAG" --arg sha "$HEAD_SHA" --arg body "$ownership_marker" \
             '.tag_name == $tag and .target_commitish == $sha and .draft == true and .body == $body' \
             <<< "$release" >/dev/null
-          upload_url="$(jq -er '.upload_url | sub("\\{.*$"; "")' <<< "$release")"
-          [[ "$upload_url" == https://uploads.github.com/* ]]
-          for asset in "$ARM_NAME" "$X64_NAME" "$PROVENANCE_NAME"; do
-            curl --fail-with-body --silent --show-error \
-              --proto '=https' --tlsv1.2 --request POST \
-              -H "Authorization: Bearer $publish_token" \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'Content-Type: application/octet-stream' \
-              -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-              --data-binary "@publish-input/$asset" "$upload_url?name=$asset" >/dev/null
-          done
+          github_release upload "$TAG" \
+            "publish-input/$ARM_NAME" \
+            "publish-input/$X64_NAME" \
+            "publish-input/$PROVENANCE_NAME" \
+            --repo "$REPOSITORY"
 
           validate_current_main
           github_api --method PATCH -H "X-GitHub-Api-Version: $GH_API_VERSION" \

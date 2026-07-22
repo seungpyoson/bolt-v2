@@ -11,6 +11,7 @@ import pathlib
 import re
 import sys
 import tomllib
+import urllib.parse
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
@@ -46,6 +47,8 @@ class PublisherConfig:
     gh_archive_url: str
     gh_archive_sha256: str
     gh_archive_member: str
+    releases_per_page: int
+    max_release_pages: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -467,6 +470,8 @@ def load_document(
                 "gh_archive_url",
                 "gh_archive_sha256",
                 "gh_archive_member",
+                "releases_per_page",
+                "max_release_pages",
             }
         ),
         "publisher",
@@ -501,6 +506,12 @@ def load_document(
     )
     if gh_archive_member != f"gh_{gh_version}_linux_amd64/bin/gh":
         raise ValueError("publisher.gh_archive_member must match the pinned archive")
+    releases_per_page = publisher["releases_per_page"]
+    max_release_pages = publisher["max_release_pages"]
+    if type(releases_per_page) is not int or not 1 <= releases_per_page <= 100:
+        raise ValueError("publisher.releases_per_page must be between 1 and 100")
+    if type(max_release_pages) is not int or not 1 <= max_release_pages <= 100:
+        raise ValueError("publisher.max_release_pages must be between 1 and 100")
 
     target_table = _mapping(top["targets"], "targets")
     if frozenset(target_table) != _TARGET_NAMES:
@@ -565,6 +576,8 @@ def load_document(
             gh_archive_url=gh_archive_url,
             gh_archive_sha256=gh_archive_sha256,
             gh_archive_member=gh_archive_member,
+            releases_per_page=releases_per_page,
+            max_release_pages=max_release_pages,
         ),
         targets=MappingProxyType(targets),
     )
@@ -1105,6 +1118,119 @@ def release_ownership_marker(
     )
 
 
+def validate_release_tag(
+    tag_ref: Mapping[str, object], *, tag: str, head_sha: str
+) -> None:
+    _full_sha(head_sha, "head_sha")
+    if tag_ref.get("ref") != f"refs/tags/{tag}":
+        raise ValueError("release tag ref does not match")
+    tag_object = _mapping(tag_ref.get("object"), "release tag object")
+    if tag_object.get("type") != "commit" or tag_object.get("sha") != head_sha:
+        raise ValueError("release tag does not target exact head commit")
+
+
+def validate_tag_create_response(response: str, *, tag: str, head_sha: str) -> None:
+    separator = "\r\n\r\n" if "\r\n\r\n" in response else "\n\n"
+    parts = response.split(separator, 1)
+    if len(parts) != 2 or separator in parts[1]:
+        raise ValueError("tag-create response framing is malformed")
+    status = parts[0].replace("\r\n", "\n").split("\n", 1)[0]
+    if re.fullmatch(r"HTTP/[0-9.]+ 201(?: Created)?", status) is None:
+        raise ValueError("tag-create response status is not 201")
+    try:
+        tag_ref = _mapping(json.loads(parts[1]), "tag-create response")
+    except json.JSONDecodeError as error:
+        raise ValueError("tag-create response body is malformed JSON") from error
+    validate_release_tag(tag_ref, tag=tag, head_sha=head_sha)
+
+
+def validate_release_page_response(
+    response: str,
+    *,
+    repository: str,
+    repository_id: int,
+    expected_page: int,
+    per_page: int,
+    visited: set[str],
+) -> dict[str, object]:
+    if not re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
+        raise ValueError("repository must be OWNER/REPO")
+    if repository_id <= 0 or expected_page <= 0 or not 1 <= per_page <= 100:
+        raise ValueError("release page identity is invalid")
+    separator = "\r\n\r\n" if "\r\n\r\n" in response else "\n\n"
+    parts = response.split(separator, 1)
+    if len(parts) != 2 or separator in parts[1]:
+        raise ValueError("release page response framing is malformed")
+    header_text, body_text = parts
+    header_lines = header_text.replace("\r\n", "\n").split("\n")
+    if re.fullmatch(r"HTTP/[0-9.]+ 200(?: OK)?", header_lines[0]) is None:
+        raise ValueError("release page response status is not 200")
+    headers: dict[str, list[str]] = {}
+    for line in header_lines[1:]:
+        name, delimiter, value = line.partition(":")
+        if not delimiter or not name:
+            raise ValueError("release page response header is malformed")
+        headers.setdefault(name.lower(), []).append(value.strip())
+    if len(headers.get("link", [])) > 1:
+        raise ValueError("release page response has duplicate Link headers")
+    try:
+        releases = json.loads(body_text)
+    except json.JSONDecodeError as error:
+        raise ValueError("release page body is malformed JSON") from error
+    if not isinstance(releases, list) or len(releases) > per_page:
+        raise ValueError("release page body is not a bounded array")
+
+    owner, name = repository.split("/", 1)
+    configured_path = f"/repos/{owner}/{name}/releases"
+    numeric_path = f"/repositories/{repository_id}/releases"
+
+    def canonical_endpoint(url: str, relation: str) -> tuple[str, int]:
+        parsed = urllib.parse.urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "api.github.com"
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+            or urllib.parse.unquote(parsed.path) not in {configured_path, numeric_path}
+        ):
+            raise ValueError("release continuation origin or repository path is invalid")
+        query = urllib.parse.parse_qsl(
+            parsed.query, keep_blank_values=True, strict_parsing=True
+        )
+        if len(query) != 2 or {key for key, _ in query} != {"page", "per_page"}:
+            raise ValueError("release continuation query is invalid")
+        values = dict(query)
+        if values["per_page"] != str(per_page) or not values["page"].isdecimal():
+            raise ValueError("release continuation query values are invalid")
+        page = int(values["page"])
+        if page <= 0:
+            raise ValueError("release continuation page is invalid")
+        endpoint = f"{parsed.path}?per_page={per_page}&page={page}"
+        if relation == "next" and (page != expected_page + 1 or endpoint in visited):
+            raise ValueError("release continuation is repeated or non-sequential")
+        return endpoint.removeprefix("/"), page
+
+    relations: dict[str, tuple[str, int]] = {}
+    if headers.get("link"):
+        for segment in headers["link"][0].split(","):
+            match = re.fullmatch(r'\s*<([^>]+)>;\s*rel="(next|prev|first|last)"\s*', segment)
+            if match is None or match.group(2) in relations:
+                raise ValueError("release continuation Link header is malformed or ambiguous")
+            relations[match.group(2)] = canonical_endpoint(
+                match.group(1), match.group(2)
+            )
+    next_endpoint = relations.get("next")
+    if next_endpoint is not None and "last" not in relations:
+        raise ValueError("release continuation has next without last")
+    if next_endpoint is not None and relations["last"][1] < next_endpoint[1]:
+        raise ValueError("release continuation last page precedes next")
+    return {
+        "releases": releases,
+        "next_endpoint": next_endpoint[0] if next_endpoint is not None else None,
+    }
+
+
 def _release_records(value: object) -> list[Mapping[str, object]]:
     if isinstance(value, Mapping):
         return [value]
@@ -1267,6 +1393,24 @@ def _parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--head-sha", required=True)
     cleanup.add_argument("--ownership-marker", required=True)
 
+    release_page = subparsers.add_parser("validate-release-page")
+    release_page.add_argument("--response", required=True, type=pathlib.Path)
+    release_page.add_argument("--repository", required=True)
+    release_page.add_argument("--repository-id", required=True, type=int)
+    release_page.add_argument("--expected-page", required=True, type=int)
+    release_page.add_argument("--per-page", required=True, type=int)
+    release_page.add_argument("--visited", action="append", default=[])
+
+    tag_create = subparsers.add_parser("validate-tag-create-response")
+    tag_create.add_argument("--response", required=True, type=pathlib.Path)
+    tag_create.add_argument("--tag", required=True)
+    tag_create.add_argument("--head-sha", required=True)
+
+    release_tag = subparsers.add_parser("validate-release-tag")
+    release_tag.add_argument("--tag-json", required=True, type=pathlib.Path)
+    release_tag.add_argument("--tag", required=True)
+    release_tag.add_argument("--head-sha", required=True)
+
     return parser
 
 
@@ -1401,6 +1545,44 @@ def main(argv: list[str] | None = None) -> int:
             if release_id is None:
                 return 1
             print(release_id)
+            return 0
+        if args.command == "validate-release-page":
+            try:
+                response = args.response.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as error:
+                raise ValueError(f"unable to load release page response: {error}") from error
+            _emit_json(
+                validate_release_page_response(
+                    response,
+                    repository=args.repository,
+                    repository_id=args.repository_id,
+                    expected_page=args.expected_page,
+                    per_page=args.per_page,
+                    visited=set(args.visited),
+                )
+            )
+            return 0
+        if args.command == "validate-tag-create-response":
+            try:
+                response = args.response.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as error:
+                raise ValueError(f"unable to load tag-create response: {error}") from error
+            validate_tag_create_response(
+                response,
+                tag=args.tag,
+                head_sha=args.head_sha,
+            )
+            return 0
+        if args.command == "validate-release-tag":
+            tag_document = _mapping(
+                _read_json(args.tag_json, "release tag record"),
+                "release tag record",
+            )
+            validate_release_tag(
+                tag_document,
+                tag=args.tag,
+                head_sha=args.head_sha,
+            )
             return 0
         raise ValueError("unsupported command")
     except ValueError as error:

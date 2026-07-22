@@ -70,7 +70,7 @@ struct EntrySkipV1Wire {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EntryRealizedVolatilitySnapshotV1Wire {
+pub(super) struct EntryRealizedVolatilitySnapshotV1Wire {
     surface_id: String,
     as_of_ms: Option<u64>,
     annualized_decimal: String,
@@ -143,14 +143,14 @@ enum EntrySkipReasonV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum OutcomeSideV1 {
+pub(super) enum OutcomeSideV1 {
     Up,
     Down,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum ForcedFlatReasonV1 {
+pub(super) enum ForcedFlatReasonV1 {
     Freeze,
     StaleReference,
     ThinBook,
@@ -160,7 +160,7 @@ enum ForcedFlatReasonV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum ExposureOccupancyV1 {
+pub(super) enum ExposureOccupancyV1 {
     PendingEntry,
     EntryReconcilePending,
     ManagedPosition,
@@ -171,7 +171,7 @@ enum ExposureOccupancyV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum EntryBlockReasonV1 {
+pub(super) enum EntryBlockReasonV1 {
     PhaseNotActive,
     MetadataMismatch,
     ActiveBookNotPriced,
@@ -188,7 +188,7 @@ enum EntryBlockReasonV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum BinaryOutcomeEdgeBlockReasonV1 {
+pub(super) enum BinaryOutcomeEdgeBlockReasonV1 {
     MissingOrderBook,
     InsufficientDepth,
     InvalidProbability,
@@ -201,7 +201,7 @@ enum BinaryOutcomeEdgeBlockReasonV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum EntryPricingBlockReasonV1 {
+pub(super) enum EntryPricingBlockReasonV1 {
     SpotPriceMissing,
     ReferenceCurrentPriceStale,
     StrikePriceMissing,
@@ -218,7 +218,7 @@ enum EntryPricingBlockReasonV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RvGateResultV1 {
+pub(super) enum RvGateResultV1 {
     Accepted,
     MissingSnapshot,
     MissingEvaluationEventTime,

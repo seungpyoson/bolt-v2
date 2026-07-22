@@ -8,6 +8,7 @@ mod order_reject;
 mod requote;
 mod reservation;
 mod settlement;
+mod strategy_input;
 mod venue_truth;
 
 use anyhow::{Context, Result, ensure};
@@ -16,12 +17,13 @@ use serde::{Deserialize, Serialize};
 use super::{
     facts::{
         AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
-        CapitalAdmissionRebuildFact, EntryOrderIntentFact, EntrySkipFact,
-        ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
-        RecoveryFact, RejectedEntryAdmissionFact, RequoteThrottleObservationFact,
+        BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, EntryOrderIntentFact,
+        EntrySkipFact, ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact,
+        OrderRejectFact, RecoveryFact, RejectedEntryAdmissionFact, RequoteThrottleObservationFact,
         RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact, SettlementBookingErrorFact,
-        SettlementFact, SubmitReservationFillFact, SubmitReservationMetadataFact,
-        TerminalSettlementFact, VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
+        SettlementFact, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
+        SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
+        VenueTruthDivergenceFact,
     },
     generated_contract::{
         ConsumerDisposition, IdentityDescriptor, KnownConsumer, KnownIdentity, KnownPurpose,
@@ -317,6 +319,38 @@ impl CodecFor<identities::EntrySkipObservationV1> for CurrentCodecs {
     }
 }
 
+impl CodecFor<identities::BlockedStrategyInputObservationV1> for CurrentCodecs {
+    type Input = BlockedStrategyInputObservationFact;
+    type Fact = BlockedStrategyInputObservationFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        strategy_input::encode_blocked(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        strategy_input::decode_blocked(line, line_number)
+    }
+}
+
+impl CodecFor<identities::SubmitLinkedStrategyInputSnapshotV1> for CurrentCodecs {
+    type Input = SubmitLinkedStrategyInputSnapshotFact;
+    type Fact = SubmitLinkedStrategyInputSnapshotFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        strategy_input::encode_submit(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        strategy_input::decode_submit(line, line_number)
+    }
+}
+
 impl CodecFor<identities::AdmittedEntryAdmissionV1> for CurrentCodecs {
     type Input = AdmittedEntryAdmissionFact;
     type Fact = AdmittedEntryAdmissionFact;
@@ -508,6 +542,24 @@ pub(crate) fn encode_entry_skip_observation(
     fact: EntrySkipFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     <CurrentCodecs as CodecFor<identities::EntrySkipObservationV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
+}
+
+pub(crate) fn encode_blocked_strategy_input_observation(
+    fact: BlockedStrategyInputObservationFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::BlockedStrategyInputObservationV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
+}
+
+pub(crate) fn encode_submit_linked_strategy_input_snapshot(
+    fact: SubmitLinkedStrategyInputSnapshotFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::SubmitLinkedStrategyInputSnapshotV1>>::encode(
         &fact,
         current_utc_ns()?,
     )
@@ -715,7 +767,8 @@ mod tests {
         AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason, LossHaltReason,
         LossSnapshotSource, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
         OrderIntentDetails, OrderIntentOrderFields, OrderRejectFact, OrderRejectReason,
-        OrderRejectSource, RvGateResult,
+        OrderRejectSource, RvGateResult, StrategyInputDetails, StrategyInputRvState,
+        SubmissionLinkage,
     };
     use super::*;
 
@@ -1025,6 +1078,58 @@ mod tests {
             frozen: false,
             metadata_matches_selection: true,
             fast_venue_incoherent: false,
+        }
+    }
+
+    fn strategy_input_details() -> StrategyInputDetails {
+        StrategyInputDetails {
+            strategy_id: "strategy-1".to_string(),
+            configured_target_id: "target-1".to_string(),
+            market_selection_ruleset_id: "ruleset-1".to_string(),
+            market_selection_outcome: "selected".to_string(),
+            market_id: Some("market-1".to_string()),
+            polymarket_condition_id: Some("condition-1".to_string()),
+            polymarket_market_slug: Some("market-slug".to_string()),
+            polymarket_question_id: Some("question-1".to_string()),
+            up_instrument_id: Some("YES-USD.POLYMARKET".to_string()),
+            down_instrument_id: Some("NO-USD.POLYMARKET".to_string()),
+            market_selection_timestamp_ms: Some(31),
+            selected_market_observed_timestamp_ms: Some(31),
+            polymarket_market_start_timestamp_ms: Some(1),
+            polymarket_market_end_timestamp_ms: Some(60_000),
+            price_to_beat_source: "chainlink".to_string(),
+            price_to_beat_value: "100".to_string(),
+            reference_quote_ts_event: 31,
+            spot_price: "100".to_string(),
+            fast_venue_available: true,
+            reference_current_price: Some("100".to_string()),
+            reference_current_price_available: true,
+            reference_current_price_source_id: Some("chainlink".to_string()),
+            reference_current_price_failed_over: Some(false),
+            realized_volatility: StrategyInputRvState::Absent {
+                gate_result: RvGateResult::MissingSnapshot,
+            },
+            seconds_to_market_end: 60,
+            pricing_kurtosis: "3".to_string(),
+            theta_decay_factor: "1".to_string(),
+            theta_scaled_min_edge_bps: "10".to_string(),
+            fair_probability_up: "0.5".to_string(),
+            uncertainty_band_probability: "0.01".to_string(),
+            expected_edge_basis_points: "20".to_string(),
+            worst_case_edge_basis_points: "10".to_string(),
+            up_worst_case_edge_basis_points: Some("10".to_string()),
+            down_worst_case_edge_basis_points: Some("9".to_string()),
+            gate_blocked_by: vec![],
+            pricing_blocked_by: vec![
+                super::super::facts::EntryPricingBlockReason::RealizedVolNotReady,
+            ],
+            fast_venue_name: Some("binance".to_string()),
+            fast_venue_age_ms: Some(1),
+            fast_venue_jitter_ms: Some(1),
+            fast_venue_incoherent: false,
+            lead_agreement_corr: Some("1".to_string()),
+            fee_rate_basis_points: "0".to_string(),
+            selected_side: None,
         }
     }
 
@@ -1446,6 +1551,61 @@ mod tests {
             <CurrentCodecs as CodecFor<identities::EntrySkipObservationV1>>::decode(line, 1)
                 .expect("entry skip must decode"),
             expected
+        );
+    }
+
+    #[test]
+    fn strategy_input_identities_are_role_pure_and_model_rv_absence() {
+        let blocked = BlockedStrategyInputObservationFact {
+            details: strategy_input_details(),
+        };
+        let blocked_record = <CurrentCodecs as CodecFor<
+            identities::BlockedStrategyInputObservationV1,
+        >>::encode(&blocked, 32)
+        .expect("valid blocked observation must encode");
+        let blocked_line = std::str::from_utf8(blocked_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::BlockedStrategyInputObservationV1>>::decode(
+                blocked_line,
+                1,
+            )
+            .expect("blocked observation must decode"),
+            blocked
+        );
+
+        let submit = SubmitLinkedStrategyInputSnapshotFact {
+            details: strategy_input_details(),
+            submission: SubmissionLinkage {
+                instrument_id: "YES-USD.POLYMARKET".to_string(),
+                order_side: "buy".to_string(),
+                price: "0.4".to_string(),
+                quantity: "1".to_string(),
+                client_order_id: "client-1".to_string(),
+            },
+        };
+        let submit_record = <CurrentCodecs as CodecFor<
+            identities::SubmitLinkedStrategyInputSnapshotV1,
+        >>::encode(&submit, 33)
+        .expect("valid submit snapshot must encode");
+        let submit_line = std::str::from_utf8(submit_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::SubmitLinkedStrategyInputSnapshotV1>>::decode(
+                submit_line,
+                1,
+            )
+            .expect("submit snapshot must decode"),
+            submit
+        );
+        assert!(
+            <CurrentCodecs as CodecFor<identities::BlockedStrategyInputObservationV1>>::decode(
+                submit_line,
+                1,
+            )
+            .is_err()
         );
     }
 }

@@ -660,6 +660,86 @@ pub struct EntrySkipFact {
     pub fast_venue_incoherent: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StrategyInputRvState {
+    Absent {
+        gate_result: RvGateResult,
+    },
+    Present {
+        selected_annualized_decimal: String,
+        gate_result: RvGateResult,
+        receive_watermark_ms: Option<u64>,
+        snapshot: EntryRealizedVolatilitySnapshotFact,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrategyInputDetails {
+    pub strategy_id: String,
+    pub configured_target_id: String,
+    pub market_selection_ruleset_id: String,
+    pub market_selection_outcome: String,
+    pub market_id: Option<String>,
+    pub polymarket_condition_id: Option<String>,
+    pub polymarket_market_slug: Option<String>,
+    pub polymarket_question_id: Option<String>,
+    pub up_instrument_id: Option<String>,
+    pub down_instrument_id: Option<String>,
+    pub market_selection_timestamp_ms: Option<u64>,
+    pub selected_market_observed_timestamp_ms: Option<u64>,
+    pub polymarket_market_start_timestamp_ms: Option<u64>,
+    pub polymarket_market_end_timestamp_ms: Option<u64>,
+    pub price_to_beat_source: String,
+    pub price_to_beat_value: String,
+    pub reference_quote_ts_event: u64,
+    pub spot_price: String,
+    pub fast_venue_available: bool,
+    pub reference_current_price: Option<String>,
+    pub reference_current_price_available: bool,
+    pub reference_current_price_source_id: Option<String>,
+    pub reference_current_price_failed_over: Option<bool>,
+    pub realized_volatility: StrategyInputRvState,
+    pub seconds_to_market_end: u64,
+    pub pricing_kurtosis: String,
+    pub theta_decay_factor: String,
+    pub theta_scaled_min_edge_bps: String,
+    pub fair_probability_up: String,
+    pub uncertainty_band_probability: String,
+    pub expected_edge_basis_points: String,
+    pub worst_case_edge_basis_points: String,
+    pub up_worst_case_edge_basis_points: Option<String>,
+    pub down_worst_case_edge_basis_points: Option<String>,
+    pub gate_blocked_by: Vec<EntryBlockReason>,
+    pub pricing_blocked_by: Vec<EntryPricingBlockReason>,
+    pub fast_venue_name: Option<String>,
+    pub fast_venue_age_ms: Option<u64>,
+    pub fast_venue_jitter_ms: Option<u64>,
+    pub fast_venue_incoherent: bool,
+    pub lead_agreement_corr: Option<String>,
+    pub fee_rate_basis_points: String,
+    pub selected_side: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedStrategyInputObservationFact {
+    pub details: StrategyInputDetails,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmissionLinkage {
+    pub instrument_id: String,
+    pub order_side: String,
+    pub price: String,
+    pub quantity: String,
+    pub client_order_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmitLinkedStrategyInputSnapshotFact {
+    pub details: StrategyInputDetails,
+    pub submission: SubmissionLinkage,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,

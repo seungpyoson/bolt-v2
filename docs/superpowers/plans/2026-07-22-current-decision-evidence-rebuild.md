@@ -32,10 +32,10 @@
 - Test: `tests/bolt_v3_current_evidence_contract.rs`
 
 **Interfaces:**
-- Produces: `KnownProducer`, `KnownPurpose`, `KnownIdentity`, `KnownFact`, `KnownConsumer`, `KnownSink`, `EffectPolicy`, `current_identity_for_purpose`, `sink_for_purpose`, `effect_policy_for_purpose`, and exhaustive fact-consumer dispositions.
+- Produces: `KnownProducer`, `KnownPurpose`, `KnownIdentity`, `KnownFact`, `KnownConsumer`, `KnownSink`, `EffectPolicy`, `purpose_for_producer`, `current_identity_for_purpose`, `fact_for_identity`, `descriptor_for_identity`, `sink_for_purpose`, `effect_policy_for_purpose`, and exhaustive fact-consumer dispositions.
 - Consumes: only TOML registry IDs and metadata; no Rust function-name strings.
 
-- [ ] **Step 1: Write failing registry closure tests**
+- [x] **Step 1: Write failing registry closure tests**
 
 Add behavior tests that parse the registry and assert rejection after independently removing a producer, current identity, fact-consumer cell, owner, sink, or effect policy; adding a consumer must invalidate every unadjudicated fact row. Assert duplicate exact `(kind, schema_version)` pairs and observation-to-machine routing reject.
 
@@ -47,9 +47,9 @@ CARGO_PROFILE_TEST_DEBUG=0 cargo test --locked --test bolt_v3_current_evidence_c
 
 Expected: compilation fails because `bolt_v3_current_evidence` and the parser do not exist.
 
-- [ ] **Step 2: Implement the registry parser and validator**
+- [x] **Step 2: Implement the registry parser and validator**
 
-Use closed serde rows with `#[serde(deny_unknown_fields)]`. Register these current purposes, each with exactly one structural producer and fresh identity:
+Use closed serde rows with `#[serde(deny_unknown_fields)]`. Register these current purposes, each with at least one structural producer and exactly one fresh identity. Register both structurally distinct `order_reject` producers, for 27 producer rows total:
 
 ```text
 blocked_strategy_input_observation
@@ -82,11 +82,11 @@ venue_truth_divergence
 
 Machine duties are `action`, `join`, `reconciliation`, or `recovery`. Observation duties are `state_observation` or `diagnostic_observation`. Generator validation must make those duty sets disjoint and reject observation purposes using a machine sink or non-observation failure policy.
 
-- [ ] **Step 3: Generate sealed Rust markers and exhaustive relations**
+- [x] **Step 3: Generate sealed Rust markers and exhaustive relations**
 
 Generate enums deriving `Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash`. Generate total matches without wildcard arms. Bind each purpose to one identity, sink, effect policy, fact, and producer. Bind every fact-consumer cell to either a typed event variant or an explicit owner-ruling ID.
 
-- [ ] **Step 4: Verify deterministic generation**
+- [x] **Step 4: Verify deterministic generation**
 
 Run the focused test twice and compare a fresh render with the committed bytes. Expected: PASS with byte-identical output.
 

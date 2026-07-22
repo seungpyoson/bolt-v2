@@ -83,7 +83,7 @@ The stable envelope uses exact equality on `(kind, schema_version)` and exact `g
 
 TOML owns finite current membership and relationships:
 
-- producer ID to purpose;
+- every structural producer ID to exactly one purpose; a purpose may have multiple registered producers;
 - purpose owner, duties, sink, effect policy, novelty capability, current identity, and fact;
 - exact identity metadata;
 - consumer metadata;

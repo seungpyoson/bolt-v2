@@ -1,0 +1,1368 @@
+schema_version = 1
+
+[[owners]]
+id = "bolt_v3_decision_evidence"
+
+[[sinks]]
+id = "machine"
+startup_recovery_reads = true
+
+[[sinks]]
+id = "observation"
+startup_recovery_reads = false
+
+[[consumers]]
+id = "reservation_recovery_v1"
+mode = "startup_recovery"
+owner = "bolt_v3_decision_evidence"
+source_anchors = ["src/bolt_v3_live_node.rs:rebuild_capital_admission_from_nt_cache"]
+
+[[consumers]]
+id = "settlement_recovery_v1"
+mode = "startup_recovery"
+owner = "bolt_v3_decision_evidence"
+source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:recover_settlement_bootstrap_from_scope"]
+
+[[consumers]]
+id = "booking_recovery_v1"
+mode = "startup_recovery"
+owner = "bolt_v3_decision_evidence"
+source_anchors = ["src/bolt_v3_settlement_booking.rs:recover_settlement_bootstrap"]
+
+[[consumers]]
+id = "shadow_pnl_v1"
+mode = "offline_projection"
+owner = "bolt_v3_decision_evidence"
+source_anchors = ["src/bin/shadow_pnl_report.rs"]
+
+[[purposes]]
+id = "blocked_strategy_input_observation"
+owner = "bolt_v3_decision_evidence"
+duties = ["state_observation"]
+effect_policy = "observation_bounded_failure"
+sink = "observation"
+novelty_capability = "prohibited"
+current_identity = "blocked_strategy_input_observation_v1"
+current_fact = "blocked_strategy_input_observation_v1"
+
+[[purposes]]
+id = "submit_linked_strategy_input_snapshot"
+owner = "bolt_v3_decision_evidence"
+duties = ["join"]
+effect_policy = "must_precede_new_risk"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "submit_linked_strategy_input_snapshot_v1"
+current_fact = "submit_linked_strategy_input_snapshot_v1"
+
+[[purposes]]
+id = "entry_order_intent"
+owner = "bolt_v3_decision_evidence"
+duties = ["join", "action"]
+effect_policy = "must_precede_new_risk"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "entry_order_intent_v1"
+current_fact = "entry_order_intent_v1"
+
+[[purposes]]
+id = "risk_reducing_exit_order_intent"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "risk_reducing_continues"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "risk_reducing_exit_order_intent_v1"
+current_fact = "risk_reducing_exit_order_intent_v1"
+
+[[purposes]]
+id = "admitted_entry_admission"
+owner = "bolt_v3_decision_evidence"
+duties = ["join", "action"]
+effect_policy = "must_precede_new_risk"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "admitted_entry_admission_v1"
+current_fact = "admitted_entry_admission_v1"
+
+[[purposes]]
+id = "rejected_entry_admission"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "preserve_result"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "rejected_entry_admission_v1"
+current_fact = "rejected_entry_admission_v1"
+
+[[purposes]]
+id = "risk_reducing_exit_admission"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "risk_reducing_continues"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "risk_reducing_exit_admission_v1"
+current_fact = "risk_reducing_exit_admission_v1"
+
+[[purposes]]
+id = "forced_reduction_admission"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "risk_reducing_continues"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "forced_reduction_admission_v1"
+current_fact = "forced_reduction_admission_v1"
+
+[[purposes]]
+id = "basket_admission_granted"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "must_precede_new_risk"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "basket_admission_granted_v1"
+current_fact = "basket_admission_granted_v1"
+
+[[purposes]]
+id = "basket_admission_rejected"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "preserve_result"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "basket_admission_rejected_v1"
+current_fact = "basket_admission_rejected_v1"
+
+[[purposes]]
+id = "capital_admission_rebuild"
+owner = "bolt_v3_decision_evidence"
+duties = ["reconciliation"]
+effect_policy = "reconciliation_fail_closed"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "capital_admission_rebuild_v1"
+current_fact = "capital_admission_rebuild_v1"
+
+[[purposes]]
+id = "submit_reservation_metadata"
+owner = "bolt_v3_decision_evidence"
+duties = ["recovery"]
+effect_policy = "must_precede_new_risk"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "submit_reservation_metadata_v1"
+current_fact = "submit_reservation_metadata_v1"
+
+[[purposes]]
+id = "submit_reservation_fill"
+owner = "bolt_v3_decision_evidence"
+duties = ["recovery"]
+effect_policy = "reconciliation_fail_closed"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "submit_reservation_fill_v1"
+current_fact = "submit_reservation_fill_v1"
+
+[[purposes]]
+id = "entry_skip_observation"
+owner = "bolt_v3_decision_evidence"
+duties = ["state_observation"]
+effect_policy = "observation_bounded_failure"
+sink = "observation"
+novelty_capability = "prohibited"
+current_identity = "entry_skip_observation_v1"
+current_fact = "entry_skip_observation_v1"
+
+[[purposes]]
+id = "exit_submission_decision"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "risk_reducing_continues"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "exit_submission_decision_v1"
+current_fact = "exit_submission_decision_v1"
+
+[[purposes]]
+id = "exit_hold_decision"
+owner = "bolt_v3_decision_evidence"
+duties = ["diagnostic_observation"]
+effect_policy = "observation_bounded_failure"
+sink = "observation"
+novelty_capability = "prohibited"
+current_identity = "exit_hold_decision_v1"
+current_fact = "exit_hold_decision_v1"
+
+[[purposes]]
+id = "exit_evaluation"
+owner = "bolt_v3_decision_evidence"
+duties = ["diagnostic_observation"]
+effect_policy = "observation_bounded_failure"
+sink = "observation"
+novelty_capability = "prohibited"
+current_identity = "exit_evaluation_v1"
+current_fact = "exit_evaluation_v1"
+
+[[purposes]]
+id = "loss_governor_halt"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "preserve_result"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "loss_governor_halt_v1"
+current_fact = "loss_governor_halt_v1"
+
+[[purposes]]
+id = "order_reject"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "preserve_result"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "order_reject_v1"
+current_fact = "order_reject_v1"
+
+[[purposes]]
+id = "order_lifecycle"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "preserve_result"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "order_lifecycle_v1"
+current_fact = "order_lifecycle_v1"
+
+[[purposes]]
+id = "requote_throttle_observation"
+owner = "bolt_v3_decision_evidence"
+duties = ["state_observation"]
+effect_policy = "observation_bounded_failure"
+sink = "observation"
+novelty_capability = "prohibited"
+current_identity = "requote_throttle_observation_v1"
+current_fact = "requote_throttle_observation_v1"
+
+[[purposes]]
+id = "settlement"
+owner = "bolt_v3_decision_evidence"
+duties = ["recovery"]
+effect_policy = "reconciliation_fail_closed"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "settlement_v1"
+current_fact = "settlement_v1"
+
+[[purposes]]
+id = "settlement_booking_error"
+owner = "bolt_v3_decision_evidence"
+duties = ["recovery"]
+effect_policy = "reconciliation_fail_closed"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "settlement_booking_error_v1"
+current_fact = "settlement_booking_error_v1"
+
+[[purposes]]
+id = "terminal_settlement"
+owner = "bolt_v3_decision_evidence"
+duties = ["recovery"]
+effect_policy = "reconciliation_fail_closed"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "terminal_settlement_v1"
+current_fact = "terminal_settlement_v1"
+
+[[purposes]]
+id = "venue_truth_capture_failure"
+owner = "bolt_v3_decision_evidence"
+duties = ["reconciliation", "action"]
+effect_policy = "risk_reducing_continues"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "venue_truth_capture_failure_v1"
+current_fact = "venue_truth_capture_failure_v1"
+
+[[purposes]]
+id = "venue_truth_divergence"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "preserve_result"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "venue_truth_divergence_v1"
+current_fact = "venue_truth_divergence_v1"
+
+[[producers]]
+id = "edge_taker_blocked_strategy_input"
+purpose = "blocked_strategy_input_observation"
+source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_blocked_entry_strategy_input_snapshot_once"]
+
+[[producers]]
+id = "edge_taker_submit_strategy_input"
+purpose = "submit_linked_strategy_input_snapshot"
+source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:try_submit_entry_order"]
+
+[[producers]]
+id = "order_execution_entry_intent"
+purpose = "entry_order_intent"
+source_anchors = ["src/bolt_v3_order_execution.rs:route_submit_with_sink"]
+
+[[producers]]
+id = "order_execution_exit_intent"
+purpose = "risk_reducing_exit_order_intent"
+source_anchors = ["src/bolt_v3_order_execution.rs:route_submit_with_sink"]
+
+[[producers]]
+id = "submit_admission_admitted_entry"
+purpose = "admitted_entry_admission"
+source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at"]
+
+[[producers]]
+id = "submit_admission_rejected_entry"
+purpose = "rejected_entry_admission"
+source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at"]
+
+[[producers]]
+id = "submit_admission_exit"
+purpose = "risk_reducing_exit_admission"
+source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at"]
+
+[[producers]]
+id = "submit_admission_forced_reduction"
+purpose = "forced_reduction_admission"
+source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at"]
+
+[[producers]]
+id = "basket_admission_granted"
+purpose = "basket_admission_granted"
+source_anchors = ["src/bolt_v3_basket_admission.rs:record_basket_decision", "src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
+
+[[producers]]
+id = "basket_admission_rejected"
+purpose = "basket_admission_rejected"
+source_anchors = ["src/bolt_v3_basket_admission.rs:record_basket_decision", "src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
+
+[[producers]]
+id = "capital_admission_rebuild"
+purpose = "capital_admission_rebuild"
+source_anchors = ["src/bolt_v3_submit_admission.rs:finish_capital_admission_rebuild"]
+
+[[producers]]
+id = "submit_reservation_metadata"
+purpose = "submit_reservation_metadata"
+source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at", "src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
+
+[[producers]]
+id = "submit_reservation_fill"
+purpose = "submit_reservation_fill"
+source_anchors = ["src/bolt_v3_submit_admission.rs:apply_capital_admission_lifecycle_update"]
+
+[[producers]]
+id = "edge_taker_entry_skip"
+purpose = "entry_skip_observation"
+source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_and_log_entry_skip"]
+
+[[producers]]
+id = "edge_taker_exit_submit_decision"
+purpose = "exit_submission_decision"
+source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_exit_decision_once"]
+
+[[producers]]
+id = "edge_taker_exit_hold_decision"
+purpose = "exit_hold_decision"
+source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_exit_decision_once"]
+
+[[producers]]
+id = "edge_taker_exit_evaluation"
+purpose = "exit_evaluation"
+source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_exit_evaluation_evidence"]
+
+[[producers]]
+id = "submit_admission_loss_halt"
+purpose = "loss_governor_halt"
+source_anchors = ["src/bolt_v3_submit_admission.rs:record_stale_loss_governor_halt"]
+
+[[producers]]
+id = "submit_admission_order_reject"
+purpose = "order_reject"
+source_anchors = ["src/bolt_v3_submit_admission.rs:record_submit_admission_order_reject"]
+
+[[producers]]
+id = "order_reject_observer_feed"
+purpose = "order_reject"
+source_anchors = ["src/bolt_v3_order_reject_observer_feed.rs:on_order_event"]
+
+[[producers]]
+id = "edge_taker_order_lifecycle"
+purpose = "order_lifecycle"
+source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_order_lifecycle_evidence"]
+
+[[producers]]
+id = "maker_requote_throttle"
+purpose = "requote_throttle_observation"
+source_anchors = ["src/strategies/binary_oracle_maker/mod.rs:update_requote_throttle_edge"]
+
+[[producers]]
+id = "edge_taker_settlement"
+purpose = "settlement"
+source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:try_book_resolution_settlement"]
+
+[[producers]]
+id = "edge_taker_booking_error"
+purpose = "settlement_booking_error"
+source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_settlement_booking_error"]
+
+[[producers]]
+id = "edge_taker_terminal_settlement"
+purpose = "terminal_settlement"
+source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:apply_terminal_settlement_transition"]
+
+[[producers]]
+id = "submit_admission_venue_capture_failure"
+purpose = "venue_truth_capture_failure"
+source_anchors = ["src/bolt_v3_submit_admission.rs:suspend_capital_admission_for_venue_truth_capture_failure"]
+
+[[producers]]
+id = "submit_admission_venue_divergence"
+purpose = "venue_truth_divergence"
+source_anchors = ["src/bolt_v3_submit_admission.rs:record_venue_truth_divergence_evidence"]
+
+[[identities]]
+id = "blocked_strategy_input_observation_v1"
+purpose = "blocked_strategy_input_observation"
+kind = "blocked_strategy_input_observation"
+schema_version = 1
+gate_id = "bolt_v3.strategy_input_snapshot"
+payload_member = "blocked_strategy_input_observation"
+
+[[identities]]
+id = "submit_linked_strategy_input_snapshot_v1"
+purpose = "submit_linked_strategy_input_snapshot"
+kind = "strategy_input_snapshot"
+schema_version = 16
+gate_id = "bolt_v3.strategy_input_snapshot"
+payload_member = "snapshot"
+
+[[identities]]
+id = "entry_order_intent_v1"
+purpose = "entry_order_intent"
+kind = "order_intent"
+schema_version = 16
+gate_id = "bolt_v3.order_intent"
+payload_member = "intent"
+
+[[identities]]
+id = "risk_reducing_exit_order_intent_v1"
+purpose = "risk_reducing_exit_order_intent"
+kind = "risk_reducing_exit_order_intent"
+schema_version = 1
+gate_id = "bolt_v3.order_intent"
+payload_member = "intent"
+
+[[identities]]
+id = "admitted_entry_admission_v1"
+purpose = "admitted_entry_admission"
+kind = "admission_decision"
+schema_version = 16
+gate_id = "bolt_v3.submit_admission"
+payload_member = "decision"
+
+[[identities]]
+id = "rejected_entry_admission_v1"
+purpose = "rejected_entry_admission"
+kind = "rejected_entry_admission"
+schema_version = 1
+gate_id = "bolt_v3.submit_admission"
+payload_member = "decision"
+
+[[identities]]
+id = "risk_reducing_exit_admission_v1"
+purpose = "risk_reducing_exit_admission"
+kind = "risk_reducing_exit_admission"
+schema_version = 1
+gate_id = "bolt_v3.submit_admission"
+payload_member = "decision"
+
+[[identities]]
+id = "forced_reduction_admission_v1"
+purpose = "forced_reduction_admission"
+kind = "forced_reduction_admission"
+schema_version = 1
+gate_id = "bolt_v3.submit_admission"
+payload_member = "decision"
+
+[[identities]]
+id = "basket_admission_granted_v1"
+purpose = "basket_admission_granted"
+kind = "basket_admission_granted"
+schema_version = 1
+gate_id = "bolt_v3.submit_admission"
+payload_member = "decision"
+
+[[identities]]
+id = "basket_admission_rejected_v1"
+purpose = "basket_admission_rejected"
+kind = "basket_admission_rejected"
+schema_version = 1
+gate_id = "bolt_v3.submit_admission"
+payload_member = "decision"
+
+[[identities]]
+id = "capital_admission_rebuild_v1"
+purpose = "capital_admission_rebuild"
+kind = "capital_admission_rebuild"
+schema_version = 16
+gate_id = "bolt_v3.capital_admission_rebuild"
+payload_member = "audit"
+
+[[identities]]
+id = "submit_reservation_metadata_v1"
+purpose = "submit_reservation_metadata"
+kind = "submit_reservation_metadata"
+schema_version = 16
+gate_id = "bolt_v3.submit_admission"
+payload_member = "metadata"
+
+[[identities]]
+id = "submit_reservation_fill_v1"
+purpose = "submit_reservation_fill"
+kind = "submit_reservation_fill"
+schema_version = 16
+gate_id = "bolt_v3.submit_admission"
+payload_member = "fill"
+
+[[identities]]
+id = "entry_skip_observation_v1"
+purpose = "entry_skip_observation"
+kind = "entry_skip"
+schema_version = 16
+gate_id = "bolt_v3.entry_skip"
+payload_member = "entry_skip"
+
+[[identities]]
+id = "exit_submission_decision_v1"
+purpose = "exit_submission_decision"
+kind = "exit_submission_decision"
+schema_version = 1
+gate_id = "bolt_v3.exit_decision"
+payload_member = "exit_decision"
+
+[[identities]]
+id = "exit_hold_decision_v1"
+purpose = "exit_hold_decision"
+kind = "exit_hold_decision"
+schema_version = 1
+gate_id = "bolt_v3.exit_decision"
+payload_member = "exit_decision"
+
+[[identities]]
+id = "exit_evaluation_v1"
+purpose = "exit_evaluation"
+kind = "exit_evaluation"
+schema_version = 16
+gate_id = "bolt_v3.exit_evaluation"
+payload_member = "exit_evaluation"
+
+[[identities]]
+id = "loss_governor_halt_v1"
+purpose = "loss_governor_halt"
+kind = "loss_governor_halt"
+schema_version = 16
+gate_id = "bolt_v3.loss_governor_halt"
+payload_member = "loss_governor_halt"
+
+[[identities]]
+id = "order_reject_v1"
+purpose = "order_reject"
+kind = "order_reject"
+schema_version = 16
+gate_id = "bolt_v3.order_reject"
+payload_member = "order_reject"
+
+[[identities]]
+id = "order_lifecycle_v1"
+purpose = "order_lifecycle"
+kind = "order_lifecycle"
+schema_version = 16
+gate_id = "bolt_v3.order_lifecycle"
+payload_member = "order_lifecycle"
+
+[[identities]]
+id = "requote_throttle_observation_v1"
+purpose = "requote_throttle_observation"
+kind = "requote_throttle"
+schema_version = 16
+gate_id = "bolt_v3.requote_throttle"
+payload_member = "requote_throttle"
+
+[[identities]]
+id = "settlement_v1"
+purpose = "settlement"
+kind = "settlement"
+schema_version = 16
+gate_id = "bolt_v3.settlement"
+payload_member = "settlement"
+
+[[identities]]
+id = "settlement_booking_error_v1"
+purpose = "settlement_booking_error"
+kind = "settlement_booking_error"
+schema_version = 16
+gate_id = "bolt_v3.settlement"
+payload_member = "settlement_booking_error"
+
+[[identities]]
+id = "terminal_settlement_v1"
+purpose = "terminal_settlement"
+kind = "terminal_settlement"
+schema_version = 16
+gate_id = "bolt_v3.settlement"
+payload_member = "terminal_settlement"
+
+[[identities]]
+id = "venue_truth_capture_failure_v1"
+purpose = "venue_truth_capture_failure"
+kind = "venue_truth_capture_failure"
+schema_version = 16
+gate_id = "bolt_v3.capital_admission_rebuild"
+payload_member = "venue_truth_capture_failure"
+
+[[identities]]
+id = "venue_truth_divergence_v1"
+purpose = "venue_truth_divergence"
+kind = "venue_truth_divergence"
+schema_version = 16
+gate_id = "bolt_v3.capital_admission_rebuild"
+payload_member = "venue_truth_divergence"
+
+[[facts]]
+id = "blocked_strategy_input_observation_v1"
+identity = "blocked_strategy_input_observation_v1"
+
+[[facts]]
+id = "submit_linked_strategy_input_snapshot_v1"
+identity = "submit_linked_strategy_input_snapshot_v1"
+
+[[facts]]
+id = "entry_order_intent_v1"
+identity = "entry_order_intent_v1"
+
+[[facts]]
+id = "risk_reducing_exit_order_intent_v1"
+identity = "risk_reducing_exit_order_intent_v1"
+
+[[facts]]
+id = "admitted_entry_admission_v1"
+identity = "admitted_entry_admission_v1"
+
+[[facts]]
+id = "rejected_entry_admission_v1"
+identity = "rejected_entry_admission_v1"
+
+[[facts]]
+id = "risk_reducing_exit_admission_v1"
+identity = "risk_reducing_exit_admission_v1"
+
+[[facts]]
+id = "forced_reduction_admission_v1"
+identity = "forced_reduction_admission_v1"
+
+[[facts]]
+id = "basket_admission_granted_v1"
+identity = "basket_admission_granted_v1"
+
+[[facts]]
+id = "basket_admission_rejected_v1"
+identity = "basket_admission_rejected_v1"
+
+[[facts]]
+id = "capital_admission_rebuild_v1"
+identity = "capital_admission_rebuild_v1"
+
+[[facts]]
+id = "submit_reservation_metadata_v1"
+identity = "submit_reservation_metadata_v1"
+
+[[facts]]
+id = "submit_reservation_fill_v1"
+identity = "submit_reservation_fill_v1"
+
+[[facts]]
+id = "entry_skip_observation_v1"
+identity = "entry_skip_observation_v1"
+
+[[facts]]
+id = "exit_submission_decision_v1"
+identity = "exit_submission_decision_v1"
+
+[[facts]]
+id = "exit_hold_decision_v1"
+identity = "exit_hold_decision_v1"
+
+[[facts]]
+id = "exit_evaluation_v1"
+identity = "exit_evaluation_v1"
+
+[[facts]]
+id = "loss_governor_halt_v1"
+identity = "loss_governor_halt_v1"
+
+[[facts]]
+id = "order_reject_v1"
+identity = "order_reject_v1"
+
+[[facts]]
+id = "order_lifecycle_v1"
+identity = "order_lifecycle_v1"
+
+[[facts]]
+id = "requote_throttle_observation_v1"
+identity = "requote_throttle_observation_v1"
+
+[[facts]]
+id = "settlement_v1"
+identity = "settlement_v1"
+
+[[facts]]
+id = "settlement_booking_error_v1"
+identity = "settlement_booking_error_v1"
+
+[[facts]]
+id = "terminal_settlement_v1"
+identity = "terminal_settlement_v1"
+
+[[facts]]
+id = "venue_truth_capture_failure_v1"
+identity = "venue_truth_capture_failure_v1"
+
+[[facts]]
+id = "venue_truth_divergence_v1"
+identity = "venue_truth_divergence_v1"
+
+[[dispositions]]
+fact = "blocked_strategy_input_observation_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "blocked_strategy_input_observation_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "blocked_strategy_input_observation_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "blocked_strategy_input_observation_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "submit_linked_strategy_input_snapshot_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "submit_linked_strategy_input_snapshot_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "submit_linked_strategy_input_snapshot_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "submit_linked_strategy_input_snapshot_v1"
+consumer = "shadow_pnl_v1"
+action = "relevant"
+event_variant = "submit_linked_strategy_input_snapshot_v1"
+
+[[dispositions]]
+fact = "entry_order_intent_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "entry_order_intent_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "entry_order_intent_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "entry_order_intent_v1"
+consumer = "shadow_pnl_v1"
+action = "relevant"
+event_variant = "entry_order_intent_v1"
+
+[[dispositions]]
+fact = "risk_reducing_exit_order_intent_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "risk_reducing_exit_order_intent_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "risk_reducing_exit_order_intent_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "risk_reducing_exit_order_intent_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "admitted_entry_admission_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "admitted_entry_admission_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "admitted_entry_admission_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "admitted_entry_admission_v1"
+consumer = "shadow_pnl_v1"
+action = "relevant"
+event_variant = "admitted_entry_admission_v1"
+
+[[dispositions]]
+fact = "rejected_entry_admission_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "rejected_entry_admission_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "rejected_entry_admission_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "rejected_entry_admission_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "risk_reducing_exit_admission_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "risk_reducing_exit_admission_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "risk_reducing_exit_admission_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "risk_reducing_exit_admission_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "forced_reduction_admission_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "forced_reduction_admission_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "forced_reduction_admission_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "forced_reduction_admission_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_granted_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_granted_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_granted_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_granted_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_rejected_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_rejected_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_rejected_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_rejected_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "capital_admission_rebuild_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "capital_admission_rebuild_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "capital_admission_rebuild_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "capital_admission_rebuild_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "submit_reservation_metadata_v1"
+consumer = "reservation_recovery_v1"
+action = "relevant"
+event_variant = "submit_reservation_metadata_v1"
+
+[[dispositions]]
+fact = "submit_reservation_metadata_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "submit_reservation_metadata_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "submit_reservation_metadata_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "submit_reservation_fill_v1"
+consumer = "reservation_recovery_v1"
+action = "relevant"
+event_variant = "submit_reservation_fill_v1"
+
+[[dispositions]]
+fact = "submit_reservation_fill_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "submit_reservation_fill_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "submit_reservation_fill_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "entry_skip_observation_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "entry_skip_observation_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "entry_skip_observation_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "entry_skip_observation_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_submission_decision_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_submission_decision_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_submission_decision_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_submission_decision_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_hold_decision_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_hold_decision_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_hold_decision_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_hold_decision_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_evaluation_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_evaluation_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_evaluation_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_evaluation_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "loss_governor_halt_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "loss_governor_halt_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "loss_governor_halt_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "loss_governor_halt_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "order_reject_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "order_reject_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "order_reject_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "order_reject_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "order_lifecycle_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "order_lifecycle_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "order_lifecycle_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "order_lifecycle_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "requote_throttle_observation_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "requote_throttle_observation_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "requote_throttle_observation_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "requote_throttle_observation_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "settlement_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "settlement_v1"
+consumer = "settlement_recovery_v1"
+action = "relevant"
+event_variant = "settlement_v1"
+
+[[dispositions]]
+fact = "settlement_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "settlement_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "settlement_booking_error_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "settlement_booking_error_v1"
+consumer = "settlement_recovery_v1"
+action = "relevant"
+event_variant = "settlement_booking_error_v1"
+
+[[dispositions]]
+fact = "settlement_booking_error_v1"
+consumer = "booking_recovery_v1"
+action = "relevant"
+event_variant = "settlement_booking_error_v1"
+
+[[dispositions]]
+fact = "settlement_booking_error_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "terminal_settlement_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "terminal_settlement_v1"
+consumer = "settlement_recovery_v1"
+action = "relevant"
+event_variant = "terminal_settlement_v1"
+
+[[dispositions]]
+fact = "terminal_settlement_v1"
+consumer = "booking_recovery_v1"
+action = "relevant"
+event_variant = "terminal_settlement_v1"
+
+[[dispositions]]
+fact = "terminal_settlement_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "venue_truth_capture_failure_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "venue_truth_capture_failure_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "venue_truth_capture_failure_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "venue_truth_capture_failure_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "venue_truth_divergence_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "venue_truth_divergence_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "venue_truth_divergence_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "venue_truth_divergence_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+

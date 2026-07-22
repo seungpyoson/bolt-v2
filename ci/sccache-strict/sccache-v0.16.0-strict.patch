@@ -1,5 +1,5 @@
 diff --git a/src/cache/cache.rs b/src/cache/cache.rs
-index 760026f..5949157 100644
+index 760026f..1b9a675 100644
 --- a/src/cache/cache.rs
 +++ b/src/cache/cache.rs
 @@ -20 +19,0 @@ use crate::cache::cos::COSCache;
@@ -72,56 +72,24 @@ index 760026f..5949157 100644
 +            Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(CacheMode::ReadWrite),
 +            Err(err) => bail!("cache storage failed to write: {err:?}"),
 +        }
-@@ -573,2 +559,41 @@ pub fn build_single_cache(
+@@ -573,9 +559,5 @@ pub fn build_single_cache(
 -/// Get a suitable `Storage` implementation from configuration.
 -/// Supports both single-cache (backward compatible) and multi-level cache configurations.
-+fn governed_cache_mode_from_value(value: Option<&str>) -> Result<CacheMode> {
-+    match value {
-+        Some("READ_ONLY") => Ok(CacheMode::ReadOnly),
-+        Some("READ_WRITE") => Ok(CacheMode::ReadWrite),
-+        _ => bail!("SCCACHE_S3_RW_MODE must be exactly READ_ONLY or READ_WRITE"),
-+    }
-+}
-+
-+pub fn governed_cache_mode(config: &Config) -> Result<CacheMode> {
-+    let requested = std::env::var("SCCACHE_S3_RW_MODE").ok();
-+    let requested = governed_cache_mode_from_value(requested.as_deref())?;
-+    governed_cache_mode_for_config(config, requested)
-+}
-+
-+fn governed_cache_mode_for_config(config: &Config, requested: CacheMode) -> Result<CacheMode> {
-+    let configs = &config.cache_configs;
-+    if configs.multilevel.is_some()
-+        || configs.disk.is_some()
-+        || configs.azure.is_some()
-+        || configs.gcs.is_some()
-+        || configs.gha.is_some()
-+        || configs.memcached.is_some()
-+        || configs.redis.is_some()
-+        || configs.webdav.is_some()
-+        || configs.oss.is_some()
-+        || configs.cos.is_some()
-+    {
-+        bail!("strict sccache permits exactly one S3 cache backend");
-+    }
-+
-+    let configured = match &config.cache {
-+        Some(CacheType::S3(s3)) => CacheMode::from(s3.rw_mode),
-+        _ => bail!("strict sccache requires the governed S3 cache backend"),
-+    };
-+    if configured != requested {
-+        bail!("configured S3 mode does not match SCCACHE_S3_RW_MODE");
-+    }
-+    Ok(requested)
-+}
-+
-+/// Build the single governed S3 storage implementation.
-@@ -579,35 +604,7 @@ pub fn storage_from_config(
+-pub fn storage_from_config(
+-    config: &Config,
+-    pool: &tokio::runtime::Handle,
+-) -> Result<Arc<dyn Storage>> {
 -    // Check for multi-level cache configuration
 -    if let Some(multilevel) = MultiLevelStorage::from_config(config, pool)? {
 -        return Ok(Arc::new(multilevel));
--    }
--
++pub fn governed_cache_mode_from_snapshot(value: &str) -> Result<CacheMode> {
++    match value {
++        "READ_ONLY" => Ok(CacheMode::ReadOnly),
++        "READ_WRITE" => Ok(CacheMode::ReadWrite),
++        _ => bail!("consumer snapshot cache mode is invalid"),
+@@ -582,0 +565 @@ pub fn storage_from_config(
++}
+@@ -584,15 +567,17 @@ pub fn storage_from_config(
 -    // Single cache or fallback to disk (backward compatible path)
 -    #[cfg(any(
 -        feature = "azure",
@@ -137,8 +105,24 @@ index 760026f..5949157 100644
 -    if let Some(cache_type) = &config.cache {
 -        debug!("Configuring single cache from CacheType");
 -        return build_single_cache(cache_type, &config.basedirs, pool);
--    }
--
++fn governed_s3_config(
++    config: &Config,
++    requested: CacheMode,
++) -> Result<crate::config::S3CacheConfig> {
++    let configs = &config.cache_configs;
++    if configs.multilevel.is_some()
++        || configs.disk.is_some()
++        || configs.azure.is_some()
++        || configs.gcs.is_some()
++        || configs.gha.is_some()
++        || configs.memcached.is_some()
++        || configs.redis.is_some()
++        || configs.webdav.is_some()
++        || configs.oss.is_some()
++        || configs.cos.is_some()
++    {
++        bail!("strict sccache permits exactly one S3 cache backend");
+@@ -601,13 +586,19 @@ pub fn storage_from_config(
 -    // No remote cache configured - use disk cache only
 -    let (dir, size) = (&config.fallback_cache.dir, config.fallback_cache.size);
 -    let preprocessor_cache_mode_config = config.fallback_cache.preprocessor_cache_mode;
@@ -152,14 +136,26 @@ index 760026f..5949157 100644
 -        rw_mode,
 -        config.basedirs.clone(),
 -    )))
-+    governed_cache_mode(config)?;
-+    match &config.cache {
-+        Some(cache_type @ CacheType::S3(_)) => {
-+            build_single_cache(cache_type, &config.basedirs, pool)
-+        }
++    let mut configured = match &config.cache {
++        Some(CacheType::S3(s3)) => s3.clone(),
 +        _ => bail!("strict sccache requires the governed S3 cache backend"),
-+    }
-@@ -619,2 +616,33 @@ mod test {
++    };
++    configured.rw_mode = match requested {
++        CacheMode::ReadOnly => crate::config::CacheModeConfig::ReadOnly,
++        CacheMode::ReadWrite => crate::config::CacheModeConfig::ReadWrite,
++    };
++    Ok(configured)
++}
++
++/// Build the single governed S3 storage implementation.
++pub fn storage_from_config(
++    config: &Config,
++    pool: &tokio::runtime::Handle,
++    requested: CacheMode,
++) -> Result<Arc<dyn Storage>> {
++    let s3 = governed_s3_config(config, requested)?;
++    build_single_cache(&CacheType::S3(s3), &config.basedirs, pool)
+@@ -619,2 +610,33 @@ mod test {
 -    use crate::config::CacheModeConfig;
 -    use fs_err as fs;
 +    use crate::config::{CacheModeConfig, MultiLevelConfig, S3CacheConfig};
@@ -182,30 +178,30 @@ index 760026f..5949157 100644
 +    }
 +
 +    #[test]
-+    fn strict_cache_mode_requires_exact_explicit_value() {
++    fn strict_snapshot_cache_mode_requires_exact_value() {
 +        assert_eq!(
-+            governed_cache_mode_from_value(Some("READ_ONLY")).unwrap(),
++            governed_cache_mode_from_snapshot("READ_ONLY").unwrap(),
 +            CacheMode::ReadOnly
 +        );
 +        assert_eq!(
-+            governed_cache_mode_from_value(Some("READ_WRITE")).unwrap(),
++            governed_cache_mode_from_snapshot("READ_WRITE").unwrap(),
 +            CacheMode::ReadWrite
 +        );
-+        for invalid in [None, Some(""), Some("read_only"), Some("ReadWrite")] {
-+            assert!(governed_cache_mode_from_value(invalid).is_err());
++        for invalid in ["", "read_only", "ReadWrite"] {
++            assert!(governed_cache_mode_from_snapshot(invalid).is_err());
 +        }
 +    }
-@@ -623 +651 @@ mod test {
+@@ -623 +645 @@ mod test {
 -    fn test_read_write_mode_local() {
 +    fn strict_local_cache_is_rejected() {
-@@ -630,2 +658 @@ mod test {
+@@ -630,2 +652 @@ mod test {
 -        // Use disk cache.
 -        let mut config = Config {
 +        let config = Config {
-@@ -634,0 +662,2 @@ mod test {
-+        assert!(storage_from_config(&config, runtime.handle()).is_err());
+@@ -634,0 +656,2 @@ mod test {
++        assert!(storage_from_config(&config, runtime.handle(), CacheMode::ReadWrite).is_err());
 +    }
-@@ -636,24 +665,9 @@ mod test {
+@@ -636,24 +659,10 @@ mod test {
 -        let tempdir = tempfile::Builder::new()
 -            .prefix("sccache_test_rust_cargo")
 -            .tempdir()
@@ -231,31 +227,32 @@ index 760026f..5949157 100644
 -            });
 -        }
 +    #[test]
-+    fn strict_backend_accepts_only_single_matching_s3_mode() {
++    fn strict_backend_uses_snapshot_mode_as_sole_policy() {
 +        let config = strict_s3_config(CacheModeConfig::ReadWrite);
 +        assert_eq!(
-+            governed_cache_mode_for_config(&config, CacheMode::ReadWrite).unwrap(),
-+            CacheMode::ReadWrite
++            governed_s3_config(&config, CacheMode::ReadOnly)
++                .unwrap()
++                .rw_mode,
++            CacheModeConfig::ReadOnly
 +        );
-+        assert!(governed_cache_mode_for_config(&config, CacheMode::ReadOnly).is_err());
 +    }
-@@ -661,2 +675,13 @@ mod test {
+@@ -661,2 +670,13 @@ mod test {
 -        // Test Read-only
 -        config.fallback_cache.rw_mode = CacheModeConfig::ReadOnly;
 +    #[test]
 +    fn strict_backend_rejects_disk_and_multilevel_redirects() {
 +        let mut disk = strict_s3_config(CacheModeConfig::ReadWrite);
 +        disk.cache_configs.disk = Some(Default::default());
-+        assert!(governed_cache_mode_for_config(&disk, CacheMode::ReadWrite).is_err());
++        assert!(governed_s3_config(&disk, CacheMode::ReadWrite).is_err());
 +
 +        let mut multilevel = strict_s3_config(CacheModeConfig::ReadWrite);
 +        multilevel.cache_configs.multilevel = Some(MultiLevelConfig {
 +            chain: vec!["s3".to_owned()],
 +            write_error_policy: Default::default(),
 +        });
-+        assert!(governed_cache_mode_for_config(&multilevel, CacheMode::ReadWrite).is_err());
++        assert!(governed_s3_config(&multilevel, CacheMode::ReadWrite).is_err());
 +    }
-@@ -664,2 +689,15 @@ mod test {
+@@ -664,2 +684,15 @@ mod test {
 -        {
 -            let cache = storage_from_config(&config, runtime.handle()).unwrap();
 +    #[test]
@@ -273,7 +270,7 @@ index 760026f..5949157 100644
 +                .build()
 +                .unwrap();
 +        let storage = RemoteStorage::new(operator, vec![], CacheMode::ReadWrite);
-@@ -667,19 +705,2 @@ mod test {
+@@ -667,19 +700,2 @@ mod test {
 -            runtime.block_on(async move {
 -                assert_eq!(
 -                    cache
@@ -5978,12 +5975,12 @@ index 8760ba6..5ab6c52 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..13ba050 100644
+index 98cedfb..dba7993 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16,2 @@ use crate::cache::readonly::ReadOnlyStorage;
 -use crate::cache::{CacheMode, Storage, storage_from_config};
-+use crate::cache::{CacheMode, Storage, governed_cache_mode, storage_from_config};
++use crate::cache::{CacheMode, Storage, governed_cache_mode_from_snapshot, storage_from_config};
 +use crate::compiler::CCompilerKind;
 @@ -18,2 +19,3 @@ use crate::compiler::{
 -    CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
@@ -6138,8 +6135,9 @@ index 98cedfb..13ba050 100644
 +    identity: StrictServerIdentity,
 +    timeouts: crate::config::StrictTimeouts,
 +) -> Result<()> {
-@@ -467,0 +602,12 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
-+    let configured_mode = match governed_cache_mode(config) {
+@@ -452 +586,14 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+-    let raw_storage = match storage_from_config(config, &pool) {
++    let configured_mode = match governed_cache_mode_from_snapshot(&identity.cache_mode) {
 +        Ok(mode) => mode,
 +        Err(err) => {
 +            notify_server_startup(
@@ -6151,7 +6149,9 @@ index 98cedfb..13ba050 100644
 +            return Err(err);
 +        }
 +    };
-@@ -484,0 +631,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
++
++    let raw_storage = match storage_from_config(config, &pool, configured_mode) {
+@@ -484,0 +632,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 +    if cache_mode != configured_mode {
 +        let err = anyhow!("cache storage negotiated {cache_mode:?}, expected {configured_mode:?}");
 +        notify_server_startup(
@@ -6162,12 +6162,12 @@ index 98cedfb..13ba050 100644
 +        )?;
 +        return Err(err);
 +    }
-@@ -492,2 +648,2 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -492,2 +649,2 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -    let res: io::Result<(crate::net::SocketAddr, Box<dyn FnOnce(_) -> io::Result<()>>)> = (|| {
 -        match addr {
 +    let res: io::Result<(crate::net::SocketAddr, Box<dyn FnOnce(_) -> io::Result<()>>)> =
 +        (|| match addr {
-@@ -496,3 +652,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -496,3 +653,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                let l = runtime.block_on(tokio::net::TcpListener::bind(addr))?;
 -                let srv =
 -                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
@@ -6181,13 +6181,13 @@ index 98cedfb..13ba050 100644
 +                    identity.clone(),
 +                    timeouts,
 +                );
-@@ -507,2 +669,0 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -507,2 +670,0 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                // Unix socket will report addr in use on any unlink file.
 -                let _ = std::fs::remove_file(path);
-@@ -511 +672 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -511 +673 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                    tokio::net::UnixListener::bind(path)?
 +                    bind_governed_unix_listener(path, timeouts.ipc)?
-@@ -513,2 +674,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -513,2 +675,10 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                let srv =
 -                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
 +                let (l, socket_ownership) = l;
@@ -6200,14 +6200,14 @@ index 98cedfb..13ba050 100644
 +                    identity.clone(),
 +                    timeouts,
 +                );
-@@ -517 +686,5 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -517 +687,5 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                    Box::new(move |f| srv.run(f)) as Box<dyn FnOnce(_) -> _>,
 +                    Box::new(move |f| {
 +                        let result = srv.run(f);
 +                        let cleanup = remove_owned_unix_socket(socket_ownership);
 +                        result.and(cleanup)
 +                    }) as Box<dyn FnOnce(_) -> _>,
-@@ -530,2 +703,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -530,2 +704,9 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -                let srv =
 -                    SccacheServer::<_>::with_listener(l, runtime, client, dist_client, storage);
 +                let srv = SccacheServer::<_>::with_listener(
@@ -6219,19 +6219,19 @@ index 98cedfb..13ba050 100644
 +                    identity.clone(),
 +                    timeouts,
 +                );
-@@ -538,2 +718 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
+@@ -538,2 +719 @@ pub fn start_server(config: &Config, addr: &crate::net::SocketAddr) -> Result<()
 -        }
 -    })();
 +        })();
-@@ -579,0 +759 @@ pub struct SccacheServer<A: crate::net::Acceptor, C: CommandCreatorSync = Proces
+@@ -579,0 +760 @@ pub struct SccacheServer<A: crate::net::Acceptor, C: CommandCreatorSync = Proces
 +#[cfg(test)]
-@@ -596,0 +777,2 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
+@@ -596,0 +778,2 @@ impl<C: CommandCreatorSync> SccacheServer<tokio::net::TcpListener, C> {
 +            StrictServerIdentity::for_tests(),
 +            crate::config::StrictTimeouts::for_tests(),
-@@ -607,0 +790,2 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -607,0 +791,2 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +        identity: StrictServerIdentity,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -614 +798,10 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -614 +799,10 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 -        let service = SccacheService::new(dist_client, storage, &client, pool, tx, info);
 +        let service = SccacheService::new(
 +            dist_client,
@@ -6243,56 +6243,56 @@ index 98cedfb..13ba050 100644
 +            identity,
 +            timeouts,
 +        );
-@@ -674,0 +868 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -674,0 +869 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +        let poison = service.poison.clone();
-@@ -721,0 +916,4 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -721,0 +917,4 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +        let poisoned = async move {
 +            poison.poisoned().await;
 +            Err::<(), io::Error>(io::Error::other("strict daemon entered terminal poison"))
 +        };
-@@ -727,0 +926 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
+@@ -727,0 +927 @@ impl<A: crate::net::Acceptor, C: CommandCreatorSync> SccacheServer<A, C> {
 +                poisoned = poisoned.fuse() => poisoned,
-@@ -794,0 +994,6 @@ where
+@@ -794,0 +995,6 @@ where
 +    /// Exact derivative, backend, mode, and timeout policy negotiated by clients.
 +    identity: StrictServerIdentity,
 +
 +    /// Timeout policy validated once before server startup.
 +    timeouts: crate::config::StrictTimeouts,
 +
-@@ -814,0 +1020,3 @@ where
+@@ -814,0 +1021,3 @@ where
 +    /// One-way daemon poison transition shared by children, requests, and transports.
 +    poison: StrictPoison,
 +
-@@ -860,0 +1069 @@ where
+@@ -860,0 +1070 @@ where
 +            ensure!(me.poison.is_healthy(), "strict daemon is poisoned");
-@@ -862 +1071 @@ where
+@@ -862 +1072 @@ where
 -                Request::Compile(compile) => {
 +                Request::StrictCompile(compile) => {
-@@ -866,0 +1076,6 @@ where
+@@ -866,0 +1077,6 @@ where
 +                Request::Compile(_) => {
 +                    bail!("legacy compile request is forbidden in strict mode")
 +                }
 +                Request::GetServerIdentity => Ok(Message::WithoutBody(Response::ServerIdentity(
 +                    me.identity.clone(),
 +                ))),
-@@ -923,0 +1139,2 @@ where
+@@ -923,0 +1140,2 @@ where
 +        identity: StrictServerIdentity,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -924,0 +1142 @@ where
+@@ -924,0 +1143 @@ where
 +        let poison = StrictPoison::new();
-@@ -932 +1150,4 @@ where
+@@ -932 +1151,4 @@ where
 -            creator: C::new(client),
 +            creator: C::new_strict(
 +                client,
 +                timeouts.child_policy(identity.max_child_output_bytes, poison.clone()),
 +            ),
-@@ -934,0 +1156,3 @@ where
+@@ -934,0 +1157,3 @@ where
 +            identity,
 +            timeouts,
 +            poison,
-@@ -937,0 +1162 @@ where
+@@ -937,0 +1163 @@ where
 +    #[cfg(test)]
-@@ -940,0 +1166,13 @@ where
+@@ -940,0 +1167,13 @@ where
 +    ) -> SccacheService<C> {
 +        Self::mock_with_storage_and_timeouts(
 +            storage,
@@ -6306,22 +6306,22 @@ index 98cedfb..13ba050 100644
 +        storage: Arc<dyn Storage>,
 +        rt: tokio::runtime::Handle,
 +        timeouts: crate::config::StrictTimeouts,
-@@ -955,0 +1194,3 @@ where
+@@ -955,0 +1195,3 @@ where
 +            identity: StrictServerIdentity::for_tests(),
 +            timeouts,
 +            poison: StrictPoison::new(),
-@@ -959,0 +1201 @@ where
+@@ -959,0 +1202 @@ where
 +    #[cfg(test)]
-@@ -990,0 +1233,3 @@ where
+@@ -990,0 +1234,3 @@ where
 +            identity: StrictServerIdentity::for_tests(),
 +            timeouts: crate::config::StrictTimeouts::for_tests(),
 +            poison: StrictPoison::new(),
-@@ -993,0 +1239,4 @@ where
+@@ -993,0 +1240,4 @@ where
 +    pub fn cache_read_timeout(&self) -> Duration {
 +        self.timeouts.cache_read
 +    }
 +
-@@ -999,7 +1248,2 @@ where
+@@ -999,7 +1249,2 @@ where
 -        if let Ok(max_frame_length_str) = env::var("SCCACHE_MAX_FRAME_LENGTH") {
 -            if let Ok(max_frame_length) = max_frame_length_str.parse::<usize>() {
 -                builder.max_frame_length(max_frame_length);
@@ -6331,11 +6331,11 @@ index 98cedfb..13ba050 100644
 -        }
 +        builder
 +            .max_frame_length(usize::try_from(self.identity.max_frame_bytes).unwrap_or(usize::MAX));
-@@ -1009,0 +1254,3 @@ where
+@@ -1009,0 +1255,3 @@ where
 +            poison: self.poison.clone(),
 +            commit_timeout: self.timeouts.cleanup,
 +            commit_deadline: None,
-@@ -1061 +1308,54 @@ where
+@@ -1061 +1309,54 @@ where
 -    async fn handle_compile(&self, compile: Compile) -> Result<SccacheResponse> {
 +    async fn handle_compile(&self, compile: ClassifiedRequest) -> Result<SccacheResponse> {
 +        ensure!(
@@ -6391,10 +6391,10 @@ index 98cedfb..13ba050 100644
 +        }
 +        let binding = compile.binding.clone();
 +        let compiler_family = compile.compiler_family;
-@@ -1067 +1367 @@ where
+@@ -1067 +1368 @@ where
 -
 +        let classification_creator = self.creator.begin_classification();
-@@ -1069 +1369,6 @@ where
+@@ -1069 +1370,6 @@ where
 -            .compiler_info(exe.into(), cwd.clone(), &cmd, &env_vars)
 +            .strict_compiler_info(
 +                classification_creator.clone(),
@@ -6402,7 +6402,7 @@ index 98cedfb..13ba050 100644
 +                cwd.clone(),
 +                compiler_family,
 +            )
-@@ -1071 +1376,10 @@ where
+@@ -1071 +1377,10 @@ where
 -        Ok(me.check_compiler(info, cmd, cwd, env_vars).await)
 +        me.check_compiler(
 +            info,
@@ -6414,7 +6414,7 @@ index 98cedfb..13ba050 100644
 +            classification_creator,
 +        )
 +        .await
-@@ -1081,0 +1396,50 @@ where
+@@ -1081,0 +1397,50 @@ where
 +    ) -> Result<Box<dyn Compiler<C>>> {
 +        self.compiler_info_with_creator(self.creator.begin_classification(), path, cwd, args, env)
 +            .await
@@ -6465,19 +6465,19 @@ index 98cedfb..13ba050 100644
 +        cwd: PathBuf,
 +        args: &[OsString],
 +        env: &[(OsString, OsString)],
-@@ -1102 +1466 @@ where
+@@ -1102 +1467 @@ where
 -                            self.creator.clone(),
 +                            classification_creator.clone(),
-@@ -1178 +1542 @@ where
+@@ -1178 +1543 @@ where
 -                    me.creator.clone(),
 +                    classification_creator,
-@@ -1239 +1603,4 @@ where
+@@ -1239 +1604,4 @@ where
 -    ) -> SccacheResponse {
 +        compiler_family: StrictCompilerFamily,
 +        binding: StrictResponseBinding,
 +        classification_creator: C,
 +    ) -> Result<SccacheResponse> {
-@@ -1244,3 +1611,6 @@ where
+@@ -1244,3 +1612,6 @@ where
 -                return Message::WithoutBody(Response::Compile(
 -                    CompileResponse::UnsupportedCompiler(OsString::from(e.to_string())),
 -                ));
@@ -6487,7 +6487,7 @@ index 98cedfb..13ba050 100644
 +                        reason: OsString::from(e.to_string()),
 +                    },
 +                )));
-@@ -1249,0 +1620,21 @@ where
+@@ -1249,0 +1621,21 @@ where
 +                let compiler_matches = matches!(
 +                    (compiler_family, c.kind()),
 +                    (StrictCompilerFamily::Rust, CompilerKind::Rust)
@@ -6509,7 +6509,7 @@ index 98cedfb..13ba050 100644
 +                        },
 +                    )));
 +                }
-@@ -1253 +1644,15 @@ where
+@@ -1253 +1645,15 @@ where
 -                    CompilerArguments::Ok(hasher) => {
 +                    CompilerArguments::Ok(mut hasher) => {
 +                        let preflight = hasher
@@ -6526,9 +6526,9 @@ index 98cedfb..13ba050 100644
 +                                },
 +                            )));
 +                        }
-@@ -1255,0 +1661 @@ where
+@@ -1255,0 +1662 @@ where
 +                        let finished_binding = binding.clone();
-@@ -1259 +1665,6 @@ where
+@@ -1259 +1666,6 @@ where
 -                            .and_then(|res| async { Ok(Response::CompileFinished(res)) })
 +                            .and_then(|result| async move {
 +                                Ok(Response::StrictCompileFinished {
@@ -6536,30 +6536,30 @@ index 98cedfb..13ba050 100644
 +                                    result,
 +                                })
 +                            })
-@@ -1262,2 +1673,2 @@ where
+@@ -1262,2 +1674,2 @@ where
 -                        return Message::WithBody(
 -                            Response::Compile(CompileResponse::CompileStarted),
 +                        return Ok(Message::WithBody(
 +                            Response::Compile(CompileResponse::StrictCompileStarted(binding)),
-@@ -1265 +1676 @@ where
+@@ -1265 +1677 @@ where
 -                        );
 +                        ));
-@@ -1278,0 +1690,6 @@ where
+@@ -1278,0 +1691,6 @@ where
 +                        return Ok(Message::WithoutBody(Response::Compile(
 +                            CompileResponse::CannotCache {
 +                                binding,
 +                                reason: why.to_string(),
 +                            },
 +                        )));
-@@ -1282,0 +1700,3 @@ where
+@@ -1282,0 +1701,3 @@ where
 +                        return Ok(Message::WithoutBody(Response::Compile(
 +                            CompileResponse::NotCompilation(binding),
 +                        )));
-@@ -1287,3 +1706,0 @@ where
+@@ -1287,3 +1707,0 @@ where
 -
 -        let res = CompileResponse::UnhandledCompile;
 -        Message::WithoutBody(Response::Compile(res))
-@@ -1304,11 +1721 @@ where
+@@ -1304,11 +1722 @@ where
 -
 -        let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
 -        let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
@@ -6572,7 +6572,7 @@ index 98cedfb..13ba050 100644
 -            CacheControl::Default
 -        };
 +        let cache_control = CacheControl::Default;
-@@ -1418,0 +1826,10 @@ where
+@@ -1418,0 +1827,10 @@ where
 +                            CompileResult::ReadOnlyCacheMiss(miss_type, dt, duration) => {
 +                                debug!("[{}]: governed read-only cache miss", out_pretty);
 +                                dist_type = dt;
@@ -6583,7 +6583,7 @@ index 98cedfb..13ba050 100644
 +                                stats.cache_misses.increment(&kind, &lang);
 +                                stats.compiler_write_duration += duration;
 +                            }
-@@ -1522,7 +1939,5 @@ where
+@@ -1522,7 +1940,5 @@ where
 -                    match cache_write.await {
 -                        Err(e) => {
 -                            debug!("Error executing cache write: {}", e);
@@ -6596,7 +6596,7 @@ index 98cedfb..13ba050 100644
 +                    {
 +                        None => me.stats.lock().await.cache_write_errors += 1,
 +                        Some(info) => {
-@@ -1581,0 +1997,69 @@ impl PerLanguageCount {
+@@ -1581,0 +1998,69 @@ impl PerLanguageCount {
 +#[cfg(unix)]
 +fn validate_strict_compiler_environment(
 +    env_vars: &[(OsString, OsString)],
@@ -6666,17 +6666,17 @@ index 98cedfb..13ba050 100644
 +    }
 +}
 +
-@@ -2145,0 +2630,3 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
+@@ -2145,0 +2631,3 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
 +    poison: StrictPoison,
 +    commit_timeout: Duration,
 +    commit_deadline: Option<Pin<Box<Sleep>>>,
-@@ -2161,0 +2649,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2161,0 +2650,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        if !self.poison.is_healthy() {
 +            return Poll::Ready(Err(anyhow!(
 +                "strict response commit blocked by daemon poison"
 +            )));
 +        }
-@@ -2165,0 +2658,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2165,0 +2659,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        ensure!(
 +            self.poison.is_healthy(),
 +            "strict response commit blocked by daemon poison"
@@ -6684,7 +6684,7 @@ index 98cedfb..13ba050 100644
 +        if self.commit_deadline.is_none() {
 +            self.commit_deadline = Some(Box::pin(sleep(self.commit_timeout)));
 +        }
-@@ -2174 +2673,18 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2174 +2674,18 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        Pin::new(&mut self.inner).poll_flush(cx)
 +        if !self.poison.is_healthy() {
 +            return Poll::Ready(Err(anyhow!(
@@ -6704,7 +6704,7 @@ index 98cedfb..13ba050 100644
 +            }
 +            result => result,
 +        }
-@@ -2284,0 +2801,306 @@ mod tests {
+@@ -2284,0 +2802,306 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();

@@ -2217,10 +2217,29 @@ index 8d8406a..5e4d050 100644
 +        );
 +    }
 diff --git a/src/compiler/c.rs b/src/compiler/c.rs
-index 7cf84b5..806e99a 100644
+index 7cf84b5..485b673 100644
 --- a/src/compiler/c.rs
 +++ b/src/compiler/c.rs
-@@ -1569,0 +1570 @@ impl<'a> HashKeyParams<'a> {
+@@ -19 +19 @@ use crate::compiler::{
+-    CompilerKind, HashResult, Language,
++    CompilerKind, HashResult, Language, StrictPreflight, strict_classify_output_destinations,
+@@ -367,0 +368,15 @@ where
++    async fn strict_preflight(
++        &mut self,
++        _creator: &T,
++        cwd: &Path,
++        _env_vars: &[(OsString, OsString)],
++    ) -> Result<StrictPreflight> {
++        strict_classify_output_destinations(
++            cwd,
++            self.parsed_args
++                .outputs
++                .values()
++                .map(|output| output.path.as_path()),
++        )
++    }
++
+@@ -1569,0 +1585 @@ impl<'a> HashKeyParams<'a> {
 +        m.update(env!("SCCACHE_STRICT_CACHE_FORMAT_TOKEN").as_bytes());
 diff --git a/src/compiler/clang.rs b/src/compiler/clang.rs
 index e6294d5..463b38a 100644
@@ -2229,7 +2248,7 @@ index e6294d5..463b38a 100644
 @@ -189,0 +190 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
 +    flag!("--no-default-config", PassThroughFlag),
 diff --git a/src/compiler/compiler.rs b/src/compiler/compiler.rs
-index 78bb5a4..d3f8f51 100644
+index 78bb5a4..c6fb7d4 100644
 --- a/src/compiler/compiler.rs
 +++ b/src/compiler/compiler.rs
 @@ -16,2 +16,2 @@
@@ -2256,8 +2275,8 @@ index 78bb5a4..d3f8f51 100644
 +        _creator: &T,
 +        _cwd: &Path,
 +        _env_vars: &[(OsString, OsString)],
-+    ) -> Result<()> {
-+        Ok(())
++    ) -> Result<StrictPreflight> {
++        Ok(StrictPreflight::Cacheable)
 +    }
 +
 @@ -574,0 +586,14 @@ where
@@ -2376,9 +2395,10 @@ index 78bb5a4..d3f8f51 100644
 @@ -669 +683 @@ where
 -            (Ok(Ok(Cache::Recache)), duration) => {
 +            Ok(Cache::Recache) => {
-@@ -675,10 +689 @@ where
+@@ -675 +689 @@ where
 -                Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
--            }
++                CacheLookupResult::Miss(MissType::ForcedRecache)
+@@ -677,16 +691,7 @@ where
 -            (Ok(Err(err)), duration) => {
 -                error!(
 -                    "[{}]: Cache read error: {:?} in {}",
@@ -2387,8 +2407,7 @@ index 78bb5a4..d3f8f51 100644
 -                    fmt_duration_as_secs(&duration)
 -                );
 -                Ok(CacheLookupResult::Miss(MissType::CacheReadError))
-+                CacheLookupResult::Miss(MissType::ForcedRecache)
-@@ -686,7 +691,7 @@ where
+-            }
 -            (Err(_), duration) => {
 -                debug!(
 -                    "[{}]: Cache timed out {}",
@@ -2418,7 +2437,89 @@ index 78bb5a4..d3f8f51 100644
 +                        compiler_result,
 +                    ));
 +                }
-@@ -1170,0 +1185,99 @@ pub enum CompilerArguments<T> {
+@@ -827,0 +842,81 @@ where
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum StrictPreflight {
++    Cacheable,
++    CannotCache(&'static str),
++}
++
++pub(crate) fn strict_classify_output_destinations<'a>(
++    cwd: &Path,
++    destinations: impl IntoIterator<Item = &'a Path>,
++) -> Result<StrictPreflight> {
++    use std::path::Component;
++
++    fn normalize(path: &Path) -> Option<PathBuf> {
++        let mut normalized = PathBuf::new();
++        for component in path.components() {
++            match component {
++                Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
++                    normalized.push(component.as_os_str());
++                }
++                Component::CurDir => {}
++                Component::ParentDir => {
++                    if !normalized.pop() {
++                        return None;
++                    }
++                }
++            }
++        }
++        Some(normalized)
++    }
++
++    let mut unique = std::collections::HashSet::new();
++    for destination in destinations {
++        let bytes = destination.as_os_str().as_encoded_bytes();
++        if bytes == b"-"
++            || bytes == b"/dev/stdout"
++            || bytes == b"/dev/stderr"
++            || bytes.starts_with(b"/dev/fd/")
++            || (bytes.starts_with(b"/proc/") && bytes.windows(4).any(|part| part == b"/fd/"))
++        {
++            return Ok(StrictPreflight::CannotCache(
++                "nontransactional-output-destination",
++            ));
++        }
++
++        let absolute = if destination.is_absolute() {
++            destination.to_path_buf()
++        } else {
++            cwd.join(destination)
++        };
++        let Some(normalized) = normalize(&absolute) else {
++            return Ok(StrictPreflight::CannotCache(
++                "nontransactional-output-destination",
++            ));
++        };
++        if !unique.insert(normalized.clone()) {
++            return Ok(StrictPreflight::CannotCache("duplicate-output-destination"));
++        }
++
++        let metadata = match fs::symlink_metadata(&normalized) {
++            Ok(metadata) => metadata,
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
++            Err(error) => return Err(error.into()),
++        };
++        if !metadata.file_type().is_file() {
++            return Ok(StrictPreflight::CannotCache(
++                "nontransactional-output-destination",
++            ));
++        }
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::MetadataExt;
++            if metadata.nlink() != 1 {
++                return Ok(StrictPreflight::CannotCache(
++                    "nontransactional-output-destination",
++                ));
++            }
++        }
++    }
++    Ok(StrictPreflight::Cacheable)
++}
++
+@@ -1170,0 +1266,99 @@ pub enum CompilerArguments<T> {
 +/// Classify raw governed compiler arguments before any compiler lookup or parser expansion.
 +///
 +/// The inspection is deliberately byte-oriented and performs a complete response-file pass
@@ -2518,24 +2619,24 @@ index 78bb5a4..d3f8f51 100644
 +    CompilerArguments::Ok(())
 +}
 +
-@@ -1236,0 +1350,2 @@ pub enum CompileResult {
+@@ -1236,0 +1431,2 @@ pub enum CompileResult {
 +    /// A governed read-only miss compiled without attempting a cache write.
 +    ReadOnlyCacheMiss(MissType, DistType, Duration),
-@@ -1262,0 +1378,5 @@ impl fmt::Debug for CompileResult {
+@@ -1262,0 +1459,5 @@ impl fmt::Debug for CompileResult {
 +            CompileResult::ReadOnlyCacheMiss(ref m, ref dt, ref d) => write!(
 +                f,
 +                "CompileResult::ReadOnlyCacheMiss({:?}, {:?}, {:?})",
 +                d, m, dt
 +            ),
-@@ -1284,0 +1405,4 @@ impl PartialEq<CompileResult> for CompileResult {
+@@ -1284,0 +1486,4 @@ impl PartialEq<CompileResult> for CompileResult {
 +            (
 +                CompileResult::ReadOnlyCacheMiss(m, dt, _),
 +                CompileResult::ReadOnlyCacheMiss(n, dt2, _),
 +            ) => m == n && dt == dt2,
-@@ -1482 +1606 @@ where
+@@ -1482 +1687 @@ where
 -        let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
 +        let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool, None).await;
-@@ -1485,3 +1609,12 @@ where
+@@ -1485,3 +1690,12 @@ where
 -        // Even if it does not look like rustc like it might still be rustc driver
 -        // so we do full check
 -        executable
@@ -2551,21 +2652,21 @@ index 78bb5a4..d3f8f51 100644
 +            );
 +            executable
 +        }
-@@ -1506 +1639,2 @@ where
+@@ -1506 +1720,2 @@ where
 -                let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
 +                let cc =
 +                    detect_c_compiler(creator, executable, args, env.to_vec(), pool, None).await;
-@@ -1521,2 +1655,2 @@ async fn resolve_rust_compiler<T>(
+@@ -1521,2 +1736,2 @@ async fn resolve_rust_compiler<T>(
 -    env: &[(OsString, OsString)],
 -    cwd: PathBuf,
 +    _env: &[(OsString, OsString)],
 +    _cwd: PathBuf,
-@@ -1528,0 +1663,4 @@ where
+@@ -1528,0 +1744,4 @@ where
 +    ensure!(
 +        rustc_executable == executable,
 +        "strict compiler proxies are forbidden"
 +    );
-@@ -1530,7 +1668 @@ where
+@@ -1530,7 +1749 @@ where
 -    // We're wrapping rustc if the executable doesn't match the detected rustc_executable. In this case the wrapper
 -    // expects rustc as the first argument.
 -    if rustc_executable != executable {
@@ -2574,7 +2675,7 @@ index 78bb5a4..d3f8f51 100644
 -
 -    child.env_clear().envs(env.to_vec()).args(&["-vV"]);
 +    child.env_clear().args(&["-vV"]);
-@@ -1550,54 +1682 @@ where
+@@ -1550,54 +1763 @@ where
 -            let rustc_executable2 = rustc_executable.clone();
 -
 -            let proxy = RustupProxy::find_proxy_executable::<T>(
@@ -2630,12 +2731,12 @@ index 78bb5a4..d3f8f51 100644
 -            debug!("Using rustc at path: {resolved_rustc:?}");
 -
 +            debug!("Using governed rustc at path: {rustc_executable:?}");
-@@ -1606,2 +1685,2 @@ where
+@@ -1606,2 +1766,2 @@ where
 -                resolved_rustc,
 -                env,
 +                rustc_executable,
 +                &[],
-@@ -1613,6 +1692 @@ where
+@@ -1613,6 +1773 @@ where
 -            .map(|c| {
 -                (
 -                    Box::new(c) as Box<dyn Compiler<T>>,
@@ -2643,7 +2744,7 @@ index 78bb5a4..d3f8f51 100644
 -                )
 -            })
 +            .map(|c| (Box::new(c) as Box<dyn Compiler<T>>, None))
-@@ -1624,20 +1697,0 @@ where
+@@ -1624,20 +1778,0 @@ where
 -ArgData! {
 -    PassThrough(OsString),
 -}
@@ -2664,19 +2765,19 @@ index 78bb5a4..d3f8f51 100644
 -    take_arg!("-ccbin", OsString, CanBeSeparated(b'='), Detect_PassThrough),
 -]);
 -
-@@ -1647 +1701 @@ async fn detect_c_compiler<T, P>(
+@@ -1647 +1782 @@ async fn detect_c_compiler<T, P>(
 -    arguments: &[OsString],
 +    _arguments: &[OsString],
-@@ -1649,0 +1704 @@ async fn detect_c_compiler<T, P>(
+@@ -1649,0 +1785 @@ async fn detect_c_compiler<T, P>(
 +    expected_family: Option<StrictCompilerFamily>,
-@@ -1708 +1762,0 @@ compiler_version=__VERSION__
+@@ -1708 +1843,0 @@ compiler_version=__VERSION__
 -    // Resolve compiler avoiding ccache wrappers to prevent double-caching.
-@@ -1710,3 +1764 @@ compiler_version=__VERSION__
+@@ -1710,3 +1845 @@ compiler_version=__VERSION__
 -    let resolved_executable = resolve_compiler_avoiding_wrapper(executable, &env);
 -
 -    let mut cmd = creator.clone().new_command_sync(&resolved_executable);
 +    let mut cmd = creator.clone().new_command_sync(executable);
-@@ -1715,12 +1767 @@ compiler_version=__VERSION__
+@@ -1715,12 +1848 @@ compiler_version=__VERSION__
 -        .envs(env.iter().map(|s| (&s.0, &s.1)));
 -
 -    // Iterate over all the arguments for compilation and extract
@@ -2690,14 +2791,14 @@ index 78bb5a4..d3f8f51 100644
 -        }
 -    }
 +        .env_clear();
-@@ -1727,0 +1769,3 @@ compiler_version=__VERSION__
+@@ -1727,0 +1850,3 @@ compiler_version=__VERSION__
 +    if expected_family == Some(StrictCompilerFamily::Clang) {
 +        cmd.arg("--no-default-config");
 +    }
-@@ -1730 +1774 @@ compiler_version=__VERSION__
+@@ -1730 +1855 @@ compiler_version=__VERSION__
 -    let child = cmd.spawn().await?;
 +    let child = crate::mock_command::StrictChildLauncher::spawn_prepared(&mut cmd).await?;
-@@ -1753 +1797,21 @@ compiler_version=__VERSION__
+@@ -1753 +1878,21 @@ compiler_version=__VERSION__
 -        let executable = resolved_executable;
 +        ensure!(
 +            matches!(
@@ -2720,7 +2821,7 @@ index 78bb5a4..d3f8f51 100644
 +            );
 +        }
 +        let executable = executable.to_owned();
-@@ -1896,0 +1961,37 @@ where
+@@ -1896,0 +2042,37 @@ where
 +pub async fn get_strict_compiler_info<T>(
 +    creator: T,
 +    executable: &Path,
@@ -2758,9 +2859,9 @@ index 78bb5a4..d3f8f51 100644
 +    }
 +}
 +
-@@ -1903,0 +2005 @@ mod test {
+@@ -1903,0 +2086 @@ mod test {
 +    use crate::protocol::StrictCompilerFamily;
-@@ -1912,0 +2015,77 @@ mod test {
+@@ -1912,0 +2096,125 @@ mod test {
 +    #[cfg(unix)]
 +    #[test]
 +    fn strict_argument_preclassification_is_byte_oriented_and_precedence_ordered() {
@@ -2838,7 +2939,55 @@ index 78bb5a4..d3f8f51 100644
 +        );
 +    }
 +
-@@ -2026,0 +2206,67 @@ mod test {
++    #[cfg(unix)]
++    #[test]
++    fn strict_output_destination_classification_is_fail_closed() {
++        use std::os::unix::fs::symlink;
++
++        let directory = tempfile::tempdir().unwrap();
++        let cwd = directory.path();
++        let missing = Path::new("missing.o");
++        assert_eq!(
++            StrictPreflight::Cacheable,
++            strict_classify_output_destinations(cwd, [missing]).unwrap()
++        );
++
++        std::fs::write(cwd.join("regular.o"), b"old").unwrap();
++        let regular = Path::new("regular.o");
++        assert_eq!(
++            StrictPreflight::Cacheable,
++            strict_classify_output_destinations(cwd, [regular]).unwrap()
++        );
++        assert_eq!(
++            StrictPreflight::CannotCache("duplicate-output-destination"),
++            strict_classify_output_destinations(
++                cwd,
++                [Path::new("regular.o"), Path::new("./regular.o")],
++            )
++            .unwrap()
++        );
++
++        symlink("regular.o", cwd.join("symlink.o")).unwrap();
++        std::fs::create_dir(cwd.join("directory.o")).unwrap();
++        std::fs::hard_link(cwd.join("regular.o"), cwd.join("hardlink.o")).unwrap();
++        for destination in [
++            Path::new("symlink.o"),
++            Path::new("directory.o"),
++            Path::new("regular.o"),
++            Path::new("-"),
++            Path::new("/dev/stdout"),
++            Path::new("/dev/fd/9"),
++            Path::new("/proc/self/fd/9"),
++        ] {
++            assert_eq!(
++                StrictPreflight::CannotCache("nontransactional-output-destination"),
++                strict_classify_output_destinations(cwd, [destination]).unwrap(),
++                "unexpected classification for {destination:?}",
++            );
++        }
++    }
++
+@@ -2026,0 +2335,67 @@ mod test {
 +    #[test]
 +    fn strict_clang_probe_suppresses_default_configuration() {
 +        let f = TestFixture::new();
@@ -2906,10 +3055,10 @@ index 78bb5a4..d3f8f51 100644
 +        );
 +    }
 +
-@@ -2067 +2313 @@ mod test {
+@@ -2067 +2442 @@ mod test {
 -    fn test_detect_compiler_kind_msvc() {
 +    fn test_strict_detection_rejects_msvc() {
-@@ -2098,5 +2344,5 @@ mod test {
+@@ -2098,5 +2473,5 @@ mod test {
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -2920,10 +3069,10 @@ index 78bb5a4..d3f8f51 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2106 +2352 @@ mod test {
+@@ -2106 +2481 @@ mod test {
 -    fn test_detect_compiler_kind_nvcc() {
 +    fn test_strict_detection_rejects_nvcc() {
-@@ -2116,5 +2362,5 @@ mod test {
+@@ -2116,5 +2491,5 @@ mod test {
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -2934,10 +3083,10 @@ index 78bb5a4..d3f8f51 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2124 +2370 @@ mod test {
+@@ -2124 +2499 @@ mod test {
 -    fn test_detect_compiler_kind_nvhpc() {
 +    fn test_strict_detection_rejects_nvhpc() {
-@@ -2134,5 +2380,5 @@ mod test {
+@@ -2134,5 +2509,5 @@ mod test {
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -2948,10 +3097,10 @@ index 78bb5a4..d3f8f51 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2203 +2449 @@ LLVM version: 6.0",
+@@ -2203 +2578 @@ LLVM version: 6.0",
 -    fn test_detect_compiler_kind_rustc_workspace_wrapper() {
 +    fn test_strict_detection_rejects_rustc_workspace_wrappers() {
-@@ -2213,14 +2459,14 @@ LLVM version: 6.0",
+@@ -2213,14 +2588,14 @@ LLVM version: 6.0",
 -        let c = detect_compiler(
 -            creator,
 -            &rustc,
@@ -2980,16 +3129,16 @@ index 78bb5a4..d3f8f51 100644
 +            .wait()
 +            .is_err()
 +        );
-@@ -2246 +2492 @@ LLVM version: 6.0",
+@@ -2246 +2621 @@ LLVM version: 6.0",
 -        // Test we detect rustc if the CARGO env is not defined
 +        // Wrapper-shaped selectors remain forbidden without Cargo environment.
-@@ -2260 +2506 @@ LLVM version: 6.0",
+@@ -2260 +2635 @@ LLVM version: 6.0",
 -            .is_ok()
 +            .is_err()
-@@ -2265 +2511 @@ LLVM version: 6.0",
+@@ -2265 +2640 @@ LLVM version: 6.0",
 -    fn test_detect_compiler_kind_diab() {
 +    fn test_strict_detection_rejects_diab() {
-@@ -2275,5 +2521,5 @@ LLVM version: 6.0",
+@@ -2275,5 +2650,5 @@ LLVM version: 6.0",
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -3000,15 +3149,15 @@ index 78bb5a4..d3f8f51 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2804,2 +3050 @@ LLVM version: 6.0",
+@@ -2804,2 +3179 @@ LLVM version: 6.0",
 -    /// Test that a cache read that results in an error is treated as a cache
 -    /// miss.
 +    /// Test that a cache read error stops before compiler execution.
-@@ -2841,3 +3085,0 @@ LLVM version: 6.0",
+@@ -2841,3 +3214,0 @@ LLVM version: 6.0",
 -        // The compiler invocation.
 -        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
 -        const COMPILER_STDERR: &[u8] = b"compiler stderr";
-@@ -2845,11 +3086,0 @@ LLVM version: 6.0",
+@@ -2845,11 +3215,0 @@ LLVM version: 6.0",
 -        let o = obj.clone();
 -        next_command_calls(&creator, move |_| {
 -            // Pretend to compile something.
@@ -3020,10 +3169,10 @@ index 78bb5a4..d3f8f51 100644
 -                COMPILER_STDERR,
 -            ))
 -        });
-@@ -2864 +3095 @@ LLVM version: 6.0",
+@@ -2864 +3224 @@ LLVM version: 6.0",
 -        let (cached, res) = runtime
 +        let error = runtime
-@@ -2875,0 +3107,136 @@ LLVM version: 6.0",
+@@ -2875,0 +3236,136 @@ LLVM version: 6.0",
 +            .unwrap_err();
 +        assert!(error.to_string().contains("governed cache read failed"));
 +        assert!(!obj.exists());
@@ -3160,7 +3309,7 @@ index 78bb5a4..d3f8f51 100644
 +                CacheControl::Default,
 +                pool,
 +            ))
-@@ -2877,9 +3243,0 @@ LLVM version: 6.0",
+@@ -2877,9 +3372,0 @@ LLVM version: 6.0",
 -        // Ensure that the object file was created.
 -        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
 -        match cached {
@@ -3170,7 +3319,7 @@ index 78bb5a4..d3f8f51 100644
 -            }
 -            _ => panic!("Unexpected compile result: {:?}", cached),
 -        }
-@@ -2887,3 +3245,6 @@ LLVM version: 6.0",
+@@ -2887,3 +3374,6 @@ LLVM version: 6.0",
 -        assert_eq!(exit_status(0), res.status);
 -        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
 -        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -3211,7 +3360,7 @@ index e6f72a7..8ec211c 100644
 -                                .join("x_".to_owned() + &count + extension)
 +                                .join("x_".to_owned() + count.as_str() + extension)
 diff --git a/src/compiler/rust.rs b/src/compiler/rust.rs
-index d6c2c71..24910ee 100644
+index d6c2c71..7bef599 100644
 --- a/src/compiler/rust.rs
 +++ b/src/compiler/rust.rs
 @@ -15,0 +16,2 @@ use crate::cache::{FileObjectSource, Storage};
@@ -3221,42 +3370,118 @@ index d6c2c71..24910ee 100644
 -    CompilerArguments, CompilerHasher, CompilerKind, CompilerProxy, HashResult, Language,
 -    SingleCompileCommand, c::ArtifactDescriptor,
 +    CompilerArguments, CompilerHasher, CompilerKind, HashResult, Language, SingleCompileCommand,
-+    c::ArtifactDescriptor,
++    StrictPreflight, c::ArtifactDescriptor, strict_classify_output_destinations,
 @@ -32,0 +35 @@ use async_trait::async_trait;
 +#[cfg(test)]
 @@ -48,0 +52 @@ use std::fmt;
 +#[cfg(test)]
 @@ -55,0 +60 @@ use std::path::{Path, PathBuf};
 +#[cfg(test)]
-@@ -136,0 +142 @@ pub struct RustHasher {
-+    preflight_outputs: Option<Vec<String>>,
-@@ -140,0 +147,2 @@ pub struct RustHasher {
+@@ -136,0 +142,7 @@ pub struct RustHasher {
++    preflight_outputs: Option<RustOutputPreflight>,
++}
++
++#[derive(Clone, Debug)]
++struct RustOutputPreflight {
++    outputs: HashMap<String, ArtifactDescriptor>,
++    dep_info: Option<PathBuf>,
+@@ -140,0 +153,2 @@ pub struct RustHasher {
 +#[cfg(test)]
 +#[allow(dead_code)]
-@@ -408 +416 @@ impl Rust {
+@@ -401,0 +416,69 @@ where
++fn prepare_rust_outputs(
++    parsed_args: &ParsedArguments,
++    mut names: Vec<String>,
++) -> (Vec<(String, ArtifactDescriptor)>, Option<PathBuf>) {
++    let emit_generates_only_metadata = !parsed_args.emit.is_empty()
++        && parsed_args
++            .emit
++            .iter()
++            .all(|emit| emit == "metadata" || emit == "dep-info");
++    if emit_generates_only_metadata {
++        names.retain(|output| output.ends_with(".rlib") || output.ends_with(".rmeta"));
++    }
++
++    if parsed_args.emit.contains("metadata") {
++        let rlibs: HashSet<_> = names
++            .iter()
++            .filter(|output| output.ends_with(".rlib"))
++            .cloned()
++            .collect();
++        for library in rlibs {
++            let metadata = library.replacen(".rlib", ".rmeta", 1);
++            if !names.contains(&metadata) {
++                names.push(metadata);
++            }
++            if !parsed_args.emit.contains("link") {
++                names.retain(|output| *output != library);
++            }
++        }
++    }
++
++    let mut outputs = names
++        .into_iter()
++        .map(|name| {
++            let path = parsed_args.output_dir.join(&name);
++            (
++                name,
++                ArtifactDescriptor {
++                    path,
++                    optional: false,
++                },
++            )
++        })
++        .collect::<Vec<_>>();
++    let dep_info = parsed_args.dep_info.as_ref().map(|name| {
++        let path = parsed_args.output_dir.join(name);
++        outputs.push((
++            name.to_string_lossy().into_owned(),
++            ArtifactDescriptor {
++                path: path.clone(),
++                optional: false,
++            },
++        ));
++        path
++    });
++    for optional in [&parsed_args.profile, &parsed_args.gcno]
++        .into_iter()
++        .flatten()
++    {
++        outputs.push((
++            optional.to_string_lossy().into_owned(),
++            ArtifactDescriptor {
++                path: parsed_args.output_dir.join(optional),
++                optional: true,
++            },
++        ));
++    }
++    (outputs, dep_info)
++}
++
+@@ -408 +491 @@ impl Rust {
 -        env_vars: &[(OsString, OsString)],
 +        _env_vars: &[(OsString, OsString)],
-@@ -429,2 +437 @@ impl Rust {
+@@ -429,2 +512 @@ impl Rust {
 -            .env_clear()
 -            .envs(env_vars.to_vec());
 +            .env_clear();
-@@ -467 +474 @@ impl Rust {
+@@ -467 +549 @@ impl Rust {
 -                let env_vars = env_vars.to_owned();
 +                let env_vars = _env_vars.to_owned();
-@@ -548,0 +556 @@ where
+@@ -548,0 +631 @@ where
 +                preflight_outputs: None,
-@@ -561,0 +570 @@ where
+@@ -561,0 +645 @@ where
 +#[cfg(test)]
-@@ -611,0 +621,2 @@ where
+@@ -611,0 +696,2 @@ where
 +#[cfg(test)]
 +#[allow(dead_code)]
-@@ -1327,0 +1339,21 @@ where
+@@ -1327,0 +1414,39 @@ where
 +    async fn strict_preflight(
 +        &mut self,
 +        creator: &T,
 +        cwd: &Path,
 +        env_vars: &[(OsString, OsString)],
-+    ) -> Result<()> {
++    ) -> Result<StrictPreflight> {
 +        if self.preflight_outputs.is_some() {
 +            bail!("strict Rust output preflight was already consumed");
 +        }
@@ -3267,14 +3492,32 @@ index d6c2c71..24910ee 100644
 +            .flat_map(|argument| argument.iter_os_strings())
 +            .map(OsString::from)
 +            .collect();
-+        self.preflight_outputs =
-+            Some(get_compiler_outputs(creator, &self.executable, arguments, cwd, env_vars).await?);
-+        Ok(())
++        let names =
++            get_compiler_outputs(creator, &self.executable, arguments, cwd, env_vars).await?;
++        let (outputs, dep_info) = prepare_rust_outputs(&self.parsed_args, names);
++        let classification = strict_classify_output_destinations(
++            cwd,
++            outputs.iter().map(|(_, output)| output.path.as_path()),
++        )?;
++        if classification != StrictPreflight::Cacheable {
++            return Ok(classification);
++        }
++        let mut keyed = HashMap::new();
++        for (key, output) in outputs {
++            if keyed.insert(key, output).is_some() {
++                return Ok(StrictPreflight::CannotCache("duplicate-output-destination"));
++            }
++        }
++        self.preflight_outputs = Some(RustOutputPreflight {
++            outputs: keyed,
++            dep_info,
++        });
++        Ok(StrictPreflight::Cacheable)
 +    }
 +
-@@ -1442,0 +1475 @@ where
+@@ -1442,0 +1568 @@ where
 +        m.update(env!("SCCACHE_STRICT_CACHE_FORMAT_TOKEN").as_bytes());
-@@ -1544,14 +1577,4 @@ where
+@@ -1544,108 +1670,4 @@ where
 -        // Turn arguments into a simple Vec<OsString> to calculate outputs.
 -        let flat_os_string_arguments: Vec<OsString> = os_string_arguments
 -            .into_iter()
@@ -3289,17 +3532,111 @@ index d6c2c71..24910ee 100644
 -            &env_vars,
 -        )
 -        .await?;
-+        let mut outputs = self
+-
+-        // metadata / dep-info don't ever generate binaries, but
+-        // rustc still makes them appear in the --print
+-        // file-names output (see
+-        // https://github.com/rust-lang/rust/pull/68799).
+-        //
+-        // So if we see a binary in the rustc output and figure
+-        // out that we're not _actually_ generating it, then we
+-        // can avoid generating everything that isn't an rlib /
+-        // rmeta.
+-        //
+-        // This can go away once the above rustc PR makes it in.
+-        let emit_generates_only_metadata = !self.parsed_args.emit.is_empty()
+-            && self
+-                .parsed_args
+-                .emit
+-                .iter()
+-                .all(|e| e == "metadata" || e == "dep-info");
+-
+-        if emit_generates_only_metadata {
+-            outputs.retain(|o| o.ends_with(".rlib") || o.ends_with(".rmeta"));
+-        }
+-
+-        if self.parsed_args.emit.contains("metadata") {
+-            // rustc currently does not report rmeta outputs with --print file-names
+-            // --emit metadata the rlib is printed, and with --emit metadata,link
+-            // only the rlib is printed.
+-            let rlibs: HashSet<_> = outputs
+-                .iter()
+-                .filter(|&p| p.ends_with(".rlib"))
+-                .cloned()
+-                .collect();
+-            for lib in rlibs {
+-                let rmeta = lib.replacen(".rlib", ".rmeta", 1);
+-                // Do this defensively for future versions of rustc that may
+-                // be fixed.
+-                if !outputs.contains(&rmeta) {
+-                    outputs.push(rmeta);
+-                }
+-                if !self.parsed_args.emit.contains("link") {
+-                    outputs.retain(|p| *p != lib);
+-                }
+-            }
+-        }
+-
+-        // Convert output files into a map of basename -> full
+-        // path, and remove some unneeded / non-existing ones,
+-        // see https://github.com/rust-lang/rust/pull/68799.
+-        let mut outputs = outputs
+-            .into_iter()
+-            .map(|o| {
+-                let p = self.parsed_args.output_dir.join(&o);
+-                (
+-                    o,
+-                    ArtifactDescriptor {
+-                        path: p,
+-                        optional: false,
+-                    },
+-                )
+-            })
+-            .collect::<HashMap<_, _>>();
+-        let dep_info = if let Some(dep_info) = &self.parsed_args.dep_info {
+-            let p = self.parsed_args.output_dir.join(dep_info);
+-            outputs.insert(
+-                dep_info.to_string_lossy().into_owned(),
+-                ArtifactDescriptor {
+-                    path: p.clone(),
+-                    optional: false,
+-                },
+-            );
+-            Some(p)
+-        } else {
+-            None
+-        };
+-        if let Some(profile) = &self.parsed_args.profile {
+-            let p = self.parsed_args.output_dir.join(profile);
+-            outputs.insert(
+-                profile.to_string_lossy().into_owned(),
+-                ArtifactDescriptor {
+-                    path: p,
+-                    optional: true,
+-                },
+-            );
+-        }
+-        if let Some(gcno) = &self.parsed_args.gcno {
+-            let p = self.parsed_args.output_dir.join(gcno);
+-            outputs.insert(
+-                gcno.to_string_lossy().into_owned(),
+-                ArtifactDescriptor {
+-                    path: p,
+-                    optional: true,
+-                },
+-            );
+-        }
++        let RustOutputPreflight { outputs, dep_info } = self
 +            .preflight_outputs
 +            .take()
 +            .context("strict Rust output preflight is missing")?;
-@@ -3491,0 +3515 @@ proc_macro false
+@@ -3491,0 +3514 @@ proc_macro false
 +            preflight_outputs: None,
-@@ -3494 +3517,0 @@ proc_macro false
+@@ -3494 +3516,0 @@ proc_macro false
 -        mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
-@@ -3495,0 +3519 @@ proc_macro false
+@@ -3495,0 +3518 @@ proc_macro false
 +        mock_dep_info(&creator, &["foo.rs", "bar.rs"]);
-@@ -3497,0 +3522,18 @@ proc_macro false
+@@ -3497,0 +3521,18 @@ proc_macro false
 +        let environment = [
 +            (OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
 +            (OsString::from("FOO"), OsString::from("bar")),
@@ -3318,7 +3655,7 @@ index d6c2c71..24910ee 100644
 +            .strict_preflight(&creator, f.tempdir.path(), &environment)
 +            .wait()
 +            .unwrap();
-@@ -3502,14 +3544 @@ proc_macro false
+@@ -3502,14 +3543 @@ proc_macro false
 -                [
 -                    (OsString::from("CARGO_PKG_NAME"), OsString::from("foo")),
 -                    (OsString::from("FOO"), OsString::from("bar")),
@@ -3334,14 +3671,14 @@ index d6c2c71..24910ee 100644
 -                ]
 -                .to_vec(),
 +                environment,
-@@ -3529,0 +3559,2 @@ proc_macro false
+@@ -3529,0 +3558,2 @@ proc_macro false
 +        // Strict cache format boundary.
 +        m.update(env!("SCCACHE_STRICT_CACHE_FORMAT_TOKEN").as_bytes());
-@@ -3594,0 +3626 @@ proc_macro false
+@@ -3594,0 +3625 @@ proc_macro false
 +            preflight_outputs: None,
-@@ -3601 +3632,0 @@ proc_macro false
+@@ -3601 +3631,0 @@ proc_macro false
 -        mock_dep_info(&creator, &["foo.rs"]);
-@@ -3602,0 +3634,5 @@ proc_macro false
+@@ -3602,0 +3633,5 @@ proc_macro false
 +        mock_dep_info(&creator, &["foo.rs"]);
 +        hasher
 +            .strict_preflight(&creator, f.tempdir.path(), env_vars)
@@ -5641,7 +5978,7 @@ index 8760ba6..5ab6c52 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..6951108 100644
+index 98cedfb..13ba050 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16,2 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -5652,7 +5989,7 @@ index 98cedfb..6951108 100644
 -    CacheControl, CompileResult, Compiler, CompilerArguments, CompilerHasher, CompilerKind,
 -    CompilerProxy, DistType, Language, MissType, get_compiler_info,
 +    CacheControl, CacheWriteInfo, CompileResult, Compiler, CompilerArguments, CompilerHasher,
-+    CompilerKind, CompilerProxy, DistType, Language, MissType, get_compiler_info,
++    CompilerKind, CompilerProxy, DistType, Language, MissType, StrictPreflight, get_compiler_info,
 +    get_strict_compiler_info, strict_preclassify_arguments,
 @@ -23 +25 @@ use crate::config;
 -use crate::config::Config;
@@ -6172,15 +6509,26 @@ index 98cedfb..6951108 100644
 +                        },
 +                    )));
 +                }
-@@ -1253 +1644,4 @@ where
+@@ -1253 +1644,15 @@ where
 -                    CompilerArguments::Ok(hasher) => {
 +                    CompilerArguments::Ok(mut hasher) => {
-+                        hasher
++                        let preflight = hasher
 +                            .strict_preflight(&classification_creator, &cwd, &env_vars)
 +                            .await?;
-@@ -1255,0 +1650 @@ where
++                        if let StrictPreflight::CannotCache(reason) = preflight {
++                            let mut stats = self.stats.lock().await;
++                            stats.requests_not_cacheable += 1;
++                            *stats.not_cached.entry(reason.to_string()).or_insert(0) += 1;
++                            return Ok(Message::WithoutBody(Response::Compile(
++                                CompileResponse::CannotCache {
++                                    binding,
++                                    reason: reason.to_string(),
++                                },
++                            )));
++                        }
+@@ -1255,0 +1661 @@ where
 +                        let finished_binding = binding.clone();
-@@ -1259 +1654,6 @@ where
+@@ -1259 +1665,6 @@ where
 -                            .and_then(|res| async { Ok(Response::CompileFinished(res)) })
 +                            .and_then(|result| async move {
 +                                Ok(Response::StrictCompileFinished {
@@ -6188,30 +6536,30 @@ index 98cedfb..6951108 100644
 +                                    result,
 +                                })
 +                            })
-@@ -1262,2 +1662,2 @@ where
+@@ -1262,2 +1673,2 @@ where
 -                        return Message::WithBody(
 -                            Response::Compile(CompileResponse::CompileStarted),
 +                        return Ok(Message::WithBody(
 +                            Response::Compile(CompileResponse::StrictCompileStarted(binding)),
-@@ -1265 +1665 @@ where
+@@ -1265 +1676 @@ where
 -                        );
 +                        ));
-@@ -1278,0 +1679,6 @@ where
+@@ -1278,0 +1690,6 @@ where
 +                        return Ok(Message::WithoutBody(Response::Compile(
 +                            CompileResponse::CannotCache {
 +                                binding,
 +                                reason: why.to_string(),
 +                            },
 +                        )));
-@@ -1282,0 +1689,3 @@ where
+@@ -1282,0 +1700,3 @@ where
 +                        return Ok(Message::WithoutBody(Response::Compile(
 +                            CompileResponse::NotCompilation(binding),
 +                        )));
-@@ -1287,3 +1695,0 @@ where
+@@ -1287,3 +1706,0 @@ where
 -
 -        let res = CompileResponse::UnhandledCompile;
 -        Message::WithoutBody(Response::Compile(res))
-@@ -1304,11 +1710 @@ where
+@@ -1304,11 +1721 @@ where
 -
 -        let force_recache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_RECACHE");
 -        let force_no_cache = env_vars.iter().any(|(k, _v)| k == "SCCACHE_NO_CACHE");
@@ -6224,7 +6572,7 @@ index 98cedfb..6951108 100644
 -            CacheControl::Default
 -        };
 +        let cache_control = CacheControl::Default;
-@@ -1418,0 +1815,10 @@ where
+@@ -1418,0 +1826,10 @@ where
 +                            CompileResult::ReadOnlyCacheMiss(miss_type, dt, duration) => {
 +                                debug!("[{}]: governed read-only cache miss", out_pretty);
 +                                dist_type = dt;
@@ -6235,7 +6583,7 @@ index 98cedfb..6951108 100644
 +                                stats.cache_misses.increment(&kind, &lang);
 +                                stats.compiler_write_duration += duration;
 +                            }
-@@ -1522,7 +1928,5 @@ where
+@@ -1522,7 +1939,5 @@ where
 -                    match cache_write.await {
 -                        Err(e) => {
 -                            debug!("Error executing cache write: {}", e);
@@ -6248,7 +6596,7 @@ index 98cedfb..6951108 100644
 +                    {
 +                        None => me.stats.lock().await.cache_write_errors += 1,
 +                        Some(info) => {
-@@ -1581,0 +1986,69 @@ impl PerLanguageCount {
+@@ -1581,0 +1997,69 @@ impl PerLanguageCount {
 +#[cfg(unix)]
 +fn validate_strict_compiler_environment(
 +    env_vars: &[(OsString, OsString)],
@@ -6318,17 +6666,17 @@ index 98cedfb..6951108 100644
 +    }
 +}
 +
-@@ -2145,0 +2619,3 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
+@@ -2145,0 +2630,3 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
 +    poison: StrictPoison,
 +    commit_timeout: Duration,
 +    commit_deadline: Option<Pin<Box<Sleep>>>,
-@@ -2161,0 +2638,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2161,0 +2649,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        if !self.poison.is_healthy() {
 +            return Poll::Ready(Err(anyhow!(
 +                "strict response commit blocked by daemon poison"
 +            )));
 +        }
-@@ -2165,0 +2647,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2165,0 +2658,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        ensure!(
 +            self.poison.is_healthy(),
 +            "strict response commit blocked by daemon poison"
@@ -6336,7 +6684,7 @@ index 98cedfb..6951108 100644
 +        if self.commit_deadline.is_none() {
 +            self.commit_deadline = Some(Box::pin(sleep(self.commit_timeout)));
 +        }
-@@ -2174 +2662,18 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2174 +2673,18 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        Pin::new(&mut self.inner).poll_flush(cx)
 +        if !self.poison.is_healthy() {
 +            return Poll::Ready(Err(anyhow!(
@@ -6356,7 +6704,7 @@ index 98cedfb..6951108 100644
 +            }
 +            result => result,
 +        }
-@@ -2284,0 +2790,306 @@ mod tests {
+@@ -2284,0 +2801,306 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();

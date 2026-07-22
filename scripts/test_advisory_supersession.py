@@ -98,6 +98,11 @@ class FakeClient:
             raise RuntimeError("reconciliation-round budget exhausted")
         self.rounds += 1
 
+    def reconciliation_evidence(
+        self,
+    ) -> advisory_supersession.ReconciliationEvidence | None:
+        return None
+
     def cancel_and_confirm(
         self,
         target: advisory_supersession.WorkflowRun,
@@ -185,6 +190,29 @@ class FailingOpener:
         raise TimeoutError("dispatch timed out")
 
 
+class LateResponse:
+    status = 409
+    headers = {"x-ratelimit-remaining": "5000"}
+
+    def __enter__(self) -> LateResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return b""
+
+
+class LateOpener:
+    def __init__(self, clock: list[float]) -> None:
+        self.clock = clock
+
+    def open(self, request: object, *, timeout: float) -> LateResponse:
+        self.clock[0] = 6.0
+        return LateResponse()
+
+
 class DiscoveryClient(advisory_supersession.GitHubActionsClient):
     def __init__(
         self,
@@ -257,6 +285,7 @@ def census_run_document(
     attempt: int = 1,
     sha: str = "old",
     status: str = "in_progress",
+    created_at: str = "2026-07-22T11:00:00Z",
 ) -> dict[str, object]:
     return {
         "id": run_id,
@@ -265,7 +294,7 @@ def census_run_document(
         "head_branch": "main",
         "event": "push",
         "status": status,
-        "created_at": "2026-07-22T11:00:00Z",
+        "created_at": created_at,
     }
 
 
@@ -666,6 +695,8 @@ class ReconcileTests(unittest.TestCase):
             client.cancel_and_confirm(target, census_context(), freshness_guard)
 
         self.assertEqual(client.requests, [False])
+        assert client._ledger is not None
+        self.assertTrue(client._ledger.poisoned)
 
     def test_client_treats_unknown_status_as_unconfirmed(self) -> None:
         client = CancellationClient(["new-active-state"] * 4)
@@ -816,6 +847,38 @@ class ReconcileTests(unittest.TestCase):
         assert client._ledger is not None
         self.assertTrue(client._ledger.poisoned)
         self.assertEqual(client.requests, [False])
+
+    def test_mid_reconciliation_api_failure_poisons_later_authority(self) -> None:
+        for failure in ("403", "429", "timeout"):
+            with self.subTest(failure=failure):
+                client = CancellationClient(
+                    [
+                        "in_progress",
+                        "in_progress",
+                        RuntimeError(failure),
+                    ],
+                    poll_attempts=2,
+                )
+                target = advisory_supersession.WorkflowRun(
+                    57, "old", "push", "in_progress"
+                )
+
+                with self.assertRaisesRegex(RuntimeError, failure):
+                    client.cancel_and_confirm(
+                        target,
+                        census_context(),
+                        lambda: None,
+                    )
+
+                assert client._ledger is not None
+                self.assertEqual(client.requests, [False])
+                self.assertTrue(client._ledger.poisoned)
+                with self.assertRaisesRegex(RuntimeError, "poisoned"):
+                    client.cancel_and_confirm(
+                        target,
+                        census_context(),
+                        lambda: None,
+                    )
 
     def test_watchdog_refuses_cancellation_when_main_moves(self) -> None:
         client = FakeClient(current_shas=["current", "newer"])
@@ -1259,6 +1322,15 @@ class ExactRunTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "HTTP Date"):
             client.capture_context(run_id=123, run_sha="current")
 
+    def test_rejects_malformed_github_date(self) -> None:
+        client = ExactRunClient(
+            document=exact_run_document(),
+            date="not-a-date",
+        )
+
+        with self.assertRaisesRegex(ValueError, "malformed HTTP Date"):
+            client.capture_context(run_id=123, run_sha="current")
+
     def test_rejects_malformed_or_mismatched_run_identity(self) -> None:
         cases = {
             "id": ({"id": 124}, "id"),
@@ -1369,6 +1441,33 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "poisoned"):
             ledger.charge_request("GET")
 
+    def test_boolean_or_non_positive_binding_consumes_and_poisons(self) -> None:
+        for observed in (True, 0):
+            with self.subTest(observed=observed):
+                ledger = self.ledger()
+                ledger.latest_primary_remaining = 5000
+                episode = ledger.begin_episode(7, 3)
+                ledger.reserve_successor(
+                    episode,
+                    advisory_supersession.cancellation_episode_capacity(
+                        GOVERNED_CONFIG
+                    ),
+                )
+
+                with self.assertRaisesRegex(RuntimeError, "malformed"):
+                    ledger.bind_first_observation(observed)
+
+                self.assertTrue(ledger.poisoned)
+                self.assertEqual(ledger.reservations_consumed, 1)
+
+    def test_boolean_episode_identity_is_rejected(self) -> None:
+        ledger = self.ledger()
+
+        with self.assertRaisesRegex(ValueError, "identity"):
+            ledger.begin_episode(True, 1)
+        with self.assertRaisesRegex(ValueError, "identity"):
+            ledger.begin_episode(7, True)
+
     def test_reservation_requires_rate_request_point_and_deadline_capacity(self) -> None:
         full = advisory_supersession.cancellation_episode_capacity(GOVERNED_CONFIG)
         cases = {
@@ -1474,6 +1573,65 @@ class LedgerTests(unittest.TestCase):
                 ),
             )
 
+    def test_response_completing_after_deadline_cannot_authorize_result(self) -> None:
+        clock = [0.0]
+        client = advisory_supersession.GitHubActionsClient(
+            config=GOVERNED_CONFIG,
+            repository="owner/repository",
+            token="test-token",
+        )
+        ledger = advisory_supersession.ReconciliationLedger(
+            config=GOVERNED_CONFIG,
+            deadline=5.0,
+            monotonic_now=lambda: clock[0],
+        )
+        client._ledger = ledger
+        client._opener = LateOpener(clock)
+
+        with self.assertRaisesRegex(RuntimeError, "deadline exhausted"):
+            client._request_json(
+                "POST",
+                "repos/owner/repository/actions/runs/7/cancel",
+                expected_statuses=(202, 409),
+            )
+
+        self.assertEqual(ledger.mutations, 1)
+
+    def test_structured_evidence_reports_census_budget_and_usage(self) -> None:
+        client = CensusClient(
+            [
+                (
+                    {
+                        "total_count": 1,
+                        "workflow_runs": [
+                            census_run_document(123, sha="current")
+                        ],
+                    },
+                    None,
+                )
+            ]
+        )
+        ledger = advisory_supersession.ReconciliationLedger(
+            config=GOVERNED_CONFIG,
+            deadline=600.0,
+            monotonic_now=lambda: 0.0,
+        )
+        ledger.latest_primary_remaining = 4999
+        ledger.charge_request("GET")
+        client._ledger = ledger
+        client._workflow_run_sweep(census_context())
+
+        evidence = client.reconciliation_evidence()
+
+        self.assertEqual(
+            evidence.census,
+            advisory_supersession.CensusObservation(1, 1, 1),
+        )
+        self.assertEqual(evidence.computed_request_budget, 358)
+        self.assertEqual(evidence.remaining_primary_rate_limit, 4999)
+        self.assertEqual(evidence.requests_used, 1)
+        self.assertEqual(evidence.secondary_points_used, 1)
+
 
 class CensusTests(unittest.TestCase):
     def test_accepts_complete_multi_page_configured_repository_census(self) -> None:
@@ -1499,6 +1657,29 @@ class CensusTests(unittest.TestCase):
 
         self.assertEqual([run.run_id for run in runs], [7, 123])
         self.assertEqual(len(client.requests), 2)
+
+    def test_preserves_fractional_created_at_in_active_signature(self) -> None:
+        client = CensusClient(
+            [
+                (
+                    {
+                        "total_count": 1,
+                        "workflow_runs": [
+                            census_run_document(
+                                123,
+                                sha="current",
+                                created_at="2026-07-22T11:00:00.123456Z",
+                            )
+                        ],
+                    },
+                    None,
+                )
+            ]
+        )
+
+        runs = client._workflow_run_sweep(census_context())
+
+        self.assertEqual(runs[0].created_at, "2026-07-22T11:00:00.123456Z")
 
     def test_accepts_canonical_numeric_repository_link(self) -> None:
         client = CensusClient(

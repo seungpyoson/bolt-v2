@@ -154,6 +154,26 @@ class ReconciliationContext:
 
 
 @dataclasses.dataclass(frozen=True)
+class CensusObservation:
+    total_count: int
+    fetched_count: int
+    page_count: int
+
+
+@dataclasses.dataclass(frozen=True)
+class ReconciliationEvidence:
+    census: CensusObservation | None
+    computed_request_budget: int
+    remaining_primary_rate_limit: int | None
+    requests_used: int
+    secondary_points_used: int
+    cancellation_episodes_used: int
+    reservations_released: int
+    reservations_consumed: int
+    reconciliation_rounds_used: int
+
+
+@dataclasses.dataclass(frozen=True)
 class SuccessorReservation:
     current: tuple[int, int]
     successor: tuple[int, int]
@@ -218,7 +238,14 @@ class ReconciliationLedger:
     def begin_episode(self, run_id: int, run_attempt: int) -> tuple[int, int]:
         if self.poisoned:
             raise RuntimeError("reconciliation authority is poisoned")
-        if run_id <= 0 or run_attempt <= 0:
+        if (
+            isinstance(run_id, bool)
+            or not isinstance(run_id, int)
+            or run_id <= 0
+            or isinstance(run_attempt, bool)
+            or not isinstance(run_attempt, int)
+            or run_attempt <= 0
+        ):
             raise ValueError("cancellation episode identity must be positive")
         episode = (run_id, run_attempt)
         if episode in self.episodes:
@@ -275,6 +302,13 @@ class ReconciliationLedger:
         reservation = self.pending_reservation
         if reservation is None:
             raise RuntimeError("no immediate-successor reservation is pending")
+        if (
+            isinstance(run_attempt, bool)
+            or not isinstance(run_attempt, int)
+            or run_attempt <= 0
+        ):
+            self.consume_ambiguous_reservation()
+            raise RuntimeError("first post-mutation attempt is malformed")
         if run_attempt == reservation.current[1]:
             self.pending_reservation = None
             self.reservations_released += 1
@@ -299,6 +333,7 @@ class ReconciliationLedger:
 @dataclasses.dataclass(frozen=True)
 class ReconcileResult:
     cancelled_run_ids: tuple[int, ...]
+    evidence: ReconciliationEvidence | None = None
 
 
 class SupersededRun(RuntimeError):
@@ -341,6 +376,8 @@ class ActionsClient(Protocol):
 
     def begin_reconciliation_round(self) -> None: ...
 
+    def reconciliation_evidence(self) -> ReconciliationEvidence | None: ...
+
     def cancel_and_confirm(
         self,
         target: WorkflowRun,
@@ -378,6 +415,11 @@ def _require_timestamp(document: Mapping[str, object], key: str) -> datetime.dat
     if parsed.tzinfo is None:
         raise ValueError(f"{key} must include a timezone")
     return parsed.astimezone(datetime.UTC)
+
+
+def _canonical_timestamp(value: datetime.datetime) -> str:
+    timespec = "microseconds" if value.microsecond else "seconds"
+    return value.isoformat(timespec=timespec).replace("+00:00", "Z")
 
 
 def load_config(path: pathlib.Path) -> Config:
@@ -531,6 +573,7 @@ class GitHubActionsClient:
         self._opener = urllib.request.build_opener(_NoRedirectHandler())
         self._sleep = time.sleep
         self._ledger: ReconciliationLedger | None = None
+        self._last_census: CensusObservation | None = None
 
     def capture_context(
         self,
@@ -599,7 +642,12 @@ class GitHubActionsClient:
         raw_date = headers.get("date")
         if raw_date is None:
             raise ValueError("exact workflow run response is missing HTTP Date")
-        github_now = email.utils.parsedate_to_datetime(raw_date)
+        try:
+            github_now = email.utils.parsedate_to_datetime(raw_date)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "exact workflow run response has malformed HTTP Date"
+            ) from error
         if github_now is None or github_now.tzinfo is None:
             raise ValueError("exact workflow run response has malformed HTTP Date")
         github_now = github_now.astimezone(datetime.UTC)
@@ -616,7 +664,7 @@ class GitHubActionsClient:
                 event=event,
                 status=_require_string(root, "status"),
                 run_attempt=run_attempt,
-                created_at=created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                created_at=_canonical_timestamp(created_at),
                 head_branch=head_branch,
             ),
             repository_id=repository_id,
@@ -667,6 +715,7 @@ class GitHubActionsClient:
                     key.lower(): value for key, value in response.headers.items()
                 }
                 if ledger is not None:
+                    ledger.remaining_seconds()
                     ledger.observe_headers(response_headers)
                 return (
                     response.status,
@@ -678,6 +727,7 @@ class GitHubActionsClient:
                 key.lower(): value for key, value in error.headers.items()
             }
             if ledger is not None:
+                ledger.remaining_seconds()
                 ledger.observe_headers(error_headers)
             if error.code in expected_statuses:
                 return (
@@ -779,8 +829,8 @@ class GitHubActionsClient:
                 head_branch = _require_string(item, "head_branch")
                 if head_branch != self.config.branch:
                     raise IncompleteCensus("workflow run branch does not match config")
-                created_at = _require_timestamp(item, "created_at").strftime(
-                    "%Y-%m-%dT%H:%M:%SZ"
+                created_at = _canonical_timestamp(
+                    _require_timestamp(item, "created_at")
                 )
                 run = WorkflowRun(
                     run_id=run_id,
@@ -823,6 +873,11 @@ class GitHubActionsClient:
             raise IncompleteCensus("workflow-run census count is incomplete")
         if not sentinel_seen:
             raise IncompleteCensus("exact workflow-run sentinel is missing")
+        self._last_census = CensusObservation(
+            total_count=expected_total,
+            fetched_count=len(seen_run_ids),
+            page_count=len(seen_urls),
+        )
         return sorted(runs, key=lambda run: run.run_id)
 
     def _validate_census_url(
@@ -939,6 +994,22 @@ class GitHubActionsClient:
             raise RuntimeError("reconciliation-round budget exhausted")
         ledger.rounds += 1
 
+    def reconciliation_evidence(self) -> ReconciliationEvidence:
+        ledger = self._ledger
+        if ledger is None:
+            raise RuntimeError("reconciliation evidence requires a ledger")
+        return ReconciliationEvidence(
+            census=self._last_census,
+            computed_request_budget=reconciliation_topology(self.config).requests,
+            remaining_primary_rate_limit=ledger.latest_primary_remaining,
+            requests_used=ledger.requests,
+            secondary_points_used=ledger.secondary_points,
+            cancellation_episodes_used=len(ledger.episodes),
+            reservations_released=ledger.reservations_released,
+            reservations_consumed=ledger.reservations_consumed,
+            reconciliation_rounds_used=ledger.rounds,
+        )
+
     def _exact_target(
         self,
         target: WorkflowRun,
@@ -987,8 +1058,8 @@ class GitHubActionsClient:
         head_sha = _require_string(root, "head_sha")
         if head_sha != target.head_sha:
             raise ValueError("exact target SHA changed")
-        created_at = _require_timestamp(root, "created_at").strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
+        created_at = _canonical_timestamp(
+            _require_timestamp(root, "created_at")
         )
         _require_timestamp(root, "run_started_at")
         return WorkflowRun(
@@ -1019,6 +1090,23 @@ class GitHubActionsClient:
         freshness_guard: Callable[[], None],
     ) -> None:
         ledger = getattr(self, "_ledger", None)
+        if ledger is None:
+            raise RuntimeError("cancellation requires a reconciliation ledger")
+        mutations_before = ledger.mutations
+        try:
+            self._cancel_and_confirm(target, context, freshness_guard)
+        except Exception:
+            if ledger.mutations > mutations_before:
+                ledger.consume_ambiguous_reservation()
+            raise
+
+    def _cancel_and_confirm(
+        self,
+        target: WorkflowRun,
+        context: ReconciliationContext,
+        freshness_guard: Callable[[], None],
+    ) -> None:
+        ledger = self._ledger
         if ledger is None:
             raise RuntimeError("cancellation requires a reconciliation ledger")
         current = target
@@ -1188,7 +1276,10 @@ def reconcile(
         ]
         if not stale_runs:
             require_current_main()
-            return ReconcileResult(cancelled_run_ids=tuple(cancelled))
+            return ReconcileResult(
+                cancelled_run_ids=tuple(cancelled),
+                evidence=client.reconciliation_evidence(),
+            )
         client.begin_reconciliation_round()
         for run in stale_runs:
             client.cancel_and_confirm(run, context, require_current_main)
@@ -1205,7 +1296,10 @@ def cancel_superseded_target(
     context = client.capture_context(run_id=run_id, run_sha=run_sha)
     current_sha = client.current_branch_sha()
     if run_sha == current_sha:
-        return ReconcileResult(cancelled_run_ids=())
+        return ReconcileResult(
+            cancelled_run_ids=(),
+            evidence=client.reconciliation_evidence(),
+        )
 
     def require_stable_main() -> None:
         if client.current_branch_sha() != current_sha:
@@ -1216,7 +1310,10 @@ def cancel_superseded_target(
         context,
         require_stable_main,
     )
-    return ReconcileResult(cancelled_run_ids=(run_id,))
+    return ReconcileResult(
+        cancelled_run_ids=(run_id,),
+        evidence=client.reconciliation_evidence(),
+    )
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -1,3 +1,4 @@
+mod basket_admission;
 mod order_intent;
 mod reservation;
 mod settlement;
@@ -7,8 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     facts::{
-        EntryOrderIntentFact, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
-        OrderIntentDetails, OrderIntentOrderFields, RecoveryFact, RiskReducingExitOrderIntentFact,
+        BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, EntryOrderIntentFact,
+        OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome, OrderIntentDetails,
+        OrderIntentOrderFields, RecoveryFact, RiskReducingExitOrderIntentFact,
         SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
         SubmitReservationMetadataFact, TerminalSettlementFact,
     },
@@ -146,6 +148,38 @@ impl CodecFor<identities::RiskReducingExitOrderIntentV1> for CurrentCodecs {
     }
 }
 
+impl CodecFor<identities::BasketAdmissionGrantedV1> for CurrentCodecs {
+    type Input = BasketAdmissionGrantedFact;
+    type Fact = BasketAdmissionGrantedFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        basket_admission::encode_granted(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        basket_admission::decode_granted(line, line_number)
+    }
+}
+
+impl CodecFor<identities::BasketAdmissionRejectedV1> for CurrentCodecs {
+    type Input = BasketAdmissionRejectedFact;
+    type Fact = BasketAdmissionRejectedFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        basket_admission::encode_rejected(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        basket_admission::decode_rejected(line, line_number)
+    }
+}
+
 pub(crate) fn encode_entry_order_intent(
     fact: EntryOrderIntentFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
@@ -156,6 +190,24 @@ pub(crate) fn encode_risk_reducing_exit_order_intent(
     fact: RiskReducingExitOrderIntentFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     <CurrentCodecs as CodecFor<identities::RiskReducingExitOrderIntentV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
+}
+
+pub(crate) fn encode_basket_admission_granted(
+    fact: BasketAdmissionGrantedFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::BasketAdmissionGrantedV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
+}
+
+pub(crate) fn encode_basket_admission_rejected(
+    fact: BasketAdmissionRejectedFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::BasketAdmissionRejectedV1>>::encode(
         &fact,
         current_utc_ns()?,
     )
@@ -473,6 +525,21 @@ mod tests {
         }
     }
 
+    fn basket_details() -> super::super::facts::BasketAdmissionDetails {
+        super::super::facts::BasketAdmissionDetails {
+            strategy_id: "strategy-1".to_string(),
+            execution_client_id: "execution-1".to_string(),
+            basket_id: "basket-1".to_string(),
+            group_id: "group-1".to_string(),
+            leg_instrument_ids: vec![
+                "YES-USD.POLYMARKET".to_string(),
+                "NO-USD.POLYMARKET".to_string(),
+            ],
+            total_notional: "10".to_string(),
+            leg_order_count: 2,
+        }
+    }
+
     #[test]
     fn reservation_identity_binding_is_deterministic_and_round_trips() {
         let expected = metadata();
@@ -591,6 +658,55 @@ mod tests {
         assert!(
             <CurrentCodecs as CodecFor<identities::EntryOrderIntentV1>>::decode(exit_line, 1)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn basket_admission_identities_are_distinct_and_round_trip() {
+        let granted = BasketAdmissionGrantedFact {
+            details: basket_details(),
+        };
+        let granted_record =
+            <CurrentCodecs as CodecFor<identities::BasketAdmissionGrantedV1>>::encode(&granted, 16)
+                .expect("valid granted basket must encode");
+        let granted_line = std::str::from_utf8(granted_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::BasketAdmissionGrantedV1>>::decode(
+                granted_line,
+                1,
+            )
+            .expect("granted basket must decode"),
+            granted
+        );
+
+        let rejected = BasketAdmissionRejectedFact {
+            details: basket_details(),
+            reason: super::super::facts::BasketAdmissionRejectionReason::EdgeThreshold,
+        };
+        let rejected_record =
+            <CurrentCodecs as CodecFor<identities::BasketAdmissionRejectedV1>>::encode(
+                &rejected, 17,
+            )
+            .expect("valid rejected basket must encode");
+        let rejected_line = std::str::from_utf8(rejected_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::BasketAdmissionRejectedV1>>::decode(
+                rejected_line,
+                1,
+            )
+            .expect("rejected basket must decode"),
+            rejected
+        );
+        assert!(
+            <CurrentCodecs as CodecFor<identities::BasketAdmissionGrantedV1>>::decode(
+                rejected_line,
+                1,
+            )
+            .is_err()
         );
     }
 }

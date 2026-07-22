@@ -93,6 +93,43 @@ pub struct RiskReducingExitOrderIntentFact {
     pub details: OrderIntentDetails,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BasketAdmissionDetails {
+    pub strategy_id: String,
+    pub execution_client_id: String,
+    pub basket_id: String,
+    pub group_id: String,
+    pub leg_instrument_ids: Vec<String>,
+    pub total_notional: String,
+    pub leg_order_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BasketAdmissionGrantedFact {
+    pub details: BasketAdmissionDetails,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BasketAdmissionRejectionReason {
+    BasketNotionalCapExceeded,
+    MaxOpenBasketCapExceeded,
+    StaleScannerEvidence,
+    StaleSubmitRecheck,
+    NonPositiveCandidateCost,
+    NonPositiveEdge,
+    EdgeThreshold,
+    MissingGroupingProof,
+    MissingSettlementRules,
+    RetryBudgetExceeded,
+    SubmitSlots,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BasketAdmissionRejectedFact {
+    pub details: BasketAdmissionDetails,
+    pub reason: BasketAdmissionRejectionReason,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,

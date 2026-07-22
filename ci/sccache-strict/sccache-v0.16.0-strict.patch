@@ -360,14 +360,28 @@ index 760026f..4c569c2 100644
 +        let error = runtime.block_on(storage.check()).unwrap_err();
 +        assert!(error.to_string().contains("cache storage failed to read"));
 diff --git a/src/cache/cache_io.rs b/src/cache/cache_io.rs
-index 9e29743..f109501 100644
+index 9e29743..4a8dfa7 100644
 --- a/src/cache/cache_io.rs
 +++ b/src/cache/cache_io.rs
-@@ -19 +19,2 @@ use std::path::{Path, PathBuf};
+@@ -13 +13 @@
+-use super::utils::{get_file_mode, set_file_mode};
++use super::utils::get_file_mode;
+@@ -14,0 +15 @@ use crate::errors::*;
++use anyhow::ensure;
+@@ -15,0 +17,2 @@ use fs_err as fs;
++#[cfg(unix)]
++use std::ffi::{CString, OsStr, OsString};
+@@ -17,0 +21,6 @@ use std::io::{Cursor, Read, Seek, Write};
++#[cfg(unix)]
++use std::os::fd::{AsRawFd, FromRawFd};
++#[cfg(unix)]
++use std::os::unix::ffi::OsStrExt;
++#[cfg(unix)]
++use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+@@ -19 +28 @@ use std::path::{Path, PathBuf};
 -use tempfile::NamedTempFile;
-+use tempfile::{NamedTempFile, tempfile};
 +use zip::result::ZipError;
-@@ -88,0 +90,191 @@ impl std::error::Error for DecompressionFailure {}
+@@ -88,0 +98,442 @@ impl std::error::Error for DecompressionFailure {}
 +#[derive(Debug)]
 +struct CacheObjectMissing;
 +
@@ -379,123 +393,377 @@ index 9e29743..f109501 100644
 +
 +impl std::error::Error for CacheObjectMissing {}
 +
-+enum StagedOutput {
-+    Persist {
-+        temporary: NamedTempFile,
-+        path: PathBuf,
-+        mode: Option<u32>,
-+    },
-+    Copy {
-+        temporary: std::fs::File,
-+        path: PathBuf,
-+        mode: Option<u32>,
-+    },
++#[cfg(unix)]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum DestinationIdentity {
++    Missing,
++    Regular { device: u64, inode: u64 },
 +}
 +
++#[cfg(unix)]
++struct PinnedParent {
++    path: PathBuf,
++    directory: std::fs::File,
++    device: u64,
++    inode: u64,
++}
++
++#[cfg(unix)]
++impl PinnedParent {
++    fn open(path: &Path) -> Result<(Self, OsString)> {
++        let parent = path
++            .parent()
++            .context("cache output destination has no parent directory")?;
++        let basename = path
++            .file_name()
++            .context("cache output destination has no basename")?
++            .to_owned();
++        let mut options = std::fs::OpenOptions::new();
++        options
++            .read(true)
++            .custom_flags(libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW);
++        let directory = options
++            .open(parent)
++            .context("failed to pin cache output parent directory")?;
++        let metadata = directory
++            .metadata()
++            .context("failed to inspect pinned cache output parent")?;
++        ensure!(
++            metadata.file_type().is_dir(),
++            "cache output parent is not a directory"
++        );
++        Ok((
++            Self {
++                path: parent.to_path_buf(),
++                directory,
++                device: metadata.dev(),
++                inode: metadata.ino(),
++            },
++            basename,
++        ))
++    }
++
++    fn descriptor(&self) -> i32 {
++        self.directory.as_raw_fd()
++    }
++
++    fn revalidate(&self) -> Result<()> {
++        let metadata =
++            fs::symlink_metadata(&self.path).context("failed to revalidate cache output parent")?;
++        ensure!(
++            metadata.file_type().is_dir()
++                && metadata.dev() == self.device
++                && metadata.ino() == self.inode,
++            "cache output parent identity changed"
++        );
++        Ok(())
++    }
++
++    fn destination_identity(&self, basename: &OsStr) -> Result<DestinationIdentity> {
++        let basename = c_name(basename)?;
++        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
++        let result = unsafe {
++            libc::fstatat(
++                self.descriptor(),
++                basename.as_ptr(),
++                stat.as_mut_ptr(),
++                libc::AT_SYMLINK_NOFOLLOW,
++            )
++        };
++        if result != 0 {
++            let error = std::io::Error::last_os_error();
++            if error.kind() == std::io::ErrorKind::NotFound {
++                return Ok(DestinationIdentity::Missing);
++            }
++            return Err(error).context("failed to inspect cache output destination");
++        }
++        let stat = unsafe { stat.assume_init() };
++        ensure!(
++            stat.st_mode & libc::S_IFMT == libc::S_IFREG && stat.st_nlink == 1,
++            "refusing to replace a non-transactional cache output destination"
++        );
++        Ok(DestinationIdentity::Regular {
++            device: stat.st_dev as u64,
++            inode: stat.st_ino as u64,
++        })
++    }
++
++    fn create_temporary(&self, prefix: &str) -> Result<(OsString, std::fs::File)> {
++        let name = OsString::from(format!(".{prefix}-{}", uuid::Uuid::new_v4().simple()));
++        let name_c = c_name(&name)?;
++        let descriptor = unsafe {
++            libc::openat(
++                self.descriptor(),
++                name_c.as_ptr(),
++                libc::O_CLOEXEC | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_RDWR,
++                0o600,
++            )
++        };
++        if descriptor < 0 {
++            return Err(std::io::Error::last_os_error())
++                .context("failed to create cache output staging file");
++        }
++        Ok((name, unsafe { std::fs::File::from_raw_fd(descriptor) }))
++    }
++
++    fn rename(&self, source: &OsStr, destination: &OsStr) -> Result<()> {
++        let source = c_name(source)?;
++        let destination = c_name(destination)?;
++        let result = unsafe {
++            libc::renameat(
++                self.descriptor(),
++                source.as_ptr(),
++                self.descriptor(),
++                destination.as_ptr(),
++            )
++        };
++        if result == 0 {
++            Ok(())
++        } else {
++            Err(std::io::Error::last_os_error()).context("cache output rename failed")
++        }
++    }
++
++    #[cfg(target_os = "linux")]
++    fn rename_no_replace(&self, source: &OsStr, destination: &OsStr) -> Result<()> {
++        let source = c_name(source)?;
++        let destination = c_name(destination)?;
++        let result = unsafe {
++            libc::syscall(
++                libc::SYS_renameat2,
++                self.descriptor(),
++                source.as_ptr(),
++                self.descriptor(),
++                destination.as_ptr(),
++                libc::RENAME_NOREPLACE,
++            )
++        };
++        if result == 0 {
++            Ok(())
++        } else {
++            Err(std::io::Error::last_os_error()).context("cache output no-replace rename failed")
++        }
++    }
++
++    #[cfg(not(target_os = "linux"))]
++    fn rename_no_replace(&self, source: &OsStr, destination: &OsStr) -> Result<()> {
++        ensure!(
++            self.destination_identity(destination)? == DestinationIdentity::Missing,
++            "cache output destination appeared before no-replace rename"
++        );
++        self.rename(source, destination)
++    }
++
++    #[cfg(target_os = "linux")]
++    fn exchange(&self, left: &OsStr, right: &OsStr) -> Result<()> {
++        let left = c_name(left)?;
++        let right = c_name(right)?;
++        let result = unsafe {
++            libc::syscall(
++                libc::SYS_renameat2,
++                self.descriptor(),
++                left.as_ptr(),
++                self.descriptor(),
++                right.as_ptr(),
++                libc::RENAME_EXCHANGE,
++            )
++        };
++        if result == 0 {
++            Ok(())
++        } else {
++            Err(std::io::Error::last_os_error()).context("cache output exchange rename failed")
++        }
++    }
++
++    #[cfg(target_os = "linux")]
++    fn move_to_reserved_backup(
++        &self,
++        destination: &OsStr,
++        backup: &OsStr,
++        expected: DestinationIdentity,
++    ) -> Result<()> {
++        self.exchange(destination, backup)?;
++        match self.destination_identity(backup) {
++            Ok(actual) if actual == expected => {}
++            Ok(_) => {
++                self.exchange(destination, backup)
++                    .context("failed to reverse mismatched cache output exchange")?;
++                bail!("cache output destination identity changed during commit");
++            }
++            Err(error) => {
++                self.exchange(destination, backup)
++                    .context("failed to reverse unverifiable cache output exchange")?;
++                return Err(error);
++            }
++        }
++        if let Err(error) = self.unlink(destination) {
++            self.exchange(destination, backup)
++                .context("failed to reverse cache output exchange after unlink failure")?;
++            return Err(error);
++        }
++        Ok(())
++    }
++
++    #[cfg(not(target_os = "linux"))]
++    fn move_to_reserved_backup(
++        &self,
++        destination: &OsStr,
++        backup: &OsStr,
++        expected: DestinationIdentity,
++    ) -> Result<()> {
++        self.rename(destination, backup)?;
++        match self.destination_identity(backup) {
++            Ok(actual) if actual == expected => Ok(()),
++            Ok(_) => {
++                self.rename(backup, destination)
++                    .context("failed to reverse mismatched cache output backup")?;
++                bail!("cache output destination identity changed during commit");
++            }
++            Err(error) => {
++                self.rename(backup, destination)
++                    .context("failed to reverse unverifiable cache output backup")?;
++                Err(error)
++            }
++        }
++    }
++
++    fn unlink(&self, name: &OsStr) -> Result<()> {
++        let name = c_name(name)?;
++        let result = unsafe { libc::unlinkat(self.descriptor(), name.as_ptr(), 0) };
++        if result == 0 {
++            Ok(())
++        } else {
++            Err(std::io::Error::last_os_error()).context("cache output unlink failed")
++        }
++    }
++}
++
++#[cfg(unix)]
++fn c_name(name: &OsStr) -> Result<CString> {
++    CString::new(name.as_bytes()).context("cache output basename contains a NUL byte")
++}
++
++#[cfg(unix)]
++struct StagedOutput {
++    parent: PinnedParent,
++    basename: OsString,
++    initial: DestinationIdentity,
++    staged: DestinationIdentity,
++    stage_name: Option<OsString>,
++    backup_name: Option<OsString>,
++    committed: bool,
++}
++
++#[cfg(not(unix))]
++struct StagedOutput;
++
++#[cfg(unix)]
 +impl StagedOutput {
-+    fn path(&self) -> &Path {
-+        match self {
-+            Self::Persist { path, .. } | Self::Copy { path, .. } => path,
-+        }
++    fn stage(path: &Path) -> Result<(Self, std::fs::File)> {
++        let (parent, basename) = PinnedParent::open(path)?;
++        let initial = parent.destination_identity(&basename)?;
++        let (stage_name, temporary) = parent.create_temporary("sccache-stage")?;
++        let metadata = temporary
++            .metadata()
++            .context("failed to inspect cache output staging file")?;
++        let staged = DestinationIdentity::Regular {
++            device: metadata.dev(),
++            inode: metadata.ino(),
++        };
++        Ok((
++            Self {
++                parent,
++                basename,
++                initial,
++                staged,
++                stage_name: Some(stage_name),
++                backup_name: None,
++                committed: false,
++            },
++            temporary,
++        ))
 +    }
 +
-+    fn permits_special_destination(&self) -> bool {
-+        match self {
-+            Self::Persist { .. } => false,
-+            Self::Copy { path, .. } => is_stream_destination(path),
-+        }
++    fn identity_key(&self) -> (u64, u64, Vec<u8>) {
++        (
++            self.parent.device,
++            self.parent.inode,
++            self.basename.as_bytes().to_vec(),
++        )
 +    }
 +
-+    fn commit(self) -> Result<()> {
-+        match self {
-+            Self::Persist {
-+                temporary,
-+                path,
-+                mode,
-+            } => {
-+                temporary.persist(&path)?;
-+                if let Some(mode) = mode {
-+                    set_file_mode(path.as_path(), mode)?;
-+                }
++    fn commit(&mut self) -> Result<()> {
++        self.parent.revalidate()?;
++        ensure!(
++            self.parent.destination_identity(&self.basename)? == self.initial,
++            "cache output destination identity changed before commit"
++        );
++        if matches!(self.initial, DestinationIdentity::Regular { .. }) {
++            let (backup_name, reservation) = self.parent.create_temporary("sccache-backup")?;
++            if let Err(error) =
++                self.parent
++                    .move_to_reserved_backup(&self.basename, &backup_name, self.initial)
++            {
++                drop(reservation);
++                return Err(error);
 +            }
-+            Self::Copy {
-+                mut temporary,
-+                path,
-+                mode,
-+            } => {
-+                temporary.rewind()?;
-+                let mut destination = fs::File::create(&path)?;
-+                std::io::copy(&mut temporary, &mut destination)?;
-+                if let Some(mode) = mode {
-+                    set_file_mode(path.as_path(), mode)?;
-+                }
++            drop(reservation);
++            self.backup_name = Some(backup_name);
++        }
++        let stage_name = self
++            .stage_name
++            .as_ref()
++            .context("cache output staging authority was already consumed")?;
++        if let Err(commit_error) = self.parent.rename_no_replace(stage_name, &self.basename) {
++            if let Some(backup_name) = self.backup_name.as_ref() {
++                self.parent
++                    .rename_no_replace(backup_name, &self.basename)
++                    .context("failed to restore cache output after commit failure")?;
++                self.backup_name = None;
 +            }
++            return Err(commit_error);
++        }
++        self.stage_name = None;
++        self.committed = true;
++        ensure!(
++            self.parent.destination_identity(&self.basename)? == self.staged,
++            "cache output staging identity changed during commit"
++        );
++        Ok(())
++    }
++
++    fn rollback(&mut self) -> Result<()> {
++        if !self.committed {
++            return Ok(());
++        }
++        ensure!(
++            self.parent.destination_identity(&self.basename)? == self.staged,
++            "committed cache output identity changed before rollback"
++        );
++        self.parent.unlink(&self.basename)?;
++        if let Some(backup_name) = self.backup_name.as_ref() {
++            self.parent.rename_no_replace(backup_name, &self.basename)?;
++            self.backup_name = None;
++        }
++        self.committed = false;
++        Ok(())
++    }
++
++    fn finalize(&mut self) -> Result<()> {
++        self.parent.revalidate()?;
++        if let Some(backup_name) = self.backup_name.as_ref() {
++            self.parent.unlink(backup_name)?;
++            self.backup_name = None;
 +        }
 +        Ok(())
 +    }
 +}
 +
-+enum DestinationBackup {
-+    Missing(PathBuf),
-+    Regular {
-+        path: PathBuf,
-+        temporary: std::fs::File,
-+        mode: Option<u32>,
-+    },
-+    Special,
-+}
-+
-+impl DestinationBackup {
-+    fn capture(path: &Path, permits_special_destination: bool) -> Result<Self> {
-+        let metadata = match fs::symlink_metadata(path) {
-+            Ok(metadata) => metadata,
-+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-+                return Ok(Self::Missing(path.to_path_buf()));
-+            }
-+            Err(error) => return Err(error.into()),
-+        };
-+        if !metadata.file_type().is_file() {
-+            if permits_special_destination {
-+                return Ok(Self::Special);
-+            }
-+            bail!("refusing to replace a non-regular cache output destination");
-+        }
-+        let mut source = fs::File::open(path)?;
-+        let mode = get_file_mode(&source)?;
-+        let mut temporary = tempfile()?;
-+        std::io::copy(&mut source, &mut temporary)?;
-+        Ok(Self::Regular {
-+            path: path.to_path_buf(),
-+            temporary,
-+            mode,
-+        })
-+    }
-+
-+    fn restore(self) -> Result<()> {
-+        match self {
-+            Self::Missing(path) => match fs::remove_file(path) {
-+                Ok(()) => Ok(()),
-+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-+                Err(error) => Err(error.into()),
-+            },
-+            Self::Regular {
-+                path,
-+                mut temporary,
-+                mode,
-+            } => {
-+                temporary.rewind()?;
-+                let directory = path
-+                    .parent()
-+                    .context("cache output destination has no parent directory")?;
-+                let mut destination = NamedTempFile::new_in(directory)?;
-+                std::io::copy(&mut temporary, &mut destination)?;
-+                if let Some(mode) = mode {
-+                    set_file_mode(destination.path(), mode)?;
-+                }
-+                destination.persist(path)?;
-+                Ok(())
-+            }
-+            Self::Special => Ok(()),
++#[cfg(unix)]
++impl Drop for StagedOutput {
++    fn drop(&mut self) {
++        if let Some(stage_name) = self.stage_name.as_ref() {
++            let _ = self.parent.unlink(stage_name);
 +        }
 +    }
 +}
@@ -507,10 +775,11 @@ index 9e29743..f109501 100644
 +}
 +
 +impl StagedCacheRead {
-+    fn rollback(mut backups: Vec<DestinationBackup>) -> Result<()> {
++    #[cfg(unix)]
++    fn rollback(outputs: &mut [StagedOutput]) -> Result<()> {
 +        let mut first_error = None;
-+        while let Some(backup) = backups.pop() {
-+            if let Err(error) = backup.restore()
++        for output in outputs.iter_mut().rev() {
++            if let Err(error) = output.rollback()
 +                && first_error.is_none()
 +            {
 +                first_error = Some(error);
@@ -522,75 +791,68 @@ index 9e29743..f109501 100644
 +        Ok(())
 +    }
 +
++    #[cfg(unix)]
 +    fn commit(self, deadline: Option<std::time::Instant>) -> Result<(Vec<u8>, Vec<u8>)> {
-+        let mut backups = Vec::new();
-+        for output in self.outputs {
++        let Self {
++            stdout,
++            stderr,
++            mut outputs,
++        } = self;
++        for index in 0..outputs.len() {
 +            if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
-+                Self::rollback(backups)?;
++                Self::rollback(&mut outputs)?;
 +                bail!("governed cache materialization deadline expired before commit");
 +            }
-+            let backup = match DestinationBackup::capture(
-+                output.path(),
-+                output.permits_special_destination(),
-+            ) {
-+                Ok(backup) => backup,
-+                Err(error) => {
-+                    Self::rollback(backups)?;
-+                    return Err(error);
-+                }
-+            };
-+            if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
-+                backups.push(backup);
-+                Self::rollback(backups)?;
-+                bail!("governed cache materialization deadline expired before output mutation");
-+            }
-+            if let Err(error) = output.commit() {
-+                backups.push(backup);
-+                Self::rollback(backups)?;
++            if let Err(error) = outputs[index].commit() {
++                Self::rollback(&mut outputs)?;
 +                return Err(error);
 +            }
-+            backups.push(backup);
 +            if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
-+                Self::rollback(backups)?;
++                Self::rollback(&mut outputs)?;
 +                bail!("governed cache materialization deadline expired during commit");
 +            }
 +        }
-+        Ok((self.stdout, self.stderr))
++        for output in &mut outputs {
++            output.finalize()?;
++        }
++        Ok((stdout, stderr))
++    }
++
++    #[cfg(not(unix))]
++    fn commit(self, _deadline: Option<std::time::Instant>) -> Result<(Vec<u8>, Vec<u8>)> {
++        bail!("strict cache materialization requires Unix descriptor-relative output support")
 +    }
 +}
 +
-@@ -106 +298,5 @@ impl CacheRead {
+@@ -106 +557,5 @@ impl CacheRead {
 -        let file = self.zip.by_name(name).or(Err(DecompressionFailure))?;
 +        let file = match self.zip.by_name(name) {
 +            Ok(file) => file,
 +            Err(ZipError::FileNotFound) => bail!(CacheObjectMissing),
 +            Err(_) => bail!(DecompressionFailure),
 +        };
-@@ -116 +312 @@ impl CacheRead {
+@@ -116 +571 @@ impl CacheRead {
 -    pub fn get_stdout(&mut self) -> Vec<u8> {
 +    pub fn get_stdout(&mut self) -> Result<Vec<u8>> {
-@@ -121 +317 @@ impl CacheRead {
+@@ -121 +576 @@ impl CacheRead {
 -    pub fn get_stderr(&mut self) -> Vec<u8> {
 +    pub fn get_stderr(&mut self) -> Result<Vec<u8>> {
-@@ -125 +321 @@ impl CacheRead {
+@@ -125 +580 @@ impl CacheRead {
 -    fn get_bytes(&mut self, name: &str) -> Vec<u8> {
 +    fn get_bytes(&mut self, name: &str) -> Result<Vec<u8>> {
-@@ -127,2 +323,5 @@ impl CacheRead {
+@@ -127,2 +582,2 @@ impl CacheRead {
 -        drop(self.get_object(name, &mut bytes));
 -        bytes
-+        match self.get_object(name, &mut bytes) {
-+            Ok(_) => Ok(bytes),
-+            Err(error) if error.downcast_ref::<CacheObjectMissing>().is_some() => Ok(Vec::new()),
-+            Err(error) => Err(error),
-+        }
-@@ -131 +330 @@ impl CacheRead {
++        self.get_object(name, &mut bytes)?;
++        Ok(bytes)
+@@ -131 +586 @@ impl CacheRead {
 -    pub async fn extract_objects<T>(
 +    pub async fn materialize<T>(
-@@ -135 +334,2 @@ impl CacheRead {
+@@ -135 +590,2 @@ impl CacheRead {
 -    ) -> Result<()>
 +        deadline: Option<std::time::Instant>,
 +    ) -> Result<(Vec<u8>, Vec<u8>)>
-@@ -139 +339,12 @@ impl CacheRead {
+@@ -139 +595,14 @@ impl CacheRead {
 -        pool.spawn_blocking(move || {
 +        let staging = pool.spawn_blocking(move || {
 +            let check_deadline = || -> Result<()> {
@@ -604,7 +866,29 @@ index 9e29743..f109501 100644
 +            let stderr = self.get_stderr()?;
 +            check_deadline()?;
 +            let mut outputs = Vec::new();
-@@ -166,11 +377,9 @@ impl CacheRead {
++            #[cfg(unix)]
++            let mut destination_keys = std::collections::BTreeSet::new();
+@@ -146,45 +615,11 @@ impl CacheRead {
+-                if is_path_null(&path) {
+-                    // For unix, this is just a fast path to discard such outputs,
+-                    // so it is not an issue if `is_path_null` has false-negatives.
+-                    // But for Windows, since `NUL` looks like a relative path, the
+-                    // temporary file creation logic would happily succeed, creating
+-                    // a temp file in the CWD, but then the subsequent `persist`
+-                    // would fail with `ERROR_ALREADY_EXISTS`, since `NUL` always
+-                    // exists and cannot be `replaced`, so we really need to
+-                    // short-circuit more of such cases on Windows.
+-                    debug!("Skipping output to {}", path.display());
+-                    continue;
+-                }
+-                let dir = match path.parent() {
+-                    Some(d) => d,
+-                    None => bail!("Output file without a parent directory!"),
+-                };
+-                // Write the cache entry to a tempfile and then atomically
+-                // move it to its final location so that other rustc invocations
+-                // happening in parallel don't see a partially-written file.
+-                match (NamedTempFile::new_in(dir), optional) {
 -                    (Ok(mut tmp), _) => {
 -                        match (self.get_object(&key, &mut tmp), optional) {
 -                            (Ok(mode), _) => {
@@ -616,24 +900,11 @@ index 9e29743..f109501 100644
 -                            (Err(e), false) => return Err(e),
 -                            // skip if no object found and it's optional
 -                            (Err(_), true) => continue,
-+                    (Ok(mut tmp), _) => match (self.get_object(&key, &mut tmp), optional) {
-+                        (Ok(mode), _) => outputs.push(StagedOutput::Persist {
-+                            temporary: tmp,
-+                            path,
-+                            mode,
-+                        }),
-+                        (Err(e), false) => return Err(e),
-+                        (Err(e), true) if e.downcast_ref::<CacheObjectMissing>().is_some() => {
-+                            continue;
-@@ -178 +387,2 @@ impl CacheRead {
+-                        }
 -                    }
-+                        (Err(e), true) => return Err(e),
-+                    },
-@@ -180 +390,2 @@ impl CacheRead {
+-                    (Err(e), false) => {
 -                        // Fall back to writing directly to the final location
-+                        // Stage outside the destination filesystem. Final outputs are not
-+                        // touched until every archive member has been validated.
-@@ -182,9 +393,17 @@ impl CacheRead {
+-                        warn!("Failed to create temp file on the same file system: {e}");
 -                        let mut f = std::fs::File::create(&path)?;
 -                        // `optional` is false in this branch, so do not ignore errors
 -                        let mode = self.get_object(&key, &mut f)?;
@@ -643,31 +914,38 @@ index 9e29743..f109501 100644
 -                                // if we could not create a temp file in the same directory,
 -                                // we probably can't set the mode either (e.g. /dev/stuff)
 -                                warn!("Failed to reset file mode: {e}");
-+                        let mut temporary = tempfile()?;
-+                        let mode = self.get_object(&key, &mut temporary)?;
-+                        outputs.push(StagedOutput::Copy {
-+                            temporary,
-+                            path,
-+                            mode,
-+                        });
-+                    }
-+                    (Err(_), true) => {
-+                        // The destination is optional, but a present cache member must still
-+                        // decode successfully. Otherwise corruption would be concealed by a
-+                        // local filesystem failure.
-+                        let mut sink = std::io::sink();
-+                        match self.get_object(&key, &mut sink) {
-+                            Ok(_) => continue,
-+                            Err(error) if error.downcast_ref::<CacheObjectMissing>().is_some() => {
-+                                continue;
-@@ -191,0 +411 @@ impl CacheRead {
-+                            Err(error) => return Err(error),
-@@ -194,2 +413,0 @@ impl CacheRead {
++                #[cfg(unix)]
++                {
++                    let (staged, mut temporary) = StagedOutput::stage(&path)?;
++                    ensure!(
++                        destination_keys.insert(staged.identity_key()),
++                        "cache output destinations collide through one pinned parent"
++                    );
++                    match self.get_object(&key, &mut temporary) {
++                        Ok(mode) => {
++                            if let Some(mode) = mode {
++                                temporary.set_permissions(std::fs::Permissions::from_mode(mode))?;
+@@ -191,0 +627,2 @@ impl CacheRead {
++                            temporary.sync_all()?;
++                            outputs.push(staged);
+@@ -192,0 +630,4 @@ impl CacheRead {
++                        Err(error)
++                            if optional
++                                && error.downcast_ref::<CacheObjectMissing>().is_some() => {}
++                        Err(error) => return Err(error),
+@@ -194,2 +634,0 @@ impl CacheRead {
 -                    // skip if no object found and it's optional
 -                    (Err(_), true) => continue,
-@@ -196,0 +415 @@ impl CacheRead {
+@@ -196,0 +636,8 @@ impl CacheRead {
++                #[cfg(not(unix))]
++                {
++                    let _ = (key, path, optional);
++                    bail!(
++                        "strict cache materialization requires Unix descriptor-relative output support"
++                    );
++                }
 +                check_deadline()?;
-@@ -198,3 +417,24 @@ impl CacheRead {
+@@ -198,3 +645,20 @@ impl CacheRead {
 -            Ok(())
 -        })
 -        .await?
@@ -677,37 +955,53 @@ index 9e29743..f109501 100644
 +                outputs,
 +            })
 +        });
++        let mut staging = staging;
 +        let staged = if let Some(deadline) = deadline {
-+            let remaining = deadline
-+                .checked_duration_since(std::time::Instant::now())
-+                .context("governed cache materialization deadline expired before staging")?;
-+            tokio::time::timeout(remaining, staging)
-+                .await
-+                .context("governed cache materialization staging timed out")???
++            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
++            match tokio::time::timeout(remaining, &mut staging).await {
++                Ok(result) => result??,
++                Err(_) => {
++                    let _ = staging.await;
++                    bail!("governed cache materialization staging timed out");
++                }
++            }
 +        } else {
 +            staging.await??
 +        };
 +        pool.spawn_blocking(move || staged.commit(deadline)).await?
-+    }
-+
+@@ -202,6 +665,0 @@ impl CacheRead {
+-}
+-
+-#[cfg(unix)]
+-fn is_path_null(path: &Path) -> bool {
+-    path == Path::new("/dev/null")
+-}
+@@ -209,10 +667,6 @@ fn is_path_null(path: &Path) -> bool {
+-#[cfg(windows)]
+-fn is_path_null(path: &Path) -> bool {
+-    // For Windows, it appears that `NUL` with whatever extension is also a blackhole
+-    // (at least for `CreateFileX`), so it does not suffice to check for an exact match
+-    // Also note that gcc, cl.exe, et al. append a correct extension automatically even
+-    // if the user asks for output to `NUL`.
+-    let Some(stem) = path.file_stem() else {
+-        return false;
+-    };
+-    stem.eq_ignore_ascii_case("NUL")
 +    pub async fn extract_objects<T>(self, objects: T, pool: &tokio::runtime::Handle) -> Result<()>
 +    where
 +        T: IntoIterator<Item = FileObjectSource> + Send + Sync + 'static,
 +    {
 +        self.materialize(objects, pool, None).await.map(drop)
-@@ -208,0 +449,5 @@ fn is_path_null(path: &Path) -> bool {
-+#[cfg(unix)]
-+fn is_stream_destination(path: &Path) -> bool {
-+    path.parent() == Some(Path::new("/dev/fd"))
-+}
-+
-@@ -220,0 +466,5 @@ fn is_path_null(path: &Path) -> bool {
-+#[cfg(windows)]
-+fn is_stream_destination(_path: &Path) -> bool {
-+    false
-+}
-+
-@@ -323,0 +574,220 @@ mod tests {
++    }
+@@ -300,5 +754,2 @@ impl CacheWrite {
+-        if !bytes.is_empty() {
+-            let mut cursor = Cursor::new(bytes);
+-            return self.put_object(name, &mut cursor, None);
+-        }
+-        Ok(())
++        let mut cursor = Cursor::new(bytes);
++        self.put_object(name, &mut cursor, None)
+@@ -323,0 +775,302 @@ mod tests {
 +    use std::io::{Seek, SeekFrom};
 +
 +    struct SlowCursor {
@@ -730,12 +1024,14 @@ index 9e29743..f109501 100644
 +
 +    fn cache_entry_with_raw_member(name: &str, bytes: &[u8]) -> CacheRead {
 +        let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
-+        archive
-+            .start_file(
-+                name,
-+                FileOptions::default().compression_method(CompressionMethod::Stored),
-+            )
-+            .unwrap();
++        let options = FileOptions::default().compression_method(CompressionMethod::Stored);
++        for stream in ["stdout", "stderr"] {
++            if stream != name {
++                archive.start_file(stream, options).unwrap();
++                zstd::stream::copy_encode(Cursor::new(Vec::<u8>::new()), &mut archive, 3).unwrap();
++            }
++        }
++        archive.start_file(name, options).unwrap();
 +        archive.write_all(bytes).unwrap();
 +        CacheRead::from(Cursor::new(archive.finish().unwrap().into_inner())).unwrap()
 +    }
@@ -743,11 +1039,32 @@ index 9e29743..f109501 100644
 +    fn cache_entry_with_valid_then_corrupt_member() -> CacheRead {
 +        let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
 +        let options = FileOptions::default().compression_method(CompressionMethod::Stored);
++        for stream in ["stdout", "stderr"] {
++            archive.start_file(stream, options).unwrap();
++            zstd::stream::copy_encode(Cursor::new(Vec::<u8>::new()), &mut archive, 3).unwrap();
++        }
 +        archive.start_file("valid", options).unwrap();
 +        zstd::stream::copy_encode(Cursor::new(b"valid bytes"), &mut archive, 3).unwrap();
 +        archive.start_file("corrupt", options).unwrap();
 +        archive.write_all(b"not-zstd").unwrap();
 +        CacheRead::from(Cursor::new(archive.finish().unwrap().into_inner())).unwrap()
++    }
++
++    fn cache_entry_with_only_stream(name: &str) -> CacheRead {
++        let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
++        archive
++            .start_file(
++                name,
++                FileOptions::default().compression_method(CompressionMethod::Stored),
++            )
++            .unwrap();
++        zstd::stream::copy_encode(Cursor::new(Vec::<u8>::new()), &mut archive, 3).unwrap();
++        CacheRead::from(Cursor::new(archive.finish().unwrap().into_inner())).unwrap()
++    }
++
++    fn add_empty_streams(cache_write: &mut CacheWrite) {
++        cache_write.put_stdout(&[]).unwrap();
++        cache_write.put_stderr(&[]).unwrap();
 +    }
 +
 +    #[test]
@@ -760,6 +1077,24 @@ index 9e29743..f109501 100644
 +    fn strict_corrupt_stderr_is_fatal() {
 +        let mut cache_read = cache_entry_with_raw_member("stderr", b"not-zstd");
 +        assert!(cache_read.get_stderr().is_err());
++    }
++
++    #[test]
++    fn strict_missing_stdout_or_stderr_is_fatal() {
++        let mut missing_stdout = cache_entry_with_only_stream("stderr");
++        assert!(missing_stdout.get_stdout().is_err());
++        let mut missing_stderr = cache_entry_with_only_stream("stdout");
++        assert!(missing_stderr.get_stderr().is_err());
++    }
++
++    #[test]
++    fn strict_empty_stdout_and_stderr_round_trip_as_present_members() {
++        let mut cache_write = CacheWrite::new();
++        add_empty_streams(&mut cache_write);
++        let mut cache_read = CacheRead::from(Cursor::new(cache_write.finish().unwrap())).unwrap();
++
++        assert_eq!(cache_read.get_stdout().unwrap(), Vec::<u8>::new());
++        assert_eq!(cache_read.get_stderr().unwrap(), Vec::<u8>::new());
 +    }
 +
 +    #[test]
@@ -856,7 +1191,7 @@ index 9e29743..f109501 100644
 +    }
 +
 +    #[test]
-+    fn strict_late_commit_failure_rolls_back_earlier_outputs() {
++    fn strict_staging_failure_precedes_destination_mutation() {
 +        let runtime = tokio::runtime::Builder::new_current_thread()
 +            .enable_all()
 +            .build()
@@ -868,6 +1203,7 @@ index 9e29743..f109501 100644
 +        cache_write
 +            .put_object("second", &mut Cursor::new(b"second output"), None)
 +            .unwrap();
++        add_empty_streams(&mut cache_write);
 +        let cache_read = CacheRead::from(Cursor::new(cache_write.finish().unwrap())).unwrap();
 +        let temporary = tempfile::tempdir().unwrap();
 +        let first_path = temporary.path().join("first.out");
@@ -895,6 +1231,175 @@ index 9e29743..f109501 100644
 +        assert!(directory_destination.is_dir());
 +    }
 +
++    #[cfg(unix)]
++    fn staged_output(path: &Path, bytes: &[u8]) -> StagedOutput {
++        let (output, mut temporary) = StagedOutput::stage(path).unwrap();
++        temporary.write_all(bytes).unwrap();
++        temporary.sync_all().unwrap();
++        output
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn strict_descriptor_relative_commit_replaces_regular_and_missing_outputs() {
++        let temporary = tempfile::tempdir().unwrap();
++        let existing = temporary.path().join("existing.out");
++        let missing = temporary.path().join("missing.out");
++        fs::write(&existing, b"old").unwrap();
++        let outputs = vec![
++            staged_output(&existing, b"new-existing"),
++            staged_output(&missing, b"new-missing"),
++        ];
++
++        let staged = StagedCacheRead {
++            stdout: b"stdout".to_vec(),
++            stderr: b"stderr".to_vec(),
++            outputs,
++        };
++        assert_eq!(
++            staged.commit(None).unwrap(),
++            (b"stdout".to_vec(), b"stderr".to_vec())
++        );
++        assert_eq!(fs::read(existing).unwrap(), b"new-existing");
++        assert_eq!(fs::read(missing).unwrap(), b"new-missing");
++        assert!(fs::read_dir(temporary.path()).unwrap().all(|entry| {
++            !entry
++                .unwrap()
++                .file_name()
++                .to_string_lossy()
++                .starts_with(".sccache-")
++        }));
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn strict_parent_replacement_is_fatal_before_commit() {
++        let temporary = tempfile::tempdir().unwrap();
++        let parent = temporary.path().join("outputs");
++        let moved_parent = temporary.path().join("moved-outputs");
++        fs::create_dir(&parent).unwrap();
++        let destination = parent.join("output");
++        fs::write(&destination, b"original").unwrap();
++        let mut output = staged_output(&destination, b"cached");
++
++        fs::rename(&parent, &moved_parent).unwrap();
++        fs::create_dir(&parent).unwrap();
++
++        assert!(output.commit().is_err());
++        assert_eq!(fs::read(moved_parent.join("output")).unwrap(), b"original");
++        assert!(!parent.join("output").exists());
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn strict_destination_replacement_is_fatal_before_commit() {
++        let temporary = tempfile::tempdir().unwrap();
++        let destination = temporary.path().join("output");
++        fs::write(&destination, b"original").unwrap();
++        let mut output = staged_output(&destination, b"cached");
++
++        fs::remove_file(&destination).unwrap();
++        fs::write(&destination, b"replacement").unwrap();
++
++        assert!(output.commit().is_err());
++        assert_eq!(fs::read(destination).unwrap(), b"replacement");
++    }
+@@ -327 +1080,132 @@ mod tests {
+-    fn test_extract_object_to_devnull_works() {
++    fn strict_staging_rejects_symlink_and_multilink_destinations() {
++        use std::os::unix::fs::symlink;
++
++        let temporary = tempfile::tempdir().unwrap();
++        let regular = temporary.path().join("regular");
++        let hardlink = temporary.path().join("hardlink");
++        let symlink_path = temporary.path().join("symlink");
++        fs::write(&regular, b"original").unwrap();
++        fs::hard_link(&regular, &hardlink).unwrap();
++        symlink(&regular, &symlink_path).unwrap();
++
++        assert!(StagedOutput::stage(&regular).is_err());
++        assert!(StagedOutput::stage(&hardlink).is_err());
++        assert!(StagedOutput::stage(&symlink_path).is_err());
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn strict_pinned_parent_alias_collision_is_fatal_before_mutation() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let mut cache_write = CacheWrite::new();
++        cache_write
++            .put_object("first", &mut Cursor::new(b"first"), None)
++            .unwrap();
++        cache_write
++            .put_object("second", &mut Cursor::new(b"second"), None)
++            .unwrap();
++        add_empty_streams(&mut cache_write);
++        let cache_read = CacheRead::from(Cursor::new(cache_write.finish().unwrap())).unwrap();
++        let temporary = tempfile::tempdir().unwrap();
++        let destination = temporary.path().join("output");
++        let alias = temporary.path().join(".").join("output");
++        let objects = vec![
++            FileObjectSource {
++                key: "first".to_owned(),
++                path: destination.clone(),
++                optional: false,
++            },
++            FileObjectSource {
++                key: "second".to_owned(),
++                path: alias,
++                optional: false,
++            },
++        ];
++
++        assert!(
++            runtime
++                .block_on(cache_read.extract_objects(objects, runtime.handle()))
++                .is_err()
++        );
++        assert!(!destination.exists());
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn strict_late_commit_failure_rolls_back_earlier_output() {
++        let temporary = tempfile::tempdir().unwrap();
++        let first = temporary.path().join("first");
++        let second = temporary.path().join("second");
++        fs::write(&first, b"first-original").unwrap();
++        fs::write(&second, b"second-original").unwrap();
++        let mut outputs = vec![
++            staged_output(&first, b"first-cached"),
++            staged_output(&second, b"second-cached"),
++        ];
++
++        outputs[0].commit().unwrap();
++        fs::remove_file(&second).unwrap();
++        fs::write(&second, b"second-replacement").unwrap();
++        assert!(outputs[1].commit().is_err());
++        StagedCacheRead::rollback(&mut outputs).unwrap();
++
++        assert_eq!(fs::read(first).unwrap(), b"first-original");
++        assert_eq!(fs::read(second).unwrap(), b"second-replacement");
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn strict_rollback_uncertainty_is_fatal() {
++        let temporary = tempfile::tempdir().unwrap();
++        let destination = temporary.path().join("output");
++        fs::write(&destination, b"original").unwrap();
++        let mut output = staged_output(&destination, b"cached");
++        output.commit().unwrap();
++        let backup_name = output.backup_name.clone().unwrap();
++        output.parent.unlink(&backup_name).unwrap();
++
++        assert!(output.rollback().is_err());
++        assert!(!destination.exists());
++    }
++
 +    #[test]
 +    fn strict_stalled_cache_hit_materialization_obeys_caller_deadline() {
 +        let runtime = tokio::runtime::Builder::new_current_thread()
@@ -905,6 +1410,7 @@ index 9e29743..f109501 100644
 +        cache_write
 +            .put_object("object", &mut Cursor::new(b"cached object"), None)
 +            .unwrap();
++        add_empty_streams(&mut cache_write);
 +        let cache_read = CacheRead::from(SlowCursor {
 +            inner: Cursor::new(cache_write.finish().unwrap()),
 +            delay: std::time::Duration::from_millis(25),
@@ -928,9 +1434,67 @@ index 9e29743..f109501 100644
 +        std::thread::sleep(std::time::Duration::from_millis(50));
 +        assert!(!output.exists());
 +    }
-@@ -385 +855 @@ mod tests {
++
++    #[cfg(unix)]
++    #[test]
++    fn strict_extract_object_to_devnull_is_fatal() {
+@@ -336 +1220,2 @@ mod tests {
+-        let cache_data = CacheWrite::new();
++        let mut cache_data = CacheWrite::new();
++        add_empty_streams(&mut cache_data);
+@@ -347 +1232 @@ mod tests {
+-        assert!(result.is_ok(), "Extracting to /dev/null should succeed");
++        assert!(result.is_err(), "strict extraction must reject /dev/null");
+@@ -352,2 +1237 @@ mod tests {
+-    fn test_extract_object_to_dev_fd_something() {
+-        // Open a pipe, write to `/dev/fd/{fd}` and check the other end that the correct data was written.
++    fn strict_extract_object_to_dev_fd_is_fatal() {
+@@ -355 +1238,0 @@ mod tests {
+-        use tokio::io::AsyncReadExt;
+@@ -364,0 +1248 @@ mod tests {
++        add_empty_streams(&mut cache_data);
+@@ -368 +1252 @@ mod tests {
+-            let (sender, mut receiver) = tokio::net::unix::pipe::pipe().unwrap();
++            let (sender, _receiver) = tokio::net::unix::pipe::pipe().unwrap();
+@@ -383,8 +1267 @@ mod tests {
+-            assert!(
+-                result.is_ok(),
 -                "Extracting to /dev/fd/{raw_fd} should succeed"
-+                "Extracting to /dev/fd/{raw_fd} should succeed: {result:?}"
+-            );
+-            let mut buf = vec![0; data.len()];
+-            let n = receiver.read_exact(&mut buf).await.unwrap();
+-            assert_eq!(n, data.len(), "Read the correct number of bytes");
+-            assert_eq!(buf, data, "Read the correct data from /dev/fd/{raw_fd}");
++            assert!(result.is_err(), "strict extraction must reject /dev/fd paths");
+@@ -395,3 +1272 @@ mod tests {
+-    fn test_extract_object_to_non_writable_path() {
+-        // See `test_extract_object_to_dev_fd_something`: we still cannot cover all platforms by the other tests. Here we test a more portable case of creating a file and making its parent directory non-writable, in which case we should still be able to extract the object successfully.
+-
++    fn strict_extract_object_to_non_writable_parent_is_fatal() {
+@@ -407,0 +1283 @@ mod tests {
++        add_empty_streams(&mut cache_data);
+@@ -430,5 +1306 @@ mod tests {
+-        assert!(
+-            result.is_ok(),
+-            "Extracting to the target path should succeed"
+-        );
+-        // Test the content; make sure the old content is overwritten
++        assert!(result.is_err(), "strict staging requires a writable parent");
+@@ -437,2 +1309,2 @@ mod tests {
+-            content, b"real_test_data",
+-            "Extracted content should be correct"
++            content, b"test",
++            "the existing output must remain unchanged"
+@@ -453 +1325 @@ mod tests {
+-    fn test_extract_object_to_nul_works() {
++    fn strict_extract_object_to_nul_is_fatal() {
+@@ -462 +1334,2 @@ mod tests {
+-        let cache_data = CacheWrite::new();
++        let mut cache_data = CacheWrite::new();
++        add_empty_streams(&mut cache_data);
+@@ -473 +1346 @@ mod tests {
+-        assert!(result.is_ok(), "Extracting to NUL should succeed");
++        assert!(result.is_err(), "strict extraction must reject NUL");
 diff --git a/src/cache/readonly.rs b/src/cache/readonly.rs
 index 40f9873..9f479da 100644
 --- a/src/cache/readonly.rs
@@ -942,6 +1506,29 @@ index 40f9873..9f479da 100644
 +
 @@ -113,0 +118 @@ mod test {
 +        assert!(storage.is_read_only());
+diff --git a/src/cache/utils.rs b/src/cache/utils.rs
+index ee1186f..70d86b2 100644
+--- a/src/cache/utils.rs
++++ b/src/cache/utils.rs
+@@ -15,2 +14,0 @@ use fs_err as fs;
+-use std::path::Path;
+-
+@@ -36,15 +33,0 @@ pub(in crate::cache) fn get_file_mode(_file: &fs::File) -> Result<Option<u32>> {
+-#[cfg(unix)]
+-pub(in crate::cache) fn set_file_mode(path: &Path, mode: u32) -> Result<()> {
+-    use std::fs::Permissions;
+-    use std::os::unix::fs::PermissionsExt;
+-    let p = Permissions::from_mode(mode);
+-    fs::set_permissions(path, p)?;
+-    Ok(())
+-}
+-
+-#[cfg(windows)]
+-#[allow(clippy::unnecessary_wraps)]
+-pub(in crate::cache) fn set_file_mode(_path: &Path, _mode: u32) -> Result<()> {
+-    Ok(())
+-}
+-
 diff --git a/src/client.rs b/src/client.rs
 index 88d93fc..8d312e9 100644
 --- a/src/client.rs

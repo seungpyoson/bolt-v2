@@ -59,7 +59,7 @@ use crate::bolt_v3_config::{
     RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceClassBlock, RiskBlock,
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
-use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
+use crate::bolt_v3_current_evidence::validate_relative_path as validate_decision_evidence_relative_path;
 use crate::bolt_v3_kill_switch_cancel::BoltV3KillSwitchOutstandingOrderRiskSurface;
 use crate::bolt_v3_loss_halt_actions::LossGovernorTradingStateAction;
 use crate::bolt_v3_numeric::{

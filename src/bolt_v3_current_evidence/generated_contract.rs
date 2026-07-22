@@ -290,6 +290,41 @@ pub(crate) const fn purpose_for_producer(producer: KnownProducer) -> KnownPurpos
     }
 }
 
+pub(crate) const fn purpose_for_identity(identity: KnownIdentity) -> KnownPurpose {
+    match identity {
+        KnownIdentity::BlockedStrategyInputObservationV1 => {
+            KnownPurpose::BlockedStrategyInputObservation
+        }
+        KnownIdentity::SubmitLinkedStrategyInputSnapshotV1 => {
+            KnownPurpose::SubmitLinkedStrategyInputSnapshot
+        }
+        KnownIdentity::EntryOrderIntentV1 => KnownPurpose::EntryOrderIntent,
+        KnownIdentity::RiskReducingExitOrderIntentV1 => KnownPurpose::RiskReducingExitOrderIntent,
+        KnownIdentity::AdmittedEntryAdmissionV1 => KnownPurpose::AdmittedEntryAdmission,
+        KnownIdentity::RejectedEntryAdmissionV1 => KnownPurpose::RejectedEntryAdmission,
+        KnownIdentity::RiskReducingExitAdmissionV1 => KnownPurpose::RiskReducingExitAdmission,
+        KnownIdentity::ForcedReductionAdmissionV1 => KnownPurpose::ForcedReductionAdmission,
+        KnownIdentity::BasketAdmissionGrantedV1 => KnownPurpose::BasketAdmissionGranted,
+        KnownIdentity::BasketAdmissionRejectedV1 => KnownPurpose::BasketAdmissionRejected,
+        KnownIdentity::CapitalAdmissionRebuildV1 => KnownPurpose::CapitalAdmissionRebuild,
+        KnownIdentity::SubmitReservationMetadataV1 => KnownPurpose::SubmitReservationMetadata,
+        KnownIdentity::SubmitReservationFillV1 => KnownPurpose::SubmitReservationFill,
+        KnownIdentity::EntrySkipObservationV1 => KnownPurpose::EntrySkipObservation,
+        KnownIdentity::ExitSubmissionDecisionV1 => KnownPurpose::ExitSubmissionDecision,
+        KnownIdentity::ExitHoldDecisionV1 => KnownPurpose::ExitHoldDecision,
+        KnownIdentity::ExitEvaluationV1 => KnownPurpose::ExitEvaluation,
+        KnownIdentity::LossGovernorHaltV1 => KnownPurpose::LossGovernorHalt,
+        KnownIdentity::OrderRejectV1 => KnownPurpose::OrderReject,
+        KnownIdentity::OrderLifecycleV1 => KnownPurpose::OrderLifecycle,
+        KnownIdentity::RequoteThrottleObservationV1 => KnownPurpose::RequoteThrottleObservation,
+        KnownIdentity::SettlementV1 => KnownPurpose::Settlement,
+        KnownIdentity::SettlementBookingErrorV1 => KnownPurpose::SettlementBookingError,
+        KnownIdentity::TerminalSettlementV1 => KnownPurpose::TerminalSettlement,
+        KnownIdentity::VenueTruthCaptureFailureV1 => KnownPurpose::VenueTruthCaptureFailure,
+        KnownIdentity::VenueTruthDivergenceV1 => KnownPurpose::VenueTruthDivergence,
+    }
+}
+
 pub(crate) const fn fact_for_identity(identity: KnownIdentity) -> KnownFact {
     match identity {
         KnownIdentity::BlockedStrategyInputObservationV1 => {

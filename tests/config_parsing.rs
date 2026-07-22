@@ -5797,7 +5797,9 @@ runtime_capture_start_poll_interval_ms = 50
 data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
-order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+machine_relative_path = "bolt-v3/decision-evidence/current/machine.jsonl"
+observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl"
+retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
@@ -6225,7 +6227,9 @@ runtime_capture_start_poll_interval_ms = 50
 data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
-order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+machine_relative_path = "bolt-v3/decision-evidence/current/machine.jsonl"
+observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl"
+retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
@@ -6839,8 +6843,8 @@ fn outcome_group_cross_config_validation_fails_closed_for_live_baskets() {
     let missing_min_notional_root = outcome_group_root_toml(&missing_min_notional_source, true);
     let missing_evidence_root =
         outcome_group_root_toml(&valid_polymarket_event_source_toml(), true).replace(
-            "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
-            "order_intents_relative_path = \"\"",
+            "machine_relative_path = \"bolt-v3/decision-evidence/current/machine.jsonl\"",
+            "machine_relative_path = \"\"",
         );
     let valid_root = outcome_group_root_toml(&valid_polymarket_event_source_toml(), true);
     let complete_set_strategy = complete_set_strategy_toml();
@@ -6874,7 +6878,7 @@ fn outcome_group_cross_config_validation_fails_closed_for_live_baskets() {
             "missing decision evidence path",
             missing_evidence_root.as_str(),
             complete_set_strategy.as_str(),
-            "persistence.decision_evidence.order_intents_relative_path",
+            "persistence.decision_evidence.machine_relative_path",
         ),
     ] {
         let messages = outcome_group_strategy_validation_messages(root, strategy);
@@ -7579,8 +7583,8 @@ fn rejects_zero_decision_evidence_recovery_evidence_max_bytes() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let source = fixture_root_without_decision_evidence_recovery_bound().replace(
-        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
-        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"\nrecovery_evidence_max_bytes = 0",
+        "retired_relative_paths = [\"bolt-v3/decision-evidence/order-intents.jsonl\"]",
+        "retired_relative_paths = [\"bolt-v3/decision-evidence/order-intents.jsonl\"]\nrecovery_evidence_max_bytes = 0",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&source).expect("zero recovery evidence cap fixture should parse");
@@ -8646,12 +8650,12 @@ fn rejects_zero_persistence_min_free_bytes() {
 }
 
 #[test]
-fn rejects_absolute_decision_evidence_order_intents_relative_path() {
+fn rejects_absolute_decision_evidence_machine_relative_path() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
-        "order_intents_relative_path = \"/var/lib/bolt/decision-evidence/order-intents.jsonl\"",
+        "machine_relative_path = \"bolt-v3/decision-evidence/current/machine.jsonl\"",
+        "machine_relative_path = \"/var/lib/bolt/decision-evidence/current/machine.jsonl\"",
     );
     let root: BoltV3RootConfig = toml::from_str(&mutated)
         .expect("absolute decision-evidence relative-path fixture should parse");
@@ -8659,10 +8663,43 @@ fn rejects_absolute_decision_evidence_order_intents_relative_path() {
 
     assert!(
         messages.iter().any(|m| {
-            m.contains("persistence.decision_evidence.order_intents_relative_path")
-                && m.contains("must be non-empty, relative, and stay under catalog_directory")
+            m.contains("persistence.decision_evidence.machine_relative_path")
+                && m.contains("must be non-empty, relative, normalized")
         }),
         "expected config-load rejection of an absolute decision-evidence path, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_colliding_decision_evidence_paths() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let machine_observation_collision = replace_in_fixture_root(
+        "observation_relative_path = \"bolt-v3/decision-evidence/current/observation.jsonl\"",
+        "observation_relative_path = \"bolt-v3/decision-evidence/current/machine.jsonl\"",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&machine_observation_collision)
+        .expect("colliding decision-evidence path fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("decision-evidence paths must be distinct")),
+        "machine and observation paths must be distinct: {messages:#?}"
+    );
+
+    let active_retired_collision = replace_in_fixture_root(
+        "retired_relative_paths = [\"bolt-v3/decision-evidence/order-intents.jsonl\"]",
+        "retired_relative_paths = [\"bolt-v3/decision-evidence/current/machine.jsonl\"]",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&active_retired_collision)
+        .expect("active-retired collision fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("decision-evidence paths must be distinct")),
+        "active and retired paths must be distinct: {messages:#?}"
     );
 }
 

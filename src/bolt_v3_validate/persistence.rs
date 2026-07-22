@@ -45,10 +45,49 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
         errors
             .push("persistence.streaming.flush_interval_ms must be a positive integer".to_string());
     }
-    if let Err(message) = validate_decision_evidence_relative_path(
-        &block.decision_evidence.order_intents_relative_path,
-    ) {
-        errors.push(message);
+    let evidence = &block.decision_evidence;
+    for (field, relative_path) in [
+        (
+            "machine_relative_path",
+            evidence.machine_relative_path.as_str(),
+        ),
+        (
+            "observation_relative_path",
+            evidence.observation_relative_path.as_str(),
+        ),
+    ] {
+        if let Err(message) = validate_decision_evidence_relative_path(field, relative_path) {
+            errors.push(message);
+        }
+    }
+    if evidence.retired_relative_paths.is_empty() {
+        errors.push(
+            "persistence.decision_evidence.retired_relative_paths must register at least one retired path"
+                .to_string(),
+        );
+    }
+    for retired in &evidence.retired_relative_paths {
+        if let Err(message) =
+            validate_decision_evidence_relative_path("retired_relative_paths", retired)
+        {
+            errors.push(message);
+        }
+    }
+    let mut unique_paths = std::collections::BTreeSet::new();
+    for relative_path in std::iter::once(evidence.machine_relative_path.trim())
+        .chain(std::iter::once(evidence.observation_relative_path.trim()))
+        .chain(
+            evidence
+                .retired_relative_paths
+                .iter()
+                .map(|path| path.trim()),
+        )
+    {
+        if !unique_paths.insert(relative_path) {
+            errors.push(format!(
+                "persistence.decision_evidence decision-evidence paths must be distinct: `{relative_path}`"
+            ));
+        }
     }
     if block
         .decision_evidence

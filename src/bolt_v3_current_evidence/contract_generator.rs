@@ -578,6 +578,21 @@ pub fn render_contract(contract: &ContractRegistry) -> String {
     output.push_str("    }\n}\n\n");
 
     output.push_str(concat!(
+        "pub(crate) const fn purpose_for_identity(identity: KnownIdentity) -> KnownPurpose {\n",
+        "    match identity {\n",
+    ));
+    for row in &wire.identities {
+        render_match_arm(
+            &mut output,
+            "KnownIdentity",
+            &row.id,
+            "KnownPurpose",
+            &row.purpose,
+        );
+    }
+    output.push_str("    }\n}\n\n");
+
+    output.push_str(concat!(
         "pub(crate) const fn fact_for_identity(identity: KnownIdentity) -> KnownFact {\n",
         "    match identity {\n",
     ));

@@ -2235,13 +2235,13 @@ fn decision_evidence_path_rejects_absolute_or_parent_traversal() {
             .root
             .persistence
             .decision_evidence
-            .order_intents_relative_path = invalid.to_string();
+            .machine_relative_path = invalid.to_string();
         let error = decision_evidence_path(&loaded)
             .expect_err("invalid decision evidence path should be rejected");
         assert!(
             error
                 .to_string()
-                .contains("order_intents_relative_path must be non-empty, relative"),
+                .contains("machine_relative_path must be non-empty, relative, normalized"),
             "unexpected error for {invalid}: {error:#}"
         );
     }

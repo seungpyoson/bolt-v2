@@ -32,7 +32,7 @@
 - Test: `tests/bolt_v3_current_evidence_contract.rs`
 
 **Interfaces:**
-- Produces: `KnownProducer`, `KnownPurpose`, `KnownIdentity`, `KnownFact`, `KnownConsumer`, `KnownSink`, `EffectPolicy`, `purpose_for_producer`, `current_identity_for_purpose`, `fact_for_identity`, `descriptor_for_identity`, `sink_for_purpose`, `effect_policy_for_purpose`, and exhaustive fact-consumer dispositions.
+- Produces: `KnownProducer`, `KnownPurpose`, `KnownIdentity`, `KnownFact`, `KnownConsumer`, `KnownSink`, `EffectPolicy`, `purpose_for_producer`, `current_identity_for_purpose`, `purpose_for_identity`, `fact_for_identity`, `descriptor_for_identity`, `sink_for_purpose`, `effect_policy_for_purpose`, and exhaustive fact-consumer dispositions.
 - Consumes: only TOML registry IDs and metadata; no Rust function-name strings.
 
 - [x] **Step 1: Write failing registry closure tests**
@@ -114,17 +114,17 @@ git commit -m "feat(#1354): close current evidence contract"
 - Produces: `DecisionEvidenceRuntime::open`, `DecisionEvidenceRecorder`, `StartupRecoveryFacts`, `AppendReceipt`, `RecordFailure`, `NonBlockingRecordOutcome`, and `ObservationRecordOutcome`.
 - Consumes: generated purpose/sink/effect metadata from Task 1.
 
-- [ ] **Step 1: Write failing atomic-open behavior tests**
+- [x] **Step 1: Write failing atomic-open behavior tests**
 
 Tests must cover missing fresh machine path, current empty file, retired-path presence, symlink, directory/non-regular path, machine/observation path equality, hard-link inode alias, torn line, blank line, old identity, unknown identity, observation identity in machine stream, exact byte cap, and one byte over. Add a replacement-race harness proving appends use the descriptor validated by `open`, not a later path occupant.
 
 Expected RED: no `DecisionEvidenceRuntime` exists.
 
-- [ ] **Step 2: Replace the config schema**
+- [x] **Step 2: Replace the config schema**
 
 Replace `order_intents_relative_path` with required `machine_relative_path`, `observation_relative_path`, and `retired_relative_paths`. Preserve `recovery_evidence_max_bytes`. Validate every relative path beneath `catalog_directory`, reject empty/absolute/parent traversal, and reject duplicate configured paths.
 
-- [ ] **Step 3: Implement the only runtime constructor**
+- [x] **Step 3: Implement the only runtime constructor**
 
 Expose exactly:
 
@@ -143,11 +143,11 @@ impl DecisionEvidenceRuntime {
 
 `open` must open the machine descriptor with read+append+create+no-follow, validate and decode from that descriptor, seek it to append, then retain it. Do not expose a writer constructor or standalone preflight.
 
-- [ ] **Step 4: Write failing durability and failure-episode tests**
+- [x] **Step 4: Write failing durability and failure-episode tests**
 
 Inject write failure and sync failure below the recorder. Assert neither yields `AppendReceipt`. Assert the first observation failure for a purpose is `FailureReported`, the second is `FailureSuppressed`, successful append resets the episode, and a later failure reports once again.
 
-- [ ] **Step 5: Implement policy-specific outcomes**
+- [x] **Step 5: Implement policy-specific outcomes**
 
 Use these exact public outcomes:
 
@@ -173,7 +173,7 @@ pub enum ObservationRecordOutcome {
 
 Only the private durable append function may construct `AppendReceipt`, after `write_all` and `sync_data`. The recorder owns `Mutex<BTreeSet<KnownPurpose>>` for continuous observation failure episodes and clears a purpose on success.
 
-- [ ] **Step 6: Verify and commit the runtime boundary**
+- [x] **Step 6: Verify and commit the runtime boundary**
 
 Run the focused runtime and config tests with debug info disabled. Expected: PASS.
 

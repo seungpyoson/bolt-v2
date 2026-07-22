@@ -74,6 +74,10 @@ path = "tests/polymarket_redemption_preparation.rs"
 name = "bolt_v3_current_evidence_contract"
 path = "tests/bolt_v3_current_evidence_contract.rs"
 
+[[test]]
+name = "bolt_v3_current_evidence_runtime"
+path = "tests/bolt_v3_current_evidence_runtime.rs"
+
 [dependencies]
 ahash = "0.8.12"
 alloy-primitives = "=1.6.0"

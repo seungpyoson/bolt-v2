@@ -131,6 +131,38 @@ pub struct BasketAdmissionRejectedFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapitalAdmissionRejectionReason {
+    MissingEvidence,
+    StaleRequest,
+    PoolMismatch,
+    OverBudget,
+    InvalidRequest,
+    CollateralGroupMismatch,
+    DuplicateReservation,
+    UnknownReservation,
+    UnknownRelease,
+    ReconciliationRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapitalAdmissionRebuildOutcome {
+    Accepted,
+    Rejected(CapitalAdmissionRejectionReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapitalAdmissionRebuildFact {
+    pub observed_at_ns: u64,
+    pub source: String,
+    pub observed_open_order_count: usize,
+    pub all_open_orders_attributed: bool,
+    pub outcome: CapitalAdmissionRebuildOutcome,
+    pub attempted_reservation_count: usize,
+    pub recovered_reservation_count: usize,
+    pub live_reserved_liability: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,
     Down,

@@ -1,3 +1,4 @@
+mod admission;
 mod basket_admission;
 mod order_intent;
 mod reservation;
@@ -8,9 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     facts::{
-        BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, EntryOrderIntentFact,
-        OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome, OrderIntentDetails,
-        OrderIntentOrderFields, RecoveryFact, RiskReducingExitOrderIntentFact,
+        BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, CapitalAdmissionRebuildFact,
+        EntryOrderIntentFact, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
+        OrderIntentDetails, OrderIntentOrderFields, RecoveryFact, RiskReducingExitOrderIntentFact,
         SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
         SubmitReservationMetadataFact, TerminalSettlementFact,
     },
@@ -180,6 +181,22 @@ impl CodecFor<identities::BasketAdmissionRejectedV1> for CurrentCodecs {
     }
 }
 
+impl CodecFor<identities::CapitalAdmissionRebuildV1> for CurrentCodecs {
+    type Input = CapitalAdmissionRebuildFact;
+    type Fact = CapitalAdmissionRebuildFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        admission::encode_capital_rebuild(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        admission::decode_capital_rebuild(line, line_number)
+    }
+}
+
 pub(crate) fn encode_entry_order_intent(
     fact: EntryOrderIntentFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
@@ -208,6 +225,15 @@ pub(crate) fn encode_basket_admission_rejected(
     fact: BasketAdmissionRejectedFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     <CurrentCodecs as CodecFor<identities::BasketAdmissionRejectedV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
+}
+
+pub(crate) fn encode_capital_admission_rebuild(
+    fact: CapitalAdmissionRebuildFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::CapitalAdmissionRebuildV1>>::encode(
         &fact,
         current_utc_ns()?,
     )
@@ -540,6 +566,19 @@ mod tests {
         }
     }
 
+    fn capital_rebuild() -> CapitalAdmissionRebuildFact {
+        CapitalAdmissionRebuildFact {
+            observed_at_ns: 5,
+            source: "venue_reconciliation".to_string(),
+            observed_open_order_count: 2,
+            all_open_orders_attributed: true,
+            outcome: super::super::facts::CapitalAdmissionRebuildOutcome::Accepted,
+            attempted_reservation_count: 2,
+            recovered_reservation_count: 2,
+            live_reserved_liability: "10".to_string(),
+        }
+    }
+
     #[test]
     fn reservation_identity_binding_is_deterministic_and_round_trips() {
         let expected = metadata();
@@ -707,6 +746,23 @@ mod tests {
                 1,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn capital_admission_rebuild_identity_round_trips() {
+        let expected = capital_rebuild();
+        let record = <CurrentCodecs as CodecFor<identities::CapitalAdmissionRebuildV1>>::encode(
+            &expected, 18,
+        )
+        .expect("valid capital rebuild must encode");
+        let line = std::str::from_utf8(record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::CapitalAdmissionRebuildV1>>::decode(line, 1)
+                .expect("capital rebuild must decode"),
+            expected
         );
     }
 }

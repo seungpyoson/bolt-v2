@@ -41,6 +41,14 @@ snapshot_max_bytes = 65536
 abstract_name_max_bytes = 107
 cache_format_token = "bolt-sccache-strict-v1"
 
+[publisher]
+environment = "strict-sccache-publisher"
+api_version = "2026-03-10"
+gh_version = "2.96.0"
+gh_archive_url = "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_linux_amd64.tar.gz"
+gh_archive_sha256 = "83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60"
+gh_archive_member = "gh_2.96.0_linux_amd64/bin/gh"
+
 [targets.ARM64]
 triple = "aarch64-unknown-linux-musl"
 elf_machine = "AArch64"

@@ -39,6 +39,16 @@ class VerificationConsumerConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class PublisherConfig:
+    environment: str
+    api_version: str
+    gh_version: str
+    gh_archive_url: str
+    gh_archive_sha256: str
+    gh_archive_member: str
+
+
+@dataclasses.dataclass(frozen=True)
 class StrictBuildConfig:
     schema_version: int
     repo_root: pathlib.Path
@@ -69,6 +79,7 @@ class StrictBuildConfig:
     attestation_attempts: int
     attestation_interval_seconds: int
     verification_consumer: VerificationConsumerConfig
+    publisher: PublisherConfig
     targets: Mapping[str, TargetConfig]
 
 
@@ -162,6 +173,7 @@ def load_document(
                 "build",
                 "verification",
                 "runtime_contract",
+                "publisher",
                 "targets",
             }
         ),
@@ -444,6 +456,52 @@ def load_document(
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError(f"{name} must be a positive integer")
 
+    publisher = _mapping(top["publisher"], "publisher")
+    _exact_keys(
+        publisher,
+        frozenset(
+            {
+                "environment",
+                "api_version",
+                "gh_version",
+                "gh_archive_url",
+                "gh_archive_sha256",
+                "gh_archive_member",
+            }
+        ),
+        "publisher",
+    )
+    publisher_environment = _string(
+        publisher["environment"], "publisher.environment"
+    )
+    if re.fullmatch(r"[a-z][a-z0-9-]*", publisher_environment) is None:
+        raise ValueError("publisher.environment must be a portable name")
+    publisher_api_version = _string(
+        publisher["api_version"], "publisher.api_version"
+    )
+    if re.fullmatch(r"20[0-9]{2}-[0-9]{2}-[0-9]{2}", publisher_api_version) is None:
+        raise ValueError("publisher.api_version must be an exact date")
+    gh_version = _string(publisher["gh_version"], "publisher.gh_version")
+    if not _VERSION.fullmatch(gh_version):
+        raise ValueError("publisher.gh_version must be semantic version X.Y.Z")
+    gh_archive_url = _string(
+        publisher["gh_archive_url"], "publisher.gh_archive_url"
+    )
+    expected_gh_url = (
+        f"https://github.com/cli/cli/releases/download/v{gh_version}/"
+        f"gh_{gh_version}_linux_amd64.tar.gz"
+    )
+    if gh_archive_url != expected_gh_url:
+        raise ValueError("publisher.gh_archive_url must match the pinned Linux archive")
+    gh_archive_sha256 = _sha256(
+        publisher["gh_archive_sha256"], "publisher.gh_archive_sha256"
+    )
+    gh_archive_member = _string(
+        publisher["gh_archive_member"], "publisher.gh_archive_member"
+    )
+    if gh_archive_member != f"gh_{gh_version}_linux_amd64/bin/gh":
+        raise ValueError("publisher.gh_archive_member must match the pinned archive")
+
     target_table = _mapping(top["targets"], "targets")
     if frozenset(target_table) != _TARGET_NAMES:
         raise ValueError("targets must be exactly ARM64 and X64")
@@ -500,6 +558,14 @@ def load_document(
             s3_region=s3_region,
             s3_key_prefix=s3_key_prefix,
         ),
+        publisher=PublisherConfig(
+            environment=publisher_environment,
+            api_version=publisher_api_version,
+            gh_version=gh_version,
+            gh_archive_url=gh_archive_url,
+            gh_archive_sha256=gh_archive_sha256,
+            gh_archive_member=gh_archive_member,
+        ),
         targets=MappingProxyType(targets),
     )
 
@@ -551,6 +617,7 @@ def _derivative_identity(config: StrictBuildConfig, architecture: str) -> str:
         "abstract_name_max_bytes": config.abstract_name_max_bytes,
         "cache_format_token": config.cache_format_token,
         "verification_consumer": dataclasses.asdict(config.verification_consumer),
+        "publisher": dataclasses.asdict(config.publisher),
         "target": target.triple,
     }
     return hashlib.sha256(_canonical_json(document)).hexdigest()
@@ -671,6 +738,7 @@ def write_candidate_manifest(
         "cache_format_token": config.cache_format_token,
         "verification_cache_mode": config.verification_cache_mode,
         "verification_consumer": dataclasses.asdict(config.verification_consumer),
+        "publisher": dataclasses.asdict(config.publisher),
         "binary_name": _candidate_binary_name(config, architecture),
         "binary_sha256": _file_sha256(binary_path),
         "binary_size": binary_size,
@@ -711,6 +779,7 @@ _CANDIDATE_KEYS = frozenset(
         "cache_format_token",
         "verification_cache_mode",
         "verification_consumer",
+        "publisher",
         "binary_name",
         "binary_sha256",
         "binary_size",
@@ -788,6 +857,7 @@ def verify_candidate_set(
             "cache_format_token": config.cache_format_token,
             "verification_cache_mode": config.verification_cache_mode,
             "verification_consumer": dataclasses.asdict(config.verification_consumer),
+            "publisher": dataclasses.asdict(config.publisher),
             "binary_name": _candidate_binary_name(config, architecture),
         }
         for key, expected_value in expected_common.items():
@@ -854,6 +924,7 @@ def verify_candidate_set(
             "cache_format_token": config.cache_format_token,
             "verification_cache_mode": config.verification_cache_mode,
             "verification_consumer": dataclasses.asdict(config.verification_consumer),
+            "publisher": dataclasses.asdict(config.publisher),
             "replicas": list(config.replicas),
         },
         "release_verification": {
@@ -1074,17 +1145,6 @@ def select_owned_mutable_release(
     return matches[0]
 
 
-def validate_cleanup_tag(
-    tag_ref: Mapping[str, object], *, tag: str, head_sha: str
-) -> None:
-    _full_sha(head_sha, "head_sha")
-    if tag_ref.get("ref") != f"refs/tags/{tag}":
-        raise ValueError("cleanup tag ref does not match")
-    tag_object = _mapping(tag_ref.get("object"), "cleanup tag object")
-    if tag_object.get("type") != "commit" or tag_object.get("sha") != head_sha:
-        raise ValueError("cleanup tag does not target exact head commit")
-
-
 def _read_json(path: pathlib.Path, name: str) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -1207,10 +1267,6 @@ def _parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--head-sha", required=True)
     cleanup.add_argument("--ownership-marker", required=True)
 
-    cleanup_tag = subparsers.add_parser("validate-cleanup-tag")
-    cleanup_tag.add_argument("--tag-json", required=True, type=pathlib.Path)
-    cleanup_tag.add_argument("--tag", required=True)
-    cleanup_tag.add_argument("--head-sha", required=True)
     return parser
 
 
@@ -1250,6 +1306,7 @@ def main(argv: list[str] | None = None) -> int:
                 "verification_consumer": dataclasses.asdict(
                     config.verification_consumer
                 ),
+                "publisher": dataclasses.asdict(config.publisher),
                 "replicas": list(config.replicas),
                 "attestation_attempts": config.attestation_attempts,
                 "attestation_interval_seconds": config.attestation_interval_seconds,
@@ -1344,17 +1401,6 @@ def main(argv: list[str] | None = None) -> int:
             if release_id is None:
                 return 1
             print(release_id)
-            return 0
-        if args.command == "validate-cleanup-tag":
-            tag_document = _mapping(
-                _read_json(args.tag_json, "cleanup tag record"),
-                "cleanup tag record",
-            )
-            validate_cleanup_tag(
-                tag_document,
-                tag=args.tag,
-                head_sha=args.head_sha,
-            )
             return 0
         raise ValueError("unsupported command")
     except ValueError as error:

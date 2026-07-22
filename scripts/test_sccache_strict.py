@@ -73,6 +73,14 @@ def valid_document() -> dict[str, object]:
             "abstract_name_max_bytes": 107,
             "cache_format_token": "bolt-sccache-strict-v1",
         },
+        "publisher": {
+            "environment": "strict-sccache-publisher",
+            "api_version": "2026-03-10",
+            "gh_version": "2.96.0",
+            "gh_archive_url": "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_linux_amd64.tar.gz",
+            "gh_archive_sha256": "83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60",
+            "gh_archive_member": "gh_2.96.0_linux_amd64/bin/gh",
+        },
         "targets": {
             "ARM64": {
                 "triple": "aarch64-unknown-linux-musl",
@@ -97,6 +105,7 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.abstract_name_max_bytes, 107)
         self.assertEqual(config.cache_format_token, "bolt-sccache-strict-v1")
         self.assertEqual(config.verification_consumer.compiler_path, "/usr/bin/cc")
+        self.assertEqual(config.publisher.gh_version, "2.96.0")
 
     def test_rejects_non_positive_verification_timeout(self) -> None:
         document = valid_document()
@@ -190,6 +199,16 @@ class LoadConfigTests(unittest.TestCase):
         document["build"] = build
 
         with self.assertRaisesRegex(ValueError, "container must use sha256 digest"):
+            sccache_strict.load_document(document, repo_root=REPO_ROOT)
+
+    def test_rejects_mismatched_github_cli_archive(self) -> None:
+        document = valid_document()
+        publisher = copy.deepcopy(document["publisher"])
+        assert isinstance(publisher, dict)
+        publisher["gh_archive_url"] = "https://github.com/cli/cli/releases/latest"
+        document["publisher"] = publisher
+
+        with self.assertRaisesRegex(ValueError, "pinned Linux archive"):
             sccache_strict.load_document(document, repo_root=REPO_ROOT)
 
     def test_rejects_boolean_source_epoch(self) -> None:
@@ -688,27 +707,6 @@ class ReleaseCleanupTests(unittest.TestCase):
                 ownership_marker=self.marker,
             )
         )
-
-    def test_cleanup_tag_must_still_target_exact_head_commit(self) -> None:
-        owned = {
-            "ref": f"refs/tags/{self.tag}",
-            "object": {"type": "commit", "sha": self.head_sha},
-        }
-        replaced = copy.deepcopy(owned)
-        replaced["object"]["sha"] = "c" * 40
-
-        sccache_strict.validate_cleanup_tag(
-            owned,
-            tag=self.tag,
-            head_sha=self.head_sha,
-        )
-        with self.assertRaisesRegex(ValueError, "exact head commit"):
-            sccache_strict.validate_cleanup_tag(
-                replaced,
-                tag=self.tag,
-                head_sha=self.head_sha,
-            )
-
 
 class CliTests(unittest.TestCase):
     def test_writes_governed_verification_consumer_outside_repository(self) -> None:

@@ -7,8 +7,7 @@ use crate::{
         BinaryRuntimeSettlementInput, settle_binary_runtime_reference_prices,
     },
     bolt_v3_decision_evidence::{
-        BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        BOLT_V3_SETTLEMENT_GATE_ID, BOLT_V3_SETTLEMENT_RECORD_KIND, BoltV3OrderLifecycleOutcome,
+        BoltV3DecisionEvidenceWriterExt, BoltV3OrderLifecycleOutcome,
         BoltV3OrderLifecycleTransition, BoltV3OutcomeSide, BoltV3SettlementEvidence,
     },
     bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id,
@@ -2187,7 +2186,6 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
             reason: BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
             detail: "durable terminal booking error".to_string(),
             observed_at_ns: 2_000_u64.saturating_mul(NANOS_PER_MILLI_U64),
-            terminal_lifecycle: None,
         },
     );
 
@@ -2917,44 +2915,20 @@ fn venue_truth_snapshot(
 }
 
 fn write_settlement_evidence_line(path: &std::path::Path, evidence: BoltV3SettlementEvidence) {
-    let line = json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        "recorded_at_utc_ns": 1_000_i64,
-        "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
-        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        "kind": BOLT_V3_SETTLEMENT_RECORD_KIND,
-        "settlement": evidence,
-    });
-    std::fs::write(
-        path,
-        format!(
-            "{}\n",
-            serde_json::to_string(&line).expect("settlement evidence should encode")
-        ),
-    )
-    .expect("settlement evidence fixture should write");
+    crate::bolt_v3_decision_evidence::JsonlBoltV3DecisionEvidenceWriter::from_test_path(path)
+        .expect("current decision-evidence writer should open")
+        .record_settlement(&evidence)
+        .expect("settlement evidence should append");
 }
 
 fn write_settlement_booking_error_line(
     path: &std::path::Path,
     evidence: BoltV3SettlementBookingErrorEvidence,
 ) {
-    let line = json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        "recorded_at_utc_ns": 1_000_i64,
-        "gate_id": BOLT_V3_SETTLEMENT_GATE_ID,
-        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        "kind": crate::bolt_v3_decision_evidence::BOLT_V3_SETTLEMENT_BOOKING_ERROR_RECORD_KIND,
-        "booking_error": evidence,
-    });
-    std::fs::write(
-        path,
-        format!(
-            "{}\n",
-            serde_json::to_string(&line).expect("settlement booking error should encode")
-        ),
-    )
-    .expect("settlement booking-error fixture should write");
+    crate::bolt_v3_decision_evidence::JsonlBoltV3DecisionEvidenceWriter::from_test_path(path)
+        .expect("current decision-evidence writer should open")
+        .record_settlement_booking_error(&evidence)
+        .expect("settlement booking-error evidence should append");
 }
 
 fn assert_incident_lifecycle_counts() {

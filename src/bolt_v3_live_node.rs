@@ -165,15 +165,8 @@ use crate::{
         LoadedStrategy, nautilus_startup_bound_secs, resolve_root_relative_path,
     },
     bolt_v3_decision_evidence::{
-        BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-        BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-        BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-        BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence,
-        BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
-        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
-        read_submit_reservation_recovery_evidence,
+        BoltV3DecisionEvidenceWriter, JsonlBoltV3DecisionEvidenceWriter,
+        machine_decision_evidence_path, read_submit_reservation_recovery_evidence,
     },
     bolt_v3_iv::{
         config::IvRootConfig,
@@ -258,6 +251,9 @@ use crate::{
     },
     secrets::SsmResolverSession,
 };
+
+#[cfg(test)]
+use crate::bolt_v3_decision_evidence::NoStrategyDecisionEvidenceWriter;
 
 mod data_client_probe;
 mod iv;
@@ -399,94 +395,6 @@ use strategy_free_probe::*;
 impl BoltV3StrategyFreeReferenceCacheEvidence {
     pub fn cached_instrument_ids(&self) -> &[String] {
         &self.cached_instrument_ids
-    }
-}
-
-#[derive(Debug)]
-struct NoStrategyDecisionEvidenceWriter;
-
-impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(&self, _evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> Result<()> {
-        // Deliberate no-op: strategy-free live nodes do not create decision evidence.
-        Ok(())
     }
 }
 
@@ -3060,31 +2968,20 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             },
         ));
     }
-    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = if loaded.strategies.is_empty() {
-        if loss_policy.is_none() && capital_admission.is_none() {
-            Arc::new(NoStrategyDecisionEvidenceWriter)
-        } else {
-            Arc::new(
-                JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
-                    BoltV3LiveNodeError::StrategyRegistration(
-                        BoltV3StrategyRegistrationError::Evidence {
-                            message: error.to_string(),
-                        },
-                    )
-                })?,
-            )
-        }
-    } else {
-        Arc::new(
-            JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
-                BoltV3LiveNodeError::StrategyRegistration(
-                    BoltV3StrategyRegistrationError::Evidence {
-                        message: error.to_string(),
-                    },
-                )
-            })?,
-        )
-    };
+    crate::bolt_v3_decision_evidence::preflight_current_machine_stream(loaded).map_err(
+        |error| {
+            BoltV3LiveNodeError::StrategyRegistration(BoltV3StrategyRegistrationError::Evidence {
+                message: error.to_string(),
+            })
+        },
+    )?;
+    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = Arc::new(
+        JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(BoltV3StrategyRegistrationError::Evidence {
+                message: error.to_string(),
+            })
+        })?,
+    );
     let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
     let capital_admission_runtime_feed_config =
         capital_admission_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);

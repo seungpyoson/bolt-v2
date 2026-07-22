@@ -4,14 +4,9 @@ use bolt_v2::bolt_v3_capital_admission::{CapitalAdmissionPolicy, FeeSlippagePoli
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
-    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
-    BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-    BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
     BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-    BoltV3OrderRejectEvidence, BoltV3OrderRejectReason, BoltV3RejectSource,
-    BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence, BoltV3SettlementEvidence,
-    BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
-    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+    BoltV3OrderRejectEvidence, BoltV3OrderRejectReason, BoltV3RejectSource, BoltV3StaleLossReason,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
@@ -1686,96 +1681,27 @@ fn forced_reduction_policy_and_claim_expose_proof_metadata() {
 struct FailingDecisionEvidenceWriter;
 
 impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        command: bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> anyhow::Result<()> {
-        Ok(())
-    }
+        use bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand as Command;
 
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!(
-            "synthetic admission-decision write failure"
-        ))
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("synthetic entry-skip write failure"))
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("synthetic exit-decision write failure"))
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("synthetic requote-throttle write failure"))
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
+        match command {
+            Command::AdmittedEntryAdmission(_) => {
+                anyhow::bail!("synthetic admission-decision write failure")
+            }
+            Command::EntrySkipObservation(_) => {
+                anyhow::bail!("synthetic entry-skip write failure")
+            }
+            Command::ExitSubmissionDecision(_) | Command::ExitHoldDecision(_) => {
+                anyhow::bail!("synthetic exit-decision write failure")
+            }
+            Command::RequoteThrottle(_) => {
+                anyhow::bail!("synthetic requote-throttle write failure")
+            }
+            _ => Ok(()),
+        }
     }
 
     fn drain_shutdown(&self) -> anyhow::Result<()> {
@@ -1830,114 +1756,27 @@ impl BlockingFirstAdmissionDecisionWriter {
 }
 
 impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        command: bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .expect("blocking writer mutex should not be poisoned");
-        if !state.first_call_entered {
-            state.first_call_entered = true;
-            self.entered.notify_all();
-            while !state.release_first_call {
-                state = self
-                    .released
-                    .wait(state)
-                    .expect("blocking writer condvar should not be poisoned");
+        if let bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand::AdmittedEntryAdmission(decision) = command {
+            let mut state = self
+                .state
+                .lock()
+                .expect("blocking writer mutex should not be poisoned");
+            if !state.first_call_entered {
+                state.first_call_entered = true;
+                self.entered.notify_all();
+                while !state.release_first_call {
+                    state = self
+                        .released
+                        .wait(state)
+                        .expect("blocking writer condvar should not be poisoned");
+                }
             }
+            state.admission_decisions.push(decision);
         }
-        state.admission_decisions.push(decision.clone());
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!(
-            "blocking admission writer received entry-skip evidence"
-        ))
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!(
-            "blocking admission writer received exit-decision evidence"
-        ))
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!(
-            "blocking admission writer received requote-throttle evidence"
-        ))
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -1976,102 +1815,32 @@ impl OrderRejectFailingDecisionEvidenceWriter {
 }
 
 impl BoltV3DecisionEvidenceWriter for OrderRejectFailingDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        command: bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> anyhow::Result<()> {
-        Ok(())
-    }
+        use bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand as Command;
 
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.admission_decisions
-            .lock()
-            .expect("order-reject failing writer mutex should not be poisoned")
-            .push(decision.clone());
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        self.order_reject_attempts
-            .lock()
-            .expect("order-reject failing writer mutex should not be poisoned")
-            .push(evidence.clone());
-        Err(anyhow::anyhow!("synthetic order-reject write failure"))
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
+        match command {
+            Command::AdmittedEntryAdmission(value)
+            | Command::RejectedEntryAdmission(value)
+            | Command::RiskReducingExitAdmission(value)
+            | Command::ForcedReductionAdmission(value) => {
+                self.admission_decisions
+                    .lock()
+                    .expect("order-reject failing writer mutex should not be poisoned")
+                    .push(value);
+                Ok(())
+            }
+            Command::OrderReject(value) => {
+                self.order_reject_attempts
+                    .lock()
+                    .expect("order-reject failing writer mutex should not be poisoned")
+                    .push(value);
+                anyhow::bail!("synthetic order-reject write failure")
+            }
+            _ => Ok(()),
+        }
     }
 
     fn drain_shutdown(&self) -> anyhow::Result<()> {
@@ -2112,104 +1881,32 @@ impl LossHaltFailingDecisionEvidenceWriter {
 }
 
 impl BoltV3DecisionEvidenceWriter for LossHaltFailingDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        command: bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> anyhow::Result<()> {
-        Ok(())
-    }
+        use bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand as Command;
 
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.admission_decisions
-            .lock()
-            .expect("loss-halt failing writer mutex should not be poisoned")
-            .push(decision.clone());
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        self.loss_halt_attempts
-            .lock()
-            .expect("loss-halt failing writer mutex should not be poisoned")
-            .push(evidence.clone());
-        Err(anyhow::anyhow!(
-            "synthetic loss-governor-halt write failure"
-        ))
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
+        match command {
+            Command::AdmittedEntryAdmission(value)
+            | Command::RejectedEntryAdmission(value)
+            | Command::RiskReducingExitAdmission(value)
+            | Command::ForcedReductionAdmission(value) => {
+                self.admission_decisions
+                    .lock()
+                    .expect("loss-halt failing writer mutex should not be poisoned")
+                    .push(value);
+                Ok(())
+            }
+            Command::LossGovernorHalt(value) => {
+                self.loss_halt_attempts
+                    .lock()
+                    .expect("loss-halt failing writer mutex should not be poisoned")
+                    .push(value);
+                anyhow::bail!("synthetic loss-halt write failure")
+            }
+            _ => Ok(()),
+        }
     }
 
     fn drain_shutdown(&self) -> anyhow::Result<()> {

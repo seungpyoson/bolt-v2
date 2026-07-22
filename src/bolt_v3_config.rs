@@ -386,14 +386,12 @@ pub struct PersistenceBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionEvidenceBlock {
-    pub order_intents_relative_path: String,
-    /// Byte cap applied when the live-node startup driver reads this same
-    /// decision-evidence file to recover known submit-reservation metadata
-    /// after a restart. The path is owned by this block
-    /// (`order_intents_relative_path` via `decision_evidence_path`), so its
-    /// read bound lives here too. `None` opts startup reservation recovery
-    /// out: capital admission then fails closed if any open orders exist at
-    /// boot (it cannot attribute them without recovered metadata).
+    pub machine_relative_path: String,
+    pub observation_relative_path: String,
+    pub retired_relative_paths: Vec<String>,
+    /// Byte cap applied when startup scans and recovers the current machine
+    /// decision-evidence stream. `None` opts startup reservation recovery out:
+    /// capital admission then fails closed if open orders cannot be attributed.
     pub recovery_evidence_max_bytes: Option<u64>,
 }
 

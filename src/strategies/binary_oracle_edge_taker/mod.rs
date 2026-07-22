@@ -35,12 +35,12 @@ use crate::{
         OutcomeBookState, OutcomeBookSubscriptions, should_replace_book_subscriptions,
     },
     bolt_v3_decision_evidence::{
-        BOLT_V3_SETTLEMENT_RECORD_KIND, BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory,
-        BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult,
-        BoltV3ExitTriggerSource, BoltV3ExposureOccupancy, BoltV3ForcedFlatReason,
-        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderLifecycleEvidence,
-        BoltV3OrderLifecycleOutcome, BoltV3OrderLifecycleTransition, BoltV3OutcomeSide,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
+        BoltV3DecisionEvidenceWriterExt, BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory,
+        BoltV3ExitDecisionEvidence, BoltV3ExitDecisionOutcome, BoltV3ExitEvaluationEvidence,
+        BoltV3ExitRvGateResult, BoltV3ExitTriggerSource, BoltV3ExposureOccupancy,
+        BoltV3ForcedFlatReason, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+        BoltV3OrderLifecycleEvidence, BoltV3OrderLifecycleOutcome, BoltV3OrderLifecycleTransition,
+        BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
         BoltV3SettlementBookingErrorEvidence, BoltV3SettlementBookingErrorReason,
         BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3TerminalSettlementEvidence, number_evidence as evidence_number,
@@ -131,9 +131,7 @@ use nautilus_model::enums::{
 
 #[cfg(test)]
 use crate::{
-    bolt_v3_decision_evidence::{
-        BoltV3EntryPricingBlockReason, BoltV3ExitBlockedReason, BoltV3ExitDecisionOutcome,
-    },
+    bolt_v3_decision_evidence::{BoltV3EntryPricingBlockReason, BoltV3ExitBlockedReason},
     bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity},
     bolt_v3_providers::FeeProvider,
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
@@ -1359,7 +1357,6 @@ impl BinaryOracleEdgeTaker {
             reason,
             detail,
             observed_at_ns,
-            terminal_lifecycle: None,
         }
     }
 
@@ -4054,11 +4051,17 @@ impl BinaryOracleEdgeTaker {
         if self.last_recorded_exit_decision.as_ref() == Some(&key) {
             return Ok(());
         }
-        if let Err(error) = self
-            .context
-            .decision_evidence()
-            .record_exit_decision(&evidence)
-        {
+        let record_result = match evidence.exit_decision {
+            BoltV3ExitDecisionOutcome::Exit | BoltV3ExitDecisionOutcome::ExitFailClosed => self
+                .context
+                .decision_evidence()
+                .record_exit_submission_decision(&evidence),
+            BoltV3ExitDecisionOutcome::Hold | BoltV3ExitDecisionOutcome::Blocked => self
+                .context
+                .decision_evidence()
+                .record_exit_hold_decision(&evidence),
+        };
+        if let Err(error) = record_result {
             // A telemetry-write failure must NEVER block a risk-reducing exit:
             // record_exit_decision_once is called immediately before the exit
             // order is built and submitted. Surface the lost write at the
@@ -6108,7 +6111,7 @@ impl BinaryOracleEdgeTaker {
         };
         self.context
             .decision_evidence()
-            .record_strategy_input_snapshot(&snapshot)?;
+            .record_blocked_strategy_input_observation(&snapshot)?;
         self.last_recorded_blocked_strategy_input = Some(next_state);
         Ok(())
     }
@@ -6989,7 +6992,7 @@ impl BinaryOracleEdgeTaker {
         match self
             .context
             .decision_evidence()
-            .record_strategy_input_snapshot(&strategy_input_snapshot)
+            .record_submit_linked_strategy_input_snapshot(&strategy_input_snapshot)
             .and_then(|()| {
                 self.submit_order_with_decision_evidence(
                     intent,
@@ -8259,7 +8262,7 @@ fn settlement_position_realized_pnl_observation(
         position_id: evidence.position_id.clone(),
         event_id: Some(evidence.settlement_key.clone()),
         observed: RealizedPnlObservation {
-            source: BOLT_V3_SETTLEMENT_RECORD_KIND,
+            source: crate::bolt_v3_decision_evidence::current::settlement_record_kind(),
             observed_at_unix_nanos: evidence.resolution_ts_event_ns,
             realized_pnl: Decimal::from_str(&evidence.realized_pnl).with_context(|| {
                 format!(

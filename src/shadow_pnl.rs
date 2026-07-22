@@ -12,11 +12,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_decision_evidence::{
-    BOLT_V3_ADMISSION_DECISION_RECORD_KIND, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-    BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_ORDER_INTENT_RECORD_KIND,
-    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
-    BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionOutcome, BoltV3OrderIntentKind,
-    BoltV3SubmitIntentKind,
+    decode::read_registered_facts,
+    facts::{ShadowPnlEvent, route_shadow_pnl},
 };
 use crate::bolt_v3_market_families::OutcomeSide;
 use crate::bolt_v3_taker_updown_signal::outcome_side_evidence_label;
@@ -102,17 +99,7 @@ struct TradeAccumulator {
     realized_edge_bps: Decimal,
 }
 
-#[derive(Debug, Deserialize)]
-struct EvidenceEnvelope {
-    schema_version: u32,
-    gate_id: String,
-    kind: String,
-    snapshot: Option<StrategyInputSnapshotEvidence>,
-    intent: Option<OrderIntentEvidence>,
-    decision: Option<AdmissionDecisionEvidence>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 struct StrategyInputSnapshotEvidence {
     market_id: Option<String>,
     selected_side: Option<String>,
@@ -121,20 +108,12 @@ struct StrategyInputSnapshotEvidence {
     client_order_id: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 struct OrderIntentEvidence {
-    intent_kind: BoltV3OrderIntentKind,
     instrument_id: String,
     client_order_id: String,
     price: String,
     quantity: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct AdmissionDecisionEvidence {
-    client_order_id: String,
-    intent_kind: BoltV3SubmitIntentKind,
-    outcome: BoltV3AdmissionOutcome,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -260,71 +239,65 @@ fn write_shadow_pnl_csv_header(writer: &mut impl Write) -> Result<()> {
 }
 
 fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
+    let max_bytes = std::fs::metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?
+        .len();
     let mut snapshots = HashMap::<String, StrategyInputSnapshotEvidence>::new();
     let mut intents = HashMap::<String, OrderIntentEvidence>::new();
-    let mut admitted_entries = HashMap::<String, AdmissionDecisionEvidence>::new();
+    let mut admitted_entries = HashMap::<String, ()>::new();
 
-    for (line_number, line) in read_jsonl_lines(path)? {
-        let envelope: EvidenceEnvelope = serde_json::from_str(&line).with_context(|| {
-            format!(
-                "failed to parse decision evidence line {line_number} in {}",
-                path.display()
-            )
-        })?;
-        validate_evidence_header(&envelope, line_number)?;
-        match envelope.kind.as_str() {
-            BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND => {
-                let snapshot = envelope.snapshot.ok_or_else(|| {
-                    anyhow!("missing snapshot payload at decision evidence line {line_number}")
-                })?;
+    for (index, fact) in read_registered_facts(path, max_bytes)?
+        .into_iter()
+        .enumerate()
+    {
+        let line_number = index + SHADOW_PNL_LINE_NUMBER_BASE;
+        let Some(event) = route_shadow_pnl(fact)? else {
+            continue;
+        };
+        match event {
+            ShadowPnlEvent::Snapshot(snapshot) => {
+                let snapshot = StrategyInputSnapshotEvidence {
+                    market_id: snapshot.market_id,
+                    selected_side: snapshot.selected_side,
+                    expected_edge_basis_points: snapshot.expected_edge_basis_points,
+                    fee_rate_basis_points: snapshot.fee_rate_basis_points,
+                    client_order_id: snapshot.client_order_id,
+                };
                 insert_unique_evidence(
                     &mut snapshots,
                     snapshot.client_order_id.clone(),
                     snapshot,
-                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
+                    "submit-linked strategy input",
                     line_number,
                 )?;
             }
-            BOLT_V3_ORDER_INTENT_RECORD_KIND => {
-                let intent = envelope.intent.ok_or_else(|| {
-                    anyhow!("missing intent payload at decision evidence line {line_number}")
-                })?;
-                if intent.intent_kind == BoltV3OrderIntentKind::Entry {
-                    insert_unique_evidence(
-                        &mut intents,
-                        intent.client_order_id.clone(),
-                        intent,
-                        BOLT_V3_ORDER_INTENT_RECORD_KIND,
-                        line_number,
-                    )?;
-                }
+            ShadowPnlEvent::EntryIntent(intent) => {
+                let intent = OrderIntentEvidence {
+                    instrument_id: intent.instrument_id,
+                    client_order_id: intent.client_order_id,
+                    price: intent.price.normalize().to_string(),
+                    quantity: intent.quantity.normalize().to_string(),
+                };
+                insert_unique_evidence(
+                    &mut intents,
+                    intent.client_order_id.clone(),
+                    intent,
+                    "entry order intent",
+                    line_number,
+                )?;
             }
-            BOLT_V3_ADMISSION_DECISION_RECORD_KIND => {
-                let decision = envelope.decision.ok_or_else(|| {
-                    anyhow!(
-                        "missing admission decision payload at decision evidence line {line_number}"
-                    )
-                })?;
-                if decision.intent_kind == BoltV3SubmitIntentKind::Entry
-                    && decision.outcome == BoltV3AdmissionOutcome::Admitted
-                {
-                    insert_unique_evidence(
-                        &mut admitted_entries,
-                        decision.client_order_id.clone(),
-                        decision,
-                        BOLT_V3_ADMISSION_DECISION_RECORD_KIND,
-                        line_number,
-                    )?;
-                }
+            ShadowPnlEvent::AdmittedEntry(admission) => {
+                insert_unique_evidence(
+                    &mut admitted_entries,
+                    admission.client_order_id,
+                    (),
+                    "admitted entry",
+                    line_number,
+                )?;
             }
-            _ => {}
         }
     }
 
-    // Drive reconstruction from the admitted entries: every admitted entry is a
-    // would-be trade and MUST carry both its order intent and its input snapshot.
-    // Iterating intents instead would silently drop an admitted entry whose intent
-    // line is missing or corrupted; here a missing intent or snapshot fails loud.
     let mut chains = Vec::new();
     for client_order_id in admitted_entries.into_keys() {
         let intent = intents
@@ -343,14 +316,6 @@ fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
     });
     Ok(chains)
 }
-
-/// Insert decision evidence keyed by client_order_id, failing loud on a duplicate.
-///
-/// The settlement join treats client_order_id as the unique identity of a
-/// would-be trade. Decision evidence accumulates in append-mode JSONL across
-/// process runs, so a reused client_order_id (e.g. a non-UUID id scheme after a
-/// restart) would otherwise silently overwrite an earlier would-be trade. Reject
-/// the ambiguity instead of dropping a trade.
 fn insert_unique_evidence<V>(
     map: &mut HashMap<String, V>,
     client_order_id: String,
@@ -397,26 +362,6 @@ fn read_jsonl_lines(path: &Path) -> Result<Vec<(usize, String)>> {
             }
         })
         .collect()
-}
-
-fn validate_evidence_header(envelope: &EvidenceEnvelope, line_number: usize) -> Result<()> {
-    if envelope.schema_version != BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
-        return Err(anyhow!(
-            "invalid decision evidence schema_version at line {line_number}"
-        ));
-    }
-    let expected_gate_id = match envelope.kind.as_str() {
-        BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND => BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
-        BOLT_V3_ORDER_INTENT_RECORD_KIND => BOLT_V3_ORDER_INTENT_GATE_ID,
-        BOLT_V3_ADMISSION_DECISION_RECORD_KIND => BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
-        _ => return Ok(()),
-    };
-    if envelope.gate_id != expected_gate_id {
-        return Err(anyhow!(
-            "invalid decision evidence gate_id at line {line_number}"
-        ));
-    }
-    Ok(())
 }
 
 fn settlement_for_trade<'a>(

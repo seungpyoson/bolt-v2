@@ -2,9 +2,11 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use bolt_v2::bolt_v3_decision_evidence::contract_generator::{
-    parse_contract_registry, render_contract_rust,
-};
+
+#[path = "../bolt_v3_decision_evidence/contract_generator.rs"]
+mod contract_generator;
+
+use contract_generator::{parse_contract_registry, render_contract_rust};
 
 const REGISTRY_PATH: &str = "config/decision-evidence-contract.toml";
 const GENERATED_PATH: &str = "src/bolt_v3_decision_evidence/generated_contract.rs";

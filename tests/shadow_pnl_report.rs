@@ -1,9 +1,13 @@
 use std::process::Command;
 
 use bolt_v2::bolt_v3_decision_evidence::{
-    BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-    BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
-    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3OrderIntentClampOutcome,
+    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields,
+    BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
+    current::{
+        encode_admitted_entry_admission, encode_entry_order_intent,
+        encode_submit_linked_strategy_input_snapshot,
+    },
 };
 
 #[test]
@@ -43,7 +47,6 @@ fn shadow_pnl_report_matches_settlement_by_market_and_instrument() {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 1,
             client_order_id: "client-order-down",
             market_id: "market-btc",
             instrument_id: "BTC-DOWN.POLYMARKET",
@@ -115,7 +118,6 @@ fn shadow_pnl_report_rejects_unrecognized_winning_side() {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 1,
             client_order_id: "client-order-bad-side",
             market_id: "market-btc",
             instrument_id: "BTC-UP.POLYMARKET",
@@ -173,7 +175,6 @@ fn shadow_pnl_report_rejects_unrecognized_selected_side() {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 1,
             client_order_id: "client-order-bad-selected-side",
             market_id: "market-btc",
             instrument_id: "BTC-UP.POLYMARKET",
@@ -228,7 +229,6 @@ fn shadow_pnl_report_matches_unique_settlement_without_settlement_market_id() {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 1,
             client_order_id: "client-order-wildcard-settlement",
             market_id: "market-btc",
             instrument_id: "BTC-UP.POLYMARKET",
@@ -281,7 +281,6 @@ fn shadow_pnl_report_rejects_ambiguous_settlement_without_trade_market_id() {
     push_trade_lines_with_snapshot_market_id(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 1,
             client_order_id: "client-order-ambiguous",
             market_id: "market-btc",
             instrument_id: "BTC-UP.POLYMARKET",
@@ -341,12 +340,10 @@ fn shadow_pnl_report_rejects_ambiguous_settlement_without_trade_market_id() {
 }
 
 #[test]
-fn shadow_pnl_report_reports_original_line_numbers_past_blank_lines() {
+fn shadow_pnl_report_rejects_blank_evidence_records_before_payload_decode() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("order-intents.jsonl");
     let settlements_path = temp.path().join("shadow-settlements.jsonl");
-    // A blank leading line must not shift the reported parse-error line number:
-    // the malformed record is on original line 2, not the post-filter index.
     std::fs::write(&evidence_path, "\n{ not valid json\n").expect("fixture evidence should write");
     std::fs::write(&settlements_path, "").expect("fixture settlements should write");
 
@@ -363,8 +360,8 @@ fn shadow_pnl_report_reports_original_line_numbers_past_blank_lines() {
     assert!(!output.status.success(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
     assert!(
-        stderr.contains("decision evidence line 2"),
-        "parse error must report the original 1-based line number past blank lines: {stderr}"
+        stderr.contains("blank record at line index 0"),
+        "blank records must fail before a later payload is decoded: {stderr}"
     );
 }
 
@@ -377,7 +374,6 @@ fn shadow_pnl_report_escapes_csv_asset_fields() {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 1,
             client_order_id: "client-order-one",
             market_id: "market-btc",
             instrument_id: "BTC-UP.POLYMARKET",
@@ -431,7 +427,6 @@ fn shadow_pnl_report_rejects_trade_with_no_matching_settlement() {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 1,
             client_order_id: "client-order-unsettled",
             market_id: "market-btc",
             instrument_id: "BTC-UP.POLYMARKET",
@@ -486,7 +481,6 @@ fn shadow_pnl_report_rejects_duplicate_exact_market_id_settlements() {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 1,
             client_order_id: "client-order-dup-market",
             market_id: "market-btc",
             instrument_id: "BTC-UP.POLYMARKET",
@@ -557,7 +551,6 @@ fn shadow_pnl_report_rejects_settlement_inconsistent_with_winning_side() {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 1,
             client_order_id: "client-order-inconsistent",
             market_id: "market-btc",
             instrument_id: "BTC-UP.POLYMARKET",
@@ -616,7 +609,6 @@ fn shadow_pnl_report_rejects_duplicate_client_order_id() {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 1,
             client_order_id: "client-order-collision",
             market_id: "market-btc",
             instrument_id: "BTC-UP.POLYMARKET",
@@ -630,7 +622,6 @@ fn shadow_pnl_report_rejects_duplicate_client_order_id() {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 4,
             client_order_id: "client-order-collision",
             market_id: "market-btc",
             instrument_id: "BTC-UP.POLYMARKET",
@@ -686,38 +677,30 @@ fn shadow_pnl_report_rejects_admitted_entry_without_order_intent() {
     // An admitted entry whose order-intent line is missing (truncated or corrupted
     // evidence log). The join is driven by the admitted entries, so a missing intent
     // MUST fail loud rather than silently drop the would-be trade from the report.
-    let client_order_id = "client-order-no-intent";
-    let snapshot = serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        "recorded_at_utc_ns": 1,
-        "gate_id": BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
-        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        "kind": "strategy_input_snapshot",
-        "snapshot": {
-            "selected_side": "up",
-            "expected_edge_basis_points": "150",
-            "fee_rate_basis_points": "100",
-            "client_order_id": client_order_id,
-            "market_id": "market-btc"
-        }
-    });
-    let admission = serde_json::json!({
-        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        "recorded_at_utc_ns": 3,
-        "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
-        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        "kind": "admission_decision",
-        "decision": {
-            "client_order_id": client_order_id,
-            "intent_kind": "entry",
-            "outcome": "admitted"
-        }
-    });
-    let evidence = [snapshot, admission]
-        .iter()
-        .map(|value| serde_json::to_string(value).expect("evidence fixture should serialize"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let trade = TradeFixture {
+        client_order_id: "client-order-no-intent",
+        market_id: "market-btc",
+        instrument_id: "BTC-UP.POLYMARKET",
+        selected_side: "up",
+        expected_edge_basis_points: "150",
+        fee_rate_basis_points: "100",
+        price: "0.40",
+        quantity: "10",
+    };
+    let evidence = [
+        record_line(
+            encode_submit_linked_strategy_input_snapshot(&strategy_input_snapshot(
+                &trade,
+                Some(trade.market_id),
+            ))
+            .expect("snapshot should encode"),
+        ),
+        record_line(
+            encode_admitted_entry_admission(&admitted_entry(&trade))
+                .expect("admission should encode"),
+        ),
+    ]
+    .join("\n")
         + "\n";
     std::fs::write(&evidence_path, evidence).expect("fixture evidence should write");
     std::fs::write(
@@ -758,7 +741,6 @@ fn fixture_evidence_jsonl() -> String {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 1,
             client_order_id: "client-order-one",
             market_id: "market-btc",
             instrument_id: "BTC-UP.POLYMARKET",
@@ -772,7 +754,6 @@ fn fixture_evidence_jsonl() -> String {
     push_trade_lines(
         &mut lines,
         TradeFixture {
-            recorded_at_utc_ns: 4,
             client_order_id: "client-order-two",
             market_id: "market-btc-next",
             instrument_id: "BTC-DOWN.POLYMARKET",
@@ -813,7 +794,6 @@ fn fixture_settlements_jsonl() -> String {
 }
 
 struct TradeFixture {
-    recorded_at_utc_ns: i64,
     client_order_id: &'static str,
     market_id: &'static str,
     instrument_id: &'static str,
@@ -834,53 +814,156 @@ fn push_trade_lines_with_snapshot_market_id(
     trade: TradeFixture,
     market_id: Option<&str>,
 ) {
-    let mut snapshot_record = serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-            "recorded_at_utc_ns": trade.recorded_at_utc_ns,
-            "gate_id": BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
-            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-            "kind": "strategy_input_snapshot",
-            "snapshot": {
-                "selected_side": trade.selected_side,
-                "expected_edge_basis_points": trade.expected_edge_basis_points,
-                "fee_rate_basis_points": trade.fee_rate_basis_points,
-                "client_order_id": trade.client_order_id
-            }
-    });
-    if let Some(market_id) = market_id {
-        snapshot_record["snapshot"]["market_id"] = serde_json::json!(market_id);
+    let snapshot = strategy_input_snapshot(&trade, market_id);
+    lines.push(record_line(
+        encode_submit_linked_strategy_input_snapshot(&snapshot)
+            .expect("snapshot fixture should encode"),
+    ));
+    lines.push(record_line(
+        encode_entry_order_intent(&entry_order_intent(&trade))
+            .expect("entry-intent fixture should encode"),
+    ));
+    lines.push(record_line(
+        encode_admitted_entry_admission(&admitted_entry(&trade))
+            .expect("admission fixture should encode"),
+    ));
+}
+
+fn record_line(record: bolt_v2::bolt_v3_decision_evidence::sink::EncodedEvidenceRecord) -> String {
+    std::str::from_utf8(record.bytes())
+        .expect("current evidence bytes should be utf-8")
+        .trim_end_matches('\n')
+        .to_string()
+}
+
+fn strategy_input_snapshot(
+    trade: &TradeFixture,
+    market_id: Option<&str>,
+) -> BoltV3StrategyInputEvidenceSnapshot {
+    BoltV3StrategyInputEvidenceSnapshot {
+        strategy_id: "strategy".into(),
+        configured_target_id: "target".into(),
+        market_selection_ruleset_id: "rules".into(),
+        market_selection_outcome: "current".into(),
+        market_id: market_id.map(str::to_string),
+        polymarket_condition_id: None,
+        polymarket_market_slug: None,
+        polymarket_question_id: None,
+        up_instrument_id: None,
+        down_instrument_id: None,
+        market_selection_timestamp_ms: None,
+        selected_market_observed_timestamp_ms: None,
+        polymarket_market_start_timestamp_ms: None,
+        polymarket_market_end_timestamp_ms: None,
+        price_to_beat_source: "oracle".into(),
+        price_to_beat_value: "0".into(),
+        reference_quote_ts_event: 1,
+        spot_price: "0".into(),
+        fast_venue_available: false,
+        reference_current_price: None,
+        reference_current_price_available: false,
+        reference_current_price_source_id: None,
+        reference_current_price_failed_over: None,
+        realized_volatility: "0".into(),
+        realized_volatility_surface_id: "surface".into(),
+        realized_volatility_as_of_ms: None,
+        realized_volatility_gate_result: None,
+        realized_volatility_receive_watermark_ms: None,
+        realized_volatility_annualized_decimal: "0".into(),
+        realized_volatility_measured_annualized_decimal: "0".into(),
+        realized_volatility_noise_robust_annualized_decimal: "0".into(),
+        realized_volatility_continuous_annualized_decimal: "0".into(),
+        realized_volatility_jump_annualized_decimal: "0".into(),
+        realized_volatility_forecast_annualized_decimal: "0".into(),
+        realized_volatility_pricing_component: "continuous".into(),
+        realized_volatility_seconds_per_annum: "31536000".into(),
+        realized_volatility_aggregation: "median".into(),
+        realized_volatility_sources_used: Vec::new(),
+        realized_volatility_source_diagnostics: Vec::new(),
+        realized_volatility_unknown_source_rejections: Default::default(),
+        realized_volatility_blockers: Vec::new(),
+        realized_volatility_config_fingerprint: "config".into(),
+        seconds_to_market_end: 60,
+        pricing_kurtosis: "3".into(),
+        theta_decay_factor: "1".into(),
+        theta_scaled_min_edge_bps: "0".into(),
+        fair_probability_up: "0.5".into(),
+        uncertainty_band_probability: "0".into(),
+        expected_edge_basis_points: trade.expected_edge_basis_points.into(),
+        worst_case_edge_basis_points: trade.expected_edge_basis_points.into(),
+        up_worst_case_edge_basis_points: None,
+        down_worst_case_edge_basis_points: None,
+        gate_blocked_by: Vec::new(),
+        pricing_blocked_by: Vec::new(),
+        fast_venue_name: None,
+        fast_venue_age_ms: None,
+        fast_venue_jitter_ms: None,
+        fast_venue_incoherent: false,
+        lead_agreement_corr: None,
+        fee_rate_basis_points: trade.fee_rate_basis_points.into(),
+        selected_side: Some(trade.selected_side.into()),
+        submission_instrument_id: trade.instrument_id.into(),
+        submission_order_side: "BUY".into(),
+        submission_price: trade.price.into(),
+        submission_quantity: trade.quantity.into(),
+        client_order_id: trade.client_order_id.into(),
     }
-    lines.push(serde_json::to_string(&snapshot_record).expect("snapshot fixture should serialize"));
-    lines.push(
-        serde_json::to_string(&serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-            "recorded_at_utc_ns": trade.recorded_at_utc_ns + 1,
-            "gate_id": BOLT_V3_ORDER_INTENT_GATE_ID,
-            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-            "kind": "order_intent",
-            "intent": {
-                "intent_kind": "entry",
-                "instrument_id": trade.instrument_id,
-                "client_order_id": trade.client_order_id,
-                "price": trade.price,
-                "quantity": trade.quantity
-            }
-        }))
-        .expect("intent fixture should serialize"),
-    );
-    lines.push(
-        serde_json::to_string(&serde_json::json!({
-            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-            "recorded_at_utc_ns": trade.recorded_at_utc_ns + 2,
-            "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
-            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-            "kind": "admission_decision",
-            "decision": {
-                "client_order_id": trade.client_order_id,
-                "intent_kind": "entry",
-                "outcome": "admitted"
-            }
-        }))
-        .expect("admission fixture should serialize"),
-    );
+}
+
+fn entry_order_intent(trade: &TradeFixture) -> BoltV3OrderIntentEvidence {
+    BoltV3OrderIntentEvidence {
+        strategy_id: "strategy".into(),
+        intent_kind: BoltV3OrderIntentKind::Entry,
+        instrument_id: trade.instrument_id.into(),
+        client_order_id: trade.client_order_id.into(),
+        order_side: "BUY".into(),
+        price: trade.price.into(),
+        quantity: trade.quantity.into(),
+        clamp_outcome: Some(BoltV3OrderIntentClampOutcome::WithinBounds),
+        order_fields: BoltV3OrderIntentOrderFields {
+            order_type: "LIMIT".into(),
+            time_in_force: "GTC".into(),
+            price: Some(trade.price.into()),
+            trigger_price: None,
+            activation_price: None,
+            trigger_type: None,
+            trigger_instrument_id: None,
+            trailing_offset: None,
+            trailing_offset_type: None,
+            expire_time_unix_nanos: None,
+            is_post_only: false,
+            is_reduce_only: false,
+            is_quote_quantity: false,
+        },
+    }
+}
+
+fn admitted_entry(trade: &TradeFixture) -> BoltV3AdmissionDecisionEvidence {
+    BoltV3AdmissionDecisionEvidence {
+        strategy_id: "strategy".into(),
+        execution_client_id: "execution".into(),
+        client_order_id: trade.client_order_id.into(),
+        instrument_id: trade.instrument_id.into(),
+        notional: "10".into(),
+        intent_kind: BoltV3SubmitIntentKind::Entry,
+        outcome: BoltV3AdmissionOutcome::Admitted,
+        loss_halt_reasons: Vec::new(),
+        snapshot_present: false,
+        snapshot_observed_at_ns: None,
+        admission_now_ns: 1,
+        snapshot_age_ns: None,
+        max_snapshot_age_ns: None,
+        snapshot_source: None,
+        per_trade_pnl_present: false,
+        daily_pnl_present: false,
+        rolling_pnl_present: false,
+        current_equity_present: false,
+        peak_equity_present: false,
+        last_account_state_observed_at_ns: None,
+        last_portfolio_snapshot_observed_at_ns: None,
+        last_position_event_observed_at_ns: None,
+        stale_reason: None,
+        loss_snapshot_observed_at_ns: None,
+        loss_eval_now_ns: None,
+    }
 }

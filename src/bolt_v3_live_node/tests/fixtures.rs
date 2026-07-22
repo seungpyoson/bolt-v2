@@ -1,6 +1,9 @@
 #![cfg(test)]
 
 use super::*;
+use crate::bolt_v3_decision_evidence::{
+    BoltV3DecisionEvidenceWriterExt, BoltV3SubmitReservationMetadataEvidence,
+};
 
 pub(super) fn loaded_config_with_submit_sizer_recovery(
     temp_path: &std::path::Path,

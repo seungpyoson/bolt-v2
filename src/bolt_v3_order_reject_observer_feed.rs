@@ -9,8 +9,8 @@ use nautilus_model::{events::OrderEventAny, identifiers::AccountId};
 use crate::{
     bolt_v3_decision_evidence::{
         BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES, BoltV3DecisionEvidenceWriter,
-        BoltV3OrderRejectEvidence, BoltV3OrderRejectReason, BoltV3RejectSource, EpisodeFirstNs,
-        evict_oldest_episodes_over_cap,
+        BoltV3DecisionEvidenceWriterExt, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
+        BoltV3RejectSource, EpisodeFirstNs, evict_oldest_episodes_over_cap,
     },
     bolt_v3_operator_health::BoltV3OperatorHealthTransitionEmitter,
     nt_runtime_capture::order_events_pattern,

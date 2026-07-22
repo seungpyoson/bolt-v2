@@ -841,7 +841,7 @@ fn settlement_recovery_config_uses_decision_evidence_store_when_settlement_sink_
                 .root
                 .persistence
                 .decision_evidence
-                .order_intents_relative_path
+                .machine_relative_path
                 .trim()
         )
     );

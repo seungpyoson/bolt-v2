@@ -1,0 +1,1 @@
+{"schema_version":16,"recorded_at_utc_ns":14,"gate_id":"bolt_v3.venue_truth_capture_failure","gate_version":"0.1.0","kind":"venue_truth_capture_failure","venue_truth_capture_failure":{"source":"polymarket_venue_truth_rest","observed_at_ns":1700000000000000000,"endpoint":"clob_balance_allowance","error_class":"transport_or_decode","captures_missed":2}}

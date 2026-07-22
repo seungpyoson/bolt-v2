@@ -45,10 +45,58 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
         errors
             .push("persistence.streaming.flush_interval_ms must be a positive integer".to_string());
     }
-    if let Err(message) = validate_decision_evidence_relative_path(
-        &block.decision_evidence.order_intents_relative_path,
-    ) {
-        errors.push(message);
+    for (field, path) in [
+        (
+            "machine_relative_path",
+            block.decision_evidence.machine_relative_path.as_str(),
+        ),
+        (
+            "observation_relative_path",
+            block.decision_evidence.observation_relative_path.as_str(),
+        ),
+    ] {
+        if let Err(message) = validate_decision_evidence_relative_path(field, path) {
+            errors.push(message);
+        }
+    }
+    if block.decision_evidence.retired_relative_paths.is_empty() {
+        errors.push(
+            "persistence.decision_evidence.retired_relative_paths must name at least one retired stream"
+                .to_string(),
+        );
+    }
+    for path in &block.decision_evidence.retired_relative_paths {
+        if let Err(message) =
+            validate_decision_evidence_relative_path("retired_relative_paths", path)
+        {
+            errors.push(message);
+        }
+    }
+    let machine_path = Path::new(block.decision_evidence.machine_relative_path.trim());
+    let observation_path = Path::new(block.decision_evidence.observation_relative_path.trim());
+    if machine_path == observation_path {
+        errors.push(
+            "persistence.decision_evidence machine_relative_path and observation_relative_path must resolve to different files"
+                .to_string(),
+        );
+    }
+    let retired_paths = block
+        .decision_evidence
+        .retired_relative_paths
+        .iter()
+        .map(|path| Path::new(path.trim()))
+        .collect::<BTreeSet<_>>();
+    if retired_paths.len() != block.decision_evidence.retired_relative_paths.len() {
+        errors.push(
+            "persistence.decision_evidence.retired_relative_paths must not contain duplicates"
+                .to_string(),
+        );
+    }
+    if retired_paths.contains(machine_path) || retired_paths.contains(observation_path) {
+        errors.push(
+            "persistence.decision_evidence retired paths must differ from active stream paths"
+                .to_string(),
+        );
     }
     if block
         .decision_evidence

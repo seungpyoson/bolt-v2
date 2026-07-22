@@ -17,7 +17,7 @@ startup_recovery_reads = false
 id = "submit_reservation_recovery_v1"
 mode = "startup_recovery"
 owner = "bolt_v3_decision_evidence"
-source_anchor = "src/bolt_v3_live_node.rs:1708"
+source_anchor = "src/bolt_v3_live_node.rs:rebuild_capital_admission_from_nt_cache"
 
 [[consumers]]
 id = "settlement_recovery_v1"
@@ -30,12 +30,6 @@ id = "booking_recovery_v1"
 mode = "startup_recovery"
 owner = "bolt_v3_decision_evidence"
 source_anchor = "src/bolt_v3_settlement_booking.rs:recover_settlement_bootstrap"
-
-[[consumers]]
-id = "entry_chain_projection_v1"
-mode = "query_api"
-owner = "bolt_v3_decision_evidence"
-source_anchor = "src/bolt_v3_decision_evidence.rs:read_latest_entry_decision_evidence_chain"
 
 [[consumers]]
 id = "shadow_pnl_v1"
@@ -354,13 +348,13 @@ handler = "forced reduction admission"
 [[producers]]
 id = "basket_admission_granted"
 purpose = "basket_admission_granted"
-source_anchors = ["src/bolt_v3_basket_admission.rs:record_basket_decision", "src/bolt_v3_submit_admission.rs:evaluate_basket_and_record"]
+source_anchors = ["src/bolt_v3_basket_admission.rs:record_basket_decision", "src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
 handler = "basket admission"
 
 [[producers]]
 id = "basket_admission_rejected"
 purpose = "basket_admission_rejected"
-source_anchors = ["src/bolt_v3_basket_admission.rs:record_basket_decision", "src/bolt_v3_submit_admission.rs:evaluate_basket_and_record"]
+source_anchors = ["src/bolt_v3_basket_admission.rs:record_basket_decision", "src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
 handler = "basket admission"
 
 [[producers]]
@@ -372,7 +366,7 @@ handler = "capital admission reconciliation"
 [[producers]]
 id = "submit_reservation_metadata"
 purpose = "submit_reservation_metadata"
-source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at", "src/bolt_v3_submit_admission.rs:admit_basket"]
+source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at", "src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
 handler = "submit reservation admission"
 
 [[producers]]
@@ -432,7 +426,7 @@ handler = "order lifecycle callbacks"
 [[producers]]
 id = "maker_requote_throttle"
 purpose = "requote_throttle_observation"
-source_anchors = ["src/strategies/binary_oracle_maker/mod.rs:record_requote_throttle_once"]
+source_anchors = ["src/strategies/binary_oracle_maker/mod.rs:update_requote_throttle_edge"]
 handler = "maker quote routing"
 
 [[producers]]
@@ -702,127 +696,127 @@ payload_member = "venue_truth_divergence"
 [[facts]]
 id = "blocked_strategy_input_observation_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 [[facts]]
 id = "submit_linked_strategy_input_snapshot_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "relevant:Snapshot", shadow_pnl_v1 = "relevant:Snapshot" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "relevant" }
 
 [[facts]]
 id = "entry_order_intent_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "relevant:EntryIntent", shadow_pnl_v1 = "relevant:EntryIntent" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "relevant" }
 
 [[facts]]
 id = "risk_reducing_exit_order_intent_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 [[facts]]
 id = "admitted_entry_admission_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "relevant:AdmittedEntry", shadow_pnl_v1 = "relevant:AdmittedEntry" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "relevant" }
 
 [[facts]]
 id = "rejected_entry_admission_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "relevant:RejectedEntry", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "risk_reducing_exit_admission_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "forced_reduction_admission_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "basket_admission_granted_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "basket_admission_rejected_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "capital_admission_rebuild_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "submit_reservation_metadata_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "relevant:Metadata", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "relevant", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "submit_reservation_fill_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "relevant:Fill", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "relevant", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "entry_skip_observation_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "exit_submission_decision_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "exit_hold_decision_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "exit_evaluation_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "loss_governor_halt_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "order_reject_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "order_lifecycle_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "requote_throttle_observation_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "settlement_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "relevant:Settlement", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "relevant", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "settlement_booking_error_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "relevant:BookingError", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "relevant", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "terminal_settlement_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "relevant:TerminalSettlement", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "relevant", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "venue_truth_capture_failure_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
 
 [[facts]]
 id = "venue_truth_divergence_v1"
 owner = "bolt_v3_decision_evidence"
-dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", entry_chain_projection_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }
+dispositions = { submit_reservation_recovery_v1 = "irrelevant:#1354", settlement_recovery_v1 = "irrelevant:#1354", booking_recovery_v1 = "irrelevant:#1354", shadow_pnl_v1 = "irrelevant:#1354" }

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::bolt_v3_decision_evidence::{
     BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
-    BoltV3DecisionEvidenceWriter,
+    BoltV3DecisionEvidenceWriter, BoltV3DecisionEvidenceWriterExt,
 };
 use crate::bolt_v3_outcome_group_scanner::OutcomeGroupScanEvidence;
 use crate::bolt_v3_outcome_group_sources::outcome_group_observation_is_fresh;
@@ -384,12 +384,18 @@ impl BoltV3BasketAdmissionState {
         request: &BoltV3BasketAdmissionRequest<'_>,
         outcome: BoltV3BasketAdmissionOutcome,
     ) -> Result<(), BoltV3BasketAdmissionError> {
+        let admitted = outcome == BoltV3BasketAdmissionOutcome::Admitted;
         let evidence = basket_decision_evidence(request, outcome)?;
-        self.decision_evidence
-            .record_basket_admission_decision(&evidence)
-            .map_err(|err| BoltV3BasketAdmissionError::EvidenceWriteFailed {
-                reason: format!("{err:#}"),
-            })
+        let result = if admitted {
+            self.decision_evidence
+                .record_basket_admission_granted(&evidence)
+        } else {
+            self.decision_evidence
+                .record_basket_admission_rejected(&evidence)
+        };
+        result.map_err(|err| BoltV3BasketAdmissionError::EvidenceWriteFailed {
+            reason: format!("{err:#}"),
+        })
     }
 }
 

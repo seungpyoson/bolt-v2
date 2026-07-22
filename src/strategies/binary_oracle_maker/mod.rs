@@ -29,7 +29,8 @@ use crate::bolt_v3_strategy_context::StrategyBuildContext;
 
 use crate::{
     bolt_v3_decision_evidence::{
-        BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
+        BoltV3DecisionEvidenceWriterExt, BoltV3RequoteActionCostClass,
+        BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
         BoltV3RequoteThrottleEvidence,
     },
     bolt_v3_loss_governor::LossAdmissionDecision,
@@ -1023,14 +1024,7 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
 mod tests {
     use super::*;
     use crate::{
-        bolt_v3_decision_evidence::{
-            BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-            BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-            BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-            BoltV3SubmitReservationMetadataEvidence,
-        },
+        bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
         bolt_v3_maker_mu_estimator::{MuHealthReason, UsableMu},
         bolt_v3_market_families::OutcomeSide,
         bolt_v3_numeric::NANOS_PER_MILLI_U64,
@@ -1156,95 +1150,27 @@ mod tests {
     struct NoopDecisionEvidenceWriter;
 
     impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
-        fn record_strategy_input_snapshot(
+        fn try_record_command(
             &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+            command: crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
         ) -> Result<()> {
+            use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand as Command;
+
+            if matches!(
+                command,
+                Command::EntrySkipObservation(_)
+                    | Command::ExitSubmissionDecision(_)
+                    | Command::ExitHoldDecision(_)
+                    | Command::RequoteThrottle(_)
+                    | Command::Settlement(_)
+                    | Command::SettlementBookingError(_)
+            ) {
+                anyhow::bail!("maker noop writer received unrelated decision evidence");
+            }
             Ok(())
-        }
-
-        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            _decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &BoltV3BasketAdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_capital_admission_rebuild_audit(
-            &self,
-            _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-            anyhow::bail!("maker noop writer received entry-skip evidence")
-        }
-
-        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-            anyhow::bail!("maker noop writer received exit-decision evidence")
-        }
-
-        fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_loss_governor_halt(
-            &self,
-            _evidence: &BoltV3LossGovernorHaltEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-            anyhow::bail!("maker noop writer received requote-throttle evidence")
-        }
-
-        fn record_settlement(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("maker noop writer received settlement evidence")
-        }
-
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("maker noop writer received settlement booking-error evidence")
         }
 
         fn drain_shutdown(&self) -> Result<()> {
-            // Deliberate no-op: this test fixture never owns durable evidence.
             Ok(())
         }
     }

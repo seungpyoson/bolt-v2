@@ -16,10 +16,10 @@ use crate::bolt_v3_decision_evidence::{
     BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
     BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
     BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-    BoltV3LossGovernorHaltEvidence, BoltV3LossHaltReason, BoltV3LossSnapshotStaleReason,
-    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
-    BoltV3OrderRejectReason, BoltV3RecoveredSubmitReservationEvidence, BoltV3RejectSource,
-    BoltV3StaleLossReason, BoltV3SubmitReservationFillEvidence,
+    BoltV3DecisionEvidenceWriterExt, BoltV3LossGovernorHaltEvidence, BoltV3LossHaltReason,
+    BoltV3LossSnapshotStaleReason, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+    BoltV3OrderRejectEvidence, BoltV3OrderRejectReason, BoltV3RecoveredSubmitReservationEvidence,
+    BoltV3RejectSource, BoltV3StaleLossReason, BoltV3SubmitReservationFillEvidence,
     BoltV3SubmitReservationMetadataEvidence, EpisodeFirstNs, compiled_order_price_source,
     evict_oldest_episodes_over_cap, loss_snapshot_source_to_evidence,
 };
@@ -1819,7 +1819,26 @@ impl BoltV3SubmitAdmissionState {
                 .as_ref()
                 .map(|diagnostics| diagnostics.admission_now_ns),
         };
-        let result = self.decision_evidence.record_admission_decision(&evidence);
+        let result = match evidence.intent_kind {
+            BoltV3SubmitIntentKind::Entry => {
+                if evidence.outcome == BoltV3AdmissionOutcome::Admitted {
+                    self.decision_evidence
+                        .record_admitted_entry_admission(&evidence)
+                } else {
+                    self.decision_evidence
+                        .record_rejected_entry_admission(&evidence)
+                }
+            }
+            BoltV3SubmitIntentKind::RiskReducingExit => self
+                .decision_evidence
+                .record_risk_reducing_exit_admission(&evidence),
+            BoltV3SubmitIntentKind::KillSwitchForcedReduction => self
+                .decision_evidence
+                .record_forced_reduction_admission(&evidence),
+            BoltV3SubmitIntentKind::ReplaceSubmit => Err(anyhow::anyhow!(
+                "replace admission has no registered evidence purpose"
+            )),
+        };
         if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
             self.reject_episodes
                 .lock()
@@ -2143,7 +2162,7 @@ impl BoltV3SubmitAdmissionState {
         if outcome != BoltV3AdmissionOutcome::Admitted {
             if let Err(err) = self
                 .decision_evidence
-                .record_basket_admission_decision(&evidence)
+                .record_basket_admission_rejected(&evidence)
             {
                 rollback_capital_admission_reservations(&mut inner, &rollbacks);
                 return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
@@ -2170,7 +2189,7 @@ impl BoltV3SubmitAdmissionState {
             );
             if let Err(err) = self
                 .decision_evidence
-                .record_basket_admission_decision(&evidence)
+                .record_basket_admission_rejected(&evidence)
             {
                 rollback_capital_admission_reservations(&mut inner, &rollbacks);
                 return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
@@ -2191,7 +2210,7 @@ impl BoltV3SubmitAdmissionState {
             );
             if let Err(err) = self
                 .decision_evidence
-                .record_basket_admission_decision(&evidence)
+                .record_basket_admission_rejected(&evidence)
             {
                 rollback_capital_admission_reservations(&mut inner, &rollbacks);
                 return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
@@ -2210,7 +2229,7 @@ impl BoltV3SubmitAdmissionState {
             );
             if let Err(err) = self
                 .decision_evidence
-                .record_basket_admission_decision(&evidence)
+                .record_basket_admission_rejected(&evidence)
             {
                 rollback_capital_admission_reservations(&mut inner, &rollbacks);
                 return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
@@ -2242,7 +2261,7 @@ impl BoltV3SubmitAdmissionState {
 
         if let Err(err) = self
             .decision_evidence
-            .record_basket_admission_decision(&evidence)
+            .record_basket_admission_granted(&evidence)
         {
             rollback_capital_admission_reservations(&mut inner, &rollbacks);
             return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
@@ -4228,10 +4247,6 @@ mod notional_guard_tests {
 #[cfg(test)]
 mod loss_governor_halt_evidence_tests {
     use super::*;
-    use crate::bolt_v3_decision_evidence::{
-        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-        BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
-    };
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[derive(Debug, Default)]
@@ -4249,106 +4264,20 @@ mod loss_governor_halt_evidence_tests {
     }
 
     impl BoltV3DecisionEvidenceWriter for FailingLossGovernorHaltEvidenceWriter {
-        fn record_strategy_input_snapshot(
+        fn try_record_command(
             &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+            command: crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
         ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            _decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &BoltV3BasketAdmissionDecisionEvidence,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_capital_admission_rebuild_audit(
-            &self,
-            _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_exit_decision(
-            &self,
-            _decision: &BoltV3ExitDecisionEvidence,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_exit_evaluation(
-            &self,
-            _evidence: &BoltV3ExitEvaluationEvidence,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_loss_governor_halt(
-            &self,
-            evidence: &BoltV3LossGovernorHaltEvidence,
-        ) -> anyhow::Result<()> {
-            self.halts
-                .lock()
-                .expect("loss-governor halt writer mutex poisoned")
-                .push(evidence.clone());
-            anyhow::bail!(
-                "injected loss-governor halt evidence write failure for {}",
-                evidence.stable_halt_key
-            )
-        }
-
-        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_requote_throttle(
-            &self,
-            _throttle: &BoltV3RequoteThrottleEvidence,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-        ) -> anyhow::Result<()> {
+            if let crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand::LossGovernorHalt(evidence) = command {
+                self.halts
+                    .lock()
+                    .expect("loss-governor halt writer mutex poisoned")
+                    .push(evidence.clone());
+                anyhow::bail!(
+                    "injected loss-governor halt evidence write failure for {}",
+                    evidence.stable_halt_key
+                );
+            }
             Ok(())
         }
 

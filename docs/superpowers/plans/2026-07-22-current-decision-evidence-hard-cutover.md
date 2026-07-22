@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the released global-v15 decision-evidence lane with one current-only purpose contract, separate machine and observation streams, and a fail-closed archival cutover that contains no historical runtime decoder or migration path.
+**Goal:** Replace the released global-v15 decision-evidence lane with one current-only purpose contract, separate machine and observation streams, and a fail-closed archival cutover that contains no historical runtime decoder or migration path. Observation novelty remains a separately reviewed #1354 slice on this substrate.
 
 **Architecture:** Every structural producer maps to one purpose, current identity, private DTO, sink, and effect policy. Startup validates the complete current machine stream before activation; exact current identities decode into typed facts and exhaustive consumer dispositions. Pre-cutover files are archived outside the active data root and are never runtime inputs.
 
@@ -34,26 +34,26 @@
 - Modify: `tests/wiring_registration.rs`
 
 **Interfaces:**
-- Produces: sealed `KnownProducer`, `KnownPurpose`, `KnownIdentity`, `KnownSink`, `KnownDecodedFact`, `KnownConsumer`, `EffectPolicy`, and total `ConsumerDisposition` functions.
+- Produces: sealed `KnownPurpose`, `KnownIdentity`, `KnownSink`, `KnownDecodedFact`, `KnownConsumer`, `EffectPolicy`, and total `ConsumerDisposition` functions.
 - Produces: `resolve_identity(kind: &str, schema_version: u32) -> Result<KnownIdentity>` matching current identities only.
 
-- [ ] **Step 1: Port only current registry rows**
+- [x] **Step 1: Port only current registry rows**
 
 Use the donor registry as evidence, then remove every `status = "historical"` identity, provenance field, compatibility baseline, and dormant replace-admission purpose. Every retained purpose must have one current identity, one fact, one sink, one effect policy, and explicit consumer dispositions.
 
-- [ ] **Step 2: Port deterministic generation**
+- [x] **Step 2: Port deterministic generation**
 
 Generate sealed marker types and exhaustive matches without `_`, complement-derived irrelevance, optional routes, string-based Rust function paths, or ordered-version comparisons. Registry parsing uses `deny_unknown_fields`; adding a producer, purpose, fact, identity, or consumer leaves the relation incomplete and rejects generation.
 
-- [ ] **Step 3: Add current-only rejection tests**
+- [x] **Step 3: Add current-only rejection tests**
 
 Tests must reject duplicate allocations, missing current encoders, missing disposition cells, novelty capability on recovery facts, any historical status, and any exact identity not present in the current registry.
 
-- [ ] **Step 4: Prove deterministic output**
+- [x] **Step 4: Prove deterministic output**
 
 Run the generator twice and compare `src/bolt_v3_decision_evidence/generated_contract.rs` byte-for-byte. Run the focused registry suite and `cargo fmt --check`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit message: `feat(#1354): register current evidence purposes`
 
@@ -64,7 +64,8 @@ Commit message: `feat(#1354): register current evidence purposes`
 - Create: `src/bolt_v3_decision_evidence/current.rs`
 - Create: `src/bolt_v3_decision_evidence/current/*.rs`
 - Create: `src/bolt_v3_decision_evidence/sink.rs`
-- Create: `src/bolt_v3_decision_evidence/stream.rs`
+- Create: `src/bolt_v3_decision_evidence/decode.rs`
+- Create: `src/bolt_v3_decision_evidence/startup.rs`
 - Modify: `src/bolt_v3_config.rs`
 - Modify: `src/bolt_v3_validate/persistence.rs`
 - Modify: `config/root.toml`
@@ -76,23 +77,23 @@ Commit message: `feat(#1354): register current evidence purposes`
 - Produces: `EncodedEvidenceRecord`, `DecisionEvidenceSink`, `AppendReceipt`, and `RecordError::{Rejected, AppendFailed}`.
 - Produces: `decode_current_line(&[u8]) -> Result<DecodedFact>` and `validate_current_machine_stream(path, max_bytes) -> Result<()>`.
 
-- [ ] **Step 1: Add validated stream configuration**
+- [x] **Step 1: Add validated stream configuration**
 
 Replace `order_intents_relative_path` with required, distinct `machine_relative_path` and `observation_relative_path`, plus configured retired paths. Reject empty, absolute, parent-traversing, equal, symlinked, or out-of-root paths.
 
-- [ ] **Step 2: Port neutral facts and current DTOs**
+- [x] **Step 2: Port neutral facts and current DTOs**
 
 Move semantic fact types into `facts.rs`. Port only current codecs. Each top-level DTO spells out the envelope fields, uses `deny_unknown_fields`, binds one current identity, and validates its full enum/value domain before producing a fact.
 
-- [ ] **Step 3: Port the durable split sink**
+- [x] **Step 3: Port the durable split sink**
 
 Only current encoders construct `EncodedEvidenceRecord`; only the JSONL sink constructs `AppendReceipt` after `sync_data`. Machine and observation records resolve their sink from the generated purpose contract.
 
-- [ ] **Step 4: Implement unconditional machine-stream validation**
+- [x] **Step 4: Implement unconditional machine-stream validation**
 
 Before recovery or writer construction, reject configured retired-path presence, non-regular/symlink paths, over-cap streams, torn lines, old identities, unknown identities, malformed current payloads, and mixed content. An absent or empty fresh machine stream is valid; the observation stream is never recovery-read.
 
-- [ ] **Step 5: Add behavior fixtures**
+- [x] **Step 5: Add behavior fixtures**
 
 Add byte-exact positive fixtures and negative missing-field, wrong-type, unknown-field, wrong-gate, unknown-enum, old-identity, torn-line, exact-cap, one-byte-over, and retired-path tests for every machine fact and representative observations.
 
@@ -104,7 +105,6 @@ Run config, registry, sink, codec, and stream-validation suites. Commit message:
 
 **Files:**
 - Modify: `src/bolt_v3_decision_evidence.rs`
-- Create: `src/bolt_v3_decision_evidence/consumers.rs`
 - Modify: `src/bolt_v3_submit_admission.rs`
 - Modify: `src/bolt_v3_basket_execution.rs`
 - Modify: `src/bolt_v3_live_node.rs`
@@ -118,63 +118,61 @@ Run config, registry, sink, codec, and stream-validation suites. Commit message:
 - Consumes: generated producer/purpose markers, current encoders, split sink, and facts.
 - Produces: one production writer path and one generated consumer runner; removes the released v15 writer/reader lane.
 
-- [ ] **Step 1: Replace the wide writer trait**
+- [x] **Step 1: Replace the wide writer trait**
 
-Expose purpose-specific record commands requiring generated producer tokens and typed inputs. Remove default no-op methods, generic configured-error methods, schema-v15 line encoders, and any path that can stamp an identity outside the generator.
+Expose purpose-specific record methods with typed inputs over one required closed-command append operation. Remove default no-op methods, schema-v15 line encoders, and any path that can stamp an identity outside the generator.
 
-- [ ] **Step 2: Route every producer explicitly**
+- [x] **Step 2: Route every producer explicitly**
 
 Blocked observations and submit-linked snapshots use different identities and files. Entry/exit intents, admissions, reservations, settlements, lifecycle, safety, and observation producers each use their registered current identity and effect policy.
 
-- [ ] **Step 3: Preserve effect-policy behavior**
+- [x] **Step 3: Preserve effect-policy behavior**
 
 New-risk actions require durable append first; risk-reducing actions continue while surfacing append failure; reconciliation failures enter unreconciled state; observations use bounded failure reporting. No typed outcome is collapsed to `Result<()>` where callers distinguish it.
 
-- [ ] **Step 4: Replace all readers**
+- [x] **Step 4: Replace all readers**
 
 One consumer runner validates the complete machine stream, decodes exact identities, resolves explicit fact×consumer dispositions, and feeds typed event enums. Delete target-kind generic readers, version-order predicates, query readers with no production caller, and Shadow PnL's private evidence parser.
 
-- [ ] **Step 5: Add composition and restart tests**
+- [x] **Step 5: Add composition and restart tests**
 
-Test reservation/fill restart, settlement/booking/terminal permutations, flat restart still scanning foreign content, multiple blocked observations in Shadow PnL, malformed relevant failure, registered irrelevant observation isolation, and observation floods leaving machine bytes unchanged.
+Test reservation/fill restart, settlement/booking/terminal permutations, flat restart still scanning foreign content, malformed relevant failure, observation identity rejection from the machine stream, and observation writes leaving machine bytes unchanged. Pre-cutover blocked records are intentionally outside the current-only Shadow PnL contract.
 
 - [ ] **Step 6: Verify and commit**
 
 Run focused strategy, admission, settlement, restart, Shadow PnL, and decision-evidence suites. Commit message: `feat(#1354): cut over current decision evidence`
 
-### Task 4: Observation Novelty And Hard-Cutover Operations
+### Task 4: Hard-Cutover Operations
 
 **Files:**
-- Create or modify: current observation novelty modules under `src/bolt_v3_decision_evidence/`
-- Modify: `src/strategies/binary_oracle_edge_taker/mod.rs`
 - Delete: `scripts/migrate_bolt_v3_decision_evidence_to_v15.py`
 - Delete: its dedicated tests and references.
-- Create: `docs/operations/decision-evidence-hard-cutover.md`
-- Modify: tests for novelty and operations behavior.
+- Create: `docs/bolt-v3/decision-evidence-hard-cutover.md`
+- Modify: tests for cutover behavior.
 
 **Interfaces:**
-- Produces: typed observation-only monotone novelty and the operator cutover contract.
+- Produces: the operator cutover contract.
 - Does not produce: a runtime archive/delete/migrate command or persisted readiness authority.
 
-- [ ] **Step 1: Port observation-only novelty**
-
-Use typed episode IDs and complete semantic keys with monotone no-eviction sets. Identical state emits once; A→B→A emits twice; more than 4,096 episodes do not forget; recovery facts cannot construct novelty capability.
-
-- [ ] **Step 2: Delete migration and compatibility tooling**
+- [x] **Step 1: Delete migration and compatibility tooling**
 
 Remove the Python migrator and every invocation. Do not replace it with another migration path.
 
-- [ ] **Step 3: Write the archival runbook**
+- [x] **Step 2: Write the archival runbook**
 
 Specify stop/mask, immutable binary/config staging, authoritative consecutive venue/account reads, zero orders/positions/redemptions/reservations/settlements, kill-switch disposition, same-filesystem archive rename, checksum/fsync/read-only retention, fresh configured paths, and pause/forward-fix after the first current machine line.
 
-- [ ] **Step 4: State the activation blocker precisely**
+- [x] **Step 3: State the activation blocker precisely**
 
 The runbook must state that current provider evidence does not independently prove the fill/settlement cutoff. Live cutover is prohibited until an operator can supply that proof; ordinary startup never infers or persists it.
 
-- [ ] **Step 5: Verify and commit**
+- [ ] **Step 4: Verify and commit**
 
-Run novelty behavior tests, migration-reference checks, `cargo fmt --check`, and `git diff --check`. Commit message: `fix(#1354): bound current observation evidence`
+Run migration-reference checks, `cargo fmt --check`, and `git diff --check`. Commit message: `docs(#1354): define decision-evidence hard cutover`
+
+### Remaining #1354 Scope
+
+Observation novelty is intentionally not part of this cutover prerequisite. A separate stacked #1354 PR will add typed episode identities, monotone no-eviction state sets, absence/presence semantics, and the public write-disposition enum required before `Suppressed` or `FailedRetained` can exist. This prerequisite has exactly one successful write state—an append receipt created only after `sync_data`—so its purpose-specific caller surface distinguishes success from failure without inventing premature suppression states. Machine/recovery purposes remain structurally ineligible for novelty. #1385 remains responsible for bounded crash-safe retention and machine-stream capacity.
 
 ### Task 5: Exact-Head Evidence And PR Supersession
 
@@ -187,7 +185,7 @@ Run novelty behavior tests, migration-reference checks, `cargo fmt --check`, and
 
 - [ ] **Step 1: Run local evidence**
 
-Run formatting, deterministic generation, focused contract/codec/recovery/novelty suites, and economically reasonable checks. Record commands and exact results.
+Run formatting, deterministic generation, focused contract/codec/recovery/cutover suites, and economically reasonable checks. Record commands and exact results.
 
 - [ ] **Step 2: Conduct internal adversarial review**
 
@@ -203,4 +201,4 @@ Push the branch, open a new prerequisite PR, link and supersede #1470/#1475/#147
 
 - [ ] **Step 5: Prepare review evidence**
 
-Request exact-head review of producer completeness, current-only identity closure, sink separation, startup validation, typed effect policies, recovery behavior, novelty behavior, absence of compatibility paths, and the explicit live-activation blocker.
+Request exact-head review of producer completeness, current-only identity closure, sink separation, startup validation, typed effect policies, recovery behavior, absence of compatibility paths, the explicit live-activation blocker, and the named remaining observation-novelty scope.

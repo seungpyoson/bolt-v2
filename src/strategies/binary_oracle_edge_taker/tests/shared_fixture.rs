@@ -269,107 +269,9 @@ pub(super) struct RecordingDecisionEvidenceWriter;
 impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     for RecordingDecisionEvidenceWriter
 {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(
-        &self,
-        _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &crate::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(
-        &self,
-        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
+        _command: crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> Result<()> {
         Ok(())
     }
@@ -385,109 +287,11 @@ pub(super) struct FailingDecisionEvidenceWriter;
 impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     for FailingDecisionEvidenceWriter
 {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        _command: crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> Result<()> {
-        anyhow::bail!("strategy input snapshot write failed")
-    }
-
-    fn record_order_intent(
-        &self,
-        _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("intent write failed")
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("admission decision write failed")
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("basket admission decision write failed")
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &crate::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("capital admission rebuild audit write failed")
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("submit reservation metadata write failed")
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("submit reservation fill write failed")
-    }
-
-    fn record_entry_skip(
-        &self,
-        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("entry skip write failed")
-    }
-
-    fn record_exit_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("exit decision write failed")
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("exit evaluation write failed")
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("loss governor halt write failed")
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("order reject write failed")
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("requote throttle write failed")
-    }
-
-    fn record_settlement(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("settlement write failed")
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        anyhow::bail!("settlement booking-error write failed")
+        anyhow::bail!("decision evidence write failed")
     }
 
     fn drain_shutdown(&self) -> Result<()> {
@@ -516,112 +320,20 @@ impl ExitEvaluationFailingDecisionEvidenceWriter {
 impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     for ExitEvaluationFailingDecisionEvidenceWriter
 {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        command: crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(
-        &self,
-        _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &crate::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(
-        &self,
-        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> Result<()> {
-        *self
-            .exit_evaluation_attempts
-            .lock()
-            .expect("exit-evaluation failing writer mutex poisoned") += 1;
-        anyhow::bail!("exit evaluation write failed")
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
+        if matches!(
+            command,
+            crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand::ExitEvaluation(_)
+        ) {
+            *self
+                .exit_evaluation_attempts
+                .lock()
+                .expect("exit-evaluation failing writer mutex poisoned") += 1;
+            anyhow::bail!("exit evaluation write failed");
+        }
         Ok(())
     }
 
@@ -638,7 +350,6 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     EntrySkip(crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence),
     ExitDecision(crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence),
     ExitEvaluation(Box<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence>),
-    LossGovernorHalt(crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence),
     OrderLifecycle(crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleEvidence),
     RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
     /// Production settlement evidence (Lane 3, #1179) must map into this
@@ -700,217 +411,92 @@ impl RecordingSequencedDecisionEvidenceWriter {
             .expect("recording evidence writer mutex poisoned")
             .clone()
     }
-
-    pub(super) fn push_settlement(&self, settlement: RecordedSettlementEvidenceEvent) {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::Settlement(settlement));
-    }
 }
 
 impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     for RecordingSequencedDecisionEvidenceWriter
 {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        command: crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> Result<()> {
-        let attempt = {
-            let mut attempts = self
-                .strategy_input_attempts
-                .lock()
-                .expect("recording evidence writer strategy-input counter poisoned");
-            *attempts += 1;
-            *attempts
+        use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand as Command;
+
+        let event = match command {
+            Command::BlockedStrategyInputObservation(value)
+            | Command::SubmitLinkedStrategyInputSnapshot(value) => {
+                let attempt = {
+                    let mut attempts = self
+                        .strategy_input_attempts
+                        .lock()
+                        .expect("recording evidence writer strategy-input counter poisoned");
+                    *attempts += 1;
+                    *attempts
+                };
+                if self.fail_strategy_input_attempt == Some(attempt) {
+                    anyhow::bail!("strategy input snapshot write failed on attempt {attempt}");
+                }
+                Some(RecordedDecisionEvidenceEvent::StrategyInput(Box::new(
+                    value,
+                )))
+            }
+            Command::EntryOrderIntent(value) | Command::RiskReducingExitOrderIntent(value) => {
+                Some(RecordedDecisionEvidenceEvent::OrderIntent(Box::new(value)))
+            }
+            Command::AdmittedEntryAdmission(value)
+            | Command::RejectedEntryAdmission(value)
+            | Command::RiskReducingExitAdmission(value)
+            | Command::ForcedReductionAdmission(value) => {
+                Some(RecordedDecisionEvidenceEvent::AdmissionDecision(value))
+            }
+            Command::EntrySkipObservation(value) => {
+                Some(RecordedDecisionEvidenceEvent::EntrySkip(value))
+            }
+            Command::ExitSubmissionDecision(value) | Command::ExitHoldDecision(value) => {
+                Some(RecordedDecisionEvidenceEvent::ExitDecision(value))
+            }
+            Command::ExitEvaluation(value) => Some(RecordedDecisionEvidenceEvent::ExitEvaluation(
+                Box::new(value),
+            )),
+            Command::OrderLifecycle(value) => {
+                if self.fail_standalone_order_lifecycle {
+                    anyhow::bail!("standalone order lifecycle write failed");
+                }
+                Some(RecordedDecisionEvidenceEvent::OrderLifecycle(value))
+            }
+            Command::RequoteThrottle(value) => {
+                Some(RecordedDecisionEvidenceEvent::RequoteThrottle(value))
+            }
+            Command::Settlement(value) => {
+                let realized_pnl = value.realized_pnl.parse::<f64>().map_err(|error| {
+                    anyhow::anyhow!("settlement realized_pnl did not parse: {error}")
+                })?;
+                Some(RecordedDecisionEvidenceEvent::Settlement(
+                    RecordedSettlementEvidenceEvent {
+                        realized_pnl,
+                        product_id: value.product_id,
+                        market_id: value.market_id,
+                    },
+                ))
+            }
+            Command::SettlementBookingError(value) => {
+                Some(RecordedDecisionEvidenceEvent::SettlementBookingError(
+                    RecordedSettlementBookingErrorEvidenceEvent {
+                        reason: value.reason,
+                    },
+                ))
+            }
+            Command::TerminalSettlement(value) => {
+                Some(RecordedDecisionEvidenceEvent::TerminalSettlement(value))
+            }
+            _ => None,
         };
-        if self.fail_strategy_input_attempt == Some(attempt) {
-            anyhow::bail!("strategy input snapshot write failed on attempt {attempt}");
+        if let Some(event) = event {
+            self.events
+                .lock()
+                .expect("recording evidence writer mutex poisoned")
+                .push(event);
         }
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::StrategyInput(Box::new(
-                snapshot.clone(),
-            )));
-        Ok(())
-    }
-
-    fn record_order_intent(
-        &self,
-        intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::OrderIntent(Box::new(
-                intent.clone(),
-            )));
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::AdmissionDecision(
-                decision.clone(),
-            ));
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &crate::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(
-        &self,
-        skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::EntrySkip(skip.clone()));
-        Ok(())
-    }
-
-    fn record_exit_decision(
-        &self,
-        decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::ExitDecision(
-                decision.clone(),
-            ));
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::ExitEvaluation(Box::new(
-                evidence.clone(),
-            )));
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_lifecycle(
-        &self,
-        evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderLifecycleEvidence,
-    ) -> Result<()> {
-        if self.fail_standalone_order_lifecycle {
-            anyhow::bail!("standalone order lifecycle write failed");
-        }
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::OrderLifecycle(
-                evidence.clone(),
-            ));
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::RequoteThrottle(
-                throttle.clone(),
-            ));
-        Ok(())
-    }
-
-    fn record_settlement(
-        &self,
-        evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> Result<()> {
-        let realized_pnl = evidence
-            .realized_pnl
-            .parse::<f64>()
-            .map_err(|error| anyhow::anyhow!("settlement realized_pnl did not parse: {error}"))?;
-        self.push_settlement(RecordedSettlementEvidenceEvent {
-            realized_pnl,
-            product_id: evidence.product_id.clone(),
-            market_id: evidence.market_id.clone(),
-        });
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::SettlementBookingError(
-                RecordedSettlementBookingErrorEvidenceEvent {
-                    reason: evidence.reason,
-                },
-            ));
-        Ok(())
-    }
-
-    fn record_terminal_settlement(
-        &self,
-        evidence: &crate::bolt_v3_decision_evidence::BoltV3TerminalSettlementEvidence,
-    ) -> Result<()> {
-        self.events
-            .lock()
-            .expect("recording evidence writer mutex poisoned")
-            .push(RecordedDecisionEvidenceEvent::TerminalSettlement(
-                evidence.clone(),
-            ));
         Ok(())
     }
 

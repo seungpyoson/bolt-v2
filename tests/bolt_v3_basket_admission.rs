@@ -25,12 +25,7 @@ use bolt_v2::{
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
-        BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-        BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-        BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence,
-        BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+        BoltV3DecisionEvidenceWriter, BoltV3SubmitReservationMetadataEvidence,
     },
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
     bolt_v3_outcome_group_proofs::{
@@ -763,109 +758,48 @@ impl RecordingBasketDecisionWriter {
 }
 
 impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        command: bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> anyhow::Result<()> {
-        Ok(())
-    }
+        use bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand as Command;
 
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.admission_decisions
-            .lock()
-            .expect("admission decisions mutex should not be poisoned")
-            .push(decision.clone());
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.basket_admission_decisions
-            .lock()
-            .expect("basket admission decisions mutex should not be poisoned")
-            .push(decision.clone());
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        if self.fail_submit_reservation_metadata.load(Ordering::SeqCst) {
-            anyhow::bail!("submit reservation metadata write failed");
+        match command {
+            Command::AdmittedEntryAdmission(value)
+            | Command::RejectedEntryAdmission(value)
+            | Command::RiskReducingExitAdmission(value)
+            | Command::ForcedReductionAdmission(value) => {
+                self.admission_decisions
+                    .lock()
+                    .expect("admission decisions mutex should not be poisoned")
+                    .push(value);
+            }
+            Command::BasketAdmissionGranted(value) | Command::BasketAdmissionRejected(value) => {
+                self.basket_admission_decisions
+                    .lock()
+                    .expect("basket admission decisions mutex should not be poisoned")
+                    .push(value);
+            }
+            Command::SubmitReservationMetadata(value) => {
+                if self.fail_submit_reservation_metadata.load(Ordering::SeqCst) {
+                    anyhow::bail!("submit reservation metadata write failed");
+                }
+                self.submit_reservation_metadata
+                    .lock()
+                    .expect("submit reservation metadata mutex should not be poisoned")
+                    .push(value);
+            }
+            Command::EntrySkipObservation(_)
+            | Command::ExitSubmissionDecision(_)
+            | Command::ExitHoldDecision(_)
+            | Command::RequoteThrottle(_)
+            | Command::Settlement(_)
+            | Command::SettlementBookingError(_) => {
+                anyhow::bail!("basket admission writer received unrelated evidence")
+            }
+            _ => {}
         }
-        self.submit_reservation_metadata
-            .lock()
-            .expect("submit reservation metadata mutex should not be poisoned")
-            .push(metadata.clone());
         Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        anyhow::bail!("basket admission writer received entry-skip evidence")
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        anyhow::bail!("basket admission writer received exit-decision evidence")
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("basket admission writer received requote-throttle evidence")
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        anyhow::bail!("basket admission writer received settlement evidence")
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("basket admission writer received settlement booking-error evidence")
     }
 
     fn drain_shutdown(&self) -> anyhow::Result<()> {

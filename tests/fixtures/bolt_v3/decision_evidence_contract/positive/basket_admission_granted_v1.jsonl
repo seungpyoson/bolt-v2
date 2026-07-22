@@ -1,0 +1,1 @@
+{"schema_version":1,"recorded_at_utc_ns":4,"gate_id":"bolt_v3.submit_admission","gate_version":"0.1.0","kind":"basket_admission_granted","decision":{"strategy_id":"complete-set-arbitrage","execution_client_id":"client-1","basket_id":"basket-1","group_id":"group-1","leg_instrument_ids":["leg-a","leg-b"],"total_notional":"12.5","leg_order_count":2}}

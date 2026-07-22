@@ -1,13 +1,7 @@
 use crate::support;
 
 use bolt_v2::bolt_v3_decision_evidence::{
-    BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-    BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-    BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-    BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-    BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence, BoltV3SettlementEvidence,
-    BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
-    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+    BoltV3DecisionEvidenceWriter, BoltV3LossGovernorHaltEvidence, BoltV3StaleLossReason,
 };
 use bolt_v2::bolt_v3_loss_governor::{
     LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
@@ -1083,120 +1077,34 @@ impl RecordingLossHaltEvidenceWriter {
 }
 
 impl BoltV3DecisionEvidenceWriter for RecordingLossHaltEvidenceWriter {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        command: bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
+        use bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand as Command;
 
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        let mut count = self
-            .admission_decision_count
-            .lock()
-            .expect("admission decision count mutex should not be poisoned");
-        *count += 1;
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        self.loss_halts
-            .lock()
-            .expect("loss halt evidence mutex should not be poisoned")
-            .push(evidence.clone());
-        let mut count = self
-            .loss_halt_channel_count
-            .lock()
-            .expect("loss halt channel count mutex should not be poisoned");
-        *count += 1;
-        Ok(())
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
+        match command {
+            Command::LossGovernorHalt(value) => {
+                self.loss_halts
+                    .lock()
+                    .expect("loss halt evidence mutex should not be poisoned")
+                    .push(value);
+                *self
+                    .loss_halt_channel_count
+                    .lock()
+                    .expect("loss halt channel count mutex should not be poisoned") += 1;
+            }
+            Command::AdmittedEntryAdmission(_)
+            | Command::RejectedEntryAdmission(_)
+            | Command::RiskReducingExitAdmission(_)
+            | Command::ForcedReductionAdmission(_) => {
+                *self
+                    .admission_decision_count
+                    .lock()
+                    .expect("admission decision count mutex should not be poisoned") += 1;
+            }
+            _ => self.increment_other_evidence_channel(),
+        }
         Ok(())
     }
 

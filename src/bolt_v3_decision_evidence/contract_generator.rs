@@ -223,6 +223,7 @@ impl ContractRegistry {
 
         let identity_by_id = map_by_id(&self.identities, |row| row.id.as_str());
         let fact_by_id = map_by_id(&self.facts, |row| row.id.as_str());
+        let sink_by_id = map_by_id(&self.sinks, |row| row.id.as_str());
         for row in &self.purposes {
             validate_id("purpose", &row.id)?;
             ensure!(
@@ -250,6 +251,26 @@ impl ContractRegistry {
                 row.novelty_capability
             );
             validate_duties(row)?;
+            let observation = row
+                .duties
+                .iter()
+                .any(|duty| OBSERVATION_DUTIES.contains(&duty.as_str()));
+            let sink = sink_by_id
+                .get(row.sink.as_str())
+                .expect("purpose sink membership was validated above");
+            ensure!(
+                sink.startup_recovery_reads != observation,
+                "purpose `{}` duty class is incompatible with sink `{}` startup_recovery_reads={}",
+                row.id,
+                row.sink,
+                sink.startup_recovery_reads
+            );
+            ensure!(
+                (row.effect_policy == "observation_bounded_failure") == observation,
+                "purpose `{}` duty class is incompatible with effect_policy `{}`",
+                row.id,
+                row.effect_policy
+            );
             let identity = identity_by_id
                 .get(row.current_identity.as_str())
                 .ok_or_else(|| {
@@ -280,6 +301,7 @@ impl ContractRegistry {
             );
         }
 
+        let mut producers_by_purpose = BTreeMap::<&str, usize>::new();
         for row in &self.producers {
             validate_id("producer", &row.id)?;
             ensure!(
@@ -305,10 +327,21 @@ impl ContractRegistry {
                 "producer `{}` has an empty handler",
                 row.id
             );
+            *producers_by_purpose
+                .entry(row.purpose.as_str())
+                .or_default() += 1;
+        }
+        for purpose in &self.purposes {
+            ensure!(
+                producers_by_purpose.contains_key(purpose.id.as_str()),
+                "purpose `{}` has no registered producer",
+                purpose.id
+            );
         }
 
         let mut exact_pairs = BTreeSet::new();
         let mut current_by_purpose = BTreeMap::<&str, usize>::new();
+        let mut identities_by_fact = BTreeMap::<&str, usize>::new();
         for row in &self.identities {
             validate_id("identity", &row.id)?;
             ensure!(
@@ -356,6 +389,9 @@ impl ContractRegistry {
                 row.schema_version
             );
             *current_by_purpose.entry(row.purpose.as_str()).or_default() += 1;
+            for fact in &row.fact_ids {
+                *identities_by_fact.entry(fact.as_str()).or_default() += 1;
+            }
         }
         for purpose in &self.purposes {
             ensure!(
@@ -364,8 +400,16 @@ impl ContractRegistry {
                 purpose.id
             );
         }
+        for fact in &self.facts {
+            ensure!(
+                identities_by_fact.get(fact.id.as_str()) == Some(&1),
+                "fact `{}` must belong to exactly one current identity",
+                fact.id
+            );
+        }
 
         let expected_consumers = consumers;
+        let mut relevant_facts_by_consumer = BTreeMap::<&str, usize>::new();
         for row in &self.facts {
             validate_id("fact", &row.id)?;
             ensure!(
@@ -382,7 +426,19 @@ impl ContractRegistry {
             );
             for (consumer, disposition) in &row.dispositions {
                 validate_disposition(&row.id, consumer, disposition)?;
+                if disposition == "relevant" {
+                    *relevant_facts_by_consumer
+                        .entry(consumer.as_str())
+                        .or_default() += 1;
+                }
             }
+        }
+        for consumer in &self.consumers {
+            ensure!(
+                relevant_facts_by_consumer.contains_key(consumer.id.as_str()),
+                "consumer `{}` has no relevant fact",
+                consumer.id
+            );
         }
 
         Ok(())
@@ -415,12 +471,7 @@ fn validate_duties(row: &PurposeRow) -> Result<()> {
 }
 
 fn validate_disposition(fact: &str, consumer: &str, disposition: &str) -> Result<()> {
-    if let Some(event) = disposition.strip_prefix("relevant:") {
-        ensure!(
-            !event.is_empty(),
-            "fact `{fact}` has empty relevant event for consumer `{consumer}`"
-        );
-        validate_rust_variant("event", event)?;
+    if disposition == "relevant" {
         return Ok(());
     }
     if let Some(ruling) = disposition.strip_prefix("irrelevant:") {
@@ -453,19 +504,6 @@ fn validate_id(label: &str, value: &str) -> Result<()> {
     ensure!(
         !value.as_bytes()[0].is_ascii_digit(),
         "{label} id `{value}` must not start with a digit"
-    );
-    Ok(())
-}
-
-fn validate_rust_variant(label: &str, value: &str) -> Result<()> {
-    ensure!(!value.is_empty(), "{label} variant must not be empty");
-    ensure!(
-        value.as_bytes()[0].is_ascii_uppercase(),
-        "{label} variant `{value}` must start uppercase"
-    );
-    ensure!(
-        value.bytes().all(|byte| byte.is_ascii_alphanumeric()),
-        "{label} variant `{value}` must be alphanumeric"
     );
     Ok(())
 }
@@ -516,11 +554,6 @@ pub fn render_contract_rust(registry: &ContractRegistry) -> Result<String> {
     writeln!(output)?;
     render_enum(
         &mut output,
-        "KnownProducer",
-        registry.producers.iter().map(|row| row.id.as_str()),
-    )?;
-    render_enum(
-        &mut output,
         "KnownPurpose",
         registry.purposes.iter().map(|row| row.id.as_str()),
     )?;
@@ -553,50 +586,12 @@ pub fn render_contract_rust(registry: &ContractRegistry) -> Result<String> {
     writeln!(output, "}}")?;
     writeln!(output)?;
 
-    let events = registry
-        .facts
-        .iter()
-        .flat_map(|fact| fact.dispositions.values())
-        .filter_map(|value| value.strip_prefix("relevant:"))
-        .collect::<BTreeSet<_>>();
-    writeln!(output, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]")?;
-    writeln!(output, "pub(crate) enum KnownEventVariant {{")?;
-    for event in events {
-        writeln!(output, "    {event},")?;
-    }
-    writeln!(output, "}}")?;
-    writeln!(output)?;
     writeln!(output, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]")?;
     writeln!(output, "pub(crate) enum ConsumerDisposition {{")?;
-    writeln!(output, "    Relevant(KnownEventVariant),")?;
+    writeln!(output, "    Relevant,")?;
     writeln!(output, "    Irrelevant,")?;
     writeln!(output, "}}")?;
     writeln!(output)?;
-
-    render_marker_module(
-        &mut output,
-        "producer_markers",
-        "ProducerMarker",
-        registry.producers.iter().map(|row| row.id.as_str()),
-    )?;
-    render_marker_module(
-        &mut output,
-        "purpose_markers",
-        "PurposeMarker",
-        registry.purposes.iter().map(|row| row.id.as_str()),
-    )?;
-    render_marker_module(
-        &mut output,
-        "identity_markers",
-        "IdentityMarker",
-        registry.identities.iter().map(|row| row.id.as_str()),
-    )?;
-    render_marker_module(
-        &mut output,
-        "consumer_markers",
-        "ConsumerMarker",
-        registry.consumers.iter().map(|row| row.id.as_str()),
-    )?;
 
     writeln!(
         output,
@@ -622,23 +617,6 @@ pub fn render_contract_rust(registry: &ContractRegistry) -> Result<String> {
 
     writeln!(
         output,
-        "pub(crate) const fn purpose_for_producer(producer: KnownProducer) -> KnownPurpose {{"
-    )?;
-    writeln!(output, "    match producer {{")?;
-    for row in &registry.producers {
-        writeln!(
-            output,
-            "        KnownProducer::{} => KnownPurpose::{},",
-            pascal_case(&row.id),
-            pascal_case(&row.purpose)
-        )?;
-    }
-    writeln!(output, "    }}")?;
-    writeln!(output, "}}")?;
-    writeln!(output)?;
-
-    writeln!(
-        output,
         "pub(crate) const fn current_identity_for_purpose(purpose: KnownPurpose) -> KnownIdentity {{"
     )?;
     writeln!(output, "    match purpose {{")?;
@@ -648,6 +626,23 @@ pub fn render_contract_rust(registry: &ContractRegistry) -> Result<String> {
             "        KnownPurpose::{} => KnownIdentity::{},",
             pascal_case(&row.id),
             pascal_case(&row.current_identity)
+        )?;
+    }
+    writeln!(output, "    }}")?;
+    writeln!(output, "}}")?;
+    writeln!(output)?;
+
+    writeln!(
+        output,
+        "pub(crate) const fn purpose_for_identity(identity: KnownIdentity) -> KnownPurpose {{"
+    )?;
+    writeln!(output, "    match identity {{")?;
+    for row in &registry.identities {
+        writeln!(
+            output,
+            "        KnownIdentity::{} => KnownPurpose::{},",
+            pascal_case(&row.id),
+            pascal_case(&row.purpose)
         )?;
     }
     writeln!(output, "    }}")?;
@@ -668,6 +663,17 @@ pub fn render_contract_rust(registry: &ContractRegistry) -> Result<String> {
         )?;
     }
     writeln!(output, "    }}")?;
+    writeln!(output, "}}")?;
+    writeln!(output)?;
+
+    writeln!(
+        output,
+        "pub(crate) const fn sink_for_identity(identity: KnownIdentity) -> KnownSink {{"
+    )?;
+    writeln!(
+        output,
+        "    sink_for_purpose(purpose_for_identity(identity))"
+    )?;
     writeln!(output, "}}")?;
     writeln!(output)?;
 
@@ -742,8 +748,8 @@ pub fn render_contract_rust(registry: &ContractRegistry) -> Result<String> {
                 .dispositions
                 .get(&consumer.id)
                 .ok_or_else(|| anyhow!("missing disposition while rendering"))?;
-            let rendered = if let Some(event) = disposition.strip_prefix("relevant:") {
-                format!("ConsumerDisposition::Relevant(KnownEventVariant::{event})")
+            let rendered = if disposition == "relevant" {
+                "ConsumerDisposition::Relevant".to_string()
             } else {
                 "ConsumerDisposition::Irrelevant".to_string()
             };
@@ -801,37 +807,6 @@ fn render_enum<'a>(
         writeln!(output, "    {},", pascal_case(value))?;
     }
     writeln!(output, "}}")?;
-    writeln!(output)?;
-    Ok(())
-}
-
-fn render_marker_module<'a>(
-    output: &mut String,
-    module: &str,
-    trait_name: &str,
-    values: impl Iterator<Item = &'a str>,
-) -> Result<()> {
-    let values = values.collect::<Vec<_>>();
-    writeln!(output, "mod {module}_sealed {{")?;
-    writeln!(output, "    pub trait Sealed {{}}")?;
-    writeln!(output, "}}")?;
-    writeln!(
-        output,
-        "pub(crate) trait {trait_name}: {module}_sealed::Sealed {{}}"
-    )?;
-    writeln!(output, "pub(crate) mod {module} {{")?;
-    for value in &values {
-        writeln!(output, "    pub(crate) struct {};", pascal_case(value))?;
-    }
-    writeln!(output, "}}")?;
-    for value in values {
-        let variant = pascal_case(value);
-        writeln!(
-            output,
-            "impl {module}_sealed::Sealed for {module}::{variant} {{}}"
-        )?;
-        writeln!(output, "impl {trait_name} for {module}::{variant} {{}}")?;
-    }
     writeln!(output)?;
     Ok(())
 }

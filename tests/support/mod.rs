@@ -162,158 +162,72 @@ impl RecordingDecisionEvidenceWriter {
 impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     for RecordingDecisionEvidenceWriter
 {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &bolt_v2::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        command: bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> anyhow::Result<()> {
-        Ok(())
-    }
+        use bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand as Command;
 
-    fn record_order_intent(
-        &self,
-        intent: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> anyhow::Result<()> {
-        self.records
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(intent.clone());
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.admission_decisions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(decision.clone());
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(
-        &self,
-        skip: &bolt_v2::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> anyhow::Result<()> {
-        self.entry_skips
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(skip.clone());
-        Ok(())
-    }
-
-    fn record_exit_decision(
-        &self,
-        decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.exit_decisions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(decision.clone());
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        self.loss_governor_halts
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(evidence.clone());
-        Ok(())
-    }
-
-    fn record_order_reject(
-        &self,
-        evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> anyhow::Result<()> {
-        self.order_rejects
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(evidence.clone());
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        throttle: &bolt_v2::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        self.requote_throttles
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(throttle.clone());
-        Ok(())
-    }
-
-    fn record_settlement(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_venue_truth_capture_failure(
-        &self,
-        evidence: &bolt_v2::bolt_v3_venue_truth::VenueTruthCaptureFailureEvidence,
-    ) -> anyhow::Result<()> {
-        self.venue_truth_capture_failures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(evidence.clone());
-        Ok(())
-    }
-
-    fn record_venue_truth_divergence(
-        &self,
-        evidence: &bolt_v2::bolt_v3_venue_truth::VenueTruthDivergenceEvidence,
-    ) -> anyhow::Result<()> {
-        self.venue_truth_divergences
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(evidence.clone());
+        match command {
+            Command::EntryOrderIntent(value) | Command::RiskReducingExitOrderIntent(value) => {
+                self.records
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(value);
+            }
+            Command::AdmittedEntryAdmission(value)
+            | Command::RejectedEntryAdmission(value)
+            | Command::RiskReducingExitAdmission(value)
+            | Command::ForcedReductionAdmission(value) => {
+                self.admission_decisions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(value);
+            }
+            Command::EntrySkipObservation(value) => {
+                self.entry_skips
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(value);
+            }
+            Command::ExitSubmissionDecision(value) | Command::ExitHoldDecision(value) => {
+                self.exit_decisions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(value);
+            }
+            Command::LossGovernorHalt(value) => {
+                self.loss_governor_halts
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(value);
+            }
+            Command::OrderReject(value) => {
+                self.order_rejects
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(value);
+            }
+            Command::RequoteThrottle(value) => {
+                self.requote_throttles
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(value);
+            }
+            Command::VenueTruthCaptureFailure(value) => {
+                self.venue_truth_capture_failures
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(value);
+            }
+            Command::VenueTruthDivergence(value) => {
+                self.venue_truth_divergences
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(value);
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -342,112 +256,20 @@ impl OrderRejectFailingDecisionEvidenceWriter {
 impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     for OrderRejectFailingDecisionEvidenceWriter
 {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &bolt_v2::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        command: bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(
-        &self,
-        _intent: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(
-        &self,
-        _skip: &bolt_v2::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> anyhow::Result<()> {
-        *self
-            .order_reject_attempts
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
-        Err(anyhow::anyhow!("synthetic order-reject write failure"))
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &bolt_v2::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
+        if matches!(
+            command,
+            bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand::OrderReject(_)
+        ) {
+            *self
+                .order_reject_attempts
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
+            return Err(anyhow::anyhow!("synthetic order-reject write failure"));
+        }
         Ok(())
     }
 

@@ -977,109 +977,20 @@ impl FailingRequoteThrottleDecisionEvidenceWriter {
 }
 
 impl BoltV3DecisionEvidenceWriter for FailingRequoteThrottleDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
+    fn try_record_command(
         &self,
-        _snapshot: &bolt_v2::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        command: bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
     ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(
-        &self,
-        _intent: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(
-        &self,
-        _skip: &bolt_v2::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _halt: &bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-        self.requote_throttles
-            .lock()
-            .expect("requote throttle evidence mutex poisoned")
-            .push(throttle.clone());
-        anyhow::bail!("{}", self.failure_message)
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
+        if let bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand::RequoteThrottle(
+            value,
+        ) = command
+        {
+            self.requote_throttles
+                .lock()
+                .expect("requote throttle evidence mutex poisoned")
+                .push(value);
+            anyhow::bail!("{}", self.failure_message);
+        }
         Ok(())
     }
 

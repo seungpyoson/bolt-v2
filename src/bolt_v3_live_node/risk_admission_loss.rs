@@ -798,7 +798,7 @@ pub(super) fn capital_admission_venue_spendability_source_config_from_loaded(
 
 /// Resolve the startup reservation-recovery source from the loaded config.
 /// The recovery driver reads the decision-evidence file, so the path comes
-/// from [`decision_evidence_path`] and the read bound from
+/// from [`machine_decision_evidence_path`] and the read bound from
 /// `persistence.decision_evidence.recovery_evidence_max_bytes`. Returns
 /// `None` (recovery disabled) when the byte cap is not configured.
 pub(super) fn submit_reservation_recovery_config_from_loaded(
@@ -813,7 +813,7 @@ pub(super) fn submit_reservation_recovery_config_from_loaded(
         return Ok(None);
     };
     Ok(Some(BoltV3SubmitReservationRecoveryConfig {
-        path: decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
+        path: machine_decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
         max_bytes,
     }))
 }
@@ -838,7 +838,7 @@ pub(super) fn settlement_recovery_config_from_loaded(
         return Ok(None);
     };
     Ok(Some(BoltV3SettlementRecoveryConfig {
-        path: decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
+        path: machine_decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
         max_bytes,
     }))
 }
@@ -1763,13 +1763,9 @@ mod tests {
         },
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
         bolt_v3_decision_evidence::{
-            BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-            BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-            BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentClampOutcome,
-            BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence, BoltV3RequoteThrottleEvidence,
-            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-            BoltV3SubmitReservationMetadataEvidence,
+            BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
+            BoltV3OrderIntentClampOutcome, BoltV3OrderIntentEvidence,
+            NoStrategyDecisionEvidenceWriter,
         },
         bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState, KillSwitchStateKind},
         bolt_v3_kill_switch_store::{KillSwitchRecoveryState, KillSwitchStore},
@@ -2441,101 +2437,19 @@ mod tests {
     }
 
     impl BoltV3DecisionEvidenceWriter for TestVenueTruthDivergenceEvidenceWriter {
-        fn record_strategy_input_snapshot(
+        fn try_record_command(
             &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+            command: crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
         ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            _decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &BoltV3BasketAdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_capital_admission_rebuild_audit(
-            &self,
-            _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_loss_governor_halt(
-            &self,
-            _evidence: &BoltV3LossGovernorHaltEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_venue_truth_divergence(
-            &self,
-            evidence: &VenueTruthDivergenceEvidence,
-        ) -> Result<()> {
-            if self.fail {
-                return Err(anyhow::anyhow!("decision evidence unavailable"));
+            if let crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand::VenueTruthDivergence(evidence) = command {
+                if self.fail {
+                    return Err(anyhow::anyhow!("decision evidence unavailable"));
+                }
+                self.records
+                    .lock()
+                    .expect("test venue truth divergence records mutex should not be poisoned")
+                    .push(evidence);
             }
-            self.records
-                .lock()
-                .expect("test venue truth divergence records mutex should not be poisoned")
-                .push(evidence.clone());
             Ok(())
         }
 
@@ -2772,95 +2686,30 @@ mod tests {
     }
 
     impl BoltV3DecisionEvidenceWriter for RecordingFlattenDecisionEvidenceWriter {
-        fn record_strategy_input_snapshot(
+        fn try_record_command(
             &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+            command: crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand,
         ) -> Result<()> {
-            Ok(())
-        }
+            use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceCommand as Command;
 
-        fn record_order_intent(&self, intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-            self.records
-                .lock()
-                .expect("flatten records mutex should not be poisoned")
-                .push(intent.clone());
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            self.admission_decisions
-                .lock()
-                .expect("flatten admission mutex should not be poisoned")
-                .push(decision.clone());
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &BoltV3BasketAdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_capital_admission_rebuild_audit(
-            &self,
-            _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_loss_governor_halt(
-            &self,
-            _evidence: &BoltV3LossGovernorHaltEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
+            match command {
+                Command::EntryOrderIntent(value) | Command::RiskReducingExitOrderIntent(value) => {
+                    self.records
+                        .lock()
+                        .expect("flatten records mutex should not be poisoned")
+                        .push(value);
+                }
+                Command::AdmittedEntryAdmission(value)
+                | Command::RejectedEntryAdmission(value)
+                | Command::RiskReducingExitAdmission(value)
+                | Command::ForcedReductionAdmission(value) => {
+                    self.admission_decisions
+                        .lock()
+                        .expect("flatten admission mutex should not be poisoned")
+                        .push(value);
+                }
+                _ => {}
+            }
             Ok(())
         }
 

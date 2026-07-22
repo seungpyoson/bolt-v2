@@ -360,28 +360,29 @@ index 760026f..4c569c2 100644
 +        let error = runtime.block_on(storage.check()).unwrap_err();
 +        assert!(error.to_string().contains("cache storage failed to read"));
 diff --git a/src/cache/cache_io.rs b/src/cache/cache_io.rs
-index 9e29743..041e31e 100644
+index 9e29743..54f5f01 100644
 --- a/src/cache/cache_io.rs
 +++ b/src/cache/cache_io.rs
-@@ -13 +13 @@
+@@ -13 +13,2 @@
 -use super::utils::{get_file_mode, set_file_mode};
 +use super::utils::get_file_mode;
-@@ -14,0 +15 @@ use crate::errors::*;
++use crate::config::StrictDeadline;
+@@ -14,0 +16 @@ use crate::errors::*;
 +use anyhow::ensure;
-@@ -15,0 +17,2 @@ use fs_err as fs;
+@@ -15,0 +18,2 @@ use fs_err as fs;
 +#[cfg(unix)]
 +use std::ffi::{CString, OsStr, OsString};
-@@ -17,0 +21,6 @@ use std::io::{Cursor, Read, Seek, Write};
+@@ -17,0 +22,6 @@ use std::io::{Cursor, Read, Seek, Write};
 +#[cfg(unix)]
 +use std::os::fd::{AsRawFd, FromRawFd};
 +#[cfg(unix)]
 +use std::os::unix::ffi::OsStrExt;
 +#[cfg(unix)]
 +use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-@@ -19 +28 @@ use std::path::{Path, PathBuf};
+@@ -19 +29 @@ use std::path::{Path, PathBuf};
 -use tempfile::NamedTempFile;
 +use zip::result::ZipError;
-@@ -88,0 +98,442 @@ impl std::error::Error for DecompressionFailure {}
+@@ -88,0 +99,442 @@ impl std::error::Error for DecompressionFailure {}
 +#[derive(Debug)]
 +struct CacheObjectMissing;
 +
@@ -792,14 +793,14 @@ index 9e29743..041e31e 100644
 +    }
 +
 +    #[cfg(unix)]
-+    fn commit(self, deadline: Option<std::time::Instant>) -> Result<(Vec<u8>, Vec<u8>)> {
++    fn commit(self, deadline: Option<StrictDeadline>) -> Result<(Vec<u8>, Vec<u8>)> {
 +        let Self {
 +            stdout,
 +            stderr,
 +            mut outputs,
 +        } = self;
 +        for index in 0..outputs.len() {
-+            if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
++            if deadline.is_some_and(StrictDeadline::is_elapsed) {
 +                Self::rollback(&mut outputs)?;
 +                bail!("governed cache materialization deadline expired before commit");
 +            }
@@ -807,7 +808,7 @@ index 9e29743..041e31e 100644
 +                Self::rollback(&mut outputs)?;
 +                return Err(error);
 +            }
-+            if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
++            if deadline.is_some_and(StrictDeadline::is_elapsed) {
 +                Self::rollback(&mut outputs)?;
 +                bail!("governed cache materialization deadline expired during commit");
 +            }
@@ -819,44 +820,44 @@ index 9e29743..041e31e 100644
 +    }
 +
 +    #[cfg(not(unix))]
-+    fn commit(self, _deadline: Option<std::time::Instant>) -> Result<(Vec<u8>, Vec<u8>)> {
++    fn commit(self, _deadline: Option<StrictDeadline>) -> Result<(Vec<u8>, Vec<u8>)> {
 +        bail!("strict cache materialization requires Unix descriptor-relative output support")
 +    }
 +}
 +
-@@ -106 +557,5 @@ impl CacheRead {
+@@ -106 +558,5 @@ impl CacheRead {
 -        let file = self.zip.by_name(name).or(Err(DecompressionFailure))?;
 +        let file = match self.zip.by_name(name) {
 +            Ok(file) => file,
 +            Err(ZipError::FileNotFound) => bail!(CacheObjectMissing),
 +            Err(_) => bail!(DecompressionFailure),
 +        };
-@@ -116 +571 @@ impl CacheRead {
+@@ -116 +572 @@ impl CacheRead {
 -    pub fn get_stdout(&mut self) -> Vec<u8> {
 +    pub fn get_stdout(&mut self) -> Result<Vec<u8>> {
-@@ -121 +576 @@ impl CacheRead {
+@@ -121 +577 @@ impl CacheRead {
 -    pub fn get_stderr(&mut self) -> Vec<u8> {
 +    pub fn get_stderr(&mut self) -> Result<Vec<u8>> {
-@@ -125 +580 @@ impl CacheRead {
+@@ -125 +581 @@ impl CacheRead {
 -    fn get_bytes(&mut self, name: &str) -> Vec<u8> {
 +    fn get_bytes(&mut self, name: &str) -> Result<Vec<u8>> {
-@@ -127,2 +582,2 @@ impl CacheRead {
+@@ -127,2 +583,2 @@ impl CacheRead {
 -        drop(self.get_object(name, &mut bytes));
 -        bytes
 +        self.get_object(name, &mut bytes)?;
 +        Ok(bytes)
-@@ -131 +586 @@ impl CacheRead {
+@@ -131 +587 @@ impl CacheRead {
 -    pub async fn extract_objects<T>(
 +    pub async fn materialize<T>(
-@@ -135 +590,2 @@ impl CacheRead {
+@@ -135 +591,2 @@ impl CacheRead {
 -    ) -> Result<()>
-+        deadline: Option<std::time::Instant>,
++        deadline: Option<StrictDeadline>,
 +    ) -> Result<(Vec<u8>, Vec<u8>)>
-@@ -139 +595,14 @@ impl CacheRead {
+@@ -139 +596,14 @@ impl CacheRead {
 -        pool.spawn_blocking(move || {
 +        let staging = pool.spawn_blocking(move || {
 +            let check_deadline = || -> Result<()> {
-+                if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
++                if deadline.is_some_and(StrictDeadline::is_elapsed) {
 +                    bail!("governed cache materialization deadline expired");
 +                }
 +                Ok(())
@@ -868,7 +869,7 @@ index 9e29743..041e31e 100644
 +            let mut outputs = Vec::new();
 +            #[cfg(unix)]
 +            let mut destination_keys = std::collections::BTreeSet::new();
-@@ -146,45 +615,11 @@ impl CacheRead {
+@@ -146,45 +616,11 @@ impl CacheRead {
 -                if is_path_null(&path) {
 -                    // For unix, this is just a fast path to discard such outputs,
 -                    // so it is not an issue if `is_path_null` has false-negatives.
@@ -925,18 +926,18 @@ index 9e29743..041e31e 100644
 +                        Ok(mode) => {
 +                            if let Some(mode) = mode {
 +                                temporary.set_permissions(std::fs::Permissions::from_mode(mode))?;
-@@ -191,0 +627,2 @@ impl CacheRead {
+@@ -191,0 +628,2 @@ impl CacheRead {
 +                            temporary.sync_all()?;
 +                            outputs.push(staged);
-@@ -192,0 +630,4 @@ impl CacheRead {
+@@ -192,0 +631,4 @@ impl CacheRead {
 +                        Err(error)
 +                            if optional
 +                                && error.downcast_ref::<CacheObjectMissing>().is_some() => {}
 +                        Err(error) => return Err(error),
-@@ -194,2 +634,0 @@ impl CacheRead {
+@@ -194,2 +635,0 @@ impl CacheRead {
 -                    // skip if no object found and it's optional
 -                    (Err(_), true) => continue,
-@@ -196,0 +636,8 @@ impl CacheRead {
+@@ -196,0 +637,8 @@ impl CacheRead {
 +                #[cfg(not(unix))]
 +                {
 +                    let _ = (key, path, optional);
@@ -945,7 +946,7 @@ index 9e29743..041e31e 100644
 +                    );
 +                }
 +                check_deadline()?;
-@@ -198,3 +645,20 @@ impl CacheRead {
+@@ -198,3 +646,19 @@ impl CacheRead {
 -            Ok(())
 -        })
 -        .await?
@@ -957,8 +958,7 @@ index 9e29743..041e31e 100644
 +        });
 +        let mut staging = staging;
 +        let staged = if let Some(deadline) = deadline {
-+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-+            match tokio::time::timeout(remaining, &mut staging).await {
++            match tokio::time::timeout_at(deadline.tokio_instant(), &mut staging).await {
 +                Ok(result) => result??,
 +                Err(_) => {
 +                    let _ = staging.await;
@@ -1013,7 +1013,7 @@ index 9e29743..041e31e 100644
 -        Ok(())
 +        let mut cursor = Cursor::new(bytes);
 +        self.put_object(name, &mut cursor, None)
-@@ -323,0 +778,302 @@ mod tests {
+@@ -323,0 +778,441 @@ mod tests {
 +    use std::io::{Seek, SeekFrom};
 +
 +    struct SlowCursor {
@@ -1316,8 +1316,9 @@ index 9e29743..041e31e 100644
 +        assert!(output.commit().is_err());
 +        assert_eq!(fs::read(destination).unwrap(), b"replacement");
 +    }
-@@ -327 +1083,132 @@ mod tests {
--    fn test_extract_object_to_devnull_works() {
++
++    #[cfg(unix)]
++    #[test]
 +    fn strict_staging_rejects_symlink_and_multilink_destinations() {
 +        use std::os::unix::fs::symlink;
 +
@@ -1436,39 +1437,46 @@ index 9e29743..041e31e 100644
 +            path: output.clone(),
 +            optional: false,
 +        }];
-+        let result = runtime.block_on(cache_read.materialize(
-+            objects,
-+            runtime.handle(),
-+            Some(std::time::Instant::now() + std::time::Duration::from_millis(1)),
-+        ));
++        let result = runtime.block_on(
++            cache_read.materialize(
++                objects,
++                runtime.handle(),
++                Some(
++                    StrictDeadline::from_now(
++                        "cache materialization test deadline",
++                        std::time::Duration::from_millis(1),
++                    )
++                    .unwrap(),
++                ),
++            ),
++        );
 +
 +        assert!(result.is_err());
 +        std::thread::sleep(std::time::Duration::from_millis(50));
 +        assert!(!output.exists());
 +    }
-+
-+    #[cfg(unix)]
-+    #[test]
+@@ -327 +1222 @@ mod tests {
+-    fn test_extract_object_to_devnull_works() {
 +    fn strict_extract_object_to_devnull_is_fatal() {
-@@ -336 +1223,2 @@ mod tests {
+@@ -336 +1231,2 @@ mod tests {
 -        let cache_data = CacheWrite::new();
 +        let mut cache_data = CacheWrite::new();
 +        add_empty_streams(&mut cache_data);
-@@ -347 +1235 @@ mod tests {
+@@ -347 +1243 @@ mod tests {
 -        assert!(result.is_ok(), "Extracting to /dev/null should succeed");
 +        assert!(result.is_err(), "strict extraction must reject /dev/null");
-@@ -352,2 +1240 @@ mod tests {
+@@ -352,2 +1248 @@ mod tests {
 -    fn test_extract_object_to_dev_fd_something() {
 -        // Open a pipe, write to `/dev/fd/{fd}` and check the other end that the correct data was written.
 +    fn strict_extract_object_to_dev_fd_is_fatal() {
-@@ -355 +1241,0 @@ mod tests {
+@@ -355 +1249,0 @@ mod tests {
 -        use tokio::io::AsyncReadExt;
-@@ -364,0 +1251 @@ mod tests {
+@@ -364,0 +1259 @@ mod tests {
 +        add_empty_streams(&mut cache_data);
-@@ -368 +1255 @@ mod tests {
+@@ -368 +1263 @@ mod tests {
 -            let (sender, mut receiver) = tokio::net::unix::pipe::pipe().unwrap();
 +            let (sender, _receiver) = tokio::net::unix::pipe::pipe().unwrap();
-@@ -383,8 +1270 @@ mod tests {
+@@ -383,8 +1278 @@ mod tests {
 -            assert!(
 -                result.is_ok(),
 -                "Extracting to /dev/fd/{raw_fd} should succeed"
@@ -1478,33 +1486,33 @@ index 9e29743..041e31e 100644
 -            assert_eq!(n, data.len(), "Read the correct number of bytes");
 -            assert_eq!(buf, data, "Read the correct data from /dev/fd/{raw_fd}");
 +            assert!(result.is_err(), "strict extraction must reject /dev/fd paths");
-@@ -395,3 +1275 @@ mod tests {
+@@ -395,3 +1283 @@ mod tests {
 -    fn test_extract_object_to_non_writable_path() {
 -        // See `test_extract_object_to_dev_fd_something`: we still cannot cover all platforms by the other tests. Here we test a more portable case of creating a file and making its parent directory non-writable, in which case we should still be able to extract the object successfully.
 -
 +    fn strict_extract_object_to_non_writable_parent_is_fatal() {
-@@ -407,0 +1286 @@ mod tests {
+@@ -407,0 +1294 @@ mod tests {
 +        add_empty_streams(&mut cache_data);
-@@ -430,5 +1309 @@ mod tests {
+@@ -430,5 +1317 @@ mod tests {
 -        assert!(
 -            result.is_ok(),
 -            "Extracting to the target path should succeed"
 -        );
 -        // Test the content; make sure the old content is overwritten
 +        assert!(result.is_err(), "strict staging requires a writable parent");
-@@ -437,2 +1312,2 @@ mod tests {
+@@ -437,2 +1320,2 @@ mod tests {
 -            content, b"real_test_data",
 -            "Extracted content should be correct"
 +            content, b"test",
 +            "the existing output must remain unchanged"
-@@ -453 +1328 @@ mod tests {
+@@ -453 +1336 @@ mod tests {
 -    fn test_extract_object_to_nul_works() {
 +    fn strict_extract_object_to_nul_is_fatal() {
-@@ -462 +1337,2 @@ mod tests {
+@@ -462 +1345,2 @@ mod tests {
 -        let cache_data = CacheWrite::new();
 +        let mut cache_data = CacheWrite::new();
 +        add_empty_streams(&mut cache_data);
-@@ -473 +1349 @@ mod tests {
+@@ -473 +1357 @@ mod tests {
 -        assert!(result.is_ok(), "Extracting to NUL should succeed");
 +        assert!(result.is_err(), "strict extraction must reject NUL");
 diff --git a/src/cache/readonly.rs b/src/cache/readonly.rs
@@ -1542,26 +1550,28 @@ index ee1186f..70d86b2 100644
 -}
 -
 diff --git a/src/client.rs b/src/client.rs
-index 88d93fc..8d312e9 100644
+index 88d93fc..15a7b33 100644
 --- a/src/client.rs
 +++ b/src/client.rs
-@@ -18,2 +17,0 @@ use crate::protocol::{Request, Response};
+@@ -14,0 +15 @@
++use crate::config::StrictDeadline;
+@@ -18,2 +18,0 @@ use crate::protocol::{Request, Response};
 -use crate::util;
 -use backon::BlockingRetryable;
-@@ -21 +19 @@ use byteorder::{BigEndian, ByteOrder};
+@@ -21 +20 @@ use byteorder::{BigEndian, ByteOrder};
 -use std::io::{self, BufReader, BufWriter, Read};
 +use std::io::{self, BufReader, Read, Write};
-@@ -28 +26,3 @@ pub struct ServerConnection {
+@@ -28 +27,3 @@ pub struct ServerConnection {
 -    writer: BufWriter<Box<dyn Connection>>,
 +    writer: Box<dyn Connection>,
 +    timeout: Option<std::time::Duration>,
 +    max_frame_bytes: Option<u64>,
-@@ -37 +37,3 @@ impl ServerConnection {
+@@ -37 +38,3 @@ impl ServerConnection {
 -            writer: BufWriter::new(write_conn),
 +            writer: write_conn,
 +            timeout: None,
 +            max_frame_bytes: None,
-@@ -40,0 +43,13 @@ impl ServerConnection {
+@@ -40,0 +44,13 @@ impl ServerConnection {
 +    /// Apply the governed timeout to every IPC read and write.
 +    pub fn set_policy(
 +        &mut self,
@@ -1575,7 +1585,7 @@ index 88d93fc..8d312e9 100644
 +        Ok(())
 +    }
 +
-@@ -44 +59,8 @@ impl ServerConnection {
+@@ -44 +60,8 @@ impl ServerConnection {
 -        util::write_length_prefixed_bincode(&mut self.writer, request)?;
 +        let data = bincode::serialize(&request)?;
 +        self.validate_frame_size(data.len())?;
@@ -1585,20 +1595,21 @@ index 88d93fc..8d312e9 100644
 +        frame.extend_from_slice(&length.to_be_bytes());
 +        frame.extend_from_slice(&data);
 +        self.write_frame(&frame)?;
-@@ -51,0 +74,3 @@ impl ServerConnection {
+@@ -51,0 +75,4 @@ impl ServerConnection {
 +        let deadline = self
 +            .timeout
-+            .map(|timeout| std::time::Instant::now() + timeout);
-@@ -53,2 +78 @@ impl ServerConnection {
++            .map(|timeout| StrictDeadline::from_now("IPC read deadline", timeout))
++            .transpose()?;
+@@ -53,2 +80 @@ impl ServerConnection {
 -        self.reader
 -            .read_exact(&mut bytes)
 +        self.read_exact_frame(&mut bytes, deadline)
-@@ -56,0 +81 @@ impl ServerConnection {
+@@ -56,0 +83 @@ impl ServerConnection {
 +        self.validate_frame_size(len as usize)?;
-@@ -59 +84 @@ impl ServerConnection {
+@@ -59 +86 @@ impl ServerConnection {
 -        self.reader.read_exact(&mut data)?;
 +        self.read_exact_frame(&mut data, deadline)?;
-@@ -62,0 +88,75 @@ impl ServerConnection {
+@@ -62,0 +90,77 @@ impl ServerConnection {
 +
 +    fn validate_frame_size(&self, length: usize) -> Result<()> {
 +        if let Some(maximum) = self.max_frame_bytes
@@ -1612,14 +1623,16 @@ index 88d93fc..8d312e9 100644
 +    fn write_frame(&mut self, mut bytes: &[u8]) -> io::Result<()> {
 +        let deadline = self
 +            .timeout
-+            .map(|timeout| std::time::Instant::now() + timeout);
++            .map(|timeout| {
++                StrictDeadline::from_now("IPC write deadline", timeout)
++                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))
++            })
++            .transpose()?;
 +        while !bytes.is_empty() {
 +            if let Some(deadline) = deadline {
-+                let remaining = deadline
-+                    .checked_duration_since(std::time::Instant::now())
-+                    .ok_or_else(|| {
-+                        io::Error::new(io::ErrorKind::TimedOut, "IPC write timed out")
-+                    })?;
++                let remaining = deadline.remaining().ok_or_else(|| {
++                    io::Error::new(io::ErrorKind::TimedOut, "IPC write timed out")
++                })?;
 +                self.writer
 +                    .set_write_timeout(Some(remaining.max(std::time::Duration::from_micros(1))))
 +                    .map_err(|error| {
@@ -1644,12 +1657,12 @@ index 88d93fc..8d312e9 100644
 +    fn read_exact_frame(
 +        &mut self,
 +        mut bytes: &mut [u8],
-+        deadline: Option<std::time::Instant>,
++        deadline: Option<StrictDeadline>,
 +    ) -> io::Result<()> {
 +        while !bytes.is_empty() {
 +            if let Some(deadline) = deadline {
 +                let remaining = deadline
-+                    .checked_duration_since(std::time::Instant::now())
++                    .remaining()
 +                    .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "IPC read timed out"))?;
 +                if self.reader.buffer().is_empty() {
 +                    self.reader
@@ -1674,7 +1687,7 @@ index 88d93fc..8d312e9 100644
 +        }
 +        Ok(())
 +    }
-@@ -72,19 +172,69 @@ pub fn connect_to_server(addr: &crate::net::SocketAddr) -> io::Result<ServerConn
+@@ -72,19 +176,69 @@ pub fn connect_to_server(addr: &crate::net::SocketAddr) -> io::Result<ServerConn
 -/// Attempt to establish a TCP connection to an sccache server listening on `addr`.
 -///
 -/// If the connection fails, retry a few times.
@@ -1910,19 +1923,20 @@ index f639396..f591763 100644
 +                        })
 +                    }
 diff --git a/src/commands.rs b/src/commands.rs
-index 8d8406a..f9733a2 100644
+index 8d8406a..073349f 100644
 --- a/src/commands.rs
 +++ b/src/commands.rs
 @@ -15,2 +15 @@
 -use crate::cache::storage_from_config;
 -use crate::client::{ServerConnection, connect_to_server, connect_with_retry};
 +use crate::client::{ServerConnection, connect_to_server_with_timeout};
-@@ -19 +18,3 @@ use crate::compiler::ColorMode;
+@@ -19 +18,4 @@ use crate::compiler::ColorMode;
 -use crate::config::{Config, default_disk_cache_dir};
 +use crate::config::{
-+    CompilerEnvironment, Config, load_strict_controls, materialize_consumer_snapshot_from_path,
++    CompilerEnvironment, Config, StrictDeadline, load_strict_controls,
++    materialize_consumer_snapshot_from_path,
 +};
-@@ -21,4 +22,11 @@ use crate::jobserver::Client;
+@@ -21,4 +23,11 @@ use crate::jobserver::Client;
 -use crate::mock_command::{CommandChild, CommandCreatorSync, ProcessCommandCreator, RunCommand};
 -use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
 -use crate::server::{self, DistInfo, ServerInfo, ServerStartup, ServerStats};
@@ -1938,20 +1952,20 @@ index 8d8406a..f9733a2 100644
 +use crate::server::{self, DistInfo, ServerInfo, ServerStartup};
 +use crate::util::new_client_runtime;
 +use anyhow::ensure;
-@@ -26,3 +33,0 @@ use byteorder::{BigEndian, ByteOrder};
+@@ -26,3 +34,0 @@ use byteorder::{BigEndian, ByteOrder};
 -use fs::{File, OpenOptions};
 -use fs_err as fs;
 -use log::Level::Trace;
-@@ -32,0 +38,2 @@ use std::io::{self, IsTerminal, Write};
+@@ -32,0 +39,2 @@ use std::io::{self, IsTerminal, Write};
 +use std::os::unix::ffi::OsStrExt;
 +#[cfg(unix)]
-@@ -34 +41 @@ use std::os::unix::process::ExitStatusExt;
+@@ -34 +42 @@ use std::os::unix::process::ExitStatusExt;
 -use std::path::Path;
 +use std::path::{Path, PathBuf};
-@@ -40,2 +46,0 @@ use tokio::runtime::Runtime;
+@@ -40,2 +47,0 @@ use tokio::runtime::Runtime;
 -use walkdir::WalkDir;
 -use which::which_in;
-@@ -45,29 +49,0 @@ use crate::errors::*;
+@@ -45,29 +50,0 @@ use crate::errors::*;
 -/// The default sccache server port.
 -pub const DEFAULT_PORT: u16 = 4226;
 -
@@ -1981,22 +1995,24 @@ index 8d8406a..f9733a2 100644
 -    }
 -}
 -
-@@ -91 +67 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
+@@ -91 +68 @@ async fn read_server_startup_status<R: AsyncReadExt + Unpin>(
 -fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
 +fn run_server_process(startup_timeout: Duration) -> Result<ServerStartup> {
-@@ -107 +83 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -107 +84 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    let _child = process::Command::new(&exe_path)
 +    let mut child = process::Command::new(&exe_path)
-@@ -111,0 +88,3 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -111,0 +89,3 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 +        .stdin(process::Stdio::null())
 +        .stdout(process::Stdio::null())
 +        .stderr(process::Stdio::null())
-@@ -120,2 +99,2 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -120,3 +100,3 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    let timeout = startup_timeout.unwrap_or(SERVER_STARTUP_TIMEOUT);
 -    runtime.block_on(async move {
-+    let timeout = startup_timeout;
+-        match tokio::time::timeout(timeout, startup).await {
++    let deadline = StrictDeadline::from_now("strict server startup deadline", startup_timeout)?;
 +    let result = runtime.block_on(async move {
-@@ -126,20 +105,6 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
++        match tokio::time::timeout_at(deadline.tokio_instant(), startup).await {
+@@ -126,20 +106,6 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    })
 -}
 -
@@ -2023,7 +2039,7 @@ index 8d8406a..f9733a2 100644
 +        child
 +            .wait()
 +            .context("failed to reap unsuccessful server process")?;
-@@ -147,26 +112 @@ fn redirect_stderr(f: File) {
+@@ -147,26 +113 @@ fn redirect_stderr(f: File) {
 -}
 -
 -/// Create the log file and return an error if cannot be created
@@ -2051,22 +2067,25 @@ index 8d8406a..f9733a2 100644
 -    redirect_stderr(f);
 -    Ok(())
 +    result
-@@ -177 +117 @@ fn redirect_error_log(f: File) -> Result<()> {
+@@ -177 +118 @@ fn redirect_error_log(f: File) -> Result<()> {
 -fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup> {
 +fn run_server_process(startup_timeout: Duration) -> Result<ServerStartup> {
-@@ -293 +233 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+@@ -293 +234 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -    let timeout = startup_timeout.unwrap_or(SERVER_STARTUP_TIMEOUT);
-+    let timeout = startup_timeout;
-@@ -302,2 +242,2 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
++    let deadline = StrictDeadline::from_now("strict server startup deadline", startup_timeout)?;
+@@ -295 +236 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
+-        match tokio::time::timeout(timeout, startup).await {
++        match tokio::time::timeout_at(deadline.tokio_instant(), startup).await {
+@@ -302,2 +243,2 @@ fn run_server_process(startup_timeout: Option<Duration>) -> Result<ServerStartup
 -/// Attempt to connect to an sccache server listening on `addr`, or start one if no server is running.
 -fn connect_or_start_server(
 +/// Connect to the one server explicitly started for this job.
 +fn connect_required(
-@@ -305 +245,2 @@ fn connect_or_start_server(
+@@ -305 +246,2 @@ fn connect_or_start_server(
 -    startup_timeout: Option<Duration>,
 +    timeout: Duration,
 +    expected_identity: &crate::protocol::StrictServerIdentity,
-@@ -307,30 +248,13 @@ fn connect_or_start_server(
+@@ -307,30 +249,13 @@ fn connect_or_start_server(
 -    trace!("connect_or_start_server({addr})");
 -    match connect_to_server(addr) {
 -        Ok(server) => Ok(server),
@@ -2110,17 +2129,17 @@ index 8d8406a..f9733a2 100644
 +        Response::ServerIdentity(actual) if actual == *expected_identity => {}
 +        Response::ServerIdentity(_) => {
 +            bail!("governed server identity does not match client policy")
-@@ -338 +262 @@ fn connect_or_start_server(
+@@ -338 +263 @@ fn connect_or_start_server(
 -        Err(e) => Err(e.into()),
 +        _ => bail!("server does not implement the governed strict protocol"),
-@@ -339,0 +264 @@ fn connect_or_start_server(
+@@ -339,0 +265 @@ fn connect_or_start_server(
 +    Ok(server)
-@@ -402 +327,3 @@ fn request_compile<W, X, Y>(
+@@ -402 +328,3 @@ fn request_compile<W, X, Y>(
 -) -> Result<CompileResponse>
 +    compiler_family: StrictCompilerFamily,
 +    snapshot_digest: &str,
 +) -> Result<(CompileResponse, StrictResponseBinding)>
-@@ -408,4 +335,4 @@ where
+@@ -408,4 +336,4 @@ where
 -    let req = Request::Compile(Compile {
 -        exe: exe.as_ref().to_owned().into(),
 -        cwd: cwd.as_ref().to_owned().into(),
@@ -2129,28 +2148,28 @@ index 8d8406a..f9733a2 100644
 +        exe.as_ref().to_owned().into(),
 +        cwd.as_ref().to_owned().into(),
 +        args.iter().map(|a| a.as_ref().to_owned()).collect(),
-@@ -413 +340,5 @@ where
+@@ -413 +341,5 @@ where
 -    });
 +        compiler_family,
 +        snapshot_digest.to_owned(),
 +    );
 +    let binding = classified.binding.clone();
 +    let req = Request::StrictCompile(classified);
-@@ -420 +351 @@ where
+@@ -420 +352 @@ where
 -        Ok(response)
 +        Ok((response, binding))
-@@ -504,2 +435 @@ fn handle_compile_finished(
+@@ -504,2 +436 @@ fn handle_compile_finished(
 -/// If the server returned `UnhandledCompile`, run the compilation command
 -/// locally using `creator` and return the result.
 +/// Only explicit parser classifications authorize direct client execution.
-@@ -508 +438 @@ fn handle_compile_response<T>(
+@@ -508 +439 @@ fn handle_compile_response<T>(
 -    mut creator: T,
 +    creator: T,
-@@ -511,0 +442 @@ fn handle_compile_response<T>(
+@@ -511,0 +443 @@ fn handle_compile_response<T>(
 +    expected_binding: &StrictResponseBinding,
-@@ -514,0 +446 @@ fn handle_compile_response<T>(
+@@ -514,0 +447 @@ fn handle_compile_response<T>(
 +    environment: &CompilerEnvironment,
-@@ -520,0 +453,8 @@ where
+@@ -520,0 +454,8 @@ where
 +    let require_binding = |actual: &StrictResponseBinding| -> Result<()> {
 +        ensure!(
 +            actual == expected_binding,
@@ -2159,17 +2178,17 @@ index 8d8406a..f9733a2 100644
 +        Ok(())
 +    };
 +
-@@ -522,2 +462,3 @@ where
+@@ -522,2 +463,3 @@ where
 -        CompileResponse::CompileStarted => {
 -            debug!("Server sent CompileStarted");
 +        CompileResponse::StrictCompileStarted(binding) => {
 +            require_binding(&binding)?;
 +            debug!("Server accepted bound cacheable compilation");
-@@ -526 +467,2 @@ where
+@@ -526 +468,2 @@ where
 -                Ok(Response::CompileFinished(result)) => {
 +                Ok(Response::StrictCompileFinished { binding, result }) => {
 +                    require_binding(&binding)?;
-@@ -530,22 +472 @@ where
+@@ -530,22 +473 @@ where
 -                Err(e) => {
 -                    match e.downcast_ref::<io::Error>() {
 -                        Some(io_e) if io_e.kind() == io::ErrorKind::UnexpectedEof => {
@@ -2193,14 +2212,14 @@ index 8d8406a..f9733a2 100644
 -                    }
 -                }
 +                Err(e) => return Err(e).context("error reading compile response from server"),
-@@ -554,3 +475,3 @@ where
+@@ -554,3 +476,3 @@ where
 -        CompileResponse::UnsupportedCompiler(s) => {
 -            debug!("Server sent UnsupportedCompiler: {:?}", s);
 -            bail!("Compiler not supported: {:?}", s);
 +        CompileResponse::NotCompilation(binding) => {
 +            require_binding(&binding)?;
 +            debug!("Server classified invocation as NotCompilation");
-@@ -558,2 +479,12 @@ where
+@@ -558,2 +480,12 @@ where
 -        CompileResponse::UnhandledCompile => {
 -            debug!("Server sent UnhandledCompile");
 +        CompileResponse::CannotCache { binding, reason } => {
@@ -2215,7 +2234,7 @@ index 8d8406a..f9733a2 100644
 +        | CompileResponse::UnhandledCompile
 +        | CompileResponse::UnsupportedCompiler(_) => {
 +            bail!("legacy compile response is forbidden in strict mode");
-@@ -563,6 +494 @@ where
+@@ -563,6 +495 @@ where
 -    let mut cmd = creator.new_command_sync(exe);
 -    cmd.args(&cmdline).current_dir(cwd);
 -    if log_enabled!(Trace) {
@@ -2223,7 +2242,7 @@ index 8d8406a..f9733a2 100644
 -    }
 -
 +    let mut creator = creator;
-@@ -570 +496,9 @@ where
+@@ -570 +497,9 @@ where
 -        let child = cmd.spawn().await?;
 +        let child = StrictChildLauncher::spawn(
 +            &mut creator,
@@ -2234,13 +2253,13 @@ index 8d8406a..f9733a2 100644
 +            StrictChildIo::classified_client(),
 +        )
 +        .await?;
-@@ -599,2 +533,3 @@ pub fn do_compile<T>(
+@@ -599,2 +534,3 @@ pub fn do_compile<T>(
 -    path: Option<OsString>,
 -    env_vars: Vec<(OsString, OsString)>,
 +    environment: &CompilerEnvironment,
 +    compiler_family: StrictCompilerFamily,
 +    snapshot_digest: &str,
-@@ -608,2 +543,9 @@ where
+@@ -608,2 +544,9 @@ where
 -    let exe_path = which_in(exe, path, cwd)?;
 -    let res = request_compile(&mut conn, &exe_path, &cmdline, cwd, env_vars)?;
 +    let (res, binding) = request_compile(
@@ -2252,7 +2271,7 @@ index 8d8406a..f9733a2 100644
 +        compiler_family,
 +        snapshot_digest,
 +    )?;
-@@ -611 +553,11 @@ where
+@@ -611 +554,11 @@ where
 -        creator, runtime, &mut conn, res, &exe_path, cmdline, cwd, stdout, stderr,
 +        creator,
 +        runtime,
@@ -2265,7 +2284,7 @@ index 8d8406a..f9733a2 100644
 +        environment,
 +        stdout,
 +        stderr,
-@@ -615,0 +568,10 @@ where
+@@ -615,0 +569,10 @@ where
 +fn reject_legacy_runtime_selectors<'a>(
 +    values: impl IntoIterator<Item = Option<&'a OsStr>>,
 +) -> Result<()> {
@@ -2276,7 +2295,7 @@ index 8d8406a..f9733a2 100644
 +    Ok(())
 +}
 +
-@@ -617,4 +579,57 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -617,4 +580,57 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -    // Config isn't required for all commands, but if it's broken then we should flag
 -    // it early and loudly.
 -    let config = &Config::load()?;
@@ -2338,7 +2357,7 @@ index 8d8406a..f9733a2 100644
 +    let timeouts = controls.timeouts()?;
 +    let identity = controls.server_identity();
 +    let address = controls.address()?;
-@@ -625,10 +640,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -625,10 +641,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let stats = match connect_to_server(&get_addr()) {
 -                Ok(srv) => request_stats(srv).context("failed to get stats from server")?,
 -                // If there is no server, spawning a new server would start with zero stats
@@ -2351,7 +2370,7 @@ index 8d8406a..f9733a2 100644
 -            };
 +            let stats = request_stats(connect_required(&address, timeouts.ipc, &identity)?)
 +                .context("failed to get stats from server")?;
-@@ -641,16 +648 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -641,16 +649 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            trace!("Command::DebugPreprocessorCacheEntries");
 -            let entries_dir = default_disk_cache_dir().join("preprocessor");
 -            for entry in WalkDir::new(entries_dir).sort_by_file_name() {
@@ -2369,7 +2388,7 @@ index 8d8406a..f9733a2 100644
 -                println!("=========================");
 -            }
 +            bail!("preprocessor-cache inspection is unavailable in strict mode");
-@@ -660,10 +652,20 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -660,10 +653,20 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            if env::var("SCCACHE_ERROR_LOG").is_ok() {
 -                let f = create_error_log()?;
 -                // Can't report failure here, we're already daemonized.
@@ -2400,17 +2419,17 @@ index 8d8406a..f9733a2 100644
 +                controls.storage_identity(),
 +                timeouts,
 +            )?;
-@@ -675 +677 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -675 +678 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -                run_server_process(startup_timeout).context("failed to start server process")?;
 +                run_server_process(timeouts.startup).context("failed to start server process")?;
-@@ -688 +690,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -688 +691,2 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let server = connect_to_server(&get_addr()).context("couldn't connect to server")?;
 +            let server = connect_required(&address, timeouts.ipc, &identity)
 +                .context("couldn't connect to governed server")?;
-@@ -694 +697 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -694 +698 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
 +            let conn = connect_required(&address, timeouts.ipc, &identity)?;
-@@ -698,56 +701 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -698,56 +702 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -        #[cfg(feature = "dist-client")]
 -        Command::DistAuth => {
 -            use crate::config;
@@ -2468,10 +2487,10 @@ index 8d8406a..f9733a2 100644
 -            "Distributed compilation not compiled in, please rebuild with the dist-client feature"
 -        ),
 +        Command::DistAuth => bail!("distributed authentication is unavailable in strict mode"),
-@@ -756 +704 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -756 +705 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let srv = connect_or_start_server(&get_addr(), startup_timeout)?;
 +            let srv = connect_required(&address, timeouts.ipc, &identity)?;
-@@ -762,3 +710,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -762,3 +711,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -        #[cfg(feature = "dist-client")]
 -        Command::PackageToolchain(executable, out) => {
 -            use crate::compiler;
@@ -2483,7 +2502,7 @@ index 8d8406a..f9733a2 100644
 +            unreachable!("handled before runtime config")
 +        }
 +    }
-@@ -766,16 +719,139 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -766,16 +720,139 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            trace!("Command::PackageToolchain({})", executable.display());
 -            let runtime = new_client_runtime()?;
 -            let jobserver = Client::new();
@@ -2639,7 +2658,7 @@ index 8d8406a..f9733a2 100644
 +            max_frame_bytes: 1024 * 1024,
 +            max_child_output_bytes: 1024 * 1024,
 +            compilers: Vec::new(),
-@@ -783,25 +859 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -783,25 +860 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -        #[cfg(not(feature = "dist-client"))]
 -        Command::PackageToolchain(_executable, _out) => bail!(
 -            "Toolchain packaging not compiled in, please rebuild with the dist-client feature"
@@ -2666,7 +2685,7 @@ index 8d8406a..f9733a2 100644
 -                    _ => (),
 -                });
 +    }
-@@ -809,16 +861,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -809,16 +862,8 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -            let jobserver = Client::new();
 -            let conn = connect_or_start_server(&get_addr(), startup_timeout)?;
 -            let mut runtime = new_client_runtime()?;
@@ -2691,7 +2710,7 @@ index 8d8406a..f9733a2 100644
 +        StrictResponseBinding {
 +            request_digest: [7; 32],
 +            snapshot_digest: "strict-test".to_owned(),
-@@ -828 +872,233 @@ pub fn run_command(cmd: Command) -> Result<i32> {
+@@ -828 +873,233 @@ pub fn run_command(cmd: Command) -> Result<i32> {
 -    Ok(0)
 +    #[test]
 +    fn strict_cannot_cache_reason_authorizes_one_client_command() {
@@ -2958,7 +2977,7 @@ index e6294d5..463b38a 100644
 @@ -189,0 +190 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
 +    flag!("--no-default-config", PassThroughFlag),
 diff --git a/src/compiler/compiler.rs b/src/compiler/compiler.rs
-index 78bb5a4..c6fb7d4 100644
+index 78bb5a4..ed5c2a4 100644
 --- a/src/compiler/compiler.rs
 +++ b/src/compiler/compiler.rs
 @@ -16,2 +16,2 @@
@@ -2969,16 +2988,17 @@ index 78bb5a4..c6fb7d4 100644
 @@ -30 +30 @@ use crate::compiler::ptxas::Ptxas;
 -use crate::compiler::rust::{Rust, RustupProxy};
 +use crate::compiler::rust::Rust;
-@@ -31,0 +32 @@ use crate::compiler::tasking_vx::TaskingVX;
+@@ -31,0 +32,2 @@ use crate::compiler::tasking_vx::TaskingVX;
++use crate::config::StrictDeadline;
 +use crate::dist;
-@@ -36,0 +38 @@ use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_sta
+@@ -36,0 +39 @@ use crate::mock_command::{CommandChild, CommandCreatorSync, RunCommand, exit_sta
 +use crate::protocol::{StrictCompilerFamily, strict_environment_key_component};
-@@ -39 +41 @@ use crate::util::{fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_i
+@@ -39 +42 @@ use crate::util::{fmt_duration_as_secs, resolve_compiler_avoiding_wrapper, run_i
 -use crate::{counted_array, dist};
 +use anyhow::ensure;
-@@ -44 +45,0 @@ use fs_err as fs;
+@@ -44 +46,0 @@ use fs_err as fs;
 -use itertools::Itertools as _;
-@@ -499,0 +501,10 @@ where
+@@ -499,0 +502,10 @@ where
 +    /// Complete request-specific classification before `CompileStarted` is emitted.
 +    async fn strict_preflight(
 +        &mut self,
@@ -2989,7 +3009,7 @@ index 78bb5a4..c6fb7d4 100644
 +        Ok(StrictPreflight::Cacheable)
 +    }
 +
-@@ -574,0 +586,14 @@ where
+@@ -574,0 +587,14 @@ where
 +        let environment_component =
 +            strict_environment_key_component(env_vars.iter().map(|(name, value)| {
 +                (
@@ -3004,11 +3024,10 @@ index 78bb5a4..c6fb7d4 100644
 +        strict_key.update(&(environment_component.len() as u64).to_be_bytes());
 +        strict_key.update(&environment_component);
 +        let key = strict_key.finalize().to_hex().to_string();
-@@ -586,0 +612,4 @@ where
+@@ -586,0 +613,3 @@ where
 +        let timeout = service.cache_read_timeout();
-+        let cache_read_deadline = Instant::now()
-+            .checked_add(timeout)
-+            .context("governed cache-read timeout exceeds the monotonic-clock range")?;
++        let cache_read_deadline =
++            StrictDeadline::from_now("governed cache-read deadline", timeout)?;
 @@ -588,10 +617 @@ where
 -        // Set a maximum time limit for the cache to respond before we forge
 -        // ahead ourselves with a compilation.
@@ -3021,23 +3040,26 @@ index 78bb5a4..c6fb7d4 100644
 -
 -        // Check the result of the cache lookup.
 +        // Check the result of the cache lookup and fully restore any hit under one deadline.
-@@ -605,3 +625,12 @@ where
+@@ -605,3 +625,15 @@ where
 -
 -        let lookup = match cache_status.await {
 -            (Ok(Ok(Cache::Hit(mut entry))), duration) => {
 +        let locally_preprocessed = compilation.is_locally_preprocessed();
-+        let cache_status = tokio::time::timeout(timeout, cache_status)
-+            .await
-+            .map_err(|_| {
-+                anyhow!(
-+                    "governed cache read or materialization timed out for {out_pretty} after {}",
-+                    fmt_duration_as_secs(&start.elapsed())
-+                )
-+            })?;
++        let cache_status = tokio::time::timeout_at(
++            cache_read_deadline.tokio_instant(),
++            cache_status,
++        )
++        .await
++        .map_err(|_| {
++            anyhow!(
++                "governed cache read or materialization timed out for {out_pretty} after {}",
++                fmt_duration_as_secs(&start.elapsed())
++            )
++        })?;
 +        let duration = start.elapsed();
 +        let lookup = match cache_status {
 +            Ok(Cache::Hit(entry)) => {
-@@ -613,14 +642 @@ where
+@@ -613,14 +645 @@ where
 -                let output = process::Output {
 -                    status: exit_status(0),
 -                    stdout: entry.get_stdout(),
@@ -3053,15 +3075,15 @@ index 78bb5a4..c6fb7d4 100644
 -                    // Since we did local preprocessing, that should already have produced the dependency
 -                    // file - just leave that one alone and don't overwrite it from the cache.
 +                let filtered_outputs = if locally_preprocessed {
-@@ -629 +645 @@ where
+@@ -629 +648 @@ where
 -                        .filter(|fobj_source| fobj_source.key != "d") // key "d" means dependency file
 +                        .filter(|fobj_source| fobj_source.key != "d")
-@@ -633,4 +648,0 @@ where
+@@ -633,4 +651,0 @@ where
 -                    // In this mode, no local preprocessing was done, so the dependency file (if any)
 -                    // has not been created. But in this mode, the cache key also includes a lot of
 -                    // information about filenames (and less relevant here, file hashes), so it *is* safe
 -                    // to restore the dependency file from the cache.
-@@ -639,13 +651,15 @@ where
+@@ -639,13 +654,15 @@ where
 -
 -                let hit = CompileResult::CacheHit(duration);
 -                match entry.extract_objects(filtered_outputs, &pool).await {
@@ -3090,25 +3112,25 @@ index 78bb5a4..c6fb7d4 100644
 +                    stderr,
 +                };
 +                CacheLookupResult::Success(CompileResult::CacheHit(duration), output)
-@@ -653 +667 @@ where
+@@ -653 +670 @@ where
 -            (Ok(Ok(Cache::Miss)), duration) => {
 +            Ok(Cache::Miss) => {
-@@ -659 +673 @@ where
+@@ -659 +676 @@ where
 -                Ok(CacheLookupResult::Miss(MissType::Normal))
 +                CacheLookupResult::Miss(MissType::Normal)
-@@ -661 +675 @@ where
+@@ -661 +678 @@ where
 -            (Ok(Ok(Cache::None)), duration) => {
 +            Ok(Cache::None) => {
-@@ -667 +681 @@ where
+@@ -667 +684 @@ where
 -                Ok(CacheLookupResult::Miss(MissType::ForcedNoCache))
 +                CacheLookupResult::Miss(MissType::ForcedNoCache)
-@@ -669 +683 @@ where
+@@ -669 +686 @@ where
 -            (Ok(Ok(Cache::Recache)), duration) => {
 +            Ok(Cache::Recache) => {
-@@ -675 +689 @@ where
+@@ -675 +692 @@ where
 -                Ok(CacheLookupResult::Miss(MissType::ForcedRecache))
 +                CacheLookupResult::Miss(MissType::ForcedRecache)
-@@ -677,16 +691,7 @@ where
+@@ -677,16 +694,7 @@ where
 -            (Ok(Err(err)), duration) => {
 -                error!(
 -                    "[{}]: Cache read error: {:?} in {}",
@@ -3132,11 +3154,11 @@ index 78bb5a4..c6fb7d4 100644
 +                        fmt_duration_as_secs(&duration)
 +                    )
 +                });
-@@ -694,2 +699 @@ where
+@@ -694,2 +702 @@ where
 -        }?;
 -
 +        };
-@@ -772,0 +777,10 @@ where
+@@ -772,0 +780,10 @@ where
 +                if storage.is_read_only() {
 +                    return Ok((
 +                        CompileResult::ReadOnlyCacheMiss(
@@ -3147,7 +3169,7 @@ index 78bb5a4..c6fb7d4 100644
 +                        compiler_result,
 +                    ));
 +                }
-@@ -827,0 +842,81 @@ where
+@@ -827,0 +845,81 @@ where
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +pub enum StrictPreflight {
 +    Cacheable,
@@ -3229,7 +3251,7 @@ index 78bb5a4..c6fb7d4 100644
 +    Ok(StrictPreflight::Cacheable)
 +}
 +
-@@ -1170,0 +1266,99 @@ pub enum CompilerArguments<T> {
+@@ -1170,0 +1269,99 @@ pub enum CompilerArguments<T> {
 +/// Classify raw governed compiler arguments before any compiler lookup or parser expansion.
 +///
 +/// The inspection is deliberately byte-oriented and performs a complete response-file pass
@@ -3329,24 +3351,24 @@ index 78bb5a4..c6fb7d4 100644
 +    CompilerArguments::Ok(())
 +}
 +
-@@ -1236,0 +1431,2 @@ pub enum CompileResult {
+@@ -1236,0 +1434,2 @@ pub enum CompileResult {
 +    /// A governed read-only miss compiled without attempting a cache write.
 +    ReadOnlyCacheMiss(MissType, DistType, Duration),
-@@ -1262,0 +1459,5 @@ impl fmt::Debug for CompileResult {
+@@ -1262,0 +1462,5 @@ impl fmt::Debug for CompileResult {
 +            CompileResult::ReadOnlyCacheMiss(ref m, ref dt, ref d) => write!(
 +                f,
 +                "CompileResult::ReadOnlyCacheMiss({:?}, {:?}, {:?})",
 +                d, m, dt
 +            ),
-@@ -1284,0 +1486,4 @@ impl PartialEq<CompileResult> for CompileResult {
+@@ -1284,0 +1489,4 @@ impl PartialEq<CompileResult> for CompileResult {
 +            (
 +                CompileResult::ReadOnlyCacheMiss(m, dt, _),
 +                CompileResult::ReadOnlyCacheMiss(n, dt2, _),
 +            ) => m == n && dt == dt2,
-@@ -1482 +1687 @@ where
+@@ -1482 +1690 @@ where
 -        let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
 +        let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool, None).await;
-@@ -1485,3 +1690,12 @@ where
+@@ -1485,3 +1693,12 @@ where
 -        // Even if it does not look like rustc like it might still be rustc driver
 -        // so we do full check
 -        executable
@@ -3362,21 +3384,21 @@ index 78bb5a4..c6fb7d4 100644
 +            );
 +            executable
 +        }
-@@ -1506 +1720,2 @@ where
+@@ -1506 +1723,2 @@ where
 -                let cc = detect_c_compiler(creator, executable, args, env.to_vec(), pool).await;
 +                let cc =
 +                    detect_c_compiler(creator, executable, args, env.to_vec(), pool, None).await;
-@@ -1521,2 +1736,2 @@ async fn resolve_rust_compiler<T>(
+@@ -1521,2 +1739,2 @@ async fn resolve_rust_compiler<T>(
 -    env: &[(OsString, OsString)],
 -    cwd: PathBuf,
 +    _env: &[(OsString, OsString)],
 +    _cwd: PathBuf,
-@@ -1528,0 +1744,4 @@ where
+@@ -1528,0 +1747,4 @@ where
 +    ensure!(
 +        rustc_executable == executable,
 +        "strict compiler proxies are forbidden"
 +    );
-@@ -1530,7 +1749 @@ where
+@@ -1530,7 +1752 @@ where
 -    // We're wrapping rustc if the executable doesn't match the detected rustc_executable. In this case the wrapper
 -    // expects rustc as the first argument.
 -    if rustc_executable != executable {
@@ -3385,7 +3407,7 @@ index 78bb5a4..c6fb7d4 100644
 -
 -    child.env_clear().envs(env.to_vec()).args(&["-vV"]);
 +    child.env_clear().args(&["-vV"]);
-@@ -1550,54 +1763 @@ where
+@@ -1550,54 +1766 @@ where
 -            let rustc_executable2 = rustc_executable.clone();
 -
 -            let proxy = RustupProxy::find_proxy_executable::<T>(
@@ -3441,12 +3463,12 @@ index 78bb5a4..c6fb7d4 100644
 -            debug!("Using rustc at path: {resolved_rustc:?}");
 -
 +            debug!("Using governed rustc at path: {rustc_executable:?}");
-@@ -1606,2 +1766,2 @@ where
+@@ -1606,2 +1769,2 @@ where
 -                resolved_rustc,
 -                env,
 +                rustc_executable,
 +                &[],
-@@ -1613,6 +1773 @@ where
+@@ -1613,6 +1776 @@ where
 -            .map(|c| {
 -                (
 -                    Box::new(c) as Box<dyn Compiler<T>>,
@@ -3454,7 +3476,7 @@ index 78bb5a4..c6fb7d4 100644
 -                )
 -            })
 +            .map(|c| (Box::new(c) as Box<dyn Compiler<T>>, None))
-@@ -1624,20 +1778,0 @@ where
+@@ -1624,20 +1781,0 @@ where
 -ArgData! {
 -    PassThrough(OsString),
 -}
@@ -3475,19 +3497,19 @@ index 78bb5a4..c6fb7d4 100644
 -    take_arg!("-ccbin", OsString, CanBeSeparated(b'='), Detect_PassThrough),
 -]);
 -
-@@ -1647 +1782 @@ async fn detect_c_compiler<T, P>(
+@@ -1647 +1785 @@ async fn detect_c_compiler<T, P>(
 -    arguments: &[OsString],
 +    _arguments: &[OsString],
-@@ -1649,0 +1785 @@ async fn detect_c_compiler<T, P>(
+@@ -1649,0 +1788 @@ async fn detect_c_compiler<T, P>(
 +    expected_family: Option<StrictCompilerFamily>,
-@@ -1708 +1843,0 @@ compiler_version=__VERSION__
+@@ -1708 +1846,0 @@ compiler_version=__VERSION__
 -    // Resolve compiler avoiding ccache wrappers to prevent double-caching.
-@@ -1710,3 +1845 @@ compiler_version=__VERSION__
+@@ -1710,3 +1848 @@ compiler_version=__VERSION__
 -    let resolved_executable = resolve_compiler_avoiding_wrapper(executable, &env);
 -
 -    let mut cmd = creator.clone().new_command_sync(&resolved_executable);
 +    let mut cmd = creator.clone().new_command_sync(executable);
-@@ -1715,12 +1848 @@ compiler_version=__VERSION__
+@@ -1715,12 +1851 @@ compiler_version=__VERSION__
 -        .envs(env.iter().map(|s| (&s.0, &s.1)));
 -
 -    // Iterate over all the arguments for compilation and extract
@@ -3501,14 +3523,14 @@ index 78bb5a4..c6fb7d4 100644
 -        }
 -    }
 +        .env_clear();
-@@ -1727,0 +1850,3 @@ compiler_version=__VERSION__
+@@ -1727,0 +1853,3 @@ compiler_version=__VERSION__
 +    if expected_family == Some(StrictCompilerFamily::Clang) {
 +        cmd.arg("--no-default-config");
 +    }
-@@ -1730 +1855 @@ compiler_version=__VERSION__
+@@ -1730 +1858 @@ compiler_version=__VERSION__
 -    let child = cmd.spawn().await?;
 +    let child = crate::mock_command::StrictChildLauncher::spawn_prepared(&mut cmd).await?;
-@@ -1753 +1878,21 @@ compiler_version=__VERSION__
+@@ -1753 +1881,21 @@ compiler_version=__VERSION__
 -        let executable = resolved_executable;
 +        ensure!(
 +            matches!(
@@ -3531,7 +3553,7 @@ index 78bb5a4..c6fb7d4 100644
 +            );
 +        }
 +        let executable = executable.to_owned();
-@@ -1896,0 +2042,37 @@ where
+@@ -1896,0 +2045,37 @@ where
 +pub async fn get_strict_compiler_info<T>(
 +    creator: T,
 +    executable: &Path,
@@ -3569,9 +3591,9 @@ index 78bb5a4..c6fb7d4 100644
 +    }
 +}
 +
-@@ -1903,0 +2086 @@ mod test {
+@@ -1903,0 +2089 @@ mod test {
 +    use crate::protocol::StrictCompilerFamily;
-@@ -1912,0 +2096,125 @@ mod test {
+@@ -1912,0 +2099,125 @@ mod test {
 +    #[cfg(unix)]
 +    #[test]
 +    fn strict_argument_preclassification_is_byte_oriented_and_precedence_ordered() {
@@ -3697,7 +3719,7 @@ index 78bb5a4..c6fb7d4 100644
 +        }
 +    }
 +
-@@ -2026,0 +2335,67 @@ mod test {
+@@ -2026,0 +2338,67 @@ mod test {
 +    #[test]
 +    fn strict_clang_probe_suppresses_default_configuration() {
 +        let f = TestFixture::new();
@@ -3765,10 +3787,10 @@ index 78bb5a4..c6fb7d4 100644
 +        );
 +    }
 +
-@@ -2067 +2442 @@ mod test {
+@@ -2067 +2445 @@ mod test {
 -    fn test_detect_compiler_kind_msvc() {
 +    fn test_strict_detection_rejects_msvc() {
-@@ -2098,5 +2473,5 @@ mod test {
+@@ -2098,5 +2476,5 @@ mod test {
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -3779,10 +3801,10 @@ index 78bb5a4..c6fb7d4 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2106 +2481 @@ mod test {
+@@ -2106 +2484 @@ mod test {
 -    fn test_detect_compiler_kind_nvcc() {
 +    fn test_strict_detection_rejects_nvcc() {
-@@ -2116,5 +2491,5 @@ mod test {
+@@ -2116,5 +2494,5 @@ mod test {
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -3793,10 +3815,10 @@ index 78bb5a4..c6fb7d4 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2124 +2499 @@ mod test {
+@@ -2124 +2502 @@ mod test {
 -    fn test_detect_compiler_kind_nvhpc() {
 +    fn test_strict_detection_rejects_nvhpc() {
-@@ -2134,5 +2509,5 @@ mod test {
+@@ -2134,5 +2512,5 @@ mod test {
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -3807,10 +3829,10 @@ index 78bb5a4..c6fb7d4 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2203 +2578 @@ LLVM version: 6.0",
+@@ -2203 +2581 @@ LLVM version: 6.0",
 -    fn test_detect_compiler_kind_rustc_workspace_wrapper() {
 +    fn test_strict_detection_rejects_rustc_workspace_wrappers() {
-@@ -2213,14 +2588,14 @@ LLVM version: 6.0",
+@@ -2213,14 +2591,14 @@ LLVM version: 6.0",
 -        let c = detect_compiler(
 -            creator,
 -            &rustc,
@@ -3839,16 +3861,16 @@ index 78bb5a4..c6fb7d4 100644
 +            .wait()
 +            .is_err()
 +        );
-@@ -2246 +2621 @@ LLVM version: 6.0",
+@@ -2246 +2624 @@ LLVM version: 6.0",
 -        // Test we detect rustc if the CARGO env is not defined
 +        // Wrapper-shaped selectors remain forbidden without Cargo environment.
-@@ -2260 +2635 @@ LLVM version: 6.0",
+@@ -2260 +2638 @@ LLVM version: 6.0",
 -            .is_ok()
 +            .is_err()
-@@ -2265 +2640 @@ LLVM version: 6.0",
+@@ -2265 +2643 @@ LLVM version: 6.0",
 -    fn test_detect_compiler_kind_diab() {
 +    fn test_strict_detection_rejects_diab() {
-@@ -2275,5 +2650,5 @@ LLVM version: 6.0",
+@@ -2275,5 +2653,5 @@ LLVM version: 6.0",
 -        let c = detect_compiler(creator, &f.bins[0], f.tempdir.path(), &[], &[], pool, None)
 -            .wait()
 -            .unwrap()
@@ -3859,15 +3881,15 @@ index 78bb5a4..c6fb7d4 100644
 +                .wait()
 +                .is_err()
 +        );
-@@ -2804,2 +3179 @@ LLVM version: 6.0",
+@@ -2804,2 +3182 @@ LLVM version: 6.0",
 -    /// Test that a cache read that results in an error is treated as a cache
 -    /// miss.
 +    /// Test that a cache read error stops before compiler execution.
-@@ -2841,3 +3214,0 @@ LLVM version: 6.0",
+@@ -2841,3 +3217,0 @@ LLVM version: 6.0",
 -        // The compiler invocation.
 -        const COMPILER_STDOUT: &[u8] = b"compiler stdout";
 -        const COMPILER_STDERR: &[u8] = b"compiler stderr";
-@@ -2845,11 +3215,0 @@ LLVM version: 6.0",
+@@ -2845,11 +3218,0 @@ LLVM version: 6.0",
 -        let o = obj.clone();
 -        next_command_calls(&creator, move |_| {
 -            // Pretend to compile something.
@@ -3879,10 +3901,10 @@ index 78bb5a4..c6fb7d4 100644
 -                COMPILER_STDERR,
 -            ))
 -        });
-@@ -2864 +3224 @@ LLVM version: 6.0",
+@@ -2864 +3227 @@ LLVM version: 6.0",
 -        let (cached, res) = runtime
 +        let error = runtime
-@@ -2875,0 +3236,136 @@ LLVM version: 6.0",
+@@ -2875,0 +3239,136 @@ LLVM version: 6.0",
 +            .unwrap_err();
 +        assert!(error.to_string().contains("governed cache read failed"));
 +        assert!(!obj.exists());
@@ -4019,7 +4041,7 @@ index 78bb5a4..c6fb7d4 100644
 +                CacheControl::Default,
 +                pool,
 +            ))
-@@ -2877,9 +3372,0 @@ LLVM version: 6.0",
+@@ -2877,9 +3375,0 @@ LLVM version: 6.0",
 -        // Ensure that the object file was created.
 -        assert!(fs::metadata(&obj).map(|m| m.len() > 0).unwrap());
 -        match cached {
@@ -4029,7 +4051,7 @@ index 78bb5a4..c6fb7d4 100644
 -            }
 -            _ => panic!("Unexpected compile result: {:?}", cached),
 -        }
-@@ -2887,3 +3374,6 @@ LLVM version: 6.0",
+@@ -2887,3 +3377,6 @@ LLVM version: 6.0",
 -        assert_eq!(exit_status(0), res.status);
 -        assert_eq!(COMPILER_STDOUT, res.stdout.as_slice());
 -        assert_eq!(COMPILER_STDERR, res.stderr.as_slice());
@@ -4395,7 +4417,7 @@ index d6c2c71..7bef599 100644
 +            .wait()
 +            .unwrap();
 diff --git a/src/config.rs b/src/config.rs
-index cef32b2..1d3caba 100644
+index cef32b2..f22a567 100644
 --- a/src/config.rs
 +++ b/src/config.rs
 @@ -17,0 +18 @@ use crate::util::normalize_win_path;
@@ -4408,7 +4430,7 @@ index cef32b2..1d3caba 100644
 +    ffi::{OsStrExt, OsStringExt},
 +    fs::OpenOptionsExt,
 +};
-@@ -38,0 +46,937 @@ use crate::errors::*;
+@@ -38,0 +46,1042 @@ use crate::errors::*;
 +use crate::protocol::{
 +    StrictCompilerFamily, StrictCompilerIdentity, StrictEnvironmentEntry, StrictServerIdentity,
 +};
@@ -4511,7 +4533,7 @@ index cef32b2..1d3caba 100644
 +    }
 +
 +    pub(crate) fn timeouts(&self) -> Result<StrictTimeouts> {
-+        Ok(StrictTimeouts {
++        let timeouts = StrictTimeouts {
 +            startup: governed_duration_from_value(
 +                "consumer startup timeout",
 +                &self.timeouts.startup_ms.to_string(),
@@ -4544,7 +4566,9 @@ index cef32b2..1d3caba 100644
 +                "consumer cleanup timeout",
 +                &self.timeouts.cleanup_ms.to_string(),
 +            )?,
-+        })
++        };
++        timeouts.validate_deadline_horizons()?;
++        Ok(timeouts)
 +    }
 +
 +    pub(crate) fn server_identity(&self) -> StrictServerIdentity {
@@ -5279,6 +5303,21 @@ index cef32b2..1d3caba 100644
 +}
 +
 +impl StrictTimeouts {
++    fn validate_deadline_horizons(self) -> Result<()> {
++        let now = std::time::Instant::now();
++        StrictDeadline::checked_sequence_from(
++            "classification, termination-grace, and cleanup deadline",
++            now,
++            [self.classification, self.termination_grace, self.cleanup],
++        )?;
++        StrictDeadline::checked_sequence_from(
++            "compiler, termination-grace, and cleanup deadline",
++            now,
++            [self.compiler, self.termination_grace, self.cleanup],
++        )?;
++        Ok(())
++    }
++
 +    pub(crate) fn child_policy(
 +        self,
 +        max_output_bytes: u64,
@@ -5310,6 +5349,56 @@ index cef32b2..1d3caba 100644
 +    }
 +}
 +
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct StrictDeadline(std::time::Instant);
++
++impl StrictDeadline {
++    pub fn from_now(name: &str, duration: std::time::Duration) -> Result<Self> {
++        Self::checked_from(name, std::time::Instant::now(), duration)
++    }
++
++    pub fn checked_from(
++        name: &str,
++        start: std::time::Instant,
++        duration: std::time::Duration,
++    ) -> Result<Self> {
++        start
++            .checked_add(duration)
++            .map(Self)
++            .with_context(|| format!("{name} exceeds the platform monotonic-clock range"))
++    }
++
++    pub fn checked_sequence_from(
++        name: &str,
++        start: std::time::Instant,
++        durations: impl IntoIterator<Item = std::time::Duration>,
++    ) -> Result<Self> {
++        durations
++            .into_iter()
++            .try_fold(Self(start), |deadline, duration| {
++                deadline
++                    .0
++                    .checked_add(duration)
++                    .map(Self)
++                    .with_context(|| format!("{name} exceeds the platform monotonic-clock range"))
++            })
++    }
++
++    pub fn remaining(self) -> Option<std::time::Duration> {
++        self.0
++            .checked_duration_since(std::time::Instant::now())
++            .filter(|remaining| !remaining.is_zero())
++    }
++
++    pub fn is_elapsed(self) -> bool {
++        self.0 <= std::time::Instant::now()
++    }
++
++    pub fn tokio_instant(self) -> tokio::time::Instant {
++        tokio::time::Instant::from_std(self.0)
++    }
++}
++
 +pub fn governed_duration_from_value(name: &str, value: &str) -> Result<std::time::Duration> {
 +    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
 +        bail!("{name} must be a positive decimal millisecond value");
@@ -5334,6 +5423,44 @@ index cef32b2..1d3caba 100644
 +    Ok(duration)
 +}
 +
++#[test]
++fn strict_deadline_accepts_the_exact_compiled_maximum() {
++    let maximum = governed_duration_from_value(
++        "strict deadline maximum",
++        env!("SCCACHE_STRICT_MAX_RUNTIME_TIMEOUT_MS"),
++    )
++    .unwrap();
++    let deadline = StrictDeadline::from_now("strict deadline maximum", maximum).unwrap();
++    assert!(deadline.remaining().is_some());
++}
++
++#[test]
++fn strict_deadline_rejects_monotonic_clock_overflow() {
++    assert!(
++        StrictDeadline::checked_from(
++            "strict deadline overflow",
++            std::time::Instant::now(),
++            std::time::Duration::MAX,
++        )
++        .is_err()
++    );
++}
++
++#[test]
++fn strict_deadline_rejects_sequence_overflow() {
++    assert!(
++        StrictDeadline::checked_sequence_from(
++            "strict deadline sequence",
++            std::time::Instant::now(),
++            [
++                std::time::Duration::MAX,
++                std::time::Duration::from_millis(1),
++            ],
++        )
++        .is_err()
++    );
++}
++
 +pub fn governed_positive_u64_from_value(name: &str, value: &str) -> Result<u64> {
 +    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
 +        bail!("{name} must be a positive decimal integer");
@@ -5346,7 +5473,7 @@ index cef32b2..1d3caba 100644
 +    }
 +    Ok(parsed)
 +}
-@@ -1356,0 +2301,243 @@ impl Config {
+@@ -1356,0 +2406,243 @@ impl Config {
 +#[cfg(all(test, unix))]
 +mod strict_snapshot_tests {
 +    use super::*;
@@ -5591,20 +5718,22 @@ index cef32b2..1d3caba 100644
 +}
 +
 diff --git a/src/mock_command.rs b/src/mock_command.rs
-index d7ffa03..54f72b9 100644
+index d7ffa03..f33372f 100644
 --- a/src/mock_command.rs
 +++ b/src/mock_command.rs
-@@ -49,0 +50 @@ use crate::jobserver::{Acquired, Client};
+@@ -47,0 +48 @@
++use crate::config::StrictDeadline;
+@@ -49,0 +51 @@ use crate::jobserver::{Acquired, Client};
 +use anyhow::ensure;
-@@ -76,0 +78,4 @@ pub trait CommandChild {
+@@ -76,0 +79,4 @@ pub trait CommandChild {
 +    /// Shared stdout/stderr byte ceiling for this child.
 +    fn strict_output_limit(&self) -> u64;
 +    /// Shared daemon poison transition owned by this child.
 +    fn strict_poison(&self) -> StrictPoison;
-@@ -113,0 +119,2 @@ pub trait RunCommand: fmt::Debug + Send {
+@@ -113,0 +120,2 @@ pub trait RunCommand: fmt::Debug + Send {
 +    /// Prove that the inherited process environment was cleared before sealing.
 +    fn strict_environment_is_sealed(&self) -> bool;
-@@ -115 +122,6 @@ pub trait RunCommand: fmt::Debug + Send {
+@@ -115 +123,6 @@ pub trait RunCommand: fmt::Debug + Send {
 -    async fn spawn(&mut self) -> Result<Self::C>;
 +    async fn spawn(&mut self, permit: StrictSpawnPermit) -> Result<Self::C>;
 +}
@@ -5612,7 +5741,7 @@ index d7ffa03..54f72b9 100644
 +/// Unforgeable capability required to cross the compiler-child spawn boundary.
 +pub struct StrictSpawnPermit {
 +    _private: (),
-@@ -139,0 +152,9 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
+@@ -139,0 +153,9 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
 +    fn new_strict(client: &Client, policy: StrictChildPolicy) -> Self {
 +        let _ = policy;
 +        Self::new(client)
@@ -5622,7 +5751,7 @@ index d7ffa03..54f72b9 100644
 +        self.clone()
 +    }
 +
-@@ -142,0 +164,220 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
+@@ -142,0 +165,220 @@ pub trait CommandCreatorSync: Clone + Send + Sync + 'static {
 +#[derive(Clone, Debug)]
 +pub struct StrictChildPolicy {
 +    pub classification_timeout: std::time::Duration,
@@ -5843,11 +5972,11 @@ index d7ffa03..54f72b9 100644
 +    }
 +}
 +
-@@ -145 +386,140 @@ pub struct Child {
+@@ -145 +387,145 @@ pub struct Child {
 -    token: Acquired,
 +    _token: Acquired,
 +    policy: StrictChildPolicy,
-+    deadline: tokio::time::Instant,
++    deadline: StrictDeadline,
 +    purpose: StrictChildPurpose,
 +    #[cfg(unix)]
 +    process_group: i32,
@@ -5919,7 +6048,7 @@ index d7ffa03..54f72b9 100644
 +}
 +
 +#[cfg(target_os = "linux")]
-+async fn wait_for_linux_leader_exit(pid: i32, deadline: tokio::time::Instant) -> io::Result<()> {
++async fn wait_for_linux_leader_exit(pid: i32, deadline: StrictDeadline) -> io::Result<()> {
 +    loop {
 +        match linux_process_record(pid)? {
 +            Some((b'Z', _)) => return Ok(()),
@@ -5930,7 +6059,7 @@ index d7ffa03..54f72b9 100644
 +                ));
 +            }
 +        }
-+        if tokio::time::Instant::now() >= deadline {
++        if deadline.is_elapsed() {
 +            return Err(io::Error::new(
 +                io::ErrorKind::TimedOut,
 +                "strict child leader deadline expired",
@@ -5944,11 +6073,10 @@ index d7ffa03..54f72b9 100644
 +async fn wait_for_linux_process_group_exit(
 +    process_group: i32,
 +    leader: i32,
-+    timeout: std::time::Duration,
++    deadline: StrictDeadline,
 +) -> io::Result<()> {
-+    let deadline = tokio::time::Instant::now() + timeout;
 +    while linux_process_group_has_member(process_group, leader)? {
-+        if tokio::time::Instant::now() >= deadline {
++        if deadline.is_elapsed() {
 +            return Err(io::Error::new(
 +                io::ErrorKind::TimedOut,
 +                "strict child process group did not quiesce",
@@ -5972,11 +6100,10 @@ index d7ffa03..54f72b9 100644
 +#[cfg(unix)]
 +async fn wait_for_process_group_exit(
 +    process_group: i32,
-+    timeout: std::time::Duration,
++    deadline: StrictDeadline,
 +) -> io::Result<()> {
-+    let deadline = tokio::time::Instant::now() + timeout;
 +    while process_group_exists(process_group) {
-+        if tokio::time::Instant::now() >= deadline {
++        if deadline.is_elapsed() {
 +            return Err(io::Error::new(
 +                io::ErrorKind::TimedOut,
 +                "strict child process group did not quiesce",
@@ -5985,7 +6112,14 @@ index d7ffa03..54f72b9 100644
 +        tokio::task::yield_now().await;
 +    }
 +    Ok(())
-@@ -165,5 +545,5 @@ impl CommandChild for Child {
++}
++
++async fn wait_for_strict_phase(name: &str, duration: std::time::Duration) -> io::Result<()> {
++    let deadline = StrictDeadline::from_now(name, duration)
++        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
++    tokio::time::sleep_until(deadline.tokio_instant()).await;
++    Ok(())
+@@ -165,5 +551,5 @@ impl CommandChild for Child {
 -    async fn wait(self) -> io::Result<ExitStatus> {
 -        let Child { mut inner, token } = self;
 -        inner.wait().await.inspect(|_ret| {
@@ -5996,7 +6130,7 @@ index d7ffa03..54f72b9 100644
 +    }
 +    fn strict_poison(&self) -> StrictPoison {
 +        self.policy.poison.clone()
-@@ -172,4 +552,118 @@ impl CommandChild for Child {
+@@ -172,4 +558,157 @@ impl CommandChild for Child {
 -    async fn wait_with_output(self) -> io::Result<Output> {
 -        let Child { inner, token } = self;
 -        inner.wait_with_output().await.inspect(|_ret| {
@@ -6017,12 +6151,19 @@ index d7ffa03..54f72b9 100644
 +            if timed_out {
 +                self.policy.poison.poison();
 +                signal_process_group(leader, libc::SIGTERM)?;
-+                tokio::time::sleep(self.policy.termination_grace).await;
++                wait_for_strict_phase(
++                    "strict child termination-grace deadline",
++                    self.policy.termination_grace,
++                )
++                .await?;
 +                signal_process_group(leader, libc::SIGKILL)?;
-+                let cleanup_deadline = tokio::time::Instant::now() + self.policy.cleanup_timeout;
++                let cleanup_deadline = StrictDeadline::from_now(
++                    "strict child leader cleanup deadline",
++                    self.policy.cleanup_timeout,
++                )
++                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
 +                wait_for_linux_leader_exit(leader, cleanup_deadline).await?;
-+                wait_for_linux_process_group_exit(leader, leader, self.policy.cleanup_timeout)
-+                    .await?;
++                wait_for_linux_process_group_exit(leader, leader, cleanup_deadline).await?;
 +                self.process_group_armed = false;
 +                self.inner.wait().await?;
 +                return Err(io::Error::new(
@@ -6034,10 +6175,18 @@ index d7ffa03..54f72b9 100644
 +            if linux_process_group_has_member(leader, leader)? {
 +                self.policy.poison.poison();
 +                signal_process_group(leader, libc::SIGTERM)?;
-+                tokio::time::sleep(self.policy.termination_grace).await;
++                wait_for_strict_phase(
++                    "strict child termination-grace deadline",
++                    self.policy.termination_grace,
++                )
++                .await?;
 +                signal_process_group(leader, libc::SIGKILL)?;
-+                wait_for_linux_process_group_exit(leader, leader, self.policy.cleanup_timeout)
-+                    .await?;
++                let cleanup_deadline = StrictDeadline::from_now(
++                    "strict child process-group cleanup deadline",
++                    self.policy.cleanup_timeout,
++                )
++                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
++                wait_for_linux_process_group_exit(leader, leader, cleanup_deadline).await?;
 +                self.process_group_armed = false;
 +                self.inner.wait().await?;
 +                return Err(io::Error::other(
@@ -6051,16 +6200,33 @@ index d7ffa03..54f72b9 100644
 +
 +        #[cfg(not(target_os = "linux"))]
 +        {
-+            let status = match tokio::time::timeout_at(self.deadline, self.inner.wait()).await {
-+                Ok(status) => status?,
-+                Err(_) => {
-+                    self.policy.poison.poison();
-+                    #[cfg(unix)]
-+                    signal_process_group(self.process_group, libc::SIGTERM)?;
-+                    tokio::time::sleep(self.policy.termination_grace).await;
-+                    #[cfg(unix)]
-+                    signal_process_group(self.process_group, libc::SIGKILL)?;
-+                    tokio::time::timeout(self.policy.cleanup_timeout, self.inner.wait())
++            let status =
++                match tokio::time::timeout_at(self.deadline.tokio_instant(), self.inner.wait())
++                    .await
++                {
++                    Ok(status) => status?,
++                    Err(_) => {
++                        self.policy.poison.poison();
++                        #[cfg(unix)]
++                        signal_process_group(self.process_group, libc::SIGTERM)?;
++                        wait_for_strict_phase(
++                            "strict child termination-grace deadline",
++                            self.policy.termination_grace,
++                        )
++                        .await?;
++                        #[cfg(unix)]
++                        signal_process_group(self.process_group, libc::SIGKILL)?;
++                        let cleanup_deadline = StrictDeadline::from_now(
++                            "strict child cleanup deadline",
++                            self.policy.cleanup_timeout,
++                        )
++                        .map_err(|error| {
++                            io::Error::new(io::ErrorKind::InvalidInput, error.to_string())
++                        })?;
++                        tokio::time::timeout_at(
++                            cleanup_deadline.tokio_instant(),
++                            self.inner.wait(),
++                        )
 +                        .await
 +                        .map_err(|_| {
 +                            io::Error::new(
@@ -6068,27 +6234,34 @@ index d7ffa03..54f72b9 100644
 +                                "strict child leader cleanup timed out",
 +                            )
 +                        })??;
-+                    #[cfg(unix)]
-+                    wait_for_process_group_exit(self.process_group, self.policy.cleanup_timeout)
-+                        .await?;
-+                    #[cfg(unix)]
-+                    {
-+                        self.process_group_armed = false;
++                        #[cfg(unix)]
++                        wait_for_process_group_exit(self.process_group, cleanup_deadline).await?;
++                        #[cfg(unix)]
++                        {
++                            self.process_group_armed = false;
++                        }
++                        return Err(io::Error::new(
++                            io::ErrorKind::TimedOut,
++                            self.purpose.deadline_error(),
++                        ));
 +                    }
-+                    return Err(io::Error::new(
-+                        io::ErrorKind::TimedOut,
-+                        self.purpose.deadline_error(),
-+                    ));
-+                }
-+            };
++                };
 +            #[cfg(unix)]
 +            if process_group_exists(self.process_group) {
 +                self.policy.poison.poison();
 +                signal_process_group(self.process_group, libc::SIGTERM)?;
-+                tokio::time::sleep(self.policy.termination_grace).await;
++                wait_for_strict_phase(
++                    "strict child termination-grace deadline",
++                    self.policy.termination_grace,
++                )
++                .await?;
 +                signal_process_group(self.process_group, libc::SIGKILL)?;
-+                wait_for_process_group_exit(self.process_group, self.policy.cleanup_timeout)
-+                    .await?;
++                let cleanup_deadline = StrictDeadline::from_now(
++                    "strict child process-group cleanup deadline",
++                    self.policy.cleanup_timeout,
++                )
++                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
++                wait_for_process_group_exit(self.process_group, cleanup_deadline).await?;
 +                self.process_group_armed = false;
 +                return Err(io::Error::other(
 +                    "strict child left a live process-group member",
@@ -6119,21 +6292,21 @@ index d7ffa03..54f72b9 100644
 +            status: status?,
 +            stdout: stdout?,
 +            stderr: stderr?,
-@@ -182,0 +677,4 @@ pub struct AsyncCommand {
+@@ -182,0 +722,4 @@ pub struct AsyncCommand {
 +    environment_cleared: bool,
 +    policy: StrictChildPolicy,
-+    deadline: tokio::time::Instant,
++    deadline: StrictDeadline,
 +    purpose: StrictChildPurpose,
-@@ -186 +684,24 @@ impl AsyncCommand {
+@@ -186 +729,24 @@ impl AsyncCommand {
 -    pub fn new<S: AsRef<OsStr>>(program: S, jobserver: Client) -> AsyncCommand {
 +    pub fn new<S: AsRef<OsStr>>(
 +        program: S,
 +        jobserver: Client,
 +        policy: StrictChildPolicy,
 +    ) -> AsyncCommand {
-+        let deadline = tokio::time::Instant::now()
-+            .checked_add(policy.compiler_timeout)
-+            .expect("governed compiler timeout exceeds instant range");
++        let deadline =
++            StrictDeadline::from_now("governed compiler deadline", policy.compiler_timeout)
++                .expect("governed compiler timeout exceeds instant range");
 +        Self::new_with_deadline(
 +            program,
 +            jobserver,
@@ -6147,17 +6320,17 @@ index d7ffa03..54f72b9 100644
 +        program: S,
 +        jobserver: Client,
 +        policy: StrictChildPolicy,
-+        deadline: tokio::time::Instant,
++        deadline: StrictDeadline,
 +        purpose: StrictChildPurpose,
 +    ) -> AsyncCommand {
-@@ -189,0 +711,4 @@ impl AsyncCommand {
+@@ -189,0 +756,4 @@ impl AsyncCommand {
 +            environment_cleared: false,
 +            policy,
 +            deadline,
 +            purpose,
-@@ -229,0 +755 @@ impl RunCommand for AsyncCommand {
+@@ -229,0 +800 @@ impl RunCommand for AsyncCommand {
 +        self.environment_cleared = true;
-@@ -249,7 +775,4 @@ impl RunCommand for AsyncCommand {
+@@ -249,7 +820,4 @@ impl RunCommand for AsyncCommand {
 -    async fn spawn(&mut self) -> Result<Child> {
 -        let mut inner = self.inner.take().unwrap();
 -        inner.env_remove("MAKEFLAGS");
@@ -6169,20 +6342,20 @@ index d7ffa03..54f72b9 100644
 +        self.environment_cleared
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<Child> {
-@@ -256,0 +780,6 @@ impl RunCommand for AsyncCommand {
+@@ -256,0 +825,6 @@ impl RunCommand for AsyncCommand {
 +        let mut inner = self.inner.take().unwrap();
 +        #[cfg(unix)]
 +        {
 +            use std::os::unix::process::CommandExt;
 +            inner.process_group(0);
 +        }
-@@ -257,0 +787 @@ impl RunCommand for AsyncCommand {
+@@ -257,0 +832 @@ impl RunCommand for AsyncCommand {
 +        inner.kill_on_drop(true);
-@@ -261,0 +792,3 @@ impl RunCommand for AsyncCommand {
+@@ -261,0 +837,3 @@ impl RunCommand for AsyncCommand {
 +        #[cfg(unix)]
 +        let process_group = i32::try_from(child.id().context("strict child PID is unavailable")?)
 +            .context("strict child PID exceeds process-group range")?;
-@@ -264 +797,8 @@ impl RunCommand for AsyncCommand {
+@@ -264 +842,8 @@ impl RunCommand for AsyncCommand {
 -            token,
 +            _token: token,
 +            policy: self.policy.clone(),
@@ -6192,10 +6365,10 @@ index d7ffa03..54f72b9 100644
 +            process_group,
 +            #[cfg(unix)]
 +            process_group_armed: true,
-@@ -278,0 +819,2 @@ pub struct ProcessCommandCreator {
+@@ -278,0 +864,2 @@ pub struct ProcessCommandCreator {
 +    policy: StrictChildPolicy,
-+    classification_deadline: Option<tokio::time::Instant>,
-@@ -286,2 +828,12 @@ impl CommandCreator for ProcessCommandCreator {
++    classification_deadline: Option<StrictDeadline>,
+@@ -286,2 +873,12 @@ impl CommandCreator for ProcessCommandCreator {
 -        ProcessCommandCreator {
 -            jobserver: client.clone(),
 +        #[cfg(test)]
@@ -6210,7 +6383,7 @@ index d7ffa03..54f72b9 100644
 +        {
 +            let _ = client;
 +            panic!("strict child policy is required")
-@@ -292 +844,10 @@ impl CommandCreator for ProcessCommandCreator {
+@@ -292 +889,10 @@ impl CommandCreator for ProcessCommandCreator {
 -        AsyncCommand::new(program, self.jobserver.clone())
 +        match self.classification_deadline {
 +            Some(deadline) => AsyncCommand::new_with_deadline(
@@ -6222,7 +6395,7 @@ index d7ffa03..54f72b9 100644
 +            ),
 +            None => AsyncCommand::new(program, self.jobserver.clone(), self.policy.clone()),
 +        }
-@@ -303,0 +865,18 @@ impl CommandCreatorSync for ProcessCommandCreator {
+@@ -303,0 +910,20 @@ impl CommandCreatorSync for ProcessCommandCreator {
 +    fn new_strict(client: &Client, policy: StrictChildPolicy) -> ProcessCommandCreator {
 +        ProcessCommandCreator {
 +            jobserver: client.clone(),
@@ -6234,27 +6407,29 @@ index d7ffa03..54f72b9 100644
 +    fn begin_classification(&self) -> ProcessCommandCreator {
 +        let mut classification = self.clone();
 +        classification.classification_deadline = Some(
-+            tokio::time::Instant::now()
-+                .checked_add(self.policy.classification_timeout)
-+                .expect("governed classification timeout exceeds instant range"),
++            StrictDeadline::from_now(
++                "governed classification deadline",
++                self.policy.classification_timeout,
++            )
++            .expect("governed classification timeout exceeds instant range"),
 +        );
 +        classification
 +    }
 +
-@@ -383,0 +963,6 @@ impl CommandChild for MockChild {
+@@ -383,0 +1010,6 @@ impl CommandChild for MockChild {
 +    fn strict_output_limit(&self) -> u64 {
 +        u64::MAX
 +    }
 +    fn strict_poison(&self) -> StrictPoison {
 +        StrictPoison::new()
 +    }
-@@ -470 +1055,4 @@ impl RunCommand for MockCommand {
+@@ -470 +1102,4 @@ impl RunCommand for MockCommand {
 -    async fn spawn(&mut self) -> Result<MockChild> {
 +    fn strict_environment_is_sealed(&self) -> bool {
 +        true
 +    }
 +    async fn spawn(&mut self, _permit: StrictSpawnPermit) -> Result<MockChild> {
-@@ -548,0 +1137,239 @@ mod test {
+@@ -548,0 +1184,239 @@ mod test {
 +    #[cfg(target_os = "linux")]
 +    #[test]
 +    fn strict_linux_proc_stat_parser_handles_parentheses_in_command_name() {
@@ -6494,40 +6669,42 @@ index d7ffa03..54f72b9 100644
 +        assert!(!poisoned.is_healthy());
 +    }
 +
-@@ -553 +1380,2 @@ mod test {
+@@ -553 +1427,2 @@ mod test {
 -        creator.new_command(program).spawn().wait()
 +        let mut command = creator.new_command(program);
 +        StrictChildLauncher::spawn_prepared(&mut command).wait()
-@@ -576,2 +1404,2 @@ mod test {
+@@ -576,2 +1451,2 @@ mod test {
 -                t.new_command_sync("foo")
 -                    .spawn()
 +                let mut command = t.new_command_sync("foo");
 +                StrictChildLauncher::spawn_prepared(&mut command)
-@@ -612 +1440,4 @@ mod test {
+@@ -612 +1487,4 @@ mod test {
 -        creator.new_command("foo").spawn().wait().unwrap();
 +        let mut command = creator.new_command("foo");
 +        StrictChildLauncher::spawn_prepared(&mut command)
 +            .wait()
 +            .unwrap();
 diff --git a/src/net.rs b/src/net.rs
-index 43965d0..542ca17 100644
+index 43965d0..860bb19 100644
 --- a/src/net.rs
 +++ b/src/net.rs
-@@ -15,0 +16,2 @@ use std::fmt;
+@@ -14,0 +15 @@
++use crate::config::StrictDeadline;
+@@ -15,0 +17,2 @@ use std::fmt;
 +#[cfg(unix)]
 +use std::io;
-@@ -17,0 +20,2 @@ use std::os::android::net::SocketAddrExt;
+@@ -17,0 +21,2 @@ use std::os::android::net::SocketAddrExt;
 +#[cfg(unix)]
 +use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
-@@ -19,0 +24,4 @@ use std::os::linux::net::SocketAddrExt;
+@@ -19,0 +25,4 @@ use std::os::linux::net::SocketAddrExt;
 +#[cfg(unix)]
 +use std::os::unix::ffi::OsStrExt;
 +#[cfg(unix)]
 +use std::path::Path;
-@@ -116,0 +125,2 @@ pub trait Connection: std::io::Read + std::io::Write {
+@@ -116,0 +126,2 @@ pub trait Connection: std::io::Read + std::io::Write {
 +    fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()>;
 +    fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()>;
-@@ -124,0 +135,8 @@ impl Connection for std::net::TcpStream {
+@@ -124,0 +136,8 @@ impl Connection for std::net::TcpStream {
 +
 +    fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
 +        std::net::TcpStream::set_read_timeout(self, timeout)
@@ -6536,7 +6713,7 @@ index 43965d0..542ca17 100644
 +    fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
 +        std::net::TcpStream::set_write_timeout(self, timeout)
 +    }
-@@ -146,0 +165,159 @@ pub fn connect(addr: &SocketAddr) -> std::io::Result<Box<dyn Connection>> {
+@@ -146,0 +166,160 @@ pub fn connect(addr: &SocketAddr) -> std::io::Result<Box<dyn Connection>> {
 +#[cfg(unix)]
 +fn connect_unix_with_timeout(
 +    path: Option<&Path>,
@@ -6621,15 +6798,16 @@ index 43965d0..542ca17 100644
 +        ) {
 +            return Err(error);
 +        }
-+        let deadline = std::time::Instant::now() + timeout;
++        let deadline =
++            StrictDeadline::from_now("governed Unix socket connect deadline", timeout)
++                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
 +        loop {
-+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-+            if remaining.is_zero() {
-+                return Err(io::Error::new(
++            let remaining = deadline.remaining().ok_or_else(|| {
++                io::Error::new(
 +                    io::ErrorKind::TimedOut,
 +                    "governed unix socket connect timed out",
-+                ));
-+            }
++                )
++            })?;
 +            let timeout_ms = remaining
 +                .as_millis()
 +                .saturating_add(1)
@@ -6696,7 +6874,7 @@ index 43965d0..542ca17 100644
 +    }
 +}
 +
-@@ -182,0 +360,8 @@ mod unix_imp {
+@@ -182,0 +362,8 @@ mod unix_imp {
 +
 +        fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
 +            std::os::unix::net::UnixStream::set_read_timeout(self, timeout)
@@ -6999,7 +7177,7 @@ index 8760ba6..5ab6c52 100644
 +    }
 +}
 diff --git a/src/server.rs b/src/server.rs
-index 98cedfb..3ad4c04 100644
+index 98cedfb..6f03466 100644
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -16 +16,2 @@ use crate::cache::readonly::ReadOnlyStorage;
@@ -7014,7 +7192,7 @@ index 98cedfb..3ad4c04 100644
 +    get_strict_compiler_info, strict_preclassify_arguments,
 @@ -23 +25 @@ use crate::config;
 -use crate::config::Config;
-+use crate::config::{Config, code_owned_semantic_environment_name};
++use crate::config::{Config, StrictDeadline, code_owned_semantic_environment_name};
 @@ -26,2 +28,7 @@ use crate::jobserver::Client;
 -use crate::mock_command::{CommandCreatorSync, ProcessCommandCreator};
 -use crate::protocol::{Compile, CompileFinished, CompileResponse, Request, Response};
@@ -7640,7 +7818,7 @@ index 98cedfb..3ad4c04 100644
 +                    {
 +                        None => me.stats.lock().await.cache_write_errors += 1,
 +                        Some(info) => {
-@@ -1581,0 +1991,69 @@ impl PerLanguageCount {
+@@ -1581,0 +1991,78 @@ impl PerLanguageCount {
 +#[cfg(unix)]
 +fn validate_strict_compiler_environment(
 +    env_vars: &[(OsString, OsString)],
@@ -7692,7 +7870,16 @@ index 98cedfb..3ad4c04 100644
 +    timeout: Duration,
 +    response: &mut CompileFinished,
 +) -> Option<CacheWriteInfo> {
-+    match tokio::time::timeout(timeout, cache_write).await {
++    let deadline = match StrictDeadline::from_now("required cache-write deadline", timeout) {
++        Ok(deadline) => deadline,
++        Err(error) => {
++            error!("Required cache write deadline is invalid: {error}");
++            response.retcode = Some(-2);
++            response.stderr = b"sccache: required cache write deadline is invalid\n".to_vec();
++            return None;
++        }
++    };
++    match tokio::time::timeout_at(deadline.tokio_instant(), cache_write).await {
 +        Err(_) => {
 +            error!("Required cache write timed out");
 +            response.retcode = Some(-2);
@@ -7710,7 +7897,7 @@ index 98cedfb..3ad4c04 100644
 +    }
 +}
 +
-@@ -2145,0 +2624,78 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
+@@ -2145,0 +2633,90 @@ struct SccacheTransport<I: AsyncRead + AsyncWrite + Unpin> {
 +    poison: StrictPoison,
 +    commit_timeout: Duration,
 +    commit_deadline: Option<Pin<Box<Sleep>>>,
@@ -7720,7 +7907,19 @@ index 98cedfb..3ad4c04 100644
 +impl<I: AsyncRead + AsyncWrite + Unpin> SccacheTransport<I> {
 +    fn poll_commit_deadline(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
 +        if self.commit_deadline.is_none() {
-+            self.commit_deadline = Some(Box::pin(sleep(self.commit_timeout)));
++            let deadline = match StrictDeadline::from_now(
++                "strict response commit deadline",
++                self.commit_timeout,
++            ) {
++                Ok(deadline) => deadline,
++                Err(error) => {
++                    self.poison.poison();
++                    self.release_commit_gate();
++                    return Poll::Ready(Err(error));
++                }
++            };
++            self.commit_deadline =
++                Some(Box::pin(tokio::time::sleep_until(deadline.tokio_instant())));
 +        }
 +        if self
 +            .commit_deadline
@@ -7789,7 +7988,7 @@ index 98cedfb..3ad4c04 100644
 +            self.release_commit_gate();
 +        }
 +    }
-@@ -2162 +2718,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2162 +2739,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        Pin::new(&mut self.inner).poll_ready(cx)
 +        match self.poll_commit_gate(cx) {
 +            Poll::Ready(Ok(())) => match Pin::new(&mut self.inner).poll_ready(cx) {
@@ -7803,7 +8002,7 @@ index 98cedfb..3ad4c04 100644
 +            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
 +            Poll::Pending => Poll::Pending,
 +        }
-@@ -2166 +2733,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2166 +2754,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        match item {
 +        ensure!(
 +            self.commit_gate_held,
@@ -7818,14 +8017,14 @@ index 98cedfb..3ad4c04 100644
 +            "strict response commit deadline was not armed"
 +        );
 +        let result = match item {
-@@ -2169,0 +2749,4 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2169,0 +2770,4 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        };
 +        if result.is_err() {
 +            self.poison.poison();
 +            self.release_commit_gate();
-@@ -2170,0 +2754 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2170,0 +2775 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 +        result
-@@ -2174 +2758,22 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2174 +2779,22 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        Pin::new(&mut self.inner).poll_flush(cx)
 +        if !self.poison.is_healthy() {
 +            self.release_commit_gate();
@@ -7849,14 +8048,14 @@ index 98cedfb..3ad4c04 100644
 +            }
 +            result => result,
 +        }
-@@ -2178 +2783,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
+@@ -2178 +2804,5 @@ impl<I: AsyncRead + AsyncWrite + Unpin> Sink<Frame<Response, Response>> for Scca
 -        Pin::new(&mut self.inner).poll_close(cx)
 +        match <Self as Sink<Frame<Response, Response>>>::poll_flush(self.as_mut(), cx) {
 +            Poll::Ready(Ok(())) => Pin::new(&mut self.inner).poll_close(cx),
 +            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
 +            Poll::Pending => Poll::Pending,
 +        }
-@@ -2284,0 +2894,408 @@ mod tests {
+@@ -2284,0 +2915,408 @@ mod tests {
 +    #[test]
 +    fn strict_forced_cache_modes_are_rejected_at_the_request_boundary() {
 +        let runtime = Runtime::new().unwrap();

@@ -163,6 +163,42 @@ pub struct CapitalAdmissionRebuildFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequoteActionCostClass {
+    FreshSubmit,
+    CancelResubmit,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequoteThrottleBound {
+    SubmitCommandWindow,
+    RestCallWindow,
+    MinInterval,
+    WindowCap,
+    OutOfOrderTs,
+    Overflow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequoteThrottleObservationFact {
+    pub strategy_id: String,
+    pub family_key: String,
+    pub market_id: Option<String>,
+    pub leg: String,
+    pub now_ms: u64,
+    pub observed_at_ns: u64,
+    pub action_cost_class: RequoteActionCostClass,
+    pub bound_by: RequoteThrottleBound,
+    pub submit_commands_in_window: usize,
+    pub submit_command_cap: u64,
+    pub submit_window_ms: u64,
+    pub rest_cost_in_window: u64,
+    pub rest_cap_per_minute: u64,
+    pub rest_window_ms: u64,
+    pub min_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,
     Down,

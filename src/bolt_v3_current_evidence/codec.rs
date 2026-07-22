@@ -2,6 +2,7 @@ mod admission;
 mod basket_admission;
 mod lifecycle;
 mod order_intent;
+mod requote;
 mod reservation;
 mod settlement;
 
@@ -13,8 +14,9 @@ use super::{
         BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, CapitalAdmissionRebuildFact,
         EntryOrderIntentFact, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
         OrderIntentDetails, OrderIntentOrderFields, OrderLifecycleFact, RecoveryFact,
-        RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
-        SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
+        RequoteThrottleObservationFact, RiskReducingExitOrderIntentFact,
+        SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
+        SubmitReservationMetadataFact, TerminalSettlementFact,
     },
     generated_contract::{
         ConsumerDisposition, IdentityDescriptor, KnownConsumer, KnownIdentity, KnownPurpose,
@@ -214,6 +216,22 @@ impl CodecFor<identities::OrderLifecycleV1> for CurrentCodecs {
     }
 }
 
+impl CodecFor<identities::RequoteThrottleObservationV1> for CurrentCodecs {
+    type Input = RequoteThrottleObservationFact;
+    type Fact = RequoteThrottleObservationFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        requote::encode(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        requote::decode_fact(line, line_number)
+    }
+}
+
 pub(crate) fn encode_entry_order_intent(
     fact: EntryOrderIntentFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
@@ -260,6 +278,15 @@ pub(crate) fn encode_order_lifecycle(
     fact: OrderLifecycleFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     <CurrentCodecs as CodecFor<identities::OrderLifecycleV1>>::encode(&fact, current_utc_ns()?)
+}
+
+pub(crate) fn encode_requote_throttle_observation(
+    fact: RequoteThrottleObservationFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::RequoteThrottleObservationV1>>::encode(
+        &fact,
+        current_utc_ns()?,
+    )
 }
 
 pub(crate) fn encode_reservation_metadata(
@@ -602,6 +629,26 @@ mod tests {
         }
     }
 
+    fn requote_observation() -> RequoteThrottleObservationFact {
+        RequoteThrottleObservationFact {
+            strategy_id: "strategy-1".to_string(),
+            family_key: "family-1".to_string(),
+            market_id: Some("market-1".to_string()),
+            leg: "up".to_string(),
+            now_ms: 6,
+            observed_at_ns: 7,
+            action_cost_class: super::super::facts::RequoteActionCostClass::CancelResubmit,
+            bound_by: super::super::facts::RequoteThrottleBound::RestCallWindow,
+            submit_commands_in_window: 2,
+            submit_command_cap: 3,
+            submit_window_ms: 1_000,
+            rest_cost_in_window: 4,
+            rest_cap_per_minute: 5,
+            rest_window_ms: 60_000,
+            min_interval_ms: 100,
+        }
+    }
+
     #[test]
     fn reservation_identity_binding_is_deterministic_and_round_trips() {
         let expected = metadata();
@@ -805,6 +852,23 @@ mod tests {
         );
         assert!(
             <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::decode(line, 1).is_err()
+        );
+    }
+
+    #[test]
+    fn requote_observation_round_trips_to_the_observation_identity() {
+        let expected = requote_observation();
+        let record = <CurrentCodecs as CodecFor<identities::RequoteThrottleObservationV1>>::encode(
+            &expected, 20,
+        )
+        .expect("valid requote observation must encode");
+        let line = std::str::from_utf8(record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::RequoteThrottleObservationV1>>::decode(line, 1)
+                .expect("requote observation must decode"),
+            expected
         );
     }
 }

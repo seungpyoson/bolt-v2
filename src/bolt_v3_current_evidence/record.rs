@@ -11,14 +11,15 @@ use anyhow::Error;
 use super::codec::{
     encode_basket_admission_granted, encode_basket_admission_rejected,
     encode_capital_admission_rebuild, encode_entry_order_intent, encode_order_lifecycle,
-    encode_reservation_fill, encode_reservation_metadata, encode_risk_reducing_exit_order_intent,
-    encode_settlement, encode_settlement_booking_error, encode_terminal_settlement,
+    encode_requote_throttle_observation, encode_reservation_fill, encode_reservation_metadata,
+    encode_risk_reducing_exit_order_intent, encode_settlement, encode_settlement_booking_error,
+    encode_terminal_settlement,
 };
 use super::facts::{
     BasketAdmissionGrantedFact, BasketAdmissionRejectedFact, CapitalAdmissionRebuildFact,
-    EntryOrderIntentFact, OrderLifecycleFact, RiskReducingExitOrderIntentFact,
-    SettlementBookingErrorFact, SettlementFact, SubmitReservationFillFact,
-    SubmitReservationMetadataFact, TerminalSettlementFact,
+    EntryOrderIntentFact, OrderLifecycleFact, RequoteThrottleObservationFact,
+    RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
+    SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
 };
 use super::generated_contract::{KnownPurpose, KnownSink, sink_for_purpose};
 
@@ -196,6 +197,18 @@ impl DecisionEvidenceRecorder {
         }
     }
 
+    pub fn record_requote_throttle_observation(
+        &self,
+        fact: RequoteThrottleObservationFact,
+    ) -> ObservationRecordOutcome {
+        match encode_requote_throttle_observation(fact) {
+            Ok(record) => self.record_observation(record),
+            Err(error) => {
+                self.report_observation_failure(KnownPurpose::RequoteThrottleObservation, error)
+            }
+        }
+    }
+
     pub fn record_settlement(&self, fact: SettlementFact) -> Result<AppendReceipt, RecordFailure> {
         self.record_blocking(encode_settlement(fact)?)
     }
@@ -244,18 +257,24 @@ impl DecisionEvidenceRecorder {
                     .remove(&purpose);
                 ObservationRecordOutcome::Appended(receipt)
             }
-            Err(error) => {
-                let first_failure = self
-                    .observation_failure_episodes
-                    .lock()
-                    .expect("observation failure episode mutex must not be poisoned")
-                    .insert(purpose);
-                if first_failure {
-                    ObservationRecordOutcome::FailureReported(error)
-                } else {
-                    ObservationRecordOutcome::FailureSuppressed
-                }
-            }
+            Err(error) => self.report_observation_failure(purpose, error),
+        }
+    }
+
+    fn report_observation_failure(
+        &self,
+        purpose: KnownPurpose,
+        error: RecordFailure,
+    ) -> ObservationRecordOutcome {
+        let first_failure = self
+            .observation_failure_episodes
+            .lock()
+            .expect("observation failure episode mutex must not be poisoned")
+            .insert(purpose);
+        if first_failure {
+            ObservationRecordOutcome::FailureReported(error)
+        } else {
+            ObservationRecordOutcome::FailureSuppressed
         }
     }
 

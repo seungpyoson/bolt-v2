@@ -1069,7 +1069,7 @@ class MainTests(unittest.TestCase):
             mock.patch("builtins.print"),
             mock.patch.dict(advisory_supersession.os.environ, {"GITHUB_TOKEN": "token"}),
         ):
-            self.assertEqual(advisory_supersession.main(self.args()), 0)
+            self.assertEqual(advisory_supersession.main(self.args()), 78)
             client.cancel_invoking_run.assert_called_once_with(123)
 
     def test_watchdog_success_and_failure_exit_codes(self) -> None:
@@ -1208,8 +1208,8 @@ alternate_api_url = "https://example.com"
     def test_governed_topology_is_exact(self) -> None:
         topology = advisory_supersession.reconciliation_topology(GOVERNED_CONFIG)
 
-        self.assertEqual(topology.requests, 358)
-        self.assertEqual(topology.secondary_points, 442)
+        self.assertEqual(topology.requests, 359)
+        self.assertEqual(topology.secondary_points, 443)
         self.assertEqual(topology.minimum_pacing_seconds, 260)
 
     def test_rejects_runs_per_page_other_than_one_hundred(self) -> None:
@@ -1248,7 +1248,7 @@ alternate_api_url = "https://example.com"
             REPO_ROOT / "ci" / "advisory-supersession.toml"
         ).read_text(encoding="utf-8")
         path = self.write_config(
-            governed.replace("max_total_requests = 400", "max_total_requests = 357")
+            governed.replace("max_total_requests = 400", "max_total_requests = 358")
         )
 
         with self.assertRaisesRegex(ValueError, "max_total_requests"):
@@ -1259,7 +1259,7 @@ alternate_api_url = "https://example.com"
             REPO_ROOT / "ci" / "advisory-supersession.toml"
         ).read_text(encoding="utf-8")
         path = self.write_config(
-            governed.replace("max_secondary_points = 500", "max_secondary_points = 441")
+            governed.replace("max_secondary_points = 500", "max_secondary_points = 442")
         )
 
         with self.assertRaisesRegex(ValueError, "max_secondary_points"):
@@ -1666,7 +1666,7 @@ class LedgerTests(unittest.TestCase):
             evidence.census,
             advisory_supersession.CensusObservation(1, 1, 1),
         )
-        self.assertEqual(evidence.computed_request_budget, 358)
+        self.assertEqual(evidence.computed_request_budget, 359)
         self.assertEqual(evidence.remaining_primary_rate_limit, 4999)
         self.assertEqual(evidence.requests_used, 1)
         self.assertEqual(evidence.secondary_points_used, 1)

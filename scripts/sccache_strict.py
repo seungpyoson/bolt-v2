@@ -96,6 +96,19 @@ class StrictBuildConfig:
 CandidateManifest = dict[str, object]
 
 
+def gnu_timeout_duration(milliseconds: int) -> str:
+    """Render governed milliseconds as an exact GNU timeout duration."""
+    if isinstance(milliseconds, bool) or not isinstance(milliseconds, int):
+        raise ValueError("timeout milliseconds must be an integer")
+    if milliseconds <= 0:
+        raise ValueError("timeout milliseconds must be positive")
+    seconds, remainder = divmod(milliseconds, 1_000)
+    if remainder == 0:
+        return f"{seconds}s"
+    fraction = f"{remainder:03d}".rstrip("0")
+    return f"{seconds}.{fraction}s"
+
+
 @dataclasses.dataclass(frozen=True)
 class VerifiedAsset:
     architecture: str
@@ -1134,6 +1147,8 @@ def verify_release_record(
     expected: VerifiedCandidateSet,
     release: Mapping[str, object],
     tag_ref: Mapping[str, object],
+    tag_object: Mapping[str, object],
+    ownership_marker: str,
 ) -> None:
     if release.get("tag_name") != expected.release_tag:
         raise ValueError("release tag does not match")
@@ -1143,11 +1158,13 @@ def verify_release_record(
         raise ValueError("release is still a draft")
     if release.get("immutable") is not True:
         raise ValueError("release is not immutable")
-    if tag_ref.get("ref") != f"refs/tags/{expected.release_tag}":
-        raise ValueError("release tag ref does not match")
-    tag_object = _mapping(tag_ref.get("object"), "release tag object")
-    if tag_object.get("type") != "commit" or tag_object.get("sha") != expected.head_sha:
-        raise ValueError("release tag does not target exact head commit")
+    validate_owned_annotated_tag(
+        tag_ref,
+        tag_object,
+        tag=expected.release_tag,
+        head_sha=expected.head_sha,
+        ownership_marker=ownership_marker,
+    )
     raw_assets = release.get("assets")
     if not isinstance(raw_assets, list):
         raise ValueError("release assets must be a list")
@@ -1215,6 +1232,30 @@ def validate_release_tag(
     tag_object = _mapping(tag_ref.get("object"), "release tag object")
     if tag_object.get("type") != "commit" or tag_object.get("sha") != head_sha:
         raise ValueError("release tag does not target exact head commit")
+
+
+def validate_owned_annotated_tag(
+    tag_ref: Mapping[str, object],
+    tag_object: Mapping[str, object],
+    *,
+    tag: str,
+    head_sha: str,
+    ownership_marker: str,
+) -> None:
+    _full_sha(head_sha, "head_sha")
+    if tag_ref.get("ref") != f"refs/tags/{tag}":
+        raise ValueError("annotated release tag ref does not match")
+    ref_object = _mapping(tag_ref.get("object"), "annotated release tag ref object")
+    object_sha = _full_sha(tag_object.get("sha"), "annotated tag object sha")
+    if ref_object.get("type") != "tag" or ref_object.get("sha") != object_sha:
+        raise ValueError("release tag ref does not target the annotated tag object")
+    if tag_object.get("tag") != tag:
+        raise ValueError("annotated release tag name does not match")
+    if tag_object.get("message") != ownership_marker:
+        raise ValueError("annotated release tag ownership does not match")
+    target = _mapping(tag_object.get("object"), "annotated release tag target")
+    if target.get("type") != "commit" or target.get("sha") != head_sha:
+        raise ValueError("annotated release tag does not target exact head commit")
 
 
 def validate_tag_create_response(response: str, *, tag: str, head_sha: str) -> None:
@@ -1294,10 +1335,10 @@ def validate_release_page_response(
         page = int(values["page"])
         if page <= 0:
             raise ValueError("release continuation page is invalid")
-        endpoint = f"{parsed.path}?per_page={per_page}&page={page}"
+        endpoint = f"{parsed.path}?per_page={per_page}&page={page}".removeprefix("/")
         if relation == "next" and (page != expected_page + 1 or endpoint in visited):
             raise ValueError("release continuation is repeated or non-sequential")
-        return endpoint.removeprefix("/"), page
+        return endpoint, page
 
     relations: dict[str, tuple[str, int]] = {}
     if headers.get("link"):
@@ -1328,6 +1369,11 @@ def _release_records(value: object) -> list[Mapping[str, object]]:
     for item in value:
         records.extend(_release_records(item))
     return records
+
+
+def validate_owned_tag_cleanup(releases: object, *, tag: str) -> None:
+    if any(release.get("tag_name") == tag for release in _release_records(releases)):
+        raise ValueError("release still exists for owned tag")
 
 
 def select_owned_mutable_release(
@@ -1467,6 +1513,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     release.add_argument("--release-json", required=True, type=pathlib.Path)
     release.add_argument("--tag-json", required=True, type=pathlib.Path)
+    release.add_argument("--tag-object-json", required=True, type=pathlib.Path)
 
     marker = subparsers.add_parser("release-ownership-marker")
     marker.add_argument("--repository", required=True)
@@ -1481,6 +1528,17 @@ def _parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--tag", required=True)
     cleanup.add_argument("--head-sha", required=True)
     cleanup.add_argument("--ownership-marker", required=True)
+
+    tag_cleanup = subparsers.add_parser("validate-owned-tag-cleanup")
+    tag_cleanup.add_argument("--releases-json", required=True, type=pathlib.Path)
+    tag_cleanup.add_argument("--tag", required=True)
+
+    owned_tag = subparsers.add_parser("validate-owned-annotated-tag")
+    owned_tag.add_argument("--tag-ref-json", required=True, type=pathlib.Path)
+    owned_tag.add_argument("--tag-object-json", required=True, type=pathlib.Path)
+    owned_tag.add_argument("--tag", required=True)
+    owned_tag.add_argument("--head-sha", required=True)
+    owned_tag.add_argument("--ownership-marker", required=True)
 
     release_page = subparsers.add_parser("validate-release-page")
     release_page.add_argument("--response", required=True, type=pathlib.Path)
@@ -1530,6 +1588,9 @@ def main(argv: list[str] | None = None) -> int:
                 "default_features": config.default_features,
                 "profile": config.profile,
                 "verification_timeout_ms": config.verification_timeout_ms,
+                "verification_timeout_duration": gnu_timeout_duration(
+                    config.verification_timeout_ms
+                ),
                 "max_frame_bytes": config.max_frame_bytes,
                 "max_runtime_timeout_ms": config.max_runtime_timeout_ms,
                 "snapshot_max_bytes": config.snapshot_max_bytes,
@@ -1599,7 +1660,24 @@ def main(argv: list[str] | None = None) -> int:
             tag_document = _mapping(
                 _read_json(args.tag_json, "release tag record"), "release tag record"
             )
-            verify_release_record(verified, release_document, tag_document)
+            tag_object_document = _mapping(
+                _read_json(args.tag_object_json, "release annotated tag object"),
+                "release annotated tag object",
+            )
+            ownership_marker = release_ownership_marker(
+                repository=args.repository,
+                run_id=args.run_id,
+                run_attempt=args.run_attempt,
+                head_sha=args.head_sha,
+                tag=verified.release_tag,
+            )
+            verify_release_record(
+                verified,
+                release_document,
+                tag_document,
+                tag_object_document,
+                ownership_marker,
+            )
             _emit_json({"release_verified": True})
             return 0
         if args.command == "validate-publish-context":
@@ -1640,6 +1718,29 @@ def main(argv: list[str] | None = None) -> int:
             if release_id is None:
                 return 1
             print(release_id)
+            return 0
+        if args.command == "validate-owned-tag-cleanup":
+            validate_owned_tag_cleanup(
+                _read_json(args.releases_json, "tag cleanup release records"),
+                tag=args.tag,
+            )
+            return 0
+        if args.command == "validate-owned-annotated-tag":
+            tag_ref = _mapping(
+                _read_json(args.tag_ref_json, "annotated release tag ref"),
+                "annotated release tag ref",
+            )
+            tag_object = _mapping(
+                _read_json(args.tag_object_json, "annotated release tag object"),
+                "annotated release tag object",
+            )
+            validate_owned_annotated_tag(
+                tag_ref,
+                tag_object,
+                tag=args.tag,
+                head_sha=args.head_sha,
+                ownership_marker=args.ownership_marker,
+            )
             return 0
         if args.command == "validate-release-page":
             try:

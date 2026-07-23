@@ -26,7 +26,7 @@ default_features="$(jq -r '.default_features' "$target_json")"
 profile="$(jq -r '.profile' "$target_json")"
 source_epoch="$(jq -r '.source_date_epoch' "$target_json")"
 patch="$(jq -r '.patch' "$target_json")"
-verification_timeout="$(jq -r '.verification_timeout_ms' "$target_json")"
+verification_timeout="$(jq -r '.verification_timeout_duration' "$target_json")"
 snapshot_max_bytes="$(jq -r '.snapshot_max_bytes' "$target_json")"
 max_runtime_timeout_ms="$(jq -r '.max_runtime_timeout_ms' "$target_json")"
 abstract_name_max_bytes="$(jq -r '.abstract_name_max_bytes' "$target_json")"
@@ -145,17 +145,44 @@ python3.12 -c '
 import http.server
 import pathlib
 import sys
+import threading
 import urllib.parse
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(404)
-        self.send_header("Content-Length", "0")
+    objects = {}
+    lock = threading.Lock()
+
+    def send_object_headers(self, data):
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-    do_HEAD = do_GET
+
+    def do_GET(self):
+        with self.lock:
+            data = self.objects.get(self.path)
+        if data is None:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_object_headers(data)
+        self.wfile.write(data)
+
+    def do_HEAD(self):
+        with self.lock:
+            data = self.objects.get(self.path)
+        if data is None:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_object_headers(data)
+
     def do_PUT(self):
         length = int(self.headers.get("Content-Length", "0"))
-        self.rfile.read(length)
+        data = self.rfile.read(length)
+        with self.lock:
+            self.objects[self.path] = data
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -172,7 +199,7 @@ s3_server_pid=$!
 trap 'kill "$s3_server_pid" 2>/dev/null || true; wait "$s3_server_pid" 2>/dev/null || true' EXIT
 # The inner shell expands its positional parameter.
 # shellcheck disable=SC2016
-timeout "${verification_timeout}ms" sh -ceu 'while [ ! -s "$1" ]; do :; done' sh "$endpoint_file"
+timeout "$verification_timeout" sh -ceu 'while [ ! -s "$1" ]; do :; done' sh "$endpoint_file"
 s3_endpoint="$(< "$endpoint_file")"
 
 consumer_config="$build_root/consumer.toml"
@@ -279,6 +306,20 @@ if find "$lifecycle_home" -type s -print -quit | grep -q .; then
   exit 1
 fi
 run_startup_negative occupied-abstract-socket 'Address in use' "${backend_environment[@]}"
+printf 'int strict_smoke(void) { return 0; }\n' > "$build_root/strict-smoke.c"
+run_server_control "$lifecycle_home" --zero-stats
+run_server_control "$lifecycle_home" "$consumer_compiler_path" \
+  -c "$build_root/strict-smoke.c" -o "$build_root/strict-smoke.o"
+[[ -s "$build_root/strict-smoke.o" ]]
+rm "$build_root/strict-smoke.o"
+run_server_control "$lifecycle_home" "$consumer_compiler_path" \
+  -c "$build_root/strict-smoke.c" -o "$build_root/strict-smoke.o"
+[[ -s "$build_root/strict-smoke.o" ]]
+run_server_control "$lifecycle_home" --show-stats --stats-format=json \
+  > "$build_root/strict-smoke-stats.json"
+jq -e \
+  '.compile_requests == 2 and .cache_writes >= 1 and ([.cache_hits.counts[]] | add) >= 1' \
+  "$build_root/strict-smoke-stats.json" >/dev/null
 run_server_control "$lifecycle_home" --stop-server
 run_server_control "$lifecycle_home" --start-server
 run_server_control "$lifecycle_home" --stop-server

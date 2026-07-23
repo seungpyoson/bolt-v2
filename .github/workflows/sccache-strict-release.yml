@@ -16,6 +16,10 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: strict-sccache-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
 jobs:
   preflight:
     name: Bind source and publication controls
@@ -37,6 +41,9 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
+
+      - name: Verify strict release controls
+        run: python3.12 scripts/test_sccache_strict.py
 
       - name: Install governed GitHub CLI
         id: gh
@@ -79,7 +86,7 @@ jobs:
           EVENT_SHA: ${{ github.sha }}
           GH_API_VERSION: ${{ steps.gh.outputs.api_version }}
           GH_BIN: ${{ steps.gh.outputs.gh_bin }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && github.token || '' }}
           PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish || false }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUBLISHER_ENVIRONMENT: ${{ steps.gh.outputs.publisher_environment }}
@@ -479,12 +486,12 @@ jobs:
             --head-sha "$HEAD_SHA" \
             --tag "$TAG")"
           cleanup_mutable_release() {
-            local cleanup_id cleanup_probe cleanup_status current
+            local cleanup_id cleanup_probe cleanup_status current tag_object_sha
             local -a cleanup_args
             set +e
             if [[ -n "$release_id" ]]; then
               current="$(github_api -H "X-GitHub-Api-Version: $GH_API_VERSION" \
-                "repos/$REPOSITORY/releases/$release_id" 2>/dev/null)" || return
+                "repos/$REPOSITORY/releases/$release_id" 2>/dev/null)" || current='[]'
             else
               census_releases cleanup-release.json cleanup-release-census || return
               current="$(< cleanup-release.json)"
@@ -518,25 +525,61 @@ jobs:
                 return
               fi
             fi
+            census_releases cleanup-tag-releases.json cleanup-tag-release-census || return
+            python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" \
+              validate-owned-tag-cleanup \
+              --releases-json cleanup-tag-releases.json \
+              --tag "$TAG" || return
+            github_api -H "X-GitHub-Api-Version: $GH_API_VERSION" \
+              "repos/$REPOSITORY/git/ref/tags/$TAG" > cleanup-tag-ref.json || return
+            tag_object_sha="$(jq -er '.object.sha' cleanup-tag-ref.json)" || return
+            github_api -H "X-GitHub-Api-Version: $GH_API_VERSION" \
+              "repos/$REPOSITORY/git/tags/$tag_object_sha" > cleanup-tag-object.json || return
+            python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" \
+              validate-owned-annotated-tag \
+              --tag-ref-json cleanup-tag-ref.json \
+              --tag-object-json cleanup-tag-object.json \
+              --tag "$TAG" \
+              --head-sha "$HEAD_SHA" \
+              --ownership-marker "$ownership_marker" || return
+            github_api --method DELETE -H "X-GitHub-Api-Version: $GH_API_VERSION" \
+              "repos/$REPOSITORY/git/refs/tags/$TAG" || return
+            cleanup_probe="$(github_api --include --silent \
+              -H "X-GitHub-Api-Version: $GH_API_VERSION" \
+              "repos/$REPOSITORY/git/ref/tags/$TAG" 2>&1)"
+            cleanup_status=$?
+            if (( cleanup_status == 0 )); then
+              echo 'owned release tag cleanup did not remove the exact ref' >&2
+              return
+            fi
+            if ! grep -Eq '^HTTP/[0-9.]+[[:space:]]+404[[:space:]]' \
+              <<< "$cleanup_probe"; then
+              echo 'owned release tag cleanup absence is ambiguous' >&2
+            fi
           }
           trap cleanup_mutable_release EXIT
-          github_api --include --method POST \
+          github_api --method POST \
+            -H "X-GitHub-Api-Version: $GH_API_VERSION" \
+            "repos/$REPOSITORY/git/tags" \
+            -f tag="$TAG" \
+            -f message="$ownership_marker" \
+            -f object="$HEAD_SHA" \
+            -f type=commit > reserved-tag-object.json
+          tag_object_sha="$(jq -er '.sha' reserved-tag-object.json)"
+          github_api --method POST \
             -H "X-GitHub-Api-Version: $GH_API_VERSION" \
             "repos/$REPOSITORY/git/refs" \
             -f ref="refs/tags/$TAG" \
-            -f sha="$HEAD_SHA" > tag-create-response.txt
-          python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" \
-            validate-tag-create-response \
-            --response tag-create-response.txt \
-            --tag "$TAG" \
-            --head-sha "$HEAD_SHA"
+            -f sha="$tag_object_sha"
           github_api -H "X-GitHub-Api-Version: $GH_API_VERSION" \
             "repos/$REPOSITORY/git/ref/tags/$TAG" > reserved-tag.json
           python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" \
-            validate-release-tag \
-            --tag-json reserved-tag.json \
+            validate-owned-annotated-tag \
+            --tag-ref-json reserved-tag.json \
+            --tag-object-json reserved-tag-object.json \
             --tag "$TAG" \
-            --head-sha "$HEAD_SHA"
+            --head-sha "$HEAD_SHA" \
+            --ownership-marker "$ownership_marker"
 
           release="$(github_api --method POST -H "X-GitHub-Api-Version: $GH_API_VERSION" \
             "repos/$REPOSITORY/releases" \
@@ -568,6 +611,16 @@ jobs:
           fi
           github_api -H "X-GitHub-Api-Version: $GH_API_VERSION" \
             "repos/$REPOSITORY/git/ref/tags/$TAG" > tag.json
+          tag_object_sha="$(jq -er '.object.sha' tag.json)"
+          github_api -H "X-GitHub-Api-Version: $GH_API_VERSION" \
+            "repos/$REPOSITORY/git/tags/$tag_object_sha" > tag-object.json
+          python3.12 "$GITHUB_WORKSPACE/scripts/sccache_strict.py" \
+            validate-owned-annotated-tag \
+            --tag-ref-json tag.json \
+            --tag-object-json tag-object.json \
+            --tag "$TAG" \
+            --head-sha "$HEAD_SHA" \
+            --ownership-marker "$ownership_marker"
 
           verified_attestation=false
           for ((attempt = 1; attempt <= ATTESTATION_ATTEMPTS; attempt++)); do
@@ -622,4 +675,5 @@ jobs:
             --head-sha "$HEAD_SHA" \
             "${candidate_args[@]}" \
             --release-json release.json \
-            --tag-json tag.json
+            --tag-json tag.json \
+            --tag-object-json tag-object.json

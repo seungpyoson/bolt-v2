@@ -9206,8 +9206,6 @@ diff --git a/src/test/utils.rs b/src/test/utils.rs
 index d8531be..efd56b5 100644
 --- a/src/test/utils.rs
 +++ b/src/test/utils.rs
-@@ -19 +18,0 @@ use std::collections::HashMap;
--use std::env;
 @@ -123,2 +121,0 @@ pub struct TestFixture {
 -    /// $PATH
 -    pub paths: OsString,

@@ -35,6 +35,12 @@ mode = "offline_projection"
 owner = "bolt_v3_decision_evidence"
 source_anchors = ["src/bin/shadow_pnl_report.rs"]
 
+[[consumers]]
+id = "backtest_run_guard_v1"
+mode = "offline_projection"
+owner = "bolt_v3_decision_evidence"
+source_anchors = ["crates/backtesting-vertical-slice/src/runner.rs:BacktestDecisionEvidenceWriter::state"]
+
 [[purposes]]
 id = "blocked_strategy_input_observation"
 owner = "bolt_v3_decision_evidence"
@@ -1365,3 +1371,159 @@ fact = "venue_truth_divergence_v1"
 consumer = "shadow_pnl_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "blocked_strategy_input_observation_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "blocked_strategy_input_observation_v1"
+
+[[dispositions]]
+fact = "submit_linked_strategy_input_snapshot_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "submit_linked_strategy_input_snapshot_v1"
+
+[[dispositions]]
+fact = "entry_order_intent_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "entry_order_intent_v1"
+
+[[dispositions]]
+fact = "risk_reducing_exit_order_intent_v1"
+consumer = "backtest_run_guard_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
+
+[[dispositions]]
+fact = "admitted_entry_admission_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "admitted_entry_admission_v1"
+
+[[dispositions]]
+fact = "rejected_entry_admission_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "rejected_entry_admission_v1"
+
+[[dispositions]]
+fact = "risk_reducing_exit_admission_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "risk_reducing_exit_admission_v1"
+
+[[dispositions]]
+fact = "replace_admission_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "replace_admission_v1"
+
+[[dispositions]]
+fact = "forced_reduction_admission_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "forced_reduction_admission_v1"
+
+[[dispositions]]
+fact = "basket_admission_granted_v1"
+consumer = "backtest_run_guard_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
+
+[[dispositions]]
+fact = "basket_admission_rejected_v1"
+consumer = "backtest_run_guard_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
+
+[[dispositions]]
+fact = "capital_admission_rebuild_v1"
+consumer = "backtest_run_guard_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
+
+[[dispositions]]
+fact = "submit_reservation_metadata_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "submit_reservation_metadata_v1"
+
+[[dispositions]]
+fact = "submit_reservation_fill_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "submit_reservation_fill_v1"
+
+[[dispositions]]
+fact = "entry_skip_observation_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "entry_skip_observation_v1"
+
+[[dispositions]]
+fact = "exit_submission_decision_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "exit_submission_decision_v1"
+
+[[dispositions]]
+fact = "exit_hold_decision_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "exit_hold_decision_v1"
+
+[[dispositions]]
+fact = "exit_evaluation_v1"
+consumer = "backtest_run_guard_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
+
+[[dispositions]]
+fact = "loss_governor_halt_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "loss_governor_halt_v1"
+
+[[dispositions]]
+fact = "order_reject_v1"
+consumer = "backtest_run_guard_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
+
+[[dispositions]]
+fact = "order_lifecycle_v1"
+consumer = "backtest_run_guard_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
+
+[[dispositions]]
+fact = "requote_throttle_observation_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "requote_throttle_observation_v1"
+
+[[dispositions]]
+fact = "settlement_v1"
+consumer = "backtest_run_guard_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
+
+[[dispositions]]
+fact = "terminal_settlement_v1"
+consumer = "backtest_run_guard_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
+
+[[dispositions]]
+fact = "venue_truth_capture_failure_v1"
+consumer = "backtest_run_guard_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
+
+[[dispositions]]
+fact = "venue_truth_divergence_v1"
+consumer = "backtest_run_guard_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"

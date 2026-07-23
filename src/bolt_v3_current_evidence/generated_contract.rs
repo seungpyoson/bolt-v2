@@ -212,6 +212,7 @@ pub(crate) enum KnownConsumer {
     SettlementRecoveryV1,
     BookingRecoveryV1,
     ShadowPnlV1,
+    BacktestRunGuardV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -896,6 +897,84 @@ pub(crate) const fn disposition_for(
         }
         (KnownFact::VenueTruthDivergenceV1, KnownConsumer::ShadowPnlV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
+        }
+        (KnownFact::BlockedStrategyInputObservationV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::BlockedStrategyInputObservationV1)
+        }
+        (KnownFact::SubmitLinkedStrategyInputSnapshotV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::SubmitLinkedStrategyInputSnapshotV1)
+        }
+        (KnownFact::EntryOrderIntentV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::EntryOrderIntentV1)
+        }
+        (KnownFact::RiskReducingExitOrderIntentV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
+        }
+        (KnownFact::AdmittedEntryAdmissionV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::AdmittedEntryAdmissionV1)
+        }
+        (KnownFact::RejectedEntryAdmissionV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::RejectedEntryAdmissionV1)
+        }
+        (KnownFact::RiskReducingExitAdmissionV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::RiskReducingExitAdmissionV1)
+        }
+        (KnownFact::ReplaceAdmissionV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::ReplaceAdmissionV1)
+        }
+        (KnownFact::ForcedReductionAdmissionV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::ForcedReductionAdmissionV1)
+        }
+        (KnownFact::BasketAdmissionGrantedV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
+        }
+        (KnownFact::BasketAdmissionRejectedV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
+        }
+        (KnownFact::CapitalAdmissionRebuildV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
+        }
+        (KnownFact::SubmitReservationMetadataV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::SubmitReservationMetadataV1)
+        }
+        (KnownFact::SubmitReservationFillV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::SubmitReservationFillV1)
+        }
+        (KnownFact::EntrySkipObservationV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::EntrySkipObservationV1)
+        }
+        (KnownFact::ExitSubmissionDecisionV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::ExitSubmissionDecisionV1)
+        }
+        (KnownFact::ExitHoldDecisionV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::ExitHoldDecisionV1)
+        }
+        (KnownFact::ExitEvaluationV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
+        }
+        (KnownFact::LossGovernorHaltV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::LossGovernorHaltV1)
+        }
+        (KnownFact::OrderRejectV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
+        }
+        (KnownFact::OrderLifecycleV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
+        }
+        (KnownFact::RequoteThrottleObservationV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::RequoteThrottleObservationV1)
+        }
+        (KnownFact::SettlementV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
+        }
+        (KnownFact::TerminalSettlementV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
+        }
+        (KnownFact::VenueTruthCaptureFailureV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
+        }
+        (KnownFact::VenueTruthDivergenceV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
         }
     }
 }

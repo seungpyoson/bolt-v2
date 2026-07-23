@@ -3762,6 +3762,39 @@ mod tests {
     }
 
     #[test]
+    fn backtest_run_guard_dispositions_have_typed_reducers_for_every_current_identity() {
+        use super::super::{
+            generated_contract::{
+                ALL_IDENTITIES, ConsumerDisposition, KnownConsumer, disposition_for,
+                fact_for_identity,
+            },
+            reader::into_backtest_run_guard_event,
+        };
+
+        for identity in ALL_IDENTITIES.iter().copied() {
+            let line = positive_corpus(identity)
+                .lines()
+                .next()
+                .expect("positive corpus must contain a baseline record");
+            let fact = decode_current_fact(identity, line, 1)
+                .unwrap_or_else(|error| panic!("{identity:?} must decode: {error:#}"));
+            let expected_relevant = matches!(
+                disposition_for(
+                    fact_for_identity(identity),
+                    KnownConsumer::BacktestRunGuardV1,
+                ),
+                ConsumerDisposition::Relevant(_)
+            );
+            let reduced = into_backtest_run_guard_event(fact);
+            assert_eq!(
+                reduced.is_ok(),
+                expected_relevant,
+                "{identity:?} backtest relevance must agree with its typed reducer"
+            );
+        }
+    }
+
+    #[test]
     fn committed_rejection_corpus_fails_at_the_owned_boundary() {
         use std::io::Write;
 

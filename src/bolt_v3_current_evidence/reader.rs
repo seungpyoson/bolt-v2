@@ -10,8 +10,12 @@ use serde::Deserialize;
 use super::{
     codec::{decode_current_fact, decode_startup_recovery_fact},
     facts::{
-        AdmittedEntryAdmissionFact, CurrentFact, EntryOrderIntentFact, StartupRecoveryFacts,
-        SubmitLinkedStrategyInputSnapshotFact,
+        AdmittedEntryAdmissionFact, BlockedStrategyInputObservationFact, CurrentFact,
+        EntryOrderIntentFact, EntrySkipFact, ExitHoldDecisionFact, ExitSubmissionDecisionFact,
+        ForcedReductionAdmissionFact, LossGovernorHaltFact, RejectedEntryAdmissionFact,
+        ReplaceAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
+        StartupRecoveryFacts, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
+        SubmitReservationMetadataFact,
     },
     generated_contract::{
         ConsumerDisposition, KnownConsumer, KnownSink, descriptor_for_identity, disposition_for,
@@ -27,9 +31,34 @@ pub enum ShadowPnlEvent {
 }
 
 #[derive(Debug, Clone)]
-pub struct RecordedCurrentFact {
+struct RecordedCurrentFact {
+    recorded_at_utc_ns: i64,
+    fact: CurrentFact,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BacktestRunGuardEvent {
+    BlockedStrategyInputObservation(Box<BlockedStrategyInputObservationFact>),
+    SubmitLinkedStrategyInputSnapshot(Box<SubmitLinkedStrategyInputSnapshotFact>),
+    EntryOrderIntent(EntryOrderIntentFact),
+    AdmittedEntryAdmission(Box<AdmittedEntryAdmissionFact>),
+    RejectedEntryAdmission(Box<RejectedEntryAdmissionFact>),
+    RiskReducingExitAdmission(Box<RiskReducingExitAdmissionFact>),
+    ReplaceAdmission(Box<ReplaceAdmissionFact>),
+    ForcedReductionAdmission(Box<ForcedReductionAdmissionFact>),
+    SubmitReservationMetadata(SubmitReservationMetadataFact),
+    SubmitReservationFill(SubmitReservationFillFact),
+    EntrySkipObservation(Box<EntrySkipFact>),
+    ExitSubmissionDecision(Box<ExitSubmissionDecisionFact>),
+    ExitHoldDecision(Box<ExitHoldDecisionFact>),
+    LossGovernorHalt(LossGovernorHaltFact),
+    RequoteThrottleObservation(RequoteThrottleObservationFact),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordedBacktestRunGuardEvent {
     pub recorded_at_utc_ns: i64,
-    pub fact: CurrentFact,
+    pub event: BacktestRunGuardEvent,
 }
 
 pub fn read_current_evidence_facts(path: &Path, max_bytes: u64) -> Result<Vec<CurrentFact>> {
@@ -39,14 +68,38 @@ pub fn read_current_evidence_facts(path: &Path, max_bytes: u64) -> Result<Vec<Cu
         .collect())
 }
 
-pub fn read_current_evidence_records(
+fn read_current_evidence_records(path: &Path, max_bytes: u64) -> Result<Vec<RecordedCurrentFact>> {
+    read_consumer_records(path, Some(max_bytes), None)
+}
+
+pub fn read_backtest_run_guard_events(
     path: &Path,
     max_bytes: u64,
+) -> Result<Vec<RecordedBacktestRunGuardEvent>> {
+    read_consumer_records(
+        path,
+        Some(max_bytes),
+        Some(KnownConsumer::BacktestRunGuardV1),
+    )?
+    .into_iter()
+    .map(|record| {
+        Ok(RecordedBacktestRunGuardEvent {
+            recorded_at_utc_ns: record.recorded_at_utc_ns,
+            event: into_backtest_run_guard_event(record.fact)?,
+        })
+    })
+    .collect()
+}
+
+fn read_consumer_records(
+    path: &Path,
+    max_bytes: Option<u64>,
+    consumer: Option<KnownConsumer>,
 ) -> Result<Vec<RecordedCurrentFact>> {
     let mut file = File::open(path)
         .with_context(|| format!("open current decision evidence `{}`", path.display()))?;
     let len = file.metadata()?.len();
-    let lines = read_framed_lines(&mut file, len, Some(max_bytes), "current decision evidence")?;
+    let lines = read_framed_lines(&mut file, len, max_bytes, "current decision evidence")?;
     let mut records = Vec::new();
     for (index, line) in lines.into_iter().enumerate() {
         let line_number = index + 1;
@@ -63,40 +116,13 @@ pub fn read_current_evidence_records(
             header.gate_id == descriptor.gate_id,
             "wrong gate_id at current decision evidence line {line_number}"
         );
-        records.push(RecordedCurrentFact {
-            recorded_at_utc_ns: header.recorded_at_utc_ns,
-            fact: decode_current_fact(identity, &line, line_number)?,
-        });
-    }
-    Ok(records)
-}
-
-pub fn read_shadow_pnl_events(path: &Path) -> Result<Vec<ShadowPnlEvent>> {
-    let mut file = File::open(path)
-        .with_context(|| format!("open current decision evidence `{}`", path.display()))?;
-    let len = file.metadata()?.len();
-    let lines = read_framed_lines(&mut file, len, None, "current decision evidence")?;
-    let mut events = Vec::new();
-    for (index, line) in lines.into_iter().enumerate() {
-        let line_number = index + 1;
-        let header = validated_header(&line, line_number, "current decision evidence")?;
-        let identity = resolve_identity(&header.kind, header.schema_version).ok_or_else(|| {
-            anyhow!(
-                "unsupported exact identity at current decision evidence line {line_number}: ({}, {})",
-                header.kind,
-                header.schema_version
-            )
-        })?;
-        let descriptor = descriptor_for_identity(identity);
-        ensure!(
-            header.gate_id == descriptor.gate_id,
-            "wrong gate_id at current decision evidence line {line_number}"
-        );
         let fact_id = fact_for_identity(identity);
-        if matches!(
-            disposition_for(fact_id, KnownConsumer::ShadowPnlV1),
-            ConsumerDisposition::Irrelevant(_)
-        ) {
+        if consumer.is_some_and(|consumer| {
+            matches!(
+                disposition_for(fact_id, consumer),
+                ConsumerDisposition::Irrelevant(_)
+            )
+        }) {
             continue;
         }
         let fact = decode_current_fact(identity, &line, line_number)?;
@@ -104,9 +130,19 @@ pub fn read_shadow_pnl_events(path: &Path) -> Result<Vec<ShadowPnlEvent>> {
             fact.registered_fact() == fact_id,
             "decoded fact disagrees with registered identity at current decision evidence line {line_number}"
         );
-        events.push(into_shadow_pnl_event(fact)?);
+        records.push(RecordedCurrentFact {
+            recorded_at_utc_ns: header.recorded_at_utc_ns,
+            fact,
+        });
     }
-    Ok(events)
+    Ok(records)
+}
+
+pub fn read_shadow_pnl_events(path: &Path) -> Result<Vec<ShadowPnlEvent>> {
+    read_consumer_records(path, None, Some(KnownConsumer::ShadowPnlV1))?
+        .into_iter()
+        .map(|record| into_shadow_pnl_event(record.fact))
+        .collect()
 }
 
 fn into_shadow_pnl_event(fact: CurrentFact) -> Result<ShadowPnlEvent> {
@@ -143,6 +179,62 @@ fn into_shadow_pnl_event(fact: CurrentFact) -> Result<ShadowPnlEvent> {
         | CurrentFact::VenueTruthCaptureFailure(_)
         | CurrentFact::VenueTruthDivergence(_) => Err(anyhow!(
             "fact {registered_fact:?} is registered as relevant to Shadow PnL but has no typed reducer"
+        )),
+    }
+}
+
+pub(super) fn into_backtest_run_guard_event(fact: CurrentFact) -> Result<BacktestRunGuardEvent> {
+    let registered_fact = fact.registered_fact();
+    match fact {
+        CurrentFact::BlockedStrategyInputObservation(value) => Ok(
+            BacktestRunGuardEvent::BlockedStrategyInputObservation(value),
+        ),
+        CurrentFact::SubmitLinkedStrategyInputSnapshot(value) => Ok(
+            BacktestRunGuardEvent::SubmitLinkedStrategyInputSnapshot(value),
+        ),
+        CurrentFact::EntryOrderIntent(value) => Ok(BacktestRunGuardEvent::EntryOrderIntent(value)),
+        CurrentFact::AdmittedEntryAdmission(value) => {
+            Ok(BacktestRunGuardEvent::AdmittedEntryAdmission(value))
+        }
+        CurrentFact::RejectedEntryAdmission(value) => {
+            Ok(BacktestRunGuardEvent::RejectedEntryAdmission(value))
+        }
+        CurrentFact::RiskReducingExitAdmission(value) => {
+            Ok(BacktestRunGuardEvent::RiskReducingExitAdmission(value))
+        }
+        CurrentFact::ReplaceAdmission(value) => Ok(BacktestRunGuardEvent::ReplaceAdmission(value)),
+        CurrentFact::ForcedReductionAdmission(value) => {
+            Ok(BacktestRunGuardEvent::ForcedReductionAdmission(value))
+        }
+        CurrentFact::SubmitReservationMetadata(value) => {
+            Ok(BacktestRunGuardEvent::SubmitReservationMetadata(value))
+        }
+        CurrentFact::SubmitReservationFill(value) => {
+            Ok(BacktestRunGuardEvent::SubmitReservationFill(value))
+        }
+        CurrentFact::EntrySkipObservation(value) => {
+            Ok(BacktestRunGuardEvent::EntrySkipObservation(value))
+        }
+        CurrentFact::ExitSubmissionDecision(value) => {
+            Ok(BacktestRunGuardEvent::ExitSubmissionDecision(value))
+        }
+        CurrentFact::ExitHoldDecision(value) => Ok(BacktestRunGuardEvent::ExitHoldDecision(value)),
+        CurrentFact::LossGovernorHalt(value) => Ok(BacktestRunGuardEvent::LossGovernorHalt(value)),
+        CurrentFact::RequoteThrottleObservation(value) => {
+            Ok(BacktestRunGuardEvent::RequoteThrottleObservation(value))
+        }
+        CurrentFact::RiskReducingExitOrderIntent(_)
+        | CurrentFact::BasketAdmissionGranted(_)
+        | CurrentFact::BasketAdmissionRejected(_)
+        | CurrentFact::CapitalAdmissionRebuild(_)
+        | CurrentFact::ExitEvaluation(_)
+        | CurrentFact::OrderReject(_)
+        | CurrentFact::OrderLifecycle(_)
+        | CurrentFact::Settlement(_)
+        | CurrentFact::TerminalSettlement(_)
+        | CurrentFact::VenueTruthCaptureFailure(_)
+        | CurrentFact::VenueTruthDivergence(_) => Err(anyhow!(
+            "fact {registered_fact:?} is registered as relevant to the backtest run guard but has no typed reducer"
         )),
     }
 }

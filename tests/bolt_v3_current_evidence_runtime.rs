@@ -8,7 +8,7 @@ use bolt_v2::{
         RecordFailure, RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
         RequoteThrottleObservationFact, SettlementBookingErrorFact, SettlementBookingErrorReason,
         SettlementFact, ShadowPnlEvent, SubmitReservationFillFact, SubmitReservationMetadataFact,
-        TerminalSettlementFact, read_shadow_pnl_events,
+        TerminalSettlementFact, read_backtest_run_guard_events, read_shadow_pnl_events,
     },
 };
 use tempfile::TempDir;
@@ -623,6 +623,35 @@ fn shadow_pnl_skips_irrelevant_identity_before_payload_decode() {
     .expect("malformed irrelevant line must be written");
 
     let events = read_shadow_pnl_events(&path)
+        .expect("irrelevant identity must be skipped before payload decoding");
+    assert!(events.is_empty());
+}
+
+#[test]
+fn backtest_run_guard_skips_irrelevant_identity_before_payload_decode() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let fixture = include_str!("fixtures/bolt_v3/current_evidence/positive/order_lifecycle.jsonl");
+    let mut line: serde_json::Value = serde_json::from_str(
+        fixture
+            .lines()
+            .next()
+            .expect("order lifecycle fixture must contain a line"),
+    )
+    .expect("order lifecycle fixture must decode as JSON");
+    line.as_object_mut()
+        .expect("order lifecycle line must be an object")
+        .remove("lifecycle");
+    let path = temp.path().join("irrelevant-malformed-payload.jsonl");
+    fs::write(
+        &path,
+        format!(
+            "{}\n",
+            serde_json::to_string(&line).expect("malformed line must serialize")
+        ),
+    )
+    .expect("malformed irrelevant line must be written");
+
+    let events = read_backtest_run_guard_events(&path, u64::MAX)
         .expect("irrelevant identity must be skipped before payload decoding");
     assert!(events.is_empty());
 }

@@ -25,9 +25,9 @@ use bolt_v2::{
         load_bolt_v3_config,
     },
     bolt_v3_current_evidence::{
-        AdmissionDecisionOutcome, CurrentFact, DecisionEvidenceRecorder,
+        AdmissionDecisionOutcome, BacktestRunGuardEvent, DecisionEvidenceRecorder,
         OfflineDecisionEvidenceRuntime, StrategyInputDetails, StrategyInputRvState,
-        read_current_evidence_records,
+        read_backtest_run_guard_events,
     },
     bolt_v3_operator_artifacts::json_artifact_bytes,
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
@@ -249,71 +249,65 @@ impl BacktestDecisionEvidenceWriter {
                 .metadata()
                 .context("inspect isolated backtest evidence stream")?
                 .len();
-            for record in read_current_evidence_records(stream.path(), max_bytes)? {
-                match record.fact {
-                    CurrentFact::BlockedStrategyInputObservation(fact) => {
+            for record in read_backtest_run_guard_events(stream.path(), max_bytes)? {
+                match record.event {
+                    BacktestRunGuardEvent::BlockedStrategyInputObservation(fact) => {
                         state.observe_strategy_input(
                             record.recorded_at_utc_ns,
                             BacktestStrategyInputPurpose::BlockedObservation,
                             fact.details,
                         )?;
                     }
-                    CurrentFact::SubmitLinkedStrategyInputSnapshot(fact) => {
+                    BacktestRunGuardEvent::SubmitLinkedStrategyInputSnapshot(fact) => {
                         state.observe_strategy_input(
                             record.recorded_at_utc_ns,
                             BacktestStrategyInputPurpose::SubmitLinked,
                             fact.details,
                         )?;
                     }
-                    CurrentFact::EntryOrderIntent(_) => state.order_intent_count += 1,
-                    CurrentFact::AdmittedEntryAdmission(_) => {
+                    BacktestRunGuardEvent::EntryOrderIntent(_) => state.order_intent_count += 1,
+                    BacktestRunGuardEvent::AdmittedEntryAdmission(_) => {
                         state.admission_decision_count += 1;
                         state.admitted_order_count += 1;
                     }
-                    CurrentFact::RejectedEntryAdmission(_) => {
+                    BacktestRunGuardEvent::RejectedEntryAdmission(_) => {
                         state.admission_decision_count += 1;
                     }
-                    CurrentFact::RiskReducingExitAdmission(fact) => {
-                        state.admission_decision_count += 1;
-                        if matches!(fact.outcome, AdmissionDecisionOutcome::Admitted) {
-                            state.admitted_order_count += 1;
-                        }
-                    }
-                    CurrentFact::ReplaceAdmission(fact) => {
+                    BacktestRunGuardEvent::RiskReducingExitAdmission(fact) => {
                         state.admission_decision_count += 1;
                         if matches!(fact.outcome, AdmissionDecisionOutcome::Admitted) {
                             state.admitted_order_count += 1;
                         }
                     }
-                    CurrentFact::ForcedReductionAdmission(fact) => {
+                    BacktestRunGuardEvent::ReplaceAdmission(fact) => {
                         state.admission_decision_count += 1;
                         if matches!(fact.outcome, AdmissionDecisionOutcome::Admitted) {
                             state.admitted_order_count += 1;
                         }
                     }
-                    CurrentFact::SubmitReservationMetadata(_) => {
+                    BacktestRunGuardEvent::ForcedReductionAdmission(fact) => {
+                        state.admission_decision_count += 1;
+                        if matches!(fact.outcome, AdmissionDecisionOutcome::Admitted) {
+                            state.admitted_order_count += 1;
+                        }
+                    }
+                    BacktestRunGuardEvent::SubmitReservationMetadata(_) => {
                         state.submit_reservation_count += 1;
                     }
-                    CurrentFact::SubmitReservationFill(_) => state.submit_fill_count += 1,
-                    CurrentFact::EntrySkipObservation(_) => state.entry_skip_count += 1,
-                    CurrentFact::ExitSubmissionDecision(_) | CurrentFact::ExitHoldDecision(_) => {
+                    BacktestRunGuardEvent::SubmitReservationFill(_) => {
+                        state.submit_fill_count += 1;
+                    }
+                    BacktestRunGuardEvent::EntrySkipObservation(_) => state.entry_skip_count += 1,
+                    BacktestRunGuardEvent::ExitSubmissionDecision(_)
+                    | BacktestRunGuardEvent::ExitHoldDecision(_) => {
                         state.exit_decision_count += 1;
                     }
-                    CurrentFact::LossGovernorHalt(_) => state.loss_governor_halt_count += 1,
-                    CurrentFact::RequoteThrottleObservation(_) => {
+                    BacktestRunGuardEvent::LossGovernorHalt(_) => {
+                        state.loss_governor_halt_count += 1;
+                    }
+                    BacktestRunGuardEvent::RequoteThrottleObservation(_) => {
                         state.requote_throttle_count += 1;
                     }
-                    CurrentFact::RiskReducingExitOrderIntent(_)
-                    | CurrentFact::BasketAdmissionGranted(_)
-                    | CurrentFact::BasketAdmissionRejected(_)
-                    | CurrentFact::CapitalAdmissionRebuild(_)
-                    | CurrentFact::ExitEvaluation(_)
-                    | CurrentFact::OrderReject(_)
-                    | CurrentFact::OrderLifecycle(_)
-                    | CurrentFact::Settlement(_)
-                    | CurrentFact::TerminalSettlement(_)
-                    | CurrentFact::VenueTruthCaptureFailure(_)
-                    | CurrentFact::VenueTruthDivergence(_) => {}
                 }
             }
         }

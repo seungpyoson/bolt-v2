@@ -11,8 +11,8 @@ mod runtime;
 pub use facts::*;
 pub(crate) use path::validate_relative_path;
 pub use reader::{
-    RecordedCurrentFact, ShadowPnlEvent, read_current_evidence_facts,
-    read_current_evidence_records, read_shadow_pnl_events,
+    BacktestRunGuardEvent, RecordedBacktestRunGuardEvent, ShadowPnlEvent,
+    read_backtest_run_guard_events, read_current_evidence_facts, read_shadow_pnl_events,
 };
 pub use record::{
     AppendReceipt, CommitPhase, DecisionEvidenceRecorder, NonBlockingRecordOutcome,

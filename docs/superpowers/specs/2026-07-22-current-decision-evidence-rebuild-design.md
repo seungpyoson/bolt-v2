@@ -44,16 +44,19 @@ The rebuild accepts a stronger criterion: invalid runtime paths must be unconstr
 
 There is no public writer constructor in the default live package and no separately callable startup preflight. The bytes validated for startup and the file later appended are the same open file description.
 
-Offline readers use `read_current_evidence_facts` or a typed consumer projection such as
-`read_shadow_pnl_events`; both share the same exact-identity decoder and JSONL framing check. They
-cannot construct append capability. Shadow PnL owns no envelope parser or kind dispatch.
+Diagnostic and test inspection uses `read_current_evidence_facts`. Every offline application
+consumer uses its registered typed projection, including `read_shadow_pnl_events` and
+`read_backtest_run_guard_events`. All routes share one exact-identity decoder and JSONL framing
+check, and none can construct append capability. Shadow PnL and backtesting own no envelope parser,
+kind dispatch, or generic fact reducer.
 
 The backtesting vertical slice is a separate Cargo workspace and enables the
 `offline-current-evidence` feature on its `bolt-v2` dependency. That feature alone exposes
 `OfflineDecisionEvidenceRuntime::from_fresh_files`, which accepts only two empty, distinct file
 descriptors and returns the same concrete recorder used by live strategy construction. The default
 live build does not compile this constructor. Backtest run-guard projections read the resulting
-current facts; they do not implement a writer trait or maintain a second payload contract.
+registered `BacktestRunGuardEvent` values; they do not implement a writer trait, consume generic
+facts, or maintain a second payload contract.
 
 ## Typed Write Boundary
 
@@ -122,6 +125,7 @@ Required evidence includes:
 - observation floods do not change machine-stream bytes or recovery results;
 - submit reservation and settlement/booking/terminal recovery reconstruct after restart;
 - Shadow PnL consumes the shared typed reader and handles blocked observations by registered irrelevance;
+- the backtest run guard consumes its registered typed reader, with an explicit disposition and typed reducer for every current fact;
 - generator output is byte deterministic;
 - the full unfiltered exact-head suite, formatting, clippy, and build checks complete successfully.
 

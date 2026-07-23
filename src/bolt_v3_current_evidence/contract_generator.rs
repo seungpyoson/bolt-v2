@@ -106,6 +106,10 @@ pub struct ContractRegistry {
 }
 
 impl ContractRegistry {
+    pub fn consumer_count(&self) -> usize {
+        self.wire.consumers.len()
+    }
+
     pub fn producer_count(&self) -> usize {
         self.wire.producers.len()
     }

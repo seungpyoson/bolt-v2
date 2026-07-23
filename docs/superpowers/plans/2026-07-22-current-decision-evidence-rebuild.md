@@ -281,8 +281,9 @@ Reservation recovery, unified settlement recovery, entry-chain analysis, and Sha
 
 Migrate the separately resolved backtesting workspace from its private generic writer to the
 feature-isolated `OfflineDecisionEvidenceRuntime`. It must write through the same concrete recorder,
-durable sinks, codecs, receipts, and effect policies, then derive its run-guard report from decoded
-current facts.
+durable sinks, codecs, receipts, and effect policies, then derive its run-guard report from the
+registered `BacktestRunGuardEvent` projection. Every current fact has an explicit run-guard
+disposition, and every relevant disposition has a typed reducer.
 
 - [x] **Step 5: Verify restart and separation behavior**
 
@@ -368,7 +369,7 @@ Review exact-head startup authority, receipt construction, identity ownership, f
 
 Resolved findings were boundary defects rather than per-call-site exceptions:
 
-- the backtesting workspace's private generic writer was replaced by the feature-isolated production recorder and current-fact reader;
+- the backtesting workspace's private generic writer and generic-fact reducer were replaced by the feature-isolated production recorder and registered typed run-guard projection;
 - all readers now share strict newline and blank-line framing;
 - the recovery byte cap is mandatory and positive, removing an unbounded alternate mode;
 - startup fully decodes every current machine payload before applying generated consumer dispositions;

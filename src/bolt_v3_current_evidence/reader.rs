@@ -122,20 +122,29 @@ struct HeaderOnlyLine {
     recorded_at_utc_ns: i64,
 }
 
-pub(super) fn validate_machine_stream(
-    machine: &mut File,
+pub(super) struct ValidatedStream {
+    pub(super) startup_recovery: StartupRecoveryFacts,
+}
+
+pub(super) fn validate_stream(
+    file: &mut File,
+    expected_sink: KnownSink,
     max_bytes: Option<u64>,
-) -> Result<StartupRecoveryFacts> {
-    let len = machine.metadata()?.len();
-    machine.seek(SeekFrom::Start(0))?;
-    let lines = read_framed_lines(machine, len, max_bytes, "machine evidence")?;
+) -> Result<ValidatedStream> {
+    let stream = match expected_sink {
+        KnownSink::Machine => "machine evidence",
+        KnownSink::Observation => "observation evidence",
+    };
+    let len = file.metadata()?.len();
+    file.seek(SeekFrom::Start(0))?;
+    let lines = read_framed_lines(file, len, max_bytes, stream)?;
     let mut facts = StartupRecoveryFacts::default();
     for (index, line) in lines.into_iter().enumerate() {
-        let header = validated_header(&line, index + 1, "machine evidence")?;
+        let line_number = index + 1;
+        let header = validated_header(&line, line_number, stream)?;
         let identity = resolve_identity(&header.kind, header.schema_version).ok_or_else(|| {
             anyhow!(
-                "unsupported exact identity at machine evidence line {}: ({}, {})",
-                index + 1,
+                "unsupported exact identity at {stream} line {line_number}: ({}, {})",
                 header.kind,
                 header.schema_version
             )
@@ -143,21 +152,40 @@ pub(super) fn validate_machine_stream(
         let descriptor = descriptor_for_identity(identity);
         ensure!(
             header.gate_id == descriptor.gate_id,
-            "wrong gate_id at machine evidence line {}",
-            index + 1
+            "wrong gate_id at {stream} line {line_number}"
         );
         let purpose = purpose_for_identity(identity);
+        let actual_sink = sink_for_purpose(purpose);
         ensure!(
-            sink_for_purpose(purpose) == KnownSink::Machine,
-            "observation identity in machine stream at line {}",
-            index + 1
+            actual_sink == expected_sink,
+            "{} identity in {} stream at line {line_number}",
+            sink_name(actual_sink),
+            sink_name(expected_sink)
         );
-        if let Some(fact) = decode_startup_recovery_fact(identity, &line, index + 1)? {
-            facts.apply(fact)?;
+        match expected_sink {
+            KnownSink::Machine => {
+                if let Some(fact) = decode_startup_recovery_fact(identity, &line, line_number)? {
+                    facts.apply(fact)?;
+                }
+            }
+            KnownSink::Observation => {
+                decode_current_fact(identity, &line, line_number)?;
+            }
         }
     }
-    facts.validate()?;
-    Ok(facts)
+    if expected_sink == KnownSink::Machine {
+        facts.validate()?;
+    }
+    Ok(ValidatedStream {
+        startup_recovery: facts,
+    })
+}
+
+fn sink_name(sink: KnownSink) -> &'static str {
+    match sink {
+        KnownSink::Machine => "machine",
+        KnownSink::Observation => "observation",
+    }
 }
 
 fn read_framed_lines(

@@ -13,14 +13,24 @@ use crate::{
 };
 
 use super::{
-    facts::StartupRecoveryFacts, reader::validate_machine_stream, record::DecisionEvidenceRecorder,
+    facts::StartupRecoveryFacts,
+    generated_contract::KnownSink,
+    reader::validate_stream,
+    record::{DecisionEvidenceRecorder, PoisonCause},
     validate_relative_path,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObservationStreamStatus {
+    Available,
+    Poisoned { cause: Arc<str> },
+}
 
 #[derive(Debug)]
 pub struct DecisionEvidenceRuntime {
     recorder: Arc<DecisionEvidenceRecorder>,
     startup_recovery: Arc<StartupRecoveryFacts>,
+    observation_stream_status: ObservationStreamStatus,
 }
 
 /// File-backed current-evidence runtime exposed only to the separately resolved backtesting
@@ -49,7 +59,7 @@ impl OfflineDecisionEvidenceRuntime {
             "offline current-evidence streams must be fresh"
         );
         ensure_distinct_files(&machine, &observation)?;
-        let recovery = validate_machine_stream(&mut machine, Some(0))?;
+        let recovery = validate_stream(&mut machine, KnownSink::Machine, Some(0))?.startup_recovery;
         ensure!(
             recovery.is_empty(),
             "fresh offline current-evidence stream produced recovery state"
@@ -59,6 +69,7 @@ impl OfflineDecisionEvidenceRuntime {
             recorder: Arc::new(DecisionEvidenceRecorder::from_files(
                 machine,
                 observation,
+                None,
                 reject_episode_max_count,
             )),
         })
@@ -124,21 +135,45 @@ impl DecisionEvidenceRuntime {
 
         let mut machine = open_retained_stream(&machine_path)
             .with_context(|| format!("open machine evidence `{}`", machine_path.display()))?;
-        let startup_recovery =
-            validate_machine_stream(&mut machine, Some(config.recovery_evidence_max_bytes))?;
+        let startup_recovery = validate_stream(
+            &mut machine,
+            KnownSink::Machine,
+            Some(config.recovery_evidence_max_bytes),
+        )?
+        .startup_recovery;
         machine.seek(SeekFrom::End(0))?;
-        let observation = open_retained_stream(&observation_path).with_context(|| {
+        let mut observation = open_retained_stream(&observation_path).with_context(|| {
             format!("open observation evidence `{}`", observation_path.display())
         })?;
         ensure_distinct_files(&machine, &observation)?;
+        let (observation_stream_status, observation_poison) = match validate_stream(
+            &mut observation,
+            KnownSink::Observation,
+            Some(config.recovery_evidence_max_bytes),
+        ) {
+            Ok(_) => (ObservationStreamStatus::Available, None),
+            Err(error) => {
+                let cause: Arc<str> = Arc::from(format!("{error:#}"));
+                log::error!("retained observation evidence is poisoned: {cause}");
+                (
+                    ObservationStreamStatus::Poisoned {
+                        cause: Arc::clone(&cause),
+                    },
+                    Some(PoisonCause::StartupContentInvalid { cause }),
+                )
+            }
+        };
+        observation.seek(SeekFrom::End(0))?;
 
         Ok(Self {
             recorder: Arc::new(DecisionEvidenceRecorder::from_files(
                 machine,
                 observation,
+                observation_poison,
                 config.reject_episode_max_count,
             )),
             startup_recovery: Arc::new(startup_recovery),
+            observation_stream_status,
         })
     }
 
@@ -150,6 +185,11 @@ impl DecisionEvidenceRuntime {
     #[must_use]
     pub fn startup_recovery(&self) -> Arc<StartupRecoveryFacts> {
         Arc::clone(&self.startup_recovery)
+    }
+
+    #[must_use]
+    pub fn observation_stream_status(&self) -> ObservationStreamStatus {
+        self.observation_stream_status.clone()
     }
 }
 

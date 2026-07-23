@@ -170,6 +170,15 @@ impl DurableSink {
         }
     }
 
+    pub(super) fn poisoned(file: File, cause: PoisonCause) -> Self {
+        Self {
+            file,
+            state: DurableSinkState::Poisoned(cause),
+            #[cfg(test)]
+            forced_failure: None,
+        }
+    }
+
     fn append(&mut self, line: &[u8]) -> Result<(), RecordFailure> {
         if let DurableSinkState::Poisoned(first_cause) = &self.state {
             return Err(RecordFailure::SinkPoisoned {
@@ -241,12 +250,17 @@ impl DecisionEvidenceRecorder {
     pub(super) fn from_files(
         machine: File,
         observation: File,
+        observation_poison: Option<PoisonCause>,
         reject_episode_max_count: usize,
     ) -> Self {
         assert!(reject_episode_max_count > 0);
+        let observation = match observation_poison {
+            Some(cause) => DurableSink::poisoned(observation, cause),
+            None => DurableSink::new(observation),
+        };
         Self {
             machine: Mutex::new(DurableSink::new(machine)),
-            observation: Mutex::new(DurableSink::new(observation)),
+            observation: Mutex::new(observation),
             reject_episode_max_count,
             observation_failure_episodes: Mutex::new(BTreeSet::new()),
             #[cfg(test)]
@@ -261,6 +275,7 @@ impl DecisionEvidenceRecorder {
         Self::from_files(
             tempfile::tempfile().expect("test machine evidence sink must open"),
             tempfile::tempfile().expect("test observation evidence sink must open"),
+            None,
             4096,
         )
     }
@@ -362,7 +377,10 @@ impl DecisionEvidenceRecorder {
             .lock()
             .expect("machine sink mutex must not be poisoned");
         let mut file = sink.file.try_clone()?;
-        super::reader::validate_machine_stream(&mut file, max_bytes)
+        Ok(
+            super::reader::validate_stream(&mut file, KnownSink::Machine, max_bytes)?
+                .startup_recovery,
+        )
     }
 
     pub fn record_submit_reservation_metadata(
@@ -797,7 +815,7 @@ mod tests {
             .create_new(true)
             .open(directory.path().join("observation.jsonl"))
             .expect("observation sink must open");
-        DecisionEvidenceRecorder::from_files(machine, observation, 4096)
+        DecisionEvidenceRecorder::from_files(machine, observation, None, 4096)
     }
 
     fn recorder_with_paths() -> (
@@ -823,7 +841,7 @@ mod tests {
             .expect("observation sink must open");
         (
             directory,
-            DecisionEvidenceRecorder::from_files(machine, observation, 4096),
+            DecisionEvidenceRecorder::from_files(machine, observation, None, 4096),
             machine_path,
             observation_path,
         )

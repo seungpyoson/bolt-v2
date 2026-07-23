@@ -3,10 +3,12 @@ use std::{fs, path::Path};
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_current_evidence::{
-        DecisionEvidenceRuntime, OrderLifecycleFact, OrderLifecycleOutcome,
-        OrderLifecycleTransition, OutcomeSide, RecordFailure, SettlementBookingErrorFact,
-        SettlementBookingErrorReason, SettlementFact, SubmitReservationFillFact,
-        SubmitReservationMetadataFact, TerminalSettlementFact,
+        DecisionEvidenceRuntime, ObservationRecordOutcome, ObservationStreamStatus,
+        OrderLifecycleFact, OrderLifecycleOutcome, OrderLifecycleTransition, OutcomeSide,
+        RecordFailure, RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
+        RequoteThrottleObservationFact, SettlementBookingErrorFact, SettlementBookingErrorReason,
+        SettlementFact, SubmitReservationFillFact, SubmitReservationMetadataFact,
+        TerminalSettlementFact,
     },
 };
 use tempfile::TempDir;
@@ -128,6 +130,27 @@ fn lifecycle_fact() -> OrderLifecycleFact {
         filled_quantity: None,
         residual_quantity: None,
         ts_event_ns: Some(4),
+    }
+}
+
+fn requote_observation() -> RequoteThrottleObservationFact {
+    RequoteThrottleObservationFact {
+        strategy_id: "strategy-1".to_string(),
+        family_key: "family-1".to_string(),
+        market_id: Some("market-1".to_string()),
+        leg: "up".to_string(),
+        now_ms: 6,
+        observed_at_ns: 7,
+        action_cost_class: RequoteActionCostClass::CancelResubmit,
+        block_reason: RequoteThrottleBlockReason::RequoteBudgetExhausted,
+        bound_by: RequoteThrottleBound::RestCallWindow,
+        submit_commands_in_window: 2,
+        submit_command_cap: 3,
+        submit_window_ms: 1_000,
+        rest_cost_in_window: 4,
+        rest_cap_per_minute: 5,
+        rest_window_ms: 60_000,
+        min_interval_ms: 100,
     }
 }
 
@@ -429,6 +452,149 @@ fn open_refuses_malformed_startup_irrelevant_machine_payload() {
     assert!(
         format!("{error:#}").contains("malformed current payload"),
         "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn invalid_observation_history_poison_is_typed_bounded_and_byte_preserving() {
+    let cases: &[(&str, &[u8])] = &[
+        ("blank", b"\n"),
+        ("torn", b"{\"kind\":"),
+        (
+            "legacy identity",
+            b"{\"kind\":\"requote_throttle\",\"schema_version\":15,\"gate_id\":\"bolt_v3.requote_throttle\",\"gate_version\":\"pre-cutover\",\"recorded_at_utc_ns\":1}\n",
+        ),
+        (
+            "unknown identity",
+            b"{\"kind\":\"not_registered\",\"schema_version\":1,\"gate_id\":\"not.registered\",\"gate_version\":\"current\",\"recorded_at_utc_ns\":1}\n",
+        ),
+        (
+            "malformed observation payload",
+            b"{\"kind\":\"requote_throttle\",\"schema_version\":16,\"gate_id\":\"bolt_v3.requote_throttle\",\"gate_version\":\"current\",\"recorded_at_utc_ns\":1}\n",
+        ),
+    ];
+
+    for (name, invalid) in cases {
+        let temp = tempfile::tempdir().expect("tempdir must exist");
+        let loaded = loaded_in(&temp);
+        let initial = DecisionEvidenceRuntime::open(&loaded)
+            .unwrap_or_else(|error| panic!("{name}: fresh streams must open: {error:#}"));
+        initial
+            .recorder()
+            .record_submit_reservation_metadata(reservation_metadata_command())
+            .unwrap_or_else(|error| panic!("{name}: machine fact must append: {error}"));
+        drop(initial);
+        fs::write(observation_path(&loaded), invalid).unwrap_or_else(|error| {
+            panic!("{name}: invalid observation must be installed: {error}")
+        });
+
+        let runtime = DecisionEvidenceRuntime::open(&loaded).unwrap_or_else(|error| {
+            panic!("{name}: observation corruption must not gate: {error:#}")
+        });
+        assert!(!runtime.startup_recovery().is_empty(), "{name}");
+        assert!(
+            matches!(
+                runtime.observation_stream_status(),
+                ObservationStreamStatus::Poisoned { .. }
+            ),
+            "{name}"
+        );
+        assert!(matches!(
+            runtime
+                .recorder()
+                .record_requote_throttle_observation(requote_observation()),
+            ObservationRecordOutcome::FailureReported(RecordFailure::SinkPoisoned { .. })
+        ));
+        assert!(matches!(
+            runtime
+                .recorder()
+                .record_requote_throttle_observation(requote_observation()),
+            ObservationRecordOutcome::FailureSuppressed
+        ));
+        assert_eq!(
+            fs::read(observation_path(&loaded)).expect("observation bytes must remain readable"),
+            *invalid,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn oversized_observation_history_poison_does_not_gate_machine_recovery() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let mut loaded = loaded_in(&temp);
+    loaded
+        .root
+        .persistence
+        .decision_evidence
+        .recovery_evidence_max_bytes = 8;
+    let invalid = b"123456789\n";
+    fs::write(observation_path(&loaded), invalid).expect("oversized observation must be installed");
+
+    let runtime = DecisionEvidenceRuntime::open(&loaded)
+        .expect("oversized observation must not become readiness authority");
+    let ObservationStreamStatus::Poisoned { cause } = runtime.observation_stream_status() else {
+        panic!("oversized observation must poison its sink");
+    };
+    assert!(cause.contains("exceeds configured byte cap"));
+    assert_eq!(
+        fs::read(observation_path(&loaded)).expect("observation bytes must read"),
+        invalid
+    );
+}
+
+#[test]
+fn observation_stream_enforces_sink_membership_without_gating_machine_recovery() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let loaded = loaded_in(&temp);
+    let initial = DecisionEvidenceRuntime::open(&loaded).expect("fresh streams must open");
+    initial
+        .recorder()
+        .record_submit_reservation_metadata(reservation_metadata_command())
+        .expect("machine fact must append");
+    drop(initial);
+    let machine_bytes = fs::read(machine_path(&loaded)).expect("machine bytes must read");
+    fs::write(observation_path(&loaded), &machine_bytes)
+        .expect("machine identity must be installed in observation stream");
+
+    let runtime = DecisionEvidenceRuntime::open(&loaded)
+        .expect("wrong-sink observation content must not gate machine recovery");
+    assert!(!runtime.startup_recovery().is_empty());
+    assert!(matches!(
+        runtime.observation_stream_status(),
+        ObservationStreamStatus::Poisoned { .. }
+    ));
+    assert_eq!(
+        fs::read(observation_path(&loaded)).expect("observation bytes must read"),
+        machine_bytes
+    );
+}
+
+#[test]
+fn valid_observation_history_opens_available_and_remains_appendable() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let loaded = loaded_in(&temp);
+    let fixture = include_bytes!(
+        "fixtures/bolt_v3/current_evidence/positive/requote_throttle_observation.jsonl"
+    );
+    fs::write(observation_path(&loaded), fixture).expect("valid observation must be installed");
+
+    let runtime = DecisionEvidenceRuntime::open(&loaded).expect("valid streams must open");
+    assert_eq!(
+        runtime.observation_stream_status(),
+        ObservationStreamStatus::Available
+    );
+    assert!(matches!(
+        runtime
+            .recorder()
+            .record_requote_throttle_observation(requote_observation()),
+        ObservationRecordOutcome::Appended(_)
+    ));
+    assert!(
+        fs::metadata(observation_path(&loaded))
+            .expect("observation stream must exist")
+            .len()
+            > fixture.len() as u64
     );
 }
 

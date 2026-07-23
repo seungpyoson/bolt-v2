@@ -11,12 +11,12 @@ pub use facts::*;
 pub(crate) use path::validate_relative_path;
 pub use reader::{ShadowPnlEvent, read_current_evidence_facts, read_shadow_pnl_events};
 pub use record::{
-    AppendReceipt, DecisionEvidenceRecorder, NonBlockingRecordOutcome, ObservationRecordOutcome,
-    RecordFailure,
+    AppendReceipt, CommitPhase, DecisionEvidenceRecorder, NonBlockingRecordOutcome,
+    ObservationRecordOutcome, PoisonCause, RecordFailure,
 };
-pub use runtime::DecisionEvidenceRuntime;
 #[cfg(feature = "offline-current-evidence")]
 pub use runtime::OfflineDecisionEvidenceRuntime;
+pub use runtime::{DecisionEvidenceRuntime, ObservationStreamStatus};
 
 pub(crate) fn settlement_kind() -> &'static str {
     generated_contract::descriptor_for_identity(generated_contract::KnownIdentity::SettlementV1)

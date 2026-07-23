@@ -117,6 +117,12 @@ jobs:
           set -x
           cargo clippy --locked -- -D warnings
 
+      - name: clippy (backtesting vertical slice)
+        working-directory: crates/backtesting-vertical-slice
+        run: |
+          set -x
+          cargo clippy --locked -- -D warnings
+
       - name: Print sccache stats
         if: always()
         uses: ./.github/actions/sccache-stats
@@ -185,6 +191,15 @@ jobs:
           set -x
           mold -run cargo nextest run --locked
 
+      - name: test (backtesting vertical slice)
+        working-directory: crates/backtesting-vertical-slice
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          set -x
+          mold -run cargo nextest run --locked --no-fail-fast
+
       - name: Print sccache stats
         if: always()
         uses: ./.github/actions/sccache-stats
@@ -245,6 +260,12 @@ jobs:
         run: |
           set -x
           cargo zigbuild --release --target "$BUILD_TARGET" --locked
+
+      - name: build (backtesting vertical slice)
+        working-directory: crates/backtesting-vertical-slice
+        run: |
+          set -x
+          cargo build --release --locked
 
       - name: Print sccache stats
         if: always()

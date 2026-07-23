@@ -11,6 +11,10 @@ label = "ubuntu-latest"
 variable = "CI_RUNNER_MANAGED_HEAVY"
 label = "ubicloud-standard-4-arm"
 
+[runners.managed_build]
+variable = "CI_RUNNER_MANAGED_BUILD"
+label = "ubicloud-standard-8-arm"
+
 [runners.managed_light]
 variable = "CI_RUNNER_MANAGED_LIGHT"
 label = "ubicloud-standard-2"
@@ -24,10 +28,11 @@ probe-heavy = "managed_heavy"
 probe-light = "managed_light"
 
 [workflows.advisory]
+supersede_main = "github_hosted"
 fmt = "github_hosted"
 clippy = "managed_heavy"
 test = "managed_heavy"
-build = "managed_heavy"
+build = "managed_build"
 advisories = "github_hosted"
 
 [workflows.sccache_strict_release]
@@ -36,6 +41,9 @@ build-arm64 = "managed_heavy"
 build-x64 = "managed_light"
 verify = "github_hosted"
 publish = "github_hosted"
+
+[workflows.advisory_supersession_watchdog]
+cancel_legacy = "github_hosted"
 
 [cargo_build_jobs.rust_probe]
 probe-heavy = 3

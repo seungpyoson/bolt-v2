@@ -33,15 +33,14 @@ The rebuild accepts a stronger criterion: invalid runtime paths must be unconstr
 
 `DecisionEvidenceRuntime::open(&LoadedBoltV3Config)` is the only production constructor. It performs, in order:
 
-1. Validate the configured machine, observation, and retired relative paths under `catalog_directory`.
-2. Reject any configured retired path that exists.
-3. Open the machine file once with read, append, create, and no-follow semantics.
-4. Verify its pre-open and post-open metadata and retain that same file descriptor.
-5. Read the configured bounded prefix from that descriptor, reject oversized, torn, blank, old, unknown, observation, or malformed records, and construct typed recovery facts.
-6. Seek the validated machine descriptor to its append position.
-7. Open and validate the distinct observation descriptor.
-8. Reject identical paths or identical underlying files.
-9. Return a runtime containing the immutable startup recovery facts and the only append-capable recorder.
+1. Validate the configured machine, observation, and retired paths as relative lexical components.
+2. Open `catalog_directory` once and resolve every active and retired component through retained descriptor-relative `openat`/`fstatat` operations with no-follow semantics.
+3. Reject any configured retired path that exists.
+4. Open the machine and observation files relative to their retained parent descriptors and reject non-regular or identical underlying files.
+5. Fully validate the bounded machine descriptor, rejecting oversized, torn, blank, old, unknown, observation, or malformed records, and construct typed recovery facts.
+6. Fully validate the observation descriptor. Invalid retained observation content is preserved and constructs an explicitly poisoned observation sink; it never becomes readiness authority.
+7. Seek healthy retained descriptors to their append positions.
+8. Return a runtime containing the immutable startup recovery facts, typed observation status, and the only append-capable recorder.
 
 There is no public writer constructor in the default live package and no separately callable startup preflight. The bytes validated for startup and the file later appended are the same open file description.
 
@@ -60,7 +59,7 @@ current facts; they do not implement a writer trait or maintain a second payload
 
 The runtime exposes purpose-specific methods on one concrete `DecisionEvidenceRecorder`; it exposes no implementable writer trait.
 
-Only the durable sink constructs `AppendReceipt`, and only after the record has been completely written and `sync_data` succeeds. Encoding rejection and append/sync failure remain distinct `RecordFailure` variants.
+Only the durable sink constructs `AppendReceipt`, and only after the record has been completely written and `sync_data` succeeds. Encoding rejection occurs before I/O and leaves the sink healthy. Any write or sync error returns phase-tagged `CommitIndeterminate`, permanently poisons that sink for the process lifetime, and makes later appends return `SinkPoisoned` without I/O. Callers never retry an indeterminate fact through the poisoned sink.
 
 Purpose methods return policy-specific types:
 
@@ -112,11 +111,12 @@ Required evidence includes:
 
 - atomic runtime opening rejects retired, symlinked, non-regular, aliasing, old, unknown, observation-in-machine, malformed, torn, blank, exact-cap-plus-one, and changed-file cases;
 - startup recovery facts and later appends use the retained validated machine descriptor;
-- injected write and sync failures never produce `AppendReceipt`;
+- injected partial-write and sync failures never produce `AppendReceipt`, poison only their sink, and make later attempts byte-preserving refusals;
+- invalid retained observation content remains unchanged and poisons only the observation sink while machine recovery remains available;
 - every effect-policy outcome reaches its caller without erasure;
 - observation failures report once per continuous purpose episode and reset after success;
 - every producer emits exactly one registered identity to its registered sink;
-- each identity has byte-exact positive fixtures for every enum branch and optional absent/null/present state that it admits;
+- each identity has byte-exact canonical fixtures for every enum branch and optional null/present state; admitted omitted forms are separately frozen and canonicalize to explicit-null bytes;
 - each required field has missing and wrong-type rejects; unknown fields, unknown enums, wrong gate, wrong exact pair, boundary violations, and contradictory semantic combinations reject;
 - old-only and mixed old/current active streams fail closed;
 - observation floods do not change machine-stream bytes or recovery results;

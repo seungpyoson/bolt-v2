@@ -50,7 +50,7 @@ Startup must refuse:
 - a machine stream above `recovery_evidence_max_bytes`;
 - symlinked, non-regular, aliased, or out-of-root stream paths.
 
-The observation stream is not recovery input and never supplies readiness authority.
+The observation stream is not recovery input and never supplies readiness authority. Startup validates any retained observation content through the same exact-current framing, identity, sink, gate, and payload decoder. Invalid observation content is preserved byte-for-byte, reported as a poisoned observation sink, and does not block machine recovery or activation. The runtime never repairs, truncates, replaces, or extends that poisoned stream.
 
 ## First Boot and Point of No Return
 
@@ -60,6 +60,8 @@ The observation stream is not recovery input and never supplies readiness author
 4. After the first trade cycle, decode the current machine stream with the current binary and confirm recovery facts are readable.
 
 The first current machine record is the point of no return. Before it, the operator may remain paused and restore the complete archived deployment set. After it, rollback is prohibited: stop, preserve both generations, and forward-fix.
+
+Any machine-stream write or sync error is commit-indeterminate: some or all bytes may exist. The runtime permanently poisons that machine sink for the process lifetime and refuses later appends without touching the file. Stop the service, preserve the active stream, and diagnose it offline. A torn or otherwise invalid machine stream remains a fail-closed startup condition; recovery is pause, archive under the governed ceremony, and forward-fix—never retry, truncate, skip, or restore retired authority.
 
 ## Accepted Losses and Remaining Gates
 

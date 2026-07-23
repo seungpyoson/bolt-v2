@@ -624,7 +624,8 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 
 - type: absolute path string
 - required: yes for live startup and storage prestart checks
-- canonical parent path that `catalog_directory` must stay under before a live node starts
+- normalized, existing parent path that `catalog_directory` must stay under before a live node starts
+- every prefix and catalog component is opened descriptor-relative with symlinks rejected
 
 #### `min_free_bytes`
 
@@ -685,10 +686,11 @@ There is no `state_directory` in the current bolt-v3 scope. NT's pinned `LiveNod
 
 ### `[persistence.streaming]`
 
-This section carries the current local catalog writer settings.
+This section carries the NT raw-capture catalog writer settings.
 It is required in the current live-trading scope.
-These settings apply to the single local persistence path for both structured decision events and raw NautilusTrader capture.
-The schema does not expose a separate raw-capture backend, rotation policy, or writer path.
+These settings do not configure Bolt-owned decision evidence, whose sole writer and paths are
+defined by `[persistence.decision_evidence]`.
+The schema does not expose a second raw-capture backend, rotation policy, or writer path.
 
 #### `catalog_fs_protocol`
 

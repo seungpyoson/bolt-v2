@@ -25,6 +25,7 @@ mod unix {
 
     pub(crate) struct CatalogDirectory {
         directory: File,
+        #[cfg(test)]
         sync_directory: fn(&File) -> io::Result<()>,
     }
 
@@ -59,6 +60,7 @@ mod unix {
             }
             Ok(Self {
                 directory,
+                #[cfg(test)]
                 sync_directory: sync_directory_entry,
             })
         }
@@ -82,6 +84,7 @@ mod unix {
             })?;
             Ok(Self {
                 directory,
+                #[cfg(test)]
                 sync_directory: sync_directory_entry,
             })
         }
@@ -119,7 +122,7 @@ mod unix {
             let cleanup_result = remove_file_if_present(&self.directory, &basename)
                 .context("remove catalog write probe")
                 .and_then(|()| {
-                    (self.sync_directory)(&self.directory)
+                    self.synchronize_directory(&self.directory)
                         .context("synchronize catalog after write-probe cleanup")
                 });
             probe_result?;
@@ -131,7 +134,7 @@ mod unix {
             let Some(parent) = self.walk_parent(relative, false)? else {
                 bail!("active decision-evidence stream parent is absent: `{relative}`")
             };
-            parent.open_stream(self.sync_directory)
+            parent.open_stream(self)
         }
 
         pub(crate) fn ensure_retired_absent(&self, relative: &str) -> Result<()> {
@@ -161,12 +164,42 @@ mod unix {
                     }));
                 }
                 match open_directory_at(&directory, name) {
-                    Ok(next) => directory = next,
+                    Ok(next) => {
+                        if !missing_parent_means_absent {
+                            self.synchronize_directory(&directory).with_context(|| {
+                                format!(
+                                    "synchronize active decision-evidence parent component `{}`",
+                                    name.to_string_lossy()
+                                )
+                            })?;
+                        }
+                        directory = next;
+                    }
                     Err(error)
                         if missing_parent_means_absent
                             && error.kind() == io::ErrorKind::NotFound =>
                     {
                         return Ok(None);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        create_directory_at(&directory, name).with_context(|| {
+                            format!(
+                                "create active decision-evidence parent component `{}`",
+                                name.to_string_lossy()
+                            )
+                        })?;
+                        self.synchronize_directory(&directory).with_context(|| {
+                            format!(
+                                "synchronize active decision-evidence parent component `{}`",
+                                name.to_string_lossy()
+                            )
+                        })?;
+                        directory = open_directory_at(&directory, name).with_context(|| {
+                            format!(
+                                "open created decision-evidence parent component `{}` without symlinks",
+                                name.to_string_lossy()
+                            )
+                        })?;
                     }
                     Err(error) => {
                         return Err(error).with_context(|| {
@@ -196,10 +229,21 @@ mod unix {
             }
             Ok(directory)
         }
+
+        fn synchronize_directory(&self, directory: &File) -> io::Result<()> {
+            #[cfg(test)]
+            {
+                (self.sync_directory)(directory)
+            }
+            #[cfg(not(test))]
+            {
+                sync_directory_entry(directory)
+            }
+        }
     }
 
     impl ParentDirectory {
-        fn open_stream(self, sync_directory: fn(&File) -> io::Result<()>) -> Result<File> {
+        fn open_stream(self, catalog: &CatalogDirectory) -> Result<File> {
             let create_flags = libc::O_RDWR
                 | libc::O_APPEND
                 | libc::O_CREAT
@@ -252,12 +296,14 @@ mod unix {
                 "decision-evidence path has external hard-link aliases: `{}`",
                 self.display
             );
-            sync_directory(&self.directory).with_context(|| {
-                format!(
-                    "synchronize decision-evidence stream namespace `{}`",
-                    self.display
-                )
-            })?;
+            catalog
+                .synchronize_directory(&self.directory)
+                .with_context(|| {
+                    format!(
+                        "synchronize decision-evidence stream namespace `{}`",
+                        self.display
+                    )
+                })?;
             Ok(file)
         }
 
@@ -372,6 +418,21 @@ mod unix {
         Ok(unsafe { File::from_raw_fd(raw) })
     }
 
+    fn create_directory_at(parent: &File, name: &OsStr) -> io::Result<()> {
+        let name = component_name(name)?;
+        // SAFETY: the parent descriptor and NUL-terminated component remain valid for the call.
+        let result = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+
     fn component_name(name: &OsStr) -> io::Result<CString> {
         CString::new(name.as_bytes()).map_err(|_| {
             io::Error::new(
@@ -409,7 +470,7 @@ mod unix {
             fs::rename(&original, &retained).expect("original parent must be retained");
             symlink(outside.path(), &original).expect("old pathname must be redirected");
             let mut stream = parent
-                .open_stream(sync_directory_entry)
+                .open_stream(&catalog)
                 .expect("descriptor-relative open must succeed");
             stream.write_all(b"retained\n").expect("write must succeed");
             stream.sync_data().expect("write must sync");
@@ -440,6 +501,66 @@ mod unix {
                 error
                     .to_string()
                     .contains("synchronize decision-evidence stream namespace")
+            );
+        }
+
+        #[test]
+        fn active_stream_open_creates_missing_parent_chain_through_catalog_authority() {
+            let root = tempfile::tempdir().expect("tempdir must exist");
+            let canonical_root = fs::canonicalize(root.path()).expect("tempdir must canonicalize");
+            let catalog = CatalogDirectory::open(&canonical_root).expect("catalog must open");
+
+            let stream = catalog
+                .open_stream("bolt-v3/decision-evidence/current/machine.jsonl")
+                .expect("active stream parents and stream must be created");
+
+            assert!(
+                stream
+                    .metadata()
+                    .expect("stream metadata must read")
+                    .is_file()
+            );
+            assert!(
+                root.path()
+                    .join("bolt-v3/decision-evidence/current/machine.jsonl")
+                    .is_file()
+            );
+        }
+
+        #[test]
+        fn retry_after_parent_creation_sync_failure_completes_the_same_descriptor_walk() {
+            static PARENT_SYNC_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+            fn fail_first_parent_sync(_directory: &File) -> io::Result<()> {
+                if PARENT_SYNC_ATTEMPTS.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(io::Error::other("injected parent-component sync failure"))
+                } else {
+                    Ok(())
+                }
+            }
+
+            let root = tempfile::tempdir().expect("tempdir must exist");
+            let canonical_root = fs::canonicalize(root.path()).expect("tempdir must canonicalize");
+            let mut catalog = CatalogDirectory::open(&canonical_root).expect("catalog must open");
+            catalog.sync_directory = fail_first_parent_sync;
+            let relative = "bolt-v3/decision-evidence/current/machine.jsonl";
+
+            catalog
+                .open_stream(relative)
+                .expect_err("first parent-component namespace sync must fail");
+            let stream = catalog
+                .open_stream(relative)
+                .expect("retry must complete the descriptor-relative parent walk");
+
+            assert!(
+                stream
+                    .metadata()
+                    .expect("stream metadata must read")
+                    .is_file()
+            );
+            assert!(
+                PARENT_SYNC_ATTEMPTS.load(Ordering::SeqCst) >= 5,
+                "retry must synchronize each retained or created parent and the stream namespace"
             );
         }
 

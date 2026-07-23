@@ -86,7 +86,7 @@ fn live_operator_health_surface_renders_poisoned_reject_feed_as_degraded() {
             .expect("test should acquire feed lock before poisoning it");
         panic!("poison reject feed");
     }));
-    let submit_admission = BoltV3SubmitAdmissionState::new(writer);
+    let submit_admission = BoltV3SubmitAdmissionState::new(writer.clone());
 
     let surface = live_operator_health_surface(
         Some(&feed),
@@ -95,7 +95,7 @@ fn live_operator_health_surface_renders_poisoned_reject_feed_as_degraded() {
         0,
         None,
         BoltV3SettlementHealth::nominal(),
-        &ObservationStreamStatus::Available,
+        &writer,
     );
 
     assert_eq!(
@@ -117,7 +117,7 @@ fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth
         .expect("fixture capital admission config should parse")
         .expect("fixture should configure venue-truth capital admission");
     let submit_admission =
-        BoltV3SubmitAdmissionState::new_with_capital_admission(writer, capital_admission);
+        BoltV3SubmitAdmissionState::new_with_capital_admission(writer.clone(), capital_admission);
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         submit_admission.poison_inner_for_test();
     }));
@@ -130,7 +130,7 @@ fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth
         0,
         None,
         BoltV3SettlementHealth::nominal(),
-        &ObservationStreamStatus::Available,
+        &writer,
     );
 
     assert_eq!(
@@ -140,6 +140,62 @@ fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth
     assert_eq!(
         surface.venue_truth.read_error.as_deref(),
         Some(OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR)
+    );
+}
+
+#[test]
+fn live_operator_health_surface_reads_midrun_observation_poison_from_recorder() {
+    use crate::bolt_v3_current_evidence::{
+        ObservationRecordOutcome, RequoteActionCostClass, RequoteThrottleBlockReason,
+        RequoteThrottleBound, RequoteThrottleObservationFact,
+    };
+
+    let writer = Arc::new(DecisionEvidenceRecorder::recording());
+    let submit_admission = BoltV3SubmitAdmissionState::new(writer.clone());
+    writer.fail_observation_writes();
+    let outcome = writer.record_requote_throttle_observation(RequoteThrottleObservationFact {
+        strategy_id: "strategy-1".to_string(),
+        family_key: "family-1".to_string(),
+        market_id: Some("market-1".to_string()),
+        leg: "up".to_string(),
+        now_ms: 6,
+        observed_at_ns: 7,
+        action_cost_class: RequoteActionCostClass::CancelResubmit,
+        block_reason: RequoteThrottleBlockReason::RequoteBudgetExhausted,
+        bound_by: RequoteThrottleBound::RestCallWindow,
+        submit_commands_in_window: 2,
+        submit_command_cap: 3,
+        submit_window_ms: 1_000,
+        rest_cost_in_window: 4,
+        rest_cap_per_minute: 5,
+        rest_window_ms: 60_000,
+        min_interval_ms: 100,
+    });
+    assert!(matches!(
+        outcome,
+        ObservationRecordOutcome::FailureReported(_)
+    ));
+
+    let surface = live_operator_health_surface(
+        None,
+        &submit_admission,
+        false,
+        0,
+        None,
+        BoltV3SettlementHealth::nominal(),
+        &writer,
+    );
+
+    assert_eq!(
+        surface.decision_evidence_observation.status,
+        BoltV3OperatorHealthStatus::Degraded
+    );
+    assert!(
+        surface
+            .decision_evidence_observation
+            .poison_cause
+            .as_deref()
+            .is_some_and(|cause| cause.contains("commit indeterminate"))
     );
 }
 

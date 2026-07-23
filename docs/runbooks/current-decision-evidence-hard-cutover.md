@@ -41,7 +41,7 @@ The archive is never restored into an active path. Offline access uses the archi
 
 ## Current Generation
 
-Create the parent directory for the configured current machine and observation streams. Leave both stream paths absent; `DecisionEvidenceRuntime::open` creates them with private permissions and validates the retained descriptors before exposing append capability.
+Leave both configured current stream paths absent. `DecisionEvidenceRuntime::open` creates every missing parent component and both stream files through the same descriptor-relative catalog authority, synchronizes each namespace before use, applies private permissions, and validates the retained descriptors before exposing append capability. Operators must not pre-create a parallel layout through pathname-based tooling.
 
 Startup must refuse:
 
@@ -63,7 +63,7 @@ Archival begins the point of no return. Once archival starts, rollback is prohib
 
 Any machine-stream write or sync error is commit-indeterminate: some or all bytes may exist. The runtime permanently poisons that machine sink for the process lifetime and refuses later appends without touching the file. Stop the service, preserve the active stream, and diagnose it offline. A torn or otherwise invalid machine stream remains a fail-closed startup condition; recovery is pause, archive under the governed ceremony, and forward-fix—never retry, truncate, skip, or restore retired authority.
 
-A poisoned observation stream never gates machine recovery, but it is a terminal state for that active observation pathname: the runtime preserves the bytes and refuses to extend the stream. Stop the service, preserve and checksum the poisoned file outside the active data root, then forward-fix to a fresh configured observation pathname under an issue-bound operator change. Do not truncate, repair, replace in place, or silently resume the poisoned sink.
+A poisoned observation stream never gates machine recovery, but it is a terminal state for that active observation pathname. Startup corruption and mid-run write or sync failure both appear on `BoltV3OperatorHealthSurface.decision_evidence_observation`, while the recorder remains the sole mutable poison authority. The runtime preserves the bytes and refuses to extend the stream. Stop the service, preserve and checksum the poisoned file outside the active data root, then forward-fix to a fresh configured observation pathname under an issue-bound operator change. Do not truncate, repair, replace in place, or silently resume the poisoned sink.
 
 ## Accepted Losses and Remaining Gates
 

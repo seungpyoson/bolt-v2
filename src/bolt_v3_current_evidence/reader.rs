@@ -61,6 +61,21 @@ pub struct RecordedBacktestRunGuardEvent {
     pub event: BacktestRunGuardEvent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurrentEvidenceStream {
+    Machine,
+    Observation,
+}
+
+impl CurrentEvidenceStream {
+    const fn known_sink(self) -> KnownSink {
+        match self {
+            Self::Machine => KnownSink::Machine,
+            Self::Observation => KnownSink::Observation,
+        }
+    }
+}
+
 #[cfg(feature = "test-current-evidence-inspection")]
 #[doc(hidden)]
 pub fn read_current_evidence_facts(path: &Path, max_bytes: u64) -> Result<Vec<CurrentFact>> {
@@ -72,28 +87,35 @@ pub fn read_current_evidence_facts(path: &Path, max_bytes: u64) -> Result<Vec<Cu
 
 #[cfg(feature = "test-current-evidence-inspection")]
 fn read_current_evidence_records(path: &Path, max_bytes: u64) -> Result<Vec<RecordedCurrentFact>> {
-    read_consumer_records(path, max_bytes, None)
+    read_consumer_records(path, max_bytes, None, None)
 }
 
 pub fn read_backtest_run_guard_events(
     path: &Path,
     max_bytes: u64,
+    stream: CurrentEvidenceStream,
 ) -> Result<Vec<RecordedBacktestRunGuardEvent>> {
-    read_consumer_records(path, max_bytes, Some(KnownConsumer::BacktestRunGuardV1))?
-        .into_iter()
-        .map(|record| {
-            Ok(RecordedBacktestRunGuardEvent {
-                recorded_at_utc_ns: record.recorded_at_utc_ns,
-                event: into_backtest_run_guard_event(record.fact)?,
-            })
+    read_consumer_records(
+        path,
+        max_bytes,
+        Some(KnownConsumer::BacktestRunGuardV1),
+        Some(stream.known_sink()),
+    )?
+    .into_iter()
+    .map(|record| {
+        Ok(RecordedBacktestRunGuardEvent {
+            recorded_at_utc_ns: record.recorded_at_utc_ns,
+            event: into_backtest_run_guard_event(record.fact)?,
         })
-        .collect()
+    })
+    .collect()
 }
 
 fn read_consumer_records(
     path: &Path,
     max_bytes: u64,
     consumer: Option<KnownConsumer>,
+    expected_sink: Option<KnownSink>,
 ) -> Result<Vec<RecordedCurrentFact>> {
     let mut file = File::open(path)
         .with_context(|| format!("open current decision evidence `{}`", path.display()))?;
@@ -114,6 +136,16 @@ fn read_consumer_records(
             header.gate_id == descriptor.gate_id,
             "wrong gate_id at current decision evidence line {line_number}"
         );
+        let purpose = purpose_for_identity(identity);
+        let actual_sink = sink_for_purpose(purpose);
+        if let Some(expected_sink) = expected_sink {
+            ensure!(
+                actual_sink == expected_sink,
+                "{} identity in {} stream at current decision evidence line {line_number}",
+                sink_name(actual_sink),
+                sink_name(expected_sink)
+            );
+        }
         let fact_id = fact_for_identity(identity);
         if consumer.is_some_and(|consumer| {
             matches!(
@@ -137,10 +169,15 @@ fn read_consumer_records(
 }
 
 pub fn read_shadow_pnl_events(path: &Path, max_bytes: u64) -> Result<Vec<ShadowPnlEvent>> {
-    read_consumer_records(path, max_bytes, Some(KnownConsumer::ShadowPnlV1))?
-        .into_iter()
-        .map(|record| into_shadow_pnl_event(record.fact))
-        .collect()
+    read_consumer_records(
+        path,
+        max_bytes,
+        Some(KnownConsumer::ShadowPnlV1),
+        Some(KnownSink::Machine),
+    )?
+    .into_iter()
+    .map(|record| into_shadow_pnl_event(record.fact))
+    .collect()
 }
 
 fn into_shadow_pnl_event(fact: CurrentFact) -> Result<ShadowPnlEvent> {

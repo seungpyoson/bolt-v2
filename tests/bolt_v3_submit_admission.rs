@@ -810,7 +810,7 @@ fn ungated_submit_admission_allows_production_submit() {
 #[test]
 fn admission_evidence_failure_is_typed_and_does_not_consume_submit_capacity() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    writer.fail_machine_writes();
+    writer.fail_admitted_entry_admission_writes();
     let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::ONE);
 
     let error = admission
@@ -2014,6 +2014,28 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
         ]
     );
     assert_eq!(admission.admitted_order_count(), 2);
+}
+
+#[test]
+fn risk_reducing_exit_admission_continues_when_its_evidence_write_fails() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    writer.fail_risk_reducing_exit_admission_writes();
+    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(5, 0));
+
+    admission
+        .admit(&submit_request_with_kind_and_exit_proof(
+            Decimal::new(264, 2),
+            BoltV3SubmitIntentKind::RiskReducingExit,
+            Some(valid_risk_reducing_exit_proof()),
+        ))
+        .expect("risk-reducing admission must preserve its result when evidence fails")
+        .commit_submitted();
+
+    assert_eq!(admission.admitted_order_count(), 1);
+    assert!(
+        writer.admission_decisions().is_empty(),
+        "the injected write failure must target the risk-reducing admission fact"
+    );
 }
 
 #[test]

@@ -1942,7 +1942,7 @@ fn entry_submission_blocks_legacy_limit_base_entry_shape_before_liability_sizing
 
     assert_eq!(
         decision.blocked_reason,
-        Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
+        Some(EvidenceEntrySkipReason::EntryPricingBlocked)
     );
     assert_eq!(
         decision.evaluation.pricing_blocked_by,

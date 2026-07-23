@@ -84,6 +84,12 @@ pub enum PoisonCause {
     StartupContentInvalid { cause: Arc<str> },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObservationStreamStatus {
+    Available,
+    Poisoned { cause: Arc<str> },
+}
+
 impl fmt::Display for PoisonCause {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -143,7 +149,7 @@ pub(crate) struct EncodedEvidenceRecord {
 }
 
 impl EncodedEvidenceRecord {
-    pub(crate) fn try_new(purpose: KnownPurpose, line: Vec<u8>) -> Result<Self, RecordFailure> {
+    pub(super) fn try_new(purpose: KnownPurpose, line: Vec<u8>) -> Result<Self, RecordFailure> {
         if line.is_empty() || line.last() != Some(&b'\n') || line[..line.len() - 1].contains(&b'\n')
         {
             return Err(RecordFailure::Rejected(anyhow::anyhow!(
@@ -248,6 +254,15 @@ impl DurableSink {
             }
         }
     }
+
+    fn status(&self) -> ObservationStreamStatus {
+        match &self.state {
+            DurableSinkState::Healthy => ObservationStreamStatus::Available,
+            DurableSinkState::Poisoned(cause) => ObservationStreamStatus::Poisoned {
+                cause: Arc::from(cause.to_string()),
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -256,9 +271,9 @@ pub struct DecisionEvidenceRecorder {
     observation: Mutex<DurableSink>,
     reject_episode_max_count: usize,
     observation_failure_episodes: Mutex<BTreeSet<KnownPurpose>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     test_attempts: Mutex<std::collections::BTreeMap<KnownPurpose, usize>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     test_failure: Mutex<Option<(KnownPurpose, usize)>>,
 }
 
@@ -279,9 +294,9 @@ impl DecisionEvidenceRecorder {
             observation: Mutex::new(observation),
             reject_episode_max_count,
             observation_failure_episodes: Mutex::new(BTreeSet::new()),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-current-evidence-inspection"))]
             test_attempts: Mutex::new(std::collections::BTreeMap::new()),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-current-evidence-inspection"))]
             test_failure: Mutex::new(None),
         }
     }
@@ -298,6 +313,14 @@ impl DecisionEvidenceRecorder {
 
     pub(crate) const fn reject_episode_max_count(&self) -> usize {
         self.reject_episode_max_count
+    }
+
+    #[must_use]
+    pub fn observation_stream_status(&self) -> ObservationStreamStatus {
+        self.observation
+            .lock()
+            .expect("observation sink mutex must not be poisoned")
+            .status()
     }
 
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
@@ -325,12 +348,42 @@ impl DecisionEvidenceRecorder {
             .forced_failure = Some(ForcedFailure::Write);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     pub(crate) fn fail_purpose_on_attempt(&self, purpose: KnownPurpose, attempt: usize) {
         *self
             .test_failure
             .lock()
             .expect("test failure mutex must not be poisoned") = Some((purpose, attempt));
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
+    pub fn fail_admitted_entry_admission_writes_for_test(&self) {
+        self.fail_purpose_on_attempt(KnownPurpose::AdmittedEntryAdmission, 1);
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
+    pub fn fail_basket_admission_granted_writes_for_test(&self) {
+        self.fail_purpose_on_attempt(KnownPurpose::BasketAdmissionGranted, 1);
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
+    pub fn fail_risk_reducing_exit_admission_writes_for_test(&self) {
+        self.fail_purpose_on_attempt(KnownPurpose::RiskReducingExitAdmission, 1);
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
+    pub fn fail_risk_reducing_exit_order_intent_writes_for_test(&self) {
+        self.fail_purpose_on_attempt(KnownPurpose::RiskReducingExitOrderIntent, 1);
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
+    pub fn fail_capital_admission_rebuild_writes_for_test(&self) {
+        self.fail_purpose_on_attempt(KnownPurpose::CapitalAdmissionRebuild, 1);
     }
 
     #[cfg(test)]
@@ -684,7 +737,7 @@ impl DecisionEvidenceRecorder {
         )
     }
 
-    pub(crate) fn record_blocking(
+    fn record_blocking(
         &self,
         producer: KnownProducer,
         record: EncodedEvidenceRecord,
@@ -700,7 +753,7 @@ impl DecisionEvidenceRecorder {
         self.append(record)
     }
 
-    pub(crate) fn record_nonblocking(
+    fn record_nonblocking(
         &self,
         producer: KnownProducer,
         record: EncodedEvidenceRecord,
@@ -719,7 +772,7 @@ impl DecisionEvidenceRecorder {
         }
     }
 
-    pub(crate) fn record_observation(
+    fn record_observation(
         &self,
         producer: KnownProducer,
         record: EncodedEvidenceRecord,
@@ -760,7 +813,7 @@ impl DecisionEvidenceRecorder {
     }
 
     fn append(&self, record: EncodedEvidenceRecord) -> Result<AppendReceipt, RecordFailure> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-current-evidence-inspection"))]
         let inject_failure = {
             let attempt = {
                 let mut attempts = self
@@ -785,7 +838,7 @@ impl DecisionEvidenceRecorder {
         let mut sink = sink
             .lock()
             .expect("decision-evidence sink mutex must not be poisoned");
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-current-evidence-inspection"))]
         if inject_failure {
             sink.forced_failure = Some(ForcedFailure::Write);
         }
@@ -975,6 +1028,10 @@ mod tests {
     #[test]
     fn observation_poison_reports_once_per_purpose_and_never_resumes() {
         let recorder = recorder();
+        assert_eq!(
+            recorder.observation_stream_status(),
+            ObservationStreamStatus::Available
+        );
         recorder
             .observation
             .lock()
@@ -987,6 +1044,10 @@ mod tests {
                 record(KnownPurpose::BlockedStrategyInputObservation),
             ),
             ObservationRecordOutcome::FailureReported(_)
+        ));
+        assert!(matches!(
+            recorder.observation_stream_status(),
+            ObservationStreamStatus::Poisoned { .. }
         ));
         assert!(matches!(
             recorder.record_observation(

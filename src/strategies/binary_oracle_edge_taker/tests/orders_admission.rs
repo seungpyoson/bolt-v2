@@ -1372,7 +1372,7 @@ fn market_quote_quantity_entry_submission_blocks_below_venue_minimum() {
 
     assert_eq!(
         decision.blocked_reason,
-        Some("entry_quote_notional_below_venue_minimum")
+        Some(EvidenceEntrySkipReason::EntryQuoteNotionalBelowVenueMinimum)
     );
     assert_eq!(decision.quantity_value, None);
 }

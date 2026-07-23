@@ -3,12 +3,13 @@ use std::{fs, path::Path};
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_current_evidence::{
-        DecisionEvidenceRuntime, ObservationRecordOutcome, ObservationStreamStatus,
-        OrderLifecycleFact, OrderLifecycleOutcome, OrderLifecycleTransition, OutcomeSide,
-        RecordFailure, RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
-        RequoteThrottleObservationFact, SettlementBookingErrorFact, SettlementBookingErrorReason,
-        SettlementFact, ShadowPnlEvent, SubmitReservationFillFact, SubmitReservationMetadataFact,
-        TerminalSettlementFact, read_backtest_run_guard_events, read_shadow_pnl_events,
+        CurrentEvidenceStream, DecisionEvidenceRuntime, ObservationRecordOutcome,
+        ObservationStreamStatus, OrderLifecycleFact, OrderLifecycleOutcome,
+        OrderLifecycleTransition, OutcomeSide, RecordFailure, RequoteActionCostClass,
+        RequoteThrottleBlockReason, RequoteThrottleBound, RequoteThrottleObservationFact,
+        SettlementBookingErrorFact, SettlementBookingErrorReason, SettlementFact, ShadowPnlEvent,
+        SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
+        read_backtest_run_guard_events, read_shadow_pnl_events,
     },
 };
 use tempfile::TempDir;
@@ -701,9 +702,35 @@ fn backtest_run_guard_skips_irrelevant_identity_before_payload_decode() {
     )
     .expect("malformed irrelevant line must be written");
 
-    let events = read_backtest_run_guard_events(&path, u64::MAX)
-        .expect("irrelevant identity must be skipped before payload decoding");
+    let events = read_backtest_run_guard_events(
+        &path,
+        u64::MAX,
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceStream::Machine,
+    )
+    .expect("irrelevant identity must be skipped before payload decoding");
     assert!(events.is_empty());
+}
+
+#[test]
+fn backtest_run_guard_rejects_identity_from_the_wrong_stream() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let path = temp.path().join("wrong-stream.jsonl");
+    fs::write(
+        &path,
+        include_bytes!(
+            "fixtures/bolt_v3/current_evidence/positive/requote_throttle_observation.jsonl"
+        ),
+    )
+    .expect("observation fixture must be written");
+
+    let error = read_backtest_run_guard_events(&path, u64::MAX, CurrentEvidenceStream::Machine)
+        .expect_err("an observation identity must not be accepted as machine evidence");
+
+    assert!(
+        error
+            .to_string()
+            .contains("observation identity in machine stream")
+    );
 }
 
 #[test]

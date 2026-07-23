@@ -15,15 +15,9 @@ use super::{
     generated_contract::KnownSink,
     path_authority::CatalogDirectory,
     reader::validate_stream,
-    record::{DecisionEvidenceRecorder, PoisonCause},
+    record::{DecisionEvidenceRecorder, ObservationStreamStatus, PoisonCause},
     validate_relative_path,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ObservationStreamStatus {
-    Available,
-    Poisoned { cause: Arc<str> },
-}
 
 #[derive(Debug)]
 pub struct DecisionEvidenceRuntime {
@@ -31,7 +25,6 @@ pub struct DecisionEvidenceRuntime {
     reservation_recovery: Arc<ReservationRecoveryFacts>,
     settlement_recovery: Arc<SettlementRecoveryFacts>,
     booking_recovery: Arc<BookingRecoveryFacts>,
-    observation_stream_status: ObservationStreamStatus,
 }
 
 /// File-backed current-evidence runtime exposed only to the separately resolved backtesting
@@ -126,21 +119,16 @@ impl DecisionEvidenceRuntime {
             .open_stream(observation_relative)
             .with_context(|| format!("open observation evidence `{observation_relative}`"))?;
         ensure_distinct_files(&machine, &observation)?;
-        let (observation_stream_status, observation_poison) = match validate_stream(
+        let observation_poison = match validate_stream(
             &mut observation,
             KnownSink::Observation,
             config.recovery_evidence_max_bytes,
         ) {
-            Ok(_) => (ObservationStreamStatus::Available, None),
+            Ok(_) => None,
             Err(error) => {
                 let cause: Arc<str> = Arc::from(format!("{error:#}"));
                 log::error!("retained observation evidence is poisoned: {cause}");
-                (
-                    ObservationStreamStatus::Poisoned {
-                        cause: Arc::clone(&cause),
-                    },
-                    Some(PoisonCause::StartupContentInvalid { cause }),
-                )
+                Some(PoisonCause::StartupContentInvalid { cause })
             }
         };
         observation.seek(SeekFrom::End(0))?;
@@ -155,7 +143,6 @@ impl DecisionEvidenceRuntime {
             reservation_recovery: Arc::new(startup_recovery.reservation),
             settlement_recovery: Arc::new(startup_recovery.settlement),
             booking_recovery: Arc::new(startup_recovery.booking),
-            observation_stream_status,
         })
     }
 
@@ -181,7 +168,7 @@ impl DecisionEvidenceRuntime {
 
     #[must_use]
     pub fn observation_stream_status(&self) -> ObservationStreamStatus {
-        self.observation_stream_status.clone()
+        self.recorder.observation_stream_status()
     }
 }
 

@@ -104,6 +104,36 @@ impl RecordingDecisionEvidenceWriter {
         self.runtime.recorder().fail_machine_writes_for_test();
     }
 
+    pub fn fail_admitted_entry_admission_writes(&self) {
+        self.runtime
+            .recorder()
+            .fail_admitted_entry_admission_writes_for_test();
+    }
+
+    pub fn fail_basket_admission_granted_writes(&self) {
+        self.runtime
+            .recorder()
+            .fail_basket_admission_granted_writes_for_test();
+    }
+
+    pub fn fail_risk_reducing_exit_admission_writes(&self) {
+        self.runtime
+            .recorder()
+            .fail_risk_reducing_exit_admission_writes_for_test();
+    }
+
+    pub fn fail_risk_reducing_exit_order_intent_writes(&self) {
+        self.runtime
+            .recorder()
+            .fail_risk_reducing_exit_order_intent_writes_for_test();
+    }
+
+    pub fn fail_capital_admission_rebuild_writes(&self) {
+        self.runtime
+            .recorder()
+            .fail_capital_admission_rebuild_writes_for_test();
+    }
+
     pub fn facts(&self) -> Vec<CurrentFact> {
         let mut facts = read_current_evidence_facts(&self.machine_path, u64::MAX)
             .expect("machine evidence must decode");

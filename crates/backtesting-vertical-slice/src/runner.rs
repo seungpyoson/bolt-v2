@@ -25,9 +25,9 @@ use bolt_v2::{
         load_bolt_v3_config,
     },
     bolt_v3_current_evidence::{
-        AdmissionDecisionOutcome, BacktestRunGuardEvent, DecisionEvidenceRecorder,
-        OfflineDecisionEvidenceRuntime, StrategyInputDetails, StrategyInputRvState,
-        read_backtest_run_guard_events,
+        AdmissionDecisionOutcome, BacktestRunGuardEvent, CurrentEvidenceStream,
+        DecisionEvidenceRecorder, OfflineDecisionEvidenceRuntime, StrategyInputDetails,
+        StrategyInputRvState, read_backtest_run_guard_events,
     },
     bolt_v3_operator_artifacts::json_artifact_bytes,
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
@@ -250,8 +250,12 @@ impl BacktestDecisionEvidenceWriter {
 
     fn state(&self) -> Result<BacktestDecisionEvidenceState> {
         let mut state = BacktestDecisionEvidenceState::default();
-        for stream in [&self.machine, &self.observation] {
-            for record in read_backtest_run_guard_events(stream.path(), self.read_max_bytes)? {
+        for (stream, kind) in [
+            (&self.machine, CurrentEvidenceStream::Machine),
+            (&self.observation, CurrentEvidenceStream::Observation),
+        ] {
+            for record in read_backtest_run_guard_events(stream.path(), self.read_max_bytes, kind)?
+            {
                 match record.event {
                     BacktestRunGuardEvent::BlockedStrategyInputObservation(fact) => {
                         state.observe_strategy_input(
@@ -7584,7 +7588,7 @@ mod tests {
                 parameters: BTreeMap::from([
                     (
                         STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES.to_string(),
-                        "1048576".to_string(),
+                        "67108864".to_string(),
                     ),
                     (
                         STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT.to_string(),

@@ -501,7 +501,7 @@ fn basket_grant_evidence_failure_rolls_back_every_leg_before_submit() {
     let mut claims = entry_claims(&group, dec!(0.9));
     attach_capital_admission(&mut claims);
     seed_capital_admission_for_claims(&submit_gate, &claims);
-    writer.fail_machine_writes();
+    writer.fail_basket_admission_granted_writes();
 
     let error = submit_gate
         .reserve_basket_submit_slots(
@@ -527,6 +527,15 @@ fn basket_grant_evidence_failure_rolls_back_every_leg_before_submit() {
             claim.client_order_id
         );
     }
+    assert_eq!(
+        writer.submit_reservation_metadata().len(),
+        claims.len(),
+        "reservation metadata must commit before the targeted basket-grant failure"
+    );
+    assert!(
+        writer.basket_admission_decisions().is_empty(),
+        "the injected failure must prevent only the basket-grant fact"
+    );
 }
 
 #[test]

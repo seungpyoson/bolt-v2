@@ -1730,6 +1730,46 @@ mod tests {
     }
 
     #[test]
+    fn live_risk_reducing_exit_reaches_nt_when_order_intent_evidence_fails() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        writer.fail_risk_reducing_exit_order_intent_writes_for_test();
+        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        let mut sink = RecordingVenueMutationSink::default();
+        let order = limit_exit_order(
+            "O-19700101-000000-001-EXIT-EVIDENCE-FAILURE-1",
+            Quantity::new(3.0, 2),
+        );
+        let intent = exit_intent_for_order(&order);
+        let request = risk_reducing_exit_submit_request_for_order(
+            &order,
+            Decimal::new(3, 0),
+            Decimal::new(3, 0),
+        );
+
+        let outcome = BoltV3OrderExecutionPolicy::live()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::new(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect("risk-reducing evidence failure must not block the NT submit");
+
+        assert_eq!(outcome, BoltV3SubmitRoutingOutcome::Submitted);
+        assert_eq!(sink.submit_calls, 1);
+        assert_eq!(admission.admitted_order_count(), 1);
+        assert!(
+            writer.order_intents().is_empty(),
+            "the targeted order-intent write must fail before appending evidence"
+        );
+    }
+
+    #[test]
     fn risk_reducing_exit_without_venue_truth_records_not_evaluated_reason() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(

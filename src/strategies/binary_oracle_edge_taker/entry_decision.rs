@@ -28,17 +28,8 @@ use crate::{
 };
 
 use super::{
-    ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED, ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED,
-    ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING, ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED,
-    ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE, ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING,
-    ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE,
-    ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL, ENTRY_BLOCK_REASON_NO_SIDE_SELECTED,
-    ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION,
-    ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID, ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE,
-    ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED, ENTRY_BLOCK_REASON_SIZED_NOTIONAL_NOT_POSITIVE,
-    ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED, SelectionPhase, exposure::ExposureOccupancy,
-    exposure_occupancy_to_evidence, forced_flat_reason_to_evidence, option_evidence_number,
-    outcome_side_to_evidence,
+    SelectionPhase, exposure::ExposureOccupancy, exposure_occupancy_to_evidence,
+    forced_flat_reason_to_evidence, option_evidence_number, outcome_side_to_evidence,
 };
 use crate::bolt_v3_feed_health::ForcedFlatReason;
 
@@ -238,7 +229,7 @@ pub(super) struct EntrySubmissionDecision {
     pub(super) price: Option<f64>,
     pub(super) quantity_value: Option<f64>,
     pub(super) client_order_id: Option<ClientOrderId>,
-    pub(super) blocked_reason: Option<&'static str>,
+    pub(super) blocked_reason: Option<EvidenceEntrySkipReason>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -318,7 +309,7 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) submission_price: Option<f64>,
     pub(super) submission_quantity_value: Option<f64>,
     pub(super) submission_client_order_id: Option<ClientOrderId>,
-    pub(super) submission_blocked_reason: Option<&'static str>,
+    pub(super) submission_blocked_reason: Option<EvidenceEntrySkipReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -505,10 +496,7 @@ pub(super) fn entry_skip_fact(
         theta_scaled_min_edge_bps: option_evidence_number(fields.theta_scaled_min_edge_bps),
         up_fee_bps: option_evidence_number(fields.up_fee_bps),
         down_fee_bps: option_evidence_number(fields.down_fee_bps),
-        submission_blocked_reason: fields
-            .submission_blocked_reason
-            .and_then(entry_skip_reason_category_from_str)
-            .or(Some(reason_category)),
+        submission_blocked_reason: fields.submission_blocked_reason.or(Some(reason_category)),
         stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
         last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
         min_liquidity_required: forced_flat_inputs.min_liquidity_required,
@@ -625,47 +613,41 @@ pub(super) fn entry_pricing_block_reason_to_evidence(
     }
 }
 
-pub(super) fn entry_skip_reason_category_from_str(reason: &str) -> Option<EvidenceEntrySkipReason> {
+pub(super) const fn entry_skip_reason_label(reason: EvidenceEntrySkipReason) -> &'static str {
     match reason {
-        ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED => {
-            Some(EvidenceEntrySkipReason::StrategyCoreNotRegistered)
+        EvidenceEntrySkipReason::StrategyCoreNotRegistered => "strategy_core_not_registered",
+        EvidenceEntrySkipReason::EntryGateBlocked => "entry_gate_blocked",
+        EvidenceEntrySkipReason::EntryPricingBlocked => "entry_pricing_blocked",
+        EvidenceEntrySkipReason::NoSideSelected => "no_side_selected",
+        EvidenceEntrySkipReason::SizedNotionalNotPositive => "sized_notional_not_positive",
+        EvidenceEntrySkipReason::InstrumentIdMissing => "instrument_id_missing",
+        EvidenceEntrySkipReason::InstrumentMissingFromCache => "instrument_missing_from_cache",
+        EvidenceEntrySkipReason::EntryPriceMissing => "entry_price_missing",
+        EvidenceEntrySkipReason::QuantityRoundingFailed => "quantity_rounding_failed",
+        EvidenceEntrySkipReason::LimitNotionalExceedsSizedNotional => {
+            "limit_notional_exceeds_sized_notional"
         }
-        ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED => Some(EvidenceEntrySkipReason::EntryGateBlocked),
-        ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED => {
-            Some(EvidenceEntrySkipReason::EntryPricingBlocked)
+        EvidenceEntrySkipReason::EntryQuoteNotionalBelowVenueMinimum => {
+            "entry_quote_notional_below_venue_minimum"
         }
-        ENTRY_BLOCK_REASON_NO_SIDE_SELECTED => Some(EvidenceEntrySkipReason::NoSideSelected),
-        ENTRY_BLOCK_REASON_SIZED_NOTIONAL_NOT_POSITIVE => {
-            Some(EvidenceEntrySkipReason::SizedNotionalNotPositive)
+        EvidenceEntrySkipReason::EntryQuoteNotionalMinimumUnmodeled => {
+            "entry_quote_notional_minimum_unmodeled"
         }
-        ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING => {
-            Some(EvidenceEntrySkipReason::InstrumentIdMissing)
+        EvidenceEntrySkipReason::QuantityNotPositive => "quantity_not_positive",
+        EvidenceEntrySkipReason::PositionContractInvalid => "position_contract_invalid",
+        EvidenceEntrySkipReason::EntryPositionContractUnsupported => {
+            "entry_position_contract_unsupported"
         }
-        ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE => {
-            Some(EvidenceEntrySkipReason::InstrumentMissingFromCache)
+        EvidenceEntrySkipReason::HistoricalEntryFeeUnavailable => {
+            "historical_entry_fee_unavailable"
         }
-        ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING => Some(EvidenceEntrySkipReason::EntryPriceMissing),
-        ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED => {
-            Some(EvidenceEntrySkipReason::QuantityRoundingFailed)
+        EvidenceEntrySkipReason::OnePositionInvariantViolation => {
+            "one_position_invariant_violation"
         }
-        ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL => {
-            Some(EvidenceEntrySkipReason::LimitNotionalExceedsSizedNotional)
+        EvidenceEntrySkipReason::EntryMalformedRejected => "entry_malformed_rejected",
+        EvidenceEntrySkipReason::EntryBalanceRejected => "entry_balance_rejected",
+        EvidenceEntrySkipReason::EntryUnfillableRejectedUnchangedBook => {
+            "entry_unfillable_rejected_unchanged_book"
         }
-        ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE => {
-            Some(EvidenceEntrySkipReason::QuantityNotPositive)
-        }
-        ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID => {
-            Some(EvidenceEntrySkipReason::PositionContractInvalid)
-        }
-        ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED => {
-            Some(EvidenceEntrySkipReason::EntryPositionContractUnsupported)
-        }
-        ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE => {
-            Some(EvidenceEntrySkipReason::HistoricalEntryFeeUnavailable)
-        }
-        ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION => {
-            Some(EvidenceEntrySkipReason::OnePositionInvariantViolation)
-        }
-        _ => None,
     }
 }

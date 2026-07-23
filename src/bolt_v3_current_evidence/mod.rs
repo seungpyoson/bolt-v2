@@ -15,17 +15,18 @@ pub(crate) use path::validate_relative_path;
 #[doc(hidden)]
 pub use reader::read_current_evidence_facts;
 pub use reader::{
-    BacktestRunGuardEvent, RecordedBacktestRunGuardEvent, ShadowPnlEvent,
+    BacktestRunGuardEvent, CurrentEvidenceStream, RecordedBacktestRunGuardEvent, ShadowPnlEvent,
     read_backtest_run_guard_events, read_shadow_pnl_events,
 };
 pub(crate) use realized_volatility::source_diagnostic_fact as realized_vol_diagnostic_fact;
 pub use record::{
     AppendReceipt, CommitPhase, CommittedSettlement, DecisionEvidenceRecorder,
-    NonBlockingRecordOutcome, ObservationRecordOutcome, PoisonCause, RecordFailure,
+    NonBlockingRecordOutcome, ObservationRecordOutcome, ObservationStreamStatus, PoisonCause,
+    RecordFailure,
 };
+pub use runtime::DecisionEvidenceRuntime;
 #[cfg(feature = "offline-current-evidence")]
 pub use runtime::OfflineDecisionEvidenceRuntime;
-pub use runtime::{DecisionEvidenceRuntime, ObservationStreamStatus};
 
 /// Proves prefix containment and probes an existing catalog through one descriptor-relative authority.
 pub fn prestart_catalog_check(

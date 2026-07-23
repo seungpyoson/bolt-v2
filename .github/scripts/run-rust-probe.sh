@@ -70,6 +70,11 @@ if [ -n "$manifest_path" ]; then
   manifest_args=(--manifest-path "$manifest_path")
 fi
 
+root_test_feature_args=()
+if [ -z "$manifest_path" ]; then
+  root_test_feature_args=(--features test-current-evidence-inspection)
+fi
+
 require_target() {
   if [ -z "$test_target" ]; then
     reject "test_target is required for mode $mode"
@@ -109,27 +114,27 @@ case "$mode" in
   check-test-target)
     require_target
     forbid_name
-    probe_args=(check --locked "${manifest_args[@]}" --test "$test_target")
+    probe_args=(check --locked "${manifest_args[@]}" "${root_test_feature_args[@]}" --test "$test_target")
     ;;
   nextest-no-run-test-target)
     require_target
     forbid_name
-    probe_args=(nextest run --locked "${manifest_args[@]}" --no-run --test "$test_target")
+    probe_args=(nextest run --locked "${manifest_args[@]}" "${root_test_feature_args[@]}" --no-run --test "$test_target")
     ;;
   nextest-lib-name)
     forbid_target
     require_name
-    probe_args=(nextest run --locked "${manifest_args[@]}" --lib "$test_name")
+    probe_args=(nextest run --locked "${manifest_args[@]}" "${root_test_feature_args[@]}" --lib "$test_name")
     ;;
   nextest-test-target)
     require_target
     forbid_name
-    probe_args=(nextest run --locked "${manifest_args[@]}" --test "$test_target")
+    probe_args=(nextest run --locked "${manifest_args[@]}" "${root_test_feature_args[@]}" --test "$test_target")
     ;;
   nextest-test-target-name)
     require_target
     require_name
-    probe_args=(nextest run --locked "${manifest_args[@]}" --test "$test_target" "$test_name")
+    probe_args=(nextest run --locked "${manifest_args[@]}" "${root_test_feature_args[@]}" --test "$test_target" "$test_name")
     ;;
   *)
     reject "unsupported mode: $mode"

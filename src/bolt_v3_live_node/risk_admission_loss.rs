@@ -1797,8 +1797,9 @@ mod tests {
 
     #[test]
     fn venue_truth_failure_recovery_repeat_failure_emits_three_health_transitions() {
+        let decision_evidence = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(DecisionEvidenceRecorder::recording()),
+            decision_evidence.clone(),
             test_capital_admission_config(),
         ));
         let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
@@ -1819,6 +1820,7 @@ mod tests {
                     0,
                     None,
                     BoltV3SettlementHealth::nominal(),
+                    &decision_evidence,
                 );
                 if logger.emit_surface(reason, surface)
                     == BoltV3OperatorHealthTransitionEmission::Emitted

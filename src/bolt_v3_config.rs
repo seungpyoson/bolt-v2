@@ -390,7 +390,7 @@ pub struct DecisionEvidenceBlock {
     pub observation_relative_path: String,
     pub retired_relative_paths: Vec<String>,
     pub reject_episode_max_count: usize,
-    /// Mandatory byte cap applied when startup validates and decodes the machine stream.
+    /// Mandatory byte cap for every current-evidence read, including both startup streams.
     pub recovery_evidence_max_bytes: u64,
 }
 

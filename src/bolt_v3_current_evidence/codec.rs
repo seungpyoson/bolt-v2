@@ -858,7 +858,7 @@ pub(super) fn validate_gate_version(gate_version: &str, line_number: usize) -> R
 
 fn decode<'a, T: Deserialize<'a>>(line: &'a str, line_number: usize) -> Result<T> {
     serde_json::from_str(line).with_context(|| {
-        format!("malformed current payload at machine evidence line {line_number}")
+        format!("malformed current payload at current evidence line {line_number}")
     })
 }
 
@@ -873,15 +873,15 @@ fn validate_envelope(
     let descriptor = descriptor_for_identity(identity);
     ensure!(
         kind == descriptor.kind && schema_version == descriptor.schema_version,
-        "identity mismatch at machine evidence line {line_number}"
+        "identity mismatch at current evidence line {line_number}"
     );
     ensure!(
         gate_id == descriptor.gate_id,
-        "wrong gate_id at machine evidence line {line_number}"
+        "wrong gate_id at current evidence line {line_number}"
     );
     ensure!(
         recorded_at_utc_ns > 0,
-        "recorded_at_utc_ns must be positive at machine evidence line {line_number}"
+        "recorded_at_utc_ns must be positive at current evidence line {line_number}"
     );
     Ok(())
 }
@@ -3636,6 +3636,21 @@ mod tests {
                 .insert("recorded_at_utc_ns".to_string(), 0.into());
             mutation_is_rejected(identity, &invalid_recorded_at);
 
+            for field in [
+                "schema_version",
+                "recorded_at_utc_ns",
+                "gate_id",
+                "gate_version",
+                "kind",
+            ] {
+                let mut missing_envelope_field = value.clone();
+                missing_envelope_field
+                    .as_object_mut()
+                    .expect("fixture envelope")
+                    .remove(field);
+                mutation_is_rejected(identity, &missing_envelope_field);
+            }
+
             let mut missing_payload = value.clone();
             missing_payload
                 .as_object_mut()
@@ -3703,6 +3718,42 @@ mod tests {
 
     #[test]
     fn semantic_validator_classes_reject_well_typed_contradictions() {
+        let covered_identities = std::collections::BTreeSet::from([
+            KnownIdentity::BlockedStrategyInputObservationV1,
+            KnownIdentity::SubmitLinkedStrategyInputSnapshotV1,
+            KnownIdentity::EntryOrderIntentV1,
+            KnownIdentity::RiskReducingExitOrderIntentV1,
+            KnownIdentity::AdmittedEntryAdmissionV1,
+            KnownIdentity::RejectedEntryAdmissionV1,
+            KnownIdentity::RiskReducingExitAdmissionV1,
+            KnownIdentity::ForcedReductionAdmissionV1,
+            KnownIdentity::BasketAdmissionGrantedV1,
+            KnownIdentity::BasketAdmissionRejectedV1,
+            KnownIdentity::CapitalAdmissionRebuildV1,
+            KnownIdentity::SubmitReservationMetadataV1,
+            KnownIdentity::SubmitReservationFillV1,
+            KnownIdentity::EntrySkipObservationV1,
+            KnownIdentity::ExitSubmissionDecisionV1,
+            KnownIdentity::ExitHoldDecisionV1,
+            KnownIdentity::ExitEvaluationV1,
+            KnownIdentity::LossGovernorHaltV1,
+            KnownIdentity::OrderRejectV1,
+            KnownIdentity::OrderLifecycleV1,
+            KnownIdentity::RequoteThrottleObservationV1,
+            KnownIdentity::SettlementV1,
+            KnownIdentity::TerminalSettlementV1,
+            KnownIdentity::VenueTruthCaptureFailureV1,
+            KnownIdentity::VenueTruthDivergenceV1,
+        ]);
+        assert_eq!(
+            covered_identities,
+            super::super::generated_contract::ALL_IDENTITIES
+                .iter()
+                .copied()
+                .collect(),
+            "every current identity must retain a well-typed semantic contradiction"
+        );
+
         let mut capital = positive_value(KnownIdentity::CapitalAdmissionRebuildV1);
         capital["decision"]["recovered_reservation_count"] = 3.into();
         mutation_is_rejected(KnownIdentity::CapitalAdmissionRebuildV1, &capital);
@@ -3770,6 +3821,10 @@ mod tests {
         let mut entry_skip = positive_value(KnownIdentity::EntrySkipObservationV1);
         entry_skip["entry_skip"]["now_ms"] = 0.into();
         mutation_is_rejected(KnownIdentity::EntrySkipObservationV1, &entry_skip);
+
+        let mut exit_submission = positive_value(KnownIdentity::ExitSubmissionDecisionV1);
+        exit_submission["exit_decision"]["details"]["strategy_id"] = "".into();
+        mutation_is_rejected(KnownIdentity::ExitSubmissionDecisionV1, &exit_submission);
 
         let mut exit_hold = positive_value(KnownIdentity::ExitHoldDecisionV1);
         exit_hold["exit_decision"]["blocked_reason"] = "no_open_position".into();

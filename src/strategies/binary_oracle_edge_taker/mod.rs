@@ -184,7 +184,7 @@ use self::entry_decision::{
     EntrySkipDedupeKey, EntrySkipDedupeState, EntrySubmissionDecision, ForcedFlatEvidenceInputs,
     RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
     entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence, entry_skip_fact,
-    entry_skip_reason_category_from_str, push_executable_edge_pricing_block, rv_gate_novelty_bit,
+    entry_skip_reason_label, push_executable_edge_pricing_block, rv_gate_novelty_bit,
 };
 
 mod exit_decision;
@@ -3991,16 +3991,14 @@ impl BinaryOracleEdgeTaker {
         &mut self,
         now_ms: u64,
         decision: &EntrySubmissionDecision,
-        reason: &'static str,
+        reason: EvidenceEntrySkipReason,
     ) -> Result<()> {
-        let reason_category = entry_skip_reason_category_from_str(reason)
-            .with_context(|| format!("unregistered entry skip reason `{reason}`"))?;
         // WARN keyed on the same evidence dedupe as record_entry_skip_once.
-        if self.record_entry_skip_once(now_ms, decision, reason_category)? {
+        if self.record_entry_skip_once(now_ms, decision, reason)? {
             log::warn!(
                 "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
                 self.config.strategy_id,
-                reason
+                entry_skip_reason_label(reason)
             );
         }
         Ok(())
@@ -4198,14 +4196,14 @@ impl BinaryOracleEdgeTaker {
         &self,
         instrument_id: InstrumentId,
         selected_side: OutcomeSide,
-    ) -> Option<&'static str> {
+    ) -> Option<EvidenceEntrySkipReason> {
         match self.entry_reject_state.get(&instrument_id)? {
-            EntryRejectState::Malformed => Some(ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED),
-            EntryRejectState::Balance => Some(ENTRY_BLOCK_REASON_ENTRY_BALANCE_REJECTED),
+            EntryRejectState::Malformed => Some(EvidenceEntrySkipReason::EntryMalformedRejected),
+            EntryRejectState::Balance => Some(EvidenceEntrySkipReason::EntryBalanceRejected),
             EntryRejectState::Unfillable { book } => {
                 let current_book = self.active_book_for_outcome(selected_side);
                 (current_book == book)
-                    .then_some(ENTRY_BLOCK_REASON_ENTRY_UNFILLABLE_REJECTED_UNCHANGED_BOOK)
+                    .then_some(EvidenceEntrySkipReason::EntryUnfillableRejectedUnchangedBook)
             }
         }
     }
@@ -6720,37 +6718,37 @@ impl BinaryOracleEdgeTaker {
         };
 
         if DataActor::trader_id(self).is_none() {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED);
+            decision.blocked_reason = Some(EvidenceEntrySkipReason::StrategyCoreNotRegistered);
             return decision;
         }
 
         if !evaluation.gate.blocked_by.is_empty() {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED);
+            decision.blocked_reason = Some(EvidenceEntrySkipReason::EntryGateBlocked);
             return decision;
         }
         if !evaluation.pricing_blocked_by.is_empty() {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED);
+            decision.blocked_reason = Some(EvidenceEntrySkipReason::EntryPricingBlocked);
             return decision;
         }
 
         let Some(selected_side) = evaluation.selected_side else {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_NO_SIDE_SELECTED);
+            decision.blocked_reason = Some(EvidenceEntrySkipReason::NoSideSelected);
             return decision;
         };
         let Some(sized_notional) = evaluation
             .sized_notional
             .filter(|value| is_positive_finite(*value))
         else {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_SIZED_NOTIONAL_NOT_POSITIVE);
+            decision.blocked_reason = Some(EvidenceEntrySkipReason::SizedNotionalNotPositive);
             return decision;
         };
 
         let Some(instrument_id) = self.instrument_id_for_side(selected_side) else {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING);
+            decision.blocked_reason = Some(EvidenceEntrySkipReason::InstrumentIdMissing);
             return decision;
         };
         let Some(instrument) = self.current_instrument(instrument_id) else {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE);
+            decision.blocked_reason = Some(EvidenceEntrySkipReason::InstrumentMissingFromCache);
             return decision;
         };
         if let Some(reason) = self.entry_reject_block_reason_for(instrument_id, selected_side) {
@@ -6760,13 +6758,13 @@ impl BinaryOracleEdgeTaker {
         let Some(submission_vwap) =
             executable_submission_vwap_from_evaluation(&evaluation, selected_side)
         else {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING);
+            decision.blocked_reason = Some(EvidenceEntrySkipReason::EntryPriceMissing);
             return decision;
         };
         let price = submission_vwap.limit_price;
         let quantity_value = if self.config.entry_order.is_quote_quantity {
             let Some(sized_notional_decimal) = Decimal::from_f64(sized_notional) else {
-                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+                decision.blocked_reason = Some(EvidenceEntrySkipReason::QuantityRoundingFailed);
                 return decision;
             };
             match make_market_quote_buy_quantity(
@@ -6777,28 +6775,28 @@ impl BinaryOracleEdgeTaker {
                 Ok(quantity) => quantity.as_f64(),
                 Err(MarketQuoteBuyQuantityError::MinimumUnmodeled) => {
                     decision.blocked_reason =
-                        Some(ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED);
+                        Some(EvidenceEntrySkipReason::EntryQuoteNotionalMinimumUnmodeled);
                     return decision;
                 }
                 Err(MarketQuoteBuyQuantityError::BelowMinimum) => {
                     decision.blocked_reason =
-                        Some(ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM);
+                        Some(EvidenceEntrySkipReason::EntryQuoteNotionalBelowVenueMinimum);
                     return decision;
                 }
                 Err(MarketQuoteBuyQuantityError::QuantityInvalid) => {
-                    decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+                    decision.blocked_reason = Some(EvidenceEntrySkipReason::QuantityRoundingFailed);
                     return decision;
                 }
             }
         } else {
             let max_quantity_at_limit = sized_notional / price;
             if !is_positive_finite(max_quantity_at_limit) {
-                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING);
+                decision.blocked_reason = Some(EvidenceEntrySkipReason::EntryPriceMissing);
                 return decision;
             }
             let shares_value = submission_vwap.vwap_quantity.min(max_quantity_at_limit);
             let Ok(quantity) = instrument.try_make_qty(shares_value, Some(true)) else {
-                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+                decision.blocked_reason = Some(EvidenceEntrySkipReason::QuantityRoundingFailed);
                 return decision;
             };
             let Some(quantity) = normalize_base_order_quantity(
@@ -6806,31 +6804,32 @@ impl BinaryOracleEdgeTaker {
                 &instrument,
                 quantity,
             ) else {
-                decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+                decision.blocked_reason = Some(EvidenceEntrySkipReason::QuantityRoundingFailed);
                 return decision;
             };
             let quantity_value = quantity.as_f64();
             let limit_notional = price * quantity_value;
             if limit_notional_exceeds_sized_notional(limit_notional, sized_notional) {
                 decision.blocked_reason =
-                    Some(ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL);
+                    Some(EvidenceEntrySkipReason::LimitNotionalExceedsSizedNotional);
                 return decision;
             }
             quantity_value
         };
         if !is_positive_finite(quantity_value) {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE);
+            decision.blocked_reason = Some(EvidenceEntrySkipReason::QuantityNotPositive);
             return decision;
         }
 
         let Ok(contract) = self.configured_position_contract() else {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID);
+            decision.blocked_reason = Some(EvidenceEntrySkipReason::PositionContractInvalid);
             return decision;
         };
         let order_side = contract.entry_order_side;
         let position_side = contract.entry_position_side;
         if !supports_strategy_managed_position(order_side, position_side, contract) {
-            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED);
+            decision.blocked_reason =
+                Some(EvidenceEntrySkipReason::EntryPositionContractUnsupported);
             return decision;
         }
 
@@ -6859,7 +6858,7 @@ impl BinaryOracleEdgeTaker {
         self.log_entry_evaluation(now_ms, &decision);
 
         let realized_volatility_not_ready = decision.blocked_reason
-            == Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
+            == Some(EvidenceEntrySkipReason::EntryPricingBlocked)
             && decision
                 .evaluation
                 .pricing_blocked_by
@@ -6900,7 +6899,7 @@ impl BinaryOracleEdgeTaker {
             self.record_and_log_entry_skip(
                 now_ms,
                 &decision,
-                ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE,
+                EvidenceEntrySkipReason::HistoricalEntryFeeUnavailable,
             )?;
             return Ok(None);
         };
@@ -6921,7 +6920,7 @@ impl BinaryOracleEdgeTaker {
                 log::warn!(
                     "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
                     self.config.strategy_id,
-                    ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION
+                    entry_skip_reason_label(EvidenceEntrySkipReason::OnePositionInvariantViolation)
                 );
             }
             self.enforce_one_position_invariant()?;
@@ -8116,33 +8115,6 @@ const EVIDENCE_REASON_RECOVERY_BOOTSTRAP_POSITION_MISSING_ORIGINAL_FEE_RATE: &st
     "recovery_bootstrap_position_missing_original_fee_rate";
 const EVIDENCE_REASON_POSITION_STATE_MISSING_ORIGINAL_FEE_RATE: &str =
     "position_state_missing_original_fee_rate";
-const ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED: &str = "strategy_core_not_registered";
-const ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED: &str = "entry_gate_blocked";
-const ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED: &str = "entry_pricing_blocked";
-const ENTRY_BLOCK_REASON_NO_SIDE_SELECTED: &str = "no_side_selected";
-const ENTRY_BLOCK_REASON_SIZED_NOTIONAL_NOT_POSITIVE: &str = "sized_notional_not_positive";
-const ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING: &str = "instrument_id_missing";
-const ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE: &str = "instrument_missing_from_cache";
-const ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING: &str = "entry_price_missing";
-const ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED: &str = "quantity_rounding_failed";
-const ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL: &str =
-    "limit_notional_exceeds_sized_notional";
-const ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE: &str = "quantity_not_positive";
-const ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID: &str = "position_contract_invalid";
-const ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED: &str =
-    "entry_position_contract_unsupported";
-const ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE: &str =
-    "historical_entry_fee_unavailable";
-const ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION: &str =
-    "one_position_invariant_violation";
-const ENTRY_BLOCK_REASON_ENTRY_MALFORMED_REJECTED: &str = "entry_malformed_rejected";
-const ENTRY_BLOCK_REASON_ENTRY_BALANCE_REJECTED: &str = "entry_balance_rejected";
-const ENTRY_BLOCK_REASON_ENTRY_UNFILLABLE_REJECTED_UNCHANGED_BOOK: &str =
-    "entry_unfillable_rejected_unchanged_book";
-const ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_BELOW_VENUE_MINIMUM: &str =
-    "entry_quote_notional_below_venue_minimum";
-const ENTRY_BLOCK_REASON_ENTRY_QUOTE_NOTIONAL_MINIMUM_UNMODELED: &str =
-    "entry_quote_notional_minimum_unmodeled";
 const EXIT_BLOCK_REASON_NO_OPEN_POSITION: &str = "no_open_position";
 const EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING: &str = "exit_already_pending";
 const EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING: &str = "entry_order_still_working";

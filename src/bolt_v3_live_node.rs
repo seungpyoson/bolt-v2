@@ -165,7 +165,8 @@ use crate::{
         LoadedStrategy, nautilus_startup_bound_secs, resolve_root_relative_path,
     },
     bolt_v3_current_evidence::{
-        DecisionEvidenceRuntime, ObservationStreamStatus, ReservationRecoveryFacts,
+        DecisionEvidenceRecorder, DecisionEvidenceRuntime, ObservationStreamStatus,
+        ReservationRecoveryFacts,
     },
     bolt_v3_iv::{
         config::IvRootConfig,
@@ -251,9 +252,6 @@ use crate::{
     },
     secrets::SsmResolverSession,
 };
-
-#[cfg(test)]
-use crate::bolt_v3_current_evidence::DecisionEvidenceRecorder;
 
 mod data_client_probe;
 mod iv;
@@ -357,7 +355,7 @@ pub struct BoltV3LiveNodeRuntime {
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
     input_health_configured_source_count: usize,
     settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
-    decision_evidence_observation_status: ObservationStreamStatus,
+    decision_evidence: Arc<DecisionEvidenceRecorder>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -584,7 +582,7 @@ fn live_operator_health_surface(
     input_health_configured_source_count: usize,
     input_health: Option<BoltV3InputHealth>,
     settlement_health: BoltV3SettlementHealth,
-    observation_status: &ObservationStreamStatus,
+    decision_evidence: &DecisionEvidenceRecorder,
 ) -> BoltV3OperatorHealthSurface {
     let reject_observer = order_reject_observer_feed.map_or_else(
         BoltV3RejectObserverHealth::not_configured,
@@ -617,7 +615,7 @@ fn live_operator_health_surface(
             BoltV3InputHealth::unobserved(input_health_configured_source_count)
         }),
         settlement_health,
-        match observation_status {
+        match decision_evidence.observation_stream_status() {
             ObservationStreamStatus::Available => {
                 BoltV3DecisionEvidenceObservationHealth::available()
             }
@@ -840,7 +838,7 @@ struct BoltV3LiveNodeRuntimeComponents {
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
     input_health_configured_source_count: usize,
     settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
-    decision_evidence_observation_status: ObservationStreamStatus,
+    decision_evidence: Arc<DecisionEvidenceRecorder>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -875,8 +873,7 @@ impl BoltV3LiveNodeRuntime {
             input_health_configured_source_count: runtime_components
                 .input_health_configured_source_count,
             settlement_health: runtime_components.settlement_health,
-            decision_evidence_observation_status: runtime_components
-                .decision_evidence_observation_status,
+            decision_evidence: runtime_components.decision_evidence,
             redaction_values: runtime_components.redaction_values,
         }
     }
@@ -1371,7 +1368,7 @@ impl BoltV3LiveNodeRuntime {
             self.input_health_configured_source_count,
             input_health,
             settlement_health,
-            &self.decision_evidence_observation_status,
+            &self.decision_evidence,
         ))
     }
 
@@ -2953,7 +2950,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         })
     })?;
     let decision_evidence = evidence_runtime.recorder();
-    let decision_evidence_observation_status = evidence_runtime.observation_stream_status();
     let reservation_recovery = evidence_runtime.reservation_recovery();
     let settlement_recovery = evidence_runtime.settlement_recovery();
     let booking_recovery = evidence_runtime.booking_recovery();
@@ -3054,7 +3050,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let submit_admission = submit_admission.clone();
         let logger = operator_health_transition_logger.clone();
         let settlement_health = settlement_health.clone();
-        let observation_status = decision_evidence_observation_status.clone();
+        let decision_evidence = decision_evidence.clone();
         let venue_truth_configured = capital_admission_runtime_feed.is_some();
         Arc::new(move |reason, input_health| {
             let settlement_health = settlement_health_snapshot(&settlement_health)?;
@@ -3065,7 +3061,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                 input_health_configured_source_count,
                 input_health,
                 settlement_health,
-                &observation_status,
+                &decision_evidence,
             );
             logger.emit_surface(reason, surface);
             Ok(())
@@ -3355,7 +3351,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             operator_health_transition_logger,
             input_health_configured_source_count,
             settlement_health,
-            decision_evidence_observation_status,
+            decision_evidence,
             redaction_values: resolved.redaction_values(),
         },
     );

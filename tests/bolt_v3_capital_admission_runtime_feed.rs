@@ -17,7 +17,7 @@ use bolt_v2::bolt_v3_capital_admission_state::{
     NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
     PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
 };
-use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
+use bolt_v2::bolt_v3_capital_reservation::{CapitalPoolSnapshot, ReservationRejectionReason};
 use bolt_v2::bolt_v3_current_evidence::DecisionEvidenceRecorder;
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use bolt_v2::bolt_v3_providers::polymarket::{
@@ -1012,6 +1012,27 @@ fn capital_admission_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty(
     assert_eq!(state.order_lifecycle.observed_at_ns, 1_200);
     assert_eq!(state.order_lifecycle.open_order_count, 0);
     assert!(state.order_lifecycle.all_open_orders_attributed);
+}
+
+#[test]
+fn capital_admission_rebuild_evidence_failure_leaves_gate_unreconciled() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = capital_admission_configured_admission_with_writer(writer.recorder());
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    writer.fail_capital_admission_rebuild_writes();
+
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_000);
+
+    assert!(!rebuild.accepted);
+    assert_eq!(
+        rebuild.reason,
+        Some(ReservationRejectionReason::MissingEvidence)
+    );
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
 }
 
 #[test]
@@ -2584,7 +2605,7 @@ fn admission_evidence_failure_rolls_back_capital_reservation_before_submit() {
     arm_default(&admission);
     admission.update_capital_admission_nt_components(fresh_components(900));
     rebuild_empty_capital_admission(&admission);
-    writer.fail_machine_writes();
+    writer.fail_admitted_entry_admission_writes();
 
     let error = admission
         .admit_at(
@@ -2606,6 +2627,11 @@ fn admission_evidence_failure_rolls_back_capital_reservation_before_submit() {
     assert!(
         !admission.capital_admission_has_live_reservation("failed-evidence-order"),
         "no reservation may survive a rejected evidence boundary"
+    );
+    assert_eq!(
+        writer.submit_reservation_metadata().len(),
+        1,
+        "reservation metadata must commit before the targeted admission-decision failure"
     );
 }
 

@@ -59,7 +59,7 @@ fmt: check-workspace
     cargo fmt --manifest-path "{{bte_root}}/Cargo.toml"
 
 clippy: check-workspace
-    cargo clippy --locked -- -D warnings
+    cargo clippy --locked --all-targets --features test-current-evidence-inspection -- -D warnings
 
 _test-merge-queue:
     bash scripts/test_merge_queue.sh

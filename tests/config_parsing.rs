@@ -8572,9 +8572,9 @@ fn rejects_colliding_decision_evidence_paths() {
         .expect("colliding decision-evidence path fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("decision-evidence paths must be distinct")),
+        messages.iter().any(|message| {
+            message.contains("persistence.decision_evidence paths must be distinct")
+        }),
         "machine and observation paths must be distinct: {messages:#?}"
     );
 
@@ -8586,9 +8586,9 @@ fn rejects_colliding_decision_evidence_paths() {
         .expect("active-retired collision fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("decision-evidence paths must be distinct")),
+        messages.iter().any(|message| {
+            message.contains("persistence.decision_evidence paths must be distinct")
+        }),
         "active and retired paths must be distinct: {messages:#?}"
     );
 }

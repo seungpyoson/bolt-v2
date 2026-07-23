@@ -18,7 +18,10 @@ pub(super) fn loaded_config_with_submit_sizer_recovery(
         .as_mut()
         .expect("fixture should configure capital pools")[0]
         .enforce_submit_admission = true;
-    loaded.root.persistence.catalog_directory = temp_path.to_string_lossy().to_string();
+    loaded.root.persistence.catalog_directory = std::fs::canonicalize(temp_path)
+        .expect("temporary catalog must canonicalize")
+        .to_string_lossy()
+        .to_string();
     loaded
         .root
         .persistence

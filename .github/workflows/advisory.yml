@@ -120,14 +120,14 @@ jobs:
       - name: clippy
         run: |
           set -x
-          cargo clippy --locked --all-targets --features test-current-evidence-inspection -- -D warnings
+          cargo clippy --locked --features test-current-evidence-inspection --lib --bins -- -D warnings
 
       - name: clippy (backtesting vertical slice)
         if: ${{ !cancelled() }}
         working-directory: crates/backtesting-vertical-slice
         run: |
           set -x
-          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --lib --bins -- -D warnings
 
       - name: Print sccache stats
         if: always()

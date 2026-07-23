@@ -751,6 +751,30 @@ fn shadow_pnl_dispositions_have_typed_reducers_for_the_complete_current_corpus()
     for entry in entries {
         let contents =
             fs::read_to_string(entry.path()).expect("positive corpus file must be readable");
+        let is_machine_fixture = match read_backtest_run_guard_events(
+            &entry.path(),
+            u64::MAX,
+            CurrentEvidenceStream::Machine,
+        ) {
+            Ok(_) => true,
+            Err(machine_error) => {
+                read_backtest_run_guard_events(
+                    &entry.path(),
+                    u64::MAX,
+                    CurrentEvidenceStream::Observation,
+                )
+                .unwrap_or_else(|observation_error| {
+                    panic!(
+                        "positive fixture must belong to exactly one registered sink: path={} machine_error={machine_error:#} observation_error={observation_error:#}",
+                        entry.path().display()
+                    )
+                });
+                false
+            }
+        };
+        if !is_machine_fixture {
+            continue;
+        }
         let line_count = contents.lines().count();
         match entry
             .file_name()

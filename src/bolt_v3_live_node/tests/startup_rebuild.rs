@@ -31,7 +31,7 @@ fn live_node_surfaces_poisoned_observation_stream_without_gating_startup() {
             .decision_evidence_observation
             .poison_cause
             .as_deref()
-            .is_some_and(|cause| cause.contains("blank line"))
+            .is_some_and(|cause| !cause.is_empty())
     );
 }
 

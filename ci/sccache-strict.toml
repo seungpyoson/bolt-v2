@@ -1,0 +1,66 @@
+schema_version = 1
+
+[source]
+version = "0.16.0"
+commit = "b799af2eea02bba9e0ef2550775fe10296b62981"
+archive_url = "https://github.com/mozilla/sccache/archive/b799af2eea02bba9e0ef2550775fe10296b62981.tar.gz"
+archive_sha256 = "a4419b0a2278255d11eda1f76ee98efab0aec72649617bbefd24a5e92acf4af3"
+source_date_epoch = 1781869188
+patch = "ci/sccache-strict/sccache-v0.16.0-strict.patch"
+
+[build]
+container = "docker.io/clux/muslrust@sha256:76df925f30e106755517c78cd57b6ea890a73d6f59fcff842849006e734c174e"
+rustc_release = "1.97.1"
+rustc_commit = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
+features = ["s3", "vendored-openssl"]
+default_features = false
+profile = "release"
+workflow = ".github/workflows/sccache-strict-release.yml"
+recipe = "scripts/build_strict_sccache.sh"
+driver = "scripts/sccache_strict.py"
+
+[verification]
+strict_timeout_ms = 1000
+max_frame_bytes = 16777216
+cache_mode = "READ_WRITE"
+replicas = ["a", "b"]
+attestation_attempts = 12
+attestation_interval_seconds = 10
+attestation_max_wait_seconds = 120
+
+[verification.consumer]
+abstract_socket_template = "bolt-sccache-verifier-{job_identity}"
+compiler_path = "/usr/bin/cc"
+compiler_family = "gcc"
+s3_bucket = "bolt-sccache-verifier"
+s3_region = "us-east-1"
+s3_key_prefix = "strict-verifier"
+s3_endpoint_prefix = "http://127.0.0.1:"
+s3_no_credentials = true
+s3_use_ssl = false
+s3_enable_virtual_host_style = false
+
+[runtime_contract]
+max_runtime_timeout_ms = 3600000
+snapshot_max_bytes = 65536
+abstract_name_max_bytes = 107
+cache_format_token = "bolt-sccache-strict-v1"
+cache_compression_level = 3
+
+[publisher]
+environment = "strict-sccache-publisher"
+api_version = "2026-03-10"
+gh_version = "2.96.0"
+gh_archive_url = "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_linux_amd64.tar.gz"
+gh_archive_sha256 = "83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60"
+gh_archive_member = "gh_2.96.0_linux_amd64/bin/gh"
+releases_per_page = 100
+max_release_pages = 100
+
+[targets.ARM64]
+triple = "aarch64-unknown-linux-musl"
+elf_machine = "AArch64"
+
+[targets.X64]
+triple = "x86_64-unknown-linux-musl"
+elf_machine = "Advanced Micro Devices X86-64"

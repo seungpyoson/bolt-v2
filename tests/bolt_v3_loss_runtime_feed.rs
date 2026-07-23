@@ -13,7 +13,7 @@ use bolt_v2::bolt_v3_loss_runtime_feed::{
 };
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
-    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+    BoltV3SubmitIntentKind,
 };
 use nautilus_common::msgbus::{publish_account_state, publish_portfolio_snapshot};
 use nautilus_core::{UUID4, UnixNanos, nanos::DurationNanos};
@@ -1062,7 +1062,6 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         order_side: OrderSide::Buy,
         order_quantity: Decimal::new(1, 0),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
         admission_evidence: None,

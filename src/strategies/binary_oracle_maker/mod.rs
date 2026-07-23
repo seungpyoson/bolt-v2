@@ -68,7 +68,6 @@ use crate::{
     bolt_v3_quoting::QuoteTargets,
     bolt_v3_reference_price::ReferencePriceSelector,
     bolt_v3_requote_budget::RequoteBudgetPair,
-    bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::mu::MakerMuState,
     strategies::binary_oracle_maker::runtime::MakerRuntime,
@@ -120,7 +119,6 @@ pub struct BinaryOracleMakerRuntimeQuoteRouteInput<'a> {
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -180,7 +178,6 @@ pub struct BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'a> {
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -205,7 +202,6 @@ pub struct BinaryOracleMakerMarketActionRouteInput<'a> {
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -228,7 +224,6 @@ pub struct BinaryOracleMakerRiskRouteInput<'a> {
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -288,7 +283,6 @@ impl BinaryOracleMaker {
         command: &MakerCompiledOrderCommand,
         submit_order_prefix: &str,
         max_fee_bps: Decimal,
-        submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     ) -> Result<MakerOrderDispatchOutcome> {
         let policy = self.context.order_execution_policy();
         let decision_evidence = self.context.decision_evidence_arc();
@@ -304,7 +298,6 @@ impl BinaryOracleMaker {
                 strategy_id: strategy_id.as_str(),
                 execution_client_id: execution_client_id.as_str(),
                 max_fee_bps,
-                submit_lifecycle_policy,
             },
             MakerOrderDispatchInput {
                 command,
@@ -382,7 +375,6 @@ impl BinaryOracleMaker {
             quantity_precision,
             submit_order_prefix,
             max_fee_bps,
-            submit_lifecycle_policy,
         } = input;
 
         let family_key = quote.quote_plan.family_key.to_string();
@@ -409,12 +401,7 @@ impl BinaryOracleMaker {
         let orders = if let Some(order_plan) = quote_decision.order_plan.as_ref() {
             let mut route_command =
                 |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-                    self.route_maker_order_command(
-                        command,
-                        submit_order_prefix,
-                        max_fee_bps,
-                        submit_lifecycle_policy,
-                    )
+                    self.route_maker_order_command(command, submit_order_prefix, max_fee_bps)
                 };
             Some(dispatch_maker_runtime_order_plan_with_command_router(
                 MakerRuntimeOrderDispatchInput {
@@ -453,7 +440,6 @@ impl BinaryOracleMaker {
             quantity_precision,
             submit_order_prefix,
             max_fee_bps,
-            submit_lifecycle_policy,
         } = input;
 
         let fair_value = maker_reference_current_price_fair_value_decision(
@@ -490,7 +476,6 @@ impl BinaryOracleMaker {
                 quantity_precision,
                 submit_order_prefix,
                 max_fee_bps,
-                submit_lifecycle_policy,
             },
         )?;
         // A routing error is now per-leg data, not a `?` abort; fail loud here to
@@ -528,19 +513,13 @@ impl BinaryOracleMaker {
             quantity_precision,
             submit_order_prefix,
             max_fee_bps,
-            submit_lifecycle_policy,
         } = input;
 
         let action_kind = action.action;
         let order_plan = maker_order_plan_from_market_action(action);
 
         let mut route_command = |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-            self.route_maker_order_command(
-                command,
-                submit_order_prefix,
-                max_fee_bps,
-                submit_lifecycle_policy,
-            )
+            self.route_maker_order_command(command, submit_order_prefix, max_fee_bps)
         };
         let orders = dispatch_maker_runtime_order_plan_with_command_router(
             MakerRuntimeOrderDispatchInput {
@@ -588,7 +567,6 @@ impl BinaryOracleMaker {
             quantity_precision,
             submit_order_prefix,
             max_fee_bps,
-            submit_lifecycle_policy,
         } = input;
         let mode = maker_risk_mode_for_loss_decision(&policy, loss_decision);
         let risk = apply_maker_risk_mode(market, mode);
@@ -608,7 +586,6 @@ impl BinaryOracleMaker {
                     quantity_precision,
                     submit_order_prefix,
                     max_fee_bps,
-                    submit_lifecycle_policy,
                 })?
                 .orders,
             )
@@ -742,7 +719,6 @@ pub struct BinaryOracleMakerQuoteCycleInput<'a> {
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 impl BinaryOracleMaker {
@@ -901,7 +877,6 @@ impl BinaryOracleMaker {
             quantity_precision,
             submit_order_prefix,
             max_fee_bps,
-            submit_lifecycle_policy,
         } = input;
         let outcome = self.route_maker_runtime_quote(
             market,
@@ -917,7 +892,6 @@ impl BinaryOracleMaker {
                 quantity_precision,
                 submit_order_prefix,
                 max_fee_bps,
-                submit_lifecycle_policy,
             },
         )?;
         if let Some(orders) = outcome.orders.as_ref() {

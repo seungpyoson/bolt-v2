@@ -60,7 +60,7 @@ impl OfflineDecisionEvidenceRuntime {
             "offline current-evidence streams must be fresh"
         );
         ensure_distinct_files(&machine, &observation)?;
-        let recovery = validate_stream(&mut machine, KnownSink::Machine, Some(0))?.startup_recovery;
+        let recovery = validate_stream(&mut machine, KnownSink::Machine, 0)?.startup_recovery;
         ensure!(
             recovery.reservation.is_empty()
                 && recovery.settlement.is_empty()
@@ -118,7 +118,7 @@ impl DecisionEvidenceRuntime {
         let startup_recovery = validate_stream(
             &mut machine,
             KnownSink::Machine,
-            Some(config.recovery_evidence_max_bytes),
+            config.recovery_evidence_max_bytes,
         )?
         .startup_recovery;
         machine.seek(SeekFrom::End(0))?;
@@ -129,7 +129,7 @@ impl DecisionEvidenceRuntime {
         let (observation_stream_status, observation_poison) = match validate_stream(
             &mut observation,
             KnownSink::Observation,
-            Some(config.recovery_evidence_max_bytes),
+            config.recovery_evidence_max_bytes,
         ) {
             Ok(_) => (ObservationStreamStatus::Available, None),
             Err(error) => {

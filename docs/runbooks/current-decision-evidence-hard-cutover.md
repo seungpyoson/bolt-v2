@@ -59,9 +59,11 @@ The observation stream is not recovery input and never supplies readiness author
 3. Before arming, verify the same authoritative venue/account flatness and all ordinary readiness gates again.
 4. After the first trade cycle, decode the current machine stream with the current binary and confirm recovery facts are readable.
 
-The first current machine record is the point of no return. Before it, the operator may remain paused and restore the complete archived deployment set. After it, rollback is prohibited: stop, preserve both generations, and forward-fix.
+Archival begins the point of no return. Once archival starts, rollback is prohibited: remain paused, preserve both generations, and forward-fix. Never restore the retired binary, config, or evidence authority.
 
 Any machine-stream write or sync error is commit-indeterminate: some or all bytes may exist. The runtime permanently poisons that machine sink for the process lifetime and refuses later appends without touching the file. Stop the service, preserve the active stream, and diagnose it offline. A torn or otherwise invalid machine stream remains a fail-closed startup condition; recovery is pause, archive under the governed ceremony, and forward-fix—never retry, truncate, skip, or restore retired authority.
+
+A poisoned observation stream never gates machine recovery, but it is a terminal state for that active observation pathname: the runtime preserves the bytes and refuses to extend the stream. Stop the service, preserve and checksum the poisoned file outside the active data root, then forward-fix to a fresh configured observation pathname under an issue-bound operator change. Do not truncate, repair, replace in place, or silently resume the poisoned sink.
 
 ## Accepted Losses and Remaining Gates
 

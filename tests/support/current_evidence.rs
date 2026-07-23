@@ -76,13 +76,15 @@ impl Default for RecordingDecisionEvidenceWriter {
 impl RecordingDecisionEvidenceWriter {
     pub fn new() -> Self {
         let directory = tempfile::tempdir().expect("decision-evidence test directory must create");
+        let catalog_directory = std::fs::canonicalize(directory.path())
+            .expect("decision-evidence test directory must canonicalize");
         let fixture =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bolt_v3/root.toml");
         let mut loaded = load_bolt_v3_config(&fixture).expect("fixture config must load");
-        loaded.root.persistence.catalog_directory = directory.path().display().to_string();
+        loaded.root.persistence.catalog_directory = catalog_directory.display().to_string();
         let evidence = &loaded.root.persistence.decision_evidence;
-        let machine_path = directory.path().join(&evidence.machine_relative_path);
-        let observation_path = directory.path().join(&evidence.observation_relative_path);
+        let machine_path = catalog_directory.join(&evidence.machine_relative_path);
+        let observation_path = catalog_directory.join(&evidence.observation_relative_path);
         prepare_current_evidence_generation(&loaded);
         let runtime = DecisionEvidenceRuntime::open(&loaded)
             .expect("current decision-evidence runtime must open");
@@ -143,11 +145,6 @@ impl RecordingDecisionEvidenceWriter {
                 }),
                 CurrentFact::RiskReducingExitAdmission(fact) => Some(RecordedAdmissionDecision {
                     intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
-                    outcome: fact.outcome,
-                    details: fact.details,
-                }),
-                CurrentFact::ReplaceAdmission(fact) => Some(RecordedAdmissionDecision {
-                    intent_kind: BoltV3SubmitIntentKind::ReplaceSubmit,
                     outcome: fact.outcome,
                     details: fact.details,
                 }),

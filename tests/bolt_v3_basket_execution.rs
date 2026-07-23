@@ -21,7 +21,6 @@ use bolt_v2::{
     bolt_v3_kill_switch_store::KillSwitchStore,
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy,
     },
 };
 use nautilus_model::enums::OrderSide;
@@ -1463,7 +1462,6 @@ fn sample_submit_request() -> BoltV3SubmitAdmissionRequest {
         order_side: OrderSide::Buy,
         order_quantity: dec("1.0"),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
         admission_evidence: None,

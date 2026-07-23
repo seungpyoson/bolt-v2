@@ -34,7 +34,7 @@ use bolt_v2::{
     },
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_strategy_context::StrategyBuildContext,
-    bolt_v3_submit_admission::{BoltV3SubmitAdmissionState, BoltV3SubmitLifecyclePolicy},
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     bolt_v3_timestamp_domain::LocalReceiveMs,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::{
@@ -116,12 +116,7 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
     };
 
     let outcome = maker
-        .route_maker_order_command(
-            &command,
-            "maker_submit",
-            Decimal::ZERO,
-            BoltV3SubmitLifecyclePolicy::new(true),
-        )
+        .route_maker_order_command(&command, "maker_submit", Decimal::ZERO)
         .expect("maker submit should route through shared execution context");
 
     assert_eq!(
@@ -172,7 +167,6 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
         .expect("maker quote tick should route through shared execution context");
@@ -245,7 +239,6 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
         quantity_precision: 2,
         submit_order_prefix: "maker_submit",
         max_fee_bps: Decimal::ZERO,
-        submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
     };
 
     maker
@@ -347,7 +340,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
         .expect("maker reference quote tick should route through shared context");
@@ -436,7 +428,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
         .expect("maker reference quote blocker should be a route outcome");
@@ -514,7 +505,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                     quantity_precision: 2,
                     submit_order_prefix: "maker_submit",
                     max_fee_bps: Decimal::ZERO,
-                    submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
                 },
             )
             .expect("maker reference quote shared fair-value blocker should be a route outcome");
@@ -572,7 +562,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
         .expect("maker reference quote fair-value blocker should be a route outcome");
@@ -689,7 +678,6 @@ fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
             max_fee_bps: Decimal::ZERO,
-            submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         })
         .expect("maker should route pre-paid replacement submit through shared context");
 
@@ -1079,7 +1067,6 @@ fn risk_route_input<'a>(
         quantity_precision: 2,
         submit_order_prefix: "maker_submit",
         max_fee_bps: Decimal::ZERO,
-        submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
     }
 }
 
@@ -1765,7 +1752,6 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
         .expect("run_quote_cycle routes an active market")

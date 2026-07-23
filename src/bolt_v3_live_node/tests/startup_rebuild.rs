@@ -19,10 +19,20 @@ fn live_node_surfaces_poisoned_observation_stream_without_gating_startup() {
     let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
         .expect("observation corruption must not gate the live node");
 
-    assert!(matches!(
-        runtime.decision_evidence_observation_status(),
-        crate::bolt_v3_current_evidence::ObservationStreamStatus::Poisoned { .. }
-    ));
+    let health = runtime
+        .operator_health_surface(None)
+        .expect("operator health must surface the poisoned observation stream");
+    assert_eq!(
+        health.decision_evidence_observation.status,
+        BoltV3OperatorHealthStatus::Degraded
+    );
+    assert!(
+        health
+            .decision_evidence_observation
+            .poison_cause
+            .as_deref()
+            .is_some_and(|cause| cause.contains("blank line"))
+    );
 }
 
 #[test]

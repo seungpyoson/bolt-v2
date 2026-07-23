@@ -279,7 +279,6 @@ impl AdmissionOutcomeV1 {
 #[serde(rename_all = "snake_case")]
 enum AdmissionRejectionV1 {
     KillSwitchLatched,
-    SubmitLifecycleDisallowed,
     LossGovernorHalted,
     NonPositiveNotional,
     NotionalCapExceeded,
@@ -294,7 +293,6 @@ impl AdmissionRejectionV1 {
     fn from_fact(value: AdmissionRejectionReason) -> Self {
         match value {
             AdmissionRejectionReason::KillSwitchLatched => Self::KillSwitchLatched,
-            AdmissionRejectionReason::SubmitLifecycleDisallowed => Self::SubmitLifecycleDisallowed,
             AdmissionRejectionReason::LossGovernorHalted => Self::LossGovernorHalted,
             AdmissionRejectionReason::NonPositiveNotional => Self::NonPositiveNotional,
             AdmissionRejectionReason::NotionalCapExceeded => Self::NotionalCapExceeded,
@@ -315,7 +313,6 @@ impl AdmissionRejectionV1 {
     fn into_fact(self) -> AdmissionRejectionReason {
         match self {
             Self::KillSwitchLatched => AdmissionRejectionReason::KillSwitchLatched,
-            Self::SubmitLifecycleDisallowed => AdmissionRejectionReason::SubmitLifecycleDisallowed,
             Self::LossGovernorHalted => AdmissionRejectionReason::LossGovernorHalted,
             Self::NonPositiveNotional => AdmissionRejectionReason::NonPositiveNotional,
             Self::NotionalCapExceeded => AdmissionRejectionReason::NotionalCapExceeded,

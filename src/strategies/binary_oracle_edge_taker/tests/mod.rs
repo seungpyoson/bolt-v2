@@ -30,10 +30,7 @@ use super::*;
 // imports the rest via `use self::selection::{…}`). Imported here at test
 // scope so the production build does not flag them as unused.
 use super::selection::{CandidateOutcome, SelectionDecision};
-use crate::{
-    bolt_v3_submit_admission::BoltV3OrderLifecycleIntent,
-    strategies::{production_strategy_registry, registry::StrategyBuilder},
-};
+use crate::strategies::{production_strategy_registry, registry::StrategyBuilder};
 
 mod shared_fixture;
 

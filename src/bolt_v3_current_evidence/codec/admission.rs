@@ -7,7 +7,7 @@ use crate::bolt_v3_current_evidence::{
         AdmittedEntryAdmissionFact, CapitalAdmissionRebuildFact, CapitalAdmissionRebuildOutcome,
         CapitalAdmissionRejectionReason, ForcedReductionAdmissionFact, LossHaltReason,
         LossSnapshotSource, LossSnapshotStaleReason, RejectedEntryAdmissionFact,
-        ReplaceAdmissionFact, RiskReducingExitAdmissionFact,
+        RiskReducingExitAdmissionFact,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -346,48 +346,6 @@ pub(super) fn decode_risk_reducing_exit(
     let (details, outcome) = decoded.decision.into_parts();
     validate_admission_details(&details).map_err(anyhow::Error::new)?;
     Ok(RiskReducingExitAdmissionFact {
-        details,
-        outcome: outcome.into_fact(),
-    })
-}
-
-pub(super) fn encode_replace(
-    fact: ReplaceAdmissionFact,
-    recorded_at_utc_ns: i64,
-) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    validate_recorded_at(recorded_at_utc_ns)?;
-    validate_admission_details(&fact.details)?;
-    let purpose = KnownPurpose::ReplaceAdmission;
-    let descriptor = current_line_descriptor(purpose);
-    encode_line(
-        purpose,
-        &ReplaceAdmissionLineV1 {
-            schema_version: descriptor.schema_version,
-            recorded_at_utc_ns,
-            gate_id: descriptor.gate_id.to_string(),
-            gate_version: env!("CARGO_PKG_VERSION").to_string(),
-            kind: descriptor.kind.to_string(),
-            decision: ReplaceAdmissionDecisionV1::from_parts(
-                fact.details,
-                ReplaceAdmissionOutcomeV1::from_fact(fact.outcome),
-            ),
-        },
-    )
-}
-
-pub(super) fn decode_replace(line: &str, line_number: usize) -> Result<ReplaceAdmissionFact> {
-    let decoded: ReplaceAdmissionLineV1 = decode(line, line_number)?;
-    validate_envelope(
-        KnownIdentity::ReplaceAdmissionV1,
-        &decoded.kind,
-        decoded.schema_version,
-        &decoded.gate_id,
-        decoded.recorded_at_utc_ns,
-        line_number,
-    )?;
-    let (details, outcome) = decoded.decision.into_parts();
-    validate_admission_details(&details).map_err(anyhow::Error::new)?;
-    Ok(ReplaceAdmissionFact {
         details,
         outcome: outcome.into_fact(),
     })
@@ -740,14 +698,6 @@ define_admission_wire!(
     RiskReducingExitStaleReasonV1
 );
 define_admission_wire!(
-    ReplaceAdmissionLineV1,
-    ReplaceAdmissionDecisionV1,
-    ReplaceAdmissionOutcomeV1,
-    ReplaceAdmissionLossHaltReasonV1,
-    ReplaceAdmissionSnapshotSourceV1,
-    ReplaceAdmissionStaleReasonV1
-);
-define_admission_wire!(
     ForcedReductionLineV1,
     ForcedReductionDecisionV1,
     ForcedReductionOutcomeV1,
@@ -768,7 +718,6 @@ macro_rules! define_rejection_outcome {
         #[serde(rename_all = "snake_case")]
         enum $name {
             KillSwitchLatched,
-            SubmitLifecycleDisallowed,
             LossGovernorHalted,
             NonPositiveNotional,
             NotionalCapExceeded,
@@ -783,9 +732,6 @@ macro_rules! define_rejection_outcome {
             fn from_reason(reason: AdmissionRejectionReason) -> Self {
                 match reason {
                     AdmissionRejectionReason::KillSwitchLatched => Self::KillSwitchLatched,
-                    AdmissionRejectionReason::SubmitLifecycleDisallowed => {
-                        Self::SubmitLifecycleDisallowed
-                    }
                     AdmissionRejectionReason::LossGovernorHalted => Self::LossGovernorHalted,
                     AdmissionRejectionReason::NonPositiveNotional => Self::NonPositiveNotional,
                     AdmissionRejectionReason::NotionalCapExceeded => Self::NotionalCapExceeded,
@@ -806,9 +752,6 @@ macro_rules! define_rejection_outcome {
             fn into_reason(self) -> AdmissionRejectionReason {
                 match self {
                     Self::KillSwitchLatched => AdmissionRejectionReason::KillSwitchLatched,
-                    Self::SubmitLifecycleDisallowed => {
-                        AdmissionRejectionReason::SubmitLifecycleDisallowed
-                    }
                     Self::LossGovernorHalted => AdmissionRejectionReason::LossGovernorHalted,
                     Self::NonPositiveNotional => AdmissionRejectionReason::NonPositiveNotional,
                     Self::NotionalCapExceeded => AdmissionRejectionReason::NotionalCapExceeded,
@@ -863,8 +806,6 @@ macro_rules! define_decision_outcome {
 }
 
 define_rejection_outcome!(RiskReducingExitRejectionV1);
-define_rejection_outcome!(ReplaceAdmissionRejectionV1);
 define_rejection_outcome!(ForcedReductionRejectionV1);
 define_decision_outcome!(RiskReducingExitOutcomeV1, RiskReducingExitRejectionV1);
-define_decision_outcome!(ReplaceAdmissionOutcomeV1, ReplaceAdmissionRejectionV1);
 define_decision_outcome!(ForcedReductionOutcomeV1, ForcedReductionRejectionV1);

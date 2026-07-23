@@ -110,9 +110,8 @@ use crate::{
     bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
-        BoltV3SubmitAdmissionRequestInput, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-        OrderValuationContext, build_submit_admission_request_from_order,
-        limit_notional_exceeds_sized_notional,
+        BoltV3SubmitAdmissionRequestInput, BoltV3SubmitIntentKind, OrderValuationContext,
+        build_submit_admission_request_from_order, limit_notional_exceeds_sized_notional,
     },
     bolt_v3_taker_pricing::{
         FastSpotObservation, TakerPricingConfig, TakerPricingRequest,
@@ -5818,7 +5817,6 @@ impl BinaryOracleEdgeTaker {
                     last_trade,
                     instrument: instrument.as_ref(),
                 },
-                lifecycle_policy: self.submit_lifecycle_policy(),
                 risk_reducing_exit_position,
             },
             |price| self.max_entry_fee_bps_for_admission(order.instrument_id(), price),
@@ -6361,14 +6359,6 @@ impl BinaryOracleEdgeTaker {
                 client_order_id: client_order_id.to_string(),
             },
         })
-    }
-
-    fn submit_lifecycle_policy(&self) -> BoltV3SubmitLifecyclePolicy {
-        BoltV3SubmitLifecyclePolicy::new(
-            self.config.manage_contingent_orders
-                || self.config.manage_gtd_expiry
-                || self.config.manage_stop,
-        )
     }
 
     #[cfg(test)]

@@ -8,8 +8,8 @@ use anyhow::{Result, bail};
 mod unix {
     use std::{
         ffi::{CString, OsStr},
-        fs::{self, File},
-        io,
+        fs::File,
+        io::{self, Write},
         mem::MaybeUninit,
         os::{
             fd::{AsRawFd, FromRawFd},
@@ -40,14 +40,8 @@ mod unix {
                 path.is_absolute(),
                 "decision-evidence catalog_directory must be absolute"
             );
-            let resolved = fs::canonicalize(path).with_context(|| {
-                format!(
-                    "resolve decision-evidence catalog_directory `{}`",
-                    path.display()
-                )
-            })?;
             let mut directory = open_root_directory()?;
-            for component in resolved.components() {
+            for component in path.components() {
                 match component {
                     Component::RootDir => {}
                     Component::Normal(name) => {
@@ -67,6 +61,70 @@ mod unix {
                 directory,
                 sync_directory: sync_directory_entry,
             })
+        }
+
+        pub(crate) fn open_under_prefix(prefix: &Path, catalog: &Path) -> Result<Self> {
+            let prefix_authority = Self::open(prefix)
+                .with_context(|| format!("open required catalog prefix `{}`", prefix.display()))?;
+            let relative = catalog.strip_prefix(prefix).with_context(|| {
+                format!(
+                    "persistence.catalog_directory `{}` must be under `{}` for this service",
+                    catalog.display(),
+                    prefix.display()
+                )
+            })?;
+            let directory = prefix_authority.walk_directory(relative).with_context(|| {
+                format!(
+                    "open persistence.catalog_directory `{}` beneath required prefix `{}`",
+                    catalog.display(),
+                    prefix.display()
+                )
+            })?;
+            Ok(Self {
+                directory,
+                sync_directory: sync_directory_entry,
+            })
+        }
+
+        pub(crate) fn prestart_probe_and_available_bytes(&self) -> Result<u64> {
+            let basename = CString::new(format!(
+                ".bolt-v2-prestart-write-probe-{}",
+                std::process::id()
+            ))
+            .expect("decimal process id cannot contain NUL");
+            remove_file_if_present(&self.directory, &basename)
+                .context("remove stale catalog write probe")?;
+            let flags =
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+            // SAFETY: the directory descriptor and NUL-terminated basename are valid for this call.
+            let raw = unsafe {
+                libc::openat(
+                    self.directory.as_raw_fd(),
+                    basename.as_ptr(),
+                    flags,
+                    PRIVATE_ARTIFACT_FILE_MODE,
+                )
+            };
+            if raw < 0 {
+                return Err(io::Error::last_os_error())
+                    .context("catalog write probe failed during creation");
+            }
+            // SAFETY: `openat` returned a new owned descriptor.
+            let mut probe = unsafe { File::from_raw_fd(raw) };
+            let probe_result = probe
+                .write_all(b"\n")
+                .and_then(|()| probe.sync_all())
+                .context("catalog write probe failed during write or synchronization");
+            drop(probe);
+            let cleanup_result = remove_file_if_present(&self.directory, &basename)
+                .context("remove catalog write probe")
+                .and_then(|()| {
+                    (self.sync_directory)(&self.directory)
+                        .context("synchronize catalog after write-probe cleanup")
+                });
+            probe_result?;
+            cleanup_result?;
+            available_bytes(&self.directory)
         }
 
         pub(crate) fn open_stream(&self, relative: &str) -> Result<File> {
@@ -122,6 +180,22 @@ mod unix {
             }
             bail!("decision-evidence relative path has no file name")
         }
+
+        fn walk_directory(&self, relative: &Path) -> Result<File> {
+            let mut directory = self.directory.try_clone()?;
+            for component in relative.components() {
+                let Component::Normal(name) = component else {
+                    bail!("catalog descendant path is not normalized")
+                };
+                directory = open_directory_at(&directory, name).with_context(|| {
+                    format!(
+                        "open catalog descendant component `{}` without symlinks",
+                        name.to_string_lossy()
+                    )
+                })?;
+            }
+            Ok(directory)
+        }
     }
 
     impl ParentDirectory {
@@ -141,8 +215,8 @@ mod unix {
                     PRIVATE_ARTIFACT_FILE_MODE,
                 )
             };
-            let (raw, created) = if created_raw >= 0 {
-                (created_raw, true)
+            let raw = if created_raw >= 0 {
+                created_raw
             } else {
                 let error = io::Error::last_os_error();
                 if error.raw_os_error() == Some(libc::EEXIST) {
@@ -157,7 +231,7 @@ mod unix {
                         )
                     };
                     if existing_raw >= 0 {
-                        (existing_raw, false)
+                        existing_raw
                     } else {
                         return self.open_error(io::Error::last_os_error());
                     }
@@ -178,14 +252,12 @@ mod unix {
                 "decision-evidence path has external hard-link aliases: `{}`",
                 self.display
             );
-            if created {
-                sync_directory(&self.directory).with_context(|| {
-                    format!(
-                        "synchronize newly created decision-evidence stream namespace `{}`",
-                        self.display
-                    )
-                })?;
-            }
+            sync_directory(&self.directory).with_context(|| {
+                format!(
+                    "synchronize decision-evidence stream namespace `{}`",
+                    self.display
+                )
+            })?;
             Ok(file)
         }
 
@@ -257,6 +329,37 @@ mod unix {
         directory.sync_all()
     }
 
+    fn remove_file_if_present(directory: &File, basename: &CString) -> io::Result<()> {
+        // SAFETY: the directory descriptor and NUL-terminated basename are valid for this call.
+        let result = unsafe { libc::unlinkat(directory.as_raw_fd(), basename.as_ptr(), 0) };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+
+    fn available_bytes(directory: &File) -> Result<u64> {
+        let mut stat = MaybeUninit::<libc::statvfs>::zeroed();
+        // SAFETY: the descriptor is valid and `stat` is initialized only on success.
+        if unsafe { libc::fstatvfs(directory.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error()).context("inspect catalog free space");
+        }
+        // SAFETY: `fstatvfs` initialized `stat` on success.
+        let stat = unsafe { stat.assume_init() };
+        let fragment_size = if stat.f_frsize == 0 {
+            stat.f_bsize
+        } else {
+            stat.f_frsize
+        };
+        let available = u128::from(stat.f_bavail) * u128::from(fragment_size);
+        Ok(available.min(u128::from(u64::MAX)) as u64)
+    }
+
     fn open_directory_at(parent: &File, name: &OsStr) -> io::Result<File> {
         let name = component_name(name)?;
         let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
@@ -280,7 +383,12 @@ mod unix {
 
     #[cfg(test)]
     mod tests {
-        use std::{fs, io::Write, os::unix::fs::symlink};
+        use std::{
+            fs,
+            io::Write,
+            os::unix::fs::symlink,
+            sync::atomic::{AtomicUsize, Ordering},
+        };
 
         use super::*;
 
@@ -320,7 +428,8 @@ mod unix {
             }
 
             let root = tempfile::tempdir().expect("tempdir must exist");
-            let mut catalog = CatalogDirectory::open(root.path()).expect("catalog must open");
+            let canonical_root = fs::canonicalize(root.path()).expect("tempdir must canonicalize");
+            let mut catalog = CatalogDirectory::open(&canonical_root).expect("catalog must open");
             catalog.sync_directory = reject_sync;
 
             let error = catalog
@@ -330,29 +439,83 @@ mod unix {
             assert!(
                 error
                     .to_string()
-                    .contains("synchronize newly created decision-evidence stream namespace")
+                    .contains("synchronize decision-evidence stream namespace")
             );
         }
 
         #[test]
-        fn retained_stream_does_not_claim_a_new_namespace_commit() {
-            fn reject_sync(_directory: &File) -> io::Result<()> {
-                Err(io::Error::other("existing stream must not sync its parent"))
+        fn retry_after_creation_sync_failure_reestablishes_namespace_durability() {
+            static SYNC_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+            fn fail_once(_directory: &File) -> io::Result<()> {
+                if SYNC_ATTEMPTS.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(io::Error::other("injected first directory sync failure"))
+                } else {
+                    Ok(())
+                }
             }
 
             let root = tempfile::tempdir().expect("tempdir must exist");
-            fs::write(root.path().join("machine.jsonl"), b"retained\n")
-                .expect("retained stream must exist");
-            let mut catalog = CatalogDirectory::open(root.path()).expect("catalog must open");
-            catalog.sync_directory = reject_sync;
+            let canonical_root = fs::canonicalize(root.path()).expect("tempdir must canonicalize");
+            let mut catalog = CatalogDirectory::open(&canonical_root).expect("catalog must open");
+            catalog.sync_directory = fail_once;
 
+            catalog
+                .open_stream("machine.jsonl")
+                .expect_err("first namespace sync must fail");
             let stream = catalog
                 .open_stream("machine.jsonl")
-                .expect("opening an existing name does not create namespace state");
+                .expect("retry must synchronize the retained namespace");
 
             assert_eq!(
                 stream.metadata().expect("stream metadata must read").len(),
-                b"retained\n".len() as u64
+                0
+            );
+            assert_eq!(SYNC_ATTEMPTS.load(Ordering::SeqCst), 2);
+        }
+
+        #[test]
+        fn catalog_path_rejects_final_and_intermediate_symlinks() {
+            let root = tempfile::tempdir().expect("tempdir must exist");
+            let canonical_root = fs::canonicalize(root.path()).expect("tempdir must canonicalize");
+            let real = canonical_root.join("real");
+            let child = real.join("child");
+            fs::create_dir_all(&child).expect("real catalog must exist");
+            let final_link = canonical_root.join("final-link");
+            symlink(&child, &final_link).expect("final symlink must exist");
+            let intermediate_link = canonical_root.join("intermediate-link");
+            symlink(&real, &intermediate_link).expect("intermediate symlink must exist");
+
+            assert!(
+                CatalogDirectory::open(&final_link).is_err(),
+                "final catalog symlink must fail closed"
+            );
+            assert!(
+                CatalogDirectory::open(&intermediate_link.join("child")).is_err(),
+                "intermediate catalog symlink must fail closed"
+            );
+        }
+
+        #[test]
+        fn catalog_under_prefix_rejects_symlinked_prefix_and_descendants() {
+            let root = tempfile::tempdir().expect("tempdir must exist");
+            let canonical_root = fs::canonicalize(root.path()).expect("tempdir must canonicalize");
+            let real_prefix = canonical_root.join("real-prefix");
+            let catalog = real_prefix.join("catalog");
+            fs::create_dir_all(&catalog).expect("catalog must exist");
+            let prefix_link = canonical_root.join("prefix-link");
+            symlink(&real_prefix, &prefix_link).expect("prefix symlink must exist");
+            let descendant_link = real_prefix.join("catalog-link");
+            symlink(&catalog, &descendant_link).expect("descendant symlink must exist");
+
+            assert!(
+                CatalogDirectory::open_under_prefix(&prefix_link, &prefix_link.join("catalog"))
+                    .is_err(),
+                "symlinked required prefix must fail closed"
+            );
+            assert!(
+                CatalogDirectory::open_under_prefix(&real_prefix, &descendant_link).is_err(),
+                "symlinked catalog descendant must fail closed"
             );
         }
     }
@@ -367,6 +530,14 @@ pub(super) struct CatalogDirectory;
 #[cfg(not(unix))]
 impl CatalogDirectory {
     pub(super) fn open(_path: &Path) -> Result<Self> {
+        bail!("decision-evidence runtime is unsupported on non-Unix targets")
+    }
+
+    pub(super) fn open_under_prefix(_prefix: &Path, _catalog: &Path) -> Result<Self> {
+        bail!("decision-evidence runtime is unsupported on non-Unix targets")
+    }
+
+    pub(super) fn prestart_probe_and_available_bytes(&self) -> Result<u64> {
         bail!("decision-evidence runtime is unsupported on non-Unix targets")
     }
 

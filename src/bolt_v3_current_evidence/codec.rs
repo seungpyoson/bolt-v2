@@ -21,7 +21,7 @@ use super::{
         BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, CurrentFact,
         EntryOrderIntentFact, EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact,
         ExitSubmissionDecisionFact, ForcedReductionAdmissionFact, LossGovernorHaltFact,
-        OrderLifecycleFact, OrderRejectFact, RejectedEntryAdmissionFact, ReplaceAdmissionFact,
+        OrderLifecycleFact, OrderRejectFact, RejectedEntryAdmissionFact,
         RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
         RiskReducingExitOrderIntentFact, SettlementFact, SubmitLinkedStrategyInputSnapshotFact,
         SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
@@ -432,22 +432,6 @@ impl CodecFor<identities::RiskReducingExitAdmissionV1> for CurrentCodecs {
     }
 }
 
-impl CodecFor<identities::ReplaceAdmissionV1> for CurrentCodecs {
-    type Input = ReplaceAdmissionFact;
-    type Fact = ReplaceAdmissionFact;
-
-    fn encode(
-        input: &Self::Input,
-        recorded_at_utc_ns: i64,
-    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-        admission::encode_replace(input.clone(), recorded_at_utc_ns)
-    }
-
-    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
-        admission::decode_replace(line, line_number)
-    }
-}
-
 impl CodecFor<identities::ForcedReductionAdmissionV1> for CurrentCodecs {
     type Input = ForcedReductionAdmissionFact;
     type Fact = ForcedReductionAdmissionFact;
@@ -495,12 +479,6 @@ pub(crate) fn encode_risk_reducing_exit_admission(
         &fact,
         current_utc_ns()?,
     )
-}
-
-pub(crate) fn encode_replace_admission(
-    fact: ReplaceAdmissionFact,
-) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    <CurrentCodecs as CodecFor<identities::ReplaceAdmissionV1>>::encode(&fact, current_utc_ns()?)
 }
 
 pub(crate) fn encode_forced_reduction_admission(
@@ -676,6 +654,8 @@ pub(super) fn decode_current_fact(
     line: &str,
     line_number: usize,
 ) -> Result<CurrentFact> {
+    let header: GateVersionHeader = decode(line, line_number)?;
+    validate_gate_version(&header.gate_version, line_number)?;
     Ok(match identity {
         KnownIdentity::BlockedStrategyInputObservationV1 => {
             CurrentFact::BlockedStrategyInputObservation(Box::new(<CurrentCodecs as CodecFor<
@@ -717,11 +697,6 @@ pub(super) fn decode_current_fact(
             >>::decode(
                 line, line_number
             )?))
-        }
-        KnownIdentity::ReplaceAdmissionV1 => {
-            CurrentFact::ReplaceAdmission(Box::new(<CurrentCodecs as CodecFor<
-                identities::ReplaceAdmissionV1,
-            >>::decode(line, line_number)?))
         }
         KnownIdentity::ForcedReductionAdmissionV1 => {
             CurrentFact::ForcedReductionAdmission(Box::new(<CurrentCodecs as CodecFor<
@@ -865,6 +840,19 @@ fn validate_recorded_at(recorded_at_utc_ns: i64) -> Result<(), RecordFailure> {
             "recorded_at_utc_ns must be positive"
         )));
     }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct GateVersionHeader {
+    gate_version: String,
+}
+
+pub(super) fn validate_gate_version(gate_version: &str, line_number: usize) -> Result<()> {
+    ensure!(
+        !gate_version.trim().is_empty(),
+        "gate_version must be non-empty at current evidence line {line_number}"
+    );
     Ok(())
 }
 
@@ -1080,7 +1068,6 @@ mod tests {
         AdmissionRejectionReason,
         [
             KillSwitchLatched => "kill_switch_latched",
-            SubmitLifecycleDisallowed => "submit_lifecycle_disallowed",
             LossGovernorHalted => "loss_governor_halted",
             NonPositiveNotional => "non_positive_notional",
             NotionalCapExceeded => "notional_cap_exceeded",
@@ -1441,7 +1428,6 @@ mod tests {
             KnownIdentity::RiskReducingExitAdmissionV1 => {
                 frozen_corpus!("risk_reducing_exit_admission.jsonl")
             }
-            KnownIdentity::ReplaceAdmissionV1 => frozen_corpus!("replace_admission.jsonl"),
             KnownIdentity::ForcedReductionAdmissionV1 => {
                 frozen_corpus!("forced_reduction_admission.jsonl")
             }
@@ -1518,9 +1504,6 @@ mod tests {
             KnownIdentity::RiskReducingExitAdmissionV1 => Some(accepted_noncanonical_fixture!(
                 "risk_reducing_exit_admission.jsonl"
             )),
-            KnownIdentity::ReplaceAdmissionV1 => {
-                Some(accepted_noncanonical_fixture!("replace_admission.jsonl"))
-            }
             KnownIdentity::ForcedReductionAdmissionV1 => Some(accepted_noncanonical_fixture!(
                 "forced_reduction_admission.jsonl"
             )),
@@ -1601,11 +1584,6 @@ mod tests {
             ),
             CurrentFact::RiskReducingExitAdmission(value) => <CurrentCodecs as CodecFor<
                 identities::RiskReducingExitAdmissionV1,
-            >>::encode(
-                value.as_ref(), recorded_at_utc_ns
-            ),
-            CurrentFact::ReplaceAdmission(value) => <CurrentCodecs as CodecFor<
-                identities::ReplaceAdmissionV1,
             >>::encode(
                 value.as_ref(), recorded_at_utc_ns
             ),
@@ -2144,17 +2122,6 @@ mod tests {
                         CurrentFact::RiskReducingExitAdmission(Box::new(
                             RiskReducingExitAdmissionFact { details, outcome },
                         ))
-                    },
-                ));
-            }
-            CurrentFact::ReplaceAdmission(value) => {
-                cases.extend(admission_outcome_cases(
-                    value.details.clone(),
-                    |details, outcome| {
-                        CurrentFact::ReplaceAdmission(Box::new(ReplaceAdmissionFact {
-                            details,
-                            outcome,
-                        }))
                     },
                 ));
             }
@@ -3641,6 +3608,13 @@ mod tests {
                 .insert("gate_id".to_string(), "wrong.gate".into());
             mutation_is_rejected(identity, &wrong_gate);
 
+            let mut empty_gate_version = value.clone();
+            empty_gate_version
+                .as_object_mut()
+                .expect("fixture envelope")
+                .insert("gate_version".to_string(), " ".into());
+            mutation_is_rejected(identity, &empty_gate_version);
+
             let mut wrong_kind = value.clone();
             wrong_kind
                 .as_object_mut()
@@ -3733,17 +3707,34 @@ mod tests {
         capital["decision"]["recovered_reservation_count"] = 3.into();
         mutation_is_rejected(KnownIdentity::CapitalAdmissionRebuildV1, &capital);
 
-        let mut admission = positive_value(KnownIdentity::AdmittedEntryAdmissionV1);
-        admission["decision"]["strategy_id"] = "".into();
-        mutation_is_rejected(KnownIdentity::AdmittedEntryAdmissionV1, &admission);
+        for identity in [
+            KnownIdentity::AdmittedEntryAdmissionV1,
+            KnownIdentity::RejectedEntryAdmissionV1,
+            KnownIdentity::RiskReducingExitAdmissionV1,
+            KnownIdentity::ForcedReductionAdmissionV1,
+        ] {
+            let mut admission = positive_value(identity);
+            admission["decision"]["strategy_id"] = "".into();
+            mutation_is_rejected(identity, &admission);
+        }
 
-        let mut basket = positive_value(KnownIdentity::BasketAdmissionGrantedV1);
-        basket["decision"]["leg_order_count"] = 0.into();
-        mutation_is_rejected(KnownIdentity::BasketAdmissionGrantedV1, &basket);
+        for identity in [
+            KnownIdentity::BasketAdmissionGrantedV1,
+            KnownIdentity::BasketAdmissionRejectedV1,
+        ] {
+            let mut basket = positive_value(identity);
+            basket["decision"]["leg_order_count"] = 0.into();
+            mutation_is_rejected(identity, &basket);
+        }
 
-        let mut intent = positive_value(KnownIdentity::EntryOrderIntentV1);
-        intent["order_intent"]["strategy_id"] = "".into();
-        mutation_is_rejected(KnownIdentity::EntryOrderIntentV1, &intent);
+        for identity in [
+            KnownIdentity::EntryOrderIntentV1,
+            KnownIdentity::RiskReducingExitOrderIntentV1,
+        ] {
+            let mut intent = positive_value(identity);
+            intent["order_intent"]["strategy_id"] = "".into();
+            mutation_is_rejected(identity, &intent);
+        }
 
         let mut reject = positive_value(KnownIdentity::OrderRejectV1);
         reject["order_reject"]["retry_count"] = 0.into();
@@ -3761,12 +3752,20 @@ mod tests {
         fill["fill"]["client_order_id"] = "".into();
         mutation_is_rejected(KnownIdentity::SubmitReservationFillV1, &fill);
 
-        let mut strategy_input = positive_value(KnownIdentity::SubmitLinkedStrategyInputSnapshotV1);
-        strategy_input["snapshot"]["details"]["reference_quote_ts_event"] = 0.into();
-        mutation_is_rejected(
-            KnownIdentity::SubmitLinkedStrategyInputSnapshotV1,
-            &strategy_input,
-        );
+        for (identity, payload_member) in [
+            (
+                KnownIdentity::SubmitLinkedStrategyInputSnapshotV1,
+                "snapshot",
+            ),
+            (
+                KnownIdentity::BlockedStrategyInputObservationV1,
+                "blocked_strategy_input_observation",
+            ),
+        ] {
+            let mut strategy_input = positive_value(identity);
+            strategy_input[payload_member]["details"]["reference_quote_ts_event"] = 0.into();
+            mutation_is_rejected(identity, &strategy_input);
+        }
 
         let mut entry_skip = positive_value(KnownIdentity::EntrySkipObservationV1);
         entry_skip["entry_skip"]["now_ms"] = 0.into();
@@ -3956,7 +3955,7 @@ mod tests {
         let error = match super::super::reader::validate_stream(
             &mut wrong_sink,
             super::super::generated_contract::KnownSink::Observation,
-            None,
+            u64::MAX,
         ) {
             Ok(_) => panic!("machine identity in observation stream must fail"),
             Err(error) => error,
@@ -3974,7 +3973,7 @@ mod tests {
         let error = match super::super::reader::validate_stream(
             &mut torn,
             super::super::generated_contract::KnownSink::Machine,
-            None,
+            u64::MAX,
         ) {
             Ok(_) => panic!("torn final record must fail framing"),
             Err(error) => error,

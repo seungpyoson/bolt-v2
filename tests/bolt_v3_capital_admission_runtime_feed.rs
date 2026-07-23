@@ -31,7 +31,7 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
     BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
     BoltV3SubmitCapitalAdmissionOpenOrderReservation, BoltV3SubmitIntentKind,
-    BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
+    PredictionMarketOutcomeSide,
 };
 use bolt_v2::bolt_v3_venue_truth::{
     VenueTruthCaptureFailureEvidence, VenueTruthSettlementExplanation, VenueTruthSnapshot,
@@ -3102,7 +3102,6 @@ fn capital_admission_submit_request(client_order_id: &str) -> BoltV3SubmitAdmiss
         order_side: OrderSide::Buy,
         order_quantity: Decimal::new(10, 0),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
         admission_evidence: Some(BoltV3CompiledOrderAdmissionEvidence {
@@ -3144,7 +3143,6 @@ fn forced_reduction_submit_request(
     let mut request = capital_admission_sell_submit_request(client_order_id);
     request.notional = Decimal::new(5, 0);
     request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
-    request.lifecycle_policy = BoltV3SubmitLifecyclePolicy::new(false);
     request.risk_reducing_exit_proof = None;
     request.kill_switch_forced_reduction = Some(forced_reduction_claim(halt_id));
     request

@@ -2309,7 +2309,7 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
         })
         .expect("current terminal-settlement evidence should append");
     let (_, settlement_recovery, booking_recovery) = evidence
-        .startup_recovery_projections(Some(100_000))
+        .startup_recovery_projections(100_000)
         .expect("current booking-error evidence should reconstruct");
     strategy.context = strategy
         .context
@@ -2443,7 +2443,7 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
         })
         .expect("current settlement evidence should append");
     let (_, settlement_recovery, booking_recovery) = evidence
-        .startup_recovery_projections(Some(100_000))
+        .startup_recovery_projections(100_000)
         .expect("current settlement evidence should reconstruct");
     strategy.context = strategy
         .context

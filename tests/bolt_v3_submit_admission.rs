@@ -1,7 +1,5 @@
 use crate::support;
 
-use bolt_v2::bolt_v3_capital_admission::{CapitalAdmissionPolicy, FeeSlippagePolicy, ProductKind};
-use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_current_evidence::{
     AdmissionDecisionOutcome, AdmissionRejectionReason, DecisionEvidenceRecorder,
@@ -16,13 +14,11 @@ use bolt_v2::bolt_v3_order_execution::order_intent_details_from_compiled_order;
 use bolt_v2::bolt_v3_providers::FeeProvider;
 use bolt_v2::bolt_v3_strategy_context::StrategyBuildContext;
 use bolt_v2::bolt_v3_submit_admission::{
-    BoltV3CapitalAdmissionRejectReason, BoltV3KillSwitchForcedReductionClaim,
-    BoltV3KillSwitchForcedReductionPolicy, BoltV3LiveSubmitApprovalLimits,
-    BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderSide,
-    BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
-    BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState,
-    BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-    OrderValuationContext, build_submit_admission_request_from_order,
+    BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
+    BoltV3LiveSubmitApprovalLimits, BoltV3QuoteQuantityAdmissionInput,
+    BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
+    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState,
+    BoltV3SubmitIntentKind, OrderValuationContext, build_submit_admission_request_from_order,
     conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
     market_style_admission_ceiling_notional, rounded_order_admission_notional,
 };
@@ -149,7 +145,6 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
             intent_kind: BoltV3SubmitIntentKind::Entry,
             order: &order,
             valuation: OrderValuationContext::empty(),
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_position: None,
         },
         |_| Ok(Decimal::ZERO),
@@ -213,7 +208,6 @@ fn build_submit_admission_request_from_order_checks_fee_before_market_ceiling() 
             intent_kind: BoltV3SubmitIntentKind::Entry,
             order: &order,
             valuation: OrderValuationContext::empty(),
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_position: None,
         },
         |_| anyhow::bail!("fee lookup failed before ceiling valuation"),
@@ -563,7 +557,6 @@ fn unsided_quote_quantity_market_style_orders_fail_full_admission() {
                         last_trade,
                         instrument: Some(&instrument),
                     },
-                    lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
                     risk_reducing_exit_position: None,
                 },
                 |_| Ok(Decimal::ZERO),
@@ -676,7 +669,6 @@ fn sided_quote_quantity_market_style_orders_pass_full_admission() {
                         last_trade,
                         instrument: Some(&instrument),
                     },
-                    lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
                     risk_reducing_exit_position: None,
                 },
                 |_| Ok(Decimal::ZERO),
@@ -734,7 +726,6 @@ fn non_polymarket_market_order_uses_shared_structural_ceiling_valuation() {
                 instrument: Some(&instrument),
                 ..OrderValuationContext::empty()
             },
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_position: None,
         },
         |_| Ok(Decimal::ZERO),
@@ -1493,20 +1484,7 @@ fn submit_request_with_kind(
     notional: Decimal,
     intent_kind: BoltV3SubmitIntentKind,
 ) -> BoltV3SubmitAdmissionRequest {
-    submit_request_with_kind_policy_and_exit_proof(
-        notional,
-        intent_kind,
-        BoltV3SubmitLifecyclePolicy::new(true),
-        None,
-    )
-}
-
-fn submit_request_with_kind_and_policy(
-    notional: Decimal,
-    intent_kind: BoltV3SubmitIntentKind,
-    lifecycle_policy: BoltV3SubmitLifecyclePolicy,
-) -> BoltV3SubmitAdmissionRequest {
-    submit_request_with_kind_policy_and_exit_proof(notional, intent_kind, lifecycle_policy, None)
+    submit_request_with_kind_and_exit_proof(notional, intent_kind, None)
 }
 
 fn submit_request_with_kind_and_exit_proof(
@@ -1514,25 +1492,9 @@ fn submit_request_with_kind_and_exit_proof(
     intent_kind: BoltV3SubmitIntentKind,
     risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
 ) -> BoltV3SubmitAdmissionRequest {
-    submit_request_with_kind_policy_and_exit_proof(
-        notional,
-        intent_kind,
-        BoltV3SubmitLifecyclePolicy::new(true),
-        risk_reducing_exit_proof,
-    )
-}
-
-fn submit_request_with_kind_policy_and_exit_proof(
-    notional: Decimal,
-    intent_kind: BoltV3SubmitIntentKind,
-    lifecycle_policy: BoltV3SubmitLifecyclePolicy,
-    risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
-) -> BoltV3SubmitAdmissionRequest {
     let (order_side, order_quantity) = match intent_kind {
         BoltV3SubmitIntentKind::RiskReducingExit => (OrderSide::Sell, Decimal::new(264, 2)),
-        BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit => {
-            (OrderSide::Buy, Decimal::new(1, 0))
-        }
+        BoltV3SubmitIntentKind::Entry => (OrderSide::Buy, Decimal::new(1, 0)),
         BoltV3SubmitIntentKind::KillSwitchForcedReduction => (OrderSide::Sell, Decimal::new(1, 0)),
     };
     BoltV3SubmitAdmissionRequest {
@@ -1544,7 +1506,6 @@ fn submit_request_with_kind_policy_and_exit_proof(
         order_side,
         order_quantity,
         intent_kind,
-        lifecycle_policy,
         risk_reducing_exit_proof,
         kill_switch_forced_reduction: None,
         admission_evidence: None,
@@ -1581,36 +1542,6 @@ fn limited_admission_with_writer(
                 max_order_notional: max_notional,
             },
         )]),
-    )
-}
-
-fn capital_admission_configured_admission_with_writer(
-    writer: Arc<DecisionEvidenceRecorder>,
-) -> BoltV3SubmitAdmissionState {
-    BoltV3SubmitAdmissionState::new_with_capital_admission(
-        writer,
-        BoltV3SubmitCapitalAdmissionConfig {
-            venue_id: "POLYMARKET".to_string(),
-            account_id: "POLYMARKET-001".to_string(),
-            product_kind: ProductKind::PredictionMarketBinary,
-            collateral_currency: "PUSD".to_string(),
-            capital_pool: CapitalPoolSnapshot {
-                source: "bolt-submit-admission-test".to_string(),
-                observed_at_ns: 1_000,
-                pool_id: "polymarket-prediction-live".to_string(),
-                max_pool_liability: Decimal::new(10, 0),
-                committed_liability: Decimal::ZERO,
-                max_snapshot_age_ns: 1_000,
-            },
-            policy: CapitalAdmissionPolicy {
-                min_remaining_pool_balance: None,
-                fee_slippage_policy: Some(FeeSlippagePolicy {
-                    max_fee_liability: Decimal::new(10, 2),
-                    max_slippage_liability: Decimal::new(20, 2),
-                }),
-            },
-            dedupe_retention_ns: 1_000,
-        },
     )
 }
 
@@ -2050,40 +1981,6 @@ fn single_order_reject_episode_resets_after_admitted_submit() {
 }
 
 #[test]
-fn entry_replace_and_exit_submit_intents_are_classified_before_admission() {
-    let policy = BoltV3SubmitLifecyclePolicy::new(false);
-
-    assert_eq!(
-        policy.submit_intent_for(BoltV3OrderLifecycleIntent::Entry),
-        Ok(Some(BoltV3SubmitIntentKind::Entry))
-    );
-    assert_eq!(
-        policy.submit_intent_for(BoltV3OrderLifecycleIntent::RiskReducingExit),
-        Ok(Some(BoltV3SubmitIntentKind::RiskReducingExit))
-    );
-    assert_eq!(
-        policy.submit_intent_for(BoltV3OrderLifecycleIntent::ReplaceSubmit),
-        Ok(None)
-    );
-}
-
-#[test]
-fn submit_lifecycle_policy_source_removes_dead_risk_reducing_exit_flag() {
-    let source =
-        support::module_source_text(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
-    let source = source.as_str();
-
-    assert!(
-        !source.contains("_risk_reducing_exit_after_entry"),
-        "strict count-cap enforcement must not retain a dead underscore-prefixed policy field"
-    );
-    assert!(
-        !source.contains("risk_reducing_exit_after_entry: bool"),
-        "strict count-cap enforcement must not retain a dead constructor parameter"
-    );
-}
-
-#[test]
 fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_entry_slot() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = limited_admission_with_writer(writer.recorder(), 2, Decimal::new(5, 0));
@@ -2350,101 +2247,6 @@ fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
 }
 
 #[test]
-fn replace_submit_uses_replace_slot_after_entry_and_exit_slots_are_consumed() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = limited_admission_with_writer(writer.recorder(), 3, Decimal::new(5, 0));
-
-    admission
-        .admit(&submit_request_with_kind(
-            Decimal::new(1, 0),
-            BoltV3SubmitIntentKind::Entry,
-        ))
-        .expect("entry should admit")
-        .commit_submitted();
-    admission
-        .admit(&submit_request_with_kind_and_exit_proof(
-            Decimal::new(264, 2),
-            BoltV3SubmitIntentKind::RiskReducingExit,
-            Some(valid_risk_reducing_exit_proof()),
-        ))
-        .expect("risk-reducing exit should admit")
-        .commit_submitted();
-
-    admission
-        .admit(&submit_request_with_kind(
-            Decimal::new(1, 0),
-            BoltV3SubmitIntentKind::ReplaceSubmit,
-        ))
-        .expect("replace-submit must use the independent replace slot")
-        .commit_submitted();
-
-    assert_eq!(admission.admitted_order_count(), 3);
-}
-
-#[test]
-fn configured_capital_admission_rejects_replace_submit_before_admission() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = capital_admission_configured_admission_with_writer(writer.recorder());
-
-    let error = admission
-        .admit(&submit_request_with_kind(
-            Decimal::new(1, 0),
-            BoltV3SubmitIntentKind::ReplaceSubmit,
-        ))
-        .expect_err("replace-submit must enter the capital-admission reject path");
-
-    assert!(matches!(
-        error,
-        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
-            reason: BoltV3CapitalAdmissionRejectReason::ReplaceSubmitUnsupported
-        }
-    ));
-    assert_eq!(admission.admitted_order_count(), 0);
-    let decisions = writer.admission_decisions();
-    assert_eq!(decisions.len(), 1);
-    assert_eq!(
-        decisions[0].outcome,
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CapitalAdmission)
-    );
-    assert_eq!(
-        decisions[0].intent_kind,
-        BoltV3SubmitIntentKind::ReplaceSubmit
-    );
-}
-
-#[test]
-fn replace_submit_rejects_when_lifecycle_policy_disables_replace() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(1, 0));
-
-    let replace = admission
-        .admit(&submit_request_with_kind_and_policy(
-            Decimal::new(1, 1),
-            BoltV3SubmitIntentKind::ReplaceSubmit,
-            BoltV3SubmitLifecyclePolicy::new(false),
-        ))
-        .expect_err("disabled lifecycle policy must reject replace-submit");
-
-    assert!(matches!(
-        replace,
-        BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed {
-            intent: BoltV3SubmitIntentKind::ReplaceSubmit
-        }
-    ));
-    let decisions = writer.admission_decisions();
-    assert_eq!(decisions.len(), 1);
-    assert_eq!(
-        decisions[0].outcome,
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::SubmitLifecycleDisallowed)
-    );
-    assert_eq!(
-        decisions[0].intent_kind,
-        BoltV3SubmitIntentKind::ReplaceSubmit
-    );
-    assert_eq!(admission.admitted_order_count(), 0);
-}
-
-#[test]
 fn armed_kill_switch_preserves_existing_entry_admission_behavior() {
     let admission = limited_admission(1, Decimal::new(1, 0));
     admission.replace_kill_switch_state(KillSwitchState::Armed);
@@ -2461,51 +2263,28 @@ fn armed_kill_switch_preserves_existing_entry_admission_behavior() {
 }
 
 #[test]
-fn latched_kill_switch_states_block_entry_and_replace_before_nt_submit_without_consuming_count() {
+fn latched_kill_switch_states_block_entry_before_nt_submit_without_consuming_count() {
     for state in latched_kill_switch_states() {
         let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
         let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(1, 0));
         admission.replace_kill_switch_state(state);
 
-        for intent_kind in [
-            BoltV3SubmitIntentKind::Entry,
-            BoltV3SubmitIntentKind::ReplaceSubmit,
-        ] {
-            let error = admission
-                .admit(&submit_request_with_kind(Decimal::new(1, 1), intent_kind))
-                .expect_err("latched kill switch must reject exposure-opening risk");
-
-            assert!(matches!(
-                error,
-                BoltV3SubmitAdmissionError::KillSwitchLatched { .. }
-            ));
-        }
+        let error = admission
+            .admit(&submit_request_with_kind(
+                Decimal::new(1, 1),
+                BoltV3SubmitIntentKind::Entry,
+            ))
+            .expect_err("latched kill switch must reject exposure-opening risk");
+        assert!(matches!(
+            error,
+            BoltV3SubmitAdmissionError::KillSwitchLatched { .. }
+        ));
         assert_eq!(admission.admitted_order_count(), 0);
         let decisions = writer.admission_decisions();
-        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions.len(), 1);
         assert!(decisions.iter().all(|decision| decision.outcome
             == AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::KillSwitchLatched)));
     }
-}
-
-#[test]
-fn latched_kill_switch_blocks_replace_submit_even_when_lifecycle_policy_allows_replace() {
-    let admission = limited_admission(1, Decimal::new(1, 0));
-    admission.replace_kill_switch_state(halted_kill_switch_state());
-
-    let error = admission
-        .admit(&submit_request_with_kind_and_policy(
-            Decimal::new(1, 1),
-            BoltV3SubmitIntentKind::ReplaceSubmit,
-            BoltV3SubmitLifecyclePolicy::new(true),
-        ))
-        .expect_err("latched kill switch must block replace-submit risk");
-
-    assert!(matches!(
-        error,
-        BoltV3SubmitAdmissionError::KillSwitchLatched { .. }
-    ));
-    assert_eq!(admission.admitted_order_count(), 0);
 }
 
 #[test]
@@ -2556,7 +2335,6 @@ fn venue_truth_latch_blocks_all_normal_submit_classes() {
 
     for request in [
         submit_request_with_kind(Decimal::new(1, 1), BoltV3SubmitIntentKind::Entry),
-        submit_request_with_kind(Decimal::new(1, 1), BoltV3SubmitIntentKind::ReplaceSubmit),
         submit_request_with_kind_and_exit_proof(
             Decimal::new(264, 2),
             BoltV3SubmitIntentKind::RiskReducingExit,
@@ -2764,17 +2542,6 @@ fn dropped_uncommitted_forced_reduction_permit_rolls_back_live_cap() {
         ))
         .expect("dropped forced-reduction permit should release the live cap")
         .commit_submitted();
-}
-
-#[test]
-fn plain_cancel_lifecycle_intent_is_not_a_submit_candidate() {
-    let policy = BoltV3SubmitLifecyclePolicy::new(true);
-
-    assert_eq!(
-        policy.submit_intent_for(BoltV3OrderLifecycleIntent::PlainCancel),
-        Ok(None),
-        "plain cancel is not a live submit candidate and must not consume admission budget"
-    );
 }
 
 #[test]

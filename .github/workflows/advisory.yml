@@ -195,7 +195,7 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           set -x
-          mold -run cargo nextest run --locked --features test-current-evidence-inspection
+          mold -run cargo nextest run --locked --no-fail-fast --features test-current-evidence-inspection
 
       - name: test (backtesting vertical slice)
         if: ${{ !cancelled() }}

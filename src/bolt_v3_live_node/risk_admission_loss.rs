@@ -32,7 +32,6 @@ use crate::{
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_submit_admission::{
         BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
-        BoltV3SubmitLifecyclePolicy,
     },
 };
 
@@ -1285,7 +1284,6 @@ fn live_node_kill_switch_flatten_executor(
                         fallback_price: fallback_price.as_str(),
                         instrument: Some(&instrument),
                         max_fee_bps: Decimal::ZERO,
-                        submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
                     },
                     command,
                 )?;
@@ -1716,7 +1714,6 @@ mod tests {
         bolt_v3_submit_admission::{
             BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
             BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
-            BoltV3SubmitLifecyclePolicy,
         },
         bolt_v3_venue_truth::{
             VenueTruthCaptureEndpointError, VenueTruthDivergence, VenueTruthDivergenceAlarmClass,
@@ -2583,7 +2580,6 @@ mod tests {
                     fallback_price: "1",
                     instrument: Some(&instrument),
                     max_fee_bps: Decimal::ZERO,
-                    submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
                 },
                 command,
             )?;

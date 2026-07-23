@@ -51,6 +51,39 @@ pub struct BoltV3SettlementHealth {
     pub latest_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3DecisionEvidenceObservationHealth {
+    pub status: BoltV3OperatorHealthStatus,
+    pub configured: bool,
+    pub poison_cause: Option<String>,
+}
+
+impl BoltV3DecisionEvidenceObservationHealth {
+    pub fn not_configured() -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::NotConfigured,
+            configured: false,
+            poison_cause: None,
+        }
+    }
+
+    pub fn available() -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Nominal,
+            configured: true,
+            poison_cause: None,
+        }
+    }
+
+    pub fn poisoned(cause: impl Into<String>) -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Degraded,
+            configured: true,
+            poison_cause: Some(cause.into()),
+        }
+    }
+}
+
 impl BoltV3SettlementHealth {
     pub fn not_configured() -> Self {
         Self {
@@ -350,6 +383,7 @@ pub struct BoltV3OperatorHealthSurface {
     pub venue_truth: BoltV3VenueTruthHealth,
     pub input_health: BoltV3InputHealth,
     pub settlement: BoltV3SettlementHealth,
+    pub decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth,
 }
 
 impl BoltV3OperatorHealthSurface {
@@ -359,6 +393,8 @@ impl BoltV3OperatorHealthSurface {
             venue_truth: BoltV3VenueTruthHealth::not_configured(),
             input_health: BoltV3InputHealth::not_configured(),
             settlement: BoltV3SettlementHealth::not_configured(),
+            decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth::not_configured(
+            ),
         }
     }
 
@@ -372,6 +408,8 @@ impl BoltV3OperatorHealthSurface {
             venue_truth,
             input_health,
             settlement: BoltV3SettlementHealth::not_configured(),
+            decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth::not_configured(
+            ),
         }
     }
 
@@ -380,12 +418,14 @@ impl BoltV3OperatorHealthSurface {
         venue_truth: BoltV3VenueTruthHealth,
         input_health: BoltV3InputHealth,
         settlement: BoltV3SettlementHealth,
+        decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth,
     ) -> Self {
         Self {
             reject_observer,
             venue_truth,
             input_health,
             settlement,
+            decision_evidence_observation,
         }
     }
 }

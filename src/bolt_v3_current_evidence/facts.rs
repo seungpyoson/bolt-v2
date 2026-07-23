@@ -308,7 +308,6 @@ pub enum LossSnapshotStaleReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionRejectionReason {
     KillSwitchLatched,
-    SubmitLifecycleDisallowed,
     LossGovernorHalted,
     NonPositiveNotional,
     NotionalCapExceeded,
@@ -365,12 +364,6 @@ pub struct RejectedEntryAdmissionFact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RiskReducingExitAdmissionFact {
-    pub details: AdmissionDetails,
-    pub outcome: AdmissionDecisionOutcome,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReplaceAdmissionFact {
     pub details: AdmissionDetails,
     pub outcome: AdmissionDecisionOutcome,
 }
@@ -1200,7 +1193,6 @@ mod current_fact {
         AdmittedEntryAdmission(Box<AdmittedEntryAdmissionFact>),
         RejectedEntryAdmission(Box<RejectedEntryAdmissionFact>),
         RiskReducingExitAdmission(Box<RiskReducingExitAdmissionFact>),
-        ReplaceAdmission(Box<ReplaceAdmissionFact>),
         ForcedReductionAdmission(Box<ForcedReductionAdmissionFact>),
         BasketAdmissionGranted(BasketAdmissionGrantedFact),
         BasketAdmissionRejected(BasketAdmissionRejectedFact),
@@ -1235,7 +1227,6 @@ mod current_fact {
                 Self::AdmittedEntryAdmission(_) => KnownFact::AdmittedEntryAdmissionV1,
                 Self::RejectedEntryAdmission(_) => KnownFact::RejectedEntryAdmissionV1,
                 Self::RiskReducingExitAdmission(_) => KnownFact::RiskReducingExitAdmissionV1,
-                Self::ReplaceAdmission(_) => KnownFact::ReplaceAdmissionV1,
                 Self::ForcedReductionAdmission(_) => KnownFact::ForcedReductionAdmissionV1,
                 Self::BasketAdmissionGranted(_) => KnownFact::BasketAdmissionGrantedV1,
                 Self::BasketAdmissionRejected(_) => KnownFact::BasketAdmissionRejectedV1,

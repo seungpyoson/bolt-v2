@@ -48,8 +48,7 @@ use bolt_v2::{
         BoltV3LiveSubmitApprovalLimits, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
         BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitCapitalAdmissionNtComponents,
-        BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
-        live_submit_count_cap_outcome,
+        BoltV3SubmitIntentKind, PredictionMarketOutcomeSide, live_submit_count_cap_outcome,
     },
 };
 use nautilus_model::{
@@ -851,7 +850,6 @@ fn entry_claims(group: &OutcomeGroup, notional: Decimal) -> Vec<BoltV3BasketSubm
             order_quantity: dec!(1),
             notional,
             intent_kind: BoltV3SubmitIntentKind::Entry,
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             risk_reducing_exit_proof: None,
             admission_evidence: None,
         })
@@ -869,7 +867,6 @@ fn risk_reducing_claim(
         order_quantity: dec!(1),
         notional: dec!(0.9),
         intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
         risk_reducing_exit_proof: Some(proof),
         admission_evidence: None,
     }
@@ -974,7 +971,6 @@ fn single_order_request(client_order_id: &str, notional: Decimal) -> BoltV3Submi
         order_side: OrderSide::Buy,
         order_quantity: dec!(1),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
         admission_evidence: None,

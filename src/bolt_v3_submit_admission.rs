@@ -20,9 +20,8 @@ use crate::bolt_v3_current_evidence::{
     ForcedReductionAdmissionFact, LossGovernorHaltFact, LossHaltReason as EvidenceLossHaltReason,
     LossSnapshotSource, LossSnapshotStaleReason as EvidenceLossSnapshotStaleReason,
     NonBlockingRecordOutcome, OrderIntentDetails, OrderRejectFact, OrderRejectReason,
-    OrderRejectSource, RejectedEntryAdmissionFact, ReplaceAdmissionFact,
-    RiskReducingExitAdmissionFact, StaleLossReason, SubmitReservationFillFact,
-    SubmitReservationMetadataFact, VenueTruthCaptureFailureFact,
+    OrderRejectSource, RejectedEntryAdmissionFact, RiskReducingExitAdmissionFact, StaleLossReason,
+    SubmitReservationFillFact, SubmitReservationMetadataFact, VenueTruthCaptureFailureFact,
     VenueTruthDivergenceAlarmClass as EvidenceDivergenceAlarmClass, VenueTruthDivergenceFact,
 };
 use crate::bolt_v3_evidence_sampling::{EpisodeFirstNs, evict_oldest_episodes_over_cap};
@@ -55,7 +54,6 @@ use std::{
 pub enum BoltV3SubmitIntentKind {
     Entry,
     RiskReducingExit,
-    ReplaceSubmit,
     KillSwitchForcedReduction,
 }
 
@@ -173,7 +171,8 @@ fn capital_admission_rejection_reason(
 }
 
 fn loss_snapshot_source_to_current_evidence(source: &str) -> LossSnapshotSource {
-    match source {
+    match source.trim() {
+        "" | "unknown" => LossSnapshotSource::Unknown,
         "nt_loss_runtime_feed" => LossSnapshotSource::NtLossRuntimeFeed,
         "nt_portfolio_snapshot" => LossSnapshotSource::NtPortfolioSnapshot,
         "nt_account_snapshot" => LossSnapshotSource::NtAccountSnapshot,
@@ -185,7 +184,6 @@ fn loss_snapshot_source_to_current_evidence(source: &str) -> LossSnapshotSource 
         "nt_capital_admission_state" => LossSnapshotSource::NtCapitalAdmissionState,
         "bolt_loss_snapshot" => LossSnapshotSource::BoltLossSnapshot,
         "loss_governor" => LossSnapshotSource::LossGovernor,
-        "unknown" => LossSnapshotSource::Unknown,
         _ => LossSnapshotSource::Other,
     }
 }
@@ -195,9 +193,6 @@ fn admission_outcome_key(outcome: &AdmissionDecisionOutcome) -> &'static str {
         AdmissionDecisionOutcome::Admitted => "admitted",
         AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::KillSwitchLatched) => {
             "rejected_kill_switch_latched"
-        }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::SubmitLifecycleDisallowed) => {
-            "rejected_submit_lifecycle_disallowed"
         }
         AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::LossGovernorHalted) => {
             "rejected_loss_governor_halted"
@@ -1793,11 +1788,6 @@ impl BoltV3SubmitAdmissionState {
                     state: inner.kill_switch_state.kind(),
                 })
             }
-            AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::SubmitLifecycleDisallowed,
-            ) => Err(BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed {
-                intent: request.intent_kind,
-            }),
             AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::LossGovernorHalted) => {
                 Err(BoltV3SubmitAdmissionError::LossGovernorHalted {
                     reasons: evaluation.loss_halt_reasons,
@@ -1850,7 +1840,7 @@ impl BoltV3SubmitAdmissionState {
                 reason: format!("{err:#}"),
             });
         }
-        Self::admission_result(&inner, request, &evaluation)
+        Self::admission_result(&inner, &evaluation)
     }
 
     fn record_admission_decision(
@@ -1979,11 +1969,6 @@ impl BoltV3SubmitAdmissionState {
                 }
                 Ok(())
             }
-            (BoltV3SubmitIntentKind::ReplaceSubmit, outcome) => self
-                .decision_evidence
-                .record_replace_admission(ReplaceAdmissionFact { details, outcome })
-                .map(|_| ())
-                .map_err(anyhow::Error::from),
         };
         if evaluation.outcome == AdmissionDecisionOutcome::Admitted {
             self.reject_episodes
@@ -2178,7 +2163,6 @@ impl BoltV3SubmitAdmissionState {
 
     fn admission_result(
         inner: &BoltV3SubmitAdmissionInner,
-        request: &BoltV3SubmitAdmissionRequest,
         evaluation: &BoltV3SubmitAdmissionEvaluation,
     ) -> Result<(), BoltV3SubmitAdmissionError> {
         match evaluation.outcome {
@@ -2188,11 +2172,6 @@ impl BoltV3SubmitAdmissionState {
                     state: inner.kill_switch_state.kind(),
                 })
             }
-            AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::SubmitLifecycleDisallowed,
-            ) => Err(BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed {
-                intent: request.intent_kind,
-            }),
             AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::LossGovernorHalted) => {
                 Err(BoltV3SubmitAdmissionError::LossGovernorHalted {
                     reasons: evaluation.loss_halt_reasons.clone(),
@@ -2243,11 +2222,6 @@ impl BoltV3SubmitAdmissionState {
         } else {
             AdmissionDecisionOutcome::Admitted
         };
-        let mut rejected_intent = claims
-            .first()
-            .map(|claim| claim.intent_kind)
-            .unwrap_or(BoltV3SubmitIntentKind::Entry);
-        let mut rejected_request: Option<BoltV3SubmitAdmissionRequest> = None;
         let mut rejected_evaluation: Option<BoltV3SubmitAdmissionEvaluation> = None;
         let mut rollbacks = Vec::new();
         let mut reservation_metadata = Vec::new();
@@ -2257,8 +2231,6 @@ impl BoltV3SubmitAdmissionState {
             let evaluation = self.evaluate(&mut inner, &request, now_ns);
             outcome = evaluation.outcome;
             if outcome != AdmissionDecisionOutcome::Admitted {
-                rejected_intent = claim.intent_kind;
-                rejected_request = Some(request);
                 rejected_evaluation = Some(evaluation);
                 break;
             }
@@ -2317,15 +2289,12 @@ impl BoltV3SubmitAdmissionState {
         if outcome != AdmissionDecisionOutcome::Admitted {
             self.record_basket_submit_rejection(details);
             rollback_capital_admission_reservations(&mut inner, &rollbacks);
-            if let (Some(request), Some(evaluation)) =
-                (rejected_request.as_ref(), rejected_evaluation.as_ref())
-            {
-                Self::admission_result(&inner, request, evaluation)?;
+            if let Some(evaluation) = rejected_evaluation.as_ref() {
+                Self::admission_result(&inner, evaluation)?;
             }
             return Err(submit_admission_error_from_outcome(
                 outcome,
                 inner.kill_switch_state.kind(),
-                rejected_intent,
             ));
         }
 
@@ -2425,9 +2394,7 @@ impl BoltV3SubmitAdmissionState {
         }
         if matches!(
             request.intent_kind,
-            BoltV3SubmitIntentKind::Entry
-                | BoltV3SubmitIntentKind::RiskReducingExit
-                | BoltV3SubmitIntentKind::ReplaceSubmit
+            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit
         ) && inner.kill_switch_state.kind() != KillSwitchStateKind::Armed
         {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
@@ -2435,20 +2402,9 @@ impl BoltV3SubmitAdmissionState {
                 now_ns,
             );
         }
-        if !request.lifecycle_policy.allows(request.intent_kind) {
-            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                AdmissionDecisionOutcome::Rejected(
-                    AdmissionRejectionReason::SubmitLifecycleDisallowed,
-                ),
-                now_ns,
-            );
-        }
         let mut loss_snapshot_diagnostics = None;
         if let Some(loss_policy) = inner.loss_policy.clone()
-            && matches!(
-                request.intent_kind,
-                BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
-            )
+            && request.intent_kind == BoltV3SubmitIntentKind::Entry
         {
             let decision = evaluate_loss_admission_with_observations(
                 &loss_policy,
@@ -2532,7 +2488,6 @@ impl BoltV3SubmitAdmissionState {
                     .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics);
                 }
             }
-            BoltV3SubmitIntentKind::ReplaceSubmit => {}
             BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
                 unreachable!("kill-switch forced reduction is evaluated before normal admission")
             }
@@ -2540,9 +2495,7 @@ impl BoltV3SubmitAdmissionState {
         if inner.capital_admission.is_some()
             && matches!(
                 request.intent_kind,
-                BoltV3SubmitIntentKind::Entry
-                    | BoltV3SubmitIntentKind::RiskReducingExit
-                    | BoltV3SubmitIntentKind::ReplaceSubmit
+                BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit
             )
         {
             let decision = evaluate_capital_admission_submit(inner, request, now_ns);
@@ -2674,7 +2627,6 @@ fn loss_snapshot_stale_reason_to_evidence(
 fn submit_admission_error_from_outcome(
     outcome: AdmissionDecisionOutcome,
     kill_switch_state: KillSwitchStateKind,
-    intent: BoltV3SubmitIntentKind,
 ) -> BoltV3SubmitAdmissionError {
     match outcome {
         AdmissionDecisionOutcome::Admitted => {
@@ -2684,9 +2636,6 @@ fn submit_admission_error_from_outcome(
             BoltV3SubmitAdmissionError::KillSwitchLatched {
                 state: kill_switch_state,
             }
-        }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::SubmitLifecycleDisallowed) => {
-            BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed { intent }
         }
         AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::LossGovernorHalted) => {
             BoltV3SubmitAdmissionError::LossGovernorHalted {
@@ -2942,14 +2891,6 @@ pub enum BoltV3KillSwitchForcedReductionError {
     NonPositiveMaxNotional,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum BoltV3OrderLifecycleIntent {
-    Entry,
-    RiskReducingExit,
-    ReplaceSubmit,
-    PlainCancel,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3RiskReducingExitProof {
     pub position_id: String,
@@ -2988,42 +2929,6 @@ impl BoltV3RiskReducingExitProof {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct BoltV3SubmitLifecyclePolicy {
-    replace_submit: bool,
-}
-
-impl BoltV3SubmitLifecyclePolicy {
-    pub fn new(replace_submit: bool) -> Self {
-        Self { replace_submit }
-    }
-
-    pub fn submit_intent_for(
-        &self,
-        intent: BoltV3OrderLifecycleIntent,
-    ) -> Result<Option<BoltV3SubmitIntentKind>, BoltV3SubmitAdmissionError> {
-        match intent {
-            BoltV3OrderLifecycleIntent::Entry => Ok(Some(BoltV3SubmitIntentKind::Entry)),
-            BoltV3OrderLifecycleIntent::RiskReducingExit => {
-                Ok(Some(BoltV3SubmitIntentKind::RiskReducingExit))
-            }
-            BoltV3OrderLifecycleIntent::ReplaceSubmit if self.replace_submit => {
-                Ok(Some(BoltV3SubmitIntentKind::ReplaceSubmit))
-            }
-            BoltV3OrderLifecycleIntent::ReplaceSubmit => Ok(None),
-            BoltV3OrderLifecycleIntent::PlainCancel => Ok(None),
-        }
-    }
-
-    fn allows(&self, intent: BoltV3SubmitIntentKind) -> bool {
-        match intent {
-            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true,
-            BoltV3SubmitIntentKind::ReplaceSubmit => self.replace_submit,
-            BoltV3SubmitIntentKind::KillSwitchForcedReduction => true,
-        }
-    }
-}
-
 impl BoltV3SubmitIntentKind {
     pub fn is_venue_position_exit_clamp_eligible(self) -> bool {
         matches!(
@@ -3044,7 +2949,6 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub order_side: OrderSide,
     pub order_quantity: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
-    pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
     pub kill_switch_forced_reduction: Option<BoltV3KillSwitchForcedReductionClaim>,
     pub admission_evidence: Option<BoltV3CompiledOrderAdmissionEvidence>,
@@ -3168,7 +3072,6 @@ pub struct BoltV3BasketSubmitSlotClaim {
     pub order_side: OrderSide,
     pub order_quantity: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
-    pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
     pub admission_evidence: Option<BoltV3CompiledOrderAdmissionEvidence>,
 }
@@ -3187,7 +3090,6 @@ fn basket_submit_request(
         order_side: claim.order_side,
         order_quantity: claim.order_quantity,
         intent_kind: claim.intent_kind,
-        lifecycle_policy: claim.lifecycle_policy,
         risk_reducing_exit_proof: claim.risk_reducing_exit_proof.clone(),
         kill_switch_forced_reduction: None,
         admission_evidence: claim.admission_evidence.clone(),
@@ -3253,7 +3155,6 @@ pub struct BoltV3SubmitAdmissionRequestInput<'a> {
     pub intent_kind: BoltV3SubmitIntentKind,
     pub order: &'a OrderAny,
     pub valuation: OrderValuationContext<'a>,
-    pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub risk_reducing_exit_position: Option<BoltV3RiskReducingExitPositionInput<'a>>,
 }
 
@@ -3372,7 +3273,6 @@ where
         order_side: input.order.order_side(),
         order_quantity: quantity,
         intent_kind,
-        lifecycle_policy: input.lifecycle_policy,
         risk_reducing_exit_proof,
         kill_switch_forced_reduction: None,
         admission_evidence: None,
@@ -3657,7 +3557,6 @@ pub enum BoltV3CapitalAdmissionRejectReason {
     UnsupportedProductKind,
     MissingPredictionMarketOutcome,
     OutcomeInstrumentMismatch,
-    ReplaceSubmitUnsupported,
     DuplicateClientOrderId,
     OrderShapeMismatch,
     MissingNtState,
@@ -3673,9 +3572,6 @@ pub enum BoltV3CapitalAdmissionRejectReason {
 pub enum BoltV3SubmitAdmissionError {
     KillSwitchLatched {
         state: KillSwitchStateKind,
-    },
-    SubmitLifecycleDisallowed {
-        intent: BoltV3SubmitIntentKind,
     },
     LossGovernorHalted {
         reasons: Vec<LossHaltReason>,
@@ -3713,10 +3609,6 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             Self::KillSwitchLatched { state } => write!(
                 f,
                 "bolt-v3 submit admission is blocked by kill-switch state {state:?}"
-            ),
-            Self::SubmitLifecycleDisallowed { intent } => write!(
-                f,
-                "bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"
             ),
             Self::LossGovernorHalted { reasons } => {
                 let reasons = reasons
@@ -3801,11 +3693,6 @@ fn evaluate_capital_admission_submit(
     let Some(capital_admission) = inner.capital_admission.as_mut() else {
         return accepted_without_reservation();
     };
-    if request.intent_kind == BoltV3SubmitIntentKind::ReplaceSubmit {
-        return rejected_capital_admission(
-            BoltV3CapitalAdmissionRejectReason::ReplaceSubmitUnsupported,
-        );
-    }
     let Some(evidence) = request.admission_evidence.as_ref() else {
         return rejected_capital_admission(
             BoltV3CapitalAdmissionRejectReason::MissingAdmissionEvidence,
@@ -4403,6 +4290,20 @@ mod loss_governor_halt_evidence_tests {
         recorder
     }
 
+    #[test]
+    fn empty_loss_snapshot_sources_normalize_to_unknown_evidence() {
+        for source in ["", " ", "\t\n", "unknown"] {
+            assert_eq!(
+                loss_snapshot_source_to_current_evidence(source),
+                LossSnapshotSource::Unknown
+            );
+        }
+        assert_eq!(
+            loss_snapshot_source_to_current_evidence("unregistered-source"),
+            LossSnapshotSource::Other
+        );
+    }
+
     #[derive(Default)]
     struct CapturingLogger {
         records: Mutex<Vec<(log::Level, String)>>,
@@ -4480,7 +4381,6 @@ mod loss_governor_halt_evidence_tests {
             order_side: OrderSide::Buy,
             order_quantity: Decimal::ONE,
             intent_kind: BoltV3SubmitIntentKind::Entry,
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             risk_reducing_exit_proof: None,
             kill_switch_forced_reduction: None,
             admission_evidence: None,

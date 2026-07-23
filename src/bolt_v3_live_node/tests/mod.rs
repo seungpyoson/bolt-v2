@@ -95,6 +95,7 @@ fn live_operator_health_surface_renders_poisoned_reject_feed_as_degraded() {
         0,
         None,
         BoltV3SettlementHealth::nominal(),
+        &ObservationStreamStatus::Available,
     );
 
     assert_eq!(
@@ -129,6 +130,7 @@ fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth
         0,
         None,
         BoltV3SettlementHealth::nominal(),
+        &ObservationStreamStatus::Available,
     );
 
     assert_eq!(

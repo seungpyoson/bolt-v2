@@ -14,9 +14,9 @@ use super::codec::{
     encode_capital_admission_rebuild, encode_entry_order_intent, encode_entry_skip_observation,
     encode_exit_evaluation, encode_exit_hold_decision, encode_exit_submission_decision,
     encode_forced_reduction_admission, encode_loss_governor_halt, encode_order_lifecycle,
-    encode_order_reject, encode_rejected_entry_admission, encode_replace_admission,
-    encode_requote_throttle_observation, encode_reservation_fill, encode_reservation_metadata,
-    encode_risk_reducing_exit_admission, encode_risk_reducing_exit_order_intent, encode_settlement,
+    encode_order_reject, encode_rejected_entry_admission, encode_requote_throttle_observation,
+    encode_reservation_fill, encode_reservation_metadata, encode_risk_reducing_exit_admission,
+    encode_risk_reducing_exit_order_intent, encode_settlement,
     encode_submit_linked_strategy_input_snapshot, encode_terminal_settlement,
     encode_venue_truth_capture_failure, encode_venue_truth_divergence,
 };
@@ -25,11 +25,10 @@ use super::facts::{
     BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, EntryOrderIntentFact,
     EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitSubmissionDecisionFact,
     ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
-    RejectedEntryAdmissionFact, ReplaceAdmissionFact, RequoteThrottleObservationFact,
-    RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact, SettlementFact,
-    SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
-    SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
-    VenueTruthDivergenceFact,
+    RejectedEntryAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
+    RiskReducingExitOrderIntentFact, SettlementFact, SubmitLinkedStrategyInputSnapshotFact,
+    SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
+    VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
 };
 use super::generated_contract::{
     EffectPolicy, KnownProducer, KnownPurpose, KnownSink, effect_policy_for_purpose,
@@ -396,7 +395,7 @@ impl DecisionEvidenceRecorder {
     #[cfg(test)]
     pub(crate) fn startup_recovery_projections(
         &self,
-        max_bytes: Option<u64>,
+        max_bytes: u64,
     ) -> anyhow::Result<(
         super::facts::ReservationRecoveryFacts,
         super::facts::SettlementRecoveryFacts,
@@ -476,16 +475,6 @@ impl DecisionEvidenceRecorder {
             Ok(record) => self.record_nonblocking(KnownProducer::SubmitAdmissionExit, record),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
-    }
-
-    pub fn record_replace_admission(
-        &self,
-        fact: ReplaceAdmissionFact,
-    ) -> Result<AppendReceipt, RecordFailure> {
-        self.record_blocking(
-            KnownProducer::SubmitAdmissionReplace,
-            encode_replace_admission(fact)?,
-        )
     }
 
     pub fn record_forced_reduction_admission(

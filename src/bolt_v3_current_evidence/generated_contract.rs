@@ -9,7 +9,6 @@ pub(crate) enum KnownProducer {
     SubmitAdmissionAdmittedEntry,
     SubmitAdmissionRejectedEntry,
     SubmitAdmissionExit,
-    SubmitAdmissionReplace,
     SubmitAdmissionForcedReduction,
     BasketAdmissionGranted,
     BasketAdmissionRejected,
@@ -40,7 +39,6 @@ pub(crate) enum KnownPurpose {
     AdmittedEntryAdmission,
     RejectedEntryAdmission,
     RiskReducingExitAdmission,
-    ReplaceAdmission,
     ForcedReductionAdmission,
     BasketAdmissionGranted,
     BasketAdmissionRejected,
@@ -70,7 +68,6 @@ pub(crate) enum KnownIdentity {
     AdmittedEntryAdmissionV1,
     RejectedEntryAdmissionV1,
     RiskReducingExitAdmissionV1,
-    ReplaceAdmissionV1,
     ForcedReductionAdmissionV1,
     BasketAdmissionGrantedV1,
     BasketAdmissionRejectedV1,
@@ -100,7 +97,6 @@ pub(crate) const ALL_IDENTITIES: &[KnownIdentity] = &[
     KnownIdentity::AdmittedEntryAdmissionV1,
     KnownIdentity::RejectedEntryAdmissionV1,
     KnownIdentity::RiskReducingExitAdmissionV1,
-    KnownIdentity::ReplaceAdmissionV1,
     KnownIdentity::ForcedReductionAdmissionV1,
     KnownIdentity::BasketAdmissionGrantedV1,
     KnownIdentity::BasketAdmissionRejectedV1,
@@ -136,8 +132,6 @@ pub(crate) mod identities {
     pub(crate) struct RejectedEntryAdmissionV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct RiskReducingExitAdmissionV1;
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct ReplaceAdmissionV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct ForcedReductionAdmissionV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,7 +179,6 @@ pub(crate) enum KnownFact {
     AdmittedEntryAdmissionV1,
     RejectedEntryAdmissionV1,
     RiskReducingExitAdmissionV1,
-    ReplaceAdmissionV1,
     ForcedReductionAdmissionV1,
     BasketAdmissionGrantedV1,
     BasketAdmissionRejectedV1,
@@ -256,7 +249,6 @@ pub(crate) const fn current_identity_for_purpose(purpose: KnownPurpose) -> Known
         KnownPurpose::AdmittedEntryAdmission => KnownIdentity::AdmittedEntryAdmissionV1,
         KnownPurpose::RejectedEntryAdmission => KnownIdentity::RejectedEntryAdmissionV1,
         KnownPurpose::RiskReducingExitAdmission => KnownIdentity::RiskReducingExitAdmissionV1,
-        KnownPurpose::ReplaceAdmission => KnownIdentity::ReplaceAdmissionV1,
         KnownPurpose::ForcedReductionAdmission => KnownIdentity::ForcedReductionAdmissionV1,
         KnownPurpose::BasketAdmissionGranted => KnownIdentity::BasketAdmissionGrantedV1,
         KnownPurpose::BasketAdmissionRejected => KnownIdentity::BasketAdmissionRejectedV1,
@@ -287,7 +279,6 @@ pub(crate) const fn sink_for_purpose(purpose: KnownPurpose) -> KnownSink {
         KnownPurpose::AdmittedEntryAdmission => KnownSink::Machine,
         KnownPurpose::RejectedEntryAdmission => KnownSink::Machine,
         KnownPurpose::RiskReducingExitAdmission => KnownSink::Machine,
-        KnownPurpose::ReplaceAdmission => KnownSink::Machine,
         KnownPurpose::ForcedReductionAdmission => KnownSink::Machine,
         KnownPurpose::BasketAdmissionGranted => KnownSink::Machine,
         KnownPurpose::BasketAdmissionRejected => KnownSink::Machine,
@@ -318,7 +309,6 @@ pub(crate) const fn effect_policy_for_purpose(purpose: KnownPurpose) -> EffectPo
         KnownPurpose::AdmittedEntryAdmission => EffectPolicy::MustPrecedeNewRisk,
         KnownPurpose::RejectedEntryAdmission => EffectPolicy::PreserveResult,
         KnownPurpose::RiskReducingExitAdmission => EffectPolicy::RiskReducingContinues,
-        KnownPurpose::ReplaceAdmission => EffectPolicy::MustPrecedeNewRisk,
         KnownPurpose::ForcedReductionAdmission => EffectPolicy::RiskReducingContinues,
         KnownPurpose::BasketAdmissionGranted => EffectPolicy::MustPrecedeNewRisk,
         KnownPurpose::BasketAdmissionRejected => EffectPolicy::PreserveResult,
@@ -353,7 +343,6 @@ pub(crate) const fn purpose_for_producer(producer: KnownProducer) -> KnownPurpos
         KnownProducer::SubmitAdmissionAdmittedEntry => KnownPurpose::AdmittedEntryAdmission,
         KnownProducer::SubmitAdmissionRejectedEntry => KnownPurpose::RejectedEntryAdmission,
         KnownProducer::SubmitAdmissionExit => KnownPurpose::RiskReducingExitAdmission,
-        KnownProducer::SubmitAdmissionReplace => KnownPurpose::ReplaceAdmission,
         KnownProducer::SubmitAdmissionForcedReduction => KnownPurpose::ForcedReductionAdmission,
         KnownProducer::BasketAdmissionGranted => KnownPurpose::BasketAdmissionGranted,
         KnownProducer::BasketAdmissionRejected => KnownPurpose::BasketAdmissionRejected,
@@ -389,7 +378,6 @@ pub(crate) const fn purpose_for_identity(identity: KnownIdentity) -> KnownPurpos
         KnownIdentity::AdmittedEntryAdmissionV1 => KnownPurpose::AdmittedEntryAdmission,
         KnownIdentity::RejectedEntryAdmissionV1 => KnownPurpose::RejectedEntryAdmission,
         KnownIdentity::RiskReducingExitAdmissionV1 => KnownPurpose::RiskReducingExitAdmission,
-        KnownIdentity::ReplaceAdmissionV1 => KnownPurpose::ReplaceAdmission,
         KnownIdentity::ForcedReductionAdmissionV1 => KnownPurpose::ForcedReductionAdmission,
         KnownIdentity::BasketAdmissionGrantedV1 => KnownPurpose::BasketAdmissionGranted,
         KnownIdentity::BasketAdmissionRejectedV1 => KnownPurpose::BasketAdmissionRejected,
@@ -424,7 +412,6 @@ pub(crate) const fn fact_for_identity(identity: KnownIdentity) -> KnownFact {
         KnownIdentity::AdmittedEntryAdmissionV1 => KnownFact::AdmittedEntryAdmissionV1,
         KnownIdentity::RejectedEntryAdmissionV1 => KnownFact::RejectedEntryAdmissionV1,
         KnownIdentity::RiskReducingExitAdmissionV1 => KnownFact::RiskReducingExitAdmissionV1,
-        KnownIdentity::ReplaceAdmissionV1 => KnownFact::ReplaceAdmissionV1,
         KnownIdentity::ForcedReductionAdmissionV1 => KnownFact::ForcedReductionAdmissionV1,
         KnownIdentity::BasketAdmissionGrantedV1 => KnownFact::BasketAdmissionGrantedV1,
         KnownIdentity::BasketAdmissionRejectedV1 => KnownFact::BasketAdmissionRejectedV1,
@@ -480,11 +467,6 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::RiskReducingExitAdmissionV1 => IdentityDescriptor {
             kind: "risk_reducing_exit_admission",
-            schema_version: 1,
-            gate_id: "bolt_v3.submit_admission",
-        },
-        KnownIdentity::ReplaceAdmissionV1 => IdentityDescriptor {
-            kind: "replace_admission",
             schema_version: 1,
             gate_id: "bolt_v3.submit_admission",
         },
@@ -668,18 +650,6 @@ pub(crate) const fn disposition_for(
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::RiskReducingExitAdmissionV1, KnownConsumer::ShadowPnlV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::ReplaceAdmissionV1, KnownConsumer::ReservationRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::ReplaceAdmissionV1, KnownConsumer::SettlementRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::ReplaceAdmissionV1, KnownConsumer::BookingRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::ReplaceAdmissionV1, KnownConsumer::ShadowPnlV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::ForcedReductionAdmissionV1, KnownConsumer::ReservationRecoveryV1) => {
@@ -919,9 +889,6 @@ pub(crate) const fn disposition_for(
         (KnownFact::RiskReducingExitAdmissionV1, KnownConsumer::BacktestRunGuardV1) => {
             ConsumerDisposition::Relevant(KnownFact::RiskReducingExitAdmissionV1)
         }
-        (KnownFact::ReplaceAdmissionV1, KnownConsumer::BacktestRunGuardV1) => {
-            ConsumerDisposition::Relevant(KnownFact::ReplaceAdmissionV1)
-        }
         (KnownFact::ForcedReductionAdmissionV1, KnownConsumer::BacktestRunGuardV1) => {
             ConsumerDisposition::Relevant(KnownFact::ForcedReductionAdmissionV1)
         }
@@ -1000,9 +967,6 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     }
     if kind == "risk_reducing_exit_admission" && schema_version == 1 {
         return Some(KnownIdentity::RiskReducingExitAdmissionV1);
-    }
-    if kind == "replace_admission" && schema_version == 1 {
-        return Some(KnownIdentity::ReplaceAdmissionV1);
     }
     if kind == "forced_reduction_admission" && schema_version == 1 {
         return Some(KnownIdentity::ForcedReductionAdmissionV1);

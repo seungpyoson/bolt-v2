@@ -3,35 +3,6 @@
 use super::*;
 
 #[test]
-fn submit_lifecycle_policy_is_derived_from_strategy_config() {
-    let mut strategy = test_strategy();
-    strategy.config.forced_exit_order.is_reduce_only = false;
-    strategy.config.manage_contingent_orders = false;
-    strategy.config.manage_gtd_expiry = false;
-    strategy.config.manage_stop = false;
-    let disabled = strategy.submit_lifecycle_policy();
-
-    assert_eq!(disabled, BoltV3SubmitLifecyclePolicy::new(false));
-    assert_eq!(
-        disabled.submit_intent_for(BoltV3OrderLifecycleIntent::RiskReducingExit),
-        Ok(Some(BoltV3SubmitIntentKind::RiskReducingExit))
-    );
-    assert_eq!(
-        disabled.submit_intent_for(BoltV3OrderLifecycleIntent::ReplaceSubmit),
-        Ok(None)
-    );
-
-    strategy.config.forced_exit_order.is_reduce_only = true;
-    strategy.config.manage_contingent_orders = true;
-    let enabled = strategy.submit_lifecycle_policy();
-    assert_eq!(enabled, BoltV3SubmitLifecyclePolicy::new(true));
-    assert_eq!(
-        enabled.submit_intent_for(BoltV3OrderLifecycleIntent::ReplaceSubmit),
-        Ok(Some(BoltV3SubmitIntentKind::ReplaceSubmit))
-    );
-}
-
-#[test]
 fn decision_evidence_failure_rejects_before_nt_submit() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Seed a (zero) fee for the order's instrument so admission clears the
@@ -315,7 +286,6 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
             order_side: exit_order_side,
             order_quantity: exit_quantity,
             intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
-            lifecycle_policy: strategy.submit_lifecycle_policy(),
             risk_reducing_exit_proof: Some(BoltV3RiskReducingExitProof {
                 position_id: managed_position.position.position_id.to_string(),
                 instrument_id: managed_position.position.instrument_id.to_string(),

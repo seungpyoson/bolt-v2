@@ -8,15 +8,15 @@ use anyhow::{Context, Result, anyhow, ensure};
 use serde::Deserialize;
 
 use super::{
-    codec::decode_current_fact,
+    codec::{decode_current_fact, validate_gate_version},
     facts::{
         AdmittedEntryAdmissionFact, BlockedStrategyInputObservationFact, BookingRecoveryEvent,
         CurrentFact, EntryOrderIntentFact, EntrySkipFact, ExitHoldDecisionFact,
         ExitSubmissionDecisionFact, ForcedReductionAdmissionFact, LossGovernorHaltFact,
-        RejectedEntryAdmissionFact, ReplaceAdmissionFact, RequoteThrottleObservationFact,
-        ReservationRecoveryEvent, RiskReducingExitAdmissionFact, SettlementRecoveryEvent,
-        StartupRecoveryProjections, SubmitLinkedStrategyInputSnapshotFact,
-        SubmitReservationFillFact, SubmitReservationMetadataFact,
+        RejectedEntryAdmissionFact, RequoteThrottleObservationFact, ReservationRecoveryEvent,
+        RiskReducingExitAdmissionFact, SettlementRecoveryEvent, StartupRecoveryProjections,
+        SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
+        SubmitReservationMetadataFact,
     },
     generated_contract::{
         ConsumerDisposition, KnownConsumer, KnownSink, descriptor_for_identity, disposition_for,
@@ -45,7 +45,6 @@ pub enum BacktestRunGuardEvent {
     AdmittedEntryAdmission(Box<AdmittedEntryAdmissionFact>),
     RejectedEntryAdmission(Box<RejectedEntryAdmissionFact>),
     RiskReducingExitAdmission(Box<RiskReducingExitAdmissionFact>),
-    ReplaceAdmission(Box<ReplaceAdmissionFact>),
     ForcedReductionAdmission(Box<ForcedReductionAdmissionFact>),
     SubmitReservationMetadata(SubmitReservationMetadataFact),
     SubmitReservationFill(SubmitReservationFillFact),
@@ -73,37 +72,32 @@ pub fn read_current_evidence_facts(path: &Path, max_bytes: u64) -> Result<Vec<Cu
 
 #[cfg(feature = "test-current-evidence-inspection")]
 fn read_current_evidence_records(path: &Path, max_bytes: u64) -> Result<Vec<RecordedCurrentFact>> {
-    read_consumer_records(path, Some(max_bytes), None)
+    read_consumer_records(path, max_bytes, None)
 }
 
 pub fn read_backtest_run_guard_events(
     path: &Path,
     max_bytes: u64,
 ) -> Result<Vec<RecordedBacktestRunGuardEvent>> {
-    read_consumer_records(
-        path,
-        Some(max_bytes),
-        Some(KnownConsumer::BacktestRunGuardV1),
-    )?
-    .into_iter()
-    .map(|record| {
-        Ok(RecordedBacktestRunGuardEvent {
-            recorded_at_utc_ns: record.recorded_at_utc_ns,
-            event: into_backtest_run_guard_event(record.fact)?,
+    read_consumer_records(path, max_bytes, Some(KnownConsumer::BacktestRunGuardV1))?
+        .into_iter()
+        .map(|record| {
+            Ok(RecordedBacktestRunGuardEvent {
+                recorded_at_utc_ns: record.recorded_at_utc_ns,
+                event: into_backtest_run_guard_event(record.fact)?,
+            })
         })
-    })
-    .collect()
+        .collect()
 }
 
 fn read_consumer_records(
     path: &Path,
-    max_bytes: Option<u64>,
+    max_bytes: u64,
     consumer: Option<KnownConsumer>,
 ) -> Result<Vec<RecordedCurrentFact>> {
     let mut file = File::open(path)
         .with_context(|| format!("open current decision evidence `{}`", path.display()))?;
-    let len = file.metadata()?.len();
-    let lines = read_framed_lines(&mut file, len, max_bytes, "current decision evidence")?;
+    let lines = read_framed_lines(&mut file, max_bytes, "current decision evidence")?;
     let mut records = Vec::new();
     for (index, line) in lines.into_iter().enumerate() {
         let line_number = index + 1;
@@ -143,7 +137,7 @@ fn read_consumer_records(
 }
 
 pub fn read_shadow_pnl_events(path: &Path, max_bytes: u64) -> Result<Vec<ShadowPnlEvent>> {
-    read_consumer_records(path, Some(max_bytes), Some(KnownConsumer::ShadowPnlV1))?
+    read_consumer_records(path, max_bytes, Some(KnownConsumer::ShadowPnlV1))?
         .into_iter()
         .map(|record| into_shadow_pnl_event(record.fact))
         .collect()
@@ -163,7 +157,6 @@ fn into_shadow_pnl_event(fact: CurrentFact) -> Result<ShadowPnlEvent> {
         | CurrentFact::RiskReducingExitOrderIntent(_)
         | CurrentFact::RejectedEntryAdmission(_)
         | CurrentFact::RiskReducingExitAdmission(_)
-        | CurrentFact::ReplaceAdmission(_)
         | CurrentFact::ForcedReductionAdmission(_)
         | CurrentFact::BasketAdmissionGranted(_)
         | CurrentFact::BasketAdmissionRejected(_)
@@ -206,7 +199,6 @@ pub(super) fn into_backtest_run_guard_event(fact: CurrentFact) -> Result<Backtes
         CurrentFact::RiskReducingExitAdmission(value) => {
             Ok(BacktestRunGuardEvent::RiskReducingExitAdmission(value))
         }
-        CurrentFact::ReplaceAdmission(value) => Ok(BacktestRunGuardEvent::ReplaceAdmission(value)),
         CurrentFact::ForcedReductionAdmission(value) => {
             Ok(BacktestRunGuardEvent::ForcedReductionAdmission(value))
         }
@@ -250,10 +242,7 @@ fn validated_header(line: &str, line_number: usize, stream: &str) -> Result<Head
         header.recorded_at_utc_ns > 0,
         "recorded_at_utc_ns must be positive at {stream} line {line_number}"
     );
-    ensure!(
-        !header.gate_version.trim().is_empty(),
-        "gate_version must be non-empty at {stream} line {line_number}"
-    );
+    validate_gate_version(&header.gate_version, line_number)?;
     Ok(header)
 }
 
@@ -273,15 +262,14 @@ pub(super) struct ValidatedStream {
 pub(super) fn validate_stream(
     file: &mut File,
     expected_sink: KnownSink,
-    max_bytes: Option<u64>,
+    max_bytes: u64,
 ) -> Result<ValidatedStream> {
     let stream = match expected_sink {
         KnownSink::Machine => "machine evidence",
         KnownSink::Observation => "observation evidence",
     };
-    let len = file.metadata()?.len();
     file.seek(SeekFrom::Start(0))?;
-    let lines = read_framed_lines(file, len, max_bytes, stream)?;
+    let lines = read_framed_lines(file, max_bytes, stream)?;
     let mut recovery = StartupRecoveryProjections::default();
     for (index, line) in lines.into_iter().enumerate() {
         let line_number = index + 1;
@@ -405,22 +393,18 @@ fn sink_name(sink: KnownSink) -> &'static str {
     }
 }
 
-fn read_framed_lines(
-    reader: &mut impl Read,
-    len: u64,
-    max_bytes: Option<u64>,
-    stream: &str,
-) -> Result<Vec<String>> {
-    if let Some(max_bytes) = max_bytes {
-        ensure!(
-            len <= max_bytes,
-            "{stream} exceeds configured byte cap: {len} > {max_bytes}"
-        );
-    }
+fn read_framed_lines(reader: &mut impl Read, max_bytes: u64, stream: &str) -> Result<Vec<String>> {
     let mut bytes = String::new();
+    let read_limit = max_bytes.saturating_add(1);
     reader
+        .take(read_limit)
         .read_to_string(&mut bytes)
         .with_context(|| format!("read {stream}"))?;
+    let consumed = bytes.len() as u64;
+    ensure!(
+        consumed <= max_bytes,
+        "{stream} exceeds configured byte cap: {consumed} > {max_bytes}"
+    );
     ensure!(
         bytes.is_empty() || bytes.ends_with('\n'),
         "{stream} has a non-newline-terminated final record"
@@ -438,4 +422,20 @@ fn read_framed_lines(
             Ok(line.to_string())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::read_framed_lines;
+
+    #[test]
+    fn consuming_read_enforces_cap_without_trusting_metadata() {
+        let mut source = Cursor::new(b"12345\n");
+        let error = read_framed_lines(&mut source, 4, "growing stream")
+            .expect_err("bytes consumed beyond the cap must fail");
+
+        assert!(error.to_string().contains("exceeds configured byte cap"));
+    }
 }

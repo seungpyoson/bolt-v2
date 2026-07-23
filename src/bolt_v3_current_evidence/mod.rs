@@ -27,6 +27,15 @@ pub use record::{
 pub use runtime::OfflineDecisionEvidenceRuntime;
 pub use runtime::{DecisionEvidenceRuntime, ObservationStreamStatus};
 
+/// Proves prefix containment and probes an existing catalog through one descriptor-relative authority.
+pub fn prestart_catalog_check(
+    required_prefix: &std::path::Path,
+    catalog: &std::path::Path,
+) -> anyhow::Result<u64> {
+    path_authority::CatalogDirectory::open_under_prefix(required_prefix, catalog)?
+        .prestart_probe_and_available_bytes()
+}
+
 #[cfg(test)]
 pub(crate) fn prepare_test_generation(loaded: &crate::bolt_v3_config::LoadedBoltV3Config) {
     let catalog = std::path::Path::new(&loaded.root.persistence.catalog_directory);

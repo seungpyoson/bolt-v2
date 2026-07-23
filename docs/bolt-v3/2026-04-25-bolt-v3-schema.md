@@ -654,7 +654,7 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - `observation_relative_path`: required relative JSONL path containing observations that startup recovery never reads.
 - `retired_relative_paths`: required list of pre-cutover paths whose presence makes startup fail closed.
 - `reject_episode_max_count`: positive bound for retained semantic-key rejection diagnostics.
-- `recovery_evidence_max_bytes`: positive mandatory byte cap for validating and decoding the complete machine stream at startup.
+- `recovery_evidence_max_bytes`: positive mandatory byte cap for every current-evidence read, including startup validation of both machine and observation streams and offline Shadow-PnL reads.
 
 All configured paths are distinct, relative to `catalog_directory`, and may not traverse parent directories.
 The trading runtime has one current-format path: exact `(kind, schema_version)` plus exact `gate_id`

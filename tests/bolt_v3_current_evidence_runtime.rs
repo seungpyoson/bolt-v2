@@ -16,7 +16,10 @@ use tempfile::TempDir;
 fn loaded_in(temp: &TempDir) -> LoadedBoltV3Config {
     let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture config must load");
-    loaded.root.persistence.catalog_directory = temp.path().display().to_string();
+    loaded.root.persistence.catalog_directory = std::fs::canonicalize(temp.path())
+        .expect("temporary catalog must canonicalize")
+        .display()
+        .to_string();
     let evidence = &loaded.root.persistence.decision_evidence;
     for relative in [
         evidence.machine_relative_path.as_str(),

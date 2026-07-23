@@ -37,7 +37,7 @@ use crate::{
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
-        BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+        BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
         build_submit_admission_request_from_order,
     },
 };
@@ -319,18 +319,20 @@ fn record_order_intent(
     intent_kind: BoltV3SubmitIntentKind,
     details: OrderIntentDetails,
 ) -> Result<()> {
-    if intent_kind == BoltV3SubmitIntentKind::Entry {
-        recorder
+    match intent_kind {
+        BoltV3SubmitIntentKind::Entry => recorder
             .record_entry_order_intent(EntryOrderIntentFact { details })
             .map(|_| ())
-            .map_err(anyhow::Error::from)
-    } else {
-        if let NonBlockingRecordOutcome::Failed(error) = recorder
-            .record_risk_reducing_exit_order_intent(RiskReducingExitOrderIntentFact { details })
-        {
-            log::error!("risk-reducing order intent evidence failed: {error}");
+            .map_err(anyhow::Error::from),
+        BoltV3SubmitIntentKind::RiskReducingExit
+        | BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+            if let NonBlockingRecordOutcome::Failed(error) = recorder
+                .record_risk_reducing_exit_order_intent(RiskReducingExitOrderIntentFact { details })
+            {
+                log::error!("risk-reducing order intent evidence failed: {error}");
+            }
+            Ok(())
         }
-        Ok(())
     }
 }
 
@@ -636,7 +638,6 @@ pub struct BoltV3MakerOrderRoutingContext<'a> {
     pub strategy_id: &'a str,
     pub execution_client_id: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -645,7 +646,6 @@ pub struct BoltV3KillSwitchFlattenRoutingContext<'a> {
     pub fallback_price: &'a str,
     pub instrument: Option<&'a InstrumentAny>,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 pub(crate) fn route_kill_switch_flatten_command_with_sink<S>(
@@ -688,7 +688,6 @@ where
                 instrument: context.instrument,
                 ..crate::bolt_v3_submit_admission::OrderValuationContext::empty()
             },
-            lifecycle_policy: context.submit_lifecycle_policy,
             risk_reducing_exit_position: None,
         },
         |_| Ok(context.max_fee_bps),
@@ -1037,7 +1036,6 @@ where
                 intent_kind: BoltV3SubmitIntentKind::Entry,
                 order: &order,
                 valuation: crate::bolt_v3_submit_admission::OrderValuationContext::empty(),
-                lifecycle_policy: self.context.submit_lifecycle_policy,
                 risk_reducing_exit_position: None,
             },
             |_| Ok(self.context.max_fee_bps),
@@ -1227,7 +1225,7 @@ mod tests {
             BoltV3LiveSubmitApprovalLimits, BoltV3RiskReducingExitProof,
             BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
             BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitCapitalAdmissionNtComponents,
-            BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
+            BoltV3SubmitIntentKind, PredictionMarketOutcomeSide,
         },
     };
 
@@ -2032,7 +2030,6 @@ mod tests {
                 fallback_price: "1",
                 instrument: Some(&instrument),
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             },
             command,
         )
@@ -2122,7 +2119,6 @@ mod tests {
                 fallback_price: "1",
                 instrument: Some(&instrument),
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             },
             command,
         )
@@ -2498,7 +2494,6 @@ mod tests {
             order_side: OrderSide::Buy,
             order_quantity: Decimal::new(1, 0),
             intent_kind: BoltV3SubmitIntentKind::Entry,
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_proof: None,
             kill_switch_forced_reduction: None,
             admission_evidence: None,
@@ -2539,7 +2534,6 @@ mod tests {
             order_side: OrderSide::Sell,
             order_quantity,
             intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_proof: Some(BoltV3RiskReducingExitProof {
                 position_id: "POSITION-001".to_string(),
                 instrument_id: order.instrument_id().to_string(),
@@ -2615,7 +2609,6 @@ mod tests {
             strategy_id: "maker-strategy",
             execution_client_id: "maker_execution_client",
             max_fee_bps: Decimal::ZERO,
-            submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         }
     }
 
@@ -2800,7 +2793,6 @@ mod tests {
                 fallback_price: "1",
                 instrument: Some(instrument),
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             },
             command,
         )

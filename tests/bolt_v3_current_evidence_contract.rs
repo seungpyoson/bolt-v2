@@ -18,10 +18,10 @@ fn replace_once(input: &str, from: &str, to: &str) -> String {
 fn current_contract_is_closed_and_deterministic() {
     let contract = parse_contract_registry(REGISTRY).expect("current contract must parse");
     assert_eq!(contract.consumer_count(), 5);
-    assert_eq!(contract.producer_count(), 27);
-    assert_eq!(contract.purpose_count(), 26);
-    assert_eq!(contract.identity_count(), 26);
-    assert_eq!(contract.fact_count(), 26);
+    assert_eq!(contract.producer_count(), 26);
+    assert_eq!(contract.purpose_count(), 25);
+    assert_eq!(contract.identity_count(), 25);
+    assert_eq!(contract.fact_count(), 25);
 
     let first = render_contract(&contract);
     let second = render_contract(&contract);
@@ -33,7 +33,7 @@ fn current_contract_is_closed_and_deterministic() {
 fn every_purpose_requires_at_least_one_structural_producer() {
     let mutated = replace_once(
         REGISTRY,
-        "[[producers]]\nid = \"edge_taker_blocked_strategy_input\"\npurpose = \"blocked_strategy_input_observation\"\nsource_anchors = [\"src/strategies/binary_oracle_edge_taker/mod.rs:record_blocked_entry_strategy_input_snapshot_once\"]\n",
+        "[[producers]]\nid = \"edge_taker_blocked_strategy_input\"\npurpose = \"blocked_strategy_input_observation\"\n",
         "",
     );
     let error = parse_contract_registry(&mutated)
@@ -44,7 +44,7 @@ fn every_purpose_requires_at_least_one_structural_producer() {
 #[test]
 fn adding_a_consumer_invalidates_every_unadjudicated_fact() {
     let mutated = format!(
-        "{REGISTRY}\n[[consumers]]\nid = \"new_recovery_consumer_v1\"\nmode = \"startup_recovery\"\nowner = \"bolt_v3_decision_evidence\"\nsource_anchors = [\"src/new_consumer.rs:recover\"]\n"
+        "{REGISTRY}\n[[consumers]]\nid = \"new_recovery_consumer_v1\"\nmode = \"startup_recovery\"\nowner = \"bolt_v3_decision_evidence\"\n"
     );
     let error = parse_contract_registry(&mutated)
         .expect_err("consumer-universe growth must require explicit dispositions");

@@ -15,31 +15,26 @@ startup_recovery_reads = false
 id = "reservation_recovery_v1"
 mode = "startup_recovery"
 owner = "bolt_v3_decision_evidence"
-source_anchors = ["src/bolt_v3_live_node.rs:rebuild_capital_admission_from_nt_cache"]
 
 [[consumers]]
 id = "settlement_recovery_v1"
 mode = "startup_recovery"
 owner = "bolt_v3_decision_evidence"
-source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:recover_settlement_bootstrap_from_scope"]
 
 [[consumers]]
 id = "booking_recovery_v1"
 mode = "startup_recovery"
 owner = "bolt_v3_decision_evidence"
-source_anchors = ["src/bolt_v3_settlement_booking.rs:recover_settlement_bootstrap"]
 
 [[consumers]]
 id = "shadow_pnl_v1"
 mode = "offline_projection"
 owner = "bolt_v3_decision_evidence"
-source_anchors = ["src/bin/shadow_pnl_report.rs"]
 
 [[consumers]]
 id = "backtest_run_guard_v1"
 mode = "offline_projection"
 owner = "bolt_v3_decision_evidence"
-source_anchors = ["crates/backtesting-vertical-slice/src/runner.rs:BacktestDecisionEvidenceWriter::state"]
 
 [[purposes]]
 id = "blocked_strategy_input_observation"
@@ -110,16 +105,6 @@ sink = "machine"
 novelty_capability = "prohibited"
 current_identity = "risk_reducing_exit_admission_v1"
 current_fact = "risk_reducing_exit_admission_v1"
-
-[[purposes]]
-id = "replace_admission"
-owner = "bolt_v3_decision_evidence"
-duties = ["action"]
-effect_policy = "must_precede_new_risk"
-sink = "machine"
-novelty_capability = "prohibited"
-current_identity = "replace_admission_v1"
-current_fact = "replace_admission_v1"
 
 [[purposes]]
 id = "forced_reduction_admission"
@@ -304,137 +289,106 @@ current_fact = "venue_truth_divergence_v1"
 [[producers]]
 id = "edge_taker_blocked_strategy_input"
 purpose = "blocked_strategy_input_observation"
-source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_blocked_entry_strategy_input_snapshot_once"]
 
 [[producers]]
 id = "edge_taker_submit_strategy_input"
 purpose = "submit_linked_strategy_input_snapshot"
-source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:try_submit_entry_order"]
 
 [[producers]]
 id = "order_execution_entry_intent"
 purpose = "entry_order_intent"
-source_anchors = ["src/bolt_v3_order_execution.rs:route_submit_with_sink"]
 
 [[producers]]
 id = "order_execution_exit_intent"
 purpose = "risk_reducing_exit_order_intent"
-source_anchors = ["src/bolt_v3_order_execution.rs:route_submit_with_sink"]
 
 [[producers]]
 id = "submit_admission_admitted_entry"
 purpose = "admitted_entry_admission"
-source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at"]
 
 [[producers]]
 id = "submit_admission_rejected_entry"
 purpose = "rejected_entry_admission"
-source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at"]
 
 [[producers]]
 id = "submit_admission_exit"
 purpose = "risk_reducing_exit_admission"
-source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at"]
-
-[[producers]]
-id = "submit_admission_replace"
-purpose = "replace_admission"
-source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at"]
 
 [[producers]]
 id = "submit_admission_forced_reduction"
 purpose = "forced_reduction_admission"
-source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at"]
 
 [[producers]]
 id = "basket_admission_granted"
 purpose = "basket_admission_granted"
-source_anchors = ["src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
 
 [[producers]]
 id = "basket_admission_rejected"
 purpose = "basket_admission_rejected"
-source_anchors = ["src/bolt_v3_basket_admission.rs:record_basket_rejection", "src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
 
 [[producers]]
 id = "capital_admission_rebuild"
 purpose = "capital_admission_rebuild"
-source_anchors = ["src/bolt_v3_submit_admission.rs:finish_capital_admission_rebuild"]
 
 [[producers]]
 id = "submit_reservation_metadata"
 purpose = "submit_reservation_metadata"
-source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at", "src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
 
 [[producers]]
 id = "submit_reservation_fill"
 purpose = "submit_reservation_fill"
-source_anchors = ["src/bolt_v3_submit_admission.rs:apply_capital_admission_lifecycle_update"]
 
 [[producers]]
 id = "edge_taker_entry_skip"
 purpose = "entry_skip_observation"
-source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_and_log_entry_skip"]
 
 [[producers]]
 id = "edge_taker_exit_submit_decision"
 purpose = "exit_submission_decision"
-source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_exit_decision_once"]
 
 [[producers]]
 id = "edge_taker_exit_hold_decision"
 purpose = "exit_hold_decision"
-source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_exit_decision_once"]
 
 [[producers]]
 id = "edge_taker_exit_evaluation"
 purpose = "exit_evaluation"
-source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_exit_evaluation_evidence"]
 
 [[producers]]
 id = "submit_admission_loss_halt"
 purpose = "loss_governor_halt"
-source_anchors = ["src/bolt_v3_submit_admission.rs:record_stale_loss_governor_halt"]
 
 [[producers]]
 id = "submit_admission_order_reject"
 purpose = "order_reject"
-source_anchors = ["src/bolt_v3_submit_admission.rs:record_submit_admission_order_reject"]
 
 [[producers]]
 id = "order_reject_observer_feed"
 purpose = "order_reject"
-source_anchors = ["src/bolt_v3_order_reject_observer_feed.rs:on_order_event"]
 
 [[producers]]
 id = "edge_taker_order_lifecycle"
 purpose = "order_lifecycle"
-source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_order_lifecycle_evidence"]
 
 [[producers]]
 id = "maker_requote_throttle"
 purpose = "requote_throttle_observation"
-source_anchors = ["src/strategies/binary_oracle_maker/mod.rs:update_requote_throttle_edge"]
 
 [[producers]]
 id = "edge_taker_settlement"
 purpose = "settlement"
-source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:try_book_resolution_settlement"]
 
 [[producers]]
 id = "edge_taker_terminal_settlement"
 purpose = "terminal_settlement"
-source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:apply_terminal_settlement_transition"]
 
 [[producers]]
 id = "submit_admission_venue_capture_failure"
 purpose = "venue_truth_capture_failure"
-source_anchors = ["src/bolt_v3_submit_admission.rs:suspend_capital_admission_for_venue_truth_capture_failure"]
 
 [[producers]]
 id = "submit_admission_venue_divergence"
 purpose = "venue_truth_divergence"
-source_anchors = ["src/bolt_v3_submit_admission.rs:record_venue_truth_divergence_evidence"]
 
 [[identities]]
 id = "blocked_strategy_input_observation_v1"
@@ -482,13 +436,6 @@ gate_id = "bolt_v3.submit_admission"
 id = "risk_reducing_exit_admission_v1"
 purpose = "risk_reducing_exit_admission"
 kind = "risk_reducing_exit_admission"
-schema_version = 1
-gate_id = "bolt_v3.submit_admission"
-
-[[identities]]
-id = "replace_admission_v1"
-purpose = "replace_admission"
-kind = "replace_admission"
 schema_version = 1
 gate_id = "bolt_v3.submit_admission"
 
@@ -645,10 +592,6 @@ identity = "rejected_entry_admission_v1"
 [[facts]]
 id = "risk_reducing_exit_admission_v1"
 identity = "risk_reducing_exit_admission_v1"
-
-[[facts]]
-id = "replace_admission_v1"
-identity = "replace_admission_v1"
 
 [[facts]]
 id = "forced_reduction_admission_v1"
@@ -886,30 +829,6 @@ owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
 fact = "risk_reducing_exit_admission_v1"
-consumer = "shadow_pnl_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "replace_admission_v1"
-consumer = "reservation_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "replace_admission_v1"
-consumer = "settlement_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "replace_admission_v1"
-consumer = "booking_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "replace_admission_v1"
 consumer = "shadow_pnl_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
@@ -1387,12 +1306,6 @@ fact = "risk_reducing_exit_admission_v1"
 consumer = "backtest_run_guard_v1"
 action = "relevant"
 event_variant = "risk_reducing_exit_admission_v1"
-
-[[dispositions]]
-fact = "replace_admission_v1"
-consumer = "backtest_run_guard_v1"
-action = "relevant"
-event_variant = "replace_admission_v1"
 
 [[dispositions]]
 fact = "forced_reduction_admission_v1"

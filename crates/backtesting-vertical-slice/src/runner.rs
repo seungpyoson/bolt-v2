@@ -96,8 +96,9 @@ use super::{
     run_manifest::{
         BacktestingRunManifest, NtSurfaceClassification, STRATEGY_BINARY_ORACLE_EDGE_TAKER,
         STRATEGY_BINARY_ORACLE_MAKER, STRATEGY_HURST_VPIN_DIRECTIONAL,
-        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
-        STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategySource,
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
+        STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT, STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+        StrategySource,
     },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
 };
@@ -209,13 +210,18 @@ struct BacktestDecisionEvidenceWriter {
     runtime: OfflineDecisionEvidenceRuntime,
     machine: tempfile::NamedTempFile,
     observation: tempfile::NamedTempFile,
+    read_max_bytes: u64,
 }
 
 impl BacktestDecisionEvidenceWriter {
-    fn new(reject_episode_max_count: usize) -> Result<Self> {
+    fn new(reject_episode_max_count: usize, read_max_bytes: u64) -> Result<Self> {
         ensure!(
             reject_episode_max_count > 0,
             "strategy parameter {STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT} must be positive"
+        );
+        ensure!(
+            read_max_bytes > 0,
+            "strategy parameter {STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES} must be positive"
         );
         let machine = tempfile::NamedTempFile::new()
             .context("create isolated backtest machine-evidence stream")?;
@@ -234,6 +240,7 @@ impl BacktestDecisionEvidenceWriter {
             runtime,
             machine,
             observation,
+            read_max_bytes,
         })
     }
 
@@ -244,12 +251,7 @@ impl BacktestDecisionEvidenceWriter {
     fn state(&self) -> Result<BacktestDecisionEvidenceState> {
         let mut state = BacktestDecisionEvidenceState::default();
         for stream in [&self.machine, &self.observation] {
-            let max_bytes = stream
-                .as_file()
-                .metadata()
-                .context("inspect isolated backtest evidence stream")?
-                .len();
-            for record in read_backtest_run_guard_events(stream.path(), max_bytes)? {
+            for record in read_backtest_run_guard_events(stream.path(), self.read_max_bytes)? {
                 match record.event {
                     BacktestRunGuardEvent::BlockedStrategyInputObservation(fact) => {
                         state.observe_strategy_input(
@@ -274,12 +276,6 @@ impl BacktestDecisionEvidenceWriter {
                         state.admission_decision_count += 1;
                     }
                     BacktestRunGuardEvent::RiskReducingExitAdmission(fact) => {
-                        state.admission_decision_count += 1;
-                        if matches!(fact.outcome, AdmissionDecisionOutcome::Admitted) {
-                            state.admitted_order_count += 1;
-                        }
-                    }
-                    BacktestRunGuardEvent::ReplaceAdmission(fact) => {
                         state.admission_decision_count += 1;
                         if matches!(fact.outcome, AdmissionDecisionOutcome::Admitted) {
                             state.admitted_order_count += 1;
@@ -812,6 +808,23 @@ fn manifest_evidence_reject_episode_max_count(strategy: &StrategySource) -> Resu
     Ok(value)
 }
 
+fn manifest_evidence_read_max_bytes(strategy: &StrategySource) -> Result<u64> {
+    let raw = strategy
+        .parameters
+        .get(STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES)
+        .with_context(|| {
+            format!("strategy parameter {STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES} is required")
+        })?;
+    let value = raw
+        .parse::<u64>()
+        .with_context(|| format!("invalid {STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES} {raw:?}"))?;
+    ensure!(
+        value > 0,
+        "strategy parameter {STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES} must be positive"
+    );
+    Ok(value)
+}
+
 fn inline_manifest_strategy_config(strategy: &StrategySource) -> Result<toml::Value> {
     let raw_config = strategy
         .parameters
@@ -832,6 +845,7 @@ fn register_manifest_binary_oracle_strategy(
 ) -> Result<Arc<BacktestDecisionEvidenceWriter>> {
     let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::new(
         manifest_evidence_reject_episode_max_count(&manifest.strategy)?,
+        manifest_evidence_read_max_bytes(&manifest.strategy)?,
     )?);
     let decision_evidence = run_guard_writer.recorder();
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
@@ -998,6 +1012,7 @@ fn add_manifest_strategy(
             };
             let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::new(
                 manifest_evidence_reject_episode_max_count(strategy)?,
+                manifest_evidence_read_max_bytes(strategy)?,
             )?);
             let resolved_config_hash = sha256_hex(&resolved_config_bytes);
             let decision_evidence = run_guard_writer.recorder();
@@ -2705,9 +2720,10 @@ mod tests {
         ManifestInstrumentSettlementInput, ManifestRealizedVolatilitySourceSelector,
         ManifestReferenceCurrentPriceInput, ManifestVenueConfig, MarketStructureFixture,
         RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_BINARY_ORACLE_MAKER,
-        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
-        STRATEGY_PARAM_FEE_BPS, STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource,
-        StrategySource, StrategySourceKind,
+        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
+        STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT, STRATEGY_PARAM_FEE_BPS,
+        STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
+        StrategySourceKind,
     };
     use crate::seeded_l2_quotes::{
         SeededL2QuoteAction, SeededL2QuoteMappingConfig, SeededL2QuoteProvenance,
@@ -2761,7 +2777,7 @@ mod tests {
 
     #[test]
     fn backtest_guard_selects_latest_strategy_input_across_separate_streams() -> Result<()> {
-        let writer = BacktestDecisionEvidenceWriter::new(4)?;
+        let writer = BacktestDecisionEvidenceWriter::new(4, 1_048_576)?;
         fs::write(
             writer.machine.path(),
             strategy_input_fixture(
@@ -2799,7 +2815,7 @@ mod tests {
 
     #[test]
     fn backtest_guard_rejects_conflicting_strategy_inputs_at_the_same_timestamp() -> Result<()> {
-        let writer = BacktestDecisionEvidenceWriter::new(4)?;
+        let writer = BacktestDecisionEvidenceWriter::new(4, 1_048_576)?;
         fs::write(
             writer.machine.path(),
             strategy_input_fixture(
@@ -3396,6 +3412,10 @@ mod tests {
                 registry_key: STRATEGY_BINARY_ORACLE_MAKER.to_string(),
                 parameters: BTreeMap::from([
                     ("config_toml".to_string(), maker_smoke_config_toml()),
+                    (
+                        STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES.to_string(),
+                        "1048576".to_string(),
+                    ),
                     (
                         STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT.to_string(),
                         "4096".to_string(),
@@ -7562,6 +7582,10 @@ mod tests {
                 source_kind: StrategySourceKind::CompiledRustRegistry,
                 registry_key: STRATEGY_BINARY_ORACLE_EDGE_TAKER.to_string(),
                 parameters: BTreeMap::from([
+                    (
+                        STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES.to_string(),
+                        "1048576".to_string(),
+                    ),
                     (
                         STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT.to_string(),
                         "4096".to_string(),

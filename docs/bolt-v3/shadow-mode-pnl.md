@@ -50,9 +50,13 @@ Run:
 
 ```bash
 cargo run --locked --bin shadow_pnl_report -- \
+  --config /etc/bolt-v2/config.toml \
   --evidence-jsonl /var/lib/bolt/catalog/bolt-v3/decision-evidence/current/machine.jsonl \
   --settlements-jsonl /var/lib/bolt/catalog/shadow-settlements.jsonl
 ```
+
+The report bounds its evidence read with
+`persistence.decision_evidence.recovery_evidence_max_bytes` from `--config`.
 
 The output table is grouped by day and asset:
 

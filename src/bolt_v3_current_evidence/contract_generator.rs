@@ -48,7 +48,6 @@ struct ConsumerRow {
     id: String,
     mode: String,
     owner: String,
-    source_anchors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,7 +68,6 @@ struct PurposeRow {
 struct ProducerRow {
     id: String,
     purpose: String,
-    source_anchors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -175,7 +173,6 @@ fn validate_registry(wire: &RegistryWire) -> Result<()> {
             consumer.id,
             consumer.mode
         );
-        ensure_nonempty_anchors("consumer", &consumer.id, &consumer.source_anchors)?;
     }
     ensure!(
         wire.consumers
@@ -237,7 +234,6 @@ fn validate_registry(wire: &RegistryWire) -> Result<()> {
             producer.id,
             producer.purpose
         );
-        ensure_nonempty_anchors("producer", &producer.id, &producer.source_anchors)?;
         *producers_per_purpose
             .entry(producer.purpose.as_str())
             .or_default() += 1;
@@ -483,18 +479,6 @@ fn unique_ids<'a>(label: &str, ids: impl Iterator<Item = &'a str>) -> Result<BTr
         "contract must register at least one {label}"
     );
     Ok(unique)
-}
-
-fn ensure_nonempty_anchors(label: &str, id: &str, anchors: &[String]) -> Result<()> {
-    ensure!(
-        !anchors.is_empty(),
-        "{label} `{id}` requires source anchors"
-    );
-    ensure!(
-        anchors.iter().all(|anchor| !anchor.trim().is_empty()),
-        "{label} `{id}` has an empty source anchor"
-    );
-    Ok(())
 }
 
 pub fn render_contract(contract: &ContractRegistry) -> String {

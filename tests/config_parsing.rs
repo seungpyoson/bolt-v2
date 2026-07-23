@@ -5800,6 +5800,8 @@ data_client_readiness_probe_poll_interval_ms = 50
 machine_relative_path = "bolt-v3/decision-evidence/current/machine.jsonl"
 observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl"
 retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
+reject_episode_max_count = 4096
+recovery_evidence_max_bytes = 1048576
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
@@ -6230,6 +6232,8 @@ data_client_readiness_probe_poll_interval_ms = 50
 machine_relative_path = "bolt-v3/decision-evidence/current/machine.jsonl"
 observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl"
 retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
+reject_episode_max_count = 4096
+recovery_evidence_max_bytes = 1048576
 
 [persistence.streaming]
 catalog_fs_protocol = "file"

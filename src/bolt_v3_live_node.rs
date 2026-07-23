@@ -207,7 +207,8 @@ use crate::{
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
     },
     bolt_v3_operator_health::{
-        BoltV3InputHealth, BoltV3InputHealthSourceTransition, BoltV3InputHealthTransitionEmitter,
+        BoltV3DecisionEvidenceObservationHealth, BoltV3InputHealth,
+        BoltV3InputHealthSourceTransition, BoltV3InputHealthTransitionEmitter,
         BoltV3MissingInputSource, BoltV3OperatorHealthSurface,
         BoltV3OperatorHealthTransitionEmitter, BoltV3RejectObserverHealth, BoltV3SettlementHealth,
         BoltV3SettlementHealthTransition, BoltV3SettlementHealthTransitionEmitter,
@@ -583,6 +584,7 @@ fn live_operator_health_surface(
     input_health_configured_source_count: usize,
     input_health: Option<BoltV3InputHealth>,
     settlement_health: BoltV3SettlementHealth,
+    observation_status: &ObservationStreamStatus,
 ) -> BoltV3OperatorHealthSurface {
     let reject_observer = order_reject_observer_feed.map_or_else(
         BoltV3RejectObserverHealth::not_configured,
@@ -615,6 +617,14 @@ fn live_operator_health_surface(
             BoltV3InputHealth::unobserved(input_health_configured_source_count)
         }),
         settlement_health,
+        match observation_status {
+            ObservationStreamStatus::Available => {
+                BoltV3DecisionEvidenceObservationHealth::available()
+            }
+            ObservationStreamStatus::Poisoned { cause } => {
+                BoltV3DecisionEvidenceObservationHealth::poisoned(cause.as_ref())
+            }
+        },
     )
 }
 
@@ -991,10 +1001,6 @@ impl BoltV3LiveNodeRuntime {
         &self.registration_summary
     }
 
-    pub fn decision_evidence_observation_status(&self) -> &ObservationStreamStatus {
-        &self.decision_evidence_observation_status
-    }
-
     pub fn registered_exec_client_ids(&self) -> Vec<ClientId> {
         self.node.kernel().exec_engine.borrow().client_ids()
     }
@@ -1365,6 +1371,7 @@ impl BoltV3LiveNodeRuntime {
             self.input_health_configured_source_count,
             input_health,
             settlement_health,
+            &self.decision_evidence_observation_status,
         ))
     }
 
@@ -3047,6 +3054,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let submit_admission = submit_admission.clone();
         let logger = operator_health_transition_logger.clone();
         let settlement_health = settlement_health.clone();
+        let observation_status = decision_evidence_observation_status.clone();
         let venue_truth_configured = capital_admission_runtime_feed.is_some();
         Arc::new(move |reason, input_health| {
             let settlement_health = settlement_health_snapshot(&settlement_health)?;
@@ -3057,6 +3065,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                 input_health_configured_source_count,
                 input_health,
                 settlement_health,
+                &observation_status,
             );
             logger.emit_surface(reason, surface);
             Ok(())

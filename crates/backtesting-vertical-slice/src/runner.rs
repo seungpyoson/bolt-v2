@@ -2741,8 +2741,7 @@ mod tests {
         spot_price: &str,
     ) -> Vec<u8> {
         let baseline = fixture.lines().next().expect("fixture must contain a line");
-        let timestamp_anchor =
-            format!("\"recorded_at_utc_ns\":{baseline_recorded_at_utc_ns}");
+        let timestamp_anchor = format!("\"recorded_at_utc_ns\":{baseline_recorded_at_utc_ns}");
         assert_eq!(
             baseline.matches(&timestamp_anchor).count(),
             1,
@@ -2756,11 +2755,7 @@ mod tests {
             1,
             "fixture must contain exactly one baseline spot price"
         );
-        let line = line.replacen(
-            spot_anchor,
-            &format!("\"spot_price\":\"{spot_price}\""),
-            1,
-        );
+        let line = line.replacen(spot_anchor, &format!("\"spot_price\":\"{spot_price}\""), 1);
         format!("{line}\n").into_bytes()
     }
 

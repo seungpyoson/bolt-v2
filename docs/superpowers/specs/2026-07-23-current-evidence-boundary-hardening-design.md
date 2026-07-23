@@ -113,18 +113,17 @@ The implementation is decomposed around retained directory handles so tests can 
 
 Rust frozen wire types remain the only authority for field shape and enum domains. TOML continues to own identity, purpose, sink, policy, and consumer relationships; it does not enumerate payload cases.
 
-Every exact current identity owns an ordered, append-only positive JSONL corpus and a small raw rejection corpus. Typed case builders co-located with the codecs produce the positive cases. Coverage is linear rather than Cartesian:
+Every exact current identity owns an ordered, append-only canonical-emission JSONL corpus. Every identity with admitted omitted fields also owns an accepted-noncanonical JSONL corpus, and the contract owns a small shared raw rejection corpus. Typed case builders co-located with the codecs produce only canonical-emission cases through the sole production encoder. Coverage is linear rather than Cartesian:
 
 - one canonical baseline case;
 - at least one case for every frozen enum variant and tagged payload branch reachable from that identity;
 - every optional field serialized with a present value at least once;
 - every optional field serialized as explicit `null` at least once;
-- every optional field omitted at least once when omission is admitted;
 - additional cases only for semantic combinations whose validity depends on multiple fields.
 
-Absent and explicit null may decode to the same semantic value, but both accepted byte representations remain independently frozen.
+When omission is admitted, the accepted-noncanonical corpus freezes at least one omitted representation per optional field. Each such line must decode through the sole production decoder to the same semantic fact as its explicit-null form and then re-encode to the canonical explicit-null bytes. The encoder never gains a fixture-only omission path.
 
-Frozen enum helpers use exhaustive matches without wildcard arms. Adding a frozen variant therefore fails compilation until its typed coverage case is adjudicated. Behavioral tests encode every typed case, compare it byte-for-byte with committed JSONL, decode it through the sole exact-identity dispatch, and assert the union of cases covers the complete declared variant and optional-state inventory.
+Frozen enum helpers use exhaustive matches without wildcard arms. Adding a frozen variant therefore fails compilation until its typed coverage case is adjudicated. Behavioral tests encode every typed case, compare it byte-for-byte with committed canonical JSONL, decode both canonical and accepted-noncanonical lines through the sole exact-identity dispatch, and assert the union of cases covers the complete declared variant and optional-state inventory.
 
 Raw rejection cases cover failures that are clearer as immutable bytes, including unknown enum/tag spelling, wrong gate ID, wrong exact pair, malformed framing, extra fields, legacy identities, and wrong-sink identities. Existing programmatic per-field missing/wrong-type and absent/null semantic mutation tests remain.
 

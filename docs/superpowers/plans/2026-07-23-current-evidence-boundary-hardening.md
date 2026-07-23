@@ -168,6 +168,7 @@ Run all `bolt_v3_current_evidence_runtime` tests. Commit as `fix: anchor evidenc
 - Modify: `src/bolt_v3_current_evidence/codec/strategy_input.rs`
 - Modify: `src/bolt_v3_current_evidence/codec/venue_truth.rs`
 - Modify: the 27 existing identity files in `tests/fixtures/bolt_v3/current_evidence/positive/`, preserving their current filenames and identity mapping.
+- Create: accepted-noncanonical identity files under `tests/fixtures/bolt_v3/current_evidence/accepted_noncanonical/` for admitted omitted-field forms.
 - Create: `tests/fixtures/bolt_v3/current_evidence/reject/unknown_identity.jsonl`
 - Create: `tests/fixtures/bolt_v3/current_evidence/reject/unknown_enum.jsonl`
 - Create: `tests/fixtures/bolt_v3/current_evidence/reject/wrong_gate.jsonl`
@@ -182,17 +183,17 @@ Run all `bolt_v3_current_evidence_runtime` tests. Commit as `fix: anchor evidenc
 Change `positive_fixture(identity)` into a multi-line `positive_corpus(identity)`. Add typed coverage cases carrying encoded production bytes plus declared enum spelling and optional-state coverage:
 
 ```rust
-enum OptionalWireState { Absent, Null, Present }
+enum CanonicalOptionalWireState { Null, Present }
 
 struct WireCoverageCase {
     name: &'static str,
     encoded: EncodedEvidenceRecord,
     enum_values: Vec<(&'static str, &'static str)>,
-    optional_states: Vec<(&'static str, OptionalWireState)>,
+    optional_states: Vec<(&'static str, CanonicalOptionalWireState)>,
 }
 ```
 
-For each identity, require the union to contain every frozen enum/tag branch and every admitted optional state, then compare case lines in order with the committed JSONL corpus.
+For each identity, require the canonical union to contain every frozen enum/tag branch plus explicit-null and present coverage for every optional field, then compare case lines in order with the committed JSONL corpus. Separately require every admitted omitted-field form to decode to the same fact as its null form and canonicalize to the encoder-produced null bytes.
 
 - [ ] **Step 2: Verify RED**
 
@@ -204,7 +205,7 @@ Extend existing `bidirectional_unit_enum!` and admission outcome macros to emit 
 
 - [ ] **Step 4: Build linear typed cases and committed bytes**
 
-For every identity, distribute variants and optional absent/null/present states across typed semantic facts rather than forming a Cartesian product. Encode only through production codecs and decode every case through `decode_current_fact`. Update each positive file to the ordered multi-line bytes.
+For every identity, distribute variants and canonical optional null/present states across typed semantic facts rather than forming a Cartesian product. Encode only through production codecs and decode every case through `decode_current_fact`. Update each positive file to the ordered multi-line bytes. Add accepted-noncanonical omitted-field lines only as raw decoder inputs and require canonical re-encoding; do not add a second encoder or fixture-only omission mode.
 
 Add raw rejection files for unknown identity/enum, wrong gate, wrong sink, extra field, and torn framing; retain programmatic missing/wrong-type mutations.
 

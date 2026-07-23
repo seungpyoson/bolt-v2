@@ -991,127 +991,671 @@ fn validate_envelope(
 
 #[cfg(test)]
 mod tests {
-    use super::super::facts::{
-        AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason, ExitDecisionDetails,
-        ExitEvaluationDecision, ExitHoldOutcome, ExitSubmissionOutcome, ExitTriggerSource,
-        LossHaltReason, LossSnapshotSource, OrderIntentClampNotEvaluatedReason,
-        OrderIntentClampOutcome, OrderIntentDetails, OrderIntentOrderFields, OrderRejectFact,
-        OrderRejectReason, OrderRejectSource, RealizedVolBlockReason, RvGateResult,
-        StrategyInputDetails, StrategyInputMarketSelectionOutcome, StrategyInputRvState,
-        SubmissionLinkage,
-    };
+    use super::super::facts::*;
     use super::*;
 
-    fn positive_fixture(identity: KnownIdentity) -> &'static str {
+    macro_rules! unit_wire_coverage {
+        ($type:ty, [$($variant:ident => $wire:literal),+ $(,)?]) => {
+            impl $type {
+                fn wire_coverage_values() -> Vec<(Self, &'static str)> {
+                    let values = vec![$((Self::$variant, $wire)),+];
+                    for (value, _) in &values {
+                        match value {
+                            $(Self::$variant => {}),+
+                        }
+                    }
+                    values
+                }
+            }
+        };
+    }
+
+    macro_rules! payload_wire_coverage {
+        (
+            $type:ty,
+            [$($value:expr => $pattern:pat => $wire:literal),+ $(,)?]
+        ) => {
+            impl $type {
+                fn wire_coverage_values() -> Vec<(Self, &'static str)> {
+                    let values = vec![$(($value, $wire)),+];
+                    for (value, _) in &values {
+                        match value {
+                            $($pattern => {}),+
+                        }
+                    }
+                    values
+                }
+            }
+        };
+    }
+
+    unit_wire_coverage!(
+        OrderIntentClampNotEvaluatedReason,
+        [
+            NoVenueTruth => "no_venue_truth",
+            ForeignInstrument => "foreign_instrument",
+            NonSellOrderSide => "non_sell_order_side"
+        ]
+    );
+    payload_wire_coverage!(
+        OrderIntentClampOutcome,
+        [
+            Self::WithinBounds => Self::WithinBounds => "within_bounds",
+            Self::Clamped { original_quantity: "2".to_string() } =>
+                Self::Clamped { .. } => "clamped",
+            Self::Rejected => Self::Rejected => "rejected",
+            Self::NotEvaluated {
+                reason: OrderIntentClampNotEvaluatedReason::NoVenueTruth,
+            } => Self::NotEvaluated { .. } => "not_evaluated"
+        ]
+    );
+    unit_wire_coverage!(
+        BasketAdmissionRejectionReason,
+        [
+            BasketNotionalCapExceeded => "basket_notional_cap_exceeded",
+            MaxOpenBasketCapExceeded => "max_open_basket_cap_exceeded",
+            StaleScannerEvidence => "stale_scanner_evidence",
+            StaleSubmitRecheck => "stale_submit_recheck",
+            NonPositiveCandidateCost => "non_positive_candidate_cost",
+            NonPositiveEdge => "non_positive_edge",
+            EdgeThreshold => "edge_threshold",
+            MissingGroupingProof => "missing_grouping_proof",
+            MissingSettlementRules => "missing_settlement_rules",
+            RetryBudgetExceeded => "retry_budget_exceeded",
+            SubmitSlots => "submit_slots"
+        ]
+    );
+    unit_wire_coverage!(
+        CapitalAdmissionRejectionReason,
+        [
+            MissingEvidence => "missing_evidence",
+            StaleRequest => "stale_request",
+            PoolMismatch => "pool_mismatch",
+            OverBudget => "over_budget",
+            InvalidRequest => "invalid_request",
+            CollateralGroupMismatch => "collateral_group_mismatch",
+            DuplicateReservation => "duplicate_reservation",
+            UnknownReservation => "unknown_reservation",
+            UnknownRelease => "unknown_release",
+            ReconciliationRequired => "reconciliation_required"
+        ]
+    );
+    payload_wire_coverage!(
+        CapitalAdmissionRebuildOutcome,
+        [
+            Self::Accepted => Self::Accepted => "accepted",
+            Self::Rejected(CapitalAdmissionRejectionReason::MissingEvidence) =>
+                Self::Rejected(_) => "rejected"
+        ]
+    );
+    unit_wire_coverage!(
+        RequoteActionCostClass,
+        [
+            FreshSubmit => "fresh_submit",
+            CancelResubmit => "cancel_resubmit",
+            Cancel => "cancel"
+        ]
+    );
+    unit_wire_coverage!(
+        RequoteThrottleBound,
+        [
+            SubmitCommandWindow => "submit_command_window",
+            RestCallWindow => "rest_call_window",
+            MinInterval => "min_interval",
+            WindowCap => "window_cap",
+            OutOfOrderTs => "out_of_order_ts",
+            Overflow => "overflow"
+        ]
+    );
+    unit_wire_coverage!(
+        RequoteThrottleBlockReason,
+        [RequoteBudgetExhausted => "requote_budget_exhausted"]
+    );
+    unit_wire_coverage!(
+        VenueTruthDivergenceAlarmClass,
+        [
+            TrueDivergence => "true_divergence",
+            OrderingViolation => "ordering_violation",
+            SilentChannel => "silent_channel"
+        ]
+    );
+    unit_wire_coverage!(
+        StaleLossReason,
+        [
+            MissingSnapshot => "missing_snapshot",
+            SourceEmpty => "source_empty",
+            FutureDated => "future_dated",
+            AgeExceeded => "age_exceeded",
+            MissingRequiredField => "missing_required_field"
+        ]
+    );
+    unit_wire_coverage!(
+        LossHaltReason,
+        [
+            PerTradeLossLimit => "per_trade_loss_limit",
+            DailyLossLimit => "daily_loss_limit",
+            RollingLossLimit => "rolling_loss_limit",
+            MaxDrawdownLimit => "max_drawdown_limit",
+            StaleLossSnapshot => "stale_loss_snapshot"
+        ]
+    );
+    unit_wire_coverage!(
+        LossSnapshotSource,
+        [
+            NtLossRuntimeFeed => "nt_loss_runtime_feed",
+            NtPortfolioSnapshot => "nt_portfolio_snapshot",
+            NtAccountSnapshot => "nt_account_snapshot",
+            NtAccountAndPositionSnapshot => "nt_account_and_position_snapshot",
+            NtPositionEvent => "nt_position_event",
+            NtPositionChanged => "nt_position_changed",
+            NtPositionClosed => "nt_position_closed",
+            NtPositionAdjusted => "nt_position_adjusted",
+            NtCapitalAdmissionState => "nt_capital_admission_state",
+            BoltLossSnapshot => "bolt_loss_snapshot",
+            LossGovernor => "loss_governor",
+            Unknown => "unknown",
+            Other => "other"
+        ]
+    );
+    unit_wire_coverage!(
+        LossSnapshotStaleReason,
+        [
+            MissingSnapshot => "missing_snapshot",
+            SourceEmpty => "source_empty",
+            FutureDated => "future_dated",
+            AgeExceeded => "age_exceeded",
+            MissingRequiredField => "missing_required_field"
+        ]
+    );
+    unit_wire_coverage!(
+        AdmissionRejectionReason,
+        [
+            KillSwitchLatched => "kill_switch_latched",
+            SubmitLifecycleDisallowed => "submit_lifecycle_disallowed",
+            LossGovernorHalted => "loss_governor_halted",
+            NonPositiveNotional => "non_positive_notional",
+            NotionalCapExceeded => "notional_cap_exceeded",
+            InvalidRiskReducingExitProof => "invalid_risk_reducing_exit_proof",
+            CountCapExhausted => "count_cap_exhausted",
+            KillSwitchForcedReductionProofInvalid =>
+                "kill_switch_forced_reduction_proof_invalid",
+            KillSwitchForcedReductionCapExceeded =>
+                "kill_switch_forced_reduction_cap_exceeded",
+            CapitalAdmission => "capital_admission"
+        ]
+    );
+    payload_wire_coverage!(
+        AdmissionDecisionOutcome,
+        [
+            Self::Admitted => Self::Admitted => "admitted",
+            Self::Rejected(AdmissionRejectionReason::NotionalCapExceeded) =>
+                Self::Rejected(_) => "rejected"
+        ]
+    );
+    unit_wire_coverage!(
+        OrderRejectSource,
+        [
+            SubmitAdmission => "submit_admission",
+            Venue => "venue",
+            NtExecution => "nt_execution",
+            Internal => "internal"
+        ]
+    );
+    unit_wire_coverage!(
+        OrderRejectReason,
+        [
+            AdmissionRejected => "admission_rejected",
+            PrecisionRejected => "precision_rejected",
+            MinSizeRejected => "min_size_rejected",
+            MinNotionalRejected => "min_notional_rejected",
+            InsufficientBalance => "insufficient_balance",
+            DuplicateClientOrderId => "duplicate_client_order_id",
+            Other => "other"
+        ]
+    );
+    unit_wire_coverage!(
+        EntrySkipReason,
+        [
+            StrategyCoreNotRegistered => "strategy_core_not_registered",
+            EntryGateBlocked => "entry_gate_blocked",
+            EntryPricingBlocked => "entry_pricing_blocked",
+            NoSideSelected => "no_side_selected",
+            SizedNotionalNotPositive => "sized_notional_not_positive",
+            InstrumentIdMissing => "instrument_id_missing",
+            InstrumentMissingFromCache => "instrument_missing_from_cache",
+            EntryPriceMissing => "entry_price_missing",
+            QuantityRoundingFailed => "quantity_rounding_failed",
+            LimitNotionalExceedsSizedNotional => "limit_notional_exceeds_sized_notional",
+            EntryQuoteNotionalBelowVenueMinimum => "entry_quote_notional_below_venue_minimum",
+            EntryQuoteNotionalMinimumUnmodeled => "entry_quote_notional_minimum_unmodeled",
+            QuantityNotPositive => "quantity_not_positive",
+            PositionContractInvalid => "position_contract_invalid",
+            EntryPositionContractUnsupported => "entry_position_contract_unsupported",
+            HistoricalEntryFeeUnavailable => "historical_entry_fee_unavailable",
+            OnePositionInvariantViolation => "one_position_invariant_violation",
+            EntryMalformedRejected => "entry_malformed_rejected",
+            EntryBalanceRejected => "entry_balance_rejected",
+            EntryUnfillableRejectedUnchangedBook =>
+                "entry_unfillable_rejected_unchanged_book"
+        ]
+    );
+    unit_wire_coverage!(
+        ForcedFlatReason,
+        [
+            Freeze => "freeze",
+            StaleReference => "stale_reference",
+            ThinBook => "thin_book",
+            MetadataMismatch => "metadata_mismatch",
+            FastVenueIncoherent => "fast_venue_incoherent"
+        ]
+    );
+    unit_wire_coverage!(
+        ExposureOccupancy,
+        [
+            PendingEntry => "pending_entry",
+            EntryReconcilePending => "entry_reconcile_pending",
+            ManagedPosition => "managed_position",
+            ExitPending => "exit_pending",
+            UnsupportedObserved => "unsupported_observed",
+            BlindRecovery => "blind_recovery"
+        ]
+    );
+    payload_wire_coverage!(
+        EntryBlockReason,
+        [
+            Self::PhaseNotActive => Self::PhaseNotActive => "phase_not_active",
+            Self::MetadataMismatch => Self::MetadataMismatch => "metadata_mismatch",
+            Self::ActiveBookNotPriced => Self::ActiveBookNotPriced => "active_book_not_priced",
+            Self::BookCrossed => Self::BookCrossed => "book_crossed",
+            Self::IntervalOpenMissing => Self::IntervalOpenMissing => "interval_open_missing",
+            Self::WarmupIncomplete => Self::WarmupIncomplete => "warmup_incomplete",
+            Self::FeesNotReady => Self::FeesNotReady => "fees_not_ready",
+            Self::RecoveryMode => Self::RecoveryMode => "recovery_mode",
+            Self::MarketCoolingDown => Self::MarketCoolingDown => "market_cooling_down",
+            Self::SpotSpikeCooldown => Self::SpotSpikeCooldown => "spot_spike_cooldown",
+            Self::ForcedFlat(ForcedFlatReason::Freeze) =>
+                Self::ForcedFlat(_) => "forced_flat",
+            Self::OnePositionInvariant(ExposureOccupancy::PendingEntry) =>
+                Self::OnePositionInvariant(_) => "one_position_invariant"
+        ]
+    );
+    unit_wire_coverage!(
+        BinaryOutcomeEdgeBlockReason,
+        [
+            MissingOrderBook => "missing_order_book",
+            InsufficientDepth => "insufficient_depth",
+            InvalidProbability => "invalid_probability",
+            InvalidCost => "invalid_cost",
+            UnsupportedOrderShape => "unsupported_order_shape",
+            EdgeBelowThreshold => "edge_below_threshold",
+            SpreadOrSlippageWipedEdge => "spread_or_slippage_wiped_edge",
+            FeeUnavailable => "fee_unavailable"
+        ]
+    );
+    payload_wire_coverage!(
+        EntryPricingBlockReason,
+        [
+            Self::SpotPriceMissing => Self::SpotPriceMissing => "spot_price_missing",
+            Self::ReferenceCurrentPriceStale =>
+                Self::ReferenceCurrentPriceStale => "reference_current_price_stale",
+            Self::StrikePriceMissing => Self::StrikePriceMissing => "strike_price_missing",
+            Self::SecondsToExpiryMissing =>
+                Self::SecondsToExpiryMissing => "seconds_to_expiry_missing",
+            Self::RealizedVolNotReady => Self::RealizedVolNotReady => "realized_vol_not_ready",
+            Self::ThetaScalerUnavailable =>
+                Self::ThetaScalerUnavailable => "theta_scaler_unavailable",
+            Self::UncertaintyBandUnavailable =>
+                Self::UncertaintyBandUnavailable => "uncertainty_band_unavailable",
+            Self::FairProbabilityUnavailable =>
+                Self::FairProbabilityUnavailable => "fair_probability_unavailable",
+            Self::FeeUnavailable(OutcomeSide::Up) =>
+                Self::FeeUnavailable(_) => "fee_unavailable",
+            Self::ExecutableEntryCostUnavailable(OutcomeSide::Up) =>
+                Self::ExecutableEntryCostUnavailable(_) => "executable_entry_cost_unavailable",
+            Self::ExecutableEdgeUnavailable(
+                OutcomeSide::Up,
+                BinaryOutcomeEdgeBlockReason::MissingOrderBook,
+            ) => Self::ExecutableEdgeUnavailable(_, _) => "executable_edge_unavailable",
+            Self::SizedNotionalUnsupported(OutcomeSide::Up) =>
+                Self::SizedNotionalUnsupported(_) => "sized_notional_unsupported"
+        ]
+    );
+    unit_wire_coverage!(
+        RealizedVolPricingComponent,
+        [
+            Measured => "measured",
+            NoiseRobust => "noise_robust",
+            Continuous => "continuous",
+            Forecast => "forecast"
+        ]
+    );
+    unit_wire_coverage!(
+        RealizedVolAggregation,
+        [
+            UpperQuantile => "upper_quantile",
+            Median => "median",
+            TrimmedMean => "trimmed_mean",
+            MedianWithUpperQuantileGuard => "median_with_upper_quantile_guard"
+        ]
+    );
+    unit_wire_coverage!(
+        RealizedVolSourceClass,
+        [
+            SpotQuote => "spot_quote",
+            Trade => "trade",
+            Mark => "mark",
+            Index => "index"
+        ]
+    );
+    unit_wire_coverage!(
+        RealizedVolSampleKind,
+        [
+            Midpoint => "midpoint",
+            Trade => "trade",
+            Mark => "mark",
+            Index => "index"
+        ]
+    );
+    unit_wire_coverage!(
+        RealizedVolSourceStatus,
+        [
+            Ready => "ready",
+            Blocked => "blocked",
+            DiagnosticOnly => "diagnostic_only",
+            Waiting => "waiting"
+        ]
+    );
+    unit_wire_coverage!(
+        RealizedVolSourceRejectReason,
+        [
+            DisabledSource => "disabled_source",
+            InvalidPrice => "invalid_price",
+            SourceClassMismatch => "source_class_mismatch",
+            SampleKindMismatch => "sample_kind_mismatch",
+            EventTimeRegression => "event_time_regression",
+            DuplicateTimestamp => "duplicate_timestamp",
+            StaleSameEventUpdate => "stale_same_event_update",
+            ReceiveBeforeEvent => "receive_before_event",
+            EventReceiveLagExceeded => "event_receive_lag_exceeded"
+        ]
+    );
+    unit_wire_coverage!(
+        RealizedVolBlockReason,
+        [
+            InvalidConfig => "invalid_config",
+            QuorumNotReady => "quorum_not_ready",
+            SourceStale => "source_stale",
+            CoverageBelowMinimum => "coverage_below_minimum",
+            InterSampleGapExceeded => "inter_sample_gap_exceeded",
+            SourceClassMismatch => "source_class_mismatch",
+            SampleKindMismatch => "sample_kind_mismatch",
+            CrossSourceDispersion => "cross_source_dispersion",
+            AnnualizationBasisInvalid => "annualization_basis_invalid",
+            NotWarm => "not_warm"
+        ]
+    );
+    unit_wire_coverage!(
+        RvGateResult,
+        [
+            Accepted => "accepted",
+            MissingSnapshot => "missing_snapshot",
+            MissingEvaluationEventTime => "missing_evaluation_event_time",
+            RejectedFutureDated => "rejected_future_dated",
+            RejectedStale => "rejected_stale",
+            RejectedNotReady => "rejected_not_ready"
+        ]
+    );
+    unit_wire_coverage!(
+        StrategyInputMarketSelectionOutcome,
+        [Current => "current", Next => "next"]
+    );
+    unit_wire_coverage!(
+        ExitTriggerSource,
+        [
+            SignalQuote => "signal_quote",
+            ReferenceUpdate => "reference_update",
+            SelectionUpdate => "selection_update",
+            BookDelta => "book_delta",
+            Unknown => "unknown",
+            Other => "other"
+        ]
+    );
+    unit_wire_coverage!(
+        ExitBlockedReason,
+        [
+            NoOpenPosition => "no_open_position",
+            ExitAlreadyPending => "exit_already_pending",
+            EntryOrderStillWorking => "entry_order_still_working",
+            ExitDecisionUnavailable => "exit_decision_unavailable",
+            ExitHold => "exit_hold",
+            PositionIntervalEnded => "position_interval_ended",
+            PositionIntervalUnknown => "position_interval_unknown",
+            OpenPositionMissing => "open_position_missing",
+            ExitOrderConfigInvalid => "exit_order_config_invalid",
+            ExitQuoteQuantityUnsupported => "exit_quote_quantity_unsupported",
+            ExitPriceMissing => "exit_price_missing",
+            ExitQuantityNotPositive => "exit_quantity_not_positive"
+        ]
+    );
+    unit_wire_coverage!(
+        ExitSubmissionOutcome,
+        [Exit => "exit", ExitFailClosed => "exit_fail_closed"]
+    );
+    unit_wire_coverage!(
+        ExitHoldOutcome,
+        [Hold => "hold", Blocked => "blocked"]
+    );
+    payload_wire_coverage!(
+        ExitEvaluationDecision,
+        [
+            Self::Submission {
+                outcome: ExitSubmissionOutcome::Exit,
+            } => Self::Submission { .. } => "submit",
+            Self::Hold {
+                outcome: ExitHoldOutcome::Hold,
+                blocked_reason: None,
+            } => Self::Hold { .. } => "hold"
+        ]
+    );
+    unit_wire_coverage!(OutcomeSide, [Up => "up", Down => "down"]);
+    unit_wire_coverage!(
+        SettlementBookingErrorReason,
+        [
+            ResolutionFeedMissing => "resolution_feed_missing",
+            SettlementAlreadyBooked => "settlement_already_booked",
+            SettlementInputInvalid => "settlement_input_invalid",
+            SettlementBlocked => "settlement_blocked"
+        ]
+    );
+    unit_wire_coverage!(
+        OrderLifecycleTransition,
+        [
+            BoundaryReclassification => "boundary_reclassification",
+            EntryFillMaterialized => "entry_fill_materialized",
+            EntryReconcilePending => "entry_reconcile_pending",
+            PositionTruthRematerialized => "position_truth_rematerialized",
+            PositionClosed => "position_closed",
+            ResidualRemanaged => "residual_remanaged",
+            RestartOpenOrderAdopted => "restart_open_order_adopted",
+            RestartOpenOrderRecoveryBlocked => "restart_open_order_recovery_blocked",
+            SettlementEvidenceRecoveryBlocked => "settlement_evidence_recovery_blocked",
+            SettlementBookingTerminal => "settlement_booking_terminal",
+            OrderDenied => "order_denied",
+            OrderRejected => "order_rejected",
+            OrderCanceled => "order_canceled",
+            OrderExpired => "order_expired",
+            OrderFilled => "order_filled",
+            ReconcileQueryFailed => "reconcile_query_failed"
+        ]
+    );
+    unit_wire_coverage!(
+        OrderLifecycleOutcome,
+        [
+            PendingEntry => "pending_entry",
+            Managed => "managed",
+            ExitPending => "exit_pending",
+            EntryReconcilePending => "entry_reconcile_pending",
+            UnsupportedObserved => "unsupported_observed",
+            BlindRecovery => "blind_recovery",
+            Flat => "flat"
+        ]
+    );
+
+    macro_rules! frozen_corpus {
+        ($file:literal) => {
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bolt_v3/current_evidence/positive/",
+                $file
+            ))
+        };
+    }
+
+    fn positive_corpus(identity: KnownIdentity) -> &'static str {
         match identity {
-            KnownIdentity::BlockedStrategyInputObservationV1 => include_str!(concat!(
+            KnownIdentity::BlockedStrategyInputObservationV1 => {
+                frozen_corpus!("blocked_strategy_input_observation.jsonl")
+            }
+            KnownIdentity::SubmitLinkedStrategyInputSnapshotV1 => {
+                frozen_corpus!("submit_linked_strategy_input_snapshot.jsonl")
+            }
+            KnownIdentity::EntryOrderIntentV1 => frozen_corpus!("entry_order_intent.jsonl"),
+            KnownIdentity::RiskReducingExitOrderIntentV1 => {
+                frozen_corpus!("risk_reducing_exit_order_intent.jsonl")
+            }
+            KnownIdentity::AdmittedEntryAdmissionV1 => {
+                frozen_corpus!("admitted_entry_admission.jsonl")
+            }
+            KnownIdentity::RejectedEntryAdmissionV1 => {
+                frozen_corpus!("rejected_entry_admission.jsonl")
+            }
+            KnownIdentity::RiskReducingExitAdmissionV1 => {
+                frozen_corpus!("risk_reducing_exit_admission.jsonl")
+            }
+            KnownIdentity::ReplaceAdmissionV1 => frozen_corpus!("replace_admission.jsonl"),
+            KnownIdentity::ForcedReductionAdmissionV1 => {
+                frozen_corpus!("forced_reduction_admission.jsonl")
+            }
+            KnownIdentity::BasketAdmissionGrantedV1 => {
+                frozen_corpus!("basket_admission_granted.jsonl")
+            }
+            KnownIdentity::BasketAdmissionRejectedV1 => {
+                frozen_corpus!("basket_admission_rejected.jsonl")
+            }
+            KnownIdentity::CapitalAdmissionRebuildV1 => {
+                frozen_corpus!("capital_admission_rebuild.jsonl")
+            }
+            KnownIdentity::SubmitReservationMetadataV1 => {
+                frozen_corpus!("submit_reservation_metadata.jsonl")
+            }
+            KnownIdentity::SubmitReservationFillV1 => {
+                frozen_corpus!("submit_reservation_fill.jsonl")
+            }
+            KnownIdentity::EntrySkipObservationV1 => {
+                frozen_corpus!("entry_skip_observation.jsonl")
+            }
+            KnownIdentity::ExitSubmissionDecisionV1 => {
+                frozen_corpus!("exit_submission_decision.jsonl")
+            }
+            KnownIdentity::ExitHoldDecisionV1 => frozen_corpus!("exit_hold_decision.jsonl"),
+            KnownIdentity::ExitEvaluationV1 => frozen_corpus!("exit_evaluation.jsonl"),
+            KnownIdentity::LossGovernorHaltV1 => frozen_corpus!("loss_governor_halt.jsonl"),
+            KnownIdentity::OrderRejectV1 => frozen_corpus!("order_reject.jsonl"),
+            KnownIdentity::OrderLifecycleV1 => frozen_corpus!("order_lifecycle.jsonl"),
+            KnownIdentity::RequoteThrottleObservationV1 => {
+                frozen_corpus!("requote_throttle_observation.jsonl")
+            }
+            KnownIdentity::SettlementV1 => frozen_corpus!("settlement.jsonl"),
+            KnownIdentity::SettlementBookingErrorV1 => {
+                frozen_corpus!("settlement_booking_error.jsonl")
+            }
+            KnownIdentity::TerminalSettlementV1 => frozen_corpus!("terminal_settlement.jsonl"),
+            KnownIdentity::VenueTruthCaptureFailureV1 => {
+                frozen_corpus!("venue_truth_capture_failure.jsonl")
+            }
+            KnownIdentity::VenueTruthDivergenceV1 => {
+                frozen_corpus!("venue_truth_divergence.jsonl")
+            }
+        }
+    }
+
+    macro_rules! accepted_noncanonical_fixture {
+        ($file:literal) => {
+            include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/blocked_strategy_input_observation.jsonl"
+                "/tests/fixtures/bolt_v3/current_evidence/accepted_noncanonical/",
+                $file
+            ))
+        };
+    }
+
+    fn accepted_noncanonical_corpus(identity: KnownIdentity) -> Option<&'static str> {
+        match identity {
+            KnownIdentity::BlockedStrategyInputObservationV1 => Some(
+                accepted_noncanonical_fixture!("blocked_strategy_input_observation.jsonl"),
+            ),
+            KnownIdentity::SubmitLinkedStrategyInputSnapshotV1 => Some(
+                accepted_noncanonical_fixture!("submit_linked_strategy_input_snapshot.jsonl"),
+            ),
+            KnownIdentity::EntryOrderIntentV1 => {
+                Some(accepted_noncanonical_fixture!("entry_order_intent.jsonl"))
+            }
+            KnownIdentity::RiskReducingExitOrderIntentV1 => Some(accepted_noncanonical_fixture!(
+                "risk_reducing_exit_order_intent.jsonl"
             )),
-            KnownIdentity::SubmitLinkedStrategyInputSnapshotV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/submit_linked_strategy_input_snapshot.jsonl"
+            KnownIdentity::AdmittedEntryAdmissionV1 => Some(accepted_noncanonical_fixture!(
+                "admitted_entry_admission.jsonl"
             )),
-            KnownIdentity::EntryOrderIntentV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/entry_order_intent.jsonl"
+            KnownIdentity::RejectedEntryAdmissionV1 => Some(accepted_noncanonical_fixture!(
+                "rejected_entry_admission.jsonl"
             )),
-            KnownIdentity::RiskReducingExitOrderIntentV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/risk_reducing_exit_order_intent.jsonl"
+            KnownIdentity::RiskReducingExitAdmissionV1 => Some(accepted_noncanonical_fixture!(
+                "risk_reducing_exit_admission.jsonl"
             )),
-            KnownIdentity::AdmittedEntryAdmissionV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/admitted_entry_admission.jsonl"
+            KnownIdentity::ReplaceAdmissionV1 => {
+                Some(accepted_noncanonical_fixture!("replace_admission.jsonl"))
+            }
+            KnownIdentity::ForcedReductionAdmissionV1 => Some(accepted_noncanonical_fixture!(
+                "forced_reduction_admission.jsonl"
             )),
-            KnownIdentity::RejectedEntryAdmissionV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/rejected_entry_admission.jsonl"
+            KnownIdentity::EntrySkipObservationV1 => Some(accepted_noncanonical_fixture!(
+                "entry_skip_observation.jsonl"
             )),
-            KnownIdentity::RiskReducingExitAdmissionV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/risk_reducing_exit_admission.jsonl"
+            KnownIdentity::ExitSubmissionDecisionV1 => Some(accepted_noncanonical_fixture!(
+                "exit_submission_decision.jsonl"
             )),
-            KnownIdentity::ReplaceAdmissionV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/replace_admission.jsonl"
+            KnownIdentity::ExitHoldDecisionV1 => {
+                Some(accepted_noncanonical_fixture!("exit_hold_decision.jsonl"))
+            }
+            KnownIdentity::ExitEvaluationV1 => {
+                Some(accepted_noncanonical_fixture!("exit_evaluation.jsonl"))
+            }
+            KnownIdentity::LossGovernorHaltV1 => {
+                Some(accepted_noncanonical_fixture!("loss_governor_halt.jsonl"))
+            }
+            KnownIdentity::OrderRejectV1 => {
+                Some(accepted_noncanonical_fixture!("order_reject.jsonl"))
+            }
+            KnownIdentity::OrderLifecycleV1 => {
+                Some(accepted_noncanonical_fixture!("order_lifecycle.jsonl"))
+            }
+            KnownIdentity::RequoteThrottleObservationV1 => Some(accepted_noncanonical_fixture!(
+                "requote_throttle_observation.jsonl"
             )),
-            KnownIdentity::ForcedReductionAdmissionV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/forced_reduction_admission.jsonl"
+            KnownIdentity::SettlementBookingErrorV1 => Some(accepted_noncanonical_fixture!(
+                "settlement_booking_error.jsonl"
             )),
-            KnownIdentity::BasketAdmissionGrantedV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/basket_admission_granted.jsonl"
-            )),
-            KnownIdentity::BasketAdmissionRejectedV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/basket_admission_rejected.jsonl"
-            )),
-            KnownIdentity::CapitalAdmissionRebuildV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/capital_admission_rebuild.jsonl"
-            )),
-            KnownIdentity::SubmitReservationMetadataV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/submit_reservation_metadata.jsonl"
-            )),
-            KnownIdentity::SubmitReservationFillV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/submit_reservation_fill.jsonl"
-            )),
-            KnownIdentity::EntrySkipObservationV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/entry_skip_observation.jsonl"
-            )),
-            KnownIdentity::ExitSubmissionDecisionV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/exit_submission_decision.jsonl"
-            )),
-            KnownIdentity::ExitHoldDecisionV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/exit_hold_decision.jsonl"
-            )),
-            KnownIdentity::ExitEvaluationV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/exit_evaluation.jsonl"
-            )),
-            KnownIdentity::LossGovernorHaltV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/loss_governor_halt.jsonl"
-            )),
-            KnownIdentity::OrderRejectV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/order_reject.jsonl"
-            )),
-            KnownIdentity::OrderLifecycleV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/order_lifecycle.jsonl"
-            )),
-            KnownIdentity::RequoteThrottleObservationV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/requote_throttle_observation.jsonl"
-            )),
-            KnownIdentity::SettlementV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/settlement.jsonl"
-            )),
-            KnownIdentity::SettlementBookingErrorV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/settlement_booking_error.jsonl"
-            )),
-            KnownIdentity::TerminalSettlementV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/terminal_settlement.jsonl"
-            )),
-            KnownIdentity::VenueTruthCaptureFailureV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/venue_truth_capture_failure.jsonl"
-            )),
-            KnownIdentity::VenueTruthDivergenceV1 => include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/bolt_v3/current_evidence/positive/venue_truth_divergence.jsonl"
-            )),
+            KnownIdentity::TerminalSettlementV1 => {
+                Some(accepted_noncanonical_fixture!("terminal_settlement.jsonl"))
+            }
+            KnownIdentity::BasketAdmissionGrantedV1
+            | KnownIdentity::BasketAdmissionRejectedV1
+            | KnownIdentity::CapitalAdmissionRebuildV1
+            | KnownIdentity::SubmitReservationMetadataV1
+            | KnownIdentity::SubmitReservationFillV1
+            | KnownIdentity::SettlementV1
+            | KnownIdentity::VenueTruthCaptureFailureV1
+            | KnownIdentity::VenueTruthDivergenceV1 => None,
         }
     }
 
@@ -1256,6 +1800,1137 @@ mod tests {
         }
     }
 
+    fn rv_source_diagnostics() -> Vec<RealizedVolatilitySourceDiagnosticFact> {
+        let source_classes = RealizedVolSourceClass::wire_coverage_values();
+        let sample_kinds = RealizedVolSampleKind::wire_coverage_values();
+        let statuses = RealizedVolSourceStatus::wire_coverage_values();
+        let count = source_classes
+            .len()
+            .max(sample_kinds.len())
+            .max(statuses.len());
+        (0..count)
+            .map(|index| RealizedVolatilitySourceDiagnosticFact {
+                source_id: format!("source-{index}"),
+                source_class: source_classes[index % source_classes.len()].0,
+                sample_kind: sample_kinds[index % sample_kinds.len()].0,
+                enabled: true,
+                counts_toward_quorum: true,
+                status: statuses[index % statuses.len()].0,
+                annualized_realized_volatility_decimal: Some("0.2".to_string()),
+                measured_annualized_realized_volatility_decimal: Some("0.19".to_string()),
+                noise_robust_annualized_realized_volatility_decimal: Some("0.18".to_string()),
+                continuous_annualized_realized_volatility_decimal: Some("0.17".to_string()),
+                jump_annualized_realized_volatility_decimal: Some("0.01".to_string()),
+                first_sample_ts_ms: Some(1),
+                last_sample_ts_ms: Some(2),
+                raw_sample_count: 2,
+                grid_sample_count: 2,
+                coverage_ratio: "1".to_string(),
+                max_inter_sample_gap_ms: Some(1),
+                last_rejected_reason: Some(
+                    RealizedVolSourceRejectReason::wire_coverage_values()
+                        [index % RealizedVolSourceRejectReason::wire_coverage_values().len()]
+                    .0,
+                ),
+                last_rejected_event_ts_ms: Some(1),
+                last_rejected_recv_ts_ms: Some(2),
+                rejection_counters: RealizedVolSourceRejectReason::wire_coverage_values()
+                    .into_iter()
+                    .map(|(reason, _)| (reason, 1))
+                    .collect(),
+                block_reason: Some(
+                    RealizedVolBlockReason::wire_coverage_values()
+                        [index % RealizedVolBlockReason::wire_coverage_values().len()]
+                    .0,
+                ),
+            })
+            .collect()
+    }
+
+    fn rv_snapshot(
+        pricing_component: RealizedVolPricingComponent,
+        aggregation: RealizedVolAggregation,
+    ) -> EntryRealizedVolatilitySnapshotFact {
+        EntryRealizedVolatilitySnapshotFact {
+            surface_id: "surface-coverage".to_string(),
+            as_of_ms: Some(2),
+            annualized_decimal: Some("0.2".to_string()),
+            measured_annualized_decimal: Some("0.19".to_string()),
+            noise_robust_annualized_decimal: Some("0.18".to_string()),
+            continuous_annualized_decimal: Some("0.17".to_string()),
+            jump_annualized_decimal: Some("0.01".to_string()),
+            forecast_annualized_decimal: Some("0.21".to_string()),
+            pricing_component,
+            seconds_per_annum: "31536000".to_string(),
+            aggregation,
+            sources_used: vec!["source-0".to_string()],
+            source_diagnostics: rv_source_diagnostics(),
+            unknown_source_rejections: [("unknown-source".to_string(), 1)].into_iter().collect(),
+            blockers: RealizedVolBlockReason::wire_coverage_values()
+                .into_iter()
+                .map(|(reason, _)| reason)
+                .collect(),
+            config_fingerprint: "coverage-config".to_string(),
+        }
+    }
+
+    fn complete_rv_snapshot() -> EntryRealizedVolatilitySnapshotFact {
+        rv_snapshot(
+            RealizedVolPricingComponent::Measured,
+            RealizedVolAggregation::UpperQuantile,
+        )
+    }
+
+    fn null_optional_rv_snapshot() -> EntryRealizedVolatilitySnapshotFact {
+        EntryRealizedVolatilitySnapshotFact {
+            surface_id: "surface-null-optionals".to_string(),
+            as_of_ms: None,
+            annualized_decimal: None,
+            measured_annualized_decimal: None,
+            noise_robust_annualized_decimal: None,
+            continuous_annualized_decimal: None,
+            jump_annualized_decimal: None,
+            forecast_annualized_decimal: None,
+            pricing_component: RealizedVolPricingComponent::Measured,
+            seconds_per_annum: "31536000".to_string(),
+            aggregation: RealizedVolAggregation::UpperQuantile,
+            sources_used: vec![],
+            source_diagnostics: vec![RealizedVolatilitySourceDiagnosticFact {
+                source_id: "source-null-optionals".to_string(),
+                source_class: RealizedVolSourceClass::SpotQuote,
+                sample_kind: RealizedVolSampleKind::Midpoint,
+                enabled: true,
+                counts_toward_quorum: true,
+                status: RealizedVolSourceStatus::Waiting,
+                annualized_realized_volatility_decimal: None,
+                measured_annualized_realized_volatility_decimal: None,
+                noise_robust_annualized_realized_volatility_decimal: None,
+                continuous_annualized_realized_volatility_decimal: None,
+                jump_annualized_realized_volatility_decimal: None,
+                first_sample_ts_ms: None,
+                last_sample_ts_ms: None,
+                raw_sample_count: 0,
+                grid_sample_count: 0,
+                coverage_ratio: "0".to_string(),
+                max_inter_sample_gap_ms: None,
+                last_rejected_reason: None,
+                last_rejected_event_ts_ms: None,
+                last_rejected_recv_ts_ms: None,
+                rejection_counters: std::collections::BTreeMap::new(),
+                block_reason: None,
+            }],
+            unknown_source_rejections: std::collections::BTreeMap::new(),
+            blockers: vec![],
+            config_fingerprint: "coverage-config".to_string(),
+        }
+    }
+
+    fn entry_block_coverage_values() -> Vec<EntryBlockReason> {
+        let mut values = EntryBlockReason::wire_coverage_values()
+            .into_iter()
+            .map(|(value, _)| value)
+            .collect::<Vec<_>>();
+        values.extend(
+            ForcedFlatReason::wire_coverage_values()
+                .into_iter()
+                .map(|(reason, _)| EntryBlockReason::ForcedFlat(reason)),
+        );
+        values.extend(
+            ExposureOccupancy::wire_coverage_values()
+                .into_iter()
+                .map(|(occupancy, _)| EntryBlockReason::OnePositionInvariant(occupancy)),
+        );
+        values
+    }
+
+    fn entry_pricing_coverage_values() -> Vec<EntryPricingBlockReason> {
+        let mut values = EntryPricingBlockReason::wire_coverage_values()
+            .into_iter()
+            .map(|(value, _)| value)
+            .collect::<Vec<_>>();
+        for (side, _) in OutcomeSide::wire_coverage_values() {
+            values.push(EntryPricingBlockReason::FeeUnavailable(side));
+            values.push(EntryPricingBlockReason::ExecutableEntryCostUnavailable(
+                side,
+            ));
+            values.push(EntryPricingBlockReason::SizedNotionalUnsupported(side));
+            for (reason, _) in BinaryOutcomeEdgeBlockReason::wire_coverage_values() {
+                values.push(EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                    side, reason,
+                ));
+            }
+        }
+        values
+    }
+
+    fn wire_coverage_facts(identity: KnownIdentity, baseline: CurrentFact) -> Vec<CurrentFact> {
+        let mut cases = vec![baseline.clone()];
+        match baseline {
+            CurrentFact::BlockedStrategyInputObservation(value) => {
+                for (outcome, _) in StrategyInputMarketSelectionOutcome::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.details.market_selection_outcome = outcome;
+                    cases.push(CurrentFact::BlockedStrategyInputObservation(Box::new(case)));
+                }
+                for (gate_result, _) in RvGateResult::wire_coverage_values() {
+                    let mut absent = value.as_ref().clone();
+                    absent.details.realized_volatility = StrategyInputRvState::Absent {
+                        gate_result,
+                        receive_watermark_ms: Some(2),
+                    };
+                    cases.push(CurrentFact::BlockedStrategyInputObservation(Box::new(
+                        absent,
+                    )));
+
+                    let mut present = value.as_ref().clone();
+                    present.details.realized_volatility = StrategyInputRvState::Present {
+                        selected_annualized_decimal: Some("0.2".to_string()),
+                        gate_result,
+                        receive_watermark_ms: Some(2),
+                        snapshot: Box::new(complete_rv_snapshot()),
+                    };
+                    cases.push(CurrentFact::BlockedStrategyInputObservation(Box::new(
+                        present,
+                    )));
+                }
+                for (pricing_component, _) in RealizedVolPricingComponent::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.details.realized_volatility = StrategyInputRvState::Present {
+                        selected_annualized_decimal: Some("0.2".to_string()),
+                        gate_result: RvGateResult::Accepted,
+                        receive_watermark_ms: Some(2),
+                        snapshot: Box::new(rv_snapshot(
+                            pricing_component,
+                            RealizedVolAggregation::UpperQuantile,
+                        )),
+                    };
+                    cases.push(CurrentFact::BlockedStrategyInputObservation(Box::new(case)));
+                }
+                for (aggregation, _) in RealizedVolAggregation::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.details.realized_volatility = StrategyInputRvState::Present {
+                        selected_annualized_decimal: Some("0.2".to_string()),
+                        gate_result: RvGateResult::Accepted,
+                        receive_watermark_ms: Some(2),
+                        snapshot: Box::new(rv_snapshot(
+                            RealizedVolPricingComponent::Measured,
+                            aggregation,
+                        )),
+                    };
+                    cases.push(CurrentFact::BlockedStrategyInputObservation(Box::new(case)));
+                }
+                let mut null_rv_optionals = value.as_ref().clone();
+                null_rv_optionals.details.realized_volatility = StrategyInputRvState::Present {
+                    selected_annualized_decimal: None,
+                    gate_result: RvGateResult::MissingSnapshot,
+                    receive_watermark_ms: None,
+                    snapshot: Box::new(null_optional_rv_snapshot()),
+                };
+                cases.push(CurrentFact::BlockedStrategyInputObservation(Box::new(
+                    null_rv_optionals,
+                )));
+                let mut blockers = value.as_ref().clone();
+                blockers.details.gate_blocked_by = entry_block_coverage_values();
+                blockers.details.pricing_blocked_by = entry_pricing_coverage_values();
+                blockers.details.selected_side = Some("up".to_string());
+                cases.push(CurrentFact::BlockedStrategyInputObservation(Box::new(
+                    blockers,
+                )));
+
+                let mut absent_numbers = value.as_ref().clone();
+                clear_strategy_input_optionals(&mut absent_numbers.details);
+                absent_numbers.details.price_to_beat_value = None;
+                absent_numbers.details.spot_price = None;
+                absent_numbers.details.theta_scaled_min_edge_bps = None;
+                absent_numbers.details.fair_probability_up = None;
+                absent_numbers.details.uncertainty_band_probability = None;
+                absent_numbers.details.expected_edge_basis_points = None;
+                absent_numbers.details.worst_case_edge_basis_points = None;
+                absent_numbers.details.fee_rate_basis_points = None;
+                cases.push(CurrentFact::BlockedStrategyInputObservation(Box::new(
+                    absent_numbers,
+                )));
+            }
+            CurrentFact::SubmitLinkedStrategyInputSnapshot(value) => {
+                for (outcome, _) in StrategyInputMarketSelectionOutcome::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.details.market_selection_outcome = outcome;
+                    cases.push(CurrentFact::SubmitLinkedStrategyInputSnapshot(Box::new(
+                        case,
+                    )));
+                }
+                for (gate_result, _) in RvGateResult::wire_coverage_values() {
+                    let mut absent = value.as_ref().clone();
+                    absent.details.realized_volatility = StrategyInputRvState::Absent {
+                        gate_result,
+                        receive_watermark_ms: Some(2),
+                    };
+                    cases.push(CurrentFact::SubmitLinkedStrategyInputSnapshot(Box::new(
+                        absent,
+                    )));
+
+                    let mut present = value.as_ref().clone();
+                    present.details.realized_volatility = StrategyInputRvState::Present {
+                        selected_annualized_decimal: Some("0.2".to_string()),
+                        gate_result,
+                        receive_watermark_ms: Some(2),
+                        snapshot: Box::new(complete_rv_snapshot()),
+                    };
+                    cases.push(CurrentFact::SubmitLinkedStrategyInputSnapshot(Box::new(
+                        present,
+                    )));
+                }
+                let mut null_rv_optionals = value.as_ref().clone();
+                null_rv_optionals.details.realized_volatility = StrategyInputRvState::Present {
+                    selected_annualized_decimal: None,
+                    gate_result: RvGateResult::MissingSnapshot,
+                    receive_watermark_ms: None,
+                    snapshot: Box::new(null_optional_rv_snapshot()),
+                };
+                cases.push(CurrentFact::SubmitLinkedStrategyInputSnapshot(Box::new(
+                    null_rv_optionals,
+                )));
+                let mut blockers = value.as_ref().clone();
+                blockers.details.gate_blocked_by = entry_block_coverage_values();
+                blockers.details.pricing_blocked_by = entry_pricing_coverage_values();
+                blockers.details.selected_side = Some("up".to_string());
+                cases.push(CurrentFact::SubmitLinkedStrategyInputSnapshot(Box::new(
+                    blockers,
+                )));
+                let mut absent_optionals = value.as_ref().clone();
+                clear_strategy_input_optionals(&mut absent_optionals.details);
+                cases.push(CurrentFact::SubmitLinkedStrategyInputSnapshot(Box::new(
+                    absent_optionals,
+                )));
+            }
+            CurrentFact::EntryOrderIntent(value) => {
+                for (outcome, _) in OrderIntentClampOutcome::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.details.clamp_outcome = Some(outcome);
+                    cases.push(CurrentFact::EntryOrderIntent(case));
+                }
+                for (reason, _) in OrderIntentClampNotEvaluatedReason::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.details.clamp_outcome =
+                        Some(OrderIntentClampOutcome::NotEvaluated { reason });
+                    cases.push(CurrentFact::EntryOrderIntent(case));
+                }
+                for details in order_intent_optional_cases(&value.details) {
+                    cases.push(CurrentFact::EntryOrderIntent(EntryOrderIntentFact {
+                        details,
+                    }));
+                }
+            }
+            CurrentFact::RiskReducingExitOrderIntent(value) => {
+                for (outcome, _) in OrderIntentClampOutcome::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.details.clamp_outcome = Some(outcome);
+                    cases.push(CurrentFact::RiskReducingExitOrderIntent(case));
+                }
+                for details in order_intent_optional_cases(&value.details) {
+                    cases.push(CurrentFact::RiskReducingExitOrderIntent(
+                        RiskReducingExitOrderIntentFact { details },
+                    ));
+                }
+                for (reason, _) in OrderIntentClampNotEvaluatedReason::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.details.clamp_outcome =
+                        Some(OrderIntentClampOutcome::NotEvaluated { reason });
+                    cases.push(CurrentFact::RiskReducingExitOrderIntent(case));
+                }
+            }
+            CurrentFact::BasketAdmissionRejected(value) => {
+                for (reason, _) in BasketAdmissionRejectionReason::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.reason = reason;
+                    cases.push(CurrentFact::BasketAdmissionRejected(case));
+                }
+            }
+            CurrentFact::CapitalAdmissionRebuild(value) => {
+                for (reason, _) in CapitalAdmissionRejectionReason::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.outcome = CapitalAdmissionRebuildOutcome::Rejected(reason);
+                    cases.push(CurrentFact::CapitalAdmissionRebuild(case));
+                }
+            }
+            CurrentFact::RequoteThrottleObservation(value) => {
+                for (action_cost_class, _) in RequoteActionCostClass::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.action_cost_class = action_cost_class;
+                    cases.push(CurrentFact::RequoteThrottleObservation(case));
+                }
+                for (bound_by, _) in RequoteThrottleBound::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.bound_by = bound_by;
+                    cases.push(CurrentFact::RequoteThrottleObservation(case));
+                }
+                let mut null_market = value.clone();
+                null_market.market_id = None;
+                cases.push(CurrentFact::RequoteThrottleObservation(null_market));
+                let mut present_market = value.clone();
+                present_market.market_id = Some("market-coverage".to_string());
+                cases.push(CurrentFact::RequoteThrottleObservation(present_market));
+            }
+            CurrentFact::VenueTruthDivergence(value) => {
+                for (alarm_class, _) in VenueTruthDivergenceAlarmClass::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.alarm_class = alarm_class;
+                    cases.push(CurrentFact::VenueTruthDivergence(case));
+                }
+            }
+            CurrentFact::LossGovernorHalt(value) => {
+                for (stale_reason, _) in StaleLossReason::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.stale_reason = stale_reason;
+                    cases.push(CurrentFact::LossGovernorHalt(case));
+                }
+                let mut nulls = value.clone();
+                nulls.snapshot_present = false;
+                nulls.snapshot_observed_at_ns = None;
+                nulls.snapshot_age_ns = None;
+                nulls.snapshot_source = None;
+                nulls.has_per_trade_pnl = false;
+                nulls.has_daily_pnl = false;
+                nulls.has_rolling_pnl = false;
+                nulls.has_current_equity = false;
+                nulls.has_peak_equity = false;
+                nulls.last_account_state_ts_ns = None;
+                nulls.last_portfolio_snapshot_ts_ns = None;
+                nulls.last_position_event_ts_ns = None;
+                cases.push(CurrentFact::LossGovernorHalt(nulls));
+
+                let mut present = value.clone();
+                present.snapshot_present = true;
+                present.snapshot_observed_at_ns = Some(10);
+                present.snapshot_age_ns = Some(2);
+                present.snapshot_source = Some("nt_account_snapshot".to_string());
+                present.last_account_state_ts_ns = Some(10);
+                present.last_portfolio_snapshot_ts_ns = Some(10);
+                present.last_position_event_ts_ns = Some(10);
+                cases.push(CurrentFact::LossGovernorHalt(present));
+            }
+            CurrentFact::AdmittedEntryAdmission(value) => {
+                cases.extend(
+                    admission_detail_cases(&value.details)
+                        .into_iter()
+                        .map(|details| {
+                            CurrentFact::AdmittedEntryAdmission(Box::new(
+                                AdmittedEntryAdmissionFact { details },
+                            ))
+                        }),
+                );
+            }
+            CurrentFact::RejectedEntryAdmission(value) => {
+                cases.extend(
+                    admission_detail_cases(&value.details)
+                        .into_iter()
+                        .map(|details| {
+                            CurrentFact::RejectedEntryAdmission(Box::new(
+                                RejectedEntryAdmissionFact {
+                                    details,
+                                    reason: value.reason,
+                                },
+                            ))
+                        }),
+                );
+                for (reason, _) in AdmissionRejectionReason::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.reason = reason;
+                    cases.push(CurrentFact::RejectedEntryAdmission(Box::new(case)));
+                }
+            }
+            CurrentFact::RiskReducingExitAdmission(value) => {
+                cases.extend(admission_outcome_cases(
+                    value.details.clone(),
+                    |details, outcome| {
+                        CurrentFact::RiskReducingExitAdmission(Box::new(
+                            RiskReducingExitAdmissionFact { details, outcome },
+                        ))
+                    },
+                ));
+            }
+            CurrentFact::ReplaceAdmission(value) => {
+                cases.extend(admission_outcome_cases(
+                    value.details.clone(),
+                    |details, outcome| {
+                        CurrentFact::ReplaceAdmission(Box::new(ReplaceAdmissionFact {
+                            details,
+                            outcome,
+                        }))
+                    },
+                ));
+            }
+            CurrentFact::ForcedReductionAdmission(value) => {
+                cases.extend(admission_outcome_cases(
+                    value.details.clone(),
+                    |details, outcome| {
+                        CurrentFact::ForcedReductionAdmission(Box::new(
+                            ForcedReductionAdmissionFact { details, outcome },
+                        ))
+                    },
+                ));
+            }
+            CurrentFact::OrderReject(value) => {
+                for (reject_source, _) in OrderRejectSource::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.reject_source = reject_source;
+                    if reject_source == OrderRejectSource::SubmitAdmission {
+                        case.reject_reason = OrderRejectReason::AdmissionRejected;
+                        case.admission_outcome = Some(AdmissionDecisionOutcome::Rejected(
+                            AdmissionRejectionReason::NotionalCapExceeded,
+                        ));
+                    } else {
+                        case.reject_reason = OrderRejectReason::Other;
+                        case.admission_outcome = None;
+                    }
+                    cases.push(CurrentFact::OrderReject(Box::new(case)));
+                }
+                for (reject_reason, _) in OrderRejectReason::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.reject_reason = reject_reason;
+                    if reject_reason == OrderRejectReason::AdmissionRejected {
+                        case.reject_source = OrderRejectSource::SubmitAdmission;
+                        case.admission_outcome = Some(AdmissionDecisionOutcome::Rejected(
+                            AdmissionRejectionReason::NotionalCapExceeded,
+                        ));
+                    } else {
+                        case.admission_outcome = None;
+                    }
+                    cases.push(CurrentFact::OrderReject(Box::new(case)));
+                }
+                for (reason, _) in AdmissionRejectionReason::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.reject_source = OrderRejectSource::SubmitAdmission;
+                    case.reject_reason = OrderRejectReason::AdmissionRejected;
+                    case.admission_outcome = Some(AdmissionDecisionOutcome::Rejected(reason));
+                    cases.push(CurrentFact::OrderReject(Box::new(case)));
+                }
+                cases.extend(
+                    order_reject_optional_cases(value.as_ref())
+                        .into_iter()
+                        .map(|case| CurrentFact::OrderReject(Box::new(case))),
+                );
+            }
+            CurrentFact::EntrySkipObservation(value) => {
+                for (reason, _) in EntrySkipReason::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.reason_category = reason;
+                    case.submission_blocked_reason = Some(reason);
+                    cases.push(CurrentFact::EntrySkipObservation(Box::new(case)));
+                }
+                let mut blockers = value.as_ref().clone();
+                blockers.gate_blocked_by = entry_block_coverage_values();
+                blockers.pricing_blocked_by = entry_pricing_coverage_values();
+                blockers.realized_vol_snapshot = Some(complete_rv_snapshot());
+                cases.push(CurrentFact::EntrySkipObservation(Box::new(blockers)));
+
+                for (gate_result, _) in RvGateResult::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.realized_vol_gate_result = Some(gate_result);
+                    cases.push(CurrentFact::EntrySkipObservation(Box::new(case)));
+                }
+                for (side, _) in OutcomeSide::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.selected_side = Some(side);
+                    cases.push(CurrentFact::EntrySkipObservation(Box::new(case)));
+                }
+                for (pricing_component, _) in RealizedVolPricingComponent::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.realized_vol_snapshot = Some(rv_snapshot(
+                        pricing_component,
+                        RealizedVolAggregation::UpperQuantile,
+                    ));
+                    cases.push(CurrentFact::EntrySkipObservation(Box::new(case)));
+                }
+                for (aggregation, _) in RealizedVolAggregation::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.realized_vol_snapshot = Some(rv_snapshot(
+                        RealizedVolPricingComponent::Measured,
+                        aggregation,
+                    ));
+                    cases.push(CurrentFact::EntrySkipObservation(Box::new(case)));
+                }
+                let mut null_rv_optionals = value.as_ref().clone();
+                null_rv_optionals.realized_vol_snapshot = Some(null_optional_rv_snapshot());
+                cases.push(CurrentFact::EntrySkipObservation(Box::new(
+                    null_rv_optionals,
+                )));
+                cases.extend(
+                    entry_skip_optional_cases(value.as_ref())
+                        .into_iter()
+                        .map(|case| CurrentFact::EntrySkipObservation(Box::new(case))),
+                );
+            }
+            CurrentFact::ExitSubmissionDecision(value) => {
+                cases.extend(
+                    exit_detail_cases(&value.details)
+                        .into_iter()
+                        .map(|details| {
+                            CurrentFact::ExitSubmissionDecision(Box::new(
+                                ExitSubmissionDecisionFact {
+                                    details,
+                                    outcome: value.outcome,
+                                    submission: value.submission.clone(),
+                                },
+                            ))
+                        }),
+                );
+                for (outcome, _) in ExitSubmissionOutcome::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.outcome = outcome;
+                    cases.push(CurrentFact::ExitSubmissionDecision(Box::new(case)));
+                }
+            }
+            CurrentFact::ExitHoldDecision(value) => {
+                cases.extend(
+                    exit_detail_cases(&value.details)
+                        .into_iter()
+                        .map(|details| {
+                            CurrentFact::ExitHoldDecision(Box::new(ExitHoldDecisionFact {
+                                details,
+                                outcome: ExitHoldOutcome::Hold,
+                                blocked_reason: None,
+                            }))
+                        }),
+                );
+                for (blocked_reason, _) in ExitBlockedReason::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.outcome = ExitHoldOutcome::Blocked;
+                    case.blocked_reason = Some(blocked_reason);
+                    cases.push(CurrentFact::ExitHoldDecision(Box::new(case)));
+                }
+            }
+            CurrentFact::ExitEvaluation(value) => {
+                for (exit_trigger_source, _) in ExitTriggerSource::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.exit_trigger_source = exit_trigger_source;
+                    cases.push(CurrentFact::ExitEvaluation(Box::new(case)));
+                }
+                for (outcome, _) in ExitSubmissionOutcome::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.decision = ExitEvaluationDecision::Submission { outcome };
+                    cases.push(CurrentFact::ExitEvaluation(Box::new(case)));
+                }
+                for (blocked_reason, _) in ExitBlockedReason::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.decision = ExitEvaluationDecision::Hold {
+                        outcome: ExitHoldOutcome::Blocked,
+                        blocked_reason: Some(blocked_reason),
+                    };
+                    cases.push(CurrentFact::ExitEvaluation(Box::new(case)));
+                }
+                for (gate_result, _) in RvGateResult::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.rv_gate_result = gate_result;
+                    cases.push(CurrentFact::ExitEvaluation(Box::new(case)));
+                }
+                let mut blockers = value.as_ref().clone();
+                blockers.rv_blockers = RealizedVolBlockReason::wire_coverage_values()
+                    .into_iter()
+                    .map(|(reason, _)| reason)
+                    .collect();
+                blockers.forced_flat_reasons = ForcedFlatReason::wire_coverage_values()
+                    .into_iter()
+                    .map(|(_, wire)| wire.to_string())
+                    .collect();
+                cases.push(CurrentFact::ExitEvaluation(Box::new(blockers)));
+                cases.extend(
+                    exit_evaluation_optional_cases(value.as_ref())
+                        .into_iter()
+                        .map(|case| CurrentFact::ExitEvaluation(Box::new(case))),
+                );
+            }
+            CurrentFact::Settlement(value) => {
+                for (outcome_side, _) in OutcomeSide::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.outcome_side = outcome_side;
+                    cases.push(CurrentFact::Settlement(case));
+                }
+            }
+            CurrentFact::SettlementBookingError(value) => {
+                for (reason, _) in SettlementBookingErrorReason::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.reason = reason;
+                    cases.push(CurrentFact::SettlementBookingError(case));
+                }
+                cases.extend(
+                    settlement_booking_error_optional_cases(&value)
+                        .into_iter()
+                        .map(CurrentFact::SettlementBookingError),
+                );
+            }
+            CurrentFact::OrderLifecycle(value) => {
+                for (transition, _) in OrderLifecycleTransition::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.transition = transition;
+                    cases.push(CurrentFact::OrderLifecycle(case));
+                }
+                for (outcome, _) in OrderLifecycleOutcome::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.outcome = outcome;
+                    cases.push(CurrentFact::OrderLifecycle(case));
+                }
+                cases.extend(
+                    order_lifecycle_optional_cases(&value)
+                        .into_iter()
+                        .map(CurrentFact::OrderLifecycle),
+                );
+            }
+            CurrentFact::TerminalSettlement(value) => {
+                for (transition, _) in OrderLifecycleTransition::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.lifecycle.transition = transition;
+                    cases.push(CurrentFact::TerminalSettlement(Box::new(case)));
+                }
+                for (outcome, _) in OrderLifecycleOutcome::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.lifecycle.outcome = outcome;
+                    cases.push(CurrentFact::TerminalSettlement(Box::new(case)));
+                }
+                for (reason, _) in SettlementBookingErrorReason::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.booking_error
+                        .as_mut()
+                        .expect("terminal baseline has booking error")
+                        .reason = reason;
+                    cases.push(CurrentFact::TerminalSettlement(Box::new(case)));
+                }
+                for lifecycle in order_lifecycle_optional_cases(&value.lifecycle) {
+                    let mut case = value.as_ref().clone();
+                    case.lifecycle = lifecycle;
+                    cases.push(CurrentFact::TerminalSettlement(Box::new(case)));
+                }
+                let mut without_booking_error = value.as_ref().clone();
+                without_booking_error.booking_error = None;
+                cases.push(CurrentFact::TerminalSettlement(Box::new(
+                    without_booking_error,
+                )));
+                if let Some(booking_error) = value.booking_error.as_ref() {
+                    for booking_error in settlement_booking_error_optional_cases(booking_error) {
+                        let mut case = value.as_ref().clone();
+                        case.booking_error = Some(booking_error);
+                        cases.push(CurrentFact::TerminalSettlement(Box::new(case)));
+                    }
+                }
+            }
+            CurrentFact::BasketAdmissionGranted(_)
+            | CurrentFact::SubmitReservationMetadata(_)
+            | CurrentFact::SubmitReservationFill(_)
+            | CurrentFact::VenueTruthCaptureFailure(_) => {}
+        }
+        assert!(
+            !cases.is_empty(),
+            "{identity:?} must have at least one canonical wire case"
+        );
+        cases
+    }
+
+    fn admission_detail_cases(baseline: &AdmissionDetails) -> Vec<AdmissionDetails> {
+        let mut cases = Vec::new();
+        for (reason, _) in LossHaltReason::wire_coverage_values() {
+            let mut case = baseline.clone();
+            case.loss_halt_reasons = vec![reason];
+            cases.push(case);
+        }
+        for (source, _) in LossSnapshotSource::wire_coverage_values() {
+            let mut case = baseline.clone();
+            case.snapshot_source = Some(source);
+            cases.push(case);
+        }
+        for (reason, _) in LossSnapshotStaleReason::wire_coverage_values() {
+            let mut case = baseline.clone();
+            case.stale_reason = Some(reason);
+            cases.push(case);
+        }
+        let mut nulls = baseline.clone();
+        nulls.snapshot_observed_at_ns = None;
+        nulls.snapshot_age_ns = None;
+        nulls.max_snapshot_age_ns = None;
+        nulls.snapshot_source = None;
+        nulls.last_account_state_observed_at_ns = None;
+        nulls.last_portfolio_snapshot_observed_at_ns = None;
+        nulls.last_position_event_observed_at_ns = None;
+        nulls.stale_reason = None;
+        nulls.loss_snapshot_observed_at_ns = None;
+        nulls.loss_eval_now_ns = None;
+        cases.push(nulls);
+
+        let mut present = baseline.clone();
+        present.snapshot_observed_at_ns = Some(10);
+        present.snapshot_age_ns = Some(2);
+        present.max_snapshot_age_ns = Some(5);
+        present.snapshot_source = Some(LossSnapshotSource::NtAccountSnapshot);
+        present.last_account_state_observed_at_ns = Some(10);
+        present.last_portfolio_snapshot_observed_at_ns = Some(10);
+        present.last_position_event_observed_at_ns = Some(10);
+        present.stale_reason = Some(LossSnapshotStaleReason::AgeExceeded);
+        present.loss_snapshot_observed_at_ns = Some(10);
+        present.loss_eval_now_ns = Some(12);
+        cases.push(present);
+        cases
+    }
+
+    fn order_intent_optional_cases(baseline: &OrderIntentDetails) -> Vec<OrderIntentDetails> {
+        let mut nulls = baseline.clone();
+        nulls.clamp_outcome = None;
+        nulls.order_fields.price = None;
+        nulls.order_fields.trigger_price = None;
+        nulls.order_fields.activation_price = None;
+        nulls.order_fields.trigger_type = None;
+        nulls.order_fields.trigger_instrument_id = None;
+        nulls.order_fields.trailing_offset = None;
+        nulls.order_fields.trailing_offset_type = None;
+        nulls.order_fields.expire_time_unix_nanos = None;
+
+        let mut present = baseline.clone();
+        present.clamp_outcome = Some(OrderIntentClampOutcome::WithinBounds);
+        present.order_fields.price = Some("0.4".to_string());
+        present.order_fields.trigger_price = Some("0.5".to_string());
+        present.order_fields.activation_price = Some("0.5".to_string());
+        present.order_fields.trigger_type = Some("last_price".to_string());
+        present.order_fields.trigger_instrument_id = Some("YES-USD.POLYMARKET".to_string());
+        present.order_fields.trailing_offset = Some("0.01".to_string());
+        present.order_fields.trailing_offset_type = Some("price".to_string());
+        present.order_fields.expire_time_unix_nanos = Some("1000000000".to_string());
+        vec![nulls, present]
+    }
+
+    fn admission_outcome_cases(
+        details: AdmissionDetails,
+        wrap: impl Fn(AdmissionDetails, AdmissionDecisionOutcome) -> CurrentFact,
+    ) -> Vec<CurrentFact> {
+        let mut cases = vec![wrap(details.clone(), AdmissionDecisionOutcome::Admitted)];
+        for (reason, _) in AdmissionRejectionReason::wire_coverage_values() {
+            cases.push(wrap(
+                details.clone(),
+                AdmissionDecisionOutcome::Rejected(reason),
+            ));
+        }
+        cases.extend(
+            admission_detail_cases(&details)
+                .into_iter()
+                .map(|details| wrap(details, AdmissionDecisionOutcome::Admitted)),
+        );
+        cases
+    }
+
+    fn exit_detail_cases(baseline: &ExitDecisionDetails) -> Vec<ExitDecisionDetails> {
+        let mut cases = Vec::new();
+        for (exit_trigger_source, _) in ExitTriggerSource::wire_coverage_values() {
+            let mut case = baseline.clone();
+            case.exit_trigger_source = exit_trigger_source;
+            cases.push(case);
+        }
+        for (position_outcome_side, _) in OutcomeSide::wire_coverage_values() {
+            let mut case = baseline.clone();
+            case.position_outcome_side = Some(position_outcome_side);
+            cases.push(case);
+        }
+        for (rv_gate_result, _) in RvGateResult::wire_coverage_values() {
+            let mut case = baseline.clone();
+            case.rv_gate_result = rv_gate_result;
+            cases.push(case);
+        }
+        let mut blockers = baseline.clone();
+        blockers.forced_flat_reasons = ForcedFlatReason::wire_coverage_values()
+            .into_iter()
+            .map(|(reason, _)| reason)
+            .collect();
+        blockers.rv_snapshot_blockers = RealizedVolBlockReason::wire_coverage_values()
+            .into_iter()
+            .map(|(reason, _)| reason)
+            .collect();
+        blockers.rv_source_diagnostics = rv_source_diagnostics();
+        cases.push(blockers);
+
+        let mut nulls = baseline.clone();
+        nulls.market_id = None;
+        nulls.position_id = None;
+        nulls.position_instrument_id = None;
+        nulls.position_outcome_side = None;
+        nulls.spot_price = None;
+        nulls.spot_venue_name = None;
+        nulls.reference_current_price = None;
+        nulls.interval_open = None;
+        nulls.fair_probability_up = None;
+        nulls.fair_probability_down = None;
+        nulls.uncertainty_band_probability = None;
+        nulls.up_fee_bps = None;
+        nulls.down_fee_bps = None;
+        nulls.hold_ev_bps = None;
+        nulls.exit_ev_bps = None;
+        nulls.realized_vol = None;
+        nulls.realized_vol_source_venue = None;
+        nulls.realized_vol_source_ts_ms = None;
+        nulls.trigger_ts_init_ms = None;
+        nulls.rv_snapshot_as_of_ms = None;
+        nulls.rv_snapshot_has_ready_realized_vol = None;
+        nulls.rv_snapshot_receive_watermark_ms = None;
+        nulls.rv_max_source_age_ms = None;
+        nulls.rv_future_dating_delta_ms = None;
+        nulls.seconds_to_market_end = None;
+        nulls.stale_reference_after_ms = None;
+        nulls.last_reference_ts_ms = None;
+        nulls.min_liquidity_required = None;
+        nulls.liquidity_available = None;
+        nulls.rv_source_diagnostics = null_optional_rv_snapshot().source_diagnostics;
+        cases.push(nulls);
+
+        let mut present = baseline.clone();
+        present.market_id = Some("market-coverage".to_string());
+        present.position_id = Some("position-coverage".to_string());
+        present.position_instrument_id = Some("YES-USD.POLYMARKET".to_string());
+        present.position_outcome_side = Some(OutcomeSide::Up);
+        present.spot_price = Some("100".to_string());
+        present.spot_venue_name = Some("venue".to_string());
+        present.reference_current_price = Some("100".to_string());
+        present.interval_open = Some("100".to_string());
+        present.fair_probability_up = Some("0.5".to_string());
+        present.fair_probability_down = Some("0.5".to_string());
+        present.uncertainty_band_probability = Some("0.01".to_string());
+        present.up_fee_bps = Some("1".to_string());
+        present.down_fee_bps = Some("1".to_string());
+        present.hold_ev_bps = Some("1".to_string());
+        present.exit_ev_bps = Some("2".to_string());
+        present.realized_vol = Some("0.2".to_string());
+        present.realized_vol_source_venue = Some("venue".to_string());
+        present.realized_vol_source_ts_ms = Some(2);
+        present.trigger_ts_init_ms = Some(34);
+        present.rv_snapshot_as_of_ms = Some(2);
+        present.rv_snapshot_has_ready_realized_vol = Some(true);
+        present.rv_snapshot_receive_watermark_ms = Some(2);
+        present.rv_max_source_age_ms = Some(1_000);
+        present.rv_future_dating_delta_ms = Some(1);
+        present.seconds_to_market_end = Some(60);
+        present.stale_reference_after_ms = Some(5_000);
+        present.last_reference_ts_ms = Some(34);
+        present.min_liquidity_required = Some("1".to_string());
+        present.liquidity_available = Some("2".to_string());
+        cases.push(present);
+        cases
+    }
+
+    fn exit_evaluation_optional_cases(baseline: &ExitEvaluationFact) -> Vec<ExitEvaluationFact> {
+        let mut nulls = baseline.clone();
+        nulls.position_id = None;
+        nulls.market_id = None;
+        nulls.instrument_id = None;
+        nulls.client_order_id = None;
+        nulls.trigger_ts_event_ms = None;
+        nulls.trigger_ts_init_ms = None;
+        nulls.rv_as_of_ms = None;
+        nulls.rv_snapshot_receive_watermark_ms = None;
+        nulls.rv_max_source_age_ms = None;
+        nulls.rv_as_of_minus_now_ms = None;
+        nulls.spot_price = None;
+        nulls.spot_venue_name = None;
+        nulls.reference_current_price = None;
+        nulls.interval_open = None;
+        nulls.fair_probability_up = None;
+        nulls.fair_probability_down = None;
+        nulls.uncertainty_band_probability = None;
+        nulls.up_fee_bps = None;
+        nulls.down_fee_bps = None;
+        nulls.hold_ev_bps = None;
+        nulls.exit_ev_bps = None;
+
+        let mut present = baseline.clone();
+        present.position_id = Some("position-coverage".to_string());
+        present.market_id = Some("market-coverage".to_string());
+        present.instrument_id = Some("YES-USD.POLYMARKET".to_string());
+        present.client_order_id = Some("client-order-coverage".to_string());
+        present.trigger_ts_event_ms = Some(34);
+        present.trigger_ts_init_ms = Some(34);
+        present.rv_as_of_ms = Some(33);
+        present.rv_snapshot_receive_watermark_ms = Some(33);
+        present.rv_max_source_age_ms = Some(1_000);
+        present.rv_as_of_minus_now_ms = Some(-1);
+        present.spot_price = Some("100".to_string());
+        present.spot_venue_name = Some("venue".to_string());
+        present.reference_current_price = Some("100".to_string());
+        present.interval_open = Some("100".to_string());
+        present.fair_probability_up = Some("0.5".to_string());
+        present.fair_probability_down = Some("0.5".to_string());
+        present.uncertainty_band_probability = Some("0.01".to_string());
+        present.up_fee_bps = Some("1".to_string());
+        present.down_fee_bps = Some("1".to_string());
+        present.hold_ev_bps = Some("1".to_string());
+        present.exit_ev_bps = Some("2".to_string());
+
+        vec![nulls, present]
+    }
+
+    fn order_reject_optional_cases(baseline: &OrderRejectFact) -> Vec<OrderRejectFact> {
+        let mut nulls = baseline.clone();
+        nulls.reject_source = OrderRejectSource::Venue;
+        nulls.reject_reason = OrderRejectReason::Other;
+        nulls.admission_outcome = None;
+        nulls.raw_reason_text = None;
+        nulls.order_side = None;
+        nulls.raw_price = None;
+        nulls.raw_quantity = None;
+        nulls.raw_maker_amount = None;
+        nulls.raw_taker_amount = None;
+        nulls.normalized_price = None;
+        nulls.normalized_quantity = None;
+        nulls.normalized_maker_amount = None;
+        nulls.normalized_taker_amount = None;
+        nulls.venue_price_precision = None;
+        nulls.venue_size_precision = None;
+        nulls.venue_min_notional = None;
+        nulls.prior_client_order_id = None;
+        nulls.backoff_cooldown_state = None;
+
+        let mut present = nulls.clone();
+        present.raw_reason_text = Some("venue rejected order".to_string());
+        present.order_side = Some("buy".to_string());
+        present.raw_price = Some("0.5".to_string());
+        present.raw_quantity = Some("2".to_string());
+        present.raw_maker_amount = Some("1".to_string());
+        present.raw_taker_amount = Some("2".to_string());
+        present.normalized_price = Some("0.5".to_string());
+        present.normalized_quantity = Some("2".to_string());
+        present.normalized_maker_amount = Some("1".to_string());
+        present.normalized_taker_amount = Some("2".to_string());
+        present.venue_price_precision = Some(2);
+        present.venue_size_precision = Some(2);
+        present.venue_min_notional = Some("1".to_string());
+        present.prior_client_order_id = Some("prior-client-order".to_string());
+        present.backoff_cooldown_state = Some("active".to_string());
+
+        vec![nulls, present]
+    }
+
+    fn order_lifecycle_optional_cases(baseline: &OrderLifecycleFact) -> Vec<OrderLifecycleFact> {
+        let mut nulls = baseline.clone();
+        nulls.market_id = None;
+        nulls.instrument_id = None;
+        nulls.position_id = None;
+        nulls.client_order_id = None;
+        nulls.prior_client_order_id = None;
+        nulls.raw_reason_text = None;
+        nulls.order_side = None;
+        nulls.filled_quantity = None;
+        nulls.residual_quantity = None;
+        nulls.ts_event_ns = None;
+
+        let mut present = baseline.clone();
+        present.market_id = Some("market-coverage".to_string());
+        present.instrument_id = Some("YES-USD.POLYMARKET".to_string());
+        present.position_id = Some("position-coverage".to_string());
+        present.client_order_id = Some("client-order-coverage".to_string());
+        present.prior_client_order_id = Some("prior-client-order-coverage".to_string());
+        present.raw_reason_text = Some("lifecycle transition".to_string());
+        present.order_side = Some("buy".to_string());
+        present.filled_quantity = Some("1".to_string());
+        present.residual_quantity = Some("1".to_string());
+        present.ts_event_ns = Some(10);
+
+        vec![nulls, present]
+    }
+
+    fn settlement_booking_error_optional_cases(
+        baseline: &SettlementBookingErrorFact,
+    ) -> Vec<SettlementBookingErrorFact> {
+        let mut nulls = baseline.clone();
+        nulls.market_id = None;
+        nulls.position_id = None;
+        nulls.instrument_id = None;
+        nulls.resolution_instrument_id = None;
+
+        let mut present = baseline.clone();
+        present.market_id = Some("market-coverage".to_string());
+        present.position_id = Some("position-coverage".to_string());
+        present.instrument_id = Some("YES-USD.POLYMARKET".to_string());
+        present.resolution_instrument_id = Some("BTC-USD.CHAINLINK".to_string());
+
+        vec![nulls, present]
+    }
+
+    fn entry_skip_optional_cases(baseline: &EntrySkipFact) -> Vec<EntrySkipFact> {
+        let mut nulls = baseline.clone();
+        nulls.market_id = None;
+        nulls.seconds_to_market_end = None;
+        nulls.spot_price = None;
+        nulls.reference_current_price = None;
+        nulls.realized_vol = None;
+        nulls.realized_vol_source_venue = None;
+        nulls.realized_vol_source_ts_ms = None;
+        nulls.realized_vol_gate_result = None;
+        nulls.realized_vol_receive_watermark_ms = None;
+        nulls.realized_vol_snapshot = None;
+        nulls.fair_probability_up = None;
+        nulls.fair_probability_down = None;
+        nulls.selected_side = None;
+        nulls.sized_notional = None;
+        nulls.sized_worst_case_ev_bps = None;
+        nulls.sized_edge_cents_per_share = None;
+        nulls.theta_scaled_min_edge_bps = None;
+        nulls.up_fee_bps = None;
+        nulls.down_fee_bps = None;
+        nulls.submission_blocked_reason = None;
+        nulls.stale_reference_after_ms = None;
+        nulls.last_reference_ts_ms = None;
+        nulls.min_liquidity_required = None;
+        nulls.liquidity_available = None;
+
+        let mut present = baseline.clone();
+        present.market_id = Some("market-coverage".to_string());
+        present.seconds_to_market_end = Some(60);
+        present.spot_price = Some("100".to_string());
+        present.reference_current_price = Some("100".to_string());
+        present.realized_vol = Some("0.2".to_string());
+        present.realized_vol_source_venue = Some("venue".to_string());
+        present.realized_vol_source_ts_ms = Some(2);
+        present.realized_vol_gate_result = Some(RvGateResult::Accepted);
+        present.realized_vol_receive_watermark_ms = Some(2);
+        present.realized_vol_snapshot = Some(complete_rv_snapshot());
+        present.fair_probability_up = Some("0.5".to_string());
+        present.fair_probability_down = Some("0.5".to_string());
+        present.selected_side = Some(OutcomeSide::Up);
+        present.sized_notional = Some("10".to_string());
+        present.sized_worst_case_ev_bps = Some("5".to_string());
+        present.sized_edge_cents_per_share = Some("0.01".to_string());
+        present.theta_scaled_min_edge_bps = Some("5".to_string());
+        present.up_fee_bps = Some("1".to_string());
+        present.down_fee_bps = Some("1".to_string());
+        present.submission_blocked_reason = Some(EntrySkipReason::EntryPricingBlocked);
+        present.stale_reference_after_ms = Some(5_000);
+        present.last_reference_ts_ms = Some(1);
+        present.min_liquidity_required = Some("1".to_string());
+        present.liquidity_available = Some("2".to_string());
+        vec![nulls, present]
+    }
+
+    fn clear_strategy_input_optionals<PurposeNumeric>(
+        details: &mut StrategyInputDetails<PurposeNumeric>,
+    ) {
+        details.market_id = None;
+        details.polymarket_condition_id = None;
+        details.polymarket_market_slug = None;
+        details.polymarket_question_id = None;
+        details.up_instrument_id = None;
+        details.down_instrument_id = None;
+        details.market_selection_timestamp_ms = None;
+        details.selected_market_observed_timestamp_ms = None;
+        details.polymarket_market_start_timestamp_ms = None;
+        details.polymarket_market_end_timestamp_ms = None;
+        details.reference_current_price = None;
+        details.reference_current_price_source_id = None;
+        details.reference_current_price_failed_over = None;
+        details.up_worst_case_edge_basis_points = None;
+        details.down_worst_case_edge_basis_points = None;
+        details.fast_venue_name = None;
+        details.fast_venue_age_ms = None;
+        details.fast_venue_jitter_ms = None;
+        details.lead_agreement_corr = None;
+        details.selected_side = None;
+        details.realized_volatility = StrategyInputRvState::Absent {
+            gate_result: RvGateResult::MissingSnapshot,
+            receive_watermark_ms: None,
+        };
+    }
+
     fn mutation_is_rejected(identity: KnownIdentity, value: &serde_json::Value) {
         let line = serde_json::to_string(value).expect("mutated fixture must remain JSON");
         assert!(
@@ -1327,6 +3002,17 @@ mod tests {
             .expect("fixture field parent must be an object")
             .remove(field)
             .expect("fixture field must exist");
+    }
+
+    fn normalized_coverage_path(path: &[JsonPathStep]) -> String {
+        let normalized = path
+            .iter()
+            .map(|step| match step {
+                JsonPathStep::Field(field) => JsonPathStep::Field(field.clone()),
+                JsonPathStep::Index(_) => JsonPathStep::Index(usize::MAX),
+            })
+            .collect::<Vec<_>>();
+        format!("{normalized:?}")
     }
 
     fn incompatible_json_type(value: &serde_json::Value) -> serde_json::Value {
@@ -1754,16 +3440,82 @@ mod tests {
     }
 
     #[test]
+    fn frozen_wire_domain_declarations_are_exhaustive_and_unique() {
+        fn assert_unique<T>(domain: &str, values: Vec<(T, &'static str)>) {
+            let mut spellings = std::collections::BTreeSet::new();
+            for (_, spelling) in values {
+                assert!(
+                    spellings.insert(spelling),
+                    "{domain} repeats frozen wire spelling {spelling}"
+                );
+            }
+            assert!(!spellings.is_empty(), "{domain} must not be empty");
+        }
+
+        macro_rules! assert_domain {
+            ($type:ty) => {
+                assert_unique(stringify!($type), <$type>::wire_coverage_values())
+            };
+        }
+
+        assert_domain!(OrderIntentClampNotEvaluatedReason);
+        assert_domain!(OrderIntentClampOutcome);
+        assert_domain!(BasketAdmissionRejectionReason);
+        assert_domain!(CapitalAdmissionRejectionReason);
+        assert_domain!(CapitalAdmissionRebuildOutcome);
+        assert_domain!(RequoteActionCostClass);
+        assert_domain!(RequoteThrottleBound);
+        assert_domain!(RequoteThrottleBlockReason);
+        assert_domain!(VenueTruthDivergenceAlarmClass);
+        assert_domain!(StaleLossReason);
+        assert_domain!(LossHaltReason);
+        assert_domain!(LossSnapshotSource);
+        assert_domain!(LossSnapshotStaleReason);
+        assert_domain!(AdmissionRejectionReason);
+        assert_domain!(AdmissionDecisionOutcome);
+        assert_domain!(OrderRejectSource);
+        assert_domain!(OrderRejectReason);
+        assert_domain!(EntrySkipReason);
+        assert_domain!(ForcedFlatReason);
+        assert_domain!(ExposureOccupancy);
+        assert_domain!(EntryBlockReason);
+        assert_domain!(BinaryOutcomeEdgeBlockReason);
+        assert_domain!(EntryPricingBlockReason);
+        assert_domain!(RealizedVolPricingComponent);
+        assert_domain!(RealizedVolAggregation);
+        assert_domain!(RealizedVolSourceClass);
+        assert_domain!(RealizedVolSampleKind);
+        assert_domain!(RealizedVolSourceStatus);
+        assert_domain!(RealizedVolSourceRejectReason);
+        assert_domain!(RealizedVolBlockReason);
+        assert_domain!(RvGateResult);
+        assert_domain!(StrategyInputMarketSelectionOutcome);
+        assert_domain!(ExitTriggerSource);
+        assert_domain!(ExitBlockedReason);
+        assert_domain!(ExitSubmissionOutcome);
+        assert_domain!(ExitHoldOutcome);
+        assert_domain!(ExitEvaluationDecision);
+        assert_domain!(OutcomeSide);
+        assert_domain!(SettlementBookingErrorReason);
+        assert_domain!(OrderLifecycleTransition);
+        assert_domain!(OrderLifecycleOutcome);
+    }
+
+    #[test]
     fn current_identity_corpus_is_complete_byte_exact_and_strict() {
         use super::super::generated_contract::{ALL_IDENTITIES, resolve_identity};
 
+        let mut corpus_mismatches = Vec::new();
         for identity in ALL_IDENTITIES.iter().copied() {
-            let fixture = positive_fixture(identity);
+            let fixture = positive_corpus(identity);
             assert!(
-                fixture.ends_with('\n') && !fixture.trim_end_matches('\n').contains('\n'),
-                "{identity:?} fixture must be exactly one newline-terminated JSONL record"
+                fixture.ends_with('\n') && !fixture.starts_with('\n'),
+                "{identity:?} corpus must contain newline-terminated JSONL records"
             );
-            let line = fixture.trim_end_matches('\n');
+            let mut fixture_lines = fixture.lines();
+            let line = fixture_lines
+                .next()
+                .expect("positive corpus must contain a baseline record");
             let value: serde_json::Value =
                 serde_json::from_str(line).expect("positive fixture must be JSON");
             let object = value
@@ -1786,13 +3538,170 @@ mod tests {
 
             let fact = decode_current_fact(identity, line, 1)
                 .expect("positive fixture must decode through the sole dispatch path");
-            let reencoded = reencode_current_fact(fact, recorded_at_utc_ns)
-                .expect("decoded fixture must re-encode");
-            assert_eq!(
-                reencoded.line(),
-                fixture.as_bytes(),
-                "{identity:?} encoder drifted from its frozen bytes"
-            );
+            let coverage_facts = wire_coverage_facts(identity, fact);
+            let mut canonical_corpus = Vec::new();
+            for (case_index, fact) in coverage_facts.into_iter().enumerate() {
+                let reencoded =
+                    reencode_current_fact(fact, recorded_at_utc_ns).unwrap_or_else(|error| {
+                        panic!(
+                            "{identity:?} canonical case {} failed to encode: {error}",
+                            case_index + 1
+                        )
+                    });
+                let encoded_line = std::str::from_utf8(reencoded.line())
+                    .expect("canonical case must encode as UTF-8");
+                decode_current_fact(
+                    identity,
+                    encoded_line.trim_end_matches('\n'),
+                    case_index + 1,
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{identity:?} canonical case {} failed to decode: {error:#}",
+                        case_index + 1
+                    )
+                });
+                canonical_corpus.extend_from_slice(reencoded.line());
+            }
+            let mut canonical_states = std::collections::BTreeMap::<String, (bool, bool)>::new();
+            let mut admitted_optional_paths = std::collections::BTreeSet::new();
+            let mut accepted_omissions = std::collections::BTreeMap::new();
+            let canonical_text = std::str::from_utf8(&canonical_corpus)
+                .expect("canonical corpus bytes must be UTF-8");
+            for (case_index, canonical_line) in canonical_text.lines().enumerate() {
+                let canonical_value: serde_json::Value = serde_json::from_str(canonical_line)
+                    .expect("canonical corpus line must be JSON");
+                let canonical_object = canonical_value
+                    .as_object()
+                    .expect("canonical corpus line must be an object");
+                let canonical_payload_key = canonical_object
+                    .keys()
+                    .find(|key| {
+                        !matches!(
+                            key.as_str(),
+                            "schema_version"
+                                | "recorded_at_utc_ns"
+                                | "gate_id"
+                                | "gate_version"
+                                | "kind"
+                        )
+                    })
+                    .expect("canonical corpus line must own a payload member");
+                let mut canonical_paths = Vec::new();
+                collect_object_field_paths(
+                    canonical_object
+                        .get(canonical_payload_key)
+                        .expect("canonical payload must exist"),
+                    &mut vec![JsonPathStep::Field(canonical_payload_key.clone())],
+                    &mut canonical_paths,
+                );
+                for path in canonical_paths {
+                    if matches!(
+                        path.get(path.len().saturating_sub(2)),
+                        Some(JsonPathStep::Field(parent))
+                            if parent == "rejection_counters"
+                                || parent == "unknown_source_rejections"
+                    ) {
+                        continue;
+                    }
+                    let original = value_at_path_mut(&mut canonical_value.clone(), &path).clone();
+                    let normalized_path = normalized_coverage_path(&path);
+                    let state = canonical_states.entry(normalized_path.clone()).or_default();
+                    if original.is_null() {
+                        state.0 = true;
+                    } else {
+                        state.1 = true;
+                    }
+                    let mut missing = canonical_value.clone();
+                    remove_field_at_path(&mut missing, &path);
+                    let missing_line = serde_json::to_string(&missing)
+                        .expect("missing-field coverage mutation must serialize");
+                    let Ok(missing_fact) =
+                        decode_current_fact(identity, &missing_line, case_index + 1)
+                    else {
+                        continue;
+                    };
+                    let mut explicit_null = canonical_value.clone();
+                    *value_at_path_mut(&mut explicit_null, &path) = serde_json::Value::Null;
+                    let null_line = serde_json::to_string(&explicit_null)
+                        .expect("null-field coverage mutation must serialize");
+                    let null_fact =
+                        decode_current_fact(identity, &null_line, case_index + 1).unwrap_or_else(
+                            |error| {
+                                panic!(
+                                    "{identity:?} accepts optional omission but rejects null at {path:?}: {error:#}"
+                                )
+                            },
+                        );
+                    assert_eq!(
+                        null_fact, missing_fact,
+                        "{identity:?} optional omission and null differ at {path:?}"
+                    );
+                    admitted_optional_paths.insert(normalized_path.clone());
+                    if original.is_null() {
+                        accepted_omissions
+                            .entry(normalized_path)
+                            .or_insert(missing_line);
+                    }
+                }
+            }
+            for path in admitted_optional_paths {
+                let (saw_null, saw_present) = canonical_states
+                    .get(&path)
+                    .copied()
+                    .expect("admitted optional path must be present in the canonical corpus");
+                assert!(
+                    saw_null && saw_present,
+                    "{identity:?} canonical corpus does not cover both null and present states for optional field {path}; saw_null={saw_null} saw_present={saw_present}"
+                );
+            }
+            match accepted_noncanonical_corpus(identity) {
+                None => assert!(
+                    accepted_omissions.is_empty(),
+                    "{identity:?} admits omissions but has no noncanonical corpus"
+                ),
+                Some(frozen_accepted) => {
+                    assert!(
+                        !accepted_omissions.is_empty(),
+                        "{identity:?} owns a noncanonical corpus but admits no omissions"
+                    );
+                    let generated_accepted = accepted_omissions
+                        .values()
+                        .map(|line| format!("{line}\n"))
+                        .collect::<String>();
+                    assert_eq!(
+                        frozen_accepted, generated_accepted,
+                        "{identity:?} admitted omission corpus drifted"
+                    );
+                    let canonical_lines = canonical_text
+                        .lines()
+                        .collect::<std::collections::BTreeSet<_>>();
+                    for (line_index, line) in frozen_accepted.lines().enumerate() {
+                        let fact = decode_current_fact(identity, line, line_index + 1)
+                            .expect("committed noncanonical omission must decode");
+                        let canonical = reencode_current_fact(fact, recorded_at_utc_ns).expect(
+                            "accepted omission must canonicalize through the production encoder",
+                        );
+                        let canonical = std::str::from_utf8(canonical.line())
+                            .expect("canonical bytes must be UTF-8")
+                            .trim_end_matches('\n');
+                        assert_ne!(
+                            line,
+                            canonical,
+                            "{identity:?} noncanonical corpus line {} is already canonical",
+                            line_index + 1
+                        );
+                        assert!(
+                            canonical_lines.contains(canonical),
+                            "{identity:?} noncanonical corpus line {} canonicalized outside the frozen positive corpus",
+                            line_index + 1
+                        );
+                    }
+                }
+            }
+            if canonical_corpus != fixture.as_bytes() {
+                corpus_mismatches.push(identity);
+            }
 
             let payload_keys = object
                 .keys()
@@ -1888,6 +3797,111 @@ mod tests {
                 }
             }
         }
+        assert!(
+            corpus_mismatches.is_empty(),
+            "canonical encoder cases drifted from frozen corpora: {corpus_mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn committed_rejection_corpus_fails_at_the_owned_boundary() {
+        use std::io::Write;
+
+        const UNKNOWN_IDENTITY: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bolt_v3/current_evidence/reject/unknown_identity.jsonl"
+        ));
+        const UNKNOWN_ENUM: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bolt_v3/current_evidence/reject/unknown_enum.jsonl"
+        ));
+        const WRONG_GATE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bolt_v3/current_evidence/reject/wrong_gate.jsonl"
+        ));
+        const WRONG_SINK: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bolt_v3/current_evidence/reject/wrong_sink.jsonl"
+        ));
+        const EXTRA_FIELD: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bolt_v3/current_evidence/reject/extra_field.jsonl"
+        ));
+        const TORN_RECORD: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bolt_v3/current_evidence/reject/torn_record.jsonl"
+        ));
+
+        let unknown: serde_json::Value =
+            serde_json::from_str(UNKNOWN_IDENTITY.trim_end()).expect("fixture must be JSON");
+        assert_eq!(
+            super::super::generated_contract::resolve_identity(
+                unknown["kind"].as_str().expect("fixture kind"),
+                u32::try_from(unknown["schema_version"].as_u64().expect("fixture version"))
+                    .expect("fixture version must fit u32"),
+            ),
+            None
+        );
+        assert!(
+            decode_current_fact(
+                KnownIdentity::BasketAdmissionRejectedV1,
+                UNKNOWN_ENUM.trim_end(),
+                1,
+            )
+            .is_err()
+        );
+        assert!(
+            decode_current_fact(
+                KnownIdentity::BasketAdmissionGrantedV1,
+                WRONG_GATE.trim_end(),
+                1,
+            )
+            .is_err()
+        );
+        assert!(
+            decode_current_fact(
+                KnownIdentity::BasketAdmissionGrantedV1,
+                EXTRA_FIELD.trim_end(),
+                1,
+            )
+            .is_err()
+        );
+
+        let mut wrong_sink = tempfile::tempfile().expect("temporary stream");
+        wrong_sink
+            .write_all(WRONG_SINK.as_bytes())
+            .expect("write wrong-sink fixture");
+        let error = match super::super::reader::validate_stream(
+            &mut wrong_sink,
+            super::super::generated_contract::KnownSink::Observation,
+            None,
+        ) {
+            Ok(_) => panic!("machine identity in observation stream must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("machine identity in observation")
+        );
+
+        assert!(!TORN_RECORD.ends_with('\n'));
+        let mut torn = tempfile::tempfile().expect("temporary stream");
+        torn.write_all(TORN_RECORD.as_bytes())
+            .expect("write torn fixture");
+        let error = match super::super::reader::validate_stream(
+            &mut torn,
+            super::super::generated_contract::KnownSink::Machine,
+            None,
+        ) {
+            Ok(_) => panic!("torn final record must fail framing"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("non-newline-terminated final record")
+        );
     }
 
     #[test]

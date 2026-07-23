@@ -232,6 +232,13 @@ jobs:
           set -x
           cargo build --locked --release --target "$BUILD_TARGET" --bin bolt-v2
 
+      - name: Validate sccache statistics
+        if: always()
+        uses: ./.github/actions/sccache-stats
+        with:
+          enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
+          require-compiler-requests: "true"
+
       - name: Stage exactly one executable
         id: stage
         env:

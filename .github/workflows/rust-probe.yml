@@ -126,3 +126,4 @@ jobs:
         uses: ./.github/actions/sccache-stats
         with:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
+          require-compiler-requests: "true"

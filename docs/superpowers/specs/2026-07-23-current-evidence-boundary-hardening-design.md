@@ -94,7 +94,7 @@ There is no truncation, repair, replacement file, fallback path, or alternate re
 
 ## Descriptor-Relative Path Authority
 
-Lexical configuration validation remains responsible for rejecting empty, absolute, parent-traversal, and non-normal relative paths. Filesystem containment uses one Unix descriptor-relative authority on the supported macOS development and Linux production targets.
+Lexical configuration validation remains responsible for rejecting empty, absolute, parent-traversal, and non-normal relative paths. Filesystem containment uses one Unix descriptor-relative authority on the supported macOS development and Linux production targets. `catalog_directory` is resolved exactly once to an absolute directory; its original pathname is then discarded and the resolved components are opened without symlink traversal into a retained descriptor.
 
 The runtime opens and retains `catalog_directory` as a directory descriptor. For every configured relative path it:
 
@@ -105,7 +105,7 @@ The runtime opens and retains `catalog_directory` as a directory descriptor. For
 
 Symlinked intermediate or final components are invalid even when their target remains inside the catalog. Active streams are compared by device and inode after opening. The retained descriptors, rather than later pathname lookups, are the sole filesystem authority.
 
-The existing canonicalize-then-reopen and before/after pathname metadata checks are removed. Non-Unix builds do not provide a weaker production constructor; `DecisionEvidenceRuntime::open` returns an explicit unsupported-target error before inspecting or creating any stream.
+The existing per-stream canonicalize-then-reopen and before/after pathname metadata checks are removed. After the one catalog resolution, active and retired operations use only retained directory descriptors. Non-Unix builds do not provide a weaker production constructor; `DecisionEvidenceRuntime::open` returns an explicit unsupported-target error before inspecting or creating any stream.
 
 The implementation is decomposed around retained directory handles so tests can open a parent, rename or replace its pathname, and prove subsequent relative opens remain anchored to the original descriptor. No filesystem abstraction trait or second runtime implementation is introduced.
 

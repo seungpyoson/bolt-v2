@@ -722,3 +722,49 @@ fn open_refuses_symlinks_and_machine_observation_inode_aliases() {
         .expect_err("machine-observation inode alias must block activation");
     assert!(error.to_string().contains("same file"));
 }
+
+#[cfg(unix)]
+#[test]
+fn open_refuses_intermediate_symlink_in_active_path() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let mut loaded = loaded_in(&temp);
+    let real_parent = temp.path().join("real-active-parent");
+    fs::create_dir(&real_parent).expect("real active parent must exist");
+    std::os::unix::fs::symlink(&real_parent, temp.path().join("linked-active-parent"))
+        .expect("intermediate symlink must exist");
+    loaded
+        .root
+        .persistence
+        .decision_evidence
+        .machine_relative_path = "linked-active-parent/machine.jsonl".to_string();
+
+    let error = DecisionEvidenceRuntime::open(&loaded)
+        .expect_err("an intermediate active symlink must block activation");
+    assert!(
+        format!("{error:#}").contains("symlink"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn open_refuses_intermediate_symlink_in_retired_path() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let mut loaded = loaded_in(&temp);
+    let real_parent = temp.path().join("real-retired-parent");
+    fs::create_dir(&real_parent).expect("real retired parent must exist");
+    std::os::unix::fs::symlink(&real_parent, temp.path().join("linked-retired-parent"))
+        .expect("intermediate symlink must exist");
+    loaded
+        .root
+        .persistence
+        .decision_evidence
+        .retired_relative_paths = vec!["linked-retired-parent/old.jsonl".to_string()];
+
+    let error = DecisionEvidenceRuntime::open(&loaded)
+        .expect_err("an intermediate retired symlink must block activation");
+    assert!(
+        format!("{error:#}").contains("symlink"),
+        "unexpected error: {error:#}"
+    );
+}

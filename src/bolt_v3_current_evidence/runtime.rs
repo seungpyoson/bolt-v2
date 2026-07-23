@@ -1,20 +1,19 @@
 use std::{
     collections::BTreeSet,
-    fs::{self, File, OpenOptions},
+    fs::File,
     io::{Seek, SeekFrom},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
 };
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, ensure};
 
-use crate::{
-    bolt_v3_config::LoadedBoltV3Config, bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE,
-};
+use crate::bolt_v3_config::LoadedBoltV3Config;
 
 use super::{
     facts::StartupRecoveryFacts,
     generated_contract::KnownSink,
+    path_authority::CatalogDirectory,
     reader::validate_stream,
     record::{DecisionEvidenceRecorder, PoisonCause},
     validate_relative_path,
@@ -85,56 +84,33 @@ impl OfflineDecisionEvidenceRuntime {
 impl DecisionEvidenceRuntime {
     pub fn open(loaded: &LoadedBoltV3Config) -> Result<Self> {
         let config = &loaded.root.persistence.decision_evidence;
-        let catalog = fs::canonicalize(&loaded.root.persistence.catalog_directory)
-            .context("canonicalize decision-evidence catalog_directory")?;
-        ensure!(
-            catalog.is_dir(),
-            "decision-evidence catalog_directory is not a directory"
-        );
-
-        let machine_path = resolve_active_path(
-            &catalog,
-            "machine_relative_path",
-            &config.machine_relative_path,
-        )?;
-        let observation_path = resolve_active_path(
-            &catalog,
+        let machine_relative =
+            configured_relative("machine_relative_path", &config.machine_relative_path)?;
+        let observation_relative = configured_relative(
             "observation_relative_path",
             &config.observation_relative_path,
         )?;
         ensure!(
-            machine_path != observation_path,
+            machine_relative != observation_relative,
             "decision-evidence paths must be distinct"
         );
 
-        let mut configured = BTreeSet::from([machine_path.clone(), observation_path.clone()]);
+        let mut configured = BTreeSet::from([machine_relative, observation_relative]);
+        let catalog =
+            CatalogDirectory::open(Path::new(&loaded.root.persistence.catalog_directory))?;
         for retired in &config.retired_relative_paths {
-            let retired_path =
-                resolve_configured_path(&catalog, "retired_relative_paths", retired)?;
+            let retired_relative = configured_relative("retired_relative_paths", retired)?;
             ensure!(
-                configured.insert(retired_path.clone()),
+                configured.insert(retired_relative),
                 "decision-evidence paths must be distinct: `{}`",
-                retired_path.display()
+                retired_relative
             );
-            match fs::symlink_metadata(&retired_path) {
-                Ok(_) => bail!(
-                    "retired decision-evidence path is present: `{}`",
-                    retired_path.display()
-                ),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!(
-                            "inspect retired decision-evidence path `{}`",
-                            retired_path.display()
-                        )
-                    });
-                }
-            }
+            catalog.ensure_retired_absent(retired_relative)?;
         }
 
-        let mut machine = open_retained_stream(&machine_path)
-            .with_context(|| format!("open machine evidence `{}`", machine_path.display()))?;
+        let mut machine = catalog
+            .open_stream(machine_relative)
+            .with_context(|| format!("open machine evidence `{machine_relative}`"))?;
         let startup_recovery = validate_stream(
             &mut machine,
             KnownSink::Machine,
@@ -142,9 +118,9 @@ impl DecisionEvidenceRuntime {
         )?
         .startup_recovery;
         machine.seek(SeekFrom::End(0))?;
-        let mut observation = open_retained_stream(&observation_path).with_context(|| {
-            format!("open observation evidence `{}`", observation_path.display())
-        })?;
+        let mut observation = catalog
+            .open_stream(observation_relative)
+            .with_context(|| format!("open observation evidence `{observation_relative}`"))?;
         ensure_distinct_files(&machine, &observation)?;
         let (observation_stream_status, observation_poison) = match validate_stream(
             &mut observation,
@@ -193,119 +169,9 @@ impl DecisionEvidenceRuntime {
     }
 }
 
-fn resolve_active_path(catalog: &Path, field: &str, raw: &str) -> Result<PathBuf> {
-    let path = resolve_configured_path(catalog, field, raw)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("decision-evidence path has no parent"))?;
-    let canonical_parent = fs::canonicalize(parent).with_context(|| {
-        format!(
-            "canonicalize decision-evidence parent `{}`; cutover must create it before startup",
-            parent.display()
-        )
-    })?;
-    ensure!(
-        canonical_parent.starts_with(catalog),
-        "decision-evidence path escapes catalog_directory"
-    );
-    Ok(path)
-}
-
-fn resolve_configured_path(catalog: &Path, field: &str, raw: &str) -> Result<PathBuf> {
-    validate_relative_path(field, raw).map_err(|message| anyhow!(message))?;
-    Ok(catalog.join(raw.trim()))
-}
-
-fn open_retained_stream(path: &Path) -> std::io::Result<File> {
-    match fs::symlink_metadata(path) {
-        Ok(before) => {
-            validate_regular_file(&before)?;
-            let file = open_existing_no_follow(path)?;
-            let opened = file.metadata()?;
-            validate_regular_file(&opened)?;
-            ensure_same_file(&before, &opened)?;
-            let after = fs::symlink_metadata(path)?;
-            validate_regular_file(&after)?;
-            ensure_same_file(&opened, &after)?;
-            Ok(file)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let file = open_new_no_follow(path)?;
-            let opened = file.metadata()?;
-            validate_regular_file(&opened)?;
-            let after = fs::symlink_metadata(path)?;
-            validate_regular_file(&after)?;
-            ensure_same_file(&opened, &after)?;
-            Ok(file)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn validate_regular_file(metadata: &fs::Metadata) -> std::io::Result<()> {
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "decision-evidence path is not a regular file",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn open_existing_no_follow(path: &Path) -> std::io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    OpenOptions::new()
-        .read(true)
-        .append(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-fn open_existing_no_follow(path: &Path) -> std::io::Result<File> {
-    OpenOptions::new().read(true).append(true).open(path)
-}
-
-#[cfg(unix)]
-fn open_new_no_follow(path: &Path) -> std::io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create_new(true)
-        .mode(PRIVATE_ARTIFACT_FILE_MODE)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-fn open_new_no_follow(path: &Path) -> std::io::Result<File> {
-    OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create_new(true)
-        .open(path)
-}
-
-#[cfg(unix)]
-fn ensure_same_file(left: &fs::Metadata, right: &fs::Metadata) -> std::io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
-
-    if left.dev() != right.dev() || left.ino() != right.ino() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "decision-evidence path changed during open",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_same_file(_left: &fs::Metadata, _right: &fs::Metadata) -> std::io::Result<()> {
-    Ok(())
+fn configured_relative<'a>(field: &str, raw: &'a str) -> Result<&'a str> {
+    validate_relative_path(field, raw).map_err(anyhow::Error::msg)?;
+    Ok(raw.trim())
 }
 
 #[cfg(unix)]
@@ -323,5 +189,5 @@ fn ensure_distinct_files(machine: &File, observation: &File) -> Result<()> {
 
 #[cfg(not(unix))]
 fn ensure_distinct_files(_machine: &File, _observation: &File) -> Result<()> {
-    Ok(())
+    anyhow::bail!("decision-evidence runtime is unsupported on non-Unix targets")
 }

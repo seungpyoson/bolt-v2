@@ -3,6 +3,7 @@ pub mod contract_generator;
 mod facts;
 pub(crate) mod generated_contract;
 mod path;
+mod path_authority;
 mod reader;
 mod record;
 mod runtime;

@@ -139,7 +139,7 @@ Run `cargo test --locked --test bolt_v3_current_evidence_runtime path -- --nocap
 
 - [ ] **Step 3: Implement one component walk**
 
-Hold the catalog as `OwnedFd`. Open each parent with `openat(O_RDONLY | O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC)`. Open/create the basename relative to that descriptor with `O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC` and private mode, then validate via `fstat`. Inspect retired basenames with `fstatat(..., AT_SYMLINK_NOFOLLOW)`. Convert raw descriptors immediately into owned Rust types.
+Resolve `catalog_directory` exactly once, discard its original pathname, and hold the resolved catalog as `OwnedFd`. Open each resolved catalog component and each configured relative parent with `openat(O_RDONLY | O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC)`. Open/create the basename relative to that descriptor with `O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC` and private mode, then validate via `fstat`. Inspect retired basenames with `fstatat(..., AT_SYMLINK_NOFOLLOW)`. Convert raw descriptors immediately into owned Rust types.
 
 On non-Unix targets, runtime construction returns an unsupported-target error before filesystem mutation.
 

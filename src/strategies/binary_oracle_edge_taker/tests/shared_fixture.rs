@@ -275,8 +275,15 @@ pub(super) fn recording_decision_evidence()
 pub(super) fn failing_decision_evidence()
 -> Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder> {
     let recorder = recording_decision_evidence();
-    recorder.fail_machine_writes();
+    recorder.fail_machine_writes_for_test();
     recorder.fail_observation_writes();
+    recorder
+}
+
+pub(super) fn sync_failing_decision_evidence()
+-> Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder> {
+    let recorder = recording_decision_evidence();
+    recorder.fail_machine_sync_for_test();
     recorder
 }
 

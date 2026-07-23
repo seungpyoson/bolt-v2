@@ -817,6 +817,30 @@ fn ungated_submit_admission_allows_production_submit() {
 }
 
 #[test]
+fn admission_evidence_failure_is_typed_and_does_not_consume_submit_capacity() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    writer.fail_machine_writes();
+    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::ONE);
+
+    let error = admission
+        .admit(&submit_request(Decimal::ONE))
+        .expect_err("must-precede-new-risk evidence failure must reject admission");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3SubmitAdmissionError::EvidenceWriteFailed { .. }
+        ),
+        "the evidence boundary must preserve its typed fail-closed outcome"
+    );
+    assert_eq!(
+        admission.admitted_order_count(),
+        0,
+        "an indeterminate evidence append must not consume submit capacity"
+    );
+}
+
+#[test]
 fn limited_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
     let admission = limited_admission(1, Decimal::new(1, 0));
 
@@ -1859,6 +1883,23 @@ fn single_order_reject_records_order_reject_evidence_on_reject_outcome() {
         "instrument-1/buy/rejected_count_cap_exhausted"
     );
     assert_eq!(reject.elapsed_ns, 0);
+}
+
+#[test]
+fn submit_admission_reject_is_preserved_when_reject_evidence_fails() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    writer.fail_machine_writes();
+    let admission = limited_admission_with_writer(writer.recorder(), 0, Decimal::ONE);
+
+    let error = admission
+        .admit_at(&submit_request(Decimal::ONE), 1_000)
+        .expect_err("zero submit capacity must still reject");
+
+    assert!(
+        matches!(error, BoltV3SubmitAdmissionError::CountCapExhausted),
+        "preserve-result evidence policy must not replace the admission result"
+    );
+    assert_eq!(admission.admitted_order_count(), 0);
 }
 
 #[test]

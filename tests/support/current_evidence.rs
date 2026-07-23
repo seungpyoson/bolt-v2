@@ -98,6 +98,10 @@ impl RecordingDecisionEvidenceWriter {
         self.runtime.recorder()
     }
 
+    pub fn fail_machine_writes(&self) {
+        self.runtime.recorder().fail_machine_writes_for_test();
+    }
+
     pub fn facts(&self) -> Vec<CurrentFact> {
         let mut facts = read_current_evidence_facts(&self.machine_path, u64::MAX)
             .expect("machine evidence must decode");

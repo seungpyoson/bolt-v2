@@ -17,6 +17,23 @@ pub(super) fn encode_metadata(
     recorded_at_utc_ns: i64,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     validate_recorded_at(recorded_at_utc_ns)?;
+    validate_metadata(&fact)?;
+    let purpose = KnownPurpose::SubmitReservationMetadata;
+    let descriptor = current_line_descriptor(purpose);
+    encode_line(
+        purpose,
+        &MetadataLineV1 {
+            schema_version: descriptor.schema_version,
+            recorded_at_utc_ns,
+            gate_id: descriptor.gate_id.to_string(),
+            gate_version: env!("CARGO_PKG_VERSION").to_string(),
+            kind: descriptor.kind.to_string(),
+            metadata: MetadataV1::from_fact(fact),
+        },
+    )
+}
+
+fn validate_metadata(fact: &SubmitReservationMetadataFact) -> Result<(), RecordFailure> {
     validate_nonempty(
         "submit reservation metadata",
         [
@@ -37,19 +54,6 @@ pub(super) fn encode_metadata(
             fact.source.as_str(),
         ],
         fact.observed_at_ns,
-    )?;
-    let purpose = KnownPurpose::SubmitReservationMetadata;
-    let descriptor = current_line_descriptor(purpose);
-    encode_line(
-        purpose,
-        &MetadataLineV1 {
-            schema_version: descriptor.schema_version,
-            recorded_at_utc_ns,
-            gate_id: descriptor.gate_id.to_string(),
-            gate_version: env!("CARGO_PKG_VERSION").to_string(),
-            kind: descriptor.kind.to_string(),
-            metadata: MetadataV1::from_fact(fact),
-        },
     )
 }
 
@@ -58,19 +62,7 @@ pub(super) fn encode_fill(
     recorded_at_utc_ns: i64,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     validate_recorded_at(recorded_at_utc_ns)?;
-    validate_nonempty(
-        "submit reservation fill",
-        [
-            fact.client_order_id.as_str(),
-            fact.submit_reservation_id.as_str(),
-            fact.trade_id.as_str(),
-            fact.instrument_id.as_str(),
-            fact.side.as_str(),
-            fact.fill_quantity.as_str(),
-            fact.source.as_str(),
-        ],
-        fact.observed_at_ns,
-    )?;
+    validate_fill(&fact)?;
     let purpose = KnownPurpose::SubmitReservationFill;
     let descriptor = current_line_descriptor(purpose);
     encode_line(
@@ -83,6 +75,22 @@ pub(super) fn encode_fill(
             kind: descriptor.kind.to_string(),
             fill: FillV1::from_fact(fact),
         },
+    )
+}
+
+fn validate_fill(fact: &SubmitReservationFillFact) -> Result<(), RecordFailure> {
+    validate_nonempty(
+        "submit reservation fill",
+        [
+            fact.client_order_id.as_str(),
+            fact.submit_reservation_id.as_str(),
+            fact.trade_id.as_str(),
+            fact.instrument_id.as_str(),
+            fact.side.as_str(),
+            fact.fill_quantity.as_str(),
+            fact.source.as_str(),
+        ],
+        fact.observed_at_ns,
     )
 }
 
@@ -99,7 +107,9 @@ pub(super) fn decode_metadata(
         decoded.recorded_at_utc_ns,
         line_number,
     )?;
-    Ok(decoded.metadata.into_fact())
+    let fact = decoded.metadata.into_fact();
+    validate_metadata(&fact).map_err(anyhow::Error::new)?;
+    Ok(fact)
 }
 
 pub(super) fn decode_fill(line: &str, line_number: usize) -> Result<SubmitReservationFillFact> {
@@ -112,7 +122,9 @@ pub(super) fn decode_fill(line: &str, line_number: usize) -> Result<SubmitReserv
         decoded.recorded_at_utc_ns,
         line_number,
     )?;
-    Ok(decoded.fill.into_fact())
+    let fact = decoded.fill.into_fact();
+    validate_fill(&fact).map_err(anyhow::Error::new)?;
+    Ok(fact)
 }
 
 #[derive(Serialize, Deserialize)]

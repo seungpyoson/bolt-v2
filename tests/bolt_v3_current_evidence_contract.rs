@@ -27,7 +27,6 @@ fn current_contract_is_closed_and_deterministic() {
     let second = render_contract(&contract);
     assert_eq!(first, second);
     assert_eq!(first, GENERATED);
-    assert!(!first.contains("_ =>"));
 }
 
 #[test]

@@ -91,7 +91,7 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
     {
         if !unique_paths.insert(relative_path) {
             errors.push(format!(
-                "persistence.decision_evidence decision-evidence paths must be distinct: `{relative_path}`"
+                "persistence.decision_evidence paths must be distinct: `{relative_path}`"
             ));
         }
     }

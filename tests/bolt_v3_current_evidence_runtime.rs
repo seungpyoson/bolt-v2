@@ -163,7 +163,9 @@ fn open_constructs_fresh_current_streams_atomically() {
 
     assert!(machine_path(&loaded).is_file());
     assert!(observation_path(&loaded).is_file());
-    assert!(runtime.startup_recovery().is_empty());
+    assert!(runtime.reservation_recovery().is_empty());
+    assert!(runtime.settlement_recovery().is_empty());
+    assert!(runtime.booking_recovery().is_empty());
 }
 
 #[test]
@@ -249,7 +251,7 @@ fn settlement_restart_retains_the_complete_semantic_fact() {
     let loaded = loaded_in(&temp);
     let runtime = DecisionEvidenceRuntime::open(&loaded).expect("fresh current streams must open");
     let expected = settlement_fact();
-    runtime
+    let _committed = runtime
         .recorder()
         .record_settlement(expected.clone())
         .expect("settlement must append");
@@ -259,7 +261,7 @@ fn settlement_restart_retains_the_complete_semantic_fact() {
         DecisionEvidenceRuntime::open(&loaded).expect("current settlement must recover");
     assert_eq!(
         restarted
-            .startup_recovery()
+            .settlement_recovery()
             .settlements()
             .get(&expected.settlement_key),
         Some(&expected)
@@ -333,7 +335,7 @@ fn open_strictly_decodes_current_recovery_facts() {
 
     let runtime = DecisionEvidenceRuntime::open(&loaded)
         .expect("current recovery identity and payload must decode");
-    assert!(!runtime.startup_recovery().is_empty());
+    assert!(!runtime.reservation_recovery().is_empty());
 
     let malformed = current.replace(
         "\"source\":\"submit_admission\"",
@@ -491,7 +493,7 @@ fn invalid_observation_history_poison_is_typed_bounded_and_byte_preserving() {
         let runtime = DecisionEvidenceRuntime::open(&loaded).unwrap_or_else(|error| {
             panic!("{name}: observation corruption must not gate: {error:#}")
         });
-        assert!(!runtime.startup_recovery().is_empty(), "{name}");
+        assert!(!runtime.reservation_recovery().is_empty(), "{name}");
         assert!(
             matches!(
                 runtime.observation_stream_status(),
@@ -517,6 +519,37 @@ fn invalid_observation_history_poison_is_typed_bounded_and_byte_preserving() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn crlf_observation_history_is_poisoned_and_preserved_without_gating_machine() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let loaded = loaded_in(&temp);
+    let fixture = include_bytes!(
+        "fixtures/bolt_v3/current_evidence/positive/requote_throttle_observation.jsonl"
+    );
+    let crlf = fixture
+        .iter()
+        .flat_map(|byte| {
+            if *byte == b'\n' {
+                vec![b'\r', b'\n']
+            } else {
+                vec![*byte]
+            }
+        })
+        .collect::<Vec<_>>();
+    fs::write(observation_path(&loaded), &crlf).expect("CRLF fixture must be written");
+
+    let runtime = DecisionEvidenceRuntime::open(&loaded)
+        .expect("observation framing must never become readiness authority");
+    let ObservationStreamStatus::Poisoned { cause } = runtime.observation_stream_status() else {
+        panic!("CRLF observation framing must poison its sink");
+    };
+    assert!(cause.contains("carriage return"), "{cause}");
+    assert_eq!(
+        fs::read(observation_path(&loaded)).expect("observation bytes must read"),
+        crlf
+    );
 }
 
 #[test]
@@ -559,7 +592,7 @@ fn observation_stream_enforces_sink_membership_without_gating_machine_recovery()
 
     let runtime = DecisionEvidenceRuntime::open(&loaded)
         .expect("wrong-sink observation content must not gate machine recovery");
-    assert!(!runtime.startup_recovery().is_empty());
+    assert!(!runtime.reservation_recovery().is_empty());
     assert!(matches!(
         runtime.observation_stream_status(),
         ObservationStreamStatus::Poisoned { .. }
@@ -622,9 +655,23 @@ fn shadow_pnl_skips_irrelevant_identity_before_payload_decode() {
     )
     .expect("malformed irrelevant line must be written");
 
-    let events = read_shadow_pnl_events(&path)
+    let events = read_shadow_pnl_events(&path, u64::MAX)
         .expect("irrelevant identity must be skipped before payload decoding");
     assert!(events.is_empty());
+}
+
+#[test]
+fn shadow_pnl_refuses_stream_over_configured_read_cap() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let path = temp.path().join("oversized-shadow-pnl.jsonl");
+    let fixture =
+        include_bytes!("fixtures/bolt_v3/current_evidence/positive/entry_order_intent.jsonl");
+    fs::write(&path, fixture).expect("shadow-PnL fixture must be written");
+
+    let error = read_shadow_pnl_events(&path, fixture.len() as u64 - 1)
+        .expect_err("shadow-PnL must enforce the configured evidence cap");
+
+    assert!(error.to_string().contains("exceeds configured byte cap"));
 }
 
 #[test]
@@ -690,7 +737,7 @@ fn shadow_pnl_dispositions_have_typed_reducers_for_the_complete_current_corpus()
 
     let path = temp.path().join("complete-current-corpus.jsonl");
     fs::write(&path, corpus).expect("combined corpus must be written");
-    let events = read_shadow_pnl_events(&path)
+    let events = read_shadow_pnl_events(&path, u64::MAX)
         .expect("every relevant disposition must have a typed Shadow PnL reducer");
     assert_eq!(
         events
@@ -802,6 +849,24 @@ fn open_refuses_blank_torn_unknown_and_non_regular_machine_streams() {
             .contains("non-newline-terminated final record")
     );
 
+    let fixture = include_bytes!(
+        "fixtures/bolt_v3/current_evidence/positive/submit_reservation_metadata.jsonl"
+    );
+    let crlf = fixture
+        .iter()
+        .flat_map(|byte| {
+            if *byte == b'\n' {
+                vec![b'\r', b'\n']
+            } else {
+                vec![*byte]
+            }
+        })
+        .collect::<Vec<_>>();
+    fs::write(&machine, crlf).expect("CRLF machine stream must be written");
+    let error =
+        DecisionEvidenceRuntime::open(&loaded).expect_err("CRLF machine framing must fail closed");
+    assert!(error.to_string().contains("carriage return"));
+
     fs::write(
         &machine,
         b"{\"kind\":\"future_kind\",\"schema_version\":1,\"gate_id\":\"future\",\"gate_version\":\"current\",\"recorded_at_utc_ns\":1}\n",
@@ -841,7 +906,33 @@ fn open_refuses_symlinks_and_machine_observation_inode_aliases() {
         .expect("observation hard link must be created");
     let error = DecisionEvidenceRuntime::open(&loaded)
         .expect_err("machine-observation inode alias must block activation");
-    assert!(error.to_string().contains("same file"));
+    assert!(
+        format!("{error:#}").contains("hard-link aliases"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn open_refuses_out_of_catalog_hard_link_without_changing_foreign_bytes() {
+    let catalog = tempfile::tempdir().expect("catalog tempdir must exist");
+    let outside = tempfile::tempdir().expect("outside tempdir must exist");
+    let loaded = loaded_in(&catalog);
+    let foreign = outside.path().join("foreign.jsonl");
+    fs::write(&foreign, b"foreign\n").expect("foreign file must be written");
+    fs::hard_link(&foreign, machine_path(&loaded)).expect("hard link must be created");
+
+    let error = DecisionEvidenceRuntime::open(&loaded)
+        .expect_err("out-of-catalog hard link must block activation");
+
+    assert!(
+        format!("{error:#}").contains("hard-link aliases"),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(
+        fs::read(&foreign).expect("foreign bytes must remain readable"),
+        b"foreign\n"
+    );
 }
 
 #[cfg(unix)]

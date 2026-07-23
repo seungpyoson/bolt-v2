@@ -164,7 +164,9 @@ use crate::{
         DataClientReadinessProbeQuoteTargetSource, LiveSubmitGovernanceMode, LoadedBoltV3Config,
         LoadedStrategy, nautilus_startup_bound_secs, resolve_root_relative_path,
     },
-    bolt_v3_current_evidence::{DecisionEvidenceRuntime, StartupRecoveryFacts},
+    bolt_v3_current_evidence::{
+        DecisionEvidenceRuntime, ObservationStreamStatus, ReservationRecoveryFacts,
+    },
     bolt_v3_iv::{
         config::IvRootConfig,
         health::IvSourceHealth,
@@ -348,12 +350,13 @@ pub struct BoltV3LiveNodeRuntime {
     venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
     capital_admission_venue_spendability_source:
         Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>,
-    submit_reservation_recovery: Option<Arc<StartupRecoveryFacts>>,
+    submit_reservation_recovery: Option<Arc<ReservationRecoveryFacts>>,
     iv_runtime: Option<IvRuntimeEngine>,
     iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
     input_health_configured_source_count: usize,
     settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
+    decision_evidence_observation_status: ObservationStreamStatus,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -474,7 +477,7 @@ struct BoltV3LiveNodeRuntimeFeeds {
     venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
     capital_admission_venue_spendability_source:
         Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>,
-    submit_reservation_recovery: Option<Arc<StartupRecoveryFacts>>,
+    submit_reservation_recovery: Option<Arc<ReservationRecoveryFacts>>,
 }
 
 #[derive(Clone)]
@@ -827,6 +830,7 @@ struct BoltV3LiveNodeRuntimeComponents {
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
     input_health_configured_source_count: usize,
     settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
+    decision_evidence_observation_status: ObservationStreamStatus,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -861,6 +865,8 @@ impl BoltV3LiveNodeRuntime {
             input_health_configured_source_count: runtime_components
                 .input_health_configured_source_count,
             settlement_health: runtime_components.settlement_health,
+            decision_evidence_observation_status: runtime_components
+                .decision_evidence_observation_status,
             redaction_values: runtime_components.redaction_values,
         }
     }
@@ -983,6 +989,10 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn registration_summary(&self) -> &BoltV3RegistrationSummary {
         &self.registration_summary
+    }
+
+    pub fn decision_evidence_observation_status(&self) -> &ObservationStreamStatus {
+        &self.decision_evidence_observation_status
     }
 
     pub fn registered_exec_client_ids(&self) -> Vec<ClientId> {
@@ -2936,7 +2946,10 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         })
     })?;
     let decision_evidence = evidence_runtime.recorder();
-    let startup_recovery = evidence_runtime.startup_recovery();
+    let decision_evidence_observation_status = evidence_runtime.observation_stream_status();
+    let reservation_recovery = evidence_runtime.reservation_recovery();
+    let settlement_recovery = evidence_runtime.settlement_recovery();
+    let booking_recovery = evidence_runtime.booking_recovery();
     // Enabled kill-switch boot must fail closed on an unresolved/corrupt/missing
     // durable record before constructing NT clients or registering
     // submit-capable strategy runtime. A clean recovery returns the latched
@@ -2978,7 +2991,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         .as_ref()
         .map(|config| config.order_event_mapper.clone());
     let submit_reservation_recovery = if capital_admission_runtime_feed_config.is_some() {
-        Some(Arc::clone(&startup_recovery))
+        Some(Arc::clone(&reservation_recovery))
     } else {
         None
     };
@@ -3149,12 +3162,16 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     );
     let settlement_recovery = settlement_runtime_sink
         .is_some()
-        .then(|| Arc::clone(&startup_recovery));
+        .then(|| Arc::clone(&settlement_recovery));
+    let booking_recovery = settlement_runtime_sink
+        .is_some()
+        .then(|| Arc::clone(&booking_recovery));
     let strategy_execution_controls = BoltV3StrategyExecutionControls {
         submit_admission: submit_admission.clone(),
         order_execution_policy,
         settlement_runtime_sink,
         settlement_recovery,
+        booking_recovery,
         settlement_health_transition_emitter: Some(settlement_health_transition_emitter),
     };
     let iv_runtime = loaded
@@ -3329,6 +3346,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             operator_health_transition_logger,
             input_health_configured_source_count,
             settlement_health,
+            decision_evidence_observation_status,
             redaction_values: resolved.redaction_values(),
         },
     );

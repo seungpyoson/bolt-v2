@@ -523,6 +523,7 @@ fn try_assembly_context<'a>(
                     bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
                 settlement_runtime_sink: None,
                 settlement_recovery: None,
+                booking_recovery: None,
                 settlement_health_transition_emitter: None,
             },
         ),
@@ -882,7 +883,7 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
             .iter()
             .filter(|token| token.text == ":")
             .count(),
-        5
+        6
     );
     assert_field_type(
         execution_controls,
@@ -902,7 +903,20 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
     assert_field_type(
         execution_controls,
         "settlement_recovery",
-        &["Option", "<", "Arc", "<", "StartupRecoveryFacts", ">", ">"],
+        &[
+            "Option",
+            "<",
+            "Arc",
+            "<",
+            "SettlementRecoveryFacts",
+            ">",
+            ">",
+        ],
+    );
+    assert_field_type(
+        execution_controls,
+        "booking_recovery",
+        &["Option", "<", "Arc", "<", "BookingRecoveryFacts", ">", ">"],
     );
     assert_field_type(
         execution_controls,
@@ -961,8 +975,21 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
     );
     assert_field_type(
         settlement_resource_tokens,
-        "recovery",
-        &["Option", "<", "Arc", "<", "StartupRecoveryFacts", ">", ">"],
+        "settlement_recovery",
+        &[
+            "Option",
+            "<",
+            "Arc",
+            "<",
+            "SettlementRecoveryFacts",
+            ">",
+            ">",
+        ],
+    );
+    assert_field_type(
+        settlement_resource_tokens,
+        "booking_recovery",
+        &["Option", "<", "Arc", "<", "BookingRecoveryFacts", ">", ">"],
     );
     assert_field_type(
         settlement_resource_tokens,

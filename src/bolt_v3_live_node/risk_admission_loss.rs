@@ -2005,7 +2005,7 @@ mod tests {
             .write_state(&KillSwitchState::Armed)
             .expect("recovered armed state should persist");
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        writer.fail_machine_writes();
+        writer.fail_machine_writes_for_test();
         let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
             writer,
             test_capital_admission_config(),

@@ -4399,7 +4399,7 @@ mod loss_governor_halt_evidence_tests {
 
     fn failing_evidence() -> Arc<DecisionEvidenceRecorder> {
         let recorder = recording_evidence();
-        recorder.fail_machine_writes();
+        recorder.fail_machine_writes_for_test();
         recorder
     }
 

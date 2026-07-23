@@ -14,6 +14,7 @@ mod unix {
         os::{
             fd::{AsRawFd, FromRawFd},
             unix::ffi::OsStrExt,
+            unix::fs::MetadataExt,
         },
         path::{Component, Path},
     };
@@ -24,6 +25,7 @@ mod unix {
 
     pub(crate) struct CatalogDirectory {
         directory: File,
+        sync_directory: fn(&File) -> io::Result<()>,
     }
 
     struct ParentDirectory {
@@ -61,14 +63,17 @@ mod unix {
                     }
                 }
             }
-            Ok(Self { directory })
+            Ok(Self {
+                directory,
+                sync_directory: sync_directory_entry,
+            })
         }
 
         pub(crate) fn open_stream(&self, relative: &str) -> Result<File> {
             let Some(parent) = self.walk_parent(relative, false)? else {
                 bail!("active decision-evidence stream parent is absent: `{relative}`")
             };
-            parent.open_stream()
+            parent.open_stream(self.sync_directory)
         }
 
         pub(crate) fn ensure_retired_absent(&self, relative: &str) -> Result<()> {
@@ -120,47 +125,89 @@ mod unix {
     }
 
     impl ParentDirectory {
-        fn open_stream(self) -> Result<File> {
-            let flags =
-                libc::O_RDWR | libc::O_APPEND | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+        fn open_stream(self, sync_directory: fn(&File) -> io::Result<()>) -> Result<File> {
+            let create_flags = libc::O_RDWR
+                | libc::O_APPEND
+                | libc::O_CREAT
+                | libc::O_EXCL
+                | libc::O_CLOEXEC
+                | libc::O_NOFOLLOW;
             // SAFETY: the parent descriptor and NUL-terminated basename remain valid for the call.
-            let raw = unsafe {
+            let created_raw = unsafe {
                 libc::openat(
                     self.directory.as_raw_fd(),
                     self.basename.as_ptr(),
-                    flags,
+                    create_flags,
                     PRIVATE_ARTIFACT_FILE_MODE,
                 )
             };
-            if raw < 0 {
+            let (raw, created) = if created_raw >= 0 {
+                (created_raw, true)
+            } else {
                 let error = io::Error::last_os_error();
-                if matches!(error.raw_os_error(), Some(libc::ELOOP)) {
-                    bail!(
-                        "decision-evidence path is not a regular file: symlink rejected at `{}`",
-                        self.display
-                    );
+                if error.raw_os_error() == Some(libc::EEXIST) {
+                    let existing_flags =
+                        libc::O_RDWR | libc::O_APPEND | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+                    // SAFETY: the parent descriptor and NUL-terminated basename remain valid.
+                    let existing_raw = unsafe {
+                        libc::openat(
+                            self.directory.as_raw_fd(),
+                            self.basename.as_ptr(),
+                            existing_flags,
+                        )
+                    };
+                    if existing_raw >= 0 {
+                        (existing_raw, false)
+                    } else {
+                        return self.open_error(io::Error::last_os_error());
+                    }
+                } else {
+                    return self.open_error(error);
                 }
-                if matches!(error.raw_os_error(), Some(libc::EISDIR)) {
-                    bail!(
-                        "decision-evidence path is not a regular file: `{}`",
-                        self.display
-                    );
-                }
-                return Err(error).with_context(|| {
-                    format!(
-                        "open decision-evidence stream `{}` without symlinks",
-                        self.display
-                    )
-                });
-            }
+            };
             // SAFETY: `openat` returned a new owned descriptor on success.
             let file = unsafe { File::from_raw_fd(raw) };
+            let metadata = file.metadata()?;
             ensure!(
-                file.metadata()?.is_file(),
+                metadata.is_file(),
                 "decision-evidence path is not a regular file: `{}`",
                 self.display
             );
+            ensure!(
+                metadata.nlink() == 1,
+                "decision-evidence path has external hard-link aliases: `{}`",
+                self.display
+            );
+            if created {
+                sync_directory(&self.directory).with_context(|| {
+                    format!(
+                        "synchronize newly created decision-evidence stream namespace `{}`",
+                        self.display
+                    )
+                })?;
+            }
             Ok(file)
+        }
+
+        fn open_error<T>(&self, error: io::Error) -> Result<T> {
+            if matches!(error.raw_os_error(), Some(libc::ELOOP)) {
+                bail!(
+                    "decision-evidence path is not a regular file: symlink rejected at `{}`",
+                    self.display
+                );
+            }
+            if matches!(error.raw_os_error(), Some(libc::EISDIR)) {
+                bail!(
+                    "decision-evidence path is not a regular file: `{}`",
+                    self.display
+                );
+            }
+            Err(error).with_context(|| {
+                format!(
+                    "open decision-evidence stream `{}` without symlinks",
+                    self.display
+                )
+            })
         }
 
         fn ensure_absent(self) -> Result<()> {
@@ -204,6 +251,10 @@ mod unix {
         }
         // SAFETY: `open` returned a new owned descriptor on success.
         Ok(unsafe { File::from_raw_fd(raw) })
+    }
+
+    fn sync_directory_entry(directory: &File) -> io::Result<()> {
+        directory.sync_all()
     }
 
     fn open_directory_at(parent: &File, name: &OsStr) -> io::Result<File> {
@@ -250,7 +301,7 @@ mod unix {
             fs::rename(&original, &retained).expect("original parent must be retained");
             symlink(outside.path(), &original).expect("old pathname must be redirected");
             let mut stream = parent
-                .open_stream()
+                .open_stream(sync_directory_entry)
                 .expect("descriptor-relative open must succeed");
             stream.write_all(b"retained\n").expect("write must succeed");
             stream.sync_data().expect("write must sync");
@@ -260,6 +311,49 @@ mod unix {
                 b"retained\n"
             );
             assert!(!outside.path().join("machine.jsonl").exists());
+        }
+
+        #[test]
+        fn newly_created_stream_requires_parent_directory_sync() {
+            fn reject_sync(_directory: &File) -> io::Result<()> {
+                Err(io::Error::other("injected directory sync failure"))
+            }
+
+            let root = tempfile::tempdir().expect("tempdir must exist");
+            let mut catalog = CatalogDirectory::open(root.path()).expect("catalog must open");
+            catalog.sync_directory = reject_sync;
+
+            let error = catalog
+                .open_stream("machine.jsonl")
+                .expect_err("creation must fail when namespace sync fails");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("synchronize newly created decision-evidence stream namespace")
+            );
+        }
+
+        #[test]
+        fn retained_stream_does_not_claim_a_new_namespace_commit() {
+            fn reject_sync(_directory: &File) -> io::Result<()> {
+                Err(io::Error::other("existing stream must not sync its parent"))
+            }
+
+            let root = tempfile::tempdir().expect("tempdir must exist");
+            fs::write(root.path().join("machine.jsonl"), b"retained\n")
+                .expect("retained stream must exist");
+            let mut catalog = CatalogDirectory::open(root.path()).expect("catalog must open");
+            catalog.sync_directory = reject_sync;
+
+            let stream = catalog
+                .open_stream("machine.jsonl")
+                .expect("opening an existing name does not create namespace state");
+
+            assert_eq!(
+                stream.metadata().expect("stream metadata must read").len(),
+                b"retained\n".len() as u64
+            );
         }
     }
 }

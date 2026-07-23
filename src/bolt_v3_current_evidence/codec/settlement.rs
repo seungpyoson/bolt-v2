@@ -21,6 +21,23 @@ pub(super) fn encode_settlement(
     recorded_at_utc_ns: i64,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     validate_recorded_at(recorded_at_utc_ns)?;
+    validate_settlement(&fact)?;
+    let purpose = KnownPurpose::Settlement;
+    let descriptor = current_line_descriptor(purpose);
+    encode_line(
+        purpose,
+        &SettlementLineV1 {
+            schema_version: descriptor.schema_version,
+            recorded_at_utc_ns,
+            gate_id: descriptor.gate_id.to_string(),
+            gate_version: env!("CARGO_PKG_VERSION").to_string(),
+            kind: descriptor.kind.to_string(),
+            settlement: SettlementV1::from_fact(fact),
+        },
+    )
+}
+
+fn validate_settlement(fact: &SettlementFact) -> Result<(), RecordFailure> {
     validate_nonempty(
         "settlement",
         [
@@ -43,19 +60,6 @@ pub(super) fn encode_settlement(
             fact.settlement_currency.as_str(),
         ],
         fact.resolution_ts_event_ns,
-    )?;
-    let purpose = KnownPurpose::Settlement;
-    let descriptor = current_line_descriptor(purpose);
-    encode_line(
-        purpose,
-        &SettlementLineV1 {
-            schema_version: descriptor.schema_version,
-            recorded_at_utc_ns,
-            gate_id: descriptor.gate_id.to_string(),
-            gate_version: env!("CARGO_PKG_VERSION").to_string(),
-            kind: descriptor.kind.to_string(),
-            settlement: SettlementV1::from_fact(fact),
-        },
     )
 }
 
@@ -90,7 +94,9 @@ pub(super) fn decode_settlement(line: &str, line_number: usize) -> Result<Settle
         decoded.recorded_at_utc_ns,
         line_number,
     )?;
-    Ok(decoded.settlement.into_fact())
+    let fact = decoded.settlement.into_fact();
+    validate_settlement(&fact).map_err(anyhow::Error::new)?;
+    Ok(fact)
 }
 
 pub(super) fn decode_terminal(line: &str, line_number: usize) -> Result<TerminalSettlementFact> {

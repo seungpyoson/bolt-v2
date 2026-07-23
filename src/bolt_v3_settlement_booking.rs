@@ -14,8 +14,8 @@ use crate::{
         BinaryRuntimeSettlementInput, settle_binary_runtime_reference_prices,
     },
     bolt_v3_current_evidence::{
-        OrderLifecycleOutcome, OrderLifecycleTransition, SettlementBookingErrorReason,
-        SettlementFact,
+        BookingRecoveryFacts, OrderLifecycleOutcome, OrderLifecycleTransition,
+        SettlementBookingErrorReason, SettlementFact, SettlementRecoveryFacts,
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_strategy_context::SettlementCapability,
@@ -291,19 +291,17 @@ fn booking_error(
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettlementRecoveryDelta {
     pub settled_position_keys: BTreeSet<String>,
-    pub booking_error_keys: BTreeSet<String>,
     pub terminal_settlement_keys: BTreeSet<String>,
     pub settled_evidence: Vec<SettlementFact>,
 }
 
-pub fn recover_settlement_bootstrap(
-    capability: Option<&SettlementCapability>,
+pub fn recover_settlement_facts(
+    recovery: Option<&SettlementRecoveryFacts>,
     recovery_scope_settlement_keys: &BTreeSet<String>,
 ) -> Result<SettlementRecoveryDelta> {
-    let Some(recovery) = capability.and_then(SettlementCapability::recovery) else {
+    let Some(recovery) = recovery else {
         return Ok(SettlementRecoveryDelta {
             settled_position_keys: BTreeSet::new(),
-            booking_error_keys: BTreeSet::new(),
             terminal_settlement_keys: BTreeSet::new(),
             settled_evidence: Vec::new(),
         });
@@ -313,11 +311,6 @@ pub fn recover_settlement_bootstrap(
             .settlements()
             .keys()
             .filter(|key| recovery_scope_settlement_keys.contains(*key))
-            .cloned()
-            .collect(),
-        booking_error_keys: recovery
-            .booking_error_keys()
-            .intersection(recovery_scope_settlement_keys)
             .cloned()
             .collect(),
         terminal_settlement_keys: recovery
@@ -332,6 +325,37 @@ pub fn recover_settlement_bootstrap(
             .map(|(_, fact)| fact.clone())
             .collect(),
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookingRecoveryDelta {
+    pub booking_error_keys: BTreeSet<String>,
+    pub terminal_settlement_keys: BTreeSet<String>,
+}
+
+#[must_use]
+pub fn recover_booking_facts(
+    recovery: Option<&BookingRecoveryFacts>,
+    recovery_scope_settlement_keys: &BTreeSet<String>,
+) -> BookingRecoveryDelta {
+    let Some(recovery) = recovery else {
+        return BookingRecoveryDelta {
+            booking_error_keys: BTreeSet::new(),
+            terminal_settlement_keys: BTreeSet::new(),
+        };
+    };
+    BookingRecoveryDelta {
+        booking_error_keys: recovery
+            .booking_error_keys()
+            .intersection(recovery_scope_settlement_keys)
+            .cloned()
+            .collect(),
+        terminal_settlement_keys: recovery
+            .terminal_settlement_keys()
+            .intersection(recovery_scope_settlement_keys)
+            .cloned()
+            .collect(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

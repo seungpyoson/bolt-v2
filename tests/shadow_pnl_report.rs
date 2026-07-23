@@ -11,6 +11,8 @@ fn shadow_pnl_report_joins_fixture_evidence_to_settlements() {
         .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -78,6 +80,8 @@ fn shadow_pnl_report_matches_settlement_by_market_and_instrument() {
     .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -137,6 +141,8 @@ fn shadow_pnl_report_rejects_unrecognized_winning_side() {
     .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -195,6 +201,8 @@ fn shadow_pnl_report_rejects_unrecognized_selected_side() {
     .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -249,6 +257,8 @@ fn shadow_pnl_report_matches_unique_settlement_without_settlement_market_id() {
     .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -317,6 +327,8 @@ fn shadow_pnl_report_rejects_ambiguous_settlement_without_trade_market_id() {
     .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -345,6 +357,8 @@ fn shadow_pnl_report_rejects_blank_lines_before_later_corruption() {
     std::fs::write(&settlements_path, "").expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -399,6 +413,8 @@ fn shadow_pnl_report_escapes_csv_asset_fields() {
     .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -454,6 +470,8 @@ fn shadow_pnl_report_rejects_trade_with_no_matching_settlement() {
     .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -523,6 +541,8 @@ fn shadow_pnl_report_rejects_duplicate_exact_market_id_settlements() {
     .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -581,6 +601,8 @@ fn shadow_pnl_report_rejects_settlement_inconsistent_with_winning_side() {
     .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -652,6 +674,8 @@ fn shadow_pnl_report_rejects_duplicate_client_order_id() {
     .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -715,6 +739,8 @@ fn shadow_pnl_report_rejects_admitted_entry_without_order_intent() {
     .expect("fixture settlements should write");
 
     let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
         .args([
             "--evidence-jsonl",
             evidence_path.to_str().expect("utf-8 path"),
@@ -865,5 +891,9 @@ fn push_trade_lines_with_snapshot_market_id(
 }
 
 fn current_fixture(raw: &str) -> serde_json::Value {
-    serde_json::from_str(raw.trim()).expect("committed current evidence fixture must decode")
+    let baseline = raw
+        .lines()
+        .next()
+        .expect("committed current evidence corpus must contain a baseline");
+    serde_json::from_str(baseline).expect("committed current evidence baseline must decode")
 }

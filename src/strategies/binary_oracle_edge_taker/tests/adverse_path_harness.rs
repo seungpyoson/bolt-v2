@@ -1593,6 +1593,64 @@ fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
         "post-settled-key venue-truth failure must enter blind settlement recovery; exposure={:?}",
         strategy.exposure
     );
+
+    try_emit_resolution_update(&mut strategy, 3_101.0)
+        .expect("blind recovery must not retry the committed settlement");
+    let replayed_events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
+    assert_eq!(
+        settlement_evidence_count(&replayed_events),
+        1,
+        "post-commit reducer failure must never re-append the settlement fact"
+    );
+}
+
+fn assert_settlement_evidence_failure_precedes_runtime_effects(
+    evidence: Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
+) {
+    assert_reality_fixtures();
+
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence,
+        submit_admission,
+    );
+    let sink = Rc::new(RecordingSettlementRuntimeSink::default());
+    attach_settlement_runtime_sink(&mut strategy, sink.clone());
+    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
+    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-EVIDENCE-BEFORE-RUNTIME"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    let settlement_key = settlement_key_for_position(&position)
+        .expect("fixture position should derive settlement key");
+
+    try_emit_resolution_update(&mut strategy, 3_101.0)
+        .expect_err("settlement evidence failure must stop before runtime reducers");
+
+    assert!(sink.loss_observations().is_empty());
+    assert!(sink.venue_explanations().is_empty());
+    assert!(
+        !strategy.settled_position_keys.contains(&settlement_key),
+        "an uncommitted settlement must not latch its idempotency key"
+    );
+}
+
+#[test]
+fn settlement_write_failure_precedes_loss_and_venue_runtime_effects() {
+    assert_settlement_evidence_failure_precedes_runtime_effects(failing_decision_evidence());
+}
+
+#[test]
+fn settlement_sync_failure_precedes_loss_and_venue_runtime_effects() {
+    assert_settlement_evidence_failure_precedes_runtime_effects(sync_failing_decision_evidence());
 }
 
 #[test]
@@ -2250,15 +2308,14 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
             },
         })
         .expect("current terminal-settlement evidence should append");
-    let recovery = Arc::new(
-        evidence
-            .startup_recovery_facts(Some(100_000))
-            .expect("current booking-error evidence should reconstruct"),
-    );
+    let (_, settlement_recovery, booking_recovery) = evidence
+        .startup_recovery_projections(Some(100_000))
+        .expect("current booking-error evidence should reconstruct");
     strategy.context = strategy
         .context
         .clone()
-        .with_settlement_recovery(Some(recovery));
+        .with_settlement_recovery(Some(Arc::new(settlement_recovery)))
+        .with_booking_recovery(Some(Arc::new(booking_recovery)));
 
     strategy.bootstrap_recovery_from_cache();
 
@@ -2361,7 +2418,7 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
     };
     let settlement_key = settlement_key_for_position(&scope_position)
         .expect("fixture cache position should derive settlement key");
-    evidence
+    let _committed = evidence
         .record_settlement(crate::bolt_v3_current_evidence::SettlementFact {
             strategy_id: strategy.config.strategy_id.clone(),
             settlement_key: settlement_key.clone(),
@@ -2385,15 +2442,14 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
             settlement_currency: "PUSD".to_string(),
         })
         .expect("current settlement evidence should append");
-    let recovery = Arc::new(
-        evidence
-            .startup_recovery_facts(Some(100_000))
-            .expect("current settlement evidence should reconstruct"),
-    );
+    let (_, settlement_recovery, booking_recovery) = evidence
+        .startup_recovery_projections(Some(100_000))
+        .expect("current settlement evidence should reconstruct");
     strategy.context = strategy
         .context
         .clone()
-        .with_settlement_recovery(Some(recovery));
+        .with_settlement_recovery(Some(Arc::new(settlement_recovery)))
+        .with_booking_recovery(Some(Arc::new(booking_recovery)));
 
     strategy.bootstrap_recovery_from_cache();
 

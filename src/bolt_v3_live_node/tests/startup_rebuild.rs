@@ -3,6 +3,29 @@
 use super::*;
 
 #[test]
+fn live_node_surfaces_poisoned_observation_stream_without_gating_startup() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+    let observation_path = temp.path().join(
+        &loaded
+            .root
+            .persistence
+            .decision_evidence
+            .observation_relative_path,
+    );
+    std::fs::write(&observation_path, b"\n")
+        .expect("invalid observation history must be installed");
+
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+        .expect("observation corruption must not gate the live node");
+
+    assert!(matches!(
+        runtime.decision_evidence_observation_status(),
+        crate::bolt_v3_current_evidence::ObservationStreamStatus::Poisoned { .. }
+    ));
+}
+
+#[test]
 fn startup_rebuild_does_not_recover_known_submit_reservation_from_nt_cache_without_venue_truth() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());

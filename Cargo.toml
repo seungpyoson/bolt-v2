@@ -80,6 +80,7 @@ path = "tests/bolt_v3_current_evidence_runtime.rs"
 
 [features]
 offline-current-evidence = []
+test-current-evidence-inspection = []
 
 [dependencies]
 ahash = "0.8.12"

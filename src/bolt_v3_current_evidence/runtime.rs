@@ -11,7 +11,7 @@ use anyhow::{Context, Result, ensure};
 use crate::bolt_v3_config::LoadedBoltV3Config;
 
 use super::{
-    facts::StartupRecoveryFacts,
+    facts::{BookingRecoveryFacts, ReservationRecoveryFacts, SettlementRecoveryFacts},
     generated_contract::KnownSink,
     path_authority::CatalogDirectory,
     reader::validate_stream,
@@ -28,7 +28,9 @@ pub enum ObservationStreamStatus {
 #[derive(Debug)]
 pub struct DecisionEvidenceRuntime {
     recorder: Arc<DecisionEvidenceRecorder>,
-    startup_recovery: Arc<StartupRecoveryFacts>,
+    reservation_recovery: Arc<ReservationRecoveryFacts>,
+    settlement_recovery: Arc<SettlementRecoveryFacts>,
+    booking_recovery: Arc<BookingRecoveryFacts>,
     observation_stream_status: ObservationStreamStatus,
 }
 
@@ -60,7 +62,9 @@ impl OfflineDecisionEvidenceRuntime {
         ensure_distinct_files(&machine, &observation)?;
         let recovery = validate_stream(&mut machine, KnownSink::Machine, Some(0))?.startup_recovery;
         ensure!(
-            recovery.is_empty(),
+            recovery.reservation.is_empty()
+                && recovery.settlement.is_empty()
+                && recovery.booking.is_empty(),
             "fresh offline current-evidence stream produced recovery state"
         );
         machine.seek(SeekFrom::End(0))?;
@@ -148,7 +152,9 @@ impl DecisionEvidenceRuntime {
                 observation_poison,
                 config.reject_episode_max_count,
             )),
-            startup_recovery: Arc::new(startup_recovery),
+            reservation_recovery: Arc::new(startup_recovery.reservation),
+            settlement_recovery: Arc::new(startup_recovery.settlement),
+            booking_recovery: Arc::new(startup_recovery.booking),
             observation_stream_status,
         })
     }
@@ -159,8 +165,18 @@ impl DecisionEvidenceRuntime {
     }
 
     #[must_use]
-    pub fn startup_recovery(&self) -> Arc<StartupRecoveryFacts> {
-        Arc::clone(&self.startup_recovery)
+    pub fn reservation_recovery(&self) -> Arc<ReservationRecoveryFacts> {
+        Arc::clone(&self.reservation_recovery)
+    }
+
+    #[must_use]
+    pub fn settlement_recovery(&self) -> Arc<SettlementRecoveryFacts> {
+        Arc::clone(&self.settlement_recovery)
+    }
+
+    #[must_use]
+    pub fn booking_recovery(&self) -> Arc<BookingRecoveryFacts> {
+        Arc::clone(&self.booking_recovery)
     }
 
     #[must_use]

@@ -21,15 +21,15 @@ use super::{
         BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, CurrentFact,
         EntryOrderIntentFact, EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact,
         ExitSubmissionDecisionFact, ForcedReductionAdmissionFact, LossGovernorHaltFact,
-        OrderLifecycleFact, OrderRejectFact, RecoveryFact, RejectedEntryAdmissionFact,
-        ReplaceAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
+        OrderLifecycleFact, OrderRejectFact, RejectedEntryAdmissionFact, ReplaceAdmissionFact,
+        RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
         RiskReducingExitOrderIntentFact, SettlementFact, SubmitLinkedStrategyInputSnapshotFact,
         SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
         VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
     },
     generated_contract::{
         IdentityDescriptor, KnownIdentity, KnownPurpose, current_identity_for_purpose,
-        descriptor_for_identity, fact_for_identity, identities, startup_recovery_relevant,
+        descriptor_for_identity, identities,
     },
     record::{EncodedEvidenceRecord, RecordFailure},
 };
@@ -669,55 +669,6 @@ pub(crate) fn encode_terminal_settlement(
     fact: TerminalSettlementFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::encode(&fact, current_utc_ns()?)
-}
-
-pub(crate) fn decode_startup_recovery_fact(
-    identity: KnownIdentity,
-    line: &str,
-    line_number: usize,
-) -> Result<Option<RecoveryFact>> {
-    let decoded = decode_current_fact(identity, line, line_number)?;
-    let registered_fact = fact_for_identity(identity);
-    ensure!(
-        decoded.registered_fact() == registered_fact,
-        "decoded fact disagrees with registered identity at line {line_number}"
-    );
-    if !startup_recovery_relevant(registered_fact) {
-        return Ok(None);
-    }
-    let fact = match decoded {
-        CurrentFact::SubmitReservationMetadata(value) => RecoveryFact::ReservationMetadata(value),
-        CurrentFact::SubmitReservationFill(value) => RecoveryFact::ReservationFill(value),
-        CurrentFact::Settlement(value) => RecoveryFact::Settlement(value),
-        CurrentFact::TerminalSettlement(value) => RecoveryFact::TerminalSettlement(*value),
-        CurrentFact::BlockedStrategyInputObservation(_)
-        | CurrentFact::SubmitLinkedStrategyInputSnapshot(_)
-        | CurrentFact::EntryOrderIntent(_)
-        | CurrentFact::RiskReducingExitOrderIntent(_)
-        | CurrentFact::AdmittedEntryAdmission(_)
-        | CurrentFact::RejectedEntryAdmission(_)
-        | CurrentFact::RiskReducingExitAdmission(_)
-        | CurrentFact::ReplaceAdmission(_)
-        | CurrentFact::ForcedReductionAdmission(_)
-        | CurrentFact::BasketAdmissionGranted(_)
-        | CurrentFact::BasketAdmissionRejected(_)
-        | CurrentFact::CapitalAdmissionRebuild(_)
-        | CurrentFact::EntrySkipObservation(_)
-        | CurrentFact::ExitSubmissionDecision(_)
-        | CurrentFact::ExitHoldDecision(_)
-        | CurrentFact::ExitEvaluation(_)
-        | CurrentFact::LossGovernorHalt(_)
-        | CurrentFact::OrderReject(_)
-        | CurrentFact::OrderLifecycle(_)
-        | CurrentFact::RequoteThrottleObservation(_)
-        | CurrentFact::VenueTruthCaptureFailure(_)
-        | CurrentFact::VenueTruthDivergence(_) => {
-            return Err(anyhow::anyhow!(
-                "fact {registered_fact:?} is registered as startup-relevant but has no typed recovery reducer"
-            ));
-        }
-    };
-    Ok(Some(fact))
 }
 
 pub(super) fn decode_current_fact(
@@ -2874,6 +2825,16 @@ mod tests {
         );
     }
 
+    fn positive_value(identity: KnownIdentity) -> serde_json::Value {
+        serde_json::from_str(
+            positive_corpus(identity)
+                .lines()
+                .next()
+                .expect("positive corpus must contain a baseline record"),
+        )
+        .expect("positive corpus line must decode as JSON")
+    }
+
     #[derive(Clone, Debug)]
     enum JsonPathStep {
         Field(String),
@@ -3476,6 +3437,7 @@ mod tests {
             let coverage_facts = wire_coverage_facts(identity, fact);
             let mut canonical_corpus = Vec::new();
             for (case_index, fact) in coverage_facts.into_iter().enumerate() {
+                let expected = fact.clone();
                 let reencoded =
                     reencode_current_fact(fact, recorded_at_utc_ns).unwrap_or_else(|error| {
                         panic!(
@@ -3485,7 +3447,7 @@ mod tests {
                     });
                 let encoded_line = std::str::from_utf8(reencoded.line())
                     .expect("canonical case must encode as UTF-8");
-                decode_current_fact(
+                let decoded = decode_current_fact(
                     identity,
                     encoded_line.trim_end_matches('\n'),
                     case_index + 1,
@@ -3496,6 +3458,12 @@ mod tests {
                         case_index + 1
                     )
                 });
+                assert_eq!(
+                    decoded,
+                    expected,
+                    "{identity:?} canonical case {} changed semantic fields across encode/decode",
+                    case_index + 1
+                );
                 canonical_corpus.extend_from_slice(reencoded.line());
             }
             let mut canonical_states = std::collections::BTreeMap::<String, (bool, bool)>::new();
@@ -3673,6 +3641,27 @@ mod tests {
                 .insert("gate_id".to_string(), "wrong.gate".into());
             mutation_is_rejected(identity, &wrong_gate);
 
+            let mut wrong_kind = value.clone();
+            wrong_kind
+                .as_object_mut()
+                .expect("fixture envelope")
+                .insert("kind".to_string(), "wrong_kind".into());
+            mutation_is_rejected(identity, &wrong_kind);
+
+            let mut wrong_schema = value.clone();
+            wrong_schema
+                .as_object_mut()
+                .expect("fixture envelope")
+                .insert("schema_version".to_string(), 0.into());
+            mutation_is_rejected(identity, &wrong_schema);
+
+            let mut invalid_recorded_at = value.clone();
+            invalid_recorded_at
+                .as_object_mut()
+                .expect("fixture envelope")
+                .insert("recorded_at_utc_ns".to_string(), 0.into());
+            mutation_is_rejected(identity, &invalid_recorded_at);
+
             let mut missing_payload = value.clone();
             missing_payload
                 .as_object_mut()
@@ -3739,9 +3728,93 @@ mod tests {
     }
 
     #[test]
+    fn semantic_validator_classes_reject_well_typed_contradictions() {
+        let mut capital = positive_value(KnownIdentity::CapitalAdmissionRebuildV1);
+        capital["decision"]["recovered_reservation_count"] = 3.into();
+        mutation_is_rejected(KnownIdentity::CapitalAdmissionRebuildV1, &capital);
+
+        let mut admission = positive_value(KnownIdentity::AdmittedEntryAdmissionV1);
+        admission["decision"]["strategy_id"] = "".into();
+        mutation_is_rejected(KnownIdentity::AdmittedEntryAdmissionV1, &admission);
+
+        let mut basket = positive_value(KnownIdentity::BasketAdmissionGrantedV1);
+        basket["decision"]["leg_order_count"] = 0.into();
+        mutation_is_rejected(KnownIdentity::BasketAdmissionGrantedV1, &basket);
+
+        let mut intent = positive_value(KnownIdentity::EntryOrderIntentV1);
+        intent["order_intent"]["strategy_id"] = "".into();
+        mutation_is_rejected(KnownIdentity::EntryOrderIntentV1, &intent);
+
+        let mut reject = positive_value(KnownIdentity::OrderRejectV1);
+        reject["order_reject"]["retry_count"] = 0.into();
+        mutation_is_rejected(KnownIdentity::OrderRejectV1, &reject);
+
+        let mut lifecycle = positive_value(KnownIdentity::OrderLifecycleV1);
+        lifecycle["lifecycle"]["strategy_id"] = "".into();
+        mutation_is_rejected(KnownIdentity::OrderLifecycleV1, &lifecycle);
+
+        let mut reservation = positive_value(KnownIdentity::SubmitReservationMetadataV1);
+        reservation["metadata"]["client_order_id"] = "".into();
+        mutation_is_rejected(KnownIdentity::SubmitReservationMetadataV1, &reservation);
+
+        let mut fill = positive_value(KnownIdentity::SubmitReservationFillV1);
+        fill["fill"]["client_order_id"] = "".into();
+        mutation_is_rejected(KnownIdentity::SubmitReservationFillV1, &fill);
+
+        let mut strategy_input = positive_value(KnownIdentity::SubmitLinkedStrategyInputSnapshotV1);
+        strategy_input["snapshot"]["details"]["reference_quote_ts_event"] = 0.into();
+        mutation_is_rejected(
+            KnownIdentity::SubmitLinkedStrategyInputSnapshotV1,
+            &strategy_input,
+        );
+
+        let mut entry_skip = positive_value(KnownIdentity::EntrySkipObservationV1);
+        entry_skip["entry_skip"]["now_ms"] = 0.into();
+        mutation_is_rejected(KnownIdentity::EntrySkipObservationV1, &entry_skip);
+
+        let mut exit_hold = positive_value(KnownIdentity::ExitHoldDecisionV1);
+        exit_hold["exit_decision"]["blocked_reason"] = "no_open_position".into();
+        mutation_is_rejected(KnownIdentity::ExitHoldDecisionV1, &exit_hold);
+
+        let mut exit_evaluation = positive_value(KnownIdentity::ExitEvaluationV1);
+        exit_evaluation["exit_evaluation"]["exit_eval_now_ms"] = (-1).into();
+        mutation_is_rejected(KnownIdentity::ExitEvaluationV1, &exit_evaluation);
+
+        let mut loss = positive_value(KnownIdentity::LossGovernorHaltV1);
+        loss["halt"]["retry_count"] = 3.into();
+        mutation_is_rejected(KnownIdentity::LossGovernorHaltV1, &loss);
+
+        let mut requote = positive_value(KnownIdentity::RequoteThrottleObservationV1);
+        requote["observation"]["submit_command_cap"] = 0.into();
+        mutation_is_rejected(KnownIdentity::RequoteThrottleObservationV1, &requote);
+
+        let mut venue_truth = positive_value(KnownIdentity::VenueTruthDivergenceV1);
+        venue_truth["divergence"]["source"] = "".into();
+        mutation_is_rejected(KnownIdentity::VenueTruthDivergenceV1, &venue_truth);
+
+        let mut capture = positive_value(KnownIdentity::VenueTruthCaptureFailureV1);
+        capture["capture_failure"]["captures_missed"] = 0.into();
+        mutation_is_rejected(KnownIdentity::VenueTruthCaptureFailureV1, &capture);
+
+        let mut settlement = positive_value(KnownIdentity::SettlementV1);
+        settlement["settlement"]["settlement_key"] = "".into();
+        mutation_is_rejected(KnownIdentity::SettlementV1, &settlement);
+
+        let mut terminal = positive_value(KnownIdentity::TerminalSettlementV1);
+        terminal["terminal_settlement"]["booking_error"]["settlement_key"] =
+            "different-settlement-key".into();
+        mutation_is_rejected(KnownIdentity::TerminalSettlementV1, &terminal);
+    }
+
+    #[test]
     fn startup_recovery_dispositions_have_typed_reducers_for_every_current_identity() {
-        use super::super::generated_contract::{
-            ALL_IDENTITIES, fact_for_identity, startup_recovery_relevant,
+        use super::super::{
+            facts::StartupRecoveryProjections,
+            generated_contract::{
+                ALL_IDENTITIES, ConsumerDisposition, KnownConsumer, disposition_for,
+                fact_for_identity,
+            },
+            reader::apply_startup_recovery_projections,
         };
 
         for identity in ALL_IDENTITIES.iter().copied() {
@@ -3749,15 +3822,33 @@ mod tests {
                 .lines()
                 .next()
                 .expect("positive corpus must contain a baseline record");
-            let expected_relevant = startup_recovery_relevant(fact_for_identity(identity));
-            let decoded = decode_startup_recovery_fact(identity, line, 1).unwrap_or_else(|error| {
-                panic!("{identity:?} must have a typed reducer: {error:#}")
-            });
-            assert_eq!(
-                decoded.is_some(),
-                expected_relevant,
-                "{identity:?} startup relevance must agree with its typed reducer"
+            let mut recovery = StartupRecoveryProjections::default();
+            apply_startup_recovery_projections(identity, line, 1, &mut recovery).unwrap_or_else(
+                |error| panic!("{identity:?} must have a typed reducer: {error:#}"),
             );
+            for (consumer, projected) in [
+                (
+                    KnownConsumer::ReservationRecoveryV1,
+                    !recovery.reservation.is_empty(),
+                ),
+                (
+                    KnownConsumer::SettlementRecoveryV1,
+                    !recovery.settlement.is_empty(),
+                ),
+                (
+                    KnownConsumer::BookingRecoveryV1,
+                    !recovery.booking.is_empty(),
+                ),
+            ] {
+                let relevant = matches!(
+                    disposition_for(fact_for_identity(identity), consumer),
+                    ConsumerDisposition::Relevant(_)
+                );
+                assert_eq!(
+                    projected, relevant,
+                    "{identity:?} × {consumer:?} must agree with its typed projection"
+                );
+            }
         }
     }
 

@@ -82,6 +82,7 @@ fn strategy_registration_test_runtime(
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             settlement_runtime_sink: None,
             settlement_recovery: None,
+            booking_recovery: None,
             settlement_health_transition_emitter: None,
         };
     let adapters =
@@ -840,6 +841,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             settlement_runtime_sink: None,
             settlement_recovery: None,
+            booking_recovery: None,
             settlement_health_transition_emitter: None,
         };
     let adapters =
@@ -1012,6 +1014,7 @@ fn assert_invalid_second_execution_route_fails_before_binding_preparation(
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             settlement_runtime_sink: None,
             settlement_recovery: None,
+            booking_recovery: None,
             settlement_health_transition_emitter: None,
         };
     let adapters =
@@ -1419,6 +1422,7 @@ fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             settlement_runtime_sink: None,
             settlement_recovery: None,
+            booking_recovery: None,
             settlement_health_transition_emitter: None,
         };
 

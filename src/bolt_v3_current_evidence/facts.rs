@@ -1012,27 +1012,15 @@ pub struct TerminalSettlementFact {
 }
 
 #[derive(Debug, Default)]
-pub struct StartupRecoveryFacts {
+pub struct ReservationRecoveryFacts {
     reservation_metadata: BTreeMap<String, SubmitReservationMetadataFact>,
     reservation_fill_trade_ids: BTreeMap<(String, String), BTreeSet<String>>,
-    settlements: BTreeMap<String, SettlementFact>,
-    booking_error_keys: BTreeSet<String>,
-    terminal_settlement_keys: BTreeSet<String>,
 }
 
-impl StartupRecoveryFacts {
+impl ReservationRecoveryFacts {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.reservation_metadata.is_empty()
-            && self.reservation_fill_trade_ids.is_empty()
-            && self.settlements.is_empty()
-            && self.booking_error_keys.is_empty()
-            && self.terminal_settlement_keys.is_empty()
-    }
-
-    #[must_use]
-    pub fn settlements(&self) -> &BTreeMap<String, SettlementFact> {
-        &self.settlements
+        self.reservation_metadata.is_empty() && self.reservation_fill_trade_ids.is_empty()
     }
 
     #[must_use]
@@ -1055,19 +1043,9 @@ impl StartupRecoveryFacts {
         ))
     }
 
-    #[must_use]
-    pub fn booking_error_keys(&self) -> &BTreeSet<String> {
-        &self.booking_error_keys
-    }
-
-    #[must_use]
-    pub fn terminal_settlement_keys(&self) -> &BTreeSet<String> {
-        &self.terminal_settlement_keys
-    }
-
-    pub(super) fn apply(&mut self, fact: RecoveryFact) -> Result<()> {
+    pub(super) fn apply(&mut self, fact: ReservationRecoveryEvent) -> Result<()> {
         match fact {
-            RecoveryFact::ReservationMetadata(metadata) => {
+            ReservationRecoveryEvent::Metadata(metadata) => {
                 ensure!(
                     !self
                         .reservation_metadata
@@ -1078,28 +1056,11 @@ impl StartupRecoveryFacts {
                 self.reservation_metadata
                     .insert(metadata.client_order_id.clone(), metadata);
             }
-            RecoveryFact::ReservationFill(fill) => {
+            ReservationRecoveryEvent::Fill(fill) => {
                 self.reservation_fill_trade_ids
                     .entry((fill.client_order_id, fill.submit_reservation_id))
                     .or_default()
                     .insert(fill.trade_id);
-            }
-            RecoveryFact::Settlement(settlement) => {
-                ensure!(
-                    !self.settlements.contains_key(&settlement.settlement_key),
-                    "duplicate settlement evidence for settlement_key `{}`",
-                    settlement.settlement_key
-                );
-                self.settlements
-                    .insert(settlement.settlement_key.clone(), settlement);
-            }
-            RecoveryFact::TerminalSettlement(terminal) => {
-                if terminal.booking_error.is_some() {
-                    self.booking_error_keys
-                        .insert(terminal.settlement_key.clone());
-                }
-                self.terminal_settlement_keys
-                    .insert(terminal.settlement_key);
             }
         }
         Ok(())
@@ -1125,76 +1086,180 @@ impl StartupRecoveryFacts {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum CurrentFact {
-    BlockedStrategyInputObservation(Box<BlockedStrategyInputObservationFact>),
-    SubmitLinkedStrategyInputSnapshot(Box<SubmitLinkedStrategyInputSnapshotFact>),
-    EntryOrderIntent(EntryOrderIntentFact),
-    RiskReducingExitOrderIntent(RiskReducingExitOrderIntentFact),
-    AdmittedEntryAdmission(Box<AdmittedEntryAdmissionFact>),
-    RejectedEntryAdmission(Box<RejectedEntryAdmissionFact>),
-    RiskReducingExitAdmission(Box<RiskReducingExitAdmissionFact>),
-    ReplaceAdmission(Box<ReplaceAdmissionFact>),
-    ForcedReductionAdmission(Box<ForcedReductionAdmissionFact>),
-    BasketAdmissionGranted(BasketAdmissionGrantedFact),
-    BasketAdmissionRejected(BasketAdmissionRejectedFact),
-    CapitalAdmissionRebuild(CapitalAdmissionRebuildFact),
-    SubmitReservationMetadata(SubmitReservationMetadataFact),
-    SubmitReservationFill(SubmitReservationFillFact),
-    EntrySkipObservation(Box<EntrySkipFact>),
-    ExitSubmissionDecision(Box<ExitSubmissionDecisionFact>),
-    ExitHoldDecision(Box<ExitHoldDecisionFact>),
-    ExitEvaluation(Box<ExitEvaluationFact>),
-    LossGovernorHalt(LossGovernorHaltFact),
-    OrderReject(Box<OrderRejectFact>),
-    OrderLifecycle(OrderLifecycleFact),
-    RequoteThrottleObservation(RequoteThrottleObservationFact),
-    Settlement(SettlementFact),
-    TerminalSettlement(Box<TerminalSettlementFact>),
-    VenueTruthCaptureFailure(VenueTruthCaptureFailureFact),
-    VenueTruthDivergence(VenueTruthDivergenceFact),
+#[derive(Debug, Default)]
+pub struct SettlementRecoveryFacts {
+    settlements: BTreeMap<String, SettlementFact>,
+    terminal_settlement_keys: BTreeSet<String>,
 }
 
-impl CurrentFact {
-    pub(super) fn registered_fact(&self) -> KnownFact {
-        match self {
-            Self::BlockedStrategyInputObservation(_) => {
-                KnownFact::BlockedStrategyInputObservationV1
+impl SettlementRecoveryFacts {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.settlements.is_empty() && self.terminal_settlement_keys.is_empty()
+    }
+
+    #[must_use]
+    pub fn settlements(&self) -> &BTreeMap<String, SettlementFact> {
+        &self.settlements
+    }
+
+    #[must_use]
+    pub fn terminal_settlement_keys(&self) -> &BTreeSet<String> {
+        &self.terminal_settlement_keys
+    }
+
+    pub(super) fn apply(&mut self, fact: SettlementRecoveryEvent) -> Result<()> {
+        match fact {
+            SettlementRecoveryEvent::Settlement(settlement) => {
+                ensure!(
+                    !self.settlements.contains_key(&settlement.settlement_key),
+                    "duplicate settlement evidence for settlement_key `{}`",
+                    settlement.settlement_key
+                );
+                self.settlements
+                    .insert(settlement.settlement_key.clone(), settlement);
             }
-            Self::SubmitLinkedStrategyInputSnapshot(_) => {
-                KnownFact::SubmitLinkedStrategyInputSnapshotV1
+            SettlementRecoveryEvent::TerminalSettlement(terminal) => {
+                self.terminal_settlement_keys
+                    .insert(terminal.settlement_key);
             }
-            Self::EntryOrderIntent(_) => KnownFact::EntryOrderIntentV1,
-            Self::RiskReducingExitOrderIntent(_) => KnownFact::RiskReducingExitOrderIntentV1,
-            Self::AdmittedEntryAdmission(_) => KnownFact::AdmittedEntryAdmissionV1,
-            Self::RejectedEntryAdmission(_) => KnownFact::RejectedEntryAdmissionV1,
-            Self::RiskReducingExitAdmission(_) => KnownFact::RiskReducingExitAdmissionV1,
-            Self::ReplaceAdmission(_) => KnownFact::ReplaceAdmissionV1,
-            Self::ForcedReductionAdmission(_) => KnownFact::ForcedReductionAdmissionV1,
-            Self::BasketAdmissionGranted(_) => KnownFact::BasketAdmissionGrantedV1,
-            Self::BasketAdmissionRejected(_) => KnownFact::BasketAdmissionRejectedV1,
-            Self::CapitalAdmissionRebuild(_) => KnownFact::CapitalAdmissionRebuildV1,
-            Self::SubmitReservationMetadata(_) => KnownFact::SubmitReservationMetadataV1,
-            Self::SubmitReservationFill(_) => KnownFact::SubmitReservationFillV1,
-            Self::EntrySkipObservation(_) => KnownFact::EntrySkipObservationV1,
-            Self::ExitSubmissionDecision(_) => KnownFact::ExitSubmissionDecisionV1,
-            Self::ExitHoldDecision(_) => KnownFact::ExitHoldDecisionV1,
-            Self::ExitEvaluation(_) => KnownFact::ExitEvaluationV1,
-            Self::LossGovernorHalt(_) => KnownFact::LossGovernorHaltV1,
-            Self::OrderReject(_) => KnownFact::OrderRejectV1,
-            Self::OrderLifecycle(_) => KnownFact::OrderLifecycleV1,
-            Self::RequoteThrottleObservation(_) => KnownFact::RequoteThrottleObservationV1,
-            Self::Settlement(_) => KnownFact::SettlementV1,
-            Self::TerminalSettlement(_) => KnownFact::TerminalSettlementV1,
-            Self::VenueTruthCaptureFailure(_) => KnownFact::VenueTruthCaptureFailureV1,
-            Self::VenueTruthDivergence(_) => KnownFact::VenueTruthDivergenceV1,
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct BookingRecoveryFacts {
+    booking_error_keys: BTreeSet<String>,
+    terminal_settlement_keys: BTreeSet<String>,
+}
+
+impl BookingRecoveryFacts {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.booking_error_keys.is_empty() && self.terminal_settlement_keys.is_empty()
+    }
+
+    #[must_use]
+    pub fn booking_error_keys(&self) -> &BTreeSet<String> {
+        &self.booking_error_keys
+    }
+
+    #[must_use]
+    pub fn terminal_settlement_keys(&self) -> &BTreeSet<String> {
+        &self.terminal_settlement_keys
+    }
+
+    pub(super) fn apply(&mut self, fact: BookingRecoveryEvent) {
+        match fact {
+            BookingRecoveryEvent::TerminalSettlement(terminal) => {
+                if terminal.booking_error.is_some() {
+                    self.booking_error_keys
+                        .insert(terminal.settlement_key.clone());
+                }
+                self.terminal_settlement_keys
+                    .insert(terminal.settlement_key);
+            }
         }
     }
 }
 
-pub(super) enum RecoveryFact {
-    ReservationMetadata(SubmitReservationMetadataFact),
-    ReservationFill(SubmitReservationFillFact),
+#[derive(Debug)]
+pub(super) enum ReservationRecoveryEvent {
+    Metadata(SubmitReservationMetadataFact),
+    Fill(SubmitReservationFillFact),
+}
+
+#[derive(Debug)]
+pub(super) enum SettlementRecoveryEvent {
     Settlement(SettlementFact),
     TerminalSettlement(TerminalSettlementFact),
 }
+
+#[derive(Debug)]
+pub(super) enum BookingRecoveryEvent {
+    TerminalSettlement(TerminalSettlementFact),
+}
+
+#[derive(Debug, Default)]
+pub(super) struct StartupRecoveryProjections {
+    pub(super) reservation: ReservationRecoveryFacts,
+    pub(super) settlement: SettlementRecoveryFacts,
+    pub(super) booking: BookingRecoveryFacts,
+}
+
+mod current_fact {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum CurrentFact {
+        BlockedStrategyInputObservation(Box<BlockedStrategyInputObservationFact>),
+        SubmitLinkedStrategyInputSnapshot(Box<SubmitLinkedStrategyInputSnapshotFact>),
+        EntryOrderIntent(EntryOrderIntentFact),
+        RiskReducingExitOrderIntent(RiskReducingExitOrderIntentFact),
+        AdmittedEntryAdmission(Box<AdmittedEntryAdmissionFact>),
+        RejectedEntryAdmission(Box<RejectedEntryAdmissionFact>),
+        RiskReducingExitAdmission(Box<RiskReducingExitAdmissionFact>),
+        ReplaceAdmission(Box<ReplaceAdmissionFact>),
+        ForcedReductionAdmission(Box<ForcedReductionAdmissionFact>),
+        BasketAdmissionGranted(BasketAdmissionGrantedFact),
+        BasketAdmissionRejected(BasketAdmissionRejectedFact),
+        CapitalAdmissionRebuild(CapitalAdmissionRebuildFact),
+        SubmitReservationMetadata(SubmitReservationMetadataFact),
+        SubmitReservationFill(SubmitReservationFillFact),
+        EntrySkipObservation(Box<EntrySkipFact>),
+        ExitSubmissionDecision(Box<ExitSubmissionDecisionFact>),
+        ExitHoldDecision(Box<ExitHoldDecisionFact>),
+        ExitEvaluation(Box<ExitEvaluationFact>),
+        LossGovernorHalt(LossGovernorHaltFact),
+        OrderReject(Box<OrderRejectFact>),
+        OrderLifecycle(OrderLifecycleFact),
+        RequoteThrottleObservation(RequoteThrottleObservationFact),
+        Settlement(SettlementFact),
+        TerminalSettlement(Box<TerminalSettlementFact>),
+        VenueTruthCaptureFailure(VenueTruthCaptureFailureFact),
+        VenueTruthDivergence(VenueTruthDivergenceFact),
+    }
+
+    impl CurrentFact {
+        pub(in crate::bolt_v3_current_evidence) fn registered_fact(&self) -> KnownFact {
+            match self {
+                Self::BlockedStrategyInputObservation(_) => {
+                    KnownFact::BlockedStrategyInputObservationV1
+                }
+                Self::SubmitLinkedStrategyInputSnapshot(_) => {
+                    KnownFact::SubmitLinkedStrategyInputSnapshotV1
+                }
+                Self::EntryOrderIntent(_) => KnownFact::EntryOrderIntentV1,
+                Self::RiskReducingExitOrderIntent(_) => KnownFact::RiskReducingExitOrderIntentV1,
+                Self::AdmittedEntryAdmission(_) => KnownFact::AdmittedEntryAdmissionV1,
+                Self::RejectedEntryAdmission(_) => KnownFact::RejectedEntryAdmissionV1,
+                Self::RiskReducingExitAdmission(_) => KnownFact::RiskReducingExitAdmissionV1,
+                Self::ReplaceAdmission(_) => KnownFact::ReplaceAdmissionV1,
+                Self::ForcedReductionAdmission(_) => KnownFact::ForcedReductionAdmissionV1,
+                Self::BasketAdmissionGranted(_) => KnownFact::BasketAdmissionGrantedV1,
+                Self::BasketAdmissionRejected(_) => KnownFact::BasketAdmissionRejectedV1,
+                Self::CapitalAdmissionRebuild(_) => KnownFact::CapitalAdmissionRebuildV1,
+                Self::SubmitReservationMetadata(_) => KnownFact::SubmitReservationMetadataV1,
+                Self::SubmitReservationFill(_) => KnownFact::SubmitReservationFillV1,
+                Self::EntrySkipObservation(_) => KnownFact::EntrySkipObservationV1,
+                Self::ExitSubmissionDecision(_) => KnownFact::ExitSubmissionDecisionV1,
+                Self::ExitHoldDecision(_) => KnownFact::ExitHoldDecisionV1,
+                Self::ExitEvaluation(_) => KnownFact::ExitEvaluationV1,
+                Self::LossGovernorHalt(_) => KnownFact::LossGovernorHaltV1,
+                Self::OrderReject(_) => KnownFact::OrderRejectV1,
+                Self::OrderLifecycle(_) => KnownFact::OrderLifecycleV1,
+                Self::RequoteThrottleObservation(_) => KnownFact::RequoteThrottleObservationV1,
+                Self::Settlement(_) => KnownFact::SettlementV1,
+                Self::TerminalSettlement(_) => KnownFact::TerminalSettlementV1,
+                Self::VenueTruthCaptureFailure(_) => KnownFact::VenueTruthCaptureFailureV1,
+                Self::VenueTruthDivergence(_) => KnownFact::VenueTruthDivergenceV1,
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "test-current-evidence-inspection"))]
+pub(crate) use current_fact::CurrentFact;
+#[cfg(feature = "test-current-evidence-inspection")]
+pub use current_fact::CurrentFact;

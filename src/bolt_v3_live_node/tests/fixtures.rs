@@ -499,6 +499,7 @@ pub(super) fn test_registration_controls(
         order_execution_policy: crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         settlement_runtime_sink: None,
         settlement_recovery: None,
+        booking_recovery: None,
         settlement_health_transition_emitter: None,
     }
 }

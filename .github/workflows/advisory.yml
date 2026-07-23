@@ -195,7 +195,7 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           set -x
-          mold -run cargo nextest run --locked --no-fail-fast
+          mold -run cargo nextest run --locked --features test-current-evidence-inspection
 
       - name: test (backtesting vertical slice)
         if: ${{ !cancelled() }}
@@ -205,7 +205,9 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           set -x
-          mold -run cargo nextest run --locked --no-fail-fast
+          # The MinIO conformance module owns an opt-in external service
+          # environment; this advisory lane verifies the host-native workspace.
+          mold -run cargo nextest run --locked --no-fail-fast -- --skip backtesting_vertical_slice_s3_catalog_smoke
 
       - name: Print sccache stats
         if: always()

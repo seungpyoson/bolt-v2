@@ -80,7 +80,6 @@ struct IdentityRow {
     kind: String,
     schema_version: u32,
     gate_id: String,
-    payload_member: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -217,11 +216,6 @@ fn validate_registry(wire: &RegistryWire) -> Result<()> {
         ensure!(
             !identity.gate_id.trim().is_empty(),
             "identity `{}` has empty gate_id",
-            identity.id
-        );
-        ensure!(
-            !identity.payload_member.trim().is_empty(),
-            "identity `{}` has empty payload_member",
             identity.id
         );
         ensure!(
@@ -682,25 +676,6 @@ pub fn render_contract(contract: &ContractRegistry) -> String {
         }
     }
     output.push_str("    }\n}\n\n");
-
-    let startup_consumers = wire
-        .consumers
-        .iter()
-        .filter(|consumer| consumer.mode == "startup_recovery")
-        .map(|consumer| consumer.id.as_str())
-        .collect::<BTreeSet<_>>();
-    output
-        .push_str("pub(crate) const fn startup_recovery_relevant(fact: KnownFact) -> bool {\n    ");
-    for (index, consumer) in startup_consumers.into_iter().enumerate() {
-        if index > 0 {
-            output.push_str(" || ");
-        }
-        output.push_str(&format!(
-            "matches!(\n        disposition_for(fact, KnownConsumer::{}),\n        ConsumerDisposition::Relevant(_)\n    )",
-            rust_variant(consumer)
-        ));
-    }
-    output.push_str("\n}\n\n");
 
     output.push_str("pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownIdentity> {\n");
     for row in &wire.identities {

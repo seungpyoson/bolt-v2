@@ -979,19 +979,6 @@ pub(crate) const fn disposition_for(
     }
 }
 
-pub(crate) const fn startup_recovery_relevant(fact: KnownFact) -> bool {
-    matches!(
-        disposition_for(fact, KnownConsumer::BookingRecoveryV1),
-        ConsumerDisposition::Relevant(_)
-    ) || matches!(
-        disposition_for(fact, KnownConsumer::ReservationRecoveryV1),
-        ConsumerDisposition::Relevant(_)
-    ) || matches!(
-        disposition_for(fact, KnownConsumer::SettlementRecoveryV1),
-        ConsumerDisposition::Relevant(_)
-    )
-}
-
 pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownIdentity> {
     if kind == "blocked_strategy_input_observation" && schema_version == 1 {
         return Some(KnownIdentity::BlockedStrategyInputObservationV1);

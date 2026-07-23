@@ -7,7 +7,9 @@ use nautilus_model::{
 };
 
 use crate::{
-    bolt_v3_current_evidence::{DecisionEvidenceRecorder, StartupRecoveryFacts},
+    bolt_v3_current_evidence::{
+        BookingRecoveryFacts, DecisionEvidenceRecorder, SettlementRecoveryFacts,
+    },
     bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter,
     bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_providers::FeeProvider,
@@ -32,7 +34,8 @@ impl RealizedVolatilityCapability {
 #[derive(Clone, Default)]
 pub struct SettlementCapability {
     runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
-    recovery: Option<Arc<StartupRecoveryFacts>>,
+    settlement_recovery: Option<Arc<SettlementRecoveryFacts>>,
+    booking_recovery: Option<Arc<BookingRecoveryFacts>>,
     account_id: Option<String>,
     currency: Option<Currency>,
     health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
@@ -43,8 +46,12 @@ impl SettlementCapability {
         self.runtime_sink.clone()
     }
 
-    pub fn recovery(&self) -> Option<&StartupRecoveryFacts> {
-        self.recovery.as_deref()
+    pub fn settlement_recovery(&self) -> Option<&SettlementRecoveryFacts> {
+        self.settlement_recovery.as_deref()
+    }
+
+    pub fn booking_recovery(&self) -> Option<&BookingRecoveryFacts> {
+        self.booking_recovery.as_deref()
     }
 
     pub fn account_id(&self) -> Option<&str> {
@@ -126,8 +133,16 @@ impl StrategyBuildContext {
         self
     }
 
-    pub fn with_settlement_recovery(mut self, recovery: Option<Arc<StartupRecoveryFacts>>) -> Self {
-        self.settlement.get_or_insert_default().recovery = recovery;
+    pub fn with_settlement_recovery(
+        mut self,
+        recovery: Option<Arc<SettlementRecoveryFacts>>,
+    ) -> Self {
+        self.settlement.get_or_insert_default().settlement_recovery = recovery;
+        self
+    }
+
+    pub fn with_booking_recovery(mut self, recovery: Option<Arc<BookingRecoveryFacts>>) -> Self {
+        self.settlement.get_or_insert_default().booking_recovery = recovery;
         self
     }
 
@@ -205,10 +220,16 @@ impl StrategyBuildContext {
             .and_then(|capability| capability.runtime_sink.clone())
     }
 
-    pub fn settlement_recovery(&self) -> Option<&StartupRecoveryFacts> {
+    pub fn settlement_recovery(&self) -> Option<&SettlementRecoveryFacts> {
         self.settlement
             .as_ref()
-            .and_then(|capability| capability.recovery.as_deref())
+            .and_then(|capability| capability.settlement_recovery.as_deref())
+    }
+
+    pub fn booking_recovery(&self) -> Option<&BookingRecoveryFacts> {
+        self.settlement
+            .as_ref()
+            .and_then(|capability| capability.booking_recovery.as_deref())
     }
 
     pub fn settlement_account_id(&self) -> Option<&str> {

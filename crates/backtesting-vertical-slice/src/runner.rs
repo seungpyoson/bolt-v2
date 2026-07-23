@@ -2736,18 +2736,32 @@ mod tests {
 
     fn strategy_input_fixture(
         fixture: &str,
-        payload_member: &str,
+        baseline_recorded_at_utc_ns: i64,
         recorded_at_utc_ns: i64,
         spot_price: &str,
     ) -> Vec<u8> {
-        let mut line: serde_json::Value =
-            serde_json::from_str(fixture.lines().next().expect("fixture must contain a line"))
-                .expect("fixture must decode as JSON");
-        line["recorded_at_utc_ns"] = serde_json::json!(recorded_at_utc_ns);
-        line[payload_member]["details"]["spot_price"] = serde_json::json!(spot_price);
-        let mut bytes = serde_json::to_vec(&line).expect("fixture must serialize");
-        bytes.push(b'\n');
-        bytes
+        let baseline = fixture.lines().next().expect("fixture must contain a line");
+        let timestamp_anchor =
+            format!("\"recorded_at_utc_ns\":{baseline_recorded_at_utc_ns}");
+        assert_eq!(
+            baseline.matches(&timestamp_anchor).count(),
+            1,
+            "fixture must contain exactly one declared baseline timestamp"
+        );
+        let timestamp = format!("\"recorded_at_utc_ns\":{recorded_at_utc_ns}");
+        let line = baseline.replacen(&timestamp_anchor, &timestamp, 1);
+        let spot_anchor = "\"spot_price\":\"100\"";
+        assert_eq!(
+            line.matches(spot_anchor).count(),
+            1,
+            "fixture must contain exactly one baseline spot price"
+        );
+        let line = line.replacen(
+            spot_anchor,
+            &format!("\"spot_price\":\"{spot_price}\""),
+            1,
+        );
+        format!("{line}\n").into_bytes()
     }
 
     #[test]
@@ -2759,7 +2773,7 @@ mod tests {
                 include_str!(
                     "../../../tests/fixtures/bolt_v3/current_evidence/positive/submit_linked_strategy_input_snapshot.jsonl"
                 ),
-                "snapshot",
+                33,
                 200,
                 "200",
             ),
@@ -2770,7 +2784,7 @@ mod tests {
                 include_str!(
                     "../../../tests/fixtures/bolt_v3/current_evidence/positive/blocked_strategy_input_observation.jsonl"
                 ),
-                "blocked_strategy_input_observation",
+                32,
                 100,
                 "100",
             ),
@@ -2797,7 +2811,7 @@ mod tests {
                 include_str!(
                     "../../../tests/fixtures/bolt_v3/current_evidence/positive/submit_linked_strategy_input_snapshot.jsonl"
                 ),
-                "snapshot",
+                33,
                 200,
                 "200",
             ),
@@ -2808,7 +2822,7 @@ mod tests {
                 include_str!(
                     "../../../tests/fixtures/bolt_v3/current_evidence/positive/blocked_strategy_input_observation.jsonl"
                 ),
-                "blocked_strategy_input_observation",
+                32,
                 200,
                 "200",
             ),

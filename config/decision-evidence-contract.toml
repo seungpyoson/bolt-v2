@@ -349,12 +349,12 @@ source_anchors = ["src/bolt_v3_submit_admission.rs:admit_at"]
 [[producers]]
 id = "basket_admission_granted"
 purpose = "basket_admission_granted"
-source_anchors = ["src/bolt_v3_basket_admission.rs:record_basket_decision", "src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
+source_anchors = ["src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
 
 [[producers]]
 id = "basket_admission_rejected"
 purpose = "basket_admission_rejected"
-source_anchors = ["src/bolt_v3_basket_admission.rs:record_basket_decision", "src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
+source_anchors = ["src/bolt_v3_basket_admission.rs:record_basket_rejection", "src/bolt_v3_submit_admission.rs:reserve_basket_submit_slots"]
 
 [[producers]]
 id = "capital_admission_rebuild"
@@ -442,7 +442,6 @@ purpose = "blocked_strategy_input_observation"
 kind = "blocked_strategy_input_observation"
 schema_version = 1
 gate_id = "bolt_v3.strategy_input_snapshot"
-payload_member = "blocked_strategy_input_observation"
 
 [[identities]]
 id = "submit_linked_strategy_input_snapshot_v1"
@@ -450,7 +449,6 @@ purpose = "submit_linked_strategy_input_snapshot"
 kind = "strategy_input_snapshot"
 schema_version = 16
 gate_id = "bolt_v3.strategy_input_snapshot"
-payload_member = "snapshot"
 
 [[identities]]
 id = "entry_order_intent_v1"
@@ -458,7 +456,6 @@ purpose = "entry_order_intent"
 kind = "order_intent"
 schema_version = 16
 gate_id = "bolt_v3.order_intent"
-payload_member = "intent"
 
 [[identities]]
 id = "risk_reducing_exit_order_intent_v1"
@@ -466,7 +463,6 @@ purpose = "risk_reducing_exit_order_intent"
 kind = "risk_reducing_exit_order_intent"
 schema_version = 1
 gate_id = "bolt_v3.order_intent"
-payload_member = "intent"
 
 [[identities]]
 id = "admitted_entry_admission_v1"
@@ -474,7 +470,6 @@ purpose = "admitted_entry_admission"
 kind = "admission_decision"
 schema_version = 16
 gate_id = "bolt_v3.submit_admission"
-payload_member = "decision"
 
 [[identities]]
 id = "rejected_entry_admission_v1"
@@ -482,7 +477,6 @@ purpose = "rejected_entry_admission"
 kind = "rejected_entry_admission"
 schema_version = 1
 gate_id = "bolt_v3.submit_admission"
-payload_member = "decision"
 
 [[identities]]
 id = "risk_reducing_exit_admission_v1"
@@ -490,7 +484,6 @@ purpose = "risk_reducing_exit_admission"
 kind = "risk_reducing_exit_admission"
 schema_version = 1
 gate_id = "bolt_v3.submit_admission"
-payload_member = "decision"
 
 [[identities]]
 id = "replace_admission_v1"
@@ -498,7 +491,6 @@ purpose = "replace_admission"
 kind = "replace_admission"
 schema_version = 1
 gate_id = "bolt_v3.submit_admission"
-payload_member = "decision"
 
 [[identities]]
 id = "forced_reduction_admission_v1"
@@ -506,7 +498,6 @@ purpose = "forced_reduction_admission"
 kind = "forced_reduction_admission"
 schema_version = 1
 gate_id = "bolt_v3.submit_admission"
-payload_member = "decision"
 
 [[identities]]
 id = "basket_admission_granted_v1"
@@ -514,7 +505,6 @@ purpose = "basket_admission_granted"
 kind = "basket_admission_granted"
 schema_version = 1
 gate_id = "bolt_v3.submit_admission"
-payload_member = "decision"
 
 [[identities]]
 id = "basket_admission_rejected_v1"
@@ -522,7 +512,6 @@ purpose = "basket_admission_rejected"
 kind = "basket_admission_rejected"
 schema_version = 1
 gate_id = "bolt_v3.submit_admission"
-payload_member = "decision"
 
 [[identities]]
 id = "capital_admission_rebuild_v1"
@@ -530,7 +519,6 @@ purpose = "capital_admission_rebuild"
 kind = "capital_admission_rebuild"
 schema_version = 16
 gate_id = "bolt_v3.capital_admission_rebuild"
-payload_member = "audit"
 
 [[identities]]
 id = "submit_reservation_metadata_v1"
@@ -538,7 +526,6 @@ purpose = "submit_reservation_metadata"
 kind = "submit_reservation_metadata"
 schema_version = 16
 gate_id = "bolt_v3.submit_admission"
-payload_member = "metadata"
 
 [[identities]]
 id = "submit_reservation_fill_v1"
@@ -546,7 +533,6 @@ purpose = "submit_reservation_fill"
 kind = "submit_reservation_fill"
 schema_version = 16
 gate_id = "bolt_v3.submit_admission"
-payload_member = "fill"
 
 [[identities]]
 id = "entry_skip_observation_v1"
@@ -554,7 +540,6 @@ purpose = "entry_skip_observation"
 kind = "entry_skip"
 schema_version = 16
 gate_id = "bolt_v3.entry_skip"
-payload_member = "entry_skip"
 
 [[identities]]
 id = "exit_submission_decision_v1"
@@ -562,7 +547,6 @@ purpose = "exit_submission_decision"
 kind = "exit_submission_decision"
 schema_version = 1
 gate_id = "bolt_v3.exit_decision"
-payload_member = "exit_decision"
 
 [[identities]]
 id = "exit_hold_decision_v1"
@@ -570,7 +554,6 @@ purpose = "exit_hold_decision"
 kind = "exit_hold_decision"
 schema_version = 1
 gate_id = "bolt_v3.exit_decision"
-payload_member = "exit_decision"
 
 [[identities]]
 id = "exit_evaluation_v1"
@@ -578,7 +561,6 @@ purpose = "exit_evaluation"
 kind = "exit_evaluation"
 schema_version = 16
 gate_id = "bolt_v3.exit_evaluation"
-payload_member = "exit_evaluation"
 
 [[identities]]
 id = "loss_governor_halt_v1"
@@ -586,7 +568,6 @@ purpose = "loss_governor_halt"
 kind = "loss_governor_halt"
 schema_version = 16
 gate_id = "bolt_v3.loss_governor_halt"
-payload_member = "loss_governor_halt"
 
 [[identities]]
 id = "order_reject_v1"
@@ -594,7 +575,6 @@ purpose = "order_reject"
 kind = "order_reject"
 schema_version = 16
 gate_id = "bolt_v3.order_reject"
-payload_member = "order_reject"
 
 [[identities]]
 id = "order_lifecycle_v1"
@@ -602,7 +582,6 @@ purpose = "order_lifecycle"
 kind = "order_lifecycle"
 schema_version = 16
 gate_id = "bolt_v3.order_lifecycle"
-payload_member = "order_lifecycle"
 
 [[identities]]
 id = "requote_throttle_observation_v1"
@@ -610,7 +589,6 @@ purpose = "requote_throttle_observation"
 kind = "requote_throttle"
 schema_version = 16
 gate_id = "bolt_v3.requote_throttle"
-payload_member = "requote_throttle"
 
 [[identities]]
 id = "settlement_v1"
@@ -618,7 +596,6 @@ purpose = "settlement"
 kind = "settlement"
 schema_version = 16
 gate_id = "bolt_v3.settlement"
-payload_member = "settlement"
 
 [[identities]]
 id = "terminal_settlement_v1"
@@ -626,7 +603,6 @@ purpose = "terminal_settlement"
 kind = "terminal_settlement"
 schema_version = 16
 gate_id = "bolt_v3.settlement"
-payload_member = "terminal_settlement"
 
 [[identities]]
 id = "venue_truth_capture_failure_v1"
@@ -634,7 +610,6 @@ purpose = "venue_truth_capture_failure"
 kind = "venue_truth_capture_failure"
 schema_version = 16
 gate_id = "bolt_v3.capital_admission_rebuild"
-payload_member = "venue_truth_capture_failure"
 
 [[identities]]
 id = "venue_truth_divergence_v1"
@@ -642,7 +617,6 @@ purpose = "venue_truth_divergence"
 kind = "venue_truth_divergence"
 schema_version = 16
 gate_id = "bolt_v3.capital_admission_rebuild"
-payload_member = "venue_truth_divergence"
 
 [[facts]]
 id = "blocked_strategy_input_observation_v1"

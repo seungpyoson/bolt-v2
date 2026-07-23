@@ -43,6 +43,20 @@ pub struct AppendReceipt {
     bytes: usize,
 }
 
+#[must_use = "a committed settlement must drive its post-commit reducers"]
+#[derive(Debug)]
+pub struct CommittedSettlement {
+    fact: SettlementFact,
+    _receipt: AppendReceipt,
+}
+
+impl CommittedSettlement {
+    #[must_use]
+    pub fn fact(&self) -> &SettlementFact {
+        &self.fact
+    }
+}
+
 #[derive(Debug)]
 pub enum RecordFailure {
     Rejected(Error),
@@ -150,7 +164,7 @@ impl EncodedEvidenceRecord {
 pub(crate) struct DurableSink {
     file: File,
     state: DurableSinkState,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     forced_failure: Option<ForcedFailure>,
 }
 
@@ -165,7 +179,7 @@ impl DurableSink {
         Self {
             file,
             state: DurableSinkState::Healthy,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-current-evidence-inspection"))]
             forced_failure: None,
         }
     }
@@ -174,7 +188,7 @@ impl DurableSink {
         Self {
             file,
             state: DurableSinkState::Poisoned(cause),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-current-evidence-inspection"))]
             forced_failure: None,
         }
     }
@@ -187,7 +201,7 @@ impl DurableSink {
         }
 
         let result = (|| -> Result<(), (CommitPhase, io::Error)> {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-current-evidence-inspection"))]
             match self.forced_failure {
                 Some(ForcedFailure::Write) => {
                     return Err((
@@ -195,6 +209,7 @@ impl DurableSink {
                         io::Error::other("injected write failure"),
                     ));
                 }
+                #[cfg(test)]
                 Some(ForcedFailure::PartialWrite(bytes)) => {
                     let bytes = bytes.min(line.len());
                     self.file
@@ -205,7 +220,9 @@ impl DurableSink {
                         io::Error::other("injected partial write failure"),
                     ));
                 }
-                Some(ForcedFailure::Sync) | None => {}
+                #[cfg(test)]
+                Some(ForcedFailure::Sync) => {}
+                None => {}
             }
 
             self.file
@@ -284,12 +301,21 @@ impl DecisionEvidenceRecorder {
         self.reject_episode_max_count
     }
 
-    #[cfg(test)]
-    pub(crate) fn fail_machine_writes(&self) {
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
+    pub fn fail_machine_writes_for_test(&self) {
         self.machine
             .lock()
             .expect("machine sink mutex must not be poisoned")
             .forced_failure = Some(ForcedFailure::Write);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_machine_sync_for_test(&self) {
+        self.machine
+            .lock()
+            .expect("machine sink mutex must not be poisoned")
+            .forced_failure = Some(ForcedFailure::Sync);
     }
 
     #[cfg(test)]
@@ -368,19 +394,26 @@ impl DecisionEvidenceRecorder {
     }
 
     #[cfg(test)]
-    pub(crate) fn startup_recovery_facts(
+    pub(crate) fn startup_recovery_projections(
         &self,
         max_bytes: Option<u64>,
-    ) -> anyhow::Result<super::facts::StartupRecoveryFacts> {
+    ) -> anyhow::Result<(
+        super::facts::ReservationRecoveryFacts,
+        super::facts::SettlementRecoveryFacts,
+        super::facts::BookingRecoveryFacts,
+    )> {
         let sink = self
             .machine
             .lock()
             .expect("machine sink mutex must not be poisoned");
         let mut file = sink.file.try_clone()?;
-        Ok(
-            super::reader::validate_stream(&mut file, KnownSink::Machine, max_bytes)?
-                .startup_recovery,
-        )
+        let projections = super::reader::validate_stream(&mut file, KnownSink::Machine, max_bytes)?
+            .startup_recovery;
+        Ok((
+            projections.reservation,
+            projections.settlement,
+            projections.booking,
+        ))
     }
 
     pub fn record_submit_reservation_metadata(
@@ -640,8 +673,16 @@ impl DecisionEvidenceRecorder {
         }
     }
 
-    pub fn record_settlement(&self, fact: SettlementFact) -> Result<AppendReceipt, RecordFailure> {
-        self.record_blocking(KnownProducer::EdgeTakerSettlement, encode_settlement(fact)?)
+    pub fn record_settlement(
+        &self,
+        fact: SettlementFact,
+    ) -> Result<CommittedSettlement, RecordFailure> {
+        let record = encode_settlement(fact.clone())?;
+        let receipt = self.record_blocking(KnownProducer::EdgeTakerSettlement, record)?;
+        Ok(CommittedSettlement {
+            fact,
+            _receipt: receipt,
+        })
     }
 
     pub fn record_terminal_settlement(
@@ -777,11 +818,13 @@ fn assert_contract_policy(
     assert!(permitted.contains(&effect_policy_for_purpose(purpose)));
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-current-evidence-inspection"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForcedFailure {
     Write,
+    #[cfg(test)]
     PartialWrite(usize),
+    #[cfg(test)]
     Sync,
 }
 

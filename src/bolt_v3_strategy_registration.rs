@@ -7,7 +7,9 @@
 use crate::bolt_v3_config::{
     BoltV3RootConfig, ClientBlock, LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey,
 };
-use crate::bolt_v3_current_evidence::{DecisionEvidenceRecorder, StartupRecoveryFacts};
+use crate::bolt_v3_current_evidence::{
+    BookingRecoveryFacts, DecisionEvidenceRecorder, SettlementRecoveryFacts,
+};
 use crate::bolt_v3_iv::{
     config::IvProfile,
     query::{IvQueryHandle, IvStrategyQueryHandle},
@@ -191,7 +193,8 @@ pub struct BoltV3StrategyExecutionControls {
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
     pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
-    pub settlement_recovery: Option<Arc<StartupRecoveryFacts>>,
+    pub settlement_recovery: Option<Arc<SettlementRecoveryFacts>>,
+    pub booking_recovery: Option<Arc<BookingRecoveryFacts>>,
     pub settlement_health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
 }
 
@@ -327,11 +330,20 @@ impl StrategyPreparationConfig {
 }
 
 #[derive(Clone)]
+struct StrategyRegistrationSettlementRuntime {
+    sink: Option<BoltV3SettlementRuntimeSinkHandle>,
+    settlement_recovery: Option<Arc<SettlementRecoveryFacts>>,
+    booking_recovery: Option<Arc<BookingRecoveryFacts>>,
+    health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+}
+
+#[derive(Clone)]
 struct StrategyRegistrationSettlementResources {
     settlement_account_id: String,
     settlement_currency: Currency,
     runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
-    recovery: Option<Arc<StartupRecoveryFacts>>,
+    settlement_recovery: Option<Arc<SettlementRecoveryFacts>>,
+    booking_recovery: Option<Arc<BookingRecoveryFacts>>,
     health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
 }
 
@@ -379,8 +391,15 @@ impl<'a> StrategyRegistrationContext<'a> {
             order_execution_policy,
             settlement_runtime_sink,
             settlement_recovery,
+            booking_recovery,
             settlement_health_transition_emitter,
         } = execution_controls;
+        let settlement_runtime = StrategyRegistrationSettlementRuntime {
+            sink: settlement_runtime_sink,
+            settlement_recovery,
+            booking_recovery,
+            health_transition_emitter: settlement_health_transition_emitter,
+        };
         let realized_volatility_runtime = capabilities
             .realized_volatility
             .then_some(realized_volatility_runtime);
@@ -405,9 +424,7 @@ impl<'a> StrategyRegistrationContext<'a> {
                     strategy,
                     execution_client,
                     execution_venue,
-                    settlement_runtime_sink,
-                    settlement_recovery,
-                    settlement_health_transition_emitter,
+                    settlement_runtime,
                 )
             })
             .transpose()
@@ -519,10 +536,14 @@ fn resolve_settlement_capability(
     strategy: &LoadedStrategy,
     execution_client: &ClientBlock,
     execution_venue: Venue,
-    runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
-    recovery: Option<Arc<StartupRecoveryFacts>>,
-    health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
+    runtime: StrategyRegistrationSettlementRuntime,
 ) -> Result<StrategyRegistrationSettlementResources, StrategyRegistrationSettlementIdentityError> {
+    let StrategyRegistrationSettlementRuntime {
+        sink,
+        settlement_recovery,
+        booking_recovery,
+        health_transition_emitter,
+    } = runtime;
     let execution_client_id = strategy.config.execution_client_id.as_str();
     let settlement_account_id =
         execution_account_id_from_client(execution_client).ok_or_else(|| {
@@ -541,8 +562,9 @@ fn resolve_settlement_capability(
     Ok(StrategyRegistrationSettlementResources {
         settlement_account_id: settlement_account_id.to_string(),
         settlement_currency,
-        runtime_sink,
-        recovery,
+        runtime_sink: sink,
+        settlement_recovery,
+        booking_recovery,
         health_transition_emitter,
     })
 }
@@ -567,7 +589,8 @@ pub fn assemble_strategy_build_context(
     if let Some(settlement) = settlement {
         build_context = build_context
             .with_settlement_runtime_sink(settlement.runtime_sink.clone())
-            .with_settlement_recovery(settlement.recovery.clone())
+            .with_settlement_recovery(settlement.settlement_recovery.clone())
+            .with_booking_recovery(settlement.booking_recovery.clone())
             .with_settlement_account_id(Some(settlement.settlement_account_id.clone()))
             .with_settlement_currency(Some(settlement.settlement_currency))
             .with_settlement_health_transition_emitter(

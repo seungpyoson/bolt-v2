@@ -658,9 +658,11 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 
 All configured paths are distinct, relative to `catalog_directory`, and may not traverse parent directories.
 The trading runtime has one current-format path: exact `(kind, schema_version)` plus exact `gate_id`
-selects one registered codec from `config/decision-evidence-contract.toml`. Old, unknown, mixed,
-malformed, blank, or torn machine records fail closed. There is no schema ordering, compatibility
-decoder, fallback, migration, or runtime path for pre-cutover evidence. The hard-cutover runbook is
+selects one codec from the checked-in Rust contract generated from
+`config/decision-evidence-contract.toml`. `gate_version` is required nonempty diagnostic metadata;
+it does not select or reject codecs. Old, unknown, mixed, malformed, blank, or torn machine records
+fail closed. There is no schema ordering, compatibility decoder, fallback, migration, or runtime
+path for pre-cutover evidence. The hard-cutover runbook is
 `docs/runbooks/current-decision-evidence-hard-cutover.md`.
 
 `order_intent.order_fields` fields:

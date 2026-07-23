@@ -281,6 +281,32 @@ fn recorded_raw_reason_text_redacts_address_and_long_digit_run() {
 }
 
 #[test]
+fn observed_order_reject_is_preserved_when_evidence_sink_is_poisoned() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
+    writer.fail_machine_writes();
+    let mut feed =
+        BoltV3OrderRejectObserverFeed::new(writer.recorder(), AccountId::from("ACCOUNT-001"));
+
+    let observed = feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
+        "client-order-evidence-failure",
+        "instrument-yes.VENUE-A",
+        AccountId::from("ACCOUNT-001"),
+        "precision rejected",
+        1_000,
+    )));
+
+    assert!(
+        observed,
+        "an evidence failure must not erase the authoritative NT reject event"
+    );
+    assert_eq!(
+        feed.health_snapshot().total_retry_count,
+        1,
+        "preserve-result policy must keep the observed reject"
+    );
+}
+
+#[test]
 fn recorded_raw_reason_text_is_truncated_to_cap() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let mut feed =

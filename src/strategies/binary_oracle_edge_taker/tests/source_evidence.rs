@@ -1268,6 +1268,47 @@ fn rv_clock_domain_amendment_submit_evidence_cannot_veto_admitted_order() {
     );
 }
 
+#[test]
+fn submit_snapshot_failure_clears_pending_entry_and_never_reaches_submit_admission() {
+    let evidence = failing_decision_evidence();
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence,
+        submit_admission.clone(),
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert!(
+        decision.instrument_id.is_some(),
+        "fixture must reach admitted entry order construction"
+    );
+
+    let error = strategy
+        .submit_admitted_entry_decision(1_200, decision)
+        .expect_err("submit-linked snapshot failure must veto the entry");
+
+    assert!(
+        error
+            .to_string()
+            .contains("evidence commit indeterminate during write"),
+        "{error:#}"
+    );
+    assert!(
+        !matches!(strategy.exposure, ExposureState::PendingEntry(_)),
+        "snapshot failure must clear strategy-local pending-entry state"
+    );
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "snapshot failure must stop before shared submit admission and NT submit"
+    );
+}
+
 fn assert_admitted_a_snapshot_fields(fields: &RealizedVolatilityEvidenceFields) {
     assert_eq!(fields.surface_id, TEST_SURFACE_ID);
     assert_eq!(fields.as_of_ms, Some(1_200));

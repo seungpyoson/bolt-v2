@@ -495,6 +495,42 @@ fn basket_submit_slots_carry_capital_admission_evidence_into_shared_gate() {
 }
 
 #[test]
+fn basket_grant_evidence_failure_rolls_back_every_leg_before_submit() {
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = capital_admission_submit_state(writer.recorder());
+    let group = fixture_group();
+    let mut claims = entry_claims(&group, dec!(0.9));
+    attach_capital_admission(&mut claims);
+    seed_capital_admission_for_claims(&submit_gate, &claims);
+    writer.fail_machine_writes();
+
+    let error = submit_gate
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &claims,
+            &basket_slot_evidence("evidence-failure", &group),
+        )
+        .expect_err("basket evidence failure must reject before any leg submits");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::EvidenceWriteFailed { .. }
+    ));
+    assert_eq!(submit_gate.admitted_order_count(), 0);
+    assert_eq!(
+        submit_gate.capital_admission_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    for claim in &claims {
+        assert!(
+            !submit_gate.capital_admission_has_live_reservation(&claim.client_order_id),
+            "failed basket evidence must roll back {}",
+            claim.client_order_id
+        );
+    }
+}
+
+#[test]
 fn basket_submit_slots_reject_capital_admission_that_does_not_match_order_shape() {
     let writer = RecordingBasketDecisionWriter::default();
     let submit_gate = capital_admission_submit_state(writer.recorder());

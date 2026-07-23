@@ -2578,6 +2578,38 @@ fn terminal_nt_order_event_releases_committed_submit_reservation() {
 }
 
 #[test]
+fn admission_evidence_failure_rolls_back_capital_reservation_before_submit() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = capital_admission_configured_admission_with_writer(writer.recorder());
+    arm_default(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    writer.fail_machine_writes();
+
+    let error = admission
+        .admit_at(
+            &capital_admission_submit_request("failed-evidence-order"),
+            1_000,
+        )
+        .expect_err("machine-evidence failure must reject before provider submit");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::EvidenceWriteFailed { .. }
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::ZERO),
+        "the pre-submit capital reservation must be rolled back"
+    );
+    assert!(
+        !admission.capital_admission_has_live_reservation("failed-evidence-order"),
+        "no reservation may survive a rejected evidence boundary"
+    );
+}
+
+#[test]
 fn configured_submit_sizer_rejects_stale_venue_spendability_before_nt_submit() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);

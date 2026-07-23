@@ -43,17 +43,10 @@ use crate::{
         ForcedFlatReason as EvidenceForcedFlatReason, NonBlockingRecordOutcome,
         ObservationRecordOutcome, OrderIntentDetails, OrderLifecycleFact, OrderLifecycleOutcome,
         OrderLifecycleTransition, OutcomeSide as EvidenceOutcomeSide,
-        RealizedVolAggregation as EvidenceRealizedVolAggregation,
-        RealizedVolBlockReason as EvidenceRealizedVolBlockReason,
-        RealizedVolPricingComponent as EvidenceRealizedVolPricingComponent,
-        RealizedVolSampleKind as EvidenceRealizedVolSampleKind,
-        RealizedVolSourceClass as EvidenceRealizedVolSourceClass,
-        RealizedVolSourceRejectReason as EvidenceRealizedVolSourceRejectReason,
-        RealizedVolSourceStatus as EvidenceRealizedVolSourceStatus,
-        RealizedVolatilitySourceDiagnosticFact, RvGateResult as EvidenceRvGateResult,
-        SettlementBookingErrorFact, SettlementBookingErrorReason, SettlementFact,
-        StrategyInputDetails, StrategyInputRvState, SubmissionLinkage,
-        SubmitLinkedStrategyInputSnapshotFact, TerminalSettlementFact, settlement_kind,
+        RvGateResult as EvidenceRvGateResult, SettlementBookingErrorFact,
+        SettlementBookingErrorReason, SettlementFact, StrategyInputDetails, StrategyInputRvState,
+        SubmissionLinkage, SubmitLinkedStrategyInputSnapshotFact, TerminalSettlementFact,
+        realized_vol_diagnostic_fact, settlement_kind,
     },
     bolt_v3_evidence_values::{
         number as evidence_number, optional_number as option_evidence_number,
@@ -111,8 +104,8 @@ use crate::{
         TerminalSettlementEligibility,
         bootstrap_recovery_from_cache as decide_bootstrap_recovery_from_cache,
         enter_blind_settlement_recovery as decide_blind_settlement_recovery,
-        record_settlement_booking_error as decide_settlement_booking_error,
-        recover_settlement_bootstrap, try_book_resolution_settlement,
+        record_settlement_booking_error as decide_settlement_booking_error, recover_booking_facts,
+        recover_settlement_facts, try_book_resolution_settlement,
     },
     bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
@@ -1107,45 +1100,51 @@ impl BinaryOracleEdgeTaker {
                 realized_pnl: booking.result.realized_pnl,
             },
         );
-        if let Some(sink) = self.context.settlement_runtime_sink() {
-            let account_id = self
-                .context
-                .settlement_account_id()
-                .expect("shared booking validates settlement account id");
-            sink.record_loss_governor_position_realized_pnl(
-                settlement_position_realized_pnl_observation(
-                    account_id,
-                    &evidence,
-                    settlement_currency,
-                )?,
-            )?;
-        }
-        self.context
+        let committed = self
+            .context
             .decision_evidence()
-            .record_settlement(evidence.clone())?;
+            .record_settlement(evidence)?;
         self.settled_position_keys
             .insert(booking.settlement_key.clone());
         if booking.key_delta.remove_close_fetch_attempt {
             self.settlement_close_fetch_attempts
                 .remove(&booking.key_delta.settlement_key);
         }
-        if let Some(sink) = self.context.settlement_runtime_sink() {
-            let explanation = match venue_truth_settlement_explanation_from_evidence(&evidence) {
-                Ok(explanation) => explanation,
-                Err(error) => {
-                    self.enter_blind_settlement_recovery(error);
-                    return Ok(());
-                }
-            };
-            if let Err(error) = sink.record_venue_truth_settlement(explanation) {
-                self.enter_blind_settlement_recovery(error);
-                return Ok(());
-            }
+        if let Err(error) =
+            self.apply_committed_settlement_runtime_effects(&committed, settlement_currency)
+        {
+            self.enter_blind_settlement_recovery(error);
+            return Ok(());
         }
         self.exposure = ExposureState::Flat;
         self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
         Ok(())
+    }
+
+    fn apply_committed_settlement_runtime_effects(
+        &self,
+        committed: &crate::bolt_v3_current_evidence::CommittedSettlement,
+        settlement_currency: Currency,
+    ) -> Result<()> {
+        let Some(sink) = self.context.settlement_runtime_sink() else {
+            return Ok(());
+        };
+        let account_id = self
+            .context
+            .settlement_account_id()
+            .expect("shared booking validates settlement account id");
+        let evidence = committed.fact();
+        sink.record_loss_governor_position_realized_pnl(
+            settlement_position_realized_pnl_observation(
+                account_id,
+                evidence,
+                settlement_currency,
+            )?,
+        )?;
+        sink.record_venue_truth_settlement(venue_truth_settlement_explanation_from_evidence(
+            evidence,
+        )?)
     }
 
     fn record_settlement_booking_error(
@@ -2621,8 +2620,8 @@ impl BinaryOracleEdgeTaker {
             return true;
         }
 
-        let recovery_delta = match recover_settlement_bootstrap(
-            self.context.settlement_capability(),
+        let recovery_delta = match recover_settlement_facts(
+            self.context.settlement_recovery(),
             &recovery_scope_settlement_keys,
         ) {
             Ok(delta) => delta,
@@ -2631,6 +2630,10 @@ impl BinaryOracleEdgeTaker {
                 return false;
             }
         };
+        let booking_delta = recover_booking_facts(
+            self.context.booking_recovery(),
+            &recovery_scope_settlement_keys,
+        );
 
         if let Some(sink) = self.context.settlement_runtime_sink() {
             for evidence in recovery_delta.settled_evidence {
@@ -2652,9 +2655,11 @@ impl BinaryOracleEdgeTaker {
         self.settled_position_keys
             .extend(recovery_delta.settled_position_keys);
         self.settlement_booking_error_keys
-            .extend(recovery_delta.booking_error_keys);
+            .extend(booking_delta.booking_error_keys);
         self.terminal_settlement_keys
             .extend(recovery_delta.terminal_settlement_keys);
+        self.terminal_settlement_keys
+            .extend(booking_delta.terminal_settlement_keys);
         true
     }
 
@@ -5491,7 +5496,7 @@ impl BinaryOracleEdgeTaker {
             .raw_snapshot_blockers
             .iter()
             .copied()
-            .map(realized_vol_block_reason_fact)
+            .map(Into::into)
             .collect();
         let rv_future_dating_delta_ms = receipt
             .snapshot_as_of_minus_trigger_event_ms
@@ -5857,11 +5862,9 @@ impl BinaryOracleEdgeTaker {
                 forecast_annualized_decimal: snapshot
                     .forecast_annualized_realized_vol_decimal
                     .map(evidence_number),
-                pricing_component: Some(realized_vol_pricing_component_fact(
-                    snapshot.pricing_component,
-                )),
+                pricing_component: Some(snapshot.pricing_component.into()),
                 seconds_per_annum: evidence_number(snapshot.seconds_per_annum),
-                aggregation: Some(realized_vol_aggregation_fact(snapshot.aggregate_method)),
+                aggregation: Some(snapshot.aggregate_method.into()),
                 sources_used: snapshot.sources_used.clone(),
                 source_diagnostics: snapshot
                     .source_diagnostics
@@ -5872,7 +5875,7 @@ impl BinaryOracleEdgeTaker {
                 blockers: snapshot
                     .blocked_reasons
                     .iter()
-                    .map(|reason| realized_vol_block_reason_fact(*reason))
+                    .map(|reason| (*reason).into())
                     .collect(),
                 config_fingerprint: snapshot.config_fingerprint.clone(),
             },
@@ -6607,7 +6610,7 @@ impl BinaryOracleEdgeTaker {
             rv_blockers: receipt
                 .raw_snapshot_blockers
                 .iter()
-                .map(|reason| realized_vol_block_reason_fact(*reason))
+                .map(|reason| (*reason).into())
                 .collect(),
             rv_source_diagnostics: receipt
                 .source_diagnostics
@@ -8250,152 +8253,6 @@ fn best_healthy_oracle_price(snapshot: &ReferenceSnapshot) -> Option<f64> {
                 .then_with(|| lhs.venue_name.cmp(&rhs.venue_name))
         })
         .and_then(|venue| venue.observed_price)
-}
-
-fn realized_vol_pricing_component_fact(
-    value: crate::bolt_v3_realized_volatility::RealizedVolPricingComponent,
-) -> EvidenceRealizedVolPricingComponent {
-    use crate::bolt_v3_realized_volatility::RealizedVolPricingComponent as Source;
-    match value {
-        Source::Measured => EvidenceRealizedVolPricingComponent::Measured,
-        Source::NoiseRobust => EvidenceRealizedVolPricingComponent::NoiseRobust,
-        Source::Continuous => EvidenceRealizedVolPricingComponent::Continuous,
-        Source::Forecast => EvidenceRealizedVolPricingComponent::Forecast,
-    }
-}
-
-fn realized_vol_aggregation_fact(
-    value: crate::bolt_v3_realized_volatility::RealizedVolAggregation,
-) -> EvidenceRealizedVolAggregation {
-    use crate::bolt_v3_realized_volatility::RealizedVolAggregation as Source;
-    match value {
-        Source::UpperQuantile { .. } => EvidenceRealizedVolAggregation::UpperQuantile,
-        Source::Median => EvidenceRealizedVolAggregation::Median,
-        Source::TrimmedMean { .. } => EvidenceRealizedVolAggregation::TrimmedMean,
-        Source::MedianWithUpperQuantileGuard { .. } => {
-            EvidenceRealizedVolAggregation::MedianWithUpperQuantileGuard
-        }
-    }
-}
-
-fn realized_vol_block_reason_fact(
-    value: crate::bolt_v3_realized_volatility::RealizedVolBlockReason,
-) -> EvidenceRealizedVolBlockReason {
-    use crate::bolt_v3_realized_volatility::RealizedVolBlockReason as Source;
-    match value {
-        Source::InvalidConfig => EvidenceRealizedVolBlockReason::InvalidConfig,
-        Source::QuorumNotReady => EvidenceRealizedVolBlockReason::QuorumNotReady,
-        Source::SourceStale => EvidenceRealizedVolBlockReason::SourceStale,
-        Source::CoverageBelowMinimum => EvidenceRealizedVolBlockReason::CoverageBelowMinimum,
-        Source::InterSampleGapExceeded => EvidenceRealizedVolBlockReason::InterSampleGapExceeded,
-        Source::SourceClassMismatch => EvidenceRealizedVolBlockReason::SourceClassMismatch,
-        Source::SampleKindMismatch => EvidenceRealizedVolBlockReason::SampleKindMismatch,
-        Source::CrossSourceDispersion => EvidenceRealizedVolBlockReason::CrossSourceDispersion,
-        Source::AnnualizationBasisInvalid => {
-            EvidenceRealizedVolBlockReason::AnnualizationBasisInvalid
-        }
-        Source::NotWarm => EvidenceRealizedVolBlockReason::NotWarm,
-    }
-}
-
-fn realized_vol_source_class_fact(
-    value: crate::bolt_v3_realized_volatility::RealizedVolSourceClass,
-) -> EvidenceRealizedVolSourceClass {
-    use crate::bolt_v3_realized_volatility::RealizedVolSourceClass as Source;
-    match value {
-        Source::SpotQuote => EvidenceRealizedVolSourceClass::SpotQuote,
-        Source::Trade => EvidenceRealizedVolSourceClass::Trade,
-        Source::Mark => EvidenceRealizedVolSourceClass::Mark,
-        Source::Index => EvidenceRealizedVolSourceClass::Index,
-    }
-}
-
-fn realized_vol_sample_kind_fact(
-    value: crate::bolt_v3_realized_volatility::RealizedVolSampleKind,
-) -> EvidenceRealizedVolSampleKind {
-    use crate::bolt_v3_realized_volatility::RealizedVolSampleKind as Source;
-    match value {
-        Source::Midpoint => EvidenceRealizedVolSampleKind::Midpoint,
-        Source::Trade => EvidenceRealizedVolSampleKind::Trade,
-        Source::Mark => EvidenceRealizedVolSampleKind::Mark,
-        Source::Index => EvidenceRealizedVolSampleKind::Index,
-    }
-}
-
-fn realized_vol_source_status_fact(
-    value: crate::bolt_v3_realized_volatility::RealizedVolSourceStatus,
-) -> EvidenceRealizedVolSourceStatus {
-    use crate::bolt_v3_realized_volatility::RealizedVolSourceStatus as Source;
-    match value {
-        Source::Ready => EvidenceRealizedVolSourceStatus::Ready,
-        Source::Blocked => EvidenceRealizedVolSourceStatus::Blocked,
-        Source::DiagnosticOnly => EvidenceRealizedVolSourceStatus::DiagnosticOnly,
-        Source::Waiting => EvidenceRealizedVolSourceStatus::Waiting,
-    }
-}
-
-fn realized_vol_reject_reason_fact(
-    value: crate::bolt_v3_realized_volatility::RealizedVolSourceRejectReason,
-) -> EvidenceRealizedVolSourceRejectReason {
-    use crate::bolt_v3_realized_volatility::RealizedVolSourceRejectReason as Source;
-    match value {
-        Source::DisabledSource => EvidenceRealizedVolSourceRejectReason::DisabledSource,
-        Source::InvalidPrice => EvidenceRealizedVolSourceRejectReason::InvalidPrice,
-        Source::SourceClassMismatch => EvidenceRealizedVolSourceRejectReason::SourceClassMismatch,
-        Source::SampleKindMismatch => EvidenceRealizedVolSourceRejectReason::SampleKindMismatch,
-        Source::EventTimeRegression => EvidenceRealizedVolSourceRejectReason::EventTimeRegression,
-        Source::DuplicateTimestamp => EvidenceRealizedVolSourceRejectReason::DuplicateTimestamp,
-        Source::StaleSameEventUpdate => EvidenceRealizedVolSourceRejectReason::StaleSameEventUpdate,
-        Source::ReceiveBeforeEvent => EvidenceRealizedVolSourceRejectReason::ReceiveBeforeEvent,
-        Source::EventReceiveLagExceeded => {
-            EvidenceRealizedVolSourceRejectReason::EventReceiveLagExceeded
-        }
-    }
-}
-
-fn realized_vol_diagnostic_fact(
-    value: &crate::bolt_v3_realized_volatility::RealizedVolSourceDiagnostic,
-) -> RealizedVolatilitySourceDiagnosticFact {
-    RealizedVolatilitySourceDiagnosticFact {
-        source_id: value.source_id.clone(),
-        source_class: realized_vol_source_class_fact(value.source_class),
-        sample_kind: realized_vol_sample_kind_fact(value.sample_kind),
-        enabled: value.enabled,
-        counts_toward_quorum: value.counts_toward_quorum,
-        status: realized_vol_source_status_fact(value.status),
-        annualized_realized_volatility_decimal: value
-            .annualized_realized_vol_decimal
-            .map(evidence_number),
-        measured_annualized_realized_volatility_decimal: value
-            .measured_annualized_realized_vol_decimal
-            .map(evidence_number),
-        noise_robust_annualized_realized_volatility_decimal: value
-            .noise_robust_annualized_realized_vol_decimal
-            .map(evidence_number),
-        continuous_annualized_realized_volatility_decimal: value
-            .continuous_annualized_realized_vol_decimal
-            .map(evidence_number),
-        jump_annualized_realized_volatility_decimal: value
-            .jump_annualized_realized_vol_decimal
-            .map(evidence_number),
-        first_sample_ts_ms: value.first_sample_ts_ms,
-        last_sample_ts_ms: value.last_sample_ts_ms,
-        raw_sample_count: value.raw_sample_count,
-        grid_sample_count: value.grid_sample_count,
-        coverage_ratio: evidence_number(value.coverage_ratio),
-        max_inter_sample_gap_ms: value.max_inter_sample_gap_ms,
-        last_rejected_reason: value
-            .last_rejected_reason
-            .map(realized_vol_reject_reason_fact),
-        last_rejected_event_ts_ms: value.last_rejected_event_ts_ms,
-        last_rejected_recv_ts_ms: value.last_rejected_recv_ts_ms,
-        rejection_counters: value
-            .rejection_counters
-            .iter()
-            .map(|(reason, count)| (realized_vol_reject_reason_fact(*reason), *count))
-            .collect(),
-        block_reason: value.block_reason.map(realized_vol_block_reason_fact),
-    }
 }
 
 fn outcome_side_to_evidence(side: OutcomeSide) -> EvidenceOutcomeSide {

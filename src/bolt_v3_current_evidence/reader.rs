@@ -8,14 +8,15 @@ use anyhow::{Context, Result, anyhow, ensure};
 use serde::Deserialize;
 
 use super::{
-    codec::{decode_current_fact, decode_startup_recovery_fact},
+    codec::decode_current_fact,
     facts::{
-        AdmittedEntryAdmissionFact, BlockedStrategyInputObservationFact, CurrentFact,
-        EntryOrderIntentFact, EntrySkipFact, ExitHoldDecisionFact, ExitSubmissionDecisionFact,
-        ForcedReductionAdmissionFact, LossGovernorHaltFact, RejectedEntryAdmissionFact,
-        ReplaceAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
-        StartupRecoveryFacts, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
-        SubmitReservationMetadataFact,
+        AdmittedEntryAdmissionFact, BlockedStrategyInputObservationFact, BookingRecoveryEvent,
+        CurrentFact, EntryOrderIntentFact, EntrySkipFact, ExitHoldDecisionFact,
+        ExitSubmissionDecisionFact, ForcedReductionAdmissionFact, LossGovernorHaltFact,
+        RejectedEntryAdmissionFact, ReplaceAdmissionFact, RequoteThrottleObservationFact,
+        ReservationRecoveryEvent, RiskReducingExitAdmissionFact, SettlementRecoveryEvent,
+        StartupRecoveryProjections, SubmitLinkedStrategyInputSnapshotFact,
+        SubmitReservationFillFact, SubmitReservationMetadataFact,
     },
     generated_contract::{
         ConsumerDisposition, KnownConsumer, KnownSink, descriptor_for_identity, disposition_for,
@@ -61,6 +62,8 @@ pub struct RecordedBacktestRunGuardEvent {
     pub event: BacktestRunGuardEvent,
 }
 
+#[cfg(feature = "test-current-evidence-inspection")]
+#[doc(hidden)]
 pub fn read_current_evidence_facts(path: &Path, max_bytes: u64) -> Result<Vec<CurrentFact>> {
     Ok(read_current_evidence_records(path, max_bytes)?
         .into_iter()
@@ -68,6 +71,7 @@ pub fn read_current_evidence_facts(path: &Path, max_bytes: u64) -> Result<Vec<Cu
         .collect())
 }
 
+#[cfg(feature = "test-current-evidence-inspection")]
 fn read_current_evidence_records(path: &Path, max_bytes: u64) -> Result<Vec<RecordedCurrentFact>> {
     read_consumer_records(path, Some(max_bytes), None)
 }
@@ -138,8 +142,8 @@ fn read_consumer_records(
     Ok(records)
 }
 
-pub fn read_shadow_pnl_events(path: &Path) -> Result<Vec<ShadowPnlEvent>> {
-    read_consumer_records(path, None, Some(KnownConsumer::ShadowPnlV1))?
+pub fn read_shadow_pnl_events(path: &Path, max_bytes: u64) -> Result<Vec<ShadowPnlEvent>> {
+    read_consumer_records(path, Some(max_bytes), Some(KnownConsumer::ShadowPnlV1))?
         .into_iter()
         .map(|record| into_shadow_pnl_event(record.fact))
         .collect()
@@ -263,7 +267,7 @@ struct HeaderOnlyLine {
 }
 
 pub(super) struct ValidatedStream {
-    pub(super) startup_recovery: StartupRecoveryFacts,
+    pub(super) startup_recovery: StartupRecoveryProjections,
 }
 
 pub(super) fn validate_stream(
@@ -278,7 +282,7 @@ pub(super) fn validate_stream(
     let len = file.metadata()?.len();
     file.seek(SeekFrom::Start(0))?;
     let lines = read_framed_lines(file, len, max_bytes, stream)?;
-    let mut facts = StartupRecoveryFacts::default();
+    let mut recovery = StartupRecoveryProjections::default();
     for (index, line) in lines.into_iter().enumerate() {
         let line_number = index + 1;
         let header = validated_header(&line, line_number, stream)?;
@@ -304,9 +308,7 @@ pub(super) fn validate_stream(
         );
         match expected_sink {
             KnownSink::Machine => {
-                if let Some(fact) = decode_startup_recovery_fact(identity, &line, line_number)? {
-                    facts.apply(fact)?;
-                }
+                apply_startup_recovery_projections(identity, &line, line_number, &mut recovery)?;
             }
             KnownSink::Observation => {
                 decode_current_fact(identity, &line, line_number)?;
@@ -314,11 +316,86 @@ pub(super) fn validate_stream(
         }
     }
     if expected_sink == KnownSink::Machine {
-        facts.validate()?;
+        recovery.reservation.validate()?;
     }
     Ok(ValidatedStream {
-        startup_recovery: facts,
+        startup_recovery: recovery,
     })
+}
+
+pub(super) fn apply_startup_recovery_projections(
+    identity: super::generated_contract::KnownIdentity,
+    line: &str,
+    line_number: usize,
+    recovery: &mut StartupRecoveryProjections,
+) -> Result<()> {
+    let fact_id = fact_for_identity(identity);
+    let reservation_relevant = consumer_relevant(fact_id, KnownConsumer::ReservationRecoveryV1);
+    let settlement_relevant = consumer_relevant(fact_id, KnownConsumer::SettlementRecoveryV1);
+    let booking_relevant = consumer_relevant(fact_id, KnownConsumer::BookingRecoveryV1);
+    let fact = decode_current_fact(identity, line, line_number)?;
+    ensure!(
+        fact.registered_fact() == fact_id,
+        "decoded fact disagrees with registered identity at machine evidence line {line_number}"
+    );
+    if !reservation_relevant && !settlement_relevant && !booking_relevant {
+        return Ok(());
+    }
+
+    if reservation_relevant {
+        let event = match &fact {
+            CurrentFact::SubmitReservationMetadata(value) => {
+                ReservationRecoveryEvent::Metadata(value.clone())
+            }
+            CurrentFact::SubmitReservationFill(value) => {
+                ReservationRecoveryEvent::Fill(value.clone())
+            }
+            _ => {
+                return Err(anyhow!(
+                    "fact {fact_id:?} is registered for reservation recovery without a typed reservation event"
+                ));
+            }
+        };
+        recovery.reservation.apply(event)?;
+    }
+    if settlement_relevant {
+        let event = match &fact {
+            CurrentFact::Settlement(value) => SettlementRecoveryEvent::Settlement(value.clone()),
+            CurrentFact::TerminalSettlement(value) => {
+                SettlementRecoveryEvent::TerminalSettlement((**value).clone())
+            }
+            _ => {
+                return Err(anyhow!(
+                    "fact {fact_id:?} is registered for settlement recovery without a typed settlement event"
+                ));
+            }
+        };
+        recovery.settlement.apply(event)?;
+    }
+    if booking_relevant {
+        let event = match &fact {
+            CurrentFact::TerminalSettlement(value) => {
+                BookingRecoveryEvent::TerminalSettlement((**value).clone())
+            }
+            _ => {
+                return Err(anyhow!(
+                    "fact {fact_id:?} is registered for booking recovery without a typed booking event"
+                ));
+            }
+        };
+        recovery.booking.apply(event);
+    }
+    Ok(())
+}
+
+const fn consumer_relevant(
+    fact: super::generated_contract::KnownFact,
+    consumer: KnownConsumer,
+) -> bool {
+    matches!(
+        disposition_for(fact, consumer),
+        ConsumerDisposition::Relevant(_)
+    )
 }
 
 fn sink_name(sink: KnownSink) -> &'static str {
@@ -353,6 +430,11 @@ fn read_framed_lines(
         .enumerate()
         .map(|(index, line)| {
             ensure!(!line.trim().is_empty(), "blank {stream} line {}", index + 1);
+            ensure!(
+                !line.contains('\r'),
+                "carriage return in {stream} line {}",
+                index + 1
+            );
             Ok(line.to_string())
         })
         .collect()

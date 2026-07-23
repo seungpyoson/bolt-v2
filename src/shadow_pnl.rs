@@ -118,8 +118,9 @@ struct TradeEvidence {
 pub fn build_shadow_pnl_report(
     evidence_jsonl: &Path,
     settlements_jsonl: &Path,
+    evidence_max_bytes: u64,
 ) -> Result<Vec<ShadowPnlReportRow>> {
-    let chains = read_admitted_entry_chains(evidence_jsonl)?;
+    let chains = read_admitted_entry_chains(evidence_jsonl, evidence_max_bytes)?;
     let settlements = read_settlements(settlements_jsonl)?;
     let mut accumulators = BTreeMap::<(NaiveDate, String), TradeAccumulator>::new();
 
@@ -228,12 +229,15 @@ fn write_shadow_pnl_csv_header(writer: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-fn read_admitted_entry_chains(path: &Path) -> Result<Vec<TradeEvidence>> {
+fn read_admitted_entry_chains(path: &Path, evidence_max_bytes: u64) -> Result<Vec<TradeEvidence>> {
     let mut snapshots = HashMap::<String, SubmitLinkedStrategyInputSnapshotFact>::new();
     let mut intents = HashMap::<String, EntryOrderIntentFact>::new();
     let mut admitted_entries = HashMap::<String, ()>::new();
 
-    for (event_index, event) in read_shadow_pnl_events(path)?.into_iter().enumerate() {
+    for (event_index, event) in read_shadow_pnl_events(path, evidence_max_bytes)?
+        .into_iter()
+        .enumerate()
+    {
         match event {
             ShadowPnlEvent::SubmitLinkedStrategyInputSnapshot(snapshot) => {
                 let client_order_id = snapshot.submission.client_order_id.clone();

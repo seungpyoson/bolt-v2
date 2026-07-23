@@ -1010,6 +1010,10 @@ def verify_candidate_set(
 
     build_identity_document = {
         "schema_version": 1,
+        "publication": {
+            "repository": repository,
+            "head_sha": head_sha,
+        },
         "source": {
             "version": config.source_version,
             "commit": config.source_commit,

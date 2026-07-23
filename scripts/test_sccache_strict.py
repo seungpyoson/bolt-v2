@@ -410,6 +410,25 @@ class ManifestTests(unittest.TestCase):
 
         self.assertNotEqual(original.release_tag, changed.release_tag)
 
+    def test_release_tag_changes_when_exact_main_head_changes(self) -> None:
+        original = self.verify()
+        changed_head = "2" * 40
+        changed_manifests = copy.deepcopy(self.manifests)
+        for manifest in changed_manifests:
+            manifest["head_sha"] = changed_head
+
+        changed = sccache_strict.verify_candidate_set(
+            changed_manifests,
+            self.binary_paths,
+            config=self.config,
+            repository=self.repository,
+            run_id=self.run_id,
+            run_attempt=self.run_attempt,
+            head_sha=changed_head,
+        )
+
+        self.assertNotEqual(original.release_tag, changed.release_tag)
+
     def test_release_tag_binds_workflow_and_recipe_bytes(self) -> None:
         original = self.verify()
         original_workflow = self.workflow_path.read_bytes()
@@ -894,19 +913,24 @@ class CliTests(unittest.TestCase):
     def test_writes_governed_verification_consumer_outside_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = pathlib.Path(temporary) / "consumer.toml"
-            result = sccache_strict.main(
-                [
-                    "write-verification-consumer",
-                    "--config",
-                    str(REPO_ROOT / "ci/sccache-strict.toml"),
-                    "--output",
-                    str(output),
-                    "--s3-endpoint",
-                    "http://127.0.0.1:43127",
-                ]
-            )
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                result = sccache_strict.main(
+                    [
+                        "write-verification-consumer",
+                        "--config",
+                        str(REPO_ROOT / "ci/sccache-strict.toml"),
+                        "--output",
+                        str(output),
+                        "--s3-endpoint",
+                        "http://127.0.0.1:43127",
+                    ]
+                )
 
             self.assertEqual(result, 0)
+            self.assertEqual(
+                json.loads(stdout.getvalue()), {"consumer_config": str(output)}
+            )
             document = output.read_text()
             self.assertIn(
                 'abstract_socket_template = "bolt-sccache-verifier-{job_identity}"',

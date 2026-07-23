@@ -369,7 +369,7 @@ index 760026f..45e5825 100644
 +        let error = runtime.block_on(storage.check()).unwrap_err();
 +        assert!(error.to_string().contains("cache storage failed to read"));
 diff --git a/src/cache/cache_io.rs b/src/cache/cache_io.rs
-index 9e29743..54f5f01 100644
+index 9e29743..804a050 100644
 --- a/src/cache/cache_io.rs
 +++ b/src/cache/cache_io.rs
 @@ -13 +13,2 @@
@@ -391,7 +391,7 @@ index 9e29743..54f5f01 100644
 @@ -19 +29 @@ use std::path::{Path, PathBuf};
 -use tempfile::NamedTempFile;
 +use zip::result::ZipError;
-@@ -88,0 +99,442 @@ impl std::error::Error for DecompressionFailure {}
+@@ -88,0 +99,509 @@ impl std::error::Error for DecompressionFailure {}
 +#[derive(Debug)]
 +struct CacheObjectMissing;
 +
@@ -441,6 +441,10 @@ index 9e29743..54f5f01 100644
 +        ensure!(
 +            metadata.file_type().is_dir(),
 +            "cache output parent is not a directory"
++        );
++        ensure!(
++            metadata.permissions().mode() & 0o222 != 0,
++            "cache output parent has no writable permission bits"
 +        );
 +        Ok((
 +            Self {
@@ -496,6 +500,47 @@ index 9e29743..54f5f01 100644
 +            device: stat.st_dev as u64,
 +            inode: stat.st_ino as u64,
 +        })
++    }
++
++    fn pin_destination(
++        &self,
++        basename: &OsStr,
++        expected: DestinationIdentity,
++    ) -> Result<Option<std::fs::File>> {
++        if expected == DestinationIdentity::Missing {
++            return Ok(None);
++        }
++        let basename = c_name(basename)?;
++        #[cfg(any(target_os = "linux", target_os = "android"))]
++        let access_mode = libc::O_PATH;
++        #[cfg(not(any(target_os = "linux", target_os = "android")))]
++        let access_mode = libc::O_RDONLY;
++        let descriptor = unsafe {
++            libc::openat(
++                self.descriptor(),
++                basename.as_ptr(),
++                access_mode | libc::O_CLOEXEC | libc::O_NOFOLLOW,
++            )
++        };
++        if descriptor < 0 {
++            return Err(std::io::Error::last_os_error())
++                .context("failed to pin cache output destination");
++        }
++        let destination = unsafe { std::fs::File::from_raw_fd(descriptor) };
++        let metadata = destination
++            .metadata()
++            .context("failed to inspect pinned cache output destination")?;
++        ensure!(
++            metadata.file_type().is_file()
++                && metadata.nlink() == 1
++                && expected
++                    == DestinationIdentity::Regular {
++                        device: metadata.dev(),
++                        inode: metadata.ino(),
++                    },
++            "cache output destination changed while being pinned"
++        );
++        Ok(Some(destination))
 +    }
 +
 +    fn create_temporary(&self, prefix: &str) -> Result<(OsString, std::fs::File)> {
@@ -658,6 +703,7 @@ index 9e29743..54f5f01 100644
 +    parent: PinnedParent,
 +    basename: OsString,
 +    initial: DestinationIdentity,
++    initial_authority: Option<std::fs::File>,
 +    staged: DestinationIdentity,
 +    stage_name: Option<OsString>,
 +    backup_name: Option<OsString>,
@@ -672,6 +718,7 @@ index 9e29743..54f5f01 100644
 +    fn stage(path: &Path) -> Result<(Self, std::fs::File)> {
 +        let (parent, basename) = PinnedParent::open(path)?;
 +        let initial = parent.destination_identity(&basename)?;
++        let initial_authority = parent.pin_destination(&basename, initial)?;
 +        let (stage_name, temporary) = parent.create_temporary("sccache-stage")?;
 +        let metadata = temporary
 +            .metadata()
@@ -685,6 +732,7 @@ index 9e29743..54f5f01 100644
 +                parent,
 +                basename,
 +                initial,
++                initial_authority,
 +                staged,
 +                stage_name: Some(stage_name),
 +                backup_name: None,
@@ -704,6 +752,25 @@ index 9e29743..54f5f01 100644
 +
 +    fn commit(&mut self) -> Result<()> {
 +        self.parent.revalidate()?;
++        match (&self.initial_authority, self.initial) {
++            (None, DestinationIdentity::Missing) => {}
++            (Some(destination), expected @ DestinationIdentity::Regular { .. }) => {
++                let metadata = destination
++                    .metadata()
++                    .context("failed to revalidate pinned cache output destination")?;
++                ensure!(
++                    metadata.file_type().is_file()
++                        && metadata.nlink() == 1
++                        && expected
++                            == DestinationIdentity::Regular {
++                                device: metadata.dev(),
++                                inode: metadata.ino(),
++                            },
++                    "pinned cache output destination identity changed before commit"
++                );
++            }
++            _ => bail!("cache output destination authority is inconsistent"),
++        }
 +        ensure!(
 +            self.parent.destination_identity(&self.basename)? == self.initial,
 +            "cache output destination identity changed before commit"
@@ -834,35 +901,35 @@ index 9e29743..54f5f01 100644
 +    }
 +}
 +
-@@ -106 +558,5 @@ impl CacheRead {
+@@ -106 +625,5 @@ impl CacheRead {
 -        let file = self.zip.by_name(name).or(Err(DecompressionFailure))?;
 +        let file = match self.zip.by_name(name) {
 +            Ok(file) => file,
 +            Err(ZipError::FileNotFound) => bail!(CacheObjectMissing),
 +            Err(_) => bail!(DecompressionFailure),
 +        };
-@@ -116 +572 @@ impl CacheRead {
+@@ -116 +639 @@ impl CacheRead {
 -    pub fn get_stdout(&mut self) -> Vec<u8> {
 +    pub fn get_stdout(&mut self) -> Result<Vec<u8>> {
-@@ -121 +577 @@ impl CacheRead {
+@@ -121 +644 @@ impl CacheRead {
 -    pub fn get_stderr(&mut self) -> Vec<u8> {
 +    pub fn get_stderr(&mut self) -> Result<Vec<u8>> {
-@@ -125 +581 @@ impl CacheRead {
+@@ -125 +648 @@ impl CacheRead {
 -    fn get_bytes(&mut self, name: &str) -> Vec<u8> {
 +    fn get_bytes(&mut self, name: &str) -> Result<Vec<u8>> {
-@@ -127,2 +583,2 @@ impl CacheRead {
+@@ -127,2 +650,2 @@ impl CacheRead {
 -        drop(self.get_object(name, &mut bytes));
 -        bytes
 +        self.get_object(name, &mut bytes)?;
 +        Ok(bytes)
-@@ -131 +587 @@ impl CacheRead {
+@@ -131 +654 @@ impl CacheRead {
 -    pub async fn extract_objects<T>(
 +    pub async fn materialize<T>(
-@@ -135 +591,2 @@ impl CacheRead {
+@@ -135 +658,2 @@ impl CacheRead {
 -    ) -> Result<()>
 +        deadline: Option<StrictDeadline>,
 +    ) -> Result<(Vec<u8>, Vec<u8>)>
-@@ -139 +596,14 @@ impl CacheRead {
+@@ -139 +663,14 @@ impl CacheRead {
 -        pool.spawn_blocking(move || {
 +        let staging = pool.spawn_blocking(move || {
 +            let check_deadline = || -> Result<()> {
@@ -878,7 +945,7 @@ index 9e29743..54f5f01 100644
 +            let mut outputs = Vec::new();
 +            #[cfg(unix)]
 +            let mut destination_keys = std::collections::BTreeSet::new();
-@@ -146,45 +616,11 @@ impl CacheRead {
+@@ -146,27 +683,11 @@ impl CacheRead {
 -                if is_path_null(&path) {
 -                    // For unix, this is just a fast path to discard such outputs,
 -                    // so it is not an issue if `is_path_null` has false-negatives.
@@ -906,12 +973,29 @@ index 9e29743..54f5f01 100644
 -                                if let Some(mode) = mode {
 -                                    set_file_mode(path.as_path(), mode)?;
 -                                }
--                            }
++                #[cfg(unix)]
++                {
++                    let (staged, mut temporary) = StagedOutput::stage(&path)?;
++                    ensure!(
++                        destination_keys.insert(staged.identity_key()),
++                        "cache output destinations collide through one pinned parent"
++                    );
++                    match self.get_object(&key, &mut temporary) {
++                        Ok(mode) => {
++                            if let Some(mode) = mode {
++                                temporary.set_permissions(std::fs::Permissions::from_mode(mode))?;
+@@ -174,3 +695,2 @@ impl CacheRead {
 -                            (Err(e), false) => return Err(e),
 -                            // skip if no object found and it's optional
 -                            (Err(_), true) => continue,
--                        }
--                    }
++                            temporary.sync_all()?;
++                            outputs.push(staged);
+@@ -177,0 +698,4 @@ impl CacheRead {
++                        Err(error)
++                            if optional
++                                && error.downcast_ref::<CacheObjectMissing>().is_some() => {}
++                        Err(error) => return Err(error),
+@@ -179,17 +702,0 @@ impl CacheRead {
 -                    (Err(e), false) => {
 -                        // Fall back to writing directly to the final location
 -                        warn!("Failed to create temp file on the same file system: {e}");
@@ -924,29 +1008,12 @@ index 9e29743..54f5f01 100644
 -                                // if we could not create a temp file in the same directory,
 -                                // we probably can't set the mode either (e.g. /dev/stuff)
 -                                warn!("Failed to reset file mode: {e}");
-+                #[cfg(unix)]
-+                {
-+                    let (staged, mut temporary) = StagedOutput::stage(&path)?;
-+                    ensure!(
-+                        destination_keys.insert(staged.identity_key()),
-+                        "cache output destinations collide through one pinned parent"
-+                    );
-+                    match self.get_object(&key, &mut temporary) {
-+                        Ok(mode) => {
-+                            if let Some(mode) = mode {
-+                                temporary.set_permissions(std::fs::Permissions::from_mode(mode))?;
-@@ -191,0 +628,2 @@ impl CacheRead {
-+                            temporary.sync_all()?;
-+                            outputs.push(staged);
-@@ -192,0 +631,4 @@ impl CacheRead {
-+                        Err(error)
-+                            if optional
-+                                && error.downcast_ref::<CacheObjectMissing>().is_some() => {}
-+                        Err(error) => return Err(error),
-@@ -194,2 +635,0 @@ impl CacheRead {
+-                            }
+-                        }
+-                    }
 -                    // skip if no object found and it's optional
 -                    (Err(_), true) => continue,
-@@ -196,0 +637,8 @@ impl CacheRead {
+@@ -196,0 +704,8 @@ impl CacheRead {
 +                #[cfg(not(unix))]
 +                {
 +                    let _ = (key, path, optional);
@@ -955,7 +1022,7 @@ index 9e29743..54f5f01 100644
 +                    );
 +                }
 +                check_deadline()?;
-@@ -198,3 +646,19 @@ impl CacheRead {
+@@ -198,3 +713,19 @@ impl CacheRead {
 -            Ok(())
 -        })
 -        .await?
@@ -978,14 +1045,14 @@ index 9e29743..54f5f01 100644
 +            staging.await??
 +        };
 +        pool.spawn_blocking(move || staged.commit(deadline)).await?
-@@ -202,6 +665,0 @@ impl CacheRead {
+@@ -202 +732,0 @@ impl CacheRead {
 -}
--
+@@ -204,15 +734,6 @@ impl CacheRead {
 -#[cfg(unix)]
 -fn is_path_null(path: &Path) -> bool {
 -    path == Path::new("/dev/null")
 -}
-@@ -209,10 +667,6 @@ fn is_path_null(path: &Path) -> bool {
+-
 -#[cfg(windows)]
 -fn is_path_null(path: &Path) -> bool {
 -    // For Windows, it appears that `NUL` with whatever extension is also a blackhole
@@ -1002,7 +1069,7 @@ index 9e29743..54f5f01 100644
 +    {
 +        self.materialize(objects, pool, None).await.map(drop)
 +    }
-@@ -283,4 +737,7 @@ impl CacheWrite {
+@@ -283,4 +804,7 @@ impl CacheWrite {
 -        let compression_level = std::env::var("SCCACHE_CACHE_ZSTD_LEVEL")
 -            .ok()
 -            .and_then(|value| value.parse::<i32>().ok())
@@ -1014,7 +1081,7 @@ index 9e29743..54f5f01 100644
 +            (1..=22).contains(&compression_level),
 +            "compiled cache compression level is outside the governed range"
 +        );
-@@ -300,5 +757,2 @@ impl CacheWrite {
+@@ -300,5 +824,2 @@ impl CacheWrite {
 -        if !bytes.is_empty() {
 -            let mut cursor = Cursor::new(bytes);
 -            return self.put_object(name, &mut cursor, None);
@@ -1022,7 +1089,7 @@ index 9e29743..54f5f01 100644
 -        Ok(())
 +        let mut cursor = Cursor::new(bytes);
 +        self.put_object(name, &mut cursor, None)
-@@ -323,0 +778,441 @@ mod tests {
+@@ -323,0 +845,360 @@ mod tests {
 +    use std::io::{Seek, SeekFrom};
 +
 +    struct SlowCursor {
@@ -1383,9 +1450,8 @@ index 9e29743..54f5f01 100644
 +        );
 +        assert!(!destination.exists());
 +    }
-+
-+    #[cfg(unix)]
-+    #[test]
+@@ -327 +1208,82 @@ mod tests {
+-    fn test_extract_object_to_devnull_works() {
 +    fn strict_late_commit_failure_rolls_back_earlier_output() {
 +        let temporary = tempfile::tempdir().unwrap();
 +        let first = temporary.path().join("first");
@@ -1464,28 +1530,29 @@ index 9e29743..54f5f01 100644
 +        std::thread::sleep(std::time::Duration::from_millis(50));
 +        assert!(!output.exists());
 +    }
-@@ -327 +1222 @@ mod tests {
--    fn test_extract_object_to_devnull_works() {
++
++    #[cfg(unix)]
++    #[test]
 +    fn strict_extract_object_to_devnull_is_fatal() {
-@@ -336 +1231,2 @@ mod tests {
+@@ -336 +1298,2 @@ mod tests {
 -        let cache_data = CacheWrite::new();
 +        let mut cache_data = CacheWrite::new();
 +        add_empty_streams(&mut cache_data);
-@@ -347 +1243 @@ mod tests {
+@@ -347 +1310 @@ mod tests {
 -        assert!(result.is_ok(), "Extracting to /dev/null should succeed");
 +        assert!(result.is_err(), "strict extraction must reject /dev/null");
-@@ -352,2 +1248 @@ mod tests {
+@@ -352,2 +1315 @@ mod tests {
 -    fn test_extract_object_to_dev_fd_something() {
 -        // Open a pipe, write to `/dev/fd/{fd}` and check the other end that the correct data was written.
 +    fn strict_extract_object_to_dev_fd_is_fatal() {
-@@ -355 +1249,0 @@ mod tests {
+@@ -355 +1316,0 @@ mod tests {
 -        use tokio::io::AsyncReadExt;
-@@ -364,0 +1259 @@ mod tests {
+@@ -364,0 +1326 @@ mod tests {
 +        add_empty_streams(&mut cache_data);
-@@ -368 +1263 @@ mod tests {
+@@ -368 +1330 @@ mod tests {
 -            let (sender, mut receiver) = tokio::net::unix::pipe::pipe().unwrap();
 +            let (sender, _receiver) = tokio::net::unix::pipe::pipe().unwrap();
-@@ -383,8 +1278 @@ mod tests {
+@@ -383,8 +1345 @@ mod tests {
 -            assert!(
 -                result.is_ok(),
 -                "Extracting to /dev/fd/{raw_fd} should succeed"
@@ -1495,33 +1562,33 @@ index 9e29743..54f5f01 100644
 -            assert_eq!(n, data.len(), "Read the correct number of bytes");
 -            assert_eq!(buf, data, "Read the correct data from /dev/fd/{raw_fd}");
 +            assert!(result.is_err(), "strict extraction must reject /dev/fd paths");
-@@ -395,3 +1283 @@ mod tests {
+@@ -395,3 +1350 @@ mod tests {
 -    fn test_extract_object_to_non_writable_path() {
 -        // See `test_extract_object_to_dev_fd_something`: we still cannot cover all platforms by the other tests. Here we test a more portable case of creating a file and making its parent directory non-writable, in which case we should still be able to extract the object successfully.
 -
 +    fn strict_extract_object_to_non_writable_parent_is_fatal() {
-@@ -407,0 +1294 @@ mod tests {
+@@ -407,0 +1361 @@ mod tests {
 +        add_empty_streams(&mut cache_data);
-@@ -430,5 +1317 @@ mod tests {
+@@ -430,5 +1384 @@ mod tests {
 -        assert!(
 -            result.is_ok(),
 -            "Extracting to the target path should succeed"
 -        );
 -        // Test the content; make sure the old content is overwritten
 +        assert!(result.is_err(), "strict staging requires a writable parent");
-@@ -437,2 +1320,2 @@ mod tests {
+@@ -437,2 +1387,2 @@ mod tests {
 -            content, b"real_test_data",
 -            "Extracted content should be correct"
 +            content, b"test",
 +            "the existing output must remain unchanged"
-@@ -453 +1336 @@ mod tests {
+@@ -453 +1403 @@ mod tests {
 -    fn test_extract_object_to_nul_works() {
 +    fn strict_extract_object_to_nul_is_fatal() {
-@@ -462 +1345,2 @@ mod tests {
+@@ -462 +1412,2 @@ mod tests {
 -        let cache_data = CacheWrite::new();
 +        let mut cache_data = CacheWrite::new();
 +        add_empty_streams(&mut cache_data);
-@@ -473 +1357 @@ mod tests {
+@@ -473 +1424 @@ mod tests {
 -        assert!(result.is_ok(), "Extracting to NUL should succeed");
 +        assert!(result.is_err(), "strict extraction must reject NUL");
 diff --git a/src/cache/readonly.rs b/src/cache/readonly.rs
@@ -4624,7 +4691,7 @@ index d6c2c71..cde6828 100644
 +            .wait()
 +            .unwrap();
 diff --git a/src/config.rs b/src/config.rs
-index cef32b2..61681ad 100644
+index cef32b2..d5fce77 100644
 --- a/src/config.rs
 +++ b/src/config.rs
 @@ -17,0 +18 @@ use crate::util::normalize_win_path;
@@ -5682,12 +5749,12 @@ index cef32b2..61681ad 100644
 +}
 @@ -1356,0 +2406,253 @@ impl Config {
 +#[cfg(all(test, unix))]
-+mod strict_snapshot_tests {
++pub(crate) mod strict_snapshot_tests {
 +    use super::*;
 +    use std::ffi::{OsStr, OsString};
 +    use std::os::unix::fs::symlink;
 +
-+    fn snapshot() -> ConsumerConfigSnapshot {
++    pub(crate) fn snapshot() -> ConsumerConfigSnapshot {
 +        ConsumerConfigSnapshot {
 +            schema_version: 1,
 +            abstract_socket_name: b"strict-test-socket".to_vec(),
@@ -9288,50 +9355,86 @@ index d4260e7..1558d10 100644
 +        self.read_only
 +    }
 diff --git a/src/test/tests.rs b/src/test/tests.rs
-index 8d283a1..f1c0f74 100644
+index 8d283a1..0761614 100644
 --- a/src/test/tests.rs
 +++ b/src/test/tests.rs
-@@ -19 +19 @@ use crate::commands::{do_compile, request_shutdown, request_stats};
+@@ -19 +19,3 @@ use crate::commands::{do_compile, request_shutdown, request_stats};
 -use crate::config::PreprocessorCacheModeConfig;
++#[cfg(target_os = "linux")]
++use crate::config::materialize_consumer_snapshot;
 +use crate::config::{CompilerEnvironment, PreprocessorCacheModeConfig};
-@@ -183,4 +183,2 @@ fn test_server_unsupported_compiler() {
+@@ -27 +29 @@ use futures::channel::oneshot::{self, Sender};
+-#[cfg(not(target_os = "macos"))]
++#[cfg(target_os = "linux")]
+@@ -30,2 +32,4 @@ use std::io::{Cursor, Write};
+-#[cfg(not(target_os = "macos"))]
+-use std::net::TcpListener;
++#[cfg(target_os = "linux")]
++use std::os::linux::net::SocketAddrExt;
++#[cfg(target_os = "linux")]
++use std::os::unix::net::{SocketAddr, UnixListener};
+@@ -33 +37 @@ use std::path::Path;
+-#[cfg(not(target_os = "macos"))]
++#[cfg(target_os = "linux")]
+@@ -183,4 +187,2 @@ fn test_server_unsupported_compiler() {
 -        // fail rust driver check
 -        c.next_command_spawns(Ok(MockChild::new(exit_status(1), "hello", "error")));
 -        // The server will check the compiler, so pretend to be an unsupported
 -        // compiler.
 +        // The strict server probes only the configured GCC family, so pretend
 +        // that exact probe reports an unsupported compiler.
-@@ -199 +197 @@ fn test_server_unsupported_compiler() {
+@@ -199 +201 @@ fn test_server_unsupported_compiler() {
 -    let path = Some(f.paths);
 +    let environment = CompilerEnvironment::for_tests(Vec::new());
-@@ -208,2 +206,3 @@ fn test_server_unsupported_compiler() {
+@@ -208,2 +210,3 @@ fn test_server_unsupported_compiler() {
 -        path,
 -        vec![],
 +        &environment,
 +        crate::protocol::StrictCompilerFamily::Gcc,
 +        "",
-@@ -215 +214,4 @@ fn test_server_unsupported_compiler() {
+@@ -215 +218,4 @@ fn test_server_unsupported_compiler() {
 -        Err(e) => assert_eq!("Compiler not supported: \"error\"", e.to_string()),
 +        Err(e) => assert_eq!(
 +            "governed compiler identity was not supported: \"error\"",
 +            e.to_string()
 +        ),
-@@ -269 +271 @@ fn test_server_compile() {
+@@ -269 +275 @@ fn test_server_compile() {
 -    let path = Some(f.paths);
 +    let environment = CompilerEnvironment::for_tests(Vec::new());
-@@ -280,2 +282,3 @@ fn test_server_compile() {
+@@ -280,2 +286,3 @@ fn test_server_compile() {
 -            path,
 -            vec![],
 +            &environment,
 +            crate::protocol::StrictCompilerFamily::Gcc,
 +            "",
-@@ -299,2 +301,0 @@ fn test_server_compile() {
+@@ -299,6 +306,10 @@ fn test_server_compile() {
 -// test fails intermittently on macos:
 -// https://github.com/mozilla/sccache/issues/234
-@@ -302 +303 @@ fn test_server_compile() {
+-#[cfg(not(target_os = "macos"))]
 -fn test_server_port_in_use() {
-+fn test_strict_server_requires_governed_backend_before_port_bind() {
-@@ -317 +318 @@ fn test_server_port_in_use() {
+-    // Bind an arbitrary free port.
+-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++#[cfg(target_os = "linux")]
++fn test_strict_server_requires_governed_backend_before_transport_bind() {
++    let address = SocketAddr::from_abstract_name(b"strict-test-socket").unwrap();
++    let _listener = UnixListener::bind_addr(&address).unwrap();
++    let snapshot_directory = tempfile::tempdir().unwrap();
++    let locator = materialize_consumer_snapshot(
++        &crate::config::strict_snapshot_tests::snapshot(),
++        snapshot_directory.path(),
++    )
++    .unwrap();
+@@ -308,5 +319,4 @@ fn test_server_port_in_use() {
+-        .env(
+-            "SCCACHE_SERVER_PORT",
+-            listener.local_addr().unwrap().port().to_string(),
+-        )
+-        .env_remove("SCCACHE_SERVER_UDS")
++        .env_clear()
++        .env("HOME", snapshot_directory.path())
++        .env("TMPDIR", snapshot_directory.path())
++        .env("SCCACHE_STRICT_BOOTSTRAP", locator)
+@@ -317 +327 @@ fn test_server_port_in_use() {
 -    const MSG: &str = "Server startup failed:";
 +    const MSG: &str = "strict sccache requires the governed S3 cache backend";
 diff --git a/src/test/utils.rs b/src/test/utils.rs

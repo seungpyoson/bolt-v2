@@ -114,7 +114,12 @@ fn validate_details(details: &OrderIntentDetails) -> Result<(), RecordFailure> {
         Some(OrderIntentClampOutcome::Clamped { original_quantity }) => {
             Some(original_quantity.as_str())
         }
-        _ => None,
+        None
+        | Some(
+            OrderIntentClampOutcome::WithinBounds
+            | OrderIntentClampOutcome::Rejected
+            | OrderIntentClampOutcome::NotEvaluated { .. },
+        ) => None,
     };
     if required.into_iter().any(|value| value.trim().is_empty())
         || optional

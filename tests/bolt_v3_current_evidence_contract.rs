@@ -17,10 +17,10 @@ fn replace_once(input: &str, from: &str, to: &str) -> String {
 #[test]
 fn current_contract_is_closed_and_deterministic() {
     let contract = parse_contract_registry(REGISTRY).expect("current contract must parse");
-    assert_eq!(contract.producer_count(), 28);
-    assert_eq!(contract.purpose_count(), 27);
-    assert_eq!(contract.identity_count(), 27);
-    assert_eq!(contract.fact_count(), 27);
+    assert_eq!(contract.producer_count(), 27);
+    assert_eq!(contract.purpose_count(), 26);
+    assert_eq!(contract.identity_count(), 26);
+    assert_eq!(contract.fact_count(), 26);
 
     let first = render_contract(&contract);
     let second = render_contract(&contract);
@@ -123,7 +123,7 @@ fn observation_purposes_cannot_route_to_machine_or_use_a_fact_policy() {
 }
 
 #[test]
-fn unknown_owner_sink_and_effect_policy_are_rejected() {
+fn unknown_owner_sink_consumer_mode_and_effect_policy_are_rejected() {
     let unknown_owner = replace_once(
         REGISTRY,
         "[[owners]]\nid = \"bolt_v3_decision_evidence\"",
@@ -148,6 +148,18 @@ fn unknown_owner_sink_and_effect_policy_are_rejected() {
             .contains("unknown sink")
     );
 
+    let unknown_consumer_mode = replace_once(
+        REGISTRY,
+        "id = \"shadow_pnl_v1\"\nmode = \"offline_projection\"",
+        "id = \"shadow_pnl_v1\"\nmode = \"best_effort_query\"",
+    );
+    assert!(
+        parse_contract_registry(&unknown_consumer_mode)
+            .expect_err("unknown consumer mode must fail")
+            .to_string()
+            .contains("unknown mode")
+    );
+
     let unknown_policy = replace_once(
         REGISTRY,
         "id = \"submit_linked_strategy_input_snapshot\"\nowner = \"bolt_v3_decision_evidence\"\nduties = [\"join\"]\neffect_policy = \"must_precede_new_risk\"",
@@ -158,5 +170,19 @@ fn unknown_owner_sink_and_effect_policy_are_rejected() {
             .expect_err("unknown effect policy must fail")
             .to_string()
             .contains("unknown effect policy")
+    );
+}
+
+#[test]
+fn at_least_one_startup_recovery_consumer_is_required() {
+    let without_startup_recovery = REGISTRY.replace(
+        "mode = \"startup_recovery\"",
+        "mode = \"offline_projection\"",
+    );
+    assert!(
+        parse_contract_registry(&without_startup_recovery)
+            .expect_err("a contract without a startup recovery consumer must fail")
+            .to_string()
+            .contains("missing startup recovery consumer")
     );
 }

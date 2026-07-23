@@ -27,7 +27,7 @@ use bolt_v2::{
     bolt_v3_current_evidence::{
         AdmissionDecisionOutcome, CurrentFact, DecisionEvidenceRecorder,
         OfflineDecisionEvidenceRuntime, StrategyInputDetails, StrategyInputRvState,
-        read_current_evidence_facts,
+        read_current_evidence_records,
     },
     bolt_v3_operator_artifacts::json_artifact_bytes,
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
@@ -123,7 +123,85 @@ struct BacktestDecisionEvidenceState {
     exit_decision_count: u64,
     loss_governor_halt_count: u64,
     requote_throttle_count: u64,
-    latest_strategy_input_snapshot: Option<StrategyInputDetails>,
+    latest_strategy_input_snapshot: Option<BacktestStrategyInputSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BacktestStrategyInputSnapshot {
+    recorded_at_utc_ns: i64,
+    purpose: BacktestStrategyInputPurpose,
+    market_id: Option<String>,
+    spot_price: Option<String>,
+    reference_current_price: Option<String>,
+    reference_current_price_source_id: Option<String>,
+    price_to_beat_value: Option<String>,
+    realized_volatility: StrategyInputRvState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BacktestStrategyInputPurpose {
+    BlockedObservation,
+    SubmitLinked,
+}
+
+trait IntoOptionalEvidenceText {
+    fn into_optional_evidence_text(self) -> Option<String>;
+}
+
+impl IntoOptionalEvidenceText for String {
+    fn into_optional_evidence_text(self) -> Option<String> {
+        Some(self)
+    }
+}
+
+impl IntoOptionalEvidenceText for Option<String> {
+    fn into_optional_evidence_text(self) -> Option<String> {
+        self
+    }
+}
+
+impl BacktestDecisionEvidenceState {
+    fn observe_strategy_input<PurposeNumeric>(
+        &mut self,
+        recorded_at_utc_ns: i64,
+        purpose: BacktestStrategyInputPurpose,
+        details: StrategyInputDetails<PurposeNumeric>,
+    ) -> Result<()>
+    where
+        PurposeNumeric: IntoOptionalEvidenceText,
+    {
+        self.strategy_input_snapshot_count += 1;
+        let candidate = BacktestStrategyInputSnapshot {
+            recorded_at_utc_ns,
+            purpose,
+            market_id: details.market_id,
+            spot_price: details.spot_price.into_optional_evidence_text(),
+            reference_current_price: details.reference_current_price,
+            reference_current_price_source_id: details.reference_current_price_source_id,
+            price_to_beat_value: details.price_to_beat_value.into_optional_evidence_text(),
+            realized_volatility: details.realized_volatility,
+        };
+        match &self.latest_strategy_input_snapshot {
+            None => self.latest_strategy_input_snapshot = Some(candidate),
+            Some(current) => match candidate
+                .recorded_at_utc_ns
+                .cmp(&current.recorded_at_utc_ns)
+            {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => {
+                    ensure!(
+                        current == &candidate,
+                        "conflicting strategy-input facts share recorded_at_utc_ns {}",
+                        candidate.recorded_at_utc_ns
+                    );
+                }
+                std::cmp::Ordering::Greater => {
+                    self.latest_strategy_input_snapshot = Some(candidate);
+                }
+            },
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -171,15 +249,21 @@ impl BacktestDecisionEvidenceWriter {
                 .metadata()
                 .context("inspect isolated backtest evidence stream")?
                 .len();
-            for fact in read_current_evidence_facts(stream.path(), max_bytes)? {
-                match fact {
+            for record in read_current_evidence_records(stream.path(), max_bytes)? {
+                match record.fact {
                     CurrentFact::BlockedStrategyInputObservation(fact) => {
-                        state.strategy_input_snapshot_count += 1;
-                        state.latest_strategy_input_snapshot = Some(fact.details);
+                        state.observe_strategy_input(
+                            record.recorded_at_utc_ns,
+                            BacktestStrategyInputPurpose::BlockedObservation,
+                            fact.details,
+                        )?;
                     }
                     CurrentFact::SubmitLinkedStrategyInputSnapshot(fact) => {
-                        state.strategy_input_snapshot_count += 1;
-                        state.latest_strategy_input_snapshot = Some(fact.details);
+                        state.observe_strategy_input(
+                            record.recorded_at_utc_ns,
+                            BacktestStrategyInputPurpose::SubmitLinked,
+                            fact.details,
+                        )?;
                     }
                     CurrentFact::EntryOrderIntent(_) => state.order_intent_count += 1,
                     CurrentFact::AdmittedEntryAdmission(_) => {
@@ -227,7 +311,6 @@ impl BacktestDecisionEvidenceWriter {
                     | CurrentFact::OrderReject(_)
                     | CurrentFact::OrderLifecycle(_)
                     | CurrentFact::Settlement(_)
-                    | CurrentFact::SettlementBookingError(_)
                     | CurrentFact::TerminalSettlement(_)
                     | CurrentFact::VenueTruthCaptureFailure(_)
                     | CurrentFact::VenueTruthDivergence(_) => {}
@@ -240,8 +323,12 @@ impl BacktestDecisionEvidenceWriter {
     fn run_guard_report(&self, result: &BacktestResult) -> Result<BacktestRunGuardReport> {
         let state = self.state()?;
         let latest = state.latest_strategy_input_snapshot.as_ref();
-        let signal_quote_received =
-            latest.is_some_and(|snapshot| positive_decimal_text(&snapshot.spot_price));
+        let signal_quote_received = latest.is_some_and(|snapshot| {
+            snapshot
+                .spot_price
+                .as_deref()
+                .is_some_and(positive_decimal_text)
+        });
         let realized_volatility_ready =
             latest.is_some_and(|snapshot| match &snapshot.realized_volatility {
                 StrategyInputRvState::Absent { .. } => false,
@@ -257,8 +344,12 @@ impl BacktestDecisionEvidenceWriter {
                         && snapshot.blockers.is_empty()
                 }
             });
-        let price_to_beat_received =
-            latest.is_some_and(|snapshot| positive_decimal_text(&snapshot.price_to_beat_value));
+        let price_to_beat_received = latest.is_some_and(|snapshot| {
+            snapshot
+                .price_to_beat_value
+                .as_deref()
+                .is_some_and(positive_decimal_text)
+        });
         let reference_fresh = latest.is_some_and(|snapshot| {
             snapshot
                 .reference_current_price
@@ -300,12 +391,13 @@ impl BacktestDecisionEvidenceWriter {
             armed,
             traded,
             latest_market_id: latest.and_then(|snapshot| snapshot.market_id.clone()),
-            latest_spot_price: latest.map(|snapshot| snapshot.spot_price.clone()),
+            latest_spot_price: latest.and_then(|snapshot| snapshot.spot_price.clone()),
             latest_reference_current_price: latest
                 .and_then(|snapshot| snapshot.reference_current_price.clone()),
             latest_reference_current_price_source_id: latest
                 .and_then(|snapshot| snapshot.reference_current_price_source_id.clone()),
-            latest_price_to_beat_value: latest.map(|snapshot| snapshot.price_to_beat_value.clone()),
+            latest_price_to_beat_value: latest
+                .and_then(|snapshot| snapshot.price_to_beat_value.clone()),
             latest_realized_volatility_as_of_ms: latest.and_then(|snapshot| {
                 match &snapshot.realized_volatility {
                     StrategyInputRvState::Absent { .. } => None,
@@ -341,7 +433,7 @@ fn positive_decimal_text(value: &str) -> bool {
 }
 
 struct DidNotArmReasonInputs<'a> {
-    latest: Option<&'a StrategyInputDetails>,
+    latest: Option<&'a BacktestStrategyInputSnapshot>,
     signal_quote_received: bool,
     realized_volatility_ready: bool,
     price_to_beat_received: bool,
@@ -2589,8 +2681,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        BacktestSelectorProvenance, OrderTerminalRecord, Position, StrategyPreparationConfig,
-        apply_backtest_config_override, assert_read_back_matches,
+        BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, OrderTerminalRecord, Position,
+        StrategyPreparationConfig, apply_backtest_config_override, assert_read_back_matches,
         canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
         expected_iterations, issue_789_proof_fill, iterations_mismatch, load_bolt_v3_config,
         prepare_strategy_client_routes, raw_taker_config, replay_executable_book_at_cursor,
@@ -2647,6 +2739,97 @@ mod tests {
     const MAKER_SMOKE_CLIENT_ID: &str = "maker_execution_client";
     const MAKER_SMOKE_RUN_ID: &str = "binary-oracle-maker-backtest-smoke";
     const MAKER_SMOKE_TS_NS: u64 = 1_772_323_201_665_000_000;
+
+    fn strategy_input_fixture(
+        fixture: &str,
+        payload_member: &str,
+        recorded_at_utc_ns: i64,
+        spot_price: &str,
+    ) -> Vec<u8> {
+        let mut line: serde_json::Value =
+            serde_json::from_str(fixture.lines().next().expect("fixture must contain a line"))
+                .expect("fixture must decode as JSON");
+        line["recorded_at_utc_ns"] = serde_json::json!(recorded_at_utc_ns);
+        line[payload_member]["details"]["spot_price"] = serde_json::json!(spot_price);
+        let mut bytes = serde_json::to_vec(&line).expect("fixture must serialize");
+        bytes.push(b'\n');
+        bytes
+    }
+
+    #[test]
+    fn backtest_guard_selects_latest_strategy_input_across_separate_streams() -> Result<()> {
+        let writer = BacktestDecisionEvidenceWriter::new(4)?;
+        fs::write(
+            writer.machine.path(),
+            strategy_input_fixture(
+                include_str!(
+                    "../../../tests/fixtures/bolt_v3/current_evidence/positive/submit_linked_strategy_input_snapshot.jsonl"
+                ),
+                "snapshot",
+                200,
+                "200",
+            ),
+        )?;
+        fs::write(
+            writer.observation.path(),
+            strategy_input_fixture(
+                include_str!(
+                    "../../../tests/fixtures/bolt_v3/current_evidence/positive/blocked_strategy_input_observation.jsonl"
+                ),
+                "blocked_strategy_input_observation",
+                100,
+                "100",
+            ),
+        )?;
+
+        let state = writer.state()?;
+        assert_eq!(state.strategy_input_snapshot_count, 2);
+        assert_eq!(
+            state
+                .latest_strategy_input_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.spot_price.as_deref()),
+            Some("200")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backtest_guard_rejects_conflicting_strategy_inputs_at_the_same_timestamp() -> Result<()> {
+        let writer = BacktestDecisionEvidenceWriter::new(4)?;
+        fs::write(
+            writer.machine.path(),
+            strategy_input_fixture(
+                include_str!(
+                    "../../../tests/fixtures/bolt_v3/current_evidence/positive/submit_linked_strategy_input_snapshot.jsonl"
+                ),
+                "snapshot",
+                200,
+                "200",
+            ),
+        )?;
+        fs::write(
+            writer.observation.path(),
+            strategy_input_fixture(
+                include_str!(
+                    "../../../tests/fixtures/bolt_v3/current_evidence/positive/blocked_strategy_input_observation.jsonl"
+                ),
+                "blocked_strategy_input_observation",
+                200,
+                "200",
+            ),
+        )?;
+
+        let error = writer
+            .state()
+            .expect_err("same-timestamp conflicting facts must not select an arbitrary winner");
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting strategy-input facts share recorded_at_utc_ns 200")
+        );
+        Ok(())
+    }
 
     fn canonical_row(
         trade_id: &str,

@@ -23,15 +23,13 @@ use super::{
         ExitSubmissionDecisionFact, ForcedReductionAdmissionFact, LossGovernorHaltFact,
         OrderLifecycleFact, OrderRejectFact, RecoveryFact, RejectedEntryAdmissionFact,
         ReplaceAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
-        RiskReducingExitOrderIntentFact, SettlementBookingErrorFact, SettlementFact,
-        SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
-        SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
-        VenueTruthDivergenceFact,
+        RiskReducingExitOrderIntentFact, SettlementFact, SubmitLinkedStrategyInputSnapshotFact,
+        SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
+        VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
     },
     generated_contract::{
-        ConsumerDisposition, IdentityDescriptor, KnownConsumer, KnownIdentity, KnownPurpose,
-        current_identity_for_purpose, descriptor_for_identity, disposition_for, fact_for_identity,
-        identities,
+        IdentityDescriptor, KnownIdentity, KnownPurpose, current_identity_for_purpose,
+        descriptor_for_identity, fact_for_identity, identities, startup_recovery_relevant,
     },
     record::{EncodedEvidenceRecord, RecordFailure},
 };
@@ -95,22 +93,6 @@ impl CodecFor<identities::SettlementV1> for CurrentCodecs {
 
     fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
         settlement::decode_settlement(line, line_number)
-    }
-}
-
-impl CodecFor<identities::SettlementBookingErrorV1> for CurrentCodecs {
-    type Input = SettlementBookingErrorFact;
-    type Fact = SettlementBookingErrorFact;
-
-    fn encode(
-        input: &Self::Input,
-        recorded_at_utc_ns: i64,
-    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-        settlement::encode_booking_error(input.clone(), recorded_at_utc_ns)
-    }
-
-    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
-        settlement::decode_booking_error(line, line_number)
     }
 }
 
@@ -683,15 +665,6 @@ pub(crate) fn encode_settlement(
     <CurrentCodecs as CodecFor<identities::SettlementV1>>::encode(&fact, current_utc_ns()?)
 }
 
-pub(crate) fn encode_settlement_booking_error(
-    fact: SettlementBookingErrorFact,
-) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    <CurrentCodecs as CodecFor<identities::SettlementBookingErrorV1>>::encode(
-        &fact,
-        current_utc_ns()?,
-    )
-}
-
 pub(crate) fn encode_terminal_settlement(
     fact: TerminalSettlementFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
@@ -704,14 +677,18 @@ pub(crate) fn decode_startup_recovery_fact(
     line_number: usize,
 ) -> Result<Option<RecoveryFact>> {
     let decoded = decode_current_fact(identity, line, line_number)?;
-    if !is_startup_relevant(identity) {
+    let registered_fact = fact_for_identity(identity);
+    ensure!(
+        decoded.registered_fact() == registered_fact,
+        "decoded fact disagrees with registered identity at line {line_number}"
+    );
+    if !startup_recovery_relevant(registered_fact) {
         return Ok(None);
     }
     let fact = match decoded {
         CurrentFact::SubmitReservationMetadata(value) => RecoveryFact::ReservationMetadata(value),
         CurrentFact::SubmitReservationFill(value) => RecoveryFact::ReservationFill(value),
         CurrentFact::Settlement(value) => RecoveryFact::Settlement(value),
-        CurrentFact::SettlementBookingError(value) => RecoveryFact::BookingError(value),
         CurrentFact::TerminalSettlement(value) => RecoveryFact::TerminalSettlement(*value),
         CurrentFact::BlockedStrategyInputObservation(_)
         | CurrentFact::SubmitLinkedStrategyInputSnapshot(_)
@@ -735,7 +712,9 @@ pub(crate) fn decode_startup_recovery_fact(
         | CurrentFact::RequoteThrottleObservation(_)
         | CurrentFact::VenueTruthCaptureFailure(_)
         | CurrentFact::VenueTruthDivergence(_) => {
-            unreachable!("startup-irrelevant fact returned relevant disposition")
+            return Err(anyhow::anyhow!(
+                "fact {registered_fact:?} is registered as startup-relevant but has no typed recovery reducer"
+            ));
         }
     };
     Ok(Some(fact))
@@ -870,11 +849,6 @@ pub(super) fn decode_current_fact(
                 <CurrentCodecs as CodecFor<identities::SettlementV1>>::decode(line, line_number)?,
             )
         }
-        KnownIdentity::SettlementBookingErrorV1 => {
-            CurrentFact::SettlementBookingError(<CurrentCodecs as CodecFor<
-                identities::SettlementBookingErrorV1,
-            >>::decode(line, line_number)?)
-        }
         KnownIdentity::TerminalSettlementV1 => {
             CurrentFact::TerminalSettlement(Box::new(<CurrentCodecs as CodecFor<
                 identities::TerminalSettlementV1,
@@ -890,22 +864,6 @@ pub(super) fn decode_current_fact(
                 identities::VenueTruthDivergenceV1,
             >>::decode(line, line_number)?)
         }
-    })
-}
-
-fn is_startup_relevant(identity: KnownIdentity) -> bool {
-    let fact = fact_for_identity(identity);
-    [
-        KnownConsumer::ReservationRecoveryV1,
-        KnownConsumer::SettlementRecoveryV1,
-        KnownConsumer::BookingRecoveryV1,
-    ]
-    .into_iter()
-    .any(|consumer| {
-        matches!(
-            disposition_for(fact, consumer),
-            ConsumerDisposition::Relevant(_)
-        )
     })
 }
 
@@ -1566,9 +1524,6 @@ mod tests {
                 frozen_corpus!("requote_throttle_observation.jsonl")
             }
             KnownIdentity::SettlementV1 => frozen_corpus!("settlement.jsonl"),
-            KnownIdentity::SettlementBookingErrorV1 => {
-                frozen_corpus!("settlement_booking_error.jsonl")
-            }
             KnownIdentity::TerminalSettlementV1 => frozen_corpus!("terminal_settlement.jsonl"),
             KnownIdentity::VenueTruthCaptureFailureV1 => {
                 frozen_corpus!("venue_truth_capture_failure.jsonl")
@@ -1641,9 +1596,6 @@ mod tests {
             }
             KnownIdentity::RequoteThrottleObservationV1 => Some(accepted_noncanonical_fixture!(
                 "requote_throttle_observation.jsonl"
-            )),
-            KnownIdentity::SettlementBookingErrorV1 => Some(accepted_noncanonical_fixture!(
-                "settlement_booking_error.jsonl"
             )),
             KnownIdentity::TerminalSettlementV1 => {
                 Some(accepted_noncanonical_fixture!("terminal_settlement.jsonl"))
@@ -1777,11 +1729,6 @@ mod tests {
             CurrentFact::Settlement(value) => <CurrentCodecs as CodecFor<
                 identities::SettlementV1,
             >>::encode(&value, recorded_at_utc_ns),
-            CurrentFact::SettlementBookingError(value) => <CurrentCodecs as CodecFor<
-                identities::SettlementBookingErrorV1,
-            >>::encode(
-                &value, recorded_at_utc_ns
-            ),
             CurrentFact::TerminalSettlement(value) => <CurrentCodecs as CodecFor<
                 identities::TerminalSettlementV1,
             >>::encode(
@@ -2446,18 +2393,6 @@ mod tests {
                     case.outcome_side = outcome_side;
                     cases.push(CurrentFact::Settlement(case));
                 }
-            }
-            CurrentFact::SettlementBookingError(value) => {
-                for (reason, _) in SettlementBookingErrorReason::wire_coverage_values() {
-                    let mut case = value.clone();
-                    case.reason = reason;
-                    cases.push(CurrentFact::SettlementBookingError(case));
-                }
-                cases.extend(
-                    settlement_booking_error_optional_cases(&value)
-                        .into_iter()
-                        .map(CurrentFact::SettlementBookingError),
-                );
             }
             CurrentFact::OrderLifecycle(value) => {
                 for (transition, _) in OrderLifecycleTransition::wire_coverage_values() {
@@ -3804,6 +3739,29 @@ mod tests {
     }
 
     #[test]
+    fn startup_recovery_dispositions_have_typed_reducers_for_every_current_identity() {
+        use super::super::generated_contract::{
+            ALL_IDENTITIES, fact_for_identity, startup_recovery_relevant,
+        };
+
+        for identity in ALL_IDENTITIES.iter().copied() {
+            let line = positive_corpus(identity)
+                .lines()
+                .next()
+                .expect("positive corpus must contain a baseline record");
+            let expected_relevant = startup_recovery_relevant(fact_for_identity(identity));
+            let decoded = decode_startup_recovery_fact(identity, line, 1).unwrap_or_else(|error| {
+                panic!("{identity:?} must have a typed reducer: {error:#}")
+            });
+            assert_eq!(
+                decoded.is_some(),
+                expected_relevant,
+                "{identity:?} startup relevance must agree with its typed reducer"
+            );
+        }
+    }
+
+    #[test]
     fn committed_rejection_corpus_fails_at_the_owned_boundary() {
         use std::io::Write;
 
@@ -3971,25 +3929,7 @@ mod tests {
     }
 
     #[test]
-    fn settlement_error_identities_preserve_complete_semantic_facts() {
-        let expected_error = booking_error();
-        let error_record =
-            <CurrentCodecs as CodecFor<identities::SettlementBookingErrorV1>>::encode(
-                &expected_error,
-                12,
-            )
-            .expect("valid booking error must encode");
-        let error_line = std::str::from_utf8(error_record.line())
-            .expect("encoded evidence must be UTF-8")
-            .trim_end_matches('\n');
-        assert_eq!(
-            <CurrentCodecs as CodecFor<identities::SettlementBookingErrorV1>>::decode(
-                error_line, 1,
-            )
-            .expect("encoded booking error must decode"),
-            expected_error
-        );
-
+    fn terminal_settlement_preserves_embedded_booking_error() {
         let expected_terminal = terminal();
         let terminal_record =
             <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::encode(

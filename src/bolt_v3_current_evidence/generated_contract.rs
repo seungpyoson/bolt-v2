@@ -26,7 +26,6 @@ pub(crate) enum KnownProducer {
     EdgeTakerOrderLifecycle,
     MakerRequoteThrottle,
     EdgeTakerSettlement,
-    EdgeTakerBookingError,
     EdgeTakerTerminalSettlement,
     SubmitAdmissionVenueCaptureFailure,
     SubmitAdmissionVenueDivergence,
@@ -57,7 +56,6 @@ pub(crate) enum KnownPurpose {
     OrderLifecycle,
     RequoteThrottleObservation,
     Settlement,
-    SettlementBookingError,
     TerminalSettlement,
     VenueTruthCaptureFailure,
     VenueTruthDivergence,
@@ -88,7 +86,6 @@ pub(crate) enum KnownIdentity {
     OrderLifecycleV1,
     RequoteThrottleObservationV1,
     SettlementV1,
-    SettlementBookingErrorV1,
     TerminalSettlementV1,
     VenueTruthCaptureFailureV1,
     VenueTruthDivergenceV1,
@@ -119,7 +116,6 @@ pub(crate) const ALL_IDENTITIES: &[KnownIdentity] = &[
     KnownIdentity::OrderLifecycleV1,
     KnownIdentity::RequoteThrottleObservationV1,
     KnownIdentity::SettlementV1,
-    KnownIdentity::SettlementBookingErrorV1,
     KnownIdentity::TerminalSettlementV1,
     KnownIdentity::VenueTruthCaptureFailureV1,
     KnownIdentity::VenueTruthDivergenceV1,
@@ -173,8 +169,6 @@ pub(crate) mod identities {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct SettlementV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct SettlementBookingErrorV1;
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct TerminalSettlementV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct VenueTruthCaptureFailureV1;
@@ -207,7 +201,6 @@ pub(crate) enum KnownFact {
     OrderLifecycleV1,
     RequoteThrottleObservationV1,
     SettlementV1,
-    SettlementBookingErrorV1,
     TerminalSettlementV1,
     VenueTruthCaptureFailureV1,
     VenueTruthDivergenceV1,
@@ -278,7 +271,6 @@ pub(crate) const fn current_identity_for_purpose(purpose: KnownPurpose) -> Known
         KnownPurpose::OrderLifecycle => KnownIdentity::OrderLifecycleV1,
         KnownPurpose::RequoteThrottleObservation => KnownIdentity::RequoteThrottleObservationV1,
         KnownPurpose::Settlement => KnownIdentity::SettlementV1,
-        KnownPurpose::SettlementBookingError => KnownIdentity::SettlementBookingErrorV1,
         KnownPurpose::TerminalSettlement => KnownIdentity::TerminalSettlementV1,
         KnownPurpose::VenueTruthCaptureFailure => KnownIdentity::VenueTruthCaptureFailureV1,
         KnownPurpose::VenueTruthDivergence => KnownIdentity::VenueTruthDivergenceV1,
@@ -310,7 +302,6 @@ pub(crate) const fn sink_for_purpose(purpose: KnownPurpose) -> KnownSink {
         KnownPurpose::OrderLifecycle => KnownSink::Machine,
         KnownPurpose::RequoteThrottleObservation => KnownSink::Observation,
         KnownPurpose::Settlement => KnownSink::Machine,
-        KnownPurpose::SettlementBookingError => KnownSink::Machine,
         KnownPurpose::TerminalSettlement => KnownSink::Machine,
         KnownPurpose::VenueTruthCaptureFailure => KnownSink::Machine,
         KnownPurpose::VenueTruthDivergence => KnownSink::Machine,
@@ -342,7 +333,6 @@ pub(crate) const fn effect_policy_for_purpose(purpose: KnownPurpose) -> EffectPo
         KnownPurpose::OrderLifecycle => EffectPolicy::PreserveResult,
         KnownPurpose::RequoteThrottleObservation => EffectPolicy::ObservationBoundedFailure,
         KnownPurpose::Settlement => EffectPolicy::ReconciliationFailClosed,
-        KnownPurpose::SettlementBookingError => EffectPolicy::ReconciliationFailClosed,
         KnownPurpose::TerminalSettlement => EffectPolicy::ReconciliationFailClosed,
         KnownPurpose::VenueTruthCaptureFailure => EffectPolicy::RiskReducingContinues,
         KnownPurpose::VenueTruthDivergence => EffectPolicy::PreserveResult,
@@ -379,7 +369,6 @@ pub(crate) const fn purpose_for_producer(producer: KnownProducer) -> KnownPurpos
         KnownProducer::EdgeTakerOrderLifecycle => KnownPurpose::OrderLifecycle,
         KnownProducer::MakerRequoteThrottle => KnownPurpose::RequoteThrottleObservation,
         KnownProducer::EdgeTakerSettlement => KnownPurpose::Settlement,
-        KnownProducer::EdgeTakerBookingError => KnownPurpose::SettlementBookingError,
         KnownProducer::EdgeTakerTerminalSettlement => KnownPurpose::TerminalSettlement,
         KnownProducer::SubmitAdmissionVenueCaptureFailure => KnownPurpose::VenueTruthCaptureFailure,
         KnownProducer::SubmitAdmissionVenueDivergence => KnownPurpose::VenueTruthDivergence,
@@ -415,7 +404,6 @@ pub(crate) const fn purpose_for_identity(identity: KnownIdentity) -> KnownPurpos
         KnownIdentity::OrderLifecycleV1 => KnownPurpose::OrderLifecycle,
         KnownIdentity::RequoteThrottleObservationV1 => KnownPurpose::RequoteThrottleObservation,
         KnownIdentity::SettlementV1 => KnownPurpose::Settlement,
-        KnownIdentity::SettlementBookingErrorV1 => KnownPurpose::SettlementBookingError,
         KnownIdentity::TerminalSettlementV1 => KnownPurpose::TerminalSettlement,
         KnownIdentity::VenueTruthCaptureFailureV1 => KnownPurpose::VenueTruthCaptureFailure,
         KnownIdentity::VenueTruthDivergenceV1 => KnownPurpose::VenueTruthDivergence,
@@ -451,7 +439,6 @@ pub(crate) const fn fact_for_identity(identity: KnownIdentity) -> KnownFact {
         KnownIdentity::OrderLifecycleV1 => KnownFact::OrderLifecycleV1,
         KnownIdentity::RequoteThrottleObservationV1 => KnownFact::RequoteThrottleObservationV1,
         KnownIdentity::SettlementV1 => KnownFact::SettlementV1,
-        KnownIdentity::SettlementBookingErrorV1 => KnownFact::SettlementBookingErrorV1,
         KnownIdentity::TerminalSettlementV1 => KnownFact::TerminalSettlementV1,
         KnownIdentity::VenueTruthCaptureFailureV1 => KnownFact::VenueTruthCaptureFailureV1,
         KnownIdentity::VenueTruthDivergenceV1 => KnownFact::VenueTruthDivergenceV1,
@@ -572,11 +559,6 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::SettlementV1 => IdentityDescriptor {
             kind: "settlement",
-            schema_version: 16,
-            gate_id: "bolt_v3.settlement",
-        },
-        KnownIdentity::SettlementBookingErrorV1 => IdentityDescriptor {
-            kind: "settlement_booking_error",
             schema_version: 16,
             gate_id: "bolt_v3.settlement",
         },
@@ -879,18 +861,6 @@ pub(crate) const fn disposition_for(
         (KnownFact::SettlementV1, KnownConsumer::ShadowPnlV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
-        (KnownFact::SettlementBookingErrorV1, KnownConsumer::ReservationRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::SettlementBookingErrorV1, KnownConsumer::SettlementRecoveryV1) => {
-            ConsumerDisposition::Relevant(KnownFact::SettlementBookingErrorV1)
-        }
-        (KnownFact::SettlementBookingErrorV1, KnownConsumer::BookingRecoveryV1) => {
-            ConsumerDisposition::Relevant(KnownFact::SettlementBookingErrorV1)
-        }
-        (KnownFact::SettlementBookingErrorV1, KnownConsumer::ShadowPnlV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
         (KnownFact::TerminalSettlementV1, KnownConsumer::ReservationRecoveryV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
@@ -928,6 +898,19 @@ pub(crate) const fn disposition_for(
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
     }
+}
+
+pub(crate) const fn startup_recovery_relevant(fact: KnownFact) -> bool {
+    matches!(
+        disposition_for(fact, KnownConsumer::BookingRecoveryV1),
+        ConsumerDisposition::Relevant(_)
+    ) || matches!(
+        disposition_for(fact, KnownConsumer::ReservationRecoveryV1),
+        ConsumerDisposition::Relevant(_)
+    ) || matches!(
+        disposition_for(fact, KnownConsumer::SettlementRecoveryV1),
+        ConsumerDisposition::Relevant(_)
+    )
 }
 
 pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownIdentity> {
@@ -999,9 +982,6 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     }
     if kind == "settlement" && schema_version == 16 {
         return Some(KnownIdentity::SettlementV1);
-    }
-    if kind == "settlement_booking_error" && schema_version == 16 {
-        return Some(KnownIdentity::SettlementBookingErrorV1);
     }
     if kind == "terminal_settlement" && schema_version == 16 {
         return Some(KnownIdentity::TerminalSettlementV1);

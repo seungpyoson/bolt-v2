@@ -7,8 +7,8 @@ use bolt_v2::{
         OrderLifecycleFact, OrderLifecycleOutcome, OrderLifecycleTransition, OutcomeSide,
         RecordFailure, RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
         RequoteThrottleObservationFact, SettlementBookingErrorFact, SettlementBookingErrorReason,
-        SettlementFact, SubmitReservationFillFact, SubmitReservationMetadataFact,
-        TerminalSettlementFact,
+        SettlementFact, ShadowPnlEvent, SubmitReservationFillFact, SubmitReservationMetadataFact,
+        TerminalSettlementFact, read_shadow_pnl_events,
     },
 };
 use tempfile::TempDir;
@@ -595,6 +595,98 @@ fn valid_observation_history_opens_available_and_remains_appendable() {
             .expect("observation stream must exist")
             .len()
             > fixture.len() as u64
+    );
+}
+
+#[test]
+fn shadow_pnl_skips_irrelevant_identity_before_payload_decode() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let fixture = include_str!("fixtures/bolt_v3/current_evidence/positive/order_lifecycle.jsonl");
+    let mut line: serde_json::Value = serde_json::from_str(
+        fixture
+            .lines()
+            .next()
+            .expect("order lifecycle fixture must contain a line"),
+    )
+    .expect("order lifecycle fixture must decode as JSON");
+    line.as_object_mut()
+        .expect("order lifecycle line must be an object")
+        .remove("lifecycle");
+    let path = temp.path().join("irrelevant-malformed-payload.jsonl");
+    fs::write(
+        &path,
+        format!(
+            "{}\n",
+            serde_json::to_string(&line).expect("malformed line must serialize")
+        ),
+    )
+    .expect("malformed irrelevant line must be written");
+
+    let events = read_shadow_pnl_events(&path)
+        .expect("irrelevant identity must be skipped before payload decoding");
+    assert!(events.is_empty());
+}
+
+#[test]
+fn shadow_pnl_dispositions_have_typed_reducers_for_the_complete_current_corpus() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let corpus_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/bolt_v3/current_evidence/positive");
+    let mut entries = fs::read_dir(&corpus_dir)
+        .expect("positive corpus directory must exist")
+        .map(|entry| entry.expect("positive corpus entry must be readable"))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name());
+
+    let mut corpus = String::new();
+    let mut expected_snapshots = 0;
+    let mut expected_intents = 0;
+    let mut expected_admissions = 0;
+    for entry in entries {
+        let contents =
+            fs::read_to_string(entry.path()).expect("positive corpus file must be readable");
+        let line_count = contents.lines().count();
+        match entry
+            .file_name()
+            .to_str()
+            .expect("fixture name must be UTF-8")
+        {
+            "submit_linked_strategy_input_snapshot.jsonl" => expected_snapshots += line_count,
+            "entry_order_intent.jsonl" => expected_intents += line_count,
+            "admitted_entry_admission.jsonl" => expected_admissions += line_count,
+            _ => {}
+        }
+        corpus.push_str(&contents);
+    }
+
+    let path = temp.path().join("complete-current-corpus.jsonl");
+    fs::write(&path, corpus).expect("combined corpus must be written");
+    let events = read_shadow_pnl_events(&path)
+        .expect("every relevant disposition must have a typed Shadow PnL reducer");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, ShadowPnlEvent::SubmitLinkedStrategyInputSnapshot(_)))
+            .count(),
+        expected_snapshots
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, ShadowPnlEvent::EntryOrderIntent(_)))
+            .count(),
+        expected_intents
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, ShadowPnlEvent::AdmittedEntryAdmission(_)))
+            .count(),
+        expected_admissions
+    );
+    assert_eq!(
+        events.len(),
+        expected_snapshots + expected_intents + expected_admissions
     );
 }
 

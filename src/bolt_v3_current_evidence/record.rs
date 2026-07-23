@@ -17,8 +17,8 @@ use super::codec::{
     encode_order_reject, encode_rejected_entry_admission, encode_replace_admission,
     encode_requote_throttle_observation, encode_reservation_fill, encode_reservation_metadata,
     encode_risk_reducing_exit_admission, encode_risk_reducing_exit_order_intent, encode_settlement,
-    encode_settlement_booking_error, encode_submit_linked_strategy_input_snapshot,
-    encode_terminal_settlement, encode_venue_truth_capture_failure, encode_venue_truth_divergence,
+    encode_submit_linked_strategy_input_snapshot, encode_terminal_settlement,
+    encode_venue_truth_capture_failure, encode_venue_truth_divergence,
 };
 use super::facts::{
     AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
@@ -26,8 +26,8 @@ use super::facts::{
     EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitSubmissionDecisionFact,
     ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
     RejectedEntryAdmissionFact, ReplaceAdmissionFact, RequoteThrottleObservationFact,
-    RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact, SettlementBookingErrorFact,
-    SettlementFact, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
+    RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact, SettlementFact,
+    SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
     SubmitReservationMetadataFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
     VenueTruthDivergenceFact,
 };
@@ -642,16 +642,6 @@ impl DecisionEvidenceRecorder {
 
     pub fn record_settlement(&self, fact: SettlementFact) -> Result<AppendReceipt, RecordFailure> {
         self.record_blocking(KnownProducer::EdgeTakerSettlement, encode_settlement(fact)?)
-    }
-
-    pub fn record_settlement_booking_error(
-        &self,
-        fact: SettlementBookingErrorFact,
-    ) -> Result<AppendReceipt, RecordFailure> {
-        self.record_blocking(
-            KnownProducer::EdgeTakerBookingError,
-            encode_settlement_booking_error(fact)?,
-        )
     }
 
     pub fn record_terminal_settlement(

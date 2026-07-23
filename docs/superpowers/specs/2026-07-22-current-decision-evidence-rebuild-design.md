@@ -75,7 +75,7 @@ Tests inject a durable append target below the recorder. They do not implement o
 
 ## Immutable Current Identities
 
-Every current identity has a dedicated Rust module containing:
+Every current identity has a dedicated private binding within its domain codec module containing:
 
 - a private `LineV1` spelling every envelope and payload member;
 - a private `PayloadV1` that owns its serialized field set;
@@ -123,7 +123,7 @@ Required evidence includes:
 - submit reservation and settlement/booking/terminal recovery reconstruct after restart;
 - Shadow PnL consumes the shared typed reader and handles blocked observations by registered irrelevance;
 - generator output is byte deterministic;
-- the full unfiltered exact-head suite, formatting, clippy, build, and source-fence checks complete successfully.
+- the full unfiltered exact-head suite, formatting, clippy, and build checks complete successfully.
 
 No new test inspects Rust source text. Privacy, sealed types, exhaustive matches, behavior tests, and raw-byte fixtures provide the evidence.
 

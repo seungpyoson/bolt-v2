@@ -2215,22 +2215,41 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
     let settlement_key = settlement_key_for_position(&recovered_position)
         .expect("recovered position should derive settlement key");
     evidence
-        .record_settlement_booking_error(
-            crate::bolt_v3_current_evidence::SettlementBookingErrorFact {
+        .record_terminal_settlement(crate::bolt_v3_current_evidence::TerminalSettlementFact {
+            settlement_key: settlement_key.clone(),
+            booking_error: Some(
+                crate::bolt_v3_current_evidence::SettlementBookingErrorFact {
+                    strategy_id: strategy.config.strategy_id.clone(),
+                    settlement_key: settlement_key.clone(),
+                    market_id: recovered_position.lifecycle.market_id_owned(),
+                    position_id: Some(position_id.to_string()),
+                    instrument_id: Some(instrument_id.to_string()),
+                    resolution_instrument_id: strategy
+                        .resolution_instrument_id()
+                        .map(|instrument_id| instrument_id.to_string()),
+                    reason: SettlementBookingErrorReason::SettlementInputInvalid,
+                    detail: "durable terminal booking error".to_string(),
+                    observed_at_ns: 2_000_u64.saturating_mul(NANOS_PER_MILLI_U64),
+                },
+            ),
+            lifecycle: crate::bolt_v3_current_evidence::OrderLifecycleFact {
                 strategy_id: strategy.config.strategy_id.clone(),
-                settlement_key: settlement_key.clone(),
+                transition: OrderLifecycleTransition::SettlementBookingTerminal,
+                outcome: OrderLifecycleOutcome::Flat,
+                source: "settlement_booking".to_string(),
                 market_id: recovered_position.lifecycle.market_id_owned(),
-                position_id: Some(position_id.to_string()),
                 instrument_id: Some(instrument_id.to_string()),
-                resolution_instrument_id: strategy
-                    .resolution_instrument_id()
-                    .map(|instrument_id| instrument_id.to_string()),
-                reason: SettlementBookingErrorReason::SettlementInputInvalid,
-                detail: "durable terminal booking error".to_string(),
-                observed_at_ns: 2_000_u64.saturating_mul(NANOS_PER_MILLI_U64),
+                position_id: Some(position_id.to_string()),
+                client_order_id: None,
+                prior_client_order_id: None,
+                raw_reason_text: Some("durable terminal booking error".to_string()),
+                order_side: Some("buy".to_string()),
+                filled_quantity: None,
+                residual_quantity: Some("0".to_string()),
+                ts_event_ns: Some(2_000_u64.saturating_mul(NANOS_PER_MILLI_U64)),
             },
-        )
-        .expect("current booking-error evidence should append");
+        })
+        .expect("current terminal-settlement evidence should append");
     let recovery = Arc::new(
         evidence
             .startup_recovery_facts(Some(100_000))
@@ -2796,12 +2815,11 @@ fn settlement_booking_error_count(events: &[CurrentFact]) -> usize {
     events
         .iter()
         .filter(|event| {
-            matches!(event, CurrentFact::SettlementBookingError(_))
-                || matches!(
-                    event,
-                    CurrentFact::TerminalSettlement(evidence)
-                        if evidence.booking_error.is_some()
-                )
+            matches!(
+                event,
+                CurrentFact::TerminalSettlement(evidence)
+                    if evidence.booking_error.is_some()
+            )
         })
         .count()
 }
@@ -2829,7 +2847,6 @@ fn settlement_booking_error_reasons(events: &[CurrentFact]) -> Vec<SettlementBoo
     events
         .iter()
         .filter_map(|event| match event {
-            CurrentFact::SettlementBookingError(evidence) => Some(evidence.reason),
             CurrentFact::TerminalSettlement(evidence) => {
                 evidence.booking_error.as_ref().map(|error| error.reason)
             }

@@ -4,6 +4,8 @@ pub use crate::bolt_v3_fair_value_pricing::RvGateResult;
 
 use anyhow::{Context, Result, ensure};
 
+use super::generated_contract::KnownFact;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubmitReservationMetadataFact {
     pub client_order_id: String,
@@ -1091,9 +1093,6 @@ impl StartupRecoveryFacts {
                 self.settlements
                     .insert(settlement.settlement_key.clone(), settlement);
             }
-            RecoveryFact::BookingError(booking_error) => {
-                self.booking_error_keys.insert(booking_error.settlement_key);
-            }
             RecoveryFact::TerminalSettlement(terminal) => {
                 if terminal.booking_error.is_some() {
                     self.booking_error_keys
@@ -1151,16 +1150,51 @@ pub enum CurrentFact {
     OrderLifecycle(OrderLifecycleFact),
     RequoteThrottleObservation(RequoteThrottleObservationFact),
     Settlement(SettlementFact),
-    SettlementBookingError(SettlementBookingErrorFact),
     TerminalSettlement(Box<TerminalSettlementFact>),
     VenueTruthCaptureFailure(VenueTruthCaptureFailureFact),
     VenueTruthDivergence(VenueTruthDivergenceFact),
+}
+
+impl CurrentFact {
+    pub(super) fn registered_fact(&self) -> KnownFact {
+        match self {
+            Self::BlockedStrategyInputObservation(_) => {
+                KnownFact::BlockedStrategyInputObservationV1
+            }
+            Self::SubmitLinkedStrategyInputSnapshot(_) => {
+                KnownFact::SubmitLinkedStrategyInputSnapshotV1
+            }
+            Self::EntryOrderIntent(_) => KnownFact::EntryOrderIntentV1,
+            Self::RiskReducingExitOrderIntent(_) => KnownFact::RiskReducingExitOrderIntentV1,
+            Self::AdmittedEntryAdmission(_) => KnownFact::AdmittedEntryAdmissionV1,
+            Self::RejectedEntryAdmission(_) => KnownFact::RejectedEntryAdmissionV1,
+            Self::RiskReducingExitAdmission(_) => KnownFact::RiskReducingExitAdmissionV1,
+            Self::ReplaceAdmission(_) => KnownFact::ReplaceAdmissionV1,
+            Self::ForcedReductionAdmission(_) => KnownFact::ForcedReductionAdmissionV1,
+            Self::BasketAdmissionGranted(_) => KnownFact::BasketAdmissionGrantedV1,
+            Self::BasketAdmissionRejected(_) => KnownFact::BasketAdmissionRejectedV1,
+            Self::CapitalAdmissionRebuild(_) => KnownFact::CapitalAdmissionRebuildV1,
+            Self::SubmitReservationMetadata(_) => KnownFact::SubmitReservationMetadataV1,
+            Self::SubmitReservationFill(_) => KnownFact::SubmitReservationFillV1,
+            Self::EntrySkipObservation(_) => KnownFact::EntrySkipObservationV1,
+            Self::ExitSubmissionDecision(_) => KnownFact::ExitSubmissionDecisionV1,
+            Self::ExitHoldDecision(_) => KnownFact::ExitHoldDecisionV1,
+            Self::ExitEvaluation(_) => KnownFact::ExitEvaluationV1,
+            Self::LossGovernorHalt(_) => KnownFact::LossGovernorHaltV1,
+            Self::OrderReject(_) => KnownFact::OrderRejectV1,
+            Self::OrderLifecycle(_) => KnownFact::OrderLifecycleV1,
+            Self::RequoteThrottleObservation(_) => KnownFact::RequoteThrottleObservationV1,
+            Self::Settlement(_) => KnownFact::SettlementV1,
+            Self::TerminalSettlement(_) => KnownFact::TerminalSettlementV1,
+            Self::VenueTruthCaptureFailure(_) => KnownFact::VenueTruthCaptureFailureV1,
+            Self::VenueTruthDivergence(_) => KnownFact::VenueTruthDivergenceV1,
+        }
+    }
 }
 
 pub(super) enum RecoveryFact {
     ReservationMetadata(SubmitReservationMetadataFact),
     ReservationFill(SubmitReservationFillFact),
     Settlement(SettlementFact),
-    BookingError(SettlementBookingErrorFact),
     TerminalSettlement(TerminalSettlementFact),
 }

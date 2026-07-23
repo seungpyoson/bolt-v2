@@ -266,16 +266,6 @@ current_identity = "settlement_v1"
 current_fact = "settlement_v1"
 
 [[purposes]]
-id = "settlement_booking_error"
-owner = "bolt_v3_decision_evidence"
-duties = ["recovery"]
-effect_policy = "reconciliation_fail_closed"
-sink = "machine"
-novelty_capability = "prohibited"
-current_identity = "settlement_booking_error_v1"
-current_fact = "settlement_booking_error_v1"
-
-[[purposes]]
 id = "terminal_settlement"
 owner = "bolt_v3_decision_evidence"
 duties = ["recovery"]
@@ -424,11 +414,6 @@ source_anchors = ["src/strategies/binary_oracle_maker/mod.rs:update_requote_thro
 id = "edge_taker_settlement"
 purpose = "settlement"
 source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:try_book_resolution_settlement"]
-
-[[producers]]
-id = "edge_taker_booking_error"
-purpose = "settlement_booking_error"
-source_anchors = ["src/strategies/binary_oracle_edge_taker/mod.rs:record_settlement_booking_error"]
 
 [[producers]]
 id = "edge_taker_terminal_settlement"
@@ -630,14 +615,6 @@ gate_id = "bolt_v3.settlement"
 payload_member = "settlement"
 
 [[identities]]
-id = "settlement_booking_error_v1"
-purpose = "settlement_booking_error"
-kind = "settlement_booking_error"
-schema_version = 16
-gate_id = "bolt_v3.settlement"
-payload_member = "settlement_booking_error"
-
-[[identities]]
 id = "terminal_settlement_v1"
 purpose = "terminal_settlement"
 kind = "terminal_settlement"
@@ -752,10 +729,6 @@ identity = "requote_throttle_observation_v1"
 [[facts]]
 id = "settlement_v1"
 identity = "settlement_v1"
-
-[[facts]]
-id = "settlement_booking_error_v1"
-identity = "settlement_booking_error_v1"
 
 [[facts]]
 id = "terminal_settlement_v1"
@@ -1317,30 +1290,6 @@ owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
 fact = "settlement_v1"
-consumer = "shadow_pnl_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "settlement_booking_error_v1"
-consumer = "reservation_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "settlement_booking_error_v1"
-consumer = "settlement_recovery_v1"
-action = "relevant"
-event_variant = "settlement_booking_error_v1"
-
-[[dispositions]]
-fact = "settlement_booking_error_v1"
-consumer = "booking_recovery_v1"
-action = "relevant"
-event_variant = "settlement_booking_error_v1"
-
-[[dispositions]]
-fact = "settlement_booking_error_v1"
 consumer = "shadow_pnl_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"

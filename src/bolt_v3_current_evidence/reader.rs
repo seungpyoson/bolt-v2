@@ -14,9 +14,8 @@ use super::{
         SubmitLinkedStrategyInputSnapshotFact,
     },
     generated_contract::{
-        ConsumerDisposition, KnownConsumer, KnownFact, KnownSink, descriptor_for_identity,
-        disposition_for, fact_for_identity, purpose_for_identity, resolve_identity,
-        sink_for_purpose,
+        ConsumerDisposition, KnownConsumer, KnownSink, descriptor_for_identity, disposition_for,
+        fact_for_identity, purpose_for_identity, resolve_identity, sink_for_purpose,
     },
 };
 
@@ -27,12 +26,28 @@ pub enum ShadowPnlEvent {
     AdmittedEntryAdmission(AdmittedEntryAdmissionFact),
 }
 
+#[derive(Debug, Clone)]
+pub struct RecordedCurrentFact {
+    pub recorded_at_utc_ns: i64,
+    pub fact: CurrentFact,
+}
+
 pub fn read_current_evidence_facts(path: &Path, max_bytes: u64) -> Result<Vec<CurrentFact>> {
+    Ok(read_current_evidence_records(path, max_bytes)?
+        .into_iter()
+        .map(|record| record.fact)
+        .collect())
+}
+
+pub fn read_current_evidence_records(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<Vec<RecordedCurrentFact>> {
     let mut file = File::open(path)
         .with_context(|| format!("open current decision evidence `{}`", path.display()))?;
     let len = file.metadata()?.len();
     let lines = read_framed_lines(&mut file, len, Some(max_bytes), "current decision evidence")?;
-    let mut facts = Vec::new();
+    let mut records = Vec::new();
     for (index, line) in lines.into_iter().enumerate() {
         let line_number = index + 1;
         let header = validated_header(&line, line_number, "current decision evidence")?;
@@ -48,9 +63,12 @@ pub fn read_current_evidence_facts(path: &Path, max_bytes: u64) -> Result<Vec<Cu
             header.gate_id == descriptor.gate_id,
             "wrong gate_id at current decision evidence line {line_number}"
         );
-        facts.push(decode_current_fact(identity, &line, line_number)?);
+        records.push(RecordedCurrentFact {
+            recorded_at_utc_ns: header.recorded_at_utc_ns,
+            fact: decode_current_fact(identity, &line, line_number)?,
+        });
     }
-    Ok(facts)
+    Ok(records)
 }
 
 pub fn read_shadow_pnl_events(path: &Path) -> Result<Vec<ShadowPnlEvent>> {
@@ -81,22 +99,52 @@ pub fn read_shadow_pnl_events(path: &Path) -> Result<Vec<ShadowPnlEvent>> {
         ) {
             continue;
         }
-        let event = match (fact_id, decode_current_fact(identity, &line, line_number)?) {
-            (
-                KnownFact::SubmitLinkedStrategyInputSnapshotV1,
-                CurrentFact::SubmitLinkedStrategyInputSnapshot(value),
-            ) => ShadowPnlEvent::SubmitLinkedStrategyInputSnapshot(value),
-            (KnownFact::EntryOrderIntentV1, CurrentFact::EntryOrderIntent(value)) => {
-                ShadowPnlEvent::EntryOrderIntent(value)
-            }
-            (KnownFact::AdmittedEntryAdmissionV1, CurrentFact::AdmittedEntryAdmission(value)) => {
-                ShadowPnlEvent::AdmittedEntryAdmission(*value)
-            }
-            _ => unreachable!("generated Shadow PnL disposition returned an unhandled fact"),
-        };
-        events.push(event);
+        let fact = decode_current_fact(identity, &line, line_number)?;
+        ensure!(
+            fact.registered_fact() == fact_id,
+            "decoded fact disagrees with registered identity at current decision evidence line {line_number}"
+        );
+        events.push(into_shadow_pnl_event(fact)?);
     }
     Ok(events)
+}
+
+fn into_shadow_pnl_event(fact: CurrentFact) -> Result<ShadowPnlEvent> {
+    let registered_fact = fact.registered_fact();
+    match fact {
+        CurrentFact::SubmitLinkedStrategyInputSnapshot(value) => {
+            Ok(ShadowPnlEvent::SubmitLinkedStrategyInputSnapshot(value))
+        }
+        CurrentFact::EntryOrderIntent(value) => Ok(ShadowPnlEvent::EntryOrderIntent(value)),
+        CurrentFact::AdmittedEntryAdmission(value) => {
+            Ok(ShadowPnlEvent::AdmittedEntryAdmission(*value))
+        }
+        CurrentFact::BlockedStrategyInputObservation(_)
+        | CurrentFact::RiskReducingExitOrderIntent(_)
+        | CurrentFact::RejectedEntryAdmission(_)
+        | CurrentFact::RiskReducingExitAdmission(_)
+        | CurrentFact::ReplaceAdmission(_)
+        | CurrentFact::ForcedReductionAdmission(_)
+        | CurrentFact::BasketAdmissionGranted(_)
+        | CurrentFact::BasketAdmissionRejected(_)
+        | CurrentFact::CapitalAdmissionRebuild(_)
+        | CurrentFact::SubmitReservationMetadata(_)
+        | CurrentFact::SubmitReservationFill(_)
+        | CurrentFact::EntrySkipObservation(_)
+        | CurrentFact::ExitSubmissionDecision(_)
+        | CurrentFact::ExitHoldDecision(_)
+        | CurrentFact::ExitEvaluation(_)
+        | CurrentFact::LossGovernorHalt(_)
+        | CurrentFact::OrderReject(_)
+        | CurrentFact::OrderLifecycle(_)
+        | CurrentFact::RequoteThrottleObservation(_)
+        | CurrentFact::Settlement(_)
+        | CurrentFact::TerminalSettlement(_)
+        | CurrentFact::VenueTruthCaptureFailure(_)
+        | CurrentFact::VenueTruthDivergence(_) => Err(anyhow!(
+            "fact {registered_fact:?} is registered as relevant to Shadow PnL but has no typed reducer"
+        )),
+    }
 }
 
 fn validated_header(line: &str, line_number: usize, stream: &str) -> Result<HeaderOnlyLine> {

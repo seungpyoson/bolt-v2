@@ -49,7 +49,7 @@ Expected: compilation fails because `bolt_v3_current_evidence` and the parser do
 
 - [x] **Step 2: Implement the registry parser and validator**
 
-Use closed serde rows with `#[serde(deny_unknown_fields)]`. Register these current purposes, each with at least one structural producer and exactly one fresh identity. Register both structurally distinct `order_reject` producers, for 28 producer rows total:
+Use closed serde rows with `#[serde(deny_unknown_fields)]`. Register these current purposes, each with at least one structural producer and exactly one fresh identity. Register both structurally distinct `order_reject` producers, for 27 producer rows total:
 
 ```text
 blocked_strategy_input_observation
@@ -75,7 +75,6 @@ order_reject
 order_lifecycle
 requote_throttle_observation
 settlement
-settlement_booking_error
 terminal_settlement
 venue_truth_capture_failure
 venue_truth_divergence

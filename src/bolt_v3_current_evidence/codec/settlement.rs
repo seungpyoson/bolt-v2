@@ -59,27 +59,6 @@ pub(super) fn encode_settlement(
     )
 }
 
-pub(super) fn encode_booking_error(
-    fact: SettlementBookingErrorFact,
-    recorded_at_utc_ns: i64,
-) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    validate_recorded_at(recorded_at_utc_ns)?;
-    validate_booking_error(&fact)?;
-    let purpose = KnownPurpose::SettlementBookingError;
-    let descriptor = current_line_descriptor(purpose);
-    encode_line(
-        purpose,
-        &BookingErrorLineV1 {
-            schema_version: descriptor.schema_version,
-            recorded_at_utc_ns,
-            gate_id: descriptor.gate_id.to_string(),
-            gate_version: env!("CARGO_PKG_VERSION").to_string(),
-            kind: descriptor.kind.to_string(),
-            booking_error: BookingErrorV1::from_fact(fact),
-        },
-    )
-}
-
 pub(super) fn encode_terminal(
     fact: TerminalSettlementFact,
     recorded_at_utc_ns: i64,
@@ -112,24 +91,6 @@ pub(super) fn decode_settlement(line: &str, line_number: usize) -> Result<Settle
         line_number,
     )?;
     Ok(decoded.settlement.into_fact())
-}
-
-pub(super) fn decode_booking_error(
-    line: &str,
-    line_number: usize,
-) -> Result<SettlementBookingErrorFact> {
-    let decoded: BookingErrorLineV1 = decode(line, line_number)?;
-    validate_envelope(
-        KnownIdentity::SettlementBookingErrorV1,
-        &decoded.kind,
-        decoded.schema_version,
-        &decoded.gate_id,
-        decoded.recorded_at_utc_ns,
-        line_number,
-    )?;
-    let fact = decoded.booking_error.into_fact();
-    validate_booking_error(&fact).map_err(anyhow::Error::new)?;
-    Ok(fact)
 }
 
 pub(super) fn decode_terminal(line: &str, line_number: usize) -> Result<TerminalSettlementFact> {
@@ -310,61 +271,6 @@ impl SettlementV1 {
 enum OutcomeSideV1 {
     Up,
     Down,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BookingErrorLineV1 {
-    schema_version: u32,
-    recorded_at_utc_ns: i64,
-    gate_id: String,
-    gate_version: String,
-    kind: String,
-    booking_error: BookingErrorV1,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BookingErrorV1 {
-    strategy_id: String,
-    settlement_key: String,
-    market_id: Option<String>,
-    position_id: Option<String>,
-    instrument_id: Option<String>,
-    resolution_instrument_id: Option<String>,
-    reason: BookingErrorReasonV1,
-    detail: String,
-    observed_at_ns: u64,
-}
-
-impl BookingErrorV1 {
-    fn from_fact(fact: SettlementBookingErrorFact) -> Self {
-        Self {
-            strategy_id: fact.strategy_id,
-            settlement_key: fact.settlement_key,
-            market_id: fact.market_id,
-            position_id: fact.position_id,
-            instrument_id: fact.instrument_id,
-            resolution_instrument_id: fact.resolution_instrument_id,
-            reason: BookingErrorReasonV1::from_fact(fact.reason),
-            detail: fact.detail,
-            observed_at_ns: fact.observed_at_ns,
-        }
-    }
-
-    fn into_fact(self) -> SettlementBookingErrorFact {
-        SettlementBookingErrorFact {
-            strategy_id: self.strategy_id,
-            settlement_key: self.settlement_key,
-            market_id: self.market_id,
-            position_id: self.position_id,
-            instrument_id: self.instrument_id,
-            resolution_instrument_id: self.resolution_instrument_id,
-            reason: self.reason.into_fact(),
-            detail: self.detail,
-            observed_at_ns: self.observed_at_ns,
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize)]

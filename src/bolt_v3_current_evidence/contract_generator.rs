@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use serde::Deserialize;
 
 const CONTRACT_SCHEMA_VERSION: u32 = 1;
+const CONSUMER_MODES: &[&str] = &["offline_projection", "startup_recovery"];
 const OBSERVATION_DUTIES: &[&str] = &["diagnostic_observation", "state_observation"];
 const MACHINE_DUTIES: &[&str] = &["action", "join", "reconciliation", "recovery"];
 const EFFECT_POLICIES: &[&str] = &[
@@ -166,12 +167,19 @@ fn validate_registry(wire: &RegistryWire) -> Result<()> {
             consumer.owner
         );
         ensure!(
-            !consumer.mode.trim().is_empty(),
-            "consumer `{}` has empty mode",
-            consumer.id
+            CONSUMER_MODES.contains(&consumer.mode.as_str()),
+            "consumer `{}` has unknown mode `{}`",
+            consumer.id,
+            consumer.mode
         );
         ensure_nonempty_anchors("consumer", &consumer.id, &consumer.source_anchors)?;
     }
+    ensure!(
+        wire.consumers
+            .iter()
+            .any(|consumer| consumer.mode == "startup_recovery"),
+        "missing startup recovery consumer"
+    );
 
     let identity_by_id: BTreeMap<_, _> = wire
         .identities
@@ -670,6 +678,25 @@ pub fn render_contract(contract: &ContractRegistry) -> String {
         }
     }
     output.push_str("    }\n}\n\n");
+
+    let startup_consumers = wire
+        .consumers
+        .iter()
+        .filter(|consumer| consumer.mode == "startup_recovery")
+        .map(|consumer| consumer.id.as_str())
+        .collect::<BTreeSet<_>>();
+    output
+        .push_str("pub(crate) const fn startup_recovery_relevant(fact: KnownFact) -> bool {\n    ");
+    for (index, consumer) in startup_consumers.into_iter().enumerate() {
+        if index > 0 {
+            output.push_str(" || ");
+        }
+        output.push_str(&format!(
+            "matches!(\n        disposition_for(fact, KnownConsumer::{}),\n        ConsumerDisposition::Relevant(_)\n    )",
+            rust_variant(consumer)
+        ));
+    }
+    output.push_str("\n}\n\n");
 
     output.push_str("pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownIdentity> {\n");
     for row in &wire.identities {

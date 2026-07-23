@@ -103,7 +103,7 @@ def reconciliation_topology(config: Config) -> ReconciliationTopology:
         1
         + (sweep_count * sweep_reads)
         + (config.max_cancellation_targets * episode.requests)
-        + 1
+        + 2
     )
     secondary_points = (
         config.secondary_read_points
@@ -116,7 +116,8 @@ def reconciliation_topology(config: Config) -> ReconciliationTopology:
             config.max_cancellation_targets
             * episode.secondary_points
         )
-        + max(config.secondary_read_points, config.secondary_mutation_points)
+        + config.secondary_read_points
+        + config.secondary_mutation_points
     )
     minimum_pacing_seconds = (
         census_count
@@ -1341,6 +1342,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    client: GitHubActionsClient | None = None
     try:
         config = load_config(args.config)
         client = GitHubActionsClient(
@@ -1352,12 +1354,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = operation(client, run_id=args.run_id, run_sha=args.run_sha)
     except SupersededRun as error:
         print(f"::notice::{error}")
+        if client is None:
+            print("::error::self-cancellation client is unavailable", file=sys.stderr)
+            return 1
         try:
             client.cancel_invoking_run(args.run_id)
         except (OSError, RuntimeError, ValueError) as cancel_error:
             print(f"::error::{cancel_error}", file=sys.stderr)
             return 1
-        return 0
+        return 78
     except (OSError, RuntimeError, ValueError, tomllib.TOMLDecodeError) as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1

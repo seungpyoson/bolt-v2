@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     fs::File,
     io::{Seek, SeekFrom},
     path::Path,
@@ -11,12 +10,12 @@ use anyhow::{Context, Result, ensure};
 use crate::bolt_v3_config::LoadedBoltV3Config;
 
 use super::{
+    CanonicalRelativeEvidencePath, PositiveFiniteEvidenceReadCap,
     facts::{BookingRecoveryFacts, ReservationRecoveryFacts, SettlementRecoveryFacts},
     generated_contract::KnownSink,
     path_authority::CatalogDirectory,
     reader::validate_stream,
     record::{DecisionEvidenceRecorder, ObservationStreamStatus, PoisonCause},
-    validate_relative_path,
 };
 
 #[derive(Debug)]
@@ -38,22 +37,41 @@ pub struct OfflineDecisionEvidenceRuntime {
 
 #[cfg(feature = "offline-current-evidence")]
 impl OfflineDecisionEvidenceRuntime {
-    /// Opens two fresh isolated files through the production recorder and sink implementation.
-    pub fn from_fresh_files(
-        mut machine: File,
-        observation: File,
+    /// Opens two fresh isolated streams through the production catalog authority and recorder.
+    pub fn open_isolated(
+        catalog_directory: &Path,
+        machine_relative_path: &str,
+        observation_relative_path: &str,
+        recovery_evidence_max_bytes: PositiveFiniteEvidenceReadCap,
         reject_episode_max_count: usize,
     ) -> Result<Self> {
         ensure!(
             reject_episode_max_count > 0,
             "reject_episode_max_count must be positive"
         );
+        let machine_relative =
+            CanonicalRelativeEvidencePath::parse("machine_relative_path", machine_relative_path)
+                .map_err(anyhow::Error::msg)?;
+        let observation_relative = CanonicalRelativeEvidencePath::parse(
+            "observation_relative_path",
+            observation_relative_path,
+        )
+        .map_err(anyhow::Error::msg)?;
+        ensure_path_topology([&machine_relative, &observation_relative])?;
+        let catalog = CatalogDirectory::open_writer(catalog_directory)?;
+        let mut machine = catalog.open_stream(&machine_relative)?;
+        let observation = catalog.open_stream(&observation_relative)?;
+        ensure_distinct_files(&machine, &observation)?;
         ensure!(
             machine.metadata()?.len() == 0 && observation.metadata()?.len() == 0,
             "offline current-evidence streams must be fresh"
         );
-        ensure_distinct_files(&machine, &observation)?;
-        let recovery = validate_stream(&mut machine, KnownSink::Machine, 0)?.startup_recovery;
+        let recovery = validate_stream(
+            &mut machine,
+            KnownSink::Machine,
+            recovery_evidence_max_bytes,
+        )?
+        .startup_recovery;
         ensure!(
             recovery.reservation.is_empty()
                 && recovery.settlement.is_empty()
@@ -65,7 +83,9 @@ impl OfflineDecisionEvidenceRuntime {
             recorder: Arc::new(DecisionEvidenceRecorder::from_files(
                 machine,
                 observation,
+                Some(catalog),
                 None,
+                recovery_evidence_max_bytes,
                 reject_episode_max_count,
             )),
         })
@@ -81,48 +101,61 @@ impl OfflineDecisionEvidenceRuntime {
 impl DecisionEvidenceRuntime {
     pub fn open(loaded: &LoadedBoltV3Config) -> Result<Self> {
         let config = &loaded.root.persistence.decision_evidence;
-        let machine_relative =
-            configured_relative("machine_relative_path", &config.machine_relative_path)?;
-        let observation_relative = configured_relative(
+        let machine_relative = CanonicalRelativeEvidencePath::parse(
+            "machine_relative_path",
+            &config.machine_relative_path,
+        )
+        .map_err(anyhow::Error::msg)?;
+        let observation_relative = CanonicalRelativeEvidencePath::parse(
             "observation_relative_path",
             &config.observation_relative_path,
+        )
+        .map_err(anyhow::Error::msg)?;
+        let retired_paths = config
+            .retired_relative_paths
+            .iter()
+            .map(|retired| {
+                CanonicalRelativeEvidencePath::parse("retired_relative_paths", retired)
+                    .map_err(anyhow::Error::msg)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        ensure_path_topology(
+            std::iter::once(&machine_relative)
+                .chain(std::iter::once(&observation_relative))
+                .chain(retired_paths.iter()),
         )?;
-        ensure!(
-            machine_relative != observation_relative,
-            "decision-evidence paths must be distinct"
-        );
-
-        let mut configured = BTreeSet::from([machine_relative, observation_relative]);
+        let recovery_evidence_max_bytes =
+            PositiveFiniteEvidenceReadCap::new(config.recovery_evidence_max_bytes)
+                .map_err(anyhow::Error::msg)?;
         let catalog =
-            CatalogDirectory::open(Path::new(&loaded.root.persistence.catalog_directory))?;
-        for retired in &config.retired_relative_paths {
-            let retired_relative = configured_relative("retired_relative_paths", retired)?;
-            ensure!(
-                configured.insert(retired_relative),
-                "decision-evidence paths must be distinct: `{}`",
-                retired_relative
-            );
+            CatalogDirectory::open_writer(Path::new(&loaded.root.persistence.catalog_directory))?;
+        for retired_relative in &retired_paths {
             catalog.ensure_retired_absent(retired_relative)?;
         }
 
         let mut machine = catalog
-            .open_stream(machine_relative)
-            .with_context(|| format!("open machine evidence `{machine_relative}`"))?;
+            .open_stream(&machine_relative)
+            .with_context(|| format!("open machine evidence `{}`", machine_relative.as_str()))?;
         let startup_recovery = validate_stream(
             &mut machine,
             KnownSink::Machine,
-            config.recovery_evidence_max_bytes,
+            recovery_evidence_max_bytes,
         )?
         .startup_recovery;
         machine.seek(SeekFrom::End(0))?;
         let mut observation = catalog
-            .open_stream(observation_relative)
-            .with_context(|| format!("open observation evidence `{observation_relative}`"))?;
+            .open_stream(&observation_relative)
+            .with_context(|| {
+                format!(
+                    "open observation evidence `{}`",
+                    observation_relative.as_str()
+                )
+            })?;
         ensure_distinct_files(&machine, &observation)?;
         let observation_poison = match validate_stream(
             &mut observation,
             KnownSink::Observation,
-            config.recovery_evidence_max_bytes,
+            recovery_evidence_max_bytes,
         ) {
             Ok(_) => None,
             Err(error) => {
@@ -137,7 +170,9 @@ impl DecisionEvidenceRuntime {
             recorder: Arc::new(DecisionEvidenceRecorder::from_files(
                 machine,
                 observation,
+                Some(catalog),
                 observation_poison,
+                recovery_evidence_max_bytes,
                 config.reject_episode_max_count,
             )),
             reservation_recovery: Arc::new(startup_recovery.reservation),
@@ -172,9 +207,26 @@ impl DecisionEvidenceRuntime {
     }
 }
 
-fn configured_relative<'a>(field: &str, raw: &'a str) -> Result<&'a str> {
-    validate_relative_path(field, raw).map_err(anyhow::Error::msg)?;
-    Ok(raw.trim())
+fn ensure_path_topology<'a>(
+    configured: impl IntoIterator<Item = &'a CanonicalRelativeEvidencePath>,
+) -> Result<()> {
+    let configured = configured.into_iter().collect::<Vec<_>>();
+    for (index, left) in configured.iter().enumerate() {
+        for right in &configured[index + 1..] {
+            ensure!(
+                left != right,
+                "decision-evidence paths must be distinct: `{}`",
+                left.as_str()
+            );
+            ensure!(
+                !left.is_ancestor_of(right) && !right.is_ancestor_of(left),
+                "decision-evidence paths must not be ancestors of one another: `{}` and `{}`",
+                left.as_str(),
+                right.as_str()
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

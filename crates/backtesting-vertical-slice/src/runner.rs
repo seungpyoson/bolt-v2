@@ -12,7 +12,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, Mutex},
 };
@@ -26,8 +26,8 @@ use bolt_v2::{
     },
     bolt_v3_current_evidence::{
         AdmissionDecisionOutcome, BacktestRunGuardEvent, CurrentEvidenceStream,
-        DecisionEvidenceRecorder, OfflineDecisionEvidenceRuntime, StrategyInputDetails,
-        StrategyInputRvState, read_backtest_run_guard_events,
+        DecisionEvidenceRecorder, OfflineDecisionEvidenceRuntime, PositiveFiniteEvidenceReadCap,
+        StrategyInputDetails, StrategyInputRvState, read_backtest_run_guard_events,
     },
     bolt_v3_operator_artifacts::json_artifact_bytes,
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
@@ -208,32 +208,48 @@ impl BacktestDecisionEvidenceState {
 #[derive(Debug)]
 struct BacktestDecisionEvidenceWriter {
     runtime: OfflineDecisionEvidenceRuntime,
-    machine: tempfile::NamedTempFile,
-    observation: tempfile::NamedTempFile,
-    read_max_bytes: u64,
+    machine: PathBuf,
+    observation: PathBuf,
+    read_max_bytes: PositiveFiniteEvidenceReadCap,
+    _catalog: tempfile::TempDir,
 }
 
 impl BacktestDecisionEvidenceWriter {
-    fn new(reject_episode_max_count: usize, read_max_bytes: u64) -> Result<Self> {
+    fn new(
+        reject_episode_max_count: usize,
+        read_max_bytes: PositiveFiniteEvidenceReadCap,
+    ) -> Result<Self> {
         ensure!(
             reject_episode_max_count > 0,
             "strategy parameter {STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT} must be positive"
         );
-        ensure!(
-            read_max_bytes > 0,
-            "strategy parameter {STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES} must be positive"
-        );
-        let machine = tempfile::NamedTempFile::new()
-            .context("create isolated backtest machine-evidence stream")?;
-        let observation = tempfile::NamedTempFile::new()
-            .context("create isolated backtest observation-evidence stream")?;
-        let runtime = OfflineDecisionEvidenceRuntime::from_fresh_files(
-            machine
-                .reopen()
-                .context("open isolated backtest machine-evidence stream")?,
-            observation
-                .reopen()
-                .context("open isolated backtest observation-evidence stream")?,
+        let catalog =
+            tempfile::tempdir().context("create isolated backtest current-evidence catalog")?;
+        let canonical_catalog = std::fs::canonicalize(catalog.path())
+            .context("canonicalize isolated backtest current-evidence catalog")?;
+        let machine_temp = tempfile::NamedTempFile::new_in(&canonical_catalog)
+            .context("allocate isolated backtest machine-evidence path")?;
+        let observation_temp = tempfile::NamedTempFile::new_in(&canonical_catalog)
+            .context("allocate isolated backtest observation-evidence path")?;
+        let machine = machine_temp.path().to_path_buf();
+        let observation = observation_temp.path().to_path_buf();
+        let machine_relative = machine
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .context("backtest machine-evidence filename must be UTF-8")?
+            .to_string();
+        let observation_relative = observation
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .context("backtest observation-evidence filename must be UTF-8")?
+            .to_string();
+        drop(machine_temp);
+        drop(observation_temp);
+        let runtime = OfflineDecisionEvidenceRuntime::open_isolated(
+            &canonical_catalog,
+            &machine_relative,
+            &observation_relative,
+            read_max_bytes,
             reject_episode_max_count,
         )?;
         Ok(Self {
@@ -241,6 +257,7 @@ impl BacktestDecisionEvidenceWriter {
             machine,
             observation,
             read_max_bytes,
+            _catalog: catalog,
         })
     }
 
@@ -254,8 +271,7 @@ impl BacktestDecisionEvidenceWriter {
             (&self.machine, CurrentEvidenceStream::Machine),
             (&self.observation, CurrentEvidenceStream::Observation),
         ] {
-            for record in read_backtest_run_guard_events(stream.path(), self.read_max_bytes, kind)?
-            {
+            for record in read_backtest_run_guard_events(stream, self.read_max_bytes, kind)? {
                 match record.event {
                     BacktestRunGuardEvent::BlockedStrategyInputObservation(fact) => {
                         state.observe_strategy_input(
@@ -812,7 +828,9 @@ fn manifest_evidence_reject_episode_max_count(strategy: &StrategySource) -> Resu
     Ok(value)
 }
 
-fn manifest_evidence_read_max_bytes(strategy: &StrategySource) -> Result<u64> {
+fn manifest_evidence_read_max_bytes(
+    strategy: &StrategySource,
+) -> Result<PositiveFiniteEvidenceReadCap> {
     let raw = strategy
         .parameters
         .get(STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES)
@@ -822,11 +840,11 @@ fn manifest_evidence_read_max_bytes(strategy: &StrategySource) -> Result<u64> {
     let value = raw
         .parse::<u64>()
         .with_context(|| format!("invalid {STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES} {raw:?}"))?;
-    ensure!(
-        value > 0,
-        "strategy parameter {STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES} must be positive"
-    );
-    Ok(value)
+    PositiveFiniteEvidenceReadCap::new(value).map_err(|message| {
+        anyhow::Error::msg(format!(
+            "strategy parameter {STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES} {message}"
+        ))
+    })
 }
 
 fn inline_manifest_strategy_config(strategy: &StrategySource) -> Result<toml::Value> {
@@ -2695,11 +2713,12 @@ mod tests {
 
     use super::{
         BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, OrderTerminalRecord, Position,
-        StrategyPreparationConfig, apply_backtest_config_override, assert_read_back_matches,
-        canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
-        expected_iterations, issue_789_proof_fill, iterations_mismatch, load_bolt_v3_config,
-        prepare_strategy_client_routes, raw_taker_config, replay_executable_book_at_cursor,
-        require_pre_run_configured_account, resolve_existing_input_path, run_nt_backtest_node,
+        PositiveFiniteEvidenceReadCap, StrategyPreparationConfig, apply_backtest_config_override,
+        assert_read_back_matches, canonical_resolved_taker_config_bytes,
+        ensure_settlement_currency_funded, expected_iterations, issue_789_proof_fill,
+        iterations_mismatch, load_bolt_v3_config, prepare_strategy_client_routes, raw_taker_config,
+        replay_executable_book_at_cursor, require_pre_run_configured_account,
+        resolve_existing_input_path, run_nt_backtest_node,
         run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
         time_window_excludes_all_data,
     };
@@ -2781,9 +2800,13 @@ mod tests {
 
     #[test]
     fn backtest_guard_selects_latest_strategy_input_across_separate_streams() -> Result<()> {
-        let writer = BacktestDecisionEvidenceWriter::new(4, 1_048_576)?;
+        let writer = BacktestDecisionEvidenceWriter::new(
+            4,
+            PositiveFiniteEvidenceReadCap::new(1_048_576)
+                .expect("test evidence cap must be positive and finite"),
+        )?;
         fs::write(
-            writer.machine.path(),
+            writer.machine.as_path(),
             strategy_input_fixture(
                 include_str!(
                     "../../../tests/fixtures/bolt_v3/current_evidence/positive/submit_linked_strategy_input_snapshot.jsonl"
@@ -2794,7 +2817,7 @@ mod tests {
             ),
         )?;
         fs::write(
-            writer.observation.path(),
+            writer.observation.as_path(),
             strategy_input_fixture(
                 include_str!(
                     "../../../tests/fixtures/bolt_v3/current_evidence/positive/blocked_strategy_input_observation.jsonl"
@@ -2819,9 +2842,13 @@ mod tests {
 
     #[test]
     fn backtest_guard_rejects_conflicting_strategy_inputs_at_the_same_timestamp() -> Result<()> {
-        let writer = BacktestDecisionEvidenceWriter::new(4, 1_048_576)?;
+        let writer = BacktestDecisionEvidenceWriter::new(
+            4,
+            PositiveFiniteEvidenceReadCap::new(1_048_576)
+                .expect("test evidence cap must be positive and finite"),
+        )?;
         fs::write(
-            writer.machine.path(),
+            writer.machine.as_path(),
             strategy_input_fixture(
                 include_str!(
                     "../../../tests/fixtures/bolt_v3/current_evidence/positive/submit_linked_strategy_input_snapshot.jsonl"
@@ -2832,7 +2859,7 @@ mod tests {
             ),
         )?;
         fs::write(
-            writer.observation.path(),
+            writer.observation.as_path(),
             strategy_input_fixture(
                 include_str!(
                     "../../../tests/fixtures/bolt_v3/current_evidence/positive/blocked_strategy_input_observation.jsonl"

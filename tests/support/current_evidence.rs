@@ -135,10 +135,27 @@ impl RecordingDecisionEvidenceWriter {
     }
 
     pub fn facts(&self) -> Vec<CurrentFact> {
-        let mut facts = read_current_evidence_facts(&self.machine_path, u64::MAX)
+        let machine_cap = bolt_v2::bolt_v3_current_evidence::PositiveFiniteEvidenceReadCap::new(
+            self.machine_path
+                .metadata()
+                .expect("machine evidence metadata must read")
+                .len()
+                .max(1),
+        )
+        .expect("machine evidence cap must be positive and finite");
+        let observation_cap =
+            bolt_v2::bolt_v3_current_evidence::PositiveFiniteEvidenceReadCap::new(
+                self.observation_path
+                    .metadata()
+                    .expect("observation evidence metadata must read")
+                    .len()
+                    .max(1),
+            )
+            .expect("observation evidence cap must be positive and finite");
+        let mut facts = read_current_evidence_facts(&self.machine_path, machine_cap)
             .expect("machine evidence must decode");
         facts.extend(
-            read_current_evidence_facts(&self.observation_path, u64::MAX)
+            read_current_evidence_facts(&self.observation_path, observation_cap)
                 .expect("observation evidence must decode"),
         );
         facts

@@ -46,6 +46,7 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
             .push("persistence.streaming.flush_interval_ms must be a positive integer".to_string());
     }
     let evidence = &block.decision_evidence;
+    let mut configured_paths = Vec::new();
     for (field, relative_path) in [
         (
             "machine_relative_path",
@@ -56,8 +57,9 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
             evidence.observation_relative_path.as_str(),
         ),
     ] {
-        if let Err(message) = validate_decision_evidence_relative_path(field, relative_path) {
-            errors.push(message);
+        match CanonicalRelativeEvidencePath::parse(field, relative_path) {
+            Ok(path) => configured_paths.push(path),
+            Err(message) => errors.push(message),
         }
     }
     if evidence.retired_relative_paths.is_empty() {
@@ -73,33 +75,33 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
         );
     }
     for retired in &evidence.retired_relative_paths {
-        if let Err(message) =
-            validate_decision_evidence_relative_path("retired_relative_paths", retired)
-        {
-            errors.push(message);
+        match CanonicalRelativeEvidencePath::parse("retired_relative_paths", retired) {
+            Ok(path) => configured_paths.push(path),
+            Err(message) => errors.push(message),
         }
     }
-    let mut unique_paths = std::collections::BTreeSet::new();
-    for relative_path in std::iter::once(evidence.machine_relative_path.trim())
-        .chain(std::iter::once(evidence.observation_relative_path.trim()))
-        .chain(
-            evidence
-                .retired_relative_paths
-                .iter()
-                .map(|path| path.trim()),
-        )
+    for (index, left) in configured_paths.iter().enumerate() {
+        for right in &configured_paths[index + 1..] {
+            if left == right {
+                errors.push(format!(
+                    "persistence.decision_evidence paths must be distinct: `{}`",
+                    left.as_str()
+                ));
+            } else if left.is_ancestor_of(right) || right.is_ancestor_of(left) {
+                errors.push(format!(
+                    "persistence.decision_evidence paths must not be ancestors of one another: `{}` and `{}`",
+                    left.as_str(),
+                    right.as_str()
+                ));
+            }
+        }
+    }
+    if let Err(message) =
+        PositiveFiniteEvidenceReadCap::new(block.decision_evidence.recovery_evidence_max_bytes)
     {
-        if !unique_paths.insert(relative_path) {
-            errors.push(format!(
-                "persistence.decision_evidence paths must be distinct: `{relative_path}`"
-            ));
-        }
-    }
-    if block.decision_evidence.recovery_evidence_max_bytes == 0 {
-        errors.push(
-            "persistence.decision_evidence.recovery_evidence_max_bytes must be a positive integer"
-                .to_string(),
-        );
+        errors.push(format!(
+            "persistence.decision_evidence.recovery_evidence_max_bytes {message}"
+        ));
     }
     errors
 }

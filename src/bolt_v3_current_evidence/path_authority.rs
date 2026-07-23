@@ -4,6 +4,8 @@ use std::{fs::File, path::Path};
 #[cfg(not(unix))]
 use anyhow::{Result, bail};
 
+use super::CanonicalRelativeEvidencePath;
+
 #[cfg(unix)]
 mod unix {
     use std::{
@@ -23,6 +25,9 @@ mod unix {
 
     use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 
+    use super::CanonicalRelativeEvidencePath;
+
+    #[derive(Debug)]
     pub(crate) struct CatalogDirectory {
         directory: File,
         #[cfg(test)]
@@ -63,6 +68,24 @@ mod unix {
                 #[cfg(test)]
                 sync_directory: sync_directory_entry,
             })
+        }
+
+        pub(crate) fn open_writer(path: &Path) -> Result<Self> {
+            let catalog = Self::open(path)?;
+            // SAFETY: `directory` is a live descriptor retained by `catalog` until drop.
+            let result = unsafe {
+                libc::flock(catalog.directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
+            };
+            if result != 0 {
+                let source = io::Error::last_os_error();
+                if source.kind() == io::ErrorKind::WouldBlock {
+                    bail!(
+                        "WriterAlreadyActive: current-evidence catalog is already owned: {source}"
+                    );
+                }
+                return Err(source).context("acquire exclusive current-evidence catalog ownership");
+            }
+            Ok(catalog)
         }
 
         pub(crate) fn open_under_prefix(prefix: &Path, catalog: &Path) -> Result<Self> {
@@ -130,14 +153,20 @@ mod unix {
             available_bytes(&self.directory)
         }
 
-        pub(crate) fn open_stream(&self, relative: &str) -> Result<File> {
+        pub(crate) fn open_stream(&self, relative: &CanonicalRelativeEvidencePath) -> Result<File> {
             let Some(parent) = self.walk_parent(relative, false)? else {
-                bail!("active decision-evidence stream parent is absent: `{relative}`")
+                bail!(
+                    "active decision-evidence stream parent is absent: `{}`",
+                    relative.as_str()
+                )
             };
             parent.open_stream(self)
         }
 
-        pub(crate) fn ensure_retired_absent(&self, relative: &str) -> Result<()> {
+        pub(crate) fn ensure_retired_absent(
+            &self,
+            relative: &CanonicalRelativeEvidencePath,
+        ) -> Result<()> {
             let Some(parent) = self.walk_parent(relative, true)? else {
                 return Ok(());
             };
@@ -146,21 +175,17 @@ mod unix {
 
         fn walk_parent(
             &self,
-            relative: &str,
+            relative: &CanonicalRelativeEvidencePath,
             missing_parent_means_absent: bool,
         ) -> Result<Option<ParentDirectory>> {
-            let path = Path::new(relative.trim());
-            let mut components = path.components().peekable();
+            let mut components = relative.components().peekable();
             let mut directory = self.directory.try_clone()?;
-            while let Some(component) = components.next() {
-                let Component::Normal(name) = component else {
-                    bail!("decision-evidence relative path is not normalized")
-                };
+            while let Some(name) = components.next() {
                 if components.peek().is_none() {
                     return Ok(Some(ParentDirectory {
                         directory,
                         basename: component_name(name)?,
-                        display: relative.trim().to_string(),
+                        display: relative.as_str().to_string(),
                     }));
                 }
                 match open_directory_at(&directory, name) {
@@ -453,6 +478,34 @@ mod unix {
 
         use super::*;
 
+        fn relative(raw: &str) -> CanonicalRelativeEvidencePath {
+            CanonicalRelativeEvidencePath::parse("test_relative_path", raw)
+                .expect("test relative path must be canonical")
+        }
+
+        #[test]
+        fn writer_ownership_is_exclusive_before_stream_mutation() {
+            let root = tempfile::tempdir().expect("tempdir must exist");
+            let canonical_root = fs::canonicalize(root.path()).expect("tempdir must canonicalize");
+            let first = CatalogDirectory::open_writer(&canonical_root)
+                .expect("first writer must acquire catalog ownership");
+
+            let error = CatalogDirectory::open_writer(&canonical_root)
+                .expect_err("second writer must fail before touching stream paths");
+
+            assert!(error.to_string().contains("WriterAlreadyActive"));
+            assert_eq!(
+                fs::read_dir(&canonical_root)
+                    .expect("catalog must remain readable")
+                    .count(),
+                0,
+                "lock conflict must not mutate the catalog"
+            );
+            drop(first);
+            CatalogDirectory::open_writer(&canonical_root)
+                .expect("writer ownership must release with the held descriptor");
+        }
+
         #[test]
         fn retained_parent_descriptor_cannot_be_redirected_by_path_replacement() {
             let root = tempfile::tempdir().expect("tempdir must exist");
@@ -462,8 +515,9 @@ mod unix {
             let outside = tempfile::tempdir().expect("outside tempdir must exist");
             fs::create_dir(&original).expect("original parent must exist");
             let catalog = CatalogDirectory::open(&canonical_root).expect("catalog must open");
+            let relative = relative("original/machine.jsonl");
             let parent = catalog
-                .walk_parent("original/machine.jsonl", false)
+                .walk_parent(&relative, false)
                 .expect("parent walk must succeed")
                 .expect("parent must exist");
 
@@ -494,7 +548,7 @@ mod unix {
             catalog.sync_directory = reject_sync;
 
             let error = catalog
-                .open_stream("machine.jsonl")
+                .open_stream(&relative("machine.jsonl"))
                 .expect_err("creation must fail when namespace sync fails");
 
             assert!(
@@ -511,7 +565,7 @@ mod unix {
             let catalog = CatalogDirectory::open(&canonical_root).expect("catalog must open");
 
             let stream = catalog
-                .open_stream("bolt-v3/decision-evidence/current/machine.jsonl")
+                .open_stream(&relative("bolt-v3/decision-evidence/current/machine.jsonl"))
                 .expect("active stream parents and stream must be created");
 
             assert!(
@@ -543,13 +597,13 @@ mod unix {
             let canonical_root = fs::canonicalize(root.path()).expect("tempdir must canonicalize");
             let mut catalog = CatalogDirectory::open(&canonical_root).expect("catalog must open");
             catalog.sync_directory = fail_first_parent_sync;
-            let relative = "bolt-v3/decision-evidence/current/machine.jsonl";
+            let relative = relative("bolt-v3/decision-evidence/current/machine.jsonl");
 
             catalog
-                .open_stream(relative)
+                .open_stream(&relative)
                 .expect_err("first parent-component namespace sync must fail");
             let stream = catalog
-                .open_stream(relative)
+                .open_stream(&relative)
                 .expect("retry must complete the descriptor-relative parent walk");
 
             assert!(
@@ -582,10 +636,10 @@ mod unix {
             catalog.sync_directory = fail_once;
 
             catalog
-                .open_stream("machine.jsonl")
+                .open_stream(&relative("machine.jsonl"))
                 .expect_err("first namespace sync must fail");
             let stream = catalog
-                .open_stream("machine.jsonl")
+                .open_stream(&relative("machine.jsonl"))
                 .expect("retry must synchronize the retained namespace");
 
             assert_eq!(
@@ -658,15 +712,22 @@ impl CatalogDirectory {
         bail!("decision-evidence runtime is unsupported on non-Unix targets")
     }
 
+    pub(super) fn open_writer(_path: &Path) -> Result<Self> {
+        bail!("decision-evidence runtime is unsupported on non-Unix targets")
+    }
+
     pub(super) fn prestart_probe_and_available_bytes(&self) -> Result<u64> {
         bail!("decision-evidence runtime is unsupported on non-Unix targets")
     }
 
-    pub(super) fn open_stream(&self, _relative: &str) -> Result<File> {
+    pub(super) fn open_stream(&self, _relative: &CanonicalRelativeEvidencePath) -> Result<File> {
         bail!("decision-evidence runtime is unsupported on non-Unix targets")
     }
 
-    pub(super) fn ensure_retired_absent(&self, _relative: &str) -> Result<()> {
+    pub(super) fn ensure_retired_absent(
+        &self,
+        _relative: &CanonicalRelativeEvidencePath,
+    ) -> Result<()> {
         bail!("decision-evidence runtime is unsupported on non-Unix targets")
     }
 }

@@ -1,3 +1,4 @@
+mod capacity;
 mod codec;
 pub mod contract_generator;
 mod facts;
@@ -9,8 +10,9 @@ mod realized_volatility;
 mod record;
 mod runtime;
 
+pub use capacity::PositiveFiniteEvidenceReadCap;
 pub use facts::*;
-pub(crate) use path::validate_relative_path;
+pub(crate) use path::CanonicalRelativeEvidencePath;
 #[cfg(feature = "test-current-evidence-inspection")]
 #[doc(hidden)]
 pub use reader::read_current_evidence_facts;

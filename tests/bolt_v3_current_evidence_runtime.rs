@@ -5,14 +5,18 @@ use bolt_v2::{
     bolt_v3_current_evidence::{
         CurrentEvidenceStream, DecisionEvidenceRuntime, ObservationRecordOutcome,
         ObservationStreamStatus, OrderLifecycleFact, OrderLifecycleOutcome,
-        OrderLifecycleTransition, OutcomeSide, RecordFailure, RequoteActionCostClass,
-        RequoteThrottleBlockReason, RequoteThrottleBound, RequoteThrottleObservationFact,
-        SettlementBookingErrorFact, SettlementBookingErrorReason, SettlementFact, ShadowPnlEvent,
-        SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
-        read_backtest_run_guard_events, read_shadow_pnl_events,
+        OrderLifecycleTransition, OutcomeSide, PositiveFiniteEvidenceReadCap, RecordFailure,
+        RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
+        RequoteThrottleObservationFact, SettlementBookingErrorFact, SettlementBookingErrorReason,
+        SettlementFact, ShadowPnlEvent, SubmitReservationFillFact, SubmitReservationMetadataFact,
+        TerminalSettlementFact, read_backtest_run_guard_events, read_shadow_pnl_events,
     },
 };
 use tempfile::TempDir;
+
+fn finite_cap(value: u64) -> PositiveFiniteEvidenceReadCap {
+    PositiveFiniteEvidenceReadCap::new(value).expect("test cap must be positive and finite")
+}
 
 fn loaded_in(temp: &TempDir) -> LoadedBoltV3Config {
     let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
@@ -57,6 +61,43 @@ fn observation_path(loaded: &LoadedBoltV3Config) -> std::path::PathBuf {
             .observation_relative_path
             .trim(),
     )
+}
+
+#[test]
+fn runtime_holds_exclusive_catalog_ownership_for_recorder_lifetime() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let loaded = loaded_in(&temp);
+    let first = DecisionEvidenceRuntime::open(&loaded).expect("first runtime must open");
+    let machine = machine_path(&loaded);
+    let observation = observation_path(&loaded);
+    let lengths_before = (
+        fs::metadata(&machine)
+            .expect("machine metadata must read")
+            .len(),
+        fs::metadata(&observation)
+            .expect("observation metadata must read")
+            .len(),
+    );
+
+    let error = DecisionEvidenceRuntime::open(&loaded)
+        .expect_err("second runtime must not acquire the same catalog");
+
+    assert!(error.to_string().contains("WriterAlreadyActive"));
+    assert_eq!(
+        (
+            fs::metadata(&machine)
+                .expect("machine metadata must read")
+                .len(),
+            fs::metadata(&observation)
+                .expect("observation metadata must read")
+                .len(),
+        ),
+        lengths_before,
+        "ownership conflict must not touch either stream"
+    );
+    drop(first);
+    DecisionEvidenceRuntime::open(&loaded)
+        .expect("catalog ownership must release when the recorder runtime drops");
 }
 
 fn reservation_metadata_command() -> SubmitReservationMetadataFact {
@@ -659,7 +700,7 @@ fn shadow_pnl_skips_irrelevant_identity_before_payload_decode() {
     )
     .expect("malformed irrelevant line must be written");
 
-    let events = read_shadow_pnl_events(&path, u64::MAX)
+    let events = read_shadow_pnl_events(&path, finite_cap(u64::MAX - 1))
         .expect("irrelevant identity must be skipped before payload decoding");
     assert!(events.is_empty());
 }
@@ -672,7 +713,7 @@ fn shadow_pnl_refuses_stream_over_configured_read_cap() {
         include_bytes!("fixtures/bolt_v3/current_evidence/positive/entry_order_intent.jsonl");
     fs::write(&path, fixture).expect("shadow-PnL fixture must be written");
 
-    let error = read_shadow_pnl_events(&path, fixture.len() as u64 - 1)
+    let error = read_shadow_pnl_events(&path, finite_cap(fixture.len() as u64 - 1))
         .expect_err("shadow-PnL must enforce the configured evidence cap");
 
     assert!(error.to_string().contains("exceeds configured byte cap"));
@@ -704,7 +745,7 @@ fn backtest_run_guard_skips_irrelevant_identity_before_payload_decode() {
 
     let events = read_backtest_run_guard_events(
         &path,
-        u64::MAX,
+        finite_cap(u64::MAX - 1),
         bolt_v2::bolt_v3_current_evidence::CurrentEvidenceStream::Machine,
     )
     .expect("irrelevant identity must be skipped before payload decoding");
@@ -723,8 +764,12 @@ fn backtest_run_guard_rejects_identity_from_the_wrong_stream() {
     )
     .expect("observation fixture must be written");
 
-    let error = read_backtest_run_guard_events(&path, u64::MAX, CurrentEvidenceStream::Machine)
-        .expect_err("an observation identity must not be accepted as machine evidence");
+    let error = read_backtest_run_guard_events(
+        &path,
+        finite_cap(u64::MAX - 1),
+        CurrentEvidenceStream::Machine,
+    )
+    .expect_err("an observation identity must not be accepted as machine evidence");
 
     assert!(
         error
@@ -753,14 +798,14 @@ fn shadow_pnl_dispositions_have_typed_reducers_for_the_complete_current_corpus()
             fs::read_to_string(entry.path()).expect("positive corpus file must be readable");
         let is_machine_fixture = match read_backtest_run_guard_events(
             &entry.path(),
-            u64::MAX,
+            finite_cap(u64::MAX - 1),
             CurrentEvidenceStream::Machine,
         ) {
             Ok(_) => true,
             Err(machine_error) => {
                 read_backtest_run_guard_events(
                     &entry.path(),
-                    u64::MAX,
+                    finite_cap(u64::MAX - 1),
                     CurrentEvidenceStream::Observation,
                 )
                 .unwrap_or_else(|observation_error| {
@@ -791,7 +836,7 @@ fn shadow_pnl_dispositions_have_typed_reducers_for_the_complete_current_corpus()
 
     let path = temp.path().join("complete-current-corpus.jsonl");
     fs::write(&path, corpus).expect("combined corpus must be written");
-    let events = read_shadow_pnl_events(&path, u64::MAX)
+    let events = read_shadow_pnl_events(&path, finite_cap(u64::MAX - 1))
         .expect("every relevant disposition must have a typed Shadow PnL reducer");
     assert_eq!(
         events

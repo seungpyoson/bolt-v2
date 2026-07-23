@@ -8,6 +8,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use serde::Deserialize;
 
 use super::{
+    PositiveFiniteEvidenceReadCap,
     codec::{decode_current_fact, validate_gate_version},
     facts::{
         AdmittedEntryAdmissionFact, BlockedStrategyInputObservationFact, BookingRecoveryEvent,
@@ -78,7 +79,10 @@ impl CurrentEvidenceStream {
 
 #[cfg(feature = "test-current-evidence-inspection")]
 #[doc(hidden)]
-pub fn read_current_evidence_facts(path: &Path, max_bytes: u64) -> Result<Vec<CurrentFact>> {
+pub fn read_current_evidence_facts(
+    path: &Path,
+    max_bytes: PositiveFiniteEvidenceReadCap,
+) -> Result<Vec<CurrentFact>> {
     Ok(read_current_evidence_records(path, max_bytes)?
         .into_iter()
         .map(|record| record.fact)
@@ -86,13 +90,16 @@ pub fn read_current_evidence_facts(path: &Path, max_bytes: u64) -> Result<Vec<Cu
 }
 
 #[cfg(feature = "test-current-evidence-inspection")]
-fn read_current_evidence_records(path: &Path, max_bytes: u64) -> Result<Vec<RecordedCurrentFact>> {
+fn read_current_evidence_records(
+    path: &Path,
+    max_bytes: PositiveFiniteEvidenceReadCap,
+) -> Result<Vec<RecordedCurrentFact>> {
     read_consumer_records(path, max_bytes, None, None)
 }
 
 pub fn read_backtest_run_guard_events(
     path: &Path,
-    max_bytes: u64,
+    max_bytes: PositiveFiniteEvidenceReadCap,
     stream: CurrentEvidenceStream,
 ) -> Result<Vec<RecordedBacktestRunGuardEvent>> {
     read_consumer_records(
@@ -113,7 +120,7 @@ pub fn read_backtest_run_guard_events(
 
 fn read_consumer_records(
     path: &Path,
-    max_bytes: u64,
+    max_bytes: PositiveFiniteEvidenceReadCap,
     consumer: Option<KnownConsumer>,
     expected_sink: Option<KnownSink>,
 ) -> Result<Vec<RecordedCurrentFact>> {
@@ -168,7 +175,10 @@ fn read_consumer_records(
     Ok(records)
 }
 
-pub fn read_shadow_pnl_events(path: &Path, max_bytes: u64) -> Result<Vec<ShadowPnlEvent>> {
+pub fn read_shadow_pnl_events(
+    path: &Path,
+    max_bytes: PositiveFiniteEvidenceReadCap,
+) -> Result<Vec<ShadowPnlEvent>> {
     read_consumer_records(
         path,
         max_bytes,
@@ -299,7 +309,7 @@ pub(super) struct ValidatedStream {
 pub(super) fn validate_stream(
     file: &mut File,
     expected_sink: KnownSink,
-    max_bytes: u64,
+    max_bytes: PositiveFiniteEvidenceReadCap,
 ) -> Result<ValidatedStream> {
     let stream = match expected_sink {
         KnownSink::Machine => "machine evidence",
@@ -430,17 +440,22 @@ fn sink_name(sink: KnownSink) -> &'static str {
     }
 }
 
-fn read_framed_lines(reader: &mut impl Read, max_bytes: u64, stream: &str) -> Result<Vec<String>> {
+fn read_framed_lines(
+    reader: &mut impl Read,
+    max_bytes: PositiveFiniteEvidenceReadCap,
+    stream: &str,
+) -> Result<Vec<String>> {
     let mut bytes = String::new();
-    let read_limit = max_bytes.saturating_add(1);
+    let read_limit = max_bytes.sentinel();
     reader
         .take(read_limit)
         .read_to_string(&mut bytes)
         .with_context(|| format!("read {stream}"))?;
     let consumed = bytes.len() as u64;
     ensure!(
-        consumed <= max_bytes,
-        "{stream} exceeds configured byte cap: {consumed} > {max_bytes}"
+        consumed <= max_bytes.get(),
+        "{stream} exceeds configured byte cap: {consumed} > {}",
+        max_bytes.get()
     );
     ensure!(
         bytes.is_empty() || bytes.ends_with('\n'),
@@ -465,13 +480,17 @@ fn read_framed_lines(reader: &mut impl Read, max_bytes: u64, stream: &str) -> Re
 mod tests {
     use std::io::Cursor;
 
-    use super::read_framed_lines;
+    use super::{PositiveFiniteEvidenceReadCap, read_framed_lines};
 
     #[test]
     fn consuming_read_enforces_cap_without_trusting_metadata() {
         let mut source = Cursor::new(b"12345\n");
-        let error = read_framed_lines(&mut source, 4, "growing stream")
-            .expect_err("bytes consumed beyond the cap must fail");
+        let error = read_framed_lines(
+            &mut source,
+            PositiveFiniteEvidenceReadCap::new(4).expect("positive finite cap"),
+            "growing stream",
+        )
+        .expect_err("bytes consumed beyond the cap must fail");
 
         assert!(error.to_string().contains("exceeds configured byte cap"));
     }

@@ -4010,7 +4010,8 @@ mod tests {
         let error = match super::super::reader::validate_stream(
             &mut wrong_sink,
             super::super::generated_contract::KnownSink::Observation,
-            u64::MAX,
+            super::super::PositiveFiniteEvidenceReadCap::new(u64::MAX - 1)
+                .expect("finite fixture cap"),
         ) {
             Ok(_) => panic!("machine identity in observation stream must fail"),
             Err(error) => error,
@@ -4028,7 +4029,8 @@ mod tests {
         let error = match super::super::reader::validate_stream(
             &mut torn,
             super::super::generated_contract::KnownSink::Machine,
-            u64::MAX,
+            super::super::PositiveFiniteEvidenceReadCap::new(u64::MAX - 1)
+                .expect("finite fixture cap"),
         ) {
             Ok(_) => panic!("torn final record must fail framing"),
             Err(error) => error,

@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::Error;
 
+use super::PositiveFiniteEvidenceReadCap;
 use super::codec::{
     encode_admitted_entry_admission, encode_basket_admission_granted,
     encode_basket_admission_rejected, encode_blocked_strategy_input_observation,
@@ -34,6 +35,7 @@ use super::generated_contract::{
     EffectPolicy, KnownProducer, KnownPurpose, KnownSink, effect_policy_for_purpose,
     purpose_for_producer, sink_for_purpose,
 };
+use super::path_authority::CatalogDirectory;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppendReceipt {
@@ -269,6 +271,8 @@ impl DurableSink {
 pub struct DecisionEvidenceRecorder {
     machine: Mutex<DurableSink>,
     observation: Mutex<DurableSink>,
+    _catalog_ownership: Option<CatalogDirectory>,
+    max_record_bytes: PositiveFiniteEvidenceReadCap,
     reject_episode_max_count: usize,
     observation_failure_episodes: Mutex<BTreeSet<KnownPurpose>>,
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
@@ -281,7 +285,9 @@ impl DecisionEvidenceRecorder {
     pub(super) fn from_files(
         machine: File,
         observation: File,
+        catalog_ownership: Option<CatalogDirectory>,
         observation_poison: Option<PoisonCause>,
+        max_record_bytes: PositiveFiniteEvidenceReadCap,
         reject_episode_max_count: usize,
     ) -> Self {
         assert!(reject_episode_max_count > 0);
@@ -292,6 +298,8 @@ impl DecisionEvidenceRecorder {
         Self {
             machine: Mutex::new(DurableSink::new(machine)),
             observation: Mutex::new(observation),
+            _catalog_ownership: catalog_ownership,
+            max_record_bytes,
             reject_episode_max_count,
             observation_failure_episodes: Mutex::new(BTreeSet::new()),
             #[cfg(any(test, feature = "test-current-evidence-inspection"))]
@@ -307,6 +315,9 @@ impl DecisionEvidenceRecorder {
             tempfile::tempfile().expect("test machine evidence sink must open"),
             tempfile::tempfile().expect("test observation evidence sink must open"),
             None,
+            None,
+            PositiveFiniteEvidenceReadCap::new(1_048_576)
+                .expect("test record cap must be positive and finite"),
             4096,
         )
     }
@@ -448,7 +459,7 @@ impl DecisionEvidenceRecorder {
     #[cfg(test)]
     pub(crate) fn startup_recovery_projections(
         &self,
-        max_bytes: u64,
+        max_bytes: super::PositiveFiniteEvidenceReadCap,
     ) -> anyhow::Result<(
         super::facts::ReservationRecoveryFacts,
         super::facts::SettlementRecoveryFacts,
@@ -813,6 +824,17 @@ impl DecisionEvidenceRecorder {
     }
 
     fn append(&self, record: EncodedEvidenceRecord) -> Result<AppendReceipt, RecordFailure> {
+        let record_bytes = u64::try_from(record.line.len()).map_err(|_| {
+            RecordFailure::Rejected(anyhow::anyhow!(
+                "encoded evidence record size cannot be represented"
+            ))
+        })?;
+        if record_bytes > self.max_record_bytes.get() {
+            return Err(RecordFailure::Rejected(anyhow::anyhow!(
+                "encoded evidence record exceeds configured byte cap: {record_bytes} > {}",
+                self.max_record_bytes.get()
+            )));
+        }
         #[cfg(any(test, feature = "test-current-evidence-inspection"))]
         let inject_failure = {
             let attempt = {
@@ -890,7 +912,15 @@ mod tests {
             .create_new(true)
             .open(directory.path().join("observation.jsonl"))
             .expect("observation sink must open");
-        DecisionEvidenceRecorder::from_files(machine, observation, None, 4096)
+        DecisionEvidenceRecorder::from_files(
+            machine,
+            observation,
+            None,
+            None,
+            PositiveFiniteEvidenceReadCap::new(1_048_576)
+                .expect("test record cap must be positive and finite"),
+            4096,
+        )
     }
 
     fn recorder_with_paths() -> (
@@ -916,7 +946,15 @@ mod tests {
             .expect("observation sink must open");
         (
             directory,
-            DecisionEvidenceRecorder::from_files(machine, observation, None, 4096),
+            DecisionEvidenceRecorder::from_files(
+                machine,
+                observation,
+                None,
+                None,
+                PositiveFiniteEvidenceReadCap::new(1_048_576)
+                    .expect("test record cap must be positive and finite"),
+                4096,
+            ),
             machine_path,
             observation_path,
         )
@@ -924,6 +962,43 @@ mod tests {
 
     fn record(purpose: KnownPurpose) -> EncodedEvidenceRecord {
         EncodedEvidenceRecord::try_new(purpose, b"{}\n".to_vec()).expect("test record must encode")
+    }
+
+    #[test]
+    fn record_larger_than_recovery_cap_is_rejected_before_io() {
+        let directory = tempfile::tempdir().expect("tempdir must exist");
+        let machine_path = directory.path().join("machine.jsonl");
+        let machine = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&machine_path)
+            .expect("machine sink must open");
+        let observation = tempfile::tempfile().expect("observation sink must open");
+        let recorder = DecisionEvidenceRecorder::from_files(
+            machine,
+            observation,
+            None,
+            None,
+            PositiveFiniteEvidenceReadCap::new(2).expect("test cap must be finite"),
+            4096,
+        );
+
+        let error = recorder
+            .record_blocking(
+                KnownProducer::OrderExecutionEntryIntent,
+                record(KnownPurpose::EntryOrderIntent),
+            )
+            .expect_err("record larger than the recovery cap must fail");
+
+        assert!(matches!(error, RecordFailure::Rejected(_)));
+        assert_eq!(
+            fs::metadata(machine_path)
+                .expect("machine metadata must read")
+                .len(),
+            0,
+            "oversized record must be rejected before touching the stream"
+        );
     }
 
     #[test]

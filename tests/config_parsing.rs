@@ -7490,6 +7490,27 @@ fn rejects_zero_decision_evidence_recovery_evidence_max_bytes() {
 }
 
 #[test]
+fn rejects_unbounded_decision_evidence_recovery_evidence_max_bytes() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "recovery_evidence_max_bytes = 1048576",
+        "recovery_evidence_max_bytes = 18446744073709551615",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("u64::MAX evidence cap fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("persistence.decision_evidence.recovery_evidence_max_bytes")
+                && message.contains("finite")
+        }),
+        "an unbounded current-evidence cap must be rejected: {messages:#?}"
+    );
+}
+
+#[test]
 fn enforced_submit_admission_accepts_positive_recovery_evidence_max_bytes() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -8591,6 +8612,61 @@ fn rejects_colliding_decision_evidence_paths() {
         }),
         "active and retired paths must be distinct: {messages:#?}"
     );
+}
+
+#[test]
+fn rejects_noncanonical_decision_evidence_path_spellings() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for noncanonical in [
+        "bolt-v3//decision-evidence/current/machine.jsonl",
+        "bolt-v3/./decision-evidence/current/machine.jsonl",
+        "bolt-v3/decision-evidence/current/machine.jsonl/",
+        " bolt-v3/decision-evidence/current/machine.jsonl",
+    ] {
+        let mutated = replace_in_fixture_root(
+            "machine_relative_path = \"bolt-v3/decision-evidence/current/machine.jsonl\"",
+            &format!("machine_relative_path = \"{noncanonical}\""),
+        );
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("noncanonical path fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|message| {
+                message.contains("persistence.decision_evidence.machine_relative_path")
+                    && message.contains("normalized")
+            }),
+            "noncanonical path `{noncanonical}` must be rejected: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_decision_evidence_path_ancestry_before_filesystem_mutation() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (from, to) in [
+        (
+            "machine_relative_path = \"bolt-v3/decision-evidence/current/machine.jsonl\"",
+            "machine_relative_path = \"bolt-v3/decision-evidence/current\"",
+        ),
+        (
+            "retired_relative_paths = [\"bolt-v3/decision-evidence/order-intents.jsonl\"]",
+            "retired_relative_paths = [\"bolt-v3/decision-evidence/current\"]",
+        ),
+    ] {
+        let mutated = replace_in_fixture_root(from, to);
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("path ancestry fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|message| {
+                message.contains("persistence.decision_evidence paths")
+                    && message.contains("ancestor")
+            }),
+            "path ancestry must be rejected before runtime mutation: {messages:#?}"
+        );
+    }
 }
 
 #[test]

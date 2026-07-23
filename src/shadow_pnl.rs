@@ -12,8 +12,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
-    EntryOrderIntentFact, ShadowPnlEvent, SubmitLinkedStrategyInputSnapshotFact,
-    read_shadow_pnl_events,
+    EntryOrderIntentFact, PositiveFiniteEvidenceReadCap, ShadowPnlEvent,
+    SubmitLinkedStrategyInputSnapshotFact, read_shadow_pnl_events,
 };
 use crate::bolt_v3_market_families::OutcomeSide;
 use crate::bolt_v3_taker_updown_signal::outcome_side_evidence_label;
@@ -120,6 +120,8 @@ pub fn build_shadow_pnl_report(
     settlements_jsonl: &Path,
     evidence_max_bytes: u64,
 ) -> Result<Vec<ShadowPnlReportRow>> {
+    let evidence_max_bytes =
+        PositiveFiniteEvidenceReadCap::new(evidence_max_bytes).map_err(anyhow::Error::msg)?;
     let chains = read_admitted_entry_chains(evidence_jsonl, evidence_max_bytes)?;
     let settlements = read_settlements(settlements_jsonl)?;
     let mut accumulators = BTreeMap::<(NaiveDate, String), TradeAccumulator>::new();
@@ -229,7 +231,10 @@ fn write_shadow_pnl_csv_header(writer: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-fn read_admitted_entry_chains(path: &Path, evidence_max_bytes: u64) -> Result<Vec<TradeEvidence>> {
+fn read_admitted_entry_chains(
+    path: &Path,
+    evidence_max_bytes: PositiveFiniteEvidenceReadCap,
+) -> Result<Vec<TradeEvidence>> {
     let mut snapshots = HashMap::<String, SubmitLinkedStrategyInputSnapshotFact>::new();
     let mut intents = HashMap::<String, EntryOrderIntentFact>::new();
     let mut admitted_entries = HashMap::<String, ()>::new();

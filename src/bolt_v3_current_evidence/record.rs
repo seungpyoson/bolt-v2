@@ -52,7 +52,7 @@ pub struct CommittedSettlement {
 
 impl CommittedSettlement {
     #[must_use]
-    pub fn fact(&self) -> &SettlementFact {
+    pub(crate) fn fact(&self) -> &SettlementFact {
         &self.fact
     }
 }

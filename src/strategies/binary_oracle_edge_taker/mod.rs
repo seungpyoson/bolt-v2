@@ -1111,7 +1111,7 @@ impl BinaryOracleEdgeTaker {
                 .remove(&booking.key_delta.settlement_key);
         }
         if let Err(error) =
-            self.apply_committed_settlement_runtime_effects(&committed, settlement_currency)
+            self.apply_committed_settlement_runtime_effects(committed, settlement_currency)
         {
             self.enter_blind_settlement_recovery(error);
             return Ok(());
@@ -1124,7 +1124,7 @@ impl BinaryOracleEdgeTaker {
 
     fn apply_committed_settlement_runtime_effects(
         &self,
-        committed: &crate::bolt_v3_current_evidence::CommittedSettlement,
+        committed: crate::bolt_v3_current_evidence::CommittedSettlement,
         settlement_currency: Currency,
     ) -> Result<()> {
         let Some(sink) = self.context.settlement_runtime_sink() else {

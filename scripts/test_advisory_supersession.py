@@ -356,6 +356,20 @@ def next_link(url: str) -> str:
 
 
 class ReconcileTests(unittest.TestCase):
+    def test_self_cancellation_uses_normal_cancel_endpoint(self) -> None:
+        client = CancellationClient([], cancel_outcomes=[202])
+
+        client.cancel_invoking_run(81)
+
+        self.assertEqual(client.requests, [False])
+        self.assertEqual(client._ledger.mutations, 1)
+
+    def test_self_cancellation_rejects_conflict(self) -> None:
+        client = CancellationClient([], cancel_outcomes=[409])
+
+        with self.assertRaisesRegex(RuntimeError, "did not accept cancellation"):
+            client.cancel_invoking_run(81)
+
     def discovery_context(self) -> advisory_supersession.ReconciliationContext:
         return FakeClient(current_shas=["current"]).capture_context(
             run_id=1,
@@ -1013,8 +1027,8 @@ class MainTests(unittest.TestCase):
             args.append("--watch-only")
         return args
 
-    def test_controller_success_and_superseded_exit_codes(self) -> None:
-        client = object()
+    def test_controller_success_and_superseded_self_cancellation(self) -> None:
+        client = mock.Mock()
         with (
             mock.patch.object(
                 advisory_supersession,
@@ -1055,7 +1069,8 @@ class MainTests(unittest.TestCase):
             mock.patch("builtins.print"),
             mock.patch.dict(advisory_supersession.os.environ, {"GITHUB_TOKEN": "token"}),
         ):
-            self.assertEqual(advisory_supersession.main(self.args()), 78)
+            self.assertEqual(advisory_supersession.main(self.args()), 0)
+            client.cancel_invoking_run.assert_called_once_with(123)
 
     def test_watchdog_success_and_failure_exit_codes(self) -> None:
         client = object()
@@ -1119,6 +1134,30 @@ class MainTests(unittest.TestCase):
                 1,
             )
 
+    def test_superseded_self_cancellation_failure_fails_closed(self) -> None:
+        client = mock.Mock()
+        client.cancel_invoking_run.side_effect = RuntimeError("cancel rejected")
+        with (
+            mock.patch.object(
+                advisory_supersession,
+                "load_config",
+                return_value=GOVERNED_CONFIG,
+            ),
+            mock.patch.object(
+                advisory_supersession,
+                "GitHubActionsClient",
+                return_value=client,
+            ),
+            mock.patch.object(
+                advisory_supersession,
+                "reconcile",
+                side_effect=advisory_supersession.SupersededRun("main moved"),
+            ),
+            mock.patch("builtins.print"),
+            mock.patch.dict(advisory_supersession.os.environ, {"GITHUB_TOKEN": "token"}),
+        ):
+            self.assertEqual(advisory_supersession.main(self.args()), 1)
+
 
 class ConfigTests(unittest.TestCase):
     def write_config(self, text: str) -> pathlib.Path:
@@ -1170,7 +1209,7 @@ alternate_api_url = "https://example.com"
         topology = advisory_supersession.reconciliation_topology(GOVERNED_CONFIG)
 
         self.assertEqual(topology.requests, 358)
-        self.assertEqual(topology.secondary_points, 438)
+        self.assertEqual(topology.secondary_points, 442)
         self.assertEqual(topology.minimum_pacing_seconds, 260)
 
     def test_rejects_runs_per_page_other_than_one_hundred(self) -> None:
@@ -1220,7 +1259,7 @@ alternate_api_url = "https://example.com"
             REPO_ROOT / "ci" / "advisory-supersession.toml"
         ).read_text(encoding="utf-8")
         path = self.write_config(
-            governed.replace("max_secondary_points = 500", "max_secondary_points = 437")
+            governed.replace("max_secondary_points = 500", "max_secondary_points = 441")
         )
 
         with self.assertRaisesRegex(ValueError, "max_secondary_points"):

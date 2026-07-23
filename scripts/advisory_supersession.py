@@ -116,7 +116,7 @@ def reconciliation_topology(config: Config) -> ReconciliationTopology:
             config.max_cancellation_targets
             * episode.secondary_points
         )
-        + config.secondary_read_points
+        + max(config.secondary_read_points, config.secondary_mutation_points)
     )
     minimum_pacing_seconds = (
         census_count
@@ -377,6 +377,8 @@ class ActionsClient(Protocol):
     def begin_reconciliation_round(self) -> None: ...
 
     def reconciliation_evidence(self) -> ReconciliationEvidence | None: ...
+
+    def cancel_invoking_run(self, run_id: int) -> None: ...
 
     def cancel_and_confirm(
         self,
@@ -1083,6 +1085,17 @@ class GitHubActionsClient:
             print(f"::warning::GitHub returned 409 while cancelling run {run_id}")
         return status
 
+    def cancel_invoking_run(self, run_id: int) -> None:
+        if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
+            raise ValueError("invoking run id must be positive")
+        if getattr(self, "_ledger", None) is None:
+            raise RuntimeError("self-cancellation requires a reconciliation ledger")
+        status = self._request_cancel(run_id, force=False)
+        if status != 202:
+            raise RuntimeError(
+                f"GitHub did not accept cancellation of invoking run {run_id}"
+            )
+
     def cancel_and_confirm(
         self,
         target: WorkflowRun,
@@ -1339,7 +1352,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = operation(client, run_id=args.run_id, run_sha=args.run_sha)
     except SupersededRun as error:
         print(f"::notice::{error}")
-        return 78
+        try:
+            client.cancel_invoking_run(args.run_id)
+        except (OSError, RuntimeError, ValueError) as cancel_error:
+            print(f"::error::{cancel_error}", file=sys.stderr)
+            return 1
+        return 0
     except (OSError, RuntimeError, ValueError, tomllib.TOMLDecodeError) as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1

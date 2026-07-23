@@ -112,6 +112,7 @@ fn ungoverned_submit_capable_loaded_config() -> LoadedBoltV3Config {
             pool.enforce_submit_admission = false;
         }
     }
+    crate::bolt_v3_current_evidence::prepare_test_generation(&loaded);
     loaded
 }
 

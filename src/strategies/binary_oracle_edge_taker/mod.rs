@@ -5841,22 +5841,22 @@ impl BinaryOracleEdgeTaker {
                 as_of_ms: Some(snapshot.as_of_ms),
                 annualized_decimal: snapshot
                     .annualized_realized_vol_decimal
-                    .map_or_else(String::new, evidence_number),
+                    .map(evidence_number),
                 measured_annualized_decimal: snapshot
                     .measured_annualized_realized_vol_decimal
-                    .map_or_else(String::new, evidence_number),
+                    .map(evidence_number),
                 noise_robust_annualized_decimal: snapshot
                     .noise_robust_annualized_realized_vol_decimal
-                    .map_or_else(String::new, evidence_number),
+                    .map(evidence_number),
                 continuous_annualized_decimal: snapshot
                     .continuous_annualized_realized_vol_decimal
-                    .map_or_else(String::new, evidence_number),
+                    .map(evidence_number),
                 jump_annualized_decimal: snapshot
                     .jump_annualized_realized_vol_decimal
-                    .map_or_else(String::new, evidence_number),
+                    .map(evidence_number),
                 forecast_annualized_decimal: snapshot
                     .forecast_annualized_realized_vol_decimal
-                    .map_or_else(String::new, evidence_number),
+                    .map(evidence_number),
                 pricing_component: Some(realized_vol_pricing_component_fact(
                     snapshot.pricing_component,
                 )),
@@ -5879,12 +5879,12 @@ impl BinaryOracleEdgeTaker {
             None => RealizedVolatilityEvidenceFields {
                 surface_id: String::new(),
                 as_of_ms: None,
-                annualized_decimal: String::new(),
-                measured_annualized_decimal: String::new(),
-                noise_robust_annualized_decimal: String::new(),
-                continuous_annualized_decimal: String::new(),
-                jump_annualized_decimal: String::new(),
-                forecast_annualized_decimal: String::new(),
+                annualized_decimal: None,
+                measured_annualized_decimal: None,
+                noise_robust_annualized_decimal: None,
+                continuous_annualized_decimal: None,
+                jump_annualized_decimal: None,
+                forecast_annualized_decimal: None,
                 pricing_component: None,
                 seconds_per_annum: String::new(),
                 aggregation: None,
@@ -5950,6 +5950,7 @@ impl BinaryOracleEdgeTaker {
             },
             None => StrategyInputRvState::Absent {
                 gate_result: receipt.gate_result,
+                receive_watermark_ms: receipt.receive_watermark_ms.map(LocalReceiveMs::value),
             },
         }
     }
@@ -6027,11 +6028,9 @@ impl BinaryOracleEdgeTaker {
                     .active
                     .price_to_beat
                     .filter(|value| is_positive_finite(*value))
-                    .map_or_else(String::new, evidence_number),
+                    .map(evidence_number),
                 reference_quote_ts_event,
-                spot_price: self
-                    .evidence_spot_price()
-                    .map_or_else(String::new, evidence_number),
+                spot_price: self.evidence_spot_price().map(evidence_number),
                 fast_venue_available,
                 reference_current_price: reference_current_price.map(evidence_number),
                 reference_current_price_available,
@@ -6049,21 +6048,21 @@ impl BinaryOracleEdgeTaker {
                     .evaluation
                     .min_worst_case_ev_bps
                     .filter(|value| value.is_finite())
-                    .map_or_else(String::new, evidence_number),
+                    .map(evidence_number),
                 fair_probability_up: decision
                     .evaluation
                     .fair_probability_up
-                    .map_or_else(String::new, probability_evidence),
+                    .map(probability_evidence),
                 uncertainty_band_probability: decision
                     .evaluation
                     .uncertainty_band_probability
-                    .map_or_else(String::new, probability_evidence),
+                    .map(probability_evidence),
                 expected_edge_basis_points: expected_edge_basis_points
                     .filter(|value| value.is_finite())
-                    .map_or_else(String::new, evidence_number),
+                    .map(evidence_number),
                 worst_case_edge_basis_points: worst_case_edge_basis_points
                     .filter(|value| value.is_finite())
-                    .map_or_else(String::new, evidence_number),
+                    .map(evidence_number),
                 up_worst_case_edge_basis_points: option_evidence_number(
                     decision.evaluation.up_worst_case_ev_bps,
                 ),
@@ -6090,7 +6089,7 @@ impl BinaryOracleEdgeTaker {
                 lead_agreement_corr: option_evidence_probability(
                     self.pricing.last_lead_agreement_corr,
                 ),
-                fee_rate_basis_points: String::new(),
+                fee_rate_basis_points: None,
                 selected_side: decision
                     .evaluation
                     .selected_side
@@ -6571,33 +6570,12 @@ impl BinaryOracleEdgeTaker {
 
         let evaluation_decision =
             if matches!(decision.evaluation.exit_decision, Some(ExitDecision::Exit)) {
-                let submission = SubmissionLinkage {
-                    instrument_id: decision
-                        .instrument_id
-                        .context("exit evaluation submission is missing instrument id")?
-                        .to_string(),
-                    order_side: decision
-                        .order_side
-                        .context("exit evaluation submission is missing order side")?
-                        .to_string(),
-                    price: option_evidence_number(decision.price)
-                        .context("exit evaluation submission is missing price")?,
-                    quantity: decision
-                        .quantity
-                        .context("exit evaluation submission is missing quantity")?
-                        .to_string(),
-                    client_order_id: decision
-                        .client_order_id
-                        .context("exit evaluation submission is missing client order id")?
-                        .to_string(),
-                };
                 ExitEvaluationDecision::Submission {
                     outcome: if log_fields.forced_flat_reasons.is_empty() {
                         ExitSubmissionOutcome::Exit
                     } else {
                         ExitSubmissionOutcome::ExitFailClosed
                     },
-                    submission,
                 }
             } else {
                 ExitEvaluationDecision::Hold {

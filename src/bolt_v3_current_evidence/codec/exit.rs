@@ -204,7 +204,6 @@ enum ExitTriggerSourceV1 {
 enum ExitEvaluationDecisionV1 {
     Submission {
         outcome: ExitSubmissionOutcomeV1,
-        submission: SubmissionLinkageWireV1,
     },
     Hold {
         outcome: ExitHoldOutcomeV1,
@@ -374,8 +373,8 @@ impl TryFrom<ExitDecisionDetails> for ExitDecisionDetailsWireV1 {
 
     fn try_from(value: ExitDecisionDetails) -> Result<Self> {
         ensure!(
-            value.exit_eval_now_ms > 0 && value.trigger_ts_event_ms > 0 && value.ts_ms > 0,
-            "exit decision timestamps must be positive"
+            value.exit_eval_now_ms > 0 && value.ts_ms > 0,
+            "exit decision evaluation and record timestamps must be positive"
         );
         Ok(Self {
             strategy_id: required_text(value.strategy_id, "strategy_id")?,
@@ -463,8 +462,8 @@ impl TryFrom<ExitDecisionDetailsWireV1> for ExitDecisionDetails {
 
     fn try_from(value: ExitDecisionDetailsWireV1) -> Result<Self> {
         ensure!(
-            value.exit_eval_now_ms > 0 && value.trigger_ts_event_ms > 0 && value.ts_ms > 0,
-            "exit decision timestamps must be positive"
+            value.exit_eval_now_ms > 0 && value.ts_ms > 0,
+            "exit decision evaluation and record timestamps must be positive"
         );
         Ok(Self {
             strategy_id: required_text(value.strategy_id, "strategy_id")?,
@@ -661,12 +660,8 @@ impl TryFrom<ExitEvaluationDecision> for ExitEvaluationDecisionV1 {
 
     fn try_from(value: ExitEvaluationDecision) -> Result<Self> {
         Ok(match value {
-            ExitEvaluationDecision::Submission {
-                outcome,
-                submission,
-            } => Self::Submission {
+            ExitEvaluationDecision::Submission { outcome } => Self::Submission {
                 outcome: outcome.into(),
-                submission: submission.try_into()?,
             },
             ExitEvaluationDecision::Hold {
                 outcome,
@@ -687,12 +682,8 @@ impl TryFrom<ExitEvaluationDecisionV1> for ExitEvaluationDecision {
 
     fn try_from(value: ExitEvaluationDecisionV1) -> Result<Self> {
         Ok(match value {
-            ExitEvaluationDecisionV1::Submission {
-                outcome,
-                submission,
-            } => Self::Submission {
+            ExitEvaluationDecisionV1::Submission { outcome } => Self::Submission {
                 outcome: outcome.into(),
-                submission: submission.try_into()?,
             },
             ExitEvaluationDecisionV1::Hold {
                 outcome,

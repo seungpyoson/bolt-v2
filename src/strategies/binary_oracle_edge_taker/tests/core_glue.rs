@@ -91,7 +91,9 @@ fn decision_evidence_failure_rejects_before_nt_submit() {
         .expect_err("evidence failure must reject before NT submit");
 
     assert!(
-        error.to_string().contains("intent write failed"),
+        error
+            .to_string()
+            .contains("evidence commit indeterminate during write"),
         "{error:#}"
     );
 }

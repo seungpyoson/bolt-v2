@@ -229,6 +229,7 @@ fn with_resolved_health_and_start_builds_reuse_one_secret_resolution() {
     // production `/var/lib/bolt` path, which is unwritable in CI. The
     // one-resolution property below is unaffected by this storage path.
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    crate::bolt_v3_current_evidence::prepare_test_generation(&loaded);
     let secret_bearing_clients = loaded
         .root
         .clients

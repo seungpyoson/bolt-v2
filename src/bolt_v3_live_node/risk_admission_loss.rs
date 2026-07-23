@@ -2033,7 +2033,8 @@ mod tests {
             panic!("evidence write failure should persist a fail-closed state");
         };
         assert!(
-            reason.contains("decision evidence unavailable"),
+            reason.contains("venue truth divergence evidence write failed")
+                && reason.contains("evidence commit indeterminate during write"),
             "persisted fail-closed state should carry the evidence persistence failure: {reason}"
         );
     }
@@ -2163,6 +2164,13 @@ mod tests {
             pre_wiring_writer.clone(),
             Decimal::new(3, 0),
         ));
+        let pre_wiring_setup_facts = pre_wiring_writer
+            .recorded_facts()
+            .expect("pre-wiring setup evidence should decode");
+        assert!(matches!(
+            pre_wiring_setup_facts.as_slice(),
+            [crate::bolt_v3_current_evidence::CurrentFact::CapitalAdmissionRebuild(_)]
+        ));
         let pre_wiring_trading_state = Rc::new(RecordingTradingStateController::default());
         let pre_wiring_sink = NtReducingLossActionSink::new(pre_wiring_trading_state.clone());
         pre_wiring_sink
@@ -2171,11 +2179,12 @@ mod tests {
 
         assert_eq!(pre_wiring_trading_state.enter_reducing_calls(), 1);
         assert_eq!(pre_wiring_executor.submitted_quantities(), Vec::new());
-        assert!(
+        assert_eq!(
             pre_wiring_writer
                 .recorded_facts()
-                .expect("empty current evidence should decode")
-                .is_empty()
+                .expect("post-action current evidence should decode"),
+            pre_wiring_setup_facts,
+            "an unwired flatten action must not add decision evidence"
         );
 
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
@@ -2183,6 +2192,10 @@ mod tests {
             writer.clone(),
             Decimal::new(3, 0),
         ));
+        let wired_setup_fact_count = writer
+            .recorded_facts()
+            .expect("wired setup evidence should decode")
+            .len();
         let wired_trading_state = Rc::new(RecordingTradingStateController::default());
         let wired_sink = NtReducingLossActionSink::with_flatten_executor(
             wired_trading_state.clone(),
@@ -2201,7 +2214,8 @@ mod tests {
         let facts = writer
             .recorded_facts()
             .expect("flatten current evidence should decode");
-        let records = facts
+        let action_facts = &facts[wired_setup_fact_count..];
+        let records = action_facts
             .iter()
             .filter_map(|fact| match fact {
                 crate::bolt_v3_current_evidence::CurrentFact::RiskReducingExitOrderIntent(
@@ -2219,7 +2233,7 @@ mod tests {
                 }
             )
         );
-        let admission_decisions = facts
+        let admission_decisions = action_facts
             .iter()
             .filter_map(|fact| match fact {
                 crate::bolt_v3_current_evidence::CurrentFact::ForcedReductionAdmission(record) => {

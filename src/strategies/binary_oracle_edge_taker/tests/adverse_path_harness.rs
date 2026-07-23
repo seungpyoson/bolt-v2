@@ -1956,7 +1956,7 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
 fn terminal_settlement_uses_one_canonical_durable_event() {
     assert_reality_fixtures();
 
-    let evidence = failing_decision_evidence();
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1989,7 +1989,7 @@ fn terminal_settlement_uses_one_canonical_durable_event() {
             "terminal evidence must use one durable append".to_string(),
             terminal_ns,
         )
-        .expect("standalone lifecycle failure must be irrelevant to terminal settlement");
+        .expect("canonical terminal settlement evidence must append once");
 
     let events = evidence
         .recorded_facts()

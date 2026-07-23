@@ -24,6 +24,7 @@ pub(super) fn loaded_config_with_submit_sizer_recovery(
         .persistence
         .decision_evidence
         .recovery_evidence_max_bytes = 100_000;
+    crate::bolt_v3_current_evidence::prepare_test_generation(&loaded);
     loaded
 }
 
@@ -298,12 +299,14 @@ pub(super) fn fixture_loaded_config() -> LoadedBoltV3Config {
         ))
         .to_string_lossy()
         .to_string();
-    LoadedBoltV3Config {
+    let loaded = LoadedBoltV3Config {
         root_path: std::path::PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
         config_bundle_checksum: String::new(),
         root,
         strategies: Vec::new(),
-    }
+    };
+    crate::bolt_v3_current_evidence::prepare_test_generation(&loaded);
+    loaded
 }
 
 pub(super) fn fixture_loaded_config_with_hyperliquid_standard_perps_route() -> LoadedBoltV3Config {

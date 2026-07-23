@@ -487,7 +487,7 @@ impl FairValuePricingState {
                     quantile: 1.0,
                 },
             seconds_per_annum: 31_536_000.0,
-            config_fingerprint: String::new(),
+            config_fingerprint: "<test-seed-config-fingerprint>".to_string(),
         });
     }
 }

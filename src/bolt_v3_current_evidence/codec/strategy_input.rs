@@ -44,19 +44,19 @@ struct SubmitLinkedStrategyInputLineV1 {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BlockedStrategyInputWireV1 {
-    details: StrategyInputDetailsWireV1,
+    details: StrategyInputDetailsWireV1<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SubmitLinkedStrategyInputWireV1 {
-    details: StrategyInputDetailsWireV1,
+    details: StrategyInputDetailsWireV1<String>,
     submission: SubmissionLinkageWireV1,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StrategyInputDetailsWireV1 {
+struct StrategyInputDetailsWireV1<PurposeNumeric> {
     strategy_id: String,
     configured_target_id: String,
     market_selection_ruleset_id: String,
@@ -72,9 +72,9 @@ struct StrategyInputDetailsWireV1 {
     polymarket_market_start_timestamp_ms: Option<u64>,
     polymarket_market_end_timestamp_ms: Option<u64>,
     price_to_beat_source: String,
-    price_to_beat_value: String,
+    price_to_beat_value: PurposeNumeric,
     reference_quote_ts_event: u64,
-    spot_price: String,
+    spot_price: PurposeNumeric,
     fast_venue_available: bool,
     reference_current_price: Option<String>,
     reference_current_price_available: bool,
@@ -84,11 +84,11 @@ struct StrategyInputDetailsWireV1 {
     seconds_to_market_end: u64,
     pricing_kurtosis: String,
     theta_decay_factor: String,
-    theta_scaled_min_edge_bps: String,
-    fair_probability_up: String,
-    uncertainty_band_probability: String,
-    expected_edge_basis_points: String,
-    worst_case_edge_basis_points: String,
+    theta_scaled_min_edge_bps: PurposeNumeric,
+    fair_probability_up: PurposeNumeric,
+    uncertainty_band_probability: PurposeNumeric,
+    expected_edge_basis_points: PurposeNumeric,
+    worst_case_edge_basis_points: PurposeNumeric,
     up_worst_case_edge_basis_points: Option<String>,
     down_worst_case_edge_basis_points: Option<String>,
     gate_blocked_by: Vec<EntryBlockReasonV1>,
@@ -98,7 +98,7 @@ struct StrategyInputDetailsWireV1 {
     fast_venue_jitter_ms: Option<u64>,
     fast_venue_incoherent: bool,
     lead_agreement_corr: Option<String>,
-    fee_rate_basis_points: String,
+    fee_rate_basis_points: PurposeNumeric,
     selected_side: Option<String>,
 }
 
@@ -114,6 +114,7 @@ enum StrategyInputMarketSelectionOutcomeV1 {
 enum StrategyInputRvStateWireV1 {
     Absent {
         gate_result: RvGateResultV1,
+        receive_watermark_ms: Option<u64>,
     },
     Present {
         selected_annualized_decimal: Option<String>,
@@ -222,10 +223,30 @@ pub(super) fn decode_submit(
     })
 }
 
-impl TryFrom<StrategyInputDetails> for StrategyInputDetailsWireV1 {
+trait StrategyInputPurposeNumeric: Sized {
+    fn validated(self, field: &str) -> Result<Self>;
+}
+
+impl StrategyInputPurposeNumeric for String {
+    fn validated(self, field: &str) -> Result<Self> {
+        required_number(self, field)
+    }
+}
+
+impl StrategyInputPurposeNumeric for Option<String> {
+    fn validated(self, field: &str) -> Result<Self> {
+        optional_number(self, field)
+    }
+}
+
+impl<PurposeNumeric> TryFrom<StrategyInputDetails<PurposeNumeric>>
+    for StrategyInputDetailsWireV1<PurposeNumeric>
+where
+    PurposeNumeric: StrategyInputPurposeNumeric,
+{
     type Error = anyhow::Error;
 
-    fn try_from(value: StrategyInputDetails) -> Result<Self> {
+    fn try_from(value: StrategyInputDetails<PurposeNumeric>) -> Result<Self> {
         ensure!(
             value.reference_quote_ts_event > 0,
             "reference quote timestamp must be positive"
@@ -264,9 +285,9 @@ impl TryFrom<StrategyInputDetails> for StrategyInputDetailsWireV1 {
                 value.price_to_beat_source,
                 "price_to_beat_source",
             )?,
-            price_to_beat_value: required_number(value.price_to_beat_value, "price_to_beat_value")?,
+            price_to_beat_value: value.price_to_beat_value.validated("price_to_beat_value")?,
             reference_quote_ts_event: value.reference_quote_ts_event,
-            spot_price: required_number(value.spot_price, "spot_price")?,
+            spot_price: value.spot_price.validated("spot_price")?,
             fast_venue_available: value.fast_venue_available,
             reference_current_price: optional_number(
                 value.reference_current_price,
@@ -282,23 +303,19 @@ impl TryFrom<StrategyInputDetails> for StrategyInputDetailsWireV1 {
             seconds_to_market_end: value.seconds_to_market_end,
             pricing_kurtosis: required_number(value.pricing_kurtosis, "pricing_kurtosis")?,
             theta_decay_factor: required_number(value.theta_decay_factor, "theta_decay_factor")?,
-            theta_scaled_min_edge_bps: required_number(
-                value.theta_scaled_min_edge_bps,
-                "theta_scaled_min_edge_bps",
-            )?,
-            fair_probability_up: required_number(value.fair_probability_up, "fair_probability_up")?,
-            uncertainty_band_probability: required_number(
-                value.uncertainty_band_probability,
-                "uncertainty_band_probability",
-            )?,
-            expected_edge_basis_points: required_number(
-                value.expected_edge_basis_points,
-                "expected_edge_basis_points",
-            )?,
-            worst_case_edge_basis_points: required_number(
-                value.worst_case_edge_basis_points,
-                "worst_case_edge_basis_points",
-            )?,
+            theta_scaled_min_edge_bps: value
+                .theta_scaled_min_edge_bps
+                .validated("theta_scaled_min_edge_bps")?,
+            fair_probability_up: value.fair_probability_up.validated("fair_probability_up")?,
+            uncertainty_band_probability: value
+                .uncertainty_band_probability
+                .validated("uncertainty_band_probability")?,
+            expected_edge_basis_points: value
+                .expected_edge_basis_points
+                .validated("expected_edge_basis_points")?,
+            worst_case_edge_basis_points: value
+                .worst_case_edge_basis_points
+                .validated("worst_case_edge_basis_points")?,
             up_worst_case_edge_basis_points: optional_number(
                 value.up_worst_case_edge_basis_points,
                 "up_worst_case_edge_basis_points",
@@ -318,19 +335,22 @@ impl TryFrom<StrategyInputDetails> for StrategyInputDetailsWireV1 {
             fast_venue_jitter_ms: value.fast_venue_jitter_ms,
             fast_venue_incoherent: value.fast_venue_incoherent,
             lead_agreement_corr: optional_number(value.lead_agreement_corr, "lead_agreement_corr")?,
-            fee_rate_basis_points: required_number(
-                value.fee_rate_basis_points,
-                "fee_rate_basis_points",
-            )?,
+            fee_rate_basis_points: value
+                .fee_rate_basis_points
+                .validated("fee_rate_basis_points")?,
             selected_side: optional_text(value.selected_side, "selected_side")?,
         })
     }
 }
 
-impl TryFrom<StrategyInputDetailsWireV1> for StrategyInputDetails {
+impl<PurposeNumeric> TryFrom<StrategyInputDetailsWireV1<PurposeNumeric>>
+    for StrategyInputDetails<PurposeNumeric>
+where
+    PurposeNumeric: StrategyInputPurposeNumeric,
+{
     type Error = anyhow::Error;
 
-    fn try_from(value: StrategyInputDetailsWireV1) -> Result<Self> {
+    fn try_from(value: StrategyInputDetailsWireV1<PurposeNumeric>) -> Result<Self> {
         ensure!(
             value.reference_quote_ts_event > 0,
             "reference quote timestamp must be positive"
@@ -369,9 +389,9 @@ impl TryFrom<StrategyInputDetailsWireV1> for StrategyInputDetails {
                 value.price_to_beat_source,
                 "price_to_beat_source",
             )?,
-            price_to_beat_value: required_number(value.price_to_beat_value, "price_to_beat_value")?,
+            price_to_beat_value: value.price_to_beat_value.validated("price_to_beat_value")?,
             reference_quote_ts_event: value.reference_quote_ts_event,
-            spot_price: required_number(value.spot_price, "spot_price")?,
+            spot_price: value.spot_price.validated("spot_price")?,
             fast_venue_available: value.fast_venue_available,
             reference_current_price: optional_number(
                 value.reference_current_price,
@@ -387,23 +407,19 @@ impl TryFrom<StrategyInputDetailsWireV1> for StrategyInputDetails {
             seconds_to_market_end: value.seconds_to_market_end,
             pricing_kurtosis: required_number(value.pricing_kurtosis, "pricing_kurtosis")?,
             theta_decay_factor: required_number(value.theta_decay_factor, "theta_decay_factor")?,
-            theta_scaled_min_edge_bps: required_number(
-                value.theta_scaled_min_edge_bps,
-                "theta_scaled_min_edge_bps",
-            )?,
-            fair_probability_up: required_number(value.fair_probability_up, "fair_probability_up")?,
-            uncertainty_band_probability: required_number(
-                value.uncertainty_band_probability,
-                "uncertainty_band_probability",
-            )?,
-            expected_edge_basis_points: required_number(
-                value.expected_edge_basis_points,
-                "expected_edge_basis_points",
-            )?,
-            worst_case_edge_basis_points: required_number(
-                value.worst_case_edge_basis_points,
-                "worst_case_edge_basis_points",
-            )?,
+            theta_scaled_min_edge_bps: value
+                .theta_scaled_min_edge_bps
+                .validated("theta_scaled_min_edge_bps")?,
+            fair_probability_up: value.fair_probability_up.validated("fair_probability_up")?,
+            uncertainty_band_probability: value
+                .uncertainty_band_probability
+                .validated("uncertainty_band_probability")?,
+            expected_edge_basis_points: value
+                .expected_edge_basis_points
+                .validated("expected_edge_basis_points")?,
+            worst_case_edge_basis_points: value
+                .worst_case_edge_basis_points
+                .validated("worst_case_edge_basis_points")?,
             up_worst_case_edge_basis_points: optional_number(
                 value.up_worst_case_edge_basis_points,
                 "up_worst_case_edge_basis_points",
@@ -423,10 +439,9 @@ impl TryFrom<StrategyInputDetailsWireV1> for StrategyInputDetails {
             fast_venue_jitter_ms: value.fast_venue_jitter_ms,
             fast_venue_incoherent: value.fast_venue_incoherent,
             lead_agreement_corr: optional_number(value.lead_agreement_corr, "lead_agreement_corr")?,
-            fee_rate_basis_points: required_number(
-                value.fee_rate_basis_points,
-                "fee_rate_basis_points",
-            )?,
+            fee_rate_basis_points: value
+                .fee_rate_basis_points
+                .validated("fee_rate_basis_points")?,
             selected_side: optional_text(value.selected_side, "selected_side")?,
         })
     }
@@ -455,8 +470,12 @@ impl TryFrom<StrategyInputRvState> for StrategyInputRvStateWireV1 {
 
     fn try_from(value: StrategyInputRvState) -> Result<Self> {
         Ok(match value {
-            StrategyInputRvState::Absent { gate_result } => Self::Absent {
+            StrategyInputRvState::Absent {
+                gate_result,
+                receive_watermark_ms,
+            } => Self::Absent {
                 gate_result: gate_result.into(),
+                receive_watermark_ms,
             },
             StrategyInputRvState::Present {
                 selected_annualized_decimal,
@@ -483,8 +502,12 @@ impl TryFrom<StrategyInputRvStateWireV1> for StrategyInputRvState {
 
     fn try_from(value: StrategyInputRvStateWireV1) -> Result<Self> {
         Ok(match value {
-            StrategyInputRvStateWireV1::Absent { gate_result } => Self::Absent {
+            StrategyInputRvStateWireV1::Absent {
+                gate_result,
+                receive_watermark_ms,
+            } => Self::Absent {
                 gate_result: gate_result.into(),
+                receive_watermark_ms,
             },
             StrategyInputRvStateWireV1::Present {
                 selected_annualized_decimal,

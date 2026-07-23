@@ -73,12 +73,12 @@ struct EntrySkipV1Wire {
 pub(super) struct EntryRealizedVolatilitySnapshotV1Wire {
     surface_id: String,
     as_of_ms: Option<u64>,
-    annualized_decimal: String,
-    measured_annualized_decimal: String,
-    noise_robust_annualized_decimal: String,
-    continuous_annualized_decimal: String,
-    jump_annualized_decimal: String,
-    forecast_annualized_decimal: String,
+    annualized_decimal: Option<String>,
+    measured_annualized_decimal: Option<String>,
+    noise_robust_annualized_decimal: Option<String>,
+    continuous_annualized_decimal: Option<String>,
+    jump_annualized_decimal: Option<String>,
+    forecast_annualized_decimal: Option<String>,
     pricing_component: RealizedVolPricingComponentV1,
     seconds_per_annum: String,
     aggregation: RealizedVolAggregationV1,
@@ -513,27 +513,27 @@ impl TryFrom<&EntryRealizedVolatilitySnapshotFact> for EntryRealizedVolatilitySn
         Ok(Self {
             surface_id: required_text(&value.surface_id, "rv.surface_id")?,
             as_of_ms: value.as_of_ms,
-            annualized_decimal: required_number(
+            annualized_decimal: optional_number(
                 &value.annualized_decimal,
                 "rv.annualized_decimal",
             )?,
-            measured_annualized_decimal: required_number(
+            measured_annualized_decimal: optional_number(
                 &value.measured_annualized_decimal,
                 "rv.measured_annualized_decimal",
             )?,
-            noise_robust_annualized_decimal: required_number(
+            noise_robust_annualized_decimal: optional_number(
                 &value.noise_robust_annualized_decimal,
                 "rv.noise_robust_annualized_decimal",
             )?,
-            continuous_annualized_decimal: required_number(
+            continuous_annualized_decimal: optional_number(
                 &value.continuous_annualized_decimal,
                 "rv.continuous_annualized_decimal",
             )?,
-            jump_annualized_decimal: required_number(
+            jump_annualized_decimal: optional_number(
                 &value.jump_annualized_decimal,
                 "rv.jump_annualized_decimal",
             )?,
-            forecast_annualized_decimal: required_number(
+            forecast_annualized_decimal: optional_number(
                 &value.forecast_annualized_decimal,
                 "rv.forecast_annualized_decimal",
             )?,
@@ -563,27 +563,27 @@ impl TryFrom<EntryRealizedVolatilitySnapshotV1Wire> for EntryRealizedVolatilityS
         Ok(Self {
             surface_id: required_text(&value.surface_id, "rv.surface_id")?,
             as_of_ms: value.as_of_ms,
-            annualized_decimal: required_number(
+            annualized_decimal: optional_number(
                 &value.annualized_decimal,
                 "rv.annualized_decimal",
             )?,
-            measured_annualized_decimal: required_number(
+            measured_annualized_decimal: optional_number(
                 &value.measured_annualized_decimal,
                 "rv.measured_annualized_decimal",
             )?,
-            noise_robust_annualized_decimal: required_number(
+            noise_robust_annualized_decimal: optional_number(
                 &value.noise_robust_annualized_decimal,
                 "rv.noise_robust_annualized_decimal",
             )?,
-            continuous_annualized_decimal: required_number(
+            continuous_annualized_decimal: optional_number(
                 &value.continuous_annualized_decimal,
                 "rv.continuous_annualized_decimal",
             )?,
-            jump_annualized_decimal: required_number(
+            jump_annualized_decimal: optional_number(
                 &value.jump_annualized_decimal,
                 "rv.jump_annualized_decimal",
             )?,
-            forecast_annualized_decimal: required_number(
+            forecast_annualized_decimal: optional_number(
                 &value.forecast_annualized_decimal,
                 "rv.forecast_annualized_decimal",
             )?,

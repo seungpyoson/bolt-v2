@@ -1647,7 +1647,9 @@ mod tests {
         }
     }
 
-    fn strategy_input_details() -> StrategyInputDetails {
+    fn strategy_input_details<PurposeNumeric>(
+        purpose_numeric: impl Fn(&str) -> PurposeNumeric,
+    ) -> StrategyInputDetails<PurposeNumeric> {
         StrategyInputDetails {
             strategy_id: "strategy-1".to_string(),
             configured_target_id: "target-1".to_string(),
@@ -1664,9 +1666,9 @@ mod tests {
             polymarket_market_start_timestamp_ms: Some(1),
             polymarket_market_end_timestamp_ms: Some(60_000),
             price_to_beat_source: "chainlink".to_string(),
-            price_to_beat_value: "100".to_string(),
+            price_to_beat_value: purpose_numeric("100"),
             reference_quote_ts_event: 31,
-            spot_price: "100".to_string(),
+            spot_price: purpose_numeric("100"),
             fast_venue_available: true,
             reference_current_price: Some("100".to_string()),
             reference_current_price_available: true,
@@ -1674,15 +1676,16 @@ mod tests {
             reference_current_price_failed_over: Some(false),
             realized_volatility: StrategyInputRvState::Absent {
                 gate_result: RvGateResult::MissingSnapshot,
+                receive_watermark_ms: None,
             },
             seconds_to_market_end: 60,
             pricing_kurtosis: "3".to_string(),
             theta_decay_factor: "1".to_string(),
-            theta_scaled_min_edge_bps: "10".to_string(),
-            fair_probability_up: "0.5".to_string(),
-            uncertainty_band_probability: "0.01".to_string(),
-            expected_edge_basis_points: "20".to_string(),
-            worst_case_edge_basis_points: "10".to_string(),
+            theta_scaled_min_edge_bps: purpose_numeric("10"),
+            fair_probability_up: purpose_numeric("0.5"),
+            uncertainty_band_probability: purpose_numeric("0.01"),
+            expected_edge_basis_points: purpose_numeric("20"),
+            worst_case_edge_basis_points: purpose_numeric("10"),
             up_worst_case_edge_basis_points: Some("10".to_string()),
             down_worst_case_edge_basis_points: Some("9".to_string()),
             gate_blocked_by: vec![],
@@ -1694,7 +1697,7 @@ mod tests {
             fast_venue_jitter_ms: Some(1),
             fast_venue_incoherent: false,
             lead_agreement_corr: Some("1".to_string()),
-            fee_rate_basis_points: "0".to_string(),
+            fee_rate_basis_points: purpose_numeric("0"),
             selected_side: None,
         }
     }
@@ -2337,7 +2340,7 @@ mod tests {
     #[test]
     fn strategy_input_identities_are_role_pure_and_model_rv_absence() {
         let blocked = BlockedStrategyInputObservationFact {
-            details: strategy_input_details(),
+            details: strategy_input_details(|value| Some(value.to_string())),
         };
         let blocked_record = <CurrentCodecs as CodecFor<
             identities::BlockedStrategyInputObservationV1,
@@ -2356,7 +2359,7 @@ mod tests {
         );
 
         let submit = SubmitLinkedStrategyInputSnapshotFact {
-            details: strategy_input_details(),
+            details: strategy_input_details(str::to_string),
             submission: SubmissionLinkage {
                 instrument_id: "YES-USD.POLYMARKET".to_string(),
                 order_side: "buy".to_string(),

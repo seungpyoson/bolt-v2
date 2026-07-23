@@ -609,12 +609,12 @@ pub struct RealizedVolatilitySourceDiagnosticFact {
 pub struct EntryRealizedVolatilitySnapshotFact {
     pub surface_id: String,
     pub as_of_ms: Option<u64>,
-    pub annualized_decimal: String,
-    pub measured_annualized_decimal: String,
-    pub noise_robust_annualized_decimal: String,
-    pub continuous_annualized_decimal: String,
-    pub jump_annualized_decimal: String,
-    pub forecast_annualized_decimal: String,
+    pub annualized_decimal: Option<String>,
+    pub measured_annualized_decimal: Option<String>,
+    pub noise_robust_annualized_decimal: Option<String>,
+    pub continuous_annualized_decimal: Option<String>,
+    pub jump_annualized_decimal: Option<String>,
+    pub forecast_annualized_decimal: Option<String>,
     pub pricing_component: RealizedVolPricingComponent,
     pub seconds_per_annum: String,
     pub aggregation: RealizedVolAggregation,
@@ -668,6 +668,7 @@ pub struct EntrySkipFact {
 pub enum StrategyInputRvState {
     Absent {
         gate_result: RvGateResult,
+        receive_watermark_ms: Option<u64>,
     },
     Present {
         selected_annualized_decimal: Option<String>,
@@ -684,7 +685,7 @@ pub enum StrategyInputMarketSelectionOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StrategyInputDetails {
+pub struct StrategyInputDetails<PurposeNumeric> {
     pub strategy_id: String,
     pub configured_target_id: String,
     pub market_selection_ruleset_id: String,
@@ -700,9 +701,9 @@ pub struct StrategyInputDetails {
     pub polymarket_market_start_timestamp_ms: Option<u64>,
     pub polymarket_market_end_timestamp_ms: Option<u64>,
     pub price_to_beat_source: String,
-    pub price_to_beat_value: String,
+    pub price_to_beat_value: PurposeNumeric,
     pub reference_quote_ts_event: u64,
-    pub spot_price: String,
+    pub spot_price: PurposeNumeric,
     pub fast_venue_available: bool,
     pub reference_current_price: Option<String>,
     pub reference_current_price_available: bool,
@@ -712,11 +713,11 @@ pub struct StrategyInputDetails {
     pub seconds_to_market_end: u64,
     pub pricing_kurtosis: String,
     pub theta_decay_factor: String,
-    pub theta_scaled_min_edge_bps: String,
-    pub fair_probability_up: String,
-    pub uncertainty_band_probability: String,
-    pub expected_edge_basis_points: String,
-    pub worst_case_edge_basis_points: String,
+    pub theta_scaled_min_edge_bps: PurposeNumeric,
+    pub fair_probability_up: PurposeNumeric,
+    pub uncertainty_band_probability: PurposeNumeric,
+    pub expected_edge_basis_points: PurposeNumeric,
+    pub worst_case_edge_basis_points: PurposeNumeric,
     pub up_worst_case_edge_basis_points: Option<String>,
     pub down_worst_case_edge_basis_points: Option<String>,
     pub gate_blocked_by: Vec<EntryBlockReason>,
@@ -726,13 +727,16 @@ pub struct StrategyInputDetails {
     pub fast_venue_jitter_ms: Option<u64>,
     pub fast_venue_incoherent: bool,
     pub lead_agreement_corr: Option<String>,
-    pub fee_rate_basis_points: String,
+    pub fee_rate_basis_points: PurposeNumeric,
     pub selected_side: Option<String>,
 }
 
+pub type BlockedStrategyInputDetails = StrategyInputDetails<Option<String>>;
+pub type SubmitLinkedStrategyInputDetails = StrategyInputDetails<String>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockedStrategyInputObservationFact {
-    pub details: StrategyInputDetails,
+    pub details: BlockedStrategyInputDetails,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -746,7 +750,7 @@ pub struct SubmissionLinkage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubmitLinkedStrategyInputSnapshotFact {
-    pub details: StrategyInputDetails,
+    pub details: SubmitLinkedStrategyInputDetails,
     pub submission: SubmissionLinkage,
 }
 
@@ -856,7 +860,6 @@ pub struct ExitHoldDecisionFact {
 pub enum ExitEvaluationDecision {
     Submission {
         outcome: ExitSubmissionOutcome,
-        submission: SubmissionLinkage,
     },
     Hold {
         outcome: ExitHoldOutcome,

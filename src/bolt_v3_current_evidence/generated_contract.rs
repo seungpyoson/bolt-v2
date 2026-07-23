@@ -13,7 +13,6 @@ pub(crate) enum KnownProducer {
     BasketAdmissionGranted,
     BasketAdmissionRejected,
     CapitalAdmissionRebuild,
-    SubmitReservationMetadata,
     SubmitReservationFill,
     EdgeTakerEntrySkip,
     EdgeTakerExitSubmitDecision,
@@ -43,7 +42,6 @@ pub(crate) enum KnownPurpose {
     BasketAdmissionGranted,
     BasketAdmissionRejected,
     CapitalAdmissionRebuild,
-    SubmitReservationMetadata,
     SubmitReservationFill,
     EntrySkipObservation,
     ExitSubmissionDecision,
@@ -72,7 +70,6 @@ pub(crate) enum KnownIdentity {
     BasketAdmissionGrantedV1,
     BasketAdmissionRejectedV1,
     CapitalAdmissionRebuildV1,
-    SubmitReservationMetadataV1,
     SubmitReservationFillV1,
     EntrySkipObservationV1,
     ExitSubmissionDecisionV1,
@@ -101,7 +98,6 @@ pub(crate) const ALL_IDENTITIES: &[KnownIdentity] = &[
     KnownIdentity::BasketAdmissionGrantedV1,
     KnownIdentity::BasketAdmissionRejectedV1,
     KnownIdentity::CapitalAdmissionRebuildV1,
-    KnownIdentity::SubmitReservationMetadataV1,
     KnownIdentity::SubmitReservationFillV1,
     KnownIdentity::EntrySkipObservationV1,
     KnownIdentity::ExitSubmissionDecisionV1,
@@ -140,8 +136,6 @@ pub(crate) mod identities {
     pub(crate) struct BasketAdmissionRejectedV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct CapitalAdmissionRebuildV1;
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct SubmitReservationMetadataV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct SubmitReservationFillV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,7 +177,6 @@ pub(crate) enum KnownFact {
     BasketAdmissionGrantedV1,
     BasketAdmissionRejectedV1,
     CapitalAdmissionRebuildV1,
-    SubmitReservationMetadataV1,
     SubmitReservationFillV1,
     EntrySkipObservationV1,
     ExitSubmissionDecisionV1,
@@ -253,7 +246,6 @@ pub(crate) const fn current_identity_for_purpose(purpose: KnownPurpose) -> Known
         KnownPurpose::BasketAdmissionGranted => KnownIdentity::BasketAdmissionGrantedV1,
         KnownPurpose::BasketAdmissionRejected => KnownIdentity::BasketAdmissionRejectedV1,
         KnownPurpose::CapitalAdmissionRebuild => KnownIdentity::CapitalAdmissionRebuildV1,
-        KnownPurpose::SubmitReservationMetadata => KnownIdentity::SubmitReservationMetadataV1,
         KnownPurpose::SubmitReservationFill => KnownIdentity::SubmitReservationFillV1,
         KnownPurpose::EntrySkipObservation => KnownIdentity::EntrySkipObservationV1,
         KnownPurpose::ExitSubmissionDecision => KnownIdentity::ExitSubmissionDecisionV1,
@@ -283,7 +275,6 @@ pub(crate) const fn sink_for_purpose(purpose: KnownPurpose) -> KnownSink {
         KnownPurpose::BasketAdmissionGranted => KnownSink::Machine,
         KnownPurpose::BasketAdmissionRejected => KnownSink::Machine,
         KnownPurpose::CapitalAdmissionRebuild => KnownSink::Machine,
-        KnownPurpose::SubmitReservationMetadata => KnownSink::Machine,
         KnownPurpose::SubmitReservationFill => KnownSink::Machine,
         KnownPurpose::EntrySkipObservation => KnownSink::Observation,
         KnownPurpose::ExitSubmissionDecision => KnownSink::Machine,
@@ -313,7 +304,6 @@ pub(crate) const fn effect_policy_for_purpose(purpose: KnownPurpose) -> EffectPo
         KnownPurpose::BasketAdmissionGranted => EffectPolicy::MustPrecedeNewRisk,
         KnownPurpose::BasketAdmissionRejected => EffectPolicy::PreserveResult,
         KnownPurpose::CapitalAdmissionRebuild => EffectPolicy::ReconciliationFailClosed,
-        KnownPurpose::SubmitReservationMetadata => EffectPolicy::MustPrecedeNewRisk,
         KnownPurpose::SubmitReservationFill => EffectPolicy::ReconciliationFailClosed,
         KnownPurpose::EntrySkipObservation => EffectPolicy::ObservationBoundedFailure,
         KnownPurpose::ExitSubmissionDecision => EffectPolicy::RiskReducingContinues,
@@ -347,7 +337,6 @@ pub(crate) const fn purpose_for_producer(producer: KnownProducer) -> KnownPurpos
         KnownProducer::BasketAdmissionGranted => KnownPurpose::BasketAdmissionGranted,
         KnownProducer::BasketAdmissionRejected => KnownPurpose::BasketAdmissionRejected,
         KnownProducer::CapitalAdmissionRebuild => KnownPurpose::CapitalAdmissionRebuild,
-        KnownProducer::SubmitReservationMetadata => KnownPurpose::SubmitReservationMetadata,
         KnownProducer::SubmitReservationFill => KnownPurpose::SubmitReservationFill,
         KnownProducer::EdgeTakerEntrySkip => KnownPurpose::EntrySkipObservation,
         KnownProducer::EdgeTakerExitSubmitDecision => KnownPurpose::ExitSubmissionDecision,
@@ -382,7 +371,6 @@ pub(crate) const fn purpose_for_identity(identity: KnownIdentity) -> KnownPurpos
         KnownIdentity::BasketAdmissionGrantedV1 => KnownPurpose::BasketAdmissionGranted,
         KnownIdentity::BasketAdmissionRejectedV1 => KnownPurpose::BasketAdmissionRejected,
         KnownIdentity::CapitalAdmissionRebuildV1 => KnownPurpose::CapitalAdmissionRebuild,
-        KnownIdentity::SubmitReservationMetadataV1 => KnownPurpose::SubmitReservationMetadata,
         KnownIdentity::SubmitReservationFillV1 => KnownPurpose::SubmitReservationFill,
         KnownIdentity::EntrySkipObservationV1 => KnownPurpose::EntrySkipObservation,
         KnownIdentity::ExitSubmissionDecisionV1 => KnownPurpose::ExitSubmissionDecision,
@@ -416,7 +404,6 @@ pub(crate) const fn fact_for_identity(identity: KnownIdentity) -> KnownFact {
         KnownIdentity::BasketAdmissionGrantedV1 => KnownFact::BasketAdmissionGrantedV1,
         KnownIdentity::BasketAdmissionRejectedV1 => KnownFact::BasketAdmissionRejectedV1,
         KnownIdentity::CapitalAdmissionRebuildV1 => KnownFact::CapitalAdmissionRebuildV1,
-        KnownIdentity::SubmitReservationMetadataV1 => KnownFact::SubmitReservationMetadataV1,
         KnownIdentity::SubmitReservationFillV1 => KnownFact::SubmitReservationFillV1,
         KnownIdentity::EntrySkipObservationV1 => KnownFact::EntrySkipObservationV1,
         KnownIdentity::ExitSubmissionDecisionV1 => KnownFact::ExitSubmissionDecisionV1,
@@ -489,11 +476,6 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
             kind: "capital_admission_rebuild",
             schema_version: 16,
             gate_id: "bolt_v3.capital_admission_rebuild",
-        },
-        KnownIdentity::SubmitReservationMetadataV1 => IdentityDescriptor {
-            kind: "submit_reservation_metadata",
-            schema_version: 16,
-            gate_id: "bolt_v3.submit_admission",
         },
         KnownIdentity::SubmitReservationFillV1 => IdentityDescriptor {
             kind: "submit_reservation_fill",
@@ -617,7 +599,7 @@ pub(crate) const fn disposition_for(
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::AdmittedEntryAdmissionV1, KnownConsumer::ReservationRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
+            ConsumerDisposition::Relevant(KnownFact::AdmittedEntryAdmissionV1)
         }
         (KnownFact::AdmittedEntryAdmissionV1, KnownConsumer::SettlementRecoveryV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
@@ -665,7 +647,7 @@ pub(crate) const fn disposition_for(
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::BasketAdmissionGrantedV1, KnownConsumer::ReservationRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
+            ConsumerDisposition::Relevant(KnownFact::BasketAdmissionGrantedV1)
         }
         (KnownFact::BasketAdmissionGrantedV1, KnownConsumer::SettlementRecoveryV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
@@ -698,18 +680,6 @@ pub(crate) const fn disposition_for(
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::CapitalAdmissionRebuildV1, KnownConsumer::ShadowPnlV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::SubmitReservationMetadataV1, KnownConsumer::ReservationRecoveryV1) => {
-            ConsumerDisposition::Relevant(KnownFact::SubmitReservationMetadataV1)
-        }
-        (KnownFact::SubmitReservationMetadataV1, KnownConsumer::SettlementRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::SubmitReservationMetadataV1, KnownConsumer::BookingRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::SubmitReservationMetadataV1, KnownConsumer::ShadowPnlV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::SubmitReservationFillV1, KnownConsumer::ReservationRecoveryV1) => {
@@ -893,16 +863,13 @@ pub(crate) const fn disposition_for(
             ConsumerDisposition::Relevant(KnownFact::ForcedReductionAdmissionV1)
         }
         (KnownFact::BasketAdmissionGrantedV1, KnownConsumer::BacktestRunGuardV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
+            ConsumerDisposition::Relevant(KnownFact::BasketAdmissionGrantedV1)
         }
         (KnownFact::BasketAdmissionRejectedV1, KnownConsumer::BacktestRunGuardV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
         }
         (KnownFact::CapitalAdmissionRebuildV1, KnownConsumer::BacktestRunGuardV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
-        }
-        (KnownFact::SubmitReservationMetadataV1, KnownConsumer::BacktestRunGuardV1) => {
-            ConsumerDisposition::Relevant(KnownFact::SubmitReservationMetadataV1)
         }
         (KnownFact::SubmitReservationFillV1, KnownConsumer::BacktestRunGuardV1) => {
             ConsumerDisposition::Relevant(KnownFact::SubmitReservationFillV1)
@@ -979,9 +946,6 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     }
     if kind == "capital_admission_rebuild" && schema_version == 16 {
         return Some(KnownIdentity::CapitalAdmissionRebuildV1);
-    }
-    if kind == "submit_reservation_metadata" && schema_version == 16 {
-        return Some(KnownIdentity::SubmitReservationMetadataV1);
     }
     if kind == "submit_reservation_fill" && schema_version == 16 {
         return Some(KnownIdentity::SubmitReservationFillV1);

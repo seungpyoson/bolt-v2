@@ -17,7 +17,6 @@ use super::{
         RejectedEntryAdmissionFact, RequoteThrottleObservationFact, ReservationRecoveryEvent,
         RiskReducingExitAdmissionFact, SettlementRecoveryEvent, StartupRecoveryProjections,
         SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
-        SubmitReservationMetadataFact,
     },
     generated_contract::{
         ConsumerDisposition, KnownConsumer, KnownSink, descriptor_for_identity, disposition_for,
@@ -28,8 +27,8 @@ use super::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShadowPnlEvent {
     SubmitLinkedStrategyInputSnapshot(Box<SubmitLinkedStrategyInputSnapshotFact>),
-    EntryOrderIntent(EntryOrderIntentFact),
-    AdmittedEntryAdmission(AdmittedEntryAdmissionFact),
+    EntryOrderIntent(Box<EntryOrderIntentFact>),
+    AdmittedEntryAdmission(Box<AdmittedEntryAdmissionFact>),
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +46,7 @@ pub enum BacktestRunGuardEvent {
     RejectedEntryAdmission(Box<RejectedEntryAdmissionFact>),
     RiskReducingExitAdmission(Box<RiskReducingExitAdmissionFact>),
     ForcedReductionAdmission(Box<ForcedReductionAdmissionFact>),
-    SubmitReservationMetadata(SubmitReservationMetadataFact),
+    BasketAdmissionGranted(super::facts::BasketAdmissionGrantedFact),
     SubmitReservationFill(SubmitReservationFillFact),
     EntrySkipObservation(Box<EntrySkipFact>),
     ExitSubmissionDecision(Box<ExitSubmissionDecisionFact>),
@@ -196,9 +195,11 @@ fn into_shadow_pnl_event(fact: CurrentFact) -> Result<ShadowPnlEvent> {
         CurrentFact::SubmitLinkedStrategyInputSnapshot(value) => {
             Ok(ShadowPnlEvent::SubmitLinkedStrategyInputSnapshot(value))
         }
-        CurrentFact::EntryOrderIntent(value) => Ok(ShadowPnlEvent::EntryOrderIntent(value)),
+        CurrentFact::EntryOrderIntent(value) => {
+            Ok(ShadowPnlEvent::EntryOrderIntent(Box::new(value)))
+        }
         CurrentFact::AdmittedEntryAdmission(value) => {
-            Ok(ShadowPnlEvent::AdmittedEntryAdmission(*value))
+            Ok(ShadowPnlEvent::AdmittedEntryAdmission(value))
         }
         CurrentFact::BlockedStrategyInputObservation(_)
         | CurrentFact::RiskReducingExitOrderIntent(_)
@@ -208,7 +209,6 @@ fn into_shadow_pnl_event(fact: CurrentFact) -> Result<ShadowPnlEvent> {
         | CurrentFact::BasketAdmissionGranted(_)
         | CurrentFact::BasketAdmissionRejected(_)
         | CurrentFact::CapitalAdmissionRebuild(_)
-        | CurrentFact::SubmitReservationMetadata(_)
         | CurrentFact::SubmitReservationFill(_)
         | CurrentFact::EntrySkipObservation(_)
         | CurrentFact::ExitSubmissionDecision(_)
@@ -249,8 +249,8 @@ pub(super) fn into_backtest_run_guard_event(fact: CurrentFact) -> Result<Backtes
         CurrentFact::ForcedReductionAdmission(value) => {
             Ok(BacktestRunGuardEvent::ForcedReductionAdmission(value))
         }
-        CurrentFact::SubmitReservationMetadata(value) => {
-            Ok(BacktestRunGuardEvent::SubmitReservationMetadata(value))
+        CurrentFact::BasketAdmissionGranted(value) => {
+            Ok(BacktestRunGuardEvent::BasketAdmissionGranted(value))
         }
         CurrentFact::SubmitReservationFill(value) => {
             Ok(BacktestRunGuardEvent::SubmitReservationFill(value))
@@ -267,7 +267,6 @@ pub(super) fn into_backtest_run_guard_event(fact: CurrentFact) -> Result<Backtes
             Ok(BacktestRunGuardEvent::RequoteThrottleObservation(value))
         }
         CurrentFact::RiskReducingExitOrderIntent(_)
-        | CurrentFact::BasketAdmissionGranted(_)
         | CurrentFact::BasketAdmissionRejected(_)
         | CurrentFact::CapitalAdmissionRebuild(_)
         | CurrentFact::ExitEvaluation(_)
@@ -379,8 +378,11 @@ pub(super) fn apply_startup_recovery_projections(
 
     if reservation_relevant {
         let event = match &fact {
-            CurrentFact::SubmitReservationMetadata(value) => {
-                ReservationRecoveryEvent::Metadata(value.clone())
+            CurrentFact::AdmittedEntryAdmission(value) => {
+                ReservationRecoveryEvent::AdmittedEntry(value.clone())
+            }
+            CurrentFact::BasketAdmissionGranted(value) => {
+                ReservationRecoveryEvent::BasketGranted(value.clone())
             }
             CurrentFact::SubmitReservationFill(value) => {
                 ReservationRecoveryEvent::Fill(value.clone())

@@ -4,12 +4,13 @@ use serde::{Deserialize, Serialize};
 use crate::bolt_v3_current_evidence::{
     facts::{
         BasketAdmissionDetails, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
-        BasketAdmissionRejectionReason,
+        BasketAdmissionRejectionReason, BasketAdmittedLeg,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
 };
 
+use super::reservation::{ReservationAttributionV1, validate_attribution};
 use super::{
     current_line_descriptor, decode, encode_line, validate_envelope, validate_recorded_at,
 };
@@ -20,6 +21,7 @@ pub(super) fn encode_granted(
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     validate_recorded_at(recorded_at_utc_ns)?;
     validate_details(&fact.details)?;
+    validate_admitted_legs(&fact)?;
     let purpose = KnownPurpose::BasketAdmissionGranted;
     let descriptor = current_line_descriptor(purpose);
     encode_line(
@@ -47,6 +49,7 @@ pub(super) fn decode_granted(line: &str, line_number: usize) -> Result<BasketAdm
     )?;
     let fact = decoded.decision.into_fact();
     validate_details(&fact.details).map_err(anyhow::Error::new)?;
+    validate_admitted_legs(&fact).map_err(anyhow::Error::new)?;
     Ok(fact)
 }
 
@@ -110,6 +113,42 @@ fn validate_details(details: &BasketAdmissionDetails) -> Result<(), RecordFailur
     Ok(())
 }
 
+fn validate_admitted_legs(fact: &BasketAdmissionGrantedFact) -> Result<(), RecordFailure> {
+    if fact.admitted_legs.len() != fact.details.leg_instrument_ids.len() {
+        return Err(RecordFailure::Rejected(anyhow::anyhow!(
+            "basket admitted legs must match the declared leg count"
+        )));
+    }
+    let mut client_order_ids = std::collections::BTreeSet::new();
+    let mut reservation_ids = std::collections::BTreeSet::new();
+    for (leg, expected_instrument_id) in fact
+        .admitted_legs
+        .iter()
+        .zip(&fact.details.leg_instrument_ids)
+    {
+        if leg.client_order_id.trim().is_empty()
+            || leg.instrument_id != *expected_instrument_id
+            || !client_order_ids.insert(leg.client_order_id.as_str())
+        {
+            return Err(RecordFailure::Rejected(anyhow::anyhow!(
+                "basket admitted leg correlation is invalid"
+            )));
+        }
+        if let Some(reservation) = leg.reservation.as_ref() {
+            validate_attribution(reservation)?;
+            if reservation.client_order_id != leg.client_order_id
+                || reservation.instrument_id != leg.instrument_id
+                || !reservation_ids.insert(reservation.submit_reservation_id.as_str())
+            {
+                return Err(RecordFailure::Rejected(anyhow::anyhow!(
+                    "basket reservation attribution is invalid or duplicated"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GrantedLineV1 {
@@ -131,11 +170,15 @@ struct GrantedDecisionV1 {
     leg_instrument_ids: Vec<String>,
     total_notional: String,
     leg_order_count: u32,
+    admitted_legs: Vec<BasketAdmittedLegV1>,
 }
 
 impl GrantedDecisionV1 {
     fn from_fact(fact: BasketAdmissionGrantedFact) -> Self {
-        let details = fact.details;
+        let BasketAdmissionGrantedFact {
+            details,
+            admitted_legs,
+        } = fact;
         Self {
             strategy_id: details.strategy_id,
             execution_client_id: details.execution_client_id,
@@ -144,6 +187,10 @@ impl GrantedDecisionV1 {
             leg_instrument_ids: details.leg_instrument_ids,
             total_notional: details.total_notional,
             leg_order_count: details.leg_order_count,
+            admitted_legs: admitted_legs
+                .into_iter()
+                .map(BasketAdmittedLegV1::from_fact)
+                .collect(),
         }
     }
 
@@ -158,6 +205,37 @@ impl GrantedDecisionV1 {
                 total_notional: self.total_notional,
                 leg_order_count: self.leg_order_count,
             },
+            admitted_legs: self
+                .admitted_legs
+                .into_iter()
+                .map(BasketAdmittedLegV1::into_fact)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BasketAdmittedLegV1 {
+    client_order_id: String,
+    instrument_id: String,
+    reservation: Option<ReservationAttributionV1>,
+}
+
+impl BasketAdmittedLegV1 {
+    fn from_fact(fact: BasketAdmittedLeg) -> Self {
+        Self {
+            client_order_id: fact.client_order_id,
+            instrument_id: fact.instrument_id,
+            reservation: fact.reservation.map(ReservationAttributionV1::from_fact),
+        }
+    }
+
+    fn into_fact(self) -> BasketAdmittedLeg {
+        BasketAdmittedLeg {
+            client_order_id: self.client_order_id,
+            instrument_id: self.instrument_id,
+            reservation: self.reservation.map(ReservationAttributionV1::into_fact),
         }
     }
 }

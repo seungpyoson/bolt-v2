@@ -24,8 +24,8 @@ use super::{
         OrderLifecycleFact, OrderRejectFact, RejectedEntryAdmissionFact,
         RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
         RiskReducingExitOrderIntentFact, SettlementFact, SubmitLinkedStrategyInputSnapshotFact,
-        SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
-        VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
+        SubmitReservationFillFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
+        VenueTruthDivergenceFact,
     },
     generated_contract::{
         IdentityDescriptor, KnownIdentity, KnownPurpose, current_identity_for_purpose,
@@ -46,22 +46,6 @@ pub(crate) trait CodecFor<I> {
     ) -> Result<EncodedEvidenceRecord, RecordFailure>;
 
     fn decode(line: &str, line_number: usize) -> Result<Self::Fact>;
-}
-
-impl CodecFor<identities::SubmitReservationMetadataV1> for CurrentCodecs {
-    type Input = SubmitReservationMetadataFact;
-    type Fact = SubmitReservationMetadataFact;
-
-    fn encode(
-        input: &Self::Input,
-        recorded_at_utc_ns: i64,
-    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-        reservation::encode_metadata(input.clone(), recorded_at_utc_ns)
-    }
-
-    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
-        reservation::decode_metadata(line, line_number)
-    }
 }
 
 impl CodecFor<identities::SubmitReservationFillV1> for CurrentCodecs {
@@ -619,15 +603,6 @@ pub(crate) fn encode_exit_evaluation(
     <CurrentCodecs as CodecFor<identities::ExitEvaluationV1>>::encode(&fact, current_utc_ns()?)
 }
 
-pub(crate) fn encode_reservation_metadata(
-    fact: SubmitReservationMetadataFact,
-) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    <CurrentCodecs as CodecFor<identities::SubmitReservationMetadataV1>>::encode(
-        &fact,
-        current_utc_ns()?,
-    )
-}
-
 pub(crate) fn encode_reservation_fill(
     fact: SubmitReservationFillFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
@@ -718,11 +693,6 @@ pub(super) fn decode_current_fact(
         KnownIdentity::CapitalAdmissionRebuildV1 => {
             CurrentFact::CapitalAdmissionRebuild(<CurrentCodecs as CodecFor<
                 identities::CapitalAdmissionRebuildV1,
-            >>::decode(line, line_number)?)
-        }
-        KnownIdentity::SubmitReservationMetadataV1 => {
-            CurrentFact::SubmitReservationMetadata(<CurrentCodecs as CodecFor<
-                identities::SubmitReservationMetadataV1,
             >>::decode(line, line_number)?)
         }
         KnownIdentity::SubmitReservationFillV1 => {
@@ -1440,9 +1410,6 @@ mod tests {
             KnownIdentity::CapitalAdmissionRebuildV1 => {
                 frozen_corpus!("capital_admission_rebuild.jsonl")
             }
-            KnownIdentity::SubmitReservationMetadataV1 => {
-                frozen_corpus!("submit_reservation_metadata.jsonl")
-            }
             KnownIdentity::SubmitReservationFillV1 => {
                 frozen_corpus!("submit_reservation_fill.jsonl")
             }
@@ -1534,10 +1501,11 @@ mod tests {
             KnownIdentity::TerminalSettlementV1 => {
                 Some(accepted_noncanonical_fixture!("terminal_settlement.jsonl"))
             }
-            KnownIdentity::BasketAdmissionGrantedV1
-            | KnownIdentity::BasketAdmissionRejectedV1
+            KnownIdentity::BasketAdmissionGrantedV1 => Some(accepted_noncanonical_fixture!(
+                "basket_admission_granted.jsonl"
+            )),
+            KnownIdentity::BasketAdmissionRejectedV1
             | KnownIdentity::CapitalAdmissionRebuildV1
-            | KnownIdentity::SubmitReservationMetadataV1
             | KnownIdentity::SubmitReservationFillV1
             | KnownIdentity::SettlementV1
             | KnownIdentity::VenueTruthCaptureFailureV1
@@ -1604,11 +1572,6 @@ mod tests {
             ),
             CurrentFact::CapitalAdmissionRebuild(value) => <CurrentCodecs as CodecFor<
                 identities::CapitalAdmissionRebuildV1,
-            >>::encode(
-                &value, recorded_at_utc_ns
-            ),
-            CurrentFact::SubmitReservationMetadata(value) => <CurrentCodecs as CodecFor<
-                identities::SubmitReservationMetadataV1,
             >>::encode(
                 &value, recorded_at_utc_ns
             ),
@@ -2092,10 +2055,18 @@ mod tests {
                         .into_iter()
                         .map(|details| {
                             CurrentFact::AdmittedEntryAdmission(Box::new(
-                                AdmittedEntryAdmissionFact { details },
+                                AdmittedEntryAdmissionFact {
+                                    details,
+                                    reservation: value.reservation.clone(),
+                                },
                             ))
                         }),
                 );
+                let mut without_reservation = value.as_ref().clone();
+                without_reservation.reservation = None;
+                cases.push(CurrentFact::AdmittedEntryAdmission(Box::new(
+                    without_reservation,
+                )));
             }
             CurrentFact::RejectedEntryAdmission(value) => {
                 cases.extend(
@@ -2331,46 +2302,42 @@ mod tests {
                 );
             }
             CurrentFact::TerminalSettlement(value) => {
-                for (transition, _) in OrderLifecycleTransition::wire_coverage_values() {
-                    let mut case = value.as_ref().clone();
-                    case.lifecycle.transition = transition;
-                    cases.push(CurrentFact::TerminalSettlement(Box::new(case)));
-                }
-                for (outcome, _) in OrderLifecycleOutcome::wire_coverage_values() {
-                    let mut case = value.as_ref().clone();
-                    case.lifecycle.outcome = outcome;
-                    cases.push(CurrentFact::TerminalSettlement(Box::new(case)));
-                }
                 for (reason, _) in SettlementBookingErrorReason::wire_coverage_values() {
                     let mut case = value.as_ref().clone();
-                    case.booking_error
-                        .as_mut()
-                        .expect("terminal baseline has booking error")
-                        .reason = reason;
+                    case.booking_error.reason = reason;
                     cases.push(CurrentFact::TerminalSettlement(Box::new(case)));
                 }
                 for lifecycle in order_lifecycle_optional_cases(&value.lifecycle) {
                     let mut case = value.as_ref().clone();
+                    case.booking_error.market_id = lifecycle.market_id.clone();
+                    case.booking_error.position_id = lifecycle.position_id.clone();
+                    case.booking_error.instrument_id = lifecycle.instrument_id.clone();
                     case.lifecycle = lifecycle;
                     cases.push(CurrentFact::TerminalSettlement(Box::new(case)));
                 }
-                let mut without_booking_error = value.as_ref().clone();
-                without_booking_error.booking_error = None;
-                cases.push(CurrentFact::TerminalSettlement(Box::new(
-                    without_booking_error,
-                )));
-                if let Some(booking_error) = value.booking_error.as_ref() {
-                    for booking_error in settlement_booking_error_optional_cases(booking_error) {
-                        let mut case = value.as_ref().clone();
-                        case.booking_error = Some(booking_error);
-                        cases.push(CurrentFact::TerminalSettlement(Box::new(case)));
+                for booking_error in settlement_booking_error_optional_cases(&value.booking_error) {
+                    let mut case = value.as_ref().clone();
+                    if booking_error.market_id.is_some() {
+                        case.lifecycle.market_id = booking_error.market_id.clone();
                     }
+                    if booking_error.position_id.is_some() {
+                        case.lifecycle.position_id = booking_error.position_id.clone();
+                    }
+                    if booking_error.instrument_id.is_some() {
+                        case.lifecycle.instrument_id = booking_error.instrument_id.clone();
+                    }
+                    case.booking_error = booking_error;
+                    cases.push(CurrentFact::TerminalSettlement(Box::new(case)));
                 }
             }
-            CurrentFact::BasketAdmissionGranted(_)
-            | CurrentFact::SubmitReservationMetadata(_)
-            | CurrentFact::SubmitReservationFill(_)
-            | CurrentFact::VenueTruthCaptureFailure(_) => {}
+            CurrentFact::BasketAdmissionGranted(value) => {
+                let mut without_reservations = value.clone();
+                for leg in &mut without_reservations.admitted_legs {
+                    leg.reservation = None;
+                }
+                cases.push(CurrentFact::BasketAdmissionGranted(without_reservations));
+            }
+            CurrentFact::SubmitReservationFill(_) | CurrentFact::VenueTruthCaptureFailure(_) => {}
         }
         assert!(
             !cases.is_empty(),
@@ -2887,27 +2854,6 @@ mod tests {
         }
     }
 
-    fn metadata() -> SubmitReservationMetadataFact {
-        SubmitReservationMetadataFact {
-            client_order_id: "client-1".to_string(),
-            submit_reservation_id: "reservation-1".to_string(),
-            venue_id: "POLYMARKET".to_string(),
-            account_id: "POLYMARKET-001".to_string(),
-            product_kind: "binary".to_string(),
-            collateral_currency: "USDC".to_string(),
-            capital_pool_id: "pool-1".to_string(),
-            collateral_group_id: "group-1".to_string(),
-            instrument_id: "YES-USD.POLYMARKET".to_string(),
-            side: "buy".to_string(),
-            submitted_quantity: "1".to_string(),
-            liability_factor: "1".to_string(),
-            additive_liability: "0".to_string(),
-            reserved_liability: "1".to_string(),
-            observed_at_ns: 1,
-            source: "submit_admission".to_string(),
-        }
-    }
-
     fn settlement() -> SettlementFact {
         SettlementFact {
             strategy_id: "strategy-1".to_string(),
@@ -2949,7 +2895,7 @@ mod tests {
     fn terminal() -> TerminalSettlementFact {
         TerminalSettlementFact {
             settlement_key: "settlement-1".to_string(),
-            booking_error: Some(booking_error()),
+            booking_error: booking_error(),
             lifecycle: super::super::facts::OrderLifecycleFact {
                 strategy_id: "strategy-1".to_string(),
                 transition:
@@ -3731,7 +3677,6 @@ mod tests {
             KnownIdentity::BasketAdmissionGrantedV1,
             KnownIdentity::BasketAdmissionRejectedV1,
             KnownIdentity::CapitalAdmissionRebuildV1,
-            KnownIdentity::SubmitReservationMetadataV1,
             KnownIdentity::SubmitReservationFillV1,
             KnownIdentity::EntrySkipObservationV1,
             KnownIdentity::ExitSubmissionDecisionV1,
@@ -3796,10 +3741,6 @@ mod tests {
         lifecycle["lifecycle"]["strategy_id"] = "".into();
         mutation_is_rejected(KnownIdentity::OrderLifecycleV1, &lifecycle);
 
-        let mut reservation = positive_value(KnownIdentity::SubmitReservationMetadataV1);
-        reservation["metadata"]["client_order_id"] = "".into();
-        mutation_is_rejected(KnownIdentity::SubmitReservationMetadataV1, &reservation);
-
         let mut fill = positive_value(KnownIdentity::SubmitReservationFillV1);
         fill["fill"]["client_order_id"] = "".into();
         mutation_is_rejected(KnownIdentity::SubmitReservationFillV1, &fill);
@@ -3858,6 +3799,28 @@ mod tests {
         let mut terminal = positive_value(KnownIdentity::TerminalSettlementV1);
         terminal["terminal_settlement"]["booking_error"]["settlement_key"] =
             "different-settlement-key".into();
+        mutation_is_rejected(KnownIdentity::TerminalSettlementV1, &terminal);
+
+        let mut terminal = positive_value(KnownIdentity::TerminalSettlementV1);
+        terminal["terminal_settlement"]
+            .as_object_mut()
+            .expect("terminal settlement payload must be an object")
+            .remove("booking_error");
+        mutation_is_rejected(KnownIdentity::TerminalSettlementV1, &terminal);
+
+        for (field, invalid_value) in [
+            ("transition", "settlement_committed"),
+            ("outcome", "managed"),
+            ("source", "settlement_evidence_recovery"),
+        ] {
+            let mut terminal = positive_value(KnownIdentity::TerminalSettlementV1);
+            terminal["terminal_settlement"]["lifecycle"][field] = invalid_value.into();
+            mutation_is_rejected(KnownIdentity::TerminalSettlementV1, &terminal);
+        }
+
+        let mut terminal = positive_value(KnownIdentity::TerminalSettlementV1);
+        terminal["terminal_settlement"]["booking_error"]["position_id"] =
+            "different-position".into();
         mutation_is_rejected(KnownIdentity::TerminalSettlementV1, &terminal);
     }
 
@@ -4044,29 +4007,7 @@ mod tests {
     }
 
     #[test]
-    fn reservation_identity_binding_is_deterministic_and_round_trips() {
-        let expected = metadata();
-        let encoded = <CurrentCodecs as CodecFor<identities::SubmitReservationMetadataV1>>::encode(
-            &expected, 7,
-        )
-        .expect("valid metadata must encode");
-        let line = std::str::from_utf8(encoded.line())
-            .expect("encoded evidence must be UTF-8")
-            .trim_end_matches('\n');
-        let decoded =
-            <CurrentCodecs as CodecFor<identities::SubmitReservationMetadataV1>>::decode(line, 1)
-                .expect("encoded metadata must decode");
-
-        assert_eq!(decoded, expected);
-        assert!(line.contains("\"recorded_at_utc_ns\":7"));
-        assert!(matches!(
-            <CurrentCodecs as CodecFor<identities::SubmitReservationMetadataV1>>::encode(
-                &metadata(),
-                0,
-            ),
-            Err(RecordFailure::Rejected(_))
-        ));
-
+    fn reservation_fill_identity_binding_is_deterministic_and_round_trips() {
         let expected_fill = SubmitReservationFillFact {
             client_order_id: "client-1".to_string(),
             submit_reservation_id: "reservation-1".to_string(),
@@ -4176,6 +4117,18 @@ mod tests {
     fn basket_admission_identities_are_distinct_and_round_trip() {
         let granted = BasketAdmissionGrantedFact {
             details: basket_details(),
+            admitted_legs: vec![
+                super::super::facts::BasketAdmittedLeg {
+                    client_order_id: "client-yes".to_string(),
+                    instrument_id: "YES-USD.POLYMARKET".to_string(),
+                    reservation: None,
+                },
+                super::super::facts::BasketAdmittedLeg {
+                    client_order_id: "client-no".to_string(),
+                    instrument_id: "NO-USD.POLYMARKET".to_string(),
+                    reservation: None,
+                },
+            ],
         };
         let granted_record =
             <CurrentCodecs as CodecFor<identities::BasketAdmissionGrantedV1>>::encode(&granted, 16)
@@ -4341,6 +4294,7 @@ mod tests {
     fn admission_identities_are_purpose_pure_and_round_trip() {
         let admitted = AdmittedEntryAdmissionFact {
             details: admission_details(),
+            reservation: None,
         };
         let admitted_record =
             <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(

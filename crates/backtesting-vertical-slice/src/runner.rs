@@ -288,9 +288,10 @@ impl BacktestDecisionEvidenceWriter {
                         )?;
                     }
                     BacktestRunGuardEvent::EntryOrderIntent(_) => state.order_intent_count += 1,
-                    BacktestRunGuardEvent::AdmittedEntryAdmission(_) => {
+                    BacktestRunGuardEvent::AdmittedEntryAdmission(fact) => {
                         state.admission_decision_count += 1;
                         state.admitted_order_count += 1;
+                        state.submit_reservation_count += u64::from(fact.reservation.is_some());
                     }
                     BacktestRunGuardEvent::RejectedEntryAdmission(_) => {
                         state.admission_decision_count += 1;
@@ -307,8 +308,14 @@ impl BacktestDecisionEvidenceWriter {
                             state.admitted_order_count += 1;
                         }
                     }
-                    BacktestRunGuardEvent::SubmitReservationMetadata(_) => {
-                        state.submit_reservation_count += 1;
+                    BacktestRunGuardEvent::BasketAdmissionGranted(fact) => {
+                        state.submit_reservation_count += u64::try_from(
+                            fact.admitted_legs
+                                .iter()
+                                .filter(|leg| leg.reservation.is_some())
+                                .count(),
+                        )
+                        .context("basket reservation count must fit u64")?;
                     }
                     BacktestRunGuardEvent::SubmitReservationFill(_) => {
                         state.submit_fill_count += 1;

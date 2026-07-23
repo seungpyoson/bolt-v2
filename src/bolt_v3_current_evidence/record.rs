@@ -16,7 +16,7 @@ use super::codec::{
     encode_exit_evaluation, encode_exit_hold_decision, encode_exit_submission_decision,
     encode_forced_reduction_admission, encode_loss_governor_halt, encode_order_lifecycle,
     encode_order_reject, encode_rejected_entry_admission, encode_requote_throttle_observation,
-    encode_reservation_fill, encode_reservation_metadata, encode_risk_reducing_exit_admission,
+    encode_reservation_fill, encode_risk_reducing_exit_admission,
     encode_risk_reducing_exit_order_intent, encode_settlement,
     encode_submit_linked_strategy_input_snapshot, encode_terminal_settlement,
     encode_venue_truth_capture_failure, encode_venue_truth_divergence,
@@ -28,8 +28,8 @@ use super::facts::{
     ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
     RejectedEntryAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
     RiskReducingExitOrderIntentFact, SettlementFact, SubmitLinkedStrategyInputSnapshotFact,
-    SubmitReservationFillFact, SubmitReservationMetadataFact, TerminalSettlementFact,
-    VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
+    SubmitReservationFillFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
+    VenueTruthDivergenceFact,
 };
 use super::generated_contract::{
     EffectPolicy, KnownProducer, KnownPurpose, KnownSink, effect_policy_for_purpose,
@@ -42,6 +42,12 @@ pub struct AppendReceipt {
     purpose: KnownPurpose,
     sink: KnownSink,
     bytes: usize,
+}
+
+#[must_use = "a committed admission must be consumed by the submit permit it authorizes"]
+#[derive(Debug)]
+pub struct CommittedAdmission {
+    _receipt: AppendReceipt,
 }
 
 #[must_use = "a committed settlement must drive its post-commit reducers"]
@@ -479,16 +485,6 @@ impl DecisionEvidenceRecorder {
         ))
     }
 
-    pub fn record_submit_reservation_metadata(
-        &self,
-        command: SubmitReservationMetadataFact,
-    ) -> Result<AppendReceipt, RecordFailure> {
-        self.record_blocking(
-            KnownProducer::SubmitReservationMetadata,
-            encode_reservation_metadata(command)?,
-        )
-    }
-
     pub fn record_submit_reservation_fill(
         &self,
         command: SubmitReservationFillFact,
@@ -512,11 +508,12 @@ impl DecisionEvidenceRecorder {
     pub fn record_admitted_entry_admission(
         &self,
         fact: AdmittedEntryAdmissionFact,
-    ) -> Result<AppendReceipt, RecordFailure> {
+    ) -> Result<CommittedAdmission, RecordFailure> {
         self.record_blocking(
             KnownProducer::SubmitAdmissionAdmittedEntry,
             encode_admitted_entry_admission(fact)?,
         )
+        .map(|receipt| CommittedAdmission { _receipt: receipt })
     }
 
     pub fn record_rejected_entry_admission(
@@ -566,11 +563,12 @@ impl DecisionEvidenceRecorder {
     pub fn record_basket_admission_granted(
         &self,
         fact: BasketAdmissionGrantedFact,
-    ) -> Result<AppendReceipt, RecordFailure> {
+    ) -> Result<CommittedAdmission, RecordFailure> {
         self.record_blocking(
             KnownProducer::BasketAdmissionGranted,
             encode_basket_admission_granted(fact)?,
         )
+        .map(|receipt| CommittedAdmission { _receipt: receipt })
     }
 
     pub fn record_basket_admission_rejected(
@@ -1176,7 +1174,7 @@ mod tests {
     fn producer_cannot_emit_another_purposes_identity() {
         let recorder = recorder();
         let _ = recorder.record_blocking(
-            KnownProducer::SubmitReservationMetadata,
+            KnownProducer::SubmitReservationFill,
             record(KnownPurpose::EntryOrderIntent),
         );
     }

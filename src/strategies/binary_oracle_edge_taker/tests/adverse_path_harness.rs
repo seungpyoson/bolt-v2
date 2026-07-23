@@ -2275,21 +2275,19 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
     evidence
         .record_terminal_settlement(crate::bolt_v3_current_evidence::TerminalSettlementFact {
             settlement_key: settlement_key.clone(),
-            booking_error: Some(
-                crate::bolt_v3_current_evidence::SettlementBookingErrorFact {
-                    strategy_id: strategy.config.strategy_id.clone(),
-                    settlement_key: settlement_key.clone(),
-                    market_id: recovered_position.lifecycle.market_id_owned(),
-                    position_id: Some(position_id.to_string()),
-                    instrument_id: Some(instrument_id.to_string()),
-                    resolution_instrument_id: strategy
-                        .resolution_instrument_id()
-                        .map(|instrument_id| instrument_id.to_string()),
-                    reason: SettlementBookingErrorReason::SettlementInputInvalid,
-                    detail: "durable terminal booking error".to_string(),
-                    observed_at_ns: 2_000_u64.saturating_mul(NANOS_PER_MILLI_U64),
-                },
-            ),
+            booking_error: crate::bolt_v3_current_evidence::SettlementBookingErrorFact {
+                strategy_id: strategy.config.strategy_id.clone(),
+                settlement_key: settlement_key.clone(),
+                market_id: recovered_position.lifecycle.market_id_owned(),
+                position_id: Some(position_id.to_string()),
+                instrument_id: Some(instrument_id.to_string()),
+                resolution_instrument_id: strategy
+                    .resolution_instrument_id()
+                    .map(|instrument_id| instrument_id.to_string()),
+                reason: SettlementBookingErrorReason::SettlementInputInvalid,
+                detail: "durable terminal booking error".to_string(),
+                observed_at_ns: 2_000_u64.saturating_mul(NANOS_PER_MILLI_U64),
+            },
             lifecycle: crate::bolt_v3_current_evidence::OrderLifecycleFact {
                 strategy_id: strategy.config.strategy_id.clone(),
                 transition: OrderLifecycleTransition::SettlementBookingTerminal,
@@ -2442,7 +2440,7 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
             payout_per_share: "1".to_string(),
             terminal_value: "10".to_string(),
             realized_pnl: "5.5".to_string(),
-            settlement_currency: "PUSD".to_string(),
+            settlement_currency: fixture_settlement_currency().to_string(),
         })
         .expect("current settlement evidence should append");
     let (_, settlement_recovery, booking_recovery) = evidence
@@ -2459,10 +2457,28 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
 
     strategy.bootstrap_recovery_from_cache();
 
+    let loss_observations = sink.loss_observations();
     let explanations = sink.venue_explanations();
+    assert_eq!(
+        loss_observations.len(),
+        1,
+        "recovery state: exposure={:?} settled_keys={:?} venue_explanations={:?}",
+        strategy.exposure,
+        strategy.settled_position_keys,
+        explanations
+    );
+    assert_eq!(
+        loss_observations[0].event_id.as_deref(),
+        Some(settlement_key.as_str()),
+        "recovered settlement must replay the loss reducer with the durable settlement key"
+    );
     assert_eq!(explanations.len(), 1);
     assert_eq!(explanations[0].settlement_key, settlement_key);
     assert!(strategy.settled_position_keys.contains(&settlement_key));
+    assert!(
+        matches!(strategy.exposure, ExposureState::Flat),
+        "a recovered successful settlement must reconstruct terminal Flat exposure"
+    );
 }
 
 fn settlement_loss_config(
@@ -2876,13 +2892,7 @@ fn settlement_market_ids(events: &[CurrentFact]) -> Vec<String> {
 fn settlement_booking_error_count(events: &[CurrentFact]) -> usize {
     events
         .iter()
-        .filter(|event| {
-            matches!(
-                event,
-                CurrentFact::TerminalSettlement(evidence)
-                    if evidence.booking_error.is_some()
-            )
-        })
+        .filter(|event| matches!(event, CurrentFact::TerminalSettlement(_)))
         .count()
 }
 
@@ -2909,9 +2919,7 @@ fn settlement_booking_error_reasons(events: &[CurrentFact]) -> Vec<SettlementBoo
     events
         .iter()
         .filter_map(|event| match event {
-            CurrentFact::TerminalSettlement(evidence) => {
-                evidence.booking_error.as_ref().map(|error| error.reason)
-            }
+            CurrentFact::TerminalSettlement(evidence) => Some(evidence.booking_error.reason),
             _ => None,
         })
         .collect()

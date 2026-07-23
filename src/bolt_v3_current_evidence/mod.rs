@@ -22,7 +22,7 @@ pub use reader::{
 };
 pub(crate) use realized_volatility::source_diagnostic_fact as realized_vol_diagnostic_fact;
 pub use record::{
-    AppendReceipt, CommitPhase, CommittedSettlement, DecisionEvidenceRecorder,
+    AppendReceipt, CommitPhase, CommittedAdmission, CommittedSettlement, DecisionEvidenceRecorder,
     NonBlockingRecordOutcome, ObservationRecordOutcome, ObservationStreamStatus, PoisonCause,
     RecordFailure,
 };

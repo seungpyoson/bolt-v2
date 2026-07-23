@@ -3,13 +3,14 @@ use std::{fs, path::Path};
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_current_evidence::{
-        CurrentEvidenceStream, DecisionEvidenceRuntime, EvidenceOrderSide, EvidenceRequoteLeg,
-        ObservationRecordOutcome, ObservationStreamStatus, OrderLifecycleFact,
-        OrderLifecycleOutcome, OrderLifecycleSource, OrderLifecycleTransition, OutcomeSide,
-        PositiveFiniteEvidenceReadCap, RecordFailure, RequoteActionCostClass,
-        RequoteThrottleBlockReason, RequoteThrottleBound, RequoteThrottleObservationFact,
-        SettlementBookingErrorFact, SettlementBookingErrorReason, SettlementFact, ShadowPnlEvent,
-        SubmitReservationFillFact, SubmitReservationFillSource, SubmitReservationMetadataFact,
+        AdmissionDetails, AdmittedEntryAdmissionFact, CurrentEvidenceStream,
+        DecisionEvidenceRuntime, EvidenceOrderSide, EvidenceRequoteLeg, ObservationRecordOutcome,
+        ObservationStreamStatus, OrderLifecycleFact, OrderLifecycleOutcome, OrderLifecycleSource,
+        OrderLifecycleTransition, OutcomeSide, PositiveFiniteEvidenceReadCap, RecordFailure,
+        RecoveredSettlementOutcome, RequoteActionCostClass, RequoteThrottleBlockReason,
+        RequoteThrottleBound, RequoteThrottleObservationFact, ReservationAttribution,
+        ReservationProductKind, SettlementBookingErrorFact, SettlementBookingErrorReason,
+        SettlementFact, ShadowPnlEvent, SubmitReservationFillFact, SubmitReservationFillSource,
         TerminalSettlementFact, read_backtest_run_guard_events, read_shadow_pnl_events,
     },
 };
@@ -101,24 +102,54 @@ fn runtime_holds_exclusive_catalog_ownership_for_recorder_lifetime() {
         .expect("catalog ownership must release when the recorder runtime drops");
 }
 
-fn reservation_metadata_command() -> SubmitReservationMetadataFact {
-    SubmitReservationMetadataFact {
+fn reservation_attribution() -> ReservationAttribution {
+    ReservationAttribution {
         client_order_id: "client-1".to_string(),
         submit_reservation_id: "reservation-1".to_string(),
         venue_id: "POLYMARKET".to_string(),
         account_id: "POLYMARKET-001".to_string(),
-        product_kind: "binary".to_string(),
+        product_kind: ReservationProductKind::PredictionMarketBinary,
         collateral_currency: "USDC".to_string(),
         capital_pool_id: "pool-1".to_string(),
         collateral_group_id: "group-1".to_string(),
         instrument_id: "YES-USD.POLYMARKET".to_string(),
-        side: "buy".to_string(),
+        side: EvidenceOrderSide::Buy,
         submitted_quantity: "1".to_string(),
         liability_factor: "1".to_string(),
         additive_liability: "0".to_string(),
         reserved_liability: "1".to_string(),
         observed_at_ns: 1,
-        source: "submit_admission".to_string(),
+    }
+}
+
+fn admitted_entry_with_reservation() -> AdmittedEntryAdmissionFact {
+    AdmittedEntryAdmissionFact {
+        details: AdmissionDetails {
+            strategy_id: "strategy-1".to_string(),
+            execution_client_id: "execution-1".to_string(),
+            client_order_id: "client-1".to_string(),
+            instrument_id: "YES-USD.POLYMARKET".to_string(),
+            notional: "1".to_string(),
+            loss_halt_reasons: Vec::new(),
+            snapshot_present: false,
+            snapshot_observed_at_ns: None,
+            admission_now_ns: 1,
+            snapshot_age_ns: None,
+            max_snapshot_age_ns: None,
+            snapshot_source: None,
+            per_trade_pnl_present: false,
+            daily_pnl_present: false,
+            rolling_pnl_present: false,
+            current_equity_present: false,
+            peak_equity_present: false,
+            last_account_state_observed_at_ns: None,
+            last_portfolio_snapshot_observed_at_ns: None,
+            last_position_event_observed_at_ns: None,
+            stale_reason: None,
+            loss_snapshot_observed_at_ns: None,
+            loss_eval_now_ns: None,
+        },
+        reservation: Some(reservation_attribution()),
     }
 }
 
@@ -179,6 +210,24 @@ fn lifecycle_fact() -> OrderLifecycleFact {
     }
 }
 
+fn terminal_fact() -> TerminalSettlementFact {
+    TerminalSettlementFact {
+        settlement_key: "settlement-1".to_string(),
+        booking_error: SettlementBookingErrorFact {
+            strategy_id: "strategy-1".to_string(),
+            settlement_key: "settlement-1".to_string(),
+            market_id: Some("market-1".to_string()),
+            position_id: Some("position-1".to_string()),
+            instrument_id: Some("YES-USD.POLYMARKET".to_string()),
+            resolution_instrument_id: Some("BTC-USD".to_string()),
+            reason: SettlementBookingErrorReason::SettlementBlocked,
+            detail: "blocked".to_string(),
+            observed_at_ns: 4,
+        },
+        lifecycle: lifecycle_fact(),
+    }
+}
+
 fn requote_observation() -> RequoteThrottleObservationFact {
     RequoteThrottleObservationFact {
         strategy_id: "strategy-1".to_string(),
@@ -221,11 +270,16 @@ fn invalid_command_is_rejected_before_the_machine_sink_is_touched() {
     let runtime = DecisionEvidenceRuntime::open(&loaded).expect("fresh current streams must open");
     let machine = machine_path(&loaded);
 
-    let mut command = reservation_metadata_command();
-    command.client_order_id.clear();
+    let mut command = admitted_entry_with_reservation();
+    command
+        .reservation
+        .as_mut()
+        .expect("fixture must carry reservation attribution")
+        .client_order_id
+        .clear();
     let error = runtime
         .recorder()
-        .record_submit_reservation_metadata(command)
+        .record_admitted_entry_admission(command)
         .expect_err("invalid command must be rejected");
 
     assert!(matches!(error, RecordFailure::Rejected(_)));
@@ -247,9 +301,9 @@ fn append_uses_the_validated_descriptor_after_the_path_is_replaced() {
     fs::rename(&active, &retained).expect("validated stream must be renamed");
     fs::write(&active, b"").expect("replacement stream must be created");
 
-    runtime
+    let _committed = runtime
         .recorder()
-        .record_submit_reservation_metadata(reservation_metadata_command())
+        .record_admitted_entry_admission(admitted_entry_with_reservation())
         .expect("record must append through the retained descriptor");
 
     assert!(
@@ -272,8 +326,8 @@ fn restart_refuses_a_fill_linked_to_the_wrong_reservation() {
     let loaded = loaded_in(&temp);
     let runtime = DecisionEvidenceRuntime::open(&loaded).expect("fresh current streams must open");
     let recorder = runtime.recorder();
-    recorder
-        .record_submit_reservation_metadata(reservation_metadata_command())
+    let _committed = recorder
+        .record_admitted_entry_admission(admitted_entry_with_reservation())
         .expect("metadata must append");
     let mut fill = reservation_fill_command();
     fill.submit_reservation_id = "wrong-reservation".to_string();
@@ -286,7 +340,7 @@ fn restart_refuses_a_fill_linked_to_the_wrong_reservation() {
     let error = DecisionEvidenceRuntime::open(&loaded)
         .expect_err("restart must reject contradictory reservation linkage");
     assert!(
-        format!("{error:#}").contains("does not match submit-reservation metadata"),
+        format!("{error:#}").contains("does not match submit-reservation attribution"),
         "unexpected error: {error:#}"
     );
 }
@@ -308,10 +362,60 @@ fn settlement_restart_retains_the_complete_semantic_fact() {
     assert_eq!(
         restarted
             .settlement_recovery()
-            .settlements()
+            .outcomes()
             .get(&expected.settlement_key),
-        Some(&expected)
+        Some(&RecoveredSettlementOutcome::Successful(expected))
     );
+}
+
+#[test]
+fn restart_rejects_duplicate_or_conflicting_settlement_outcomes() {
+    for (name, write_facts) in [
+        (
+            "duplicate-success",
+            vec![
+                (Some(settlement_fact()), None),
+                (Some(settlement_fact()), None),
+            ],
+        ),
+        (
+            "success-then-terminal",
+            vec![
+                (Some(settlement_fact()), None),
+                (None, Some(terminal_fact())),
+            ],
+        ),
+        (
+            "duplicate-terminal",
+            vec![(None, Some(terminal_fact())), (None, Some(terminal_fact()))],
+        ),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir must exist");
+        let loaded = loaded_in(&temp);
+        let runtime =
+            DecisionEvidenceRuntime::open(&loaded).expect("fresh current streams must open");
+        for (settlement, terminal) in write_facts {
+            if let Some(settlement) = settlement {
+                let _committed = runtime
+                    .recorder()
+                    .record_settlement(settlement)
+                    .unwrap_or_else(|error| panic!("{name}: settlement must append: {error}"));
+            }
+            if let Some(terminal) = terminal {
+                runtime
+                    .recorder()
+                    .record_terminal_settlement(terminal)
+                    .unwrap_or_else(|error| panic!("{name}: terminal must append: {error}"));
+            }
+        }
+        drop(runtime);
+        let error = DecisionEvidenceRuntime::open(&loaded)
+            .expect_err("duplicate or conflicting terminal outcomes must fail startup");
+        assert!(
+            format!("{error:#}").contains("duplicate or conflicting terminal settlement outcome"),
+            "{name}: unexpected error: {error:#}"
+        );
+    }
 }
 
 #[test]
@@ -322,7 +426,7 @@ fn contradictory_terminal_booking_error_is_rejected_before_io() {
     let machine = machine_path(&loaded);
     let fact = TerminalSettlementFact {
         settlement_key: "settlement-1".to_string(),
-        booking_error: Some(SettlementBookingErrorFact {
+        booking_error: SettlementBookingErrorFact {
             strategy_id: "strategy-1".to_string(),
             settlement_key: "different-settlement".to_string(),
             market_id: Some("market-1".to_string()),
@@ -332,7 +436,7 @@ fn contradictory_terminal_booking_error_is_rejected_before_io() {
             reason: SettlementBookingErrorReason::SettlementBlocked,
             detail: "blocked".to_string(),
             observed_at_ns: 4,
-        }),
+        },
         lifecycle: lifecycle_fact(),
     };
 
@@ -353,39 +457,23 @@ fn contradictory_terminal_booking_error_is_rejected_before_io() {
 fn open_strictly_decodes_current_recovery_facts() {
     let temp = tempfile::tempdir().expect("tempdir must exist");
     let loaded = loaded_in(&temp);
-    let current = concat!(
-        "{\"schema_version\":16,",
-        "\"recorded_at_utc_ns\":1,",
-        "\"gate_id\":\"bolt_v3.submit_admission\",",
-        "\"gate_version\":\"current\",",
-        "\"kind\":\"submit_reservation_metadata\",",
-        "\"metadata\":{",
-        "\"client_order_id\":\"client-1\",",
-        "\"submit_reservation_id\":\"reservation-1\",",
-        "\"venue_id\":\"POLYMARKET\",",
-        "\"account_id\":\"POLYMARKET-001\",",
-        "\"product_kind\":\"binary\",",
-        "\"collateral_currency\":\"USDC\",",
-        "\"capital_pool_id\":\"pool-1\",",
-        "\"collateral_group_id\":\"group-1\",",
-        "\"instrument_id\":\"YES-USD.POLYMARKET\",",
-        "\"side\":\"buy\",",
-        "\"submitted_quantity\":\"1\",",
-        "\"liability_factor\":\"1\",",
-        "\"additive_liability\":\"0\",",
-        "\"reserved_liability\":\"1\",",
-        "\"observed_at_ns\":1,",
-        "\"source\":\"submit_admission\"}}\n",
-    );
-    fs::write(machine_path(&loaded), current).expect("current recovery line must be written");
+    let initial = DecisionEvidenceRuntime::open(&loaded).expect("fresh stream must open");
+    let _committed = initial
+        .recorder()
+        .record_admitted_entry_admission(admitted_entry_with_reservation())
+        .expect("atomic admitted fact must append");
+    drop(initial);
+    let current =
+        fs::read_to_string(machine_path(&loaded)).expect("current recovery line must read");
 
     let runtime = DecisionEvidenceRuntime::open(&loaded)
         .expect("current recovery identity and payload must decode");
     assert!(!runtime.reservation_recovery().is_empty());
+    drop(runtime);
 
     let malformed = current.replace(
-        "\"source\":\"submit_admission\"",
-        "\"source\":\"submit_admission\",\"unexpected\":true",
+        "\"reserved_liability\":\"1\"",
+        "\"reserved_liability\":\"1\",\"unexpected\":true",
     );
     fs::write(machine_path(&loaded), malformed).expect("malformed relevant line must be written");
     let error = DecisionEvidenceRuntime::open(&loaded)
@@ -527,9 +615,9 @@ fn invalid_observation_history_poison_is_typed_bounded_and_byte_preserving() {
         let loaded = loaded_in(&temp);
         let initial = DecisionEvidenceRuntime::open(&loaded)
             .unwrap_or_else(|error| panic!("{name}: fresh streams must open: {error:#}"));
-        initial
+        let _committed = initial
             .recorder()
-            .record_submit_reservation_metadata(reservation_metadata_command())
+            .record_admitted_entry_admission(admitted_entry_with_reservation())
             .unwrap_or_else(|error| panic!("{name}: machine fact must append: {error}"));
         drop(initial);
         fs::write(observation_path(&loaded), invalid).unwrap_or_else(|error| {
@@ -627,9 +715,9 @@ fn observation_stream_enforces_sink_membership_without_gating_machine_recovery()
     let temp = tempfile::tempdir().expect("tempdir must exist");
     let loaded = loaded_in(&temp);
     let initial = DecisionEvidenceRuntime::open(&loaded).expect("fresh streams must open");
-    initial
+    let _committed = initial
         .recorder()
-        .record_submit_reservation_metadata(reservation_metadata_command())
+        .record_admitted_entry_admission(admitted_entry_with_reservation())
         .expect("machine fact must append");
     drop(initial);
     let machine_bytes = fs::read(machine_path(&loaded)).expect("machine bytes must read");
@@ -870,31 +958,13 @@ fn shadow_pnl_dispositions_have_typed_reducers_for_the_complete_current_corpus()
 fn open_accepts_the_exact_byte_cap_and_refuses_one_byte_over() {
     let temp = tempfile::tempdir().expect("tempdir must exist");
     let mut loaded = loaded_in(&temp);
-    let current = concat!(
-        "{\"schema_version\":16,",
-        "\"recorded_at_utc_ns\":1,",
-        "\"gate_id\":\"bolt_v3.submit_admission\",",
-        "\"gate_version\":\"current\",",
-        "\"kind\":\"submit_reservation_metadata\",",
-        "\"metadata\":{",
-        "\"client_order_id\":\"client-1\",",
-        "\"submit_reservation_id\":\"reservation-1\",",
-        "\"venue_id\":\"POLYMARKET\",",
-        "\"account_id\":\"POLYMARKET-001\",",
-        "\"product_kind\":\"binary\",",
-        "\"collateral_currency\":\"USDC\",",
-        "\"capital_pool_id\":\"pool-1\",",
-        "\"collateral_group_id\":\"group-1\",",
-        "\"instrument_id\":\"YES-USD.POLYMARKET\",",
-        "\"side\":\"buy\",",
-        "\"submitted_quantity\":\"1\",",
-        "\"liability_factor\":\"1\",",
-        "\"additive_liability\":\"0\",",
-        "\"reserved_liability\":\"1\",",
-        "\"observed_at_ns\":1,",
-        "\"source\":\"submit_admission\"}}\n",
-    );
-    fs::write(machine_path(&loaded), current).expect("current line must be written");
+    let initial = DecisionEvidenceRuntime::open(&loaded).expect("fresh stream must open");
+    let _committed = initial
+        .recorder()
+        .record_admitted_entry_admission(admitted_entry_with_reservation())
+        .expect("atomic admitted fact must append");
+    drop(initial);
+    let current = fs::read(machine_path(&loaded)).expect("current line must read");
     loaded
         .root
         .persistence
@@ -932,9 +1002,9 @@ fn open_refuses_blank_torn_unknown_and_non_regular_machine_streams() {
 
     fs::write(&machine, b"").expect("machine stream must be reset");
     let runtime = DecisionEvidenceRuntime::open(&loaded).expect("current stream must open");
-    runtime
+    let _committed = runtime
         .recorder()
-        .record_submit_reservation_metadata(reservation_metadata_command())
+        .record_admitted_entry_admission(admitted_entry_with_reservation())
         .expect("current record must append");
     drop(runtime);
     let mut complete_without_newline = fs::read(&machine).expect("current stream must read");
@@ -949,9 +1019,8 @@ fn open_refuses_blank_torn_unknown_and_non_regular_machine_streams() {
             .contains("non-newline-terminated final record")
     );
 
-    let fixture = include_bytes!(
-        "fixtures/bolt_v3/current_evidence/positive/submit_reservation_metadata.jsonl"
-    );
+    let fixture =
+        include_bytes!("fixtures/bolt_v3/current_evidence/positive/admitted_entry_admission.jsonl");
     let crlf = fixture
         .iter()
         .flat_map(|byte| {

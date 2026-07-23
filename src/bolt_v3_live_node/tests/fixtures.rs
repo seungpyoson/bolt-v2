@@ -53,7 +53,7 @@ pub(super) fn enable_fixture_kill_switch_for_enforced_venue_truth(
         .expect("fixture kill switch state should bootstrap armed");
 }
 
-pub(super) fn fixture_submit_reservation_metadata(
+pub(super) fn fixture_reservation_attribution(
     client_order_id: &str,
     instrument_id: &str,
     side: &str,
@@ -61,36 +61,69 @@ pub(super) fn fixture_submit_reservation_metadata(
     liability_factor: &str,
     additive_liability: &str,
     reserved_liability: &str,
-) -> crate::bolt_v3_current_evidence::SubmitReservationMetadataFact {
-    crate::bolt_v3_current_evidence::SubmitReservationMetadataFact {
+) -> crate::bolt_v3_current_evidence::ReservationAttribution {
+    crate::bolt_v3_current_evidence::ReservationAttribution {
         client_order_id: client_order_id.to_string(),
         submit_reservation_id: format!("{client_order_id}#submit"),
         venue_id: "POLYMARKET".to_string(),
         account_id: "POLYMARKET-001".to_string(),
-        product_kind: "prediction_market_binary".to_string(),
+        product_kind:
+            crate::bolt_v3_current_evidence::ReservationProductKind::PredictionMarketBinary,
         collateral_currency: "PUSD".to_string(),
         capital_pool_id: "polymarket-prediction-live".to_string(),
         collateral_group_id: "condition-fixture".to_string(),
         instrument_id: instrument_id.to_string(),
-        side: side.to_string(),
+        side: match side {
+            "buy" => crate::bolt_v3_current_evidence::EvidenceOrderSide::Buy,
+            "sell" => crate::bolt_v3_current_evidence::EvidenceOrderSide::Sell,
+            _ => panic!("fixture reservation side must be buy or sell"),
+        },
         submitted_quantity: submitted_quantity.to_string(),
         liability_factor: liability_factor.to_string(),
         additive_liability: additive_liability.to_string(),
         reserved_liability: reserved_liability.to_string(),
         observed_at_ns: 1_000,
-        source: "submit_admission".to_string(),
     }
 }
 
-pub(super) fn write_submit_reservation_metadata(
+pub(super) fn write_admitted_entry_reservation(
     loaded: &LoadedBoltV3Config,
-    metadata: &crate::bolt_v3_current_evidence::SubmitReservationMetadataFact,
+    reservation: &crate::bolt_v3_current_evidence::ReservationAttribution,
 ) {
-    crate::bolt_v3_current_evidence::DecisionEvidenceRuntime::open(loaded)
+    let _committed = crate::bolt_v3_current_evidence::DecisionEvidenceRuntime::open(loaded)
         .expect("current decision evidence runtime should open")
         .recorder()
-        .record_submit_reservation_metadata(metadata.clone())
-        .expect("submit reservation metadata should write");
+        .record_admitted_entry_admission(
+            crate::bolt_v3_current_evidence::AdmittedEntryAdmissionFact {
+                details: crate::bolt_v3_current_evidence::AdmissionDetails {
+                    strategy_id: "strategy-1".to_string(),
+                    execution_client_id: "execution-1".to_string(),
+                    client_order_id: reservation.client_order_id.clone(),
+                    instrument_id: reservation.instrument_id.clone(),
+                    notional: reservation.reserved_liability.clone(),
+                    loss_halt_reasons: Vec::new(),
+                    snapshot_present: false,
+                    snapshot_observed_at_ns: None,
+                    admission_now_ns: reservation.observed_at_ns,
+                    snapshot_age_ns: None,
+                    max_snapshot_age_ns: None,
+                    snapshot_source: None,
+                    per_trade_pnl_present: false,
+                    daily_pnl_present: false,
+                    rolling_pnl_present: false,
+                    current_equity_present: false,
+                    peak_equity_present: false,
+                    last_account_state_observed_at_ns: None,
+                    last_portfolio_snapshot_observed_at_ns: None,
+                    last_position_event_observed_at_ns: None,
+                    stale_reason: None,
+                    loss_snapshot_observed_at_ns: None,
+                    loss_eval_now_ns: None,
+                },
+                reservation: Some(reservation.clone()),
+            },
+        )
+        .expect("admitted reservation attribution should write");
 }
 
 pub(super) fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'static str> {

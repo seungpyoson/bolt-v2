@@ -7,12 +7,13 @@ use crate::bolt_v3_current_evidence::{
         AdmittedEntryAdmissionFact, CapitalAdmissionRebuildFact, CapitalAdmissionRebuildOutcome,
         CapitalAdmissionRebuildSource, CapitalAdmissionRejectionReason,
         ForcedReductionAdmissionFact, LossHaltReason, LossSnapshotSource, LossSnapshotStaleReason,
-        RejectedEntryAdmissionFact, RiskReducingExitAdmissionFact,
+        RejectedEntryAdmissionFact, ReservationAttribution, RiskReducingExitAdmissionFact,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
 };
 
+use super::reservation::{ReservationAttributionV1, validate_attribution};
 use super::{
     current_line_descriptor, decode, encode_line, validate_envelope, validate_recorded_at,
 };
@@ -251,6 +252,16 @@ pub(super) fn encode_admitted_entry(
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     validate_recorded_at(recorded_at_utc_ns)?;
     validate_admission_details(&fact.details)?;
+    if let Some(reservation) = fact.reservation.as_ref() {
+        validate_attribution(reservation)?;
+        if reservation.client_order_id != fact.details.client_order_id
+            || reservation.instrument_id != fact.details.instrument_id
+        {
+            return Err(RecordFailure::Rejected(anyhow::anyhow!(
+                "admitted entry reservation attribution does not match admission details"
+            )));
+        }
+    }
     let purpose = KnownPurpose::AdmittedEntryAdmission;
     let descriptor = current_line_descriptor(purpose);
     encode_line(
@@ -264,6 +275,7 @@ pub(super) fn encode_admitted_entry(
             decision: AdmittedEntryDecisionV1::from_parts(
                 fact.details,
                 AdmittedEntryOutcomeV1::Admitted,
+                fact.reservation,
             ),
         },
     )
@@ -282,9 +294,20 @@ pub(super) fn decode_admitted_entry(
         decoded.recorded_at_utc_ns,
         line_number,
     )?;
-    let (details, AdmittedEntryOutcomeV1::Admitted) = decoded.decision.into_parts();
+    let (details, AdmittedEntryOutcomeV1::Admitted, reservation) = decoded.decision.into_parts();
     validate_admission_details(&details).map_err(anyhow::Error::new)?;
-    Ok(AdmittedEntryAdmissionFact { details })
+    if let Some(reservation) = reservation.as_ref() {
+        validate_attribution(reservation).map_err(anyhow::Error::new)?;
+        anyhow::ensure!(
+            reservation.client_order_id == details.client_order_id
+                && reservation.instrument_id == details.instrument_id,
+            "admitted entry reservation attribution does not match admission details"
+        );
+    }
+    Ok(AdmittedEntryAdmissionFact {
+        details,
+        reservation,
+    })
 }
 
 pub(super) fn encode_rejected_entry(
@@ -459,8 +482,22 @@ fn validate_admission_details(details: &AdmissionDetails) -> Result<(), RecordFa
     Ok(())
 }
 
+macro_rules! reservation_fact_type {
+    ($field:ident) => {
+        Option<ReservationAttribution>
+    };
+}
+
 macro_rules! define_admission_wire {
-    ($line:ident, $decision:ident, $outcome:ident, $halt:ident, $source:ident, $stale:ident) => {
+    (
+        $line:ident,
+        $decision:ident,
+        $outcome:ident,
+        $halt:ident,
+        $source:ident,
+        $stale:ident
+        $(, $reservation:ident)?
+    ) => {
         #[derive(Serialize, Deserialize)]
         #[serde(deny_unknown_fields)]
         struct $line {
@@ -499,10 +536,18 @@ macro_rules! define_admission_wire {
             stale_reason: Option<$stale>,
             loss_snapshot_observed_at_ns: Option<u64>,
             loss_eval_now_ns: Option<u64>,
+            $(
+                #[serde(default)]
+                $reservation: Option<ReservationAttributionV1>,
+            )?
         }
 
         impl $decision {
-            fn from_parts(details: AdmissionDetails, outcome: $outcome) -> Self {
+            fn from_parts(
+                details: AdmissionDetails,
+                outcome: $outcome
+                $(, $reservation: Option<ReservationAttribution>)?
+            ) -> Self {
                 Self {
                     strategy_id: details.strategy_id,
                     execution_client_id: details.execution_client_id,
@@ -533,10 +578,19 @@ macro_rules! define_admission_wire {
                     stale_reason: details.stale_reason.map($stale::from_fact),
                     loss_snapshot_observed_at_ns: details.loss_snapshot_observed_at_ns,
                     loss_eval_now_ns: details.loss_eval_now_ns,
+                    $(
+                        $reservation: $reservation.map(ReservationAttributionV1::from_fact),
+                    )?
                 }
             }
 
-            fn into_parts(self) -> (AdmissionDetails, $outcome) {
+            fn into_parts(
+                self,
+            ) -> (
+                AdmissionDetails,
+                $outcome
+                $(, reservation_fact_type!($reservation))?
+            ) {
                 (
                     AdmissionDetails {
                         strategy_id: self.strategy_id,
@@ -569,6 +623,9 @@ macro_rules! define_admission_wire {
                         loss_eval_now_ns: self.loss_eval_now_ns,
                     },
                     self.outcome,
+                    $(
+                        self.$reservation.map(ReservationAttributionV1::into_fact),
+                    )?
                 )
             }
         }
@@ -705,7 +762,8 @@ define_admission_wire!(
     AdmittedEntryOutcomeV1,
     AdmittedEntryLossHaltReasonV1,
     AdmittedEntrySnapshotSourceV1,
-    AdmittedEntryStaleReasonV1
+    AdmittedEntryStaleReasonV1,
+    reservation
 );
 define_admission_wire!(
     RejectedEntryLineV1,

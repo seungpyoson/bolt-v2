@@ -147,16 +147,6 @@ current_identity = "capital_admission_rebuild_v1"
 current_fact = "capital_admission_rebuild_v1"
 
 [[purposes]]
-id = "submit_reservation_metadata"
-owner = "bolt_v3_decision_evidence"
-duties = ["recovery"]
-effect_policy = "must_precede_new_risk"
-sink = "machine"
-novelty_capability = "prohibited"
-current_identity = "submit_reservation_metadata_v1"
-current_fact = "submit_reservation_metadata_v1"
-
-[[purposes]]
 id = "submit_reservation_fill"
 owner = "bolt_v3_decision_evidence"
 duties = ["recovery"]
@@ -331,10 +321,6 @@ id = "capital_admission_rebuild"
 purpose = "capital_admission_rebuild"
 
 [[producers]]
-id = "submit_reservation_metadata"
-purpose = "submit_reservation_metadata"
-
-[[producers]]
 id = "submit_reservation_fill"
 purpose = "submit_reservation_fill"
 
@@ -466,13 +452,6 @@ purpose = "capital_admission_rebuild"
 kind = "capital_admission_rebuild"
 schema_version = 16
 gate_id = "bolt_v3.capital_admission_rebuild"
-
-[[identities]]
-id = "submit_reservation_metadata_v1"
-purpose = "submit_reservation_metadata"
-kind = "submit_reservation_metadata"
-schema_version = 16
-gate_id = "bolt_v3.submit_admission"
 
 [[identities]]
 id = "submit_reservation_fill_v1"
@@ -608,10 +587,6 @@ identity = "basket_admission_rejected_v1"
 [[facts]]
 id = "capital_admission_rebuild_v1"
 identity = "capital_admission_rebuild_v1"
-
-[[facts]]
-id = "submit_reservation_metadata_v1"
-identity = "submit_reservation_metadata_v1"
 
 [[facts]]
 id = "submit_reservation_fill_v1"
@@ -764,8 +739,8 @@ owner_ruling = "current_contract_owner_ruling_2026_07_22"
 [[dispositions]]
 fact = "admitted_entry_admission_v1"
 consumer = "reservation_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
+action = "relevant"
+event_variant = "admitted_entry_admission_v1"
 
 [[dispositions]]
 fact = "admitted_entry_admission_v1"
@@ -860,95 +835,71 @@ owner_ruling = "current_contract_owner_ruling_2026_07_22"
 [[dispositions]]
 fact = "basket_admission_granted_v1"
 consumer = "reservation_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "basket_admission_granted_v1"
-consumer = "settlement_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "basket_admission_granted_v1"
-consumer = "booking_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "basket_admission_granted_v1"
-consumer = "shadow_pnl_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "basket_admission_rejected_v1"
-consumer = "reservation_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "basket_admission_rejected_v1"
-consumer = "settlement_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "basket_admission_rejected_v1"
-consumer = "booking_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "basket_admission_rejected_v1"
-consumer = "shadow_pnl_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "capital_admission_rebuild_v1"
-consumer = "reservation_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "capital_admission_rebuild_v1"
-consumer = "settlement_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "capital_admission_rebuild_v1"
-consumer = "booking_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "capital_admission_rebuild_v1"
-consumer = "shadow_pnl_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
-
-[[dispositions]]
-fact = "submit_reservation_metadata_v1"
-consumer = "reservation_recovery_v1"
 action = "relevant"
-event_variant = "submit_reservation_metadata_v1"
+event_variant = "basket_admission_granted_v1"
 
 [[dispositions]]
-fact = "submit_reservation_metadata_v1"
+fact = "basket_admission_granted_v1"
 consumer = "settlement_recovery_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "submit_reservation_metadata_v1"
+fact = "basket_admission_granted_v1"
 consumer = "booking_recovery_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "submit_reservation_metadata_v1"
+fact = "basket_admission_granted_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_rejected_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_rejected_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_rejected_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "basket_admission_rejected_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "capital_admission_rebuild_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "capital_admission_rebuild_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "capital_admission_rebuild_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "capital_admission_rebuild_v1"
 consumer = "shadow_pnl_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
@@ -1316,8 +1267,8 @@ event_variant = "forced_reduction_admission_v1"
 [[dispositions]]
 fact = "basket_admission_granted_v1"
 consumer = "backtest_run_guard_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
+action = "relevant"
+event_variant = "basket_admission_granted_v1"
 
 [[dispositions]]
 fact = "basket_admission_rejected_v1"
@@ -1330,12 +1281,6 @@ fact = "capital_admission_rebuild_v1"
 consumer = "backtest_run_guard_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
-
-[[dispositions]]
-fact = "submit_reservation_metadata_v1"
-consumer = "backtest_run_guard_v1"
-action = "relevant"
-event_variant = "submit_reservation_metadata_v1"
 
 [[dispositions]]
 fact = "submit_reservation_fill_v1"

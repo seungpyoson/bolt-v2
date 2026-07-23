@@ -1630,7 +1630,7 @@ impl BoltV3LiveNodeRuntime {
                 break;
             };
             let Some(metadata) =
-                recovered_reservations.reservation_metadata(&evidence.client_order_id)
+                recovered_reservations.reservation_attribution(&evidence.client_order_id)
             else {
                 all_open_orders_attributed = false;
                 break;
@@ -1644,7 +1644,7 @@ impl BoltV3LiveNodeRuntime {
                 .unwrap_or_default();
             let Some(reservation) = self
                 .submit_admission
-                .capital_admission_open_order_reservation_from_known_metadata(
+                .capital_admission_open_order_reservation_from_attribution(
                     evidence,
                     metadata,
                     &fill_trade_ids,
@@ -1970,7 +1970,7 @@ pub enum BoltV3LiveNodeError {
     StrategyFreeStopFailed(anyhow::Error),
     /// The startup capital-admission rebuild from the NT cache could not
     /// attribute one or more pre-existing open orders to recovered
-    /// submit-reservation metadata, so submit admission would arm with an
+    /// atomic admitted reservation attribution, so submit admission would arm with an
     /// unreconciled capital-reservation ledger. The live runner refuses to
     /// enter NT's loop in this state to avoid double-allocating capital
     /// against orders it cannot account for. The wrapped decision carries

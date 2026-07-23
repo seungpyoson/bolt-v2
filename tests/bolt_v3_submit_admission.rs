@@ -1408,7 +1408,9 @@ fn fresh_live_node_build_keeps_submit_admission_internal() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-submit-admission-build");
-    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    let canonical_temp =
+        std::fs::canonicalize(temp.path()).expect("temp catalog path should canonicalize");
+    loaded.root.persistence.catalog_directory = canonical_temp.to_string_lossy().to_string();
     for relative in [
         &loaded
             .root
@@ -1421,8 +1423,7 @@ fn fresh_live_node_build_keeps_submit_admission_internal() {
             .decision_evidence
             .observation_relative_path,
     ] {
-        let parent = temp
-            .path()
+        let parent = canonical_temp
             .join(relative)
             .parent()
             .expect("configured evidence path must have a parent")

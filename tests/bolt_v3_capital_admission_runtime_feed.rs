@@ -2629,9 +2629,9 @@ fn admission_evidence_failure_rolls_back_capital_reservation_before_submit() {
         "no reservation may survive a rejected evidence boundary"
     );
     assert_eq!(
-        writer.submit_reservation_metadata().len(),
-        1,
-        "reservation metadata must commit before the targeted admission-decision failure"
+        writer.reservation_attributions().len(),
+        0,
+        "atomic reservation attribution must not survive a failed admission append"
     );
 }
 

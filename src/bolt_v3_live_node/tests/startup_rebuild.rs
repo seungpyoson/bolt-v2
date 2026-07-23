@@ -39,7 +39,7 @@ fn live_node_surfaces_poisoned_observation_stream_without_gating_startup() {
 fn startup_rebuild_does_not_recover_known_submit_reservation_from_nt_cache_without_venue_truth() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
-    let metadata = fixture_submit_reservation_metadata(
+    let metadata = fixture_reservation_attribution(
         "startup-known-client-order",
         "condition-fixture-yes.POLYMARKET",
         "buy",
@@ -52,7 +52,7 @@ fn startup_rebuild_does_not_recover_known_submit_reservation_from_nt_cache_witho
         .expect("fixture v3 LiveNode should build");
 
     assert_eq!(runtime.capital_admission_reconciled(), Some(false));
-    write_submit_reservation_metadata(&loaded, &metadata);
+    write_admitted_entry_reservation(&loaded, &metadata);
     seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
     seed_accepted_open_limit_order(
         &runtime,
@@ -405,10 +405,10 @@ fn startup_rebuild_nt_cached_balance_is_advisory_without_venue_truth() {
 }
 
 #[test]
-fn startup_rebuild_rejects_known_metadata_when_open_quantity_exceeds_submitted() {
+fn startup_rebuild_rejects_attribution_when_open_quantity_exceeds_submitted() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
-    let metadata = fixture_submit_reservation_metadata(
+    let metadata = fixture_reservation_attribution(
         "startup-overopen-client-order",
         "condition-fixture-yes.POLYMARKET",
         "buy",
@@ -420,7 +420,7 @@ fn startup_rebuild_rejects_known_metadata_when_open_quantity_exceeds_submitted()
     let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
         .expect("fixture v3 LiveNode should build");
 
-    write_submit_reservation_metadata(&loaded, &metadata);
+    write_admitted_entry_reservation(&loaded, &metadata);
     seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
     seed_accepted_open_limit_order(
         &runtime,

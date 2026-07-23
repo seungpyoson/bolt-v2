@@ -114,12 +114,11 @@ pub(super) fn decode_terminal(line: &str, line_number: usize) -> Result<Terminal
         decoded.recorded_at_utc_ns,
         line_number,
     )?;
-    if let Some(booking_error) = decoded.terminal_settlement.booking_error.as_ref() {
-        ensure!(
-            booking_error.settlement_key == decoded.terminal_settlement.settlement_key,
-            "terminal settlement booking-error key mismatch at machine evidence line {line_number}"
-        );
-    }
+    ensure!(
+        decoded.terminal_settlement.booking_error.settlement_key
+            == decoded.terminal_settlement.settlement_key,
+        "terminal settlement booking-error key mismatch at machine evidence line {line_number}"
+    );
     let fact = decoded.terminal_settlement.into_fact();
     validate_terminal(&fact).map_err(anyhow::Error::new)?;
     Ok(fact)
@@ -174,11 +173,43 @@ fn validate_terminal(fact: &TerminalSettlementFact) -> Result<(), RecordFailure>
             "terminal settlement contains an empty or invalid lifecycle field"
         )));
     }
-    if let Some(booking_error) = fact.booking_error.as_ref() {
-        validate_booking_error(booking_error)?;
-        if booking_error.settlement_key != fact.settlement_key {
+    if fact.lifecycle.transition != OrderLifecycleTransition::SettlementBookingTerminal
+        || fact.lifecycle.outcome != OrderLifecycleOutcome::Flat
+        || fact.lifecycle.source != OrderLifecycleSource::SettlementBookingTerminal
+    {
+        return Err(RecordFailure::Rejected(anyhow::anyhow!(
+            "terminal settlement lifecycle must be settlement-booking-terminal/flat"
+        )));
+    }
+    let booking_error = &fact.booking_error;
+    validate_booking_error(booking_error)?;
+    if booking_error.settlement_key != fact.settlement_key {
+        return Err(RecordFailure::Rejected(anyhow::anyhow!(
+            "terminal settlement booking-error key does not match canonical key"
+        )));
+    }
+    for (booking_value, lifecycle_value, field) in [
+        (
+            booking_error.market_id.as_deref(),
+            fact.lifecycle.market_id.as_deref(),
+            "market_id",
+        ),
+        (
+            booking_error.position_id.as_deref(),
+            fact.lifecycle.position_id.as_deref(),
+            "position_id",
+        ),
+        (
+            booking_error.instrument_id.as_deref(),
+            fact.lifecycle.instrument_id.as_deref(),
+            "instrument_id",
+        ),
+    ] {
+        if let Some(booking_value) = booking_value
+            && Some(booking_value) != lifecycle_value
+        {
             return Err(RecordFailure::Rejected(anyhow::anyhow!(
-                "terminal settlement booking-error key does not match canonical key"
+                "terminal settlement booking-error {field} does not match lifecycle"
             )));
         }
     }
@@ -353,7 +384,7 @@ struct TerminalLineV1 {
 #[serde(deny_unknown_fields)]
 struct TerminalV1 {
     settlement_key: String,
-    booking_error: Option<TerminalBookingErrorV1>,
+    booking_error: TerminalBookingErrorV1,
     lifecycle: TerminalLifecycleV1,
 }
 
@@ -361,7 +392,7 @@ impl TerminalV1 {
     fn from_fact(fact: TerminalSettlementFact) -> Self {
         Self {
             settlement_key: fact.settlement_key,
-            booking_error: fact.booking_error.map(TerminalBookingErrorV1::from_fact),
+            booking_error: TerminalBookingErrorV1::from_fact(fact.booking_error),
             lifecycle: TerminalLifecycleV1::from_fact(fact.lifecycle),
         }
     }
@@ -369,7 +400,7 @@ impl TerminalV1 {
     fn into_fact(self) -> TerminalSettlementFact {
         TerminalSettlementFact {
             settlement_key: self.settlement_key,
-            booking_error: self.booking_error.map(TerminalBookingErrorV1::into_fact),
+            booking_error: self.booking_error.into_fact(),
             lifecycle: self.lifecycle.into_fact(),
         }
     }

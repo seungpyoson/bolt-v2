@@ -487,7 +487,7 @@ fn basket_submit_slots_carry_capital_admission_evidence_into_shared_gate() {
         );
     }
     assert_eq!(
-        writer.submit_reservation_metadata().len(),
+        writer.reservation_attributions().len(),
         2,
         "basket legs must record submit reservation metadata before commit"
     );
@@ -528,13 +528,13 @@ fn basket_grant_evidence_failure_rolls_back_every_leg_before_submit() {
         );
     }
     assert_eq!(
-        writer.submit_reservation_metadata().len(),
-        claims.len(),
-        "reservation metadata must commit before the targeted basket-grant failure"
+        writer.reservation_attributions().len(),
+        0,
+        "atomic basket attribution must not survive a failed grant append"
     );
     assert!(
         writer.basket_admission_decisions().is_empty(),
-        "the injected failure must prevent only the basket-grant fact"
+        "the injected failure must prevent the entire atomic basket-grant fact"
     );
 }
 

@@ -43,9 +43,10 @@ use crate::{
         ForcedFlatReason as EvidenceForcedFlatReason, NonBlockingRecordOutcome,
         ObservationRecordOutcome, OrderIntentDetails, OrderLifecycleFact, OrderLifecycleOutcome,
         OrderLifecycleSource, OrderLifecycleTransition, OutcomeSide as EvidenceOutcomeSide,
-        RvGateResult as EvidenceRvGateResult, SettlementBookingErrorFact,
-        SettlementBookingErrorReason, SettlementFact, StrategyInputDetails, StrategyInputRvState,
-        SubmissionLinkage, SubmitLinkedStrategyInputSnapshotFact, TerminalSettlementFact,
+        RecoveredSettlementOutcome, RvGateResult as EvidenceRvGateResult,
+        SettlementBookingErrorFact, SettlementBookingErrorReason, SettlementFact,
+        StrategyInputDetails, StrategyInputRvState, SubmissionLinkage,
+        SubmitLinkedStrategyInputSnapshotFact, TerminalSettlementFact,
         realized_vol_diagnostic_fact, settlement_kind,
     },
     bolt_v3_evidence_values::{
@@ -1135,6 +1136,14 @@ impl BinaryOracleEdgeTaker {
         committed: crate::bolt_v3_current_evidence::CommittedSettlement,
         settlement_currency: Currency,
     ) -> Result<()> {
+        self.apply_settlement_runtime_effects(committed.fact(), settlement_currency)
+    }
+
+    fn apply_settlement_runtime_effects(
+        &self,
+        evidence: &SettlementFact,
+        settlement_currency: Currency,
+    ) -> Result<()> {
         let Some(sink) = self.context.settlement_runtime_sink() else {
             return Ok(());
         };
@@ -1142,7 +1151,6 @@ impl BinaryOracleEdgeTaker {
             .context
             .settlement_account_id()
             .expect("shared booking validates settlement account id");
-        let evidence = committed.fact();
         sink.record_loss_governor_position_realized_pnl(
             settlement_position_realized_pnl_observation(
                 account_id,
@@ -1196,7 +1204,7 @@ impl BinaryOracleEdgeTaker {
             position,
             transition.eligibility,
             transition.key_delta,
-            Some(evidence),
+            evidence,
             reason_detail,
             TerminalEvidenceState::PersistCanonical,
         )
@@ -1212,7 +1220,7 @@ impl BinaryOracleEdgeTaker {
         position: &OpenPositionState,
         eligibility: TerminalSettlementEligibility,
         key_delta: SettlementTerminalKeyDelta,
-        booking_error: Option<SettlementBookingErrorFact>,
+        booking_error: SettlementBookingErrorFact,
         reason_detail: String,
         evidence_state: TerminalEvidenceState,
     ) -> Result<()> {
@@ -2552,6 +2560,12 @@ impl BinaryOracleEdgeTaker {
         // settlement key already has a booking-error record release exposure
         // rather than parking Managed forever.
         if let Ok(settlement_key) = settlement_key_for_position(&open_position) {
+            if self.settled_position_keys.contains(&settlement_key) {
+                self.exposure = ExposureState::Flat;
+                self.sync_exposure_context_from_active();
+                self.refresh_book_subscriptions_for_current_state();
+                return;
+            }
             let position_key = settlement_position_key(&open_position, settlement_key.clone());
             let decision = decide_bootstrap_recovery_from_cache(
                 true,
@@ -2579,10 +2593,21 @@ impl BinaryOracleEdgeTaker {
                 self.adopt_restart_open_exit_order_from_cache(execution_venue, strategy_id);
                 return;
             };
-            let evidence_state = if canonical_evidence_already_durable {
-                TerminalEvidenceState::CanonicalAlreadyDurable
-            } else {
-                TerminalEvidenceState::PersistCanonical
+            if !canonical_evidence_already_durable {
+                self.enter_blind_settlement_recovery(anyhow::anyhow!(
+                    "booking-terminal recovery key `{settlement_key}` lacks canonical terminal evidence"
+                ));
+                return;
+            }
+            let Some(RecoveredSettlementOutcome::BookingTerminal(recovered_terminal)) = self
+                .context
+                .settlement_recovery()
+                .and_then(|recovery| recovery.outcomes().get(&settlement_key))
+            else {
+                self.enter_blind_settlement_recovery(anyhow::anyhow!(
+                    "booking-terminal recovery key `{settlement_key}` lacks typed terminal evidence"
+                ));
+                return;
             };
             if let Err(error) = self.apply_terminal_settlement_transition(
                 &open_position,
@@ -2593,9 +2618,9 @@ impl BinaryOracleEdgeTaker {
                     insert_terminal_key: true,
                     remove_close_fetch_attempt: true,
                 },
-                None,
+                recovered_terminal.booking_error.clone(),
                 format!("prior_booking_error_key_on_restart settlement_key={settlement_key}"),
-                evidence_state,
+                TerminalEvidenceState::CanonicalAlreadyDurable,
             ) {
                 self.enter_blind_settlement_recovery(error);
             }
@@ -2643,20 +2668,24 @@ impl BinaryOracleEdgeTaker {
             &recovery_scope_settlement_keys,
         );
 
-        if let Some(sink) = self.context.settlement_runtime_sink() {
-            for evidence in recovery_delta.settled_evidence {
-                let explanation = match venue_truth_settlement_explanation_from_evidence(&evidence)
-                {
-                    Ok(explanation) => explanation,
-                    Err(error) => {
-                        self.enter_blind_settlement_recovery(error);
-                        return false;
-                    }
-                };
-                if let Err(error) = sink.record_venue_truth_settlement(explanation) {
-                    self.enter_blind_settlement_recovery(error);
-                    return false;
-                }
+        for evidence in &recovery_delta.settled_evidence {
+            let Some(settlement_currency) = self.context.settlement_currency() else {
+                self.enter_blind_settlement_recovery(anyhow::anyhow!(
+                    "recovered settlement requires configured settlement currency"
+                ));
+                return false;
+            };
+            if settlement_currency.to_string() != evidence.settlement_currency {
+                self.enter_blind_settlement_recovery(anyhow::anyhow!(
+                    "recovered settlement currency `{}` does not match configured `{settlement_currency}`",
+                    evidence.settlement_currency
+                ));
+                return false;
+            }
+            if let Err(error) = self.apply_settlement_runtime_effects(evidence, settlement_currency)
+            {
+                self.enter_blind_settlement_recovery(error);
+                return false;
             }
         }
 

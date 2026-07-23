@@ -8,24 +8,28 @@ use anyhow::{Context, Result, ensure};
 
 use super::generated_contract::KnownFact;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReservationProductKind {
+    PredictionMarketBinary,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubmitReservationMetadataFact {
+pub struct ReservationAttribution {
     pub client_order_id: String,
     pub submit_reservation_id: String,
     pub venue_id: String,
     pub account_id: String,
-    pub product_kind: String,
+    pub product_kind: ReservationProductKind,
     pub collateral_currency: String,
     pub capital_pool_id: String,
     pub collateral_group_id: String,
     pub instrument_id: String,
-    pub side: String,
+    pub side: EvidenceOrderSide,
     pub submitted_quantity: String,
     pub liability_factor: String,
     pub additive_liability: String,
     pub reserved_liability: String,
     pub observed_at_ns: u64,
-    pub source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +171,14 @@ pub struct BasketAdmissionDetails {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BasketAdmissionGrantedFact {
     pub details: BasketAdmissionDetails,
+    pub admitted_legs: Vec<BasketAdmittedLeg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BasketAdmittedLeg {
+    pub client_order_id: String,
+    pub instrument_id: String,
+    pub reservation: Option<ReservationAttribution>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -429,6 +441,7 @@ pub struct AdmissionDetails {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmittedEntryAdmissionFact {
     pub details: AdmissionDetails,
+    pub reservation: Option<ReservationAttribution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1097,28 +1110,28 @@ pub struct OrderLifecycleFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalSettlementFact {
     pub settlement_key: String,
-    pub booking_error: Option<SettlementBookingErrorFact>,
+    pub booking_error: SettlementBookingErrorFact,
     pub lifecycle: OrderLifecycleFact,
 }
 
 #[derive(Debug, Default)]
 pub struct ReservationRecoveryFacts {
-    reservation_metadata: BTreeMap<String, SubmitReservationMetadataFact>,
+    reservation_attribution: BTreeMap<String, ReservationAttribution>,
     reservation_fill_trade_ids: BTreeMap<(String, String), BTreeSet<String>>,
 }
 
 impl ReservationRecoveryFacts {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.reservation_metadata.is_empty() && self.reservation_fill_trade_ids.is_empty()
+        self.reservation_attribution.is_empty() && self.reservation_fill_trade_ids.is_empty()
     }
 
     #[must_use]
-    pub fn reservation_metadata(
+    pub fn reservation_attribution(
         &self,
         client_order_id: &str,
-    ) -> Option<&SubmitReservationMetadataFact> {
-        self.reservation_metadata.get(client_order_id)
+    ) -> Option<&ReservationAttribution> {
+        self.reservation_attribution.get(client_order_id)
     }
 
     #[must_use]
@@ -1135,16 +1148,17 @@ impl ReservationRecoveryFacts {
 
     pub(super) fn apply(&mut self, fact: ReservationRecoveryEvent) -> Result<()> {
         match fact {
-            ReservationRecoveryEvent::Metadata(metadata) => {
-                ensure!(
-                    !self
-                        .reservation_metadata
-                        .contains_key(&metadata.client_order_id),
-                    "duplicate submit-reservation metadata for client_order_id `{}`",
-                    metadata.client_order_id
-                );
-                self.reservation_metadata
-                    .insert(metadata.client_order_id.clone(), metadata);
+            ReservationRecoveryEvent::AdmittedEntry(admission) => {
+                if let Some(reservation) = admission.reservation {
+                    self.insert_attribution(reservation)?;
+                }
+            }
+            ReservationRecoveryEvent::BasketGranted(grant) => {
+                for leg in grant.admitted_legs {
+                    if let Some(reservation) = leg.reservation {
+                        self.insert_attribution(reservation)?;
+                    }
+                }
             }
             ReservationRecoveryEvent::Fill(fill) => {
                 self.reservation_fill_trade_ids
@@ -1158,62 +1172,75 @@ impl ReservationRecoveryFacts {
 
     pub(super) fn validate(&self) -> Result<()> {
         for (client_order_id, submit_reservation_id) in self.reservation_fill_trade_ids.keys() {
-            let metadata = self
-                .reservation_metadata
+            let attribution = self
+                .reservation_attribution
                 .get(client_order_id)
                 .with_context(|| {
                     format!(
-                        "submit-reservation fill has no metadata for client_order_id `{client_order_id}`"
+                        "submit-reservation fill has no attribution for client_order_id `{client_order_id}`"
                     )
                 })?;
             ensure!(
-                metadata.submit_reservation_id == *submit_reservation_id,
-                "submit-reservation fill `{client_order_id}` reservation `{submit_reservation_id}` does not match submit-reservation metadata `{}`",
-                metadata.submit_reservation_id
+                attribution.submit_reservation_id == *submit_reservation_id,
+                "submit-reservation fill `{client_order_id}` reservation `{submit_reservation_id}` does not match submit-reservation attribution `{}`",
+                attribution.submit_reservation_id
             );
         }
+        Ok(())
+    }
+
+    fn insert_attribution(&mut self, attribution: ReservationAttribution) -> Result<()> {
+        ensure!(
+            !self
+                .reservation_attribution
+                .contains_key(&attribution.client_order_id),
+            "duplicate submit-reservation attribution for client_order_id `{}`",
+            attribution.client_order_id
+        );
+        self.reservation_attribution
+            .insert(attribution.client_order_id.clone(), attribution);
         Ok(())
     }
 }
 
 #[derive(Debug, Default)]
 pub struct SettlementRecoveryFacts {
-    settlements: BTreeMap<String, SettlementFact>,
-    terminal_settlement_keys: BTreeSet<String>,
+    outcomes: BTreeMap<String, RecoveredSettlementOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoveredSettlementOutcome {
+    Successful(SettlementFact),
+    BookingTerminal(TerminalSettlementFact),
 }
 
 impl SettlementRecoveryFacts {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.settlements.is_empty() && self.terminal_settlement_keys.is_empty()
+        self.outcomes.is_empty()
     }
 
     #[must_use]
-    pub fn settlements(&self) -> &BTreeMap<String, SettlementFact> {
-        &self.settlements
-    }
-
-    #[must_use]
-    pub fn terminal_settlement_keys(&self) -> &BTreeSet<String> {
-        &self.terminal_settlement_keys
+    pub fn outcomes(&self) -> &BTreeMap<String, RecoveredSettlementOutcome> {
+        &self.outcomes
     }
 
     pub(super) fn apply(&mut self, fact: SettlementRecoveryEvent) -> Result<()> {
-        match fact {
+        let (settlement_key, outcome) = match fact {
             SettlementRecoveryEvent::Settlement(settlement) => {
-                ensure!(
-                    !self.settlements.contains_key(&settlement.settlement_key),
-                    "duplicate settlement evidence for settlement_key `{}`",
-                    settlement.settlement_key
-                );
-                self.settlements
-                    .insert(settlement.settlement_key.clone(), settlement);
+                let key = settlement.settlement_key.clone();
+                (key, RecoveredSettlementOutcome::Successful(settlement))
             }
             SettlementRecoveryEvent::TerminalSettlement(terminal) => {
-                self.terminal_settlement_keys
-                    .insert(terminal.settlement_key);
+                let key = terminal.settlement_key.clone();
+                (key, RecoveredSettlementOutcome::BookingTerminal(terminal))
             }
-        }
+        };
+        ensure!(
+            !self.outcomes.contains_key(&settlement_key),
+            "duplicate or conflicting terminal settlement outcome for settlement_key `{settlement_key}`"
+        );
+        self.outcomes.insert(settlement_key, outcome);
         Ok(())
     }
 }
@@ -1243,10 +1270,8 @@ impl BookingRecoveryFacts {
     pub(super) fn apply(&mut self, fact: BookingRecoveryEvent) {
         match fact {
             BookingRecoveryEvent::TerminalSettlement(terminal) => {
-                if terminal.booking_error.is_some() {
-                    self.booking_error_keys
-                        .insert(terminal.settlement_key.clone());
-                }
+                self.booking_error_keys
+                    .insert(terminal.settlement_key.clone());
                 self.terminal_settlement_keys
                     .insert(terminal.settlement_key);
             }
@@ -1256,7 +1281,8 @@ impl BookingRecoveryFacts {
 
 #[derive(Debug)]
 pub(super) enum ReservationRecoveryEvent {
-    Metadata(SubmitReservationMetadataFact),
+    AdmittedEntry(Box<AdmittedEntryAdmissionFact>),
+    BasketGranted(BasketAdmissionGrantedFact),
     Fill(SubmitReservationFillFact),
 }
 
@@ -1294,7 +1320,6 @@ mod current_fact {
         BasketAdmissionGranted(BasketAdmissionGrantedFact),
         BasketAdmissionRejected(BasketAdmissionRejectedFact),
         CapitalAdmissionRebuild(CapitalAdmissionRebuildFact),
-        SubmitReservationMetadata(SubmitReservationMetadataFact),
         SubmitReservationFill(SubmitReservationFillFact),
         EntrySkipObservation(Box<EntrySkipFact>),
         ExitSubmissionDecision(Box<ExitSubmissionDecisionFact>),
@@ -1328,7 +1353,6 @@ mod current_fact {
                 Self::BasketAdmissionGranted(_) => KnownFact::BasketAdmissionGrantedV1,
                 Self::BasketAdmissionRejected(_) => KnownFact::BasketAdmissionRejectedV1,
                 Self::CapitalAdmissionRebuild(_) => KnownFact::CapitalAdmissionRebuildV1,
-                Self::SubmitReservationMetadata(_) => KnownFact::SubmitReservationMetadataV1,
                 Self::SubmitReservationFill(_) => KnownFact::SubmitReservationFillV1,
                 Self::EntrySkipObservation(_) => KnownFact::EntrySkipObservationV1,
                 Self::ExitSubmissionDecision(_) => KnownFact::ExitSubmissionDecisionV1,

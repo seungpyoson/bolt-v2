@@ -5,7 +5,7 @@ use bolt_v2::{
     bolt_v3_current_evidence::{
         AdmissionDecisionOutcome, AdmissionDetails, CurrentFact, DecisionEvidenceRecorder,
         DecisionEvidenceRuntime, EntrySkipFact, LossGovernorHaltFact, OrderIntentDetails,
-        OrderRejectFact, RequoteThrottleObservationFact, SubmitReservationMetadataFact,
+        OrderRejectFact, RequoteThrottleObservationFact, ReservationAttribution,
         VenueTruthCaptureFailureFact, VenueTruthDivergenceFact, read_current_evidence_facts,
     },
     bolt_v3_submit_admission::BoltV3SubmitIntentKind,
@@ -236,12 +236,17 @@ impl RecordingDecisionEvidenceWriter {
             .collect()
     }
 
-    pub fn submit_reservation_metadata(&self) -> Vec<SubmitReservationMetadataFact> {
+    pub fn reservation_attributions(&self) -> Vec<ReservationAttribution> {
         self.facts()
             .into_iter()
-            .filter_map(|fact| match fact {
-                CurrentFact::SubmitReservationMetadata(fact) => Some(fact),
-                _ => None,
+            .flat_map(|fact| match fact {
+                CurrentFact::AdmittedEntryAdmission(fact) => fact.reservation.into_iter().collect(),
+                CurrentFact::BasketAdmissionGranted(fact) => fact
+                    .admitted_legs
+                    .into_iter()
+                    .filter_map(|leg| leg.reservation)
+                    .collect(),
+                _ => Vec::new(),
             })
             .collect()
     }

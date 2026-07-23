@@ -15,7 +15,8 @@ use crate::{
     },
     bolt_v3_current_evidence::{
         BookingRecoveryFacts, OrderLifecycleOutcome, OrderLifecycleTransition,
-        SettlementBookingErrorReason, SettlementFact, SettlementRecoveryFacts,
+        RecoveredSettlementOutcome, SettlementBookingErrorReason, SettlementFact,
+        SettlementRecoveryFacts, TerminalSettlementFact,
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_strategy_context::SettlementCapability,
@@ -293,6 +294,7 @@ pub struct SettlementRecoveryDelta {
     pub settled_position_keys: BTreeSet<String>,
     pub terminal_settlement_keys: BTreeSet<String>,
     pub settled_evidence: Vec<SettlementFact>,
+    pub terminal_evidence: Vec<TerminalSettlementFact>,
 }
 
 pub fn recover_settlement_facts(
@@ -304,25 +306,38 @@ pub fn recover_settlement_facts(
             settled_position_keys: BTreeSet::new(),
             terminal_settlement_keys: BTreeSet::new(),
             settled_evidence: Vec::new(),
+            terminal_evidence: Vec::new(),
         });
     };
+    let scoped_outcomes = recovery
+        .outcomes()
+        .iter()
+        .filter(|(key, _)| recovery_scope_settlement_keys.contains(*key));
     Ok(SettlementRecoveryDelta {
-        settled_position_keys: recovery
-            .settlements()
-            .keys()
-            .filter(|key| recovery_scope_settlement_keys.contains(*key))
-            .cloned()
+        settled_position_keys: scoped_outcomes
+            .clone()
+            .filter(|(_, outcome)| matches!(outcome, RecoveredSettlementOutcome::Successful(_)))
+            .map(|(key, _)| key.clone())
             .collect(),
-        terminal_settlement_keys: recovery
-            .terminal_settlement_keys()
-            .intersection(recovery_scope_settlement_keys)
-            .cloned()
+        terminal_settlement_keys: scoped_outcomes
+            .clone()
+            .filter(|(_, outcome)| {
+                matches!(outcome, RecoveredSettlementOutcome::BookingTerminal(_))
+            })
+            .map(|(key, _)| key.clone())
             .collect(),
-        settled_evidence: recovery
-            .settlements()
-            .iter()
-            .filter(|(key, _)| recovery_scope_settlement_keys.contains(*key))
-            .map(|(_, fact)| fact.clone())
+        settled_evidence: scoped_outcomes
+            .clone()
+            .filter_map(|(_, outcome)| match outcome {
+                RecoveredSettlementOutcome::Successful(fact) => Some(fact.clone()),
+                RecoveredSettlementOutcome::BookingTerminal(_) => None,
+            })
+            .collect(),
+        terminal_evidence: scoped_outcomes
+            .filter_map(|(_, outcome)| match outcome {
+                RecoveredSettlementOutcome::Successful(_) => None,
+                RecoveredSettlementOutcome::BookingTerminal(fact) => Some(fact.clone()),
+            })
             .collect(),
     })
 }

@@ -251,7 +251,7 @@ fn read_admitted_entry_chains(
                 insert_unique_evidence(
                     &mut intents,
                     client_order_id,
-                    intent,
+                    *intent,
                     "entry order intent",
                     event_index + SHADOW_PNL_LINE_NUMBER_BASE,
                 )?;

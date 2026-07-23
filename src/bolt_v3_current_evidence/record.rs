@@ -3,7 +3,7 @@ use std::{
     fmt,
     fs::File,
     io::{self, Write},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use anyhow::Error;
@@ -46,14 +46,57 @@ pub struct AppendReceipt {
 #[derive(Debug)]
 pub enum RecordFailure {
     Rejected(Error),
-    AppendFailed(Error),
+    CommitIndeterminate { phase: CommitPhase, cause: Arc<str> },
+    SinkPoisoned { first_cause: PoisonCause },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitPhase {
+    Write,
+    Sync,
+}
+
+impl fmt::Display for CommitPhase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Write => formatter.write_str("write"),
+            Self::Sync => formatter.write_str("sync"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PoisonCause {
+    CommitIndeterminate { phase: CommitPhase, cause: Arc<str> },
+    StartupContentInvalid { cause: Arc<str> },
+}
+
+impl fmt::Display for PoisonCause {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CommitIndeterminate { phase, cause } => {
+                write!(formatter, "commit indeterminate during {phase}: {cause}")
+            }
+            Self::StartupContentInvalid { cause } => {
+                write!(formatter, "startup content invalid: {cause}")
+            }
+        }
+    }
 }
 
 impl fmt::Display for RecordFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Rejected(source) => write!(formatter, "evidence record rejected: {source}"),
-            Self::AppendFailed(source) => write!(formatter, "evidence append failed: {source}"),
+            Self::CommitIndeterminate { phase, cause } => {
+                write!(
+                    formatter,
+                    "evidence commit indeterminate during {phase}: {cause}"
+                )
+            }
+            Self::SinkPoisoned { first_cause } => {
+                write!(formatter, "evidence sink poisoned after {first_cause}")
+            }
         }
     }
 }
@@ -61,7 +104,8 @@ impl fmt::Display for RecordFailure {
 impl std::error::Error for RecordFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Rejected(source) | Self::AppendFailed(source) => Some(source.as_ref()),
+            Self::Rejected(source) => Some(source.as_ref()),
+            Self::CommitIndeterminate { .. } | Self::SinkPoisoned { .. } => None,
         }
     }
 }
@@ -105,30 +149,79 @@ impl EncodedEvidenceRecord {
 #[derive(Debug)]
 pub(crate) struct DurableSink {
     file: File,
+    state: DurableSinkState,
     #[cfg(test)]
     forced_failure: Option<ForcedFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DurableSinkState {
+    Healthy,
+    Poisoned(PoisonCause),
 }
 
 impl DurableSink {
     pub(crate) fn new(file: File) -> Self {
         Self {
             file,
+            state: DurableSinkState::Healthy,
             #[cfg(test)]
             forced_failure: None,
         }
     }
 
-    fn append(&mut self, line: &[u8]) -> io::Result<()> {
-        #[cfg(test)]
-        if self.forced_failure == Some(ForcedFailure::Write) {
-            return Err(io::Error::other("injected write failure"));
+    fn append(&mut self, line: &[u8]) -> Result<(), RecordFailure> {
+        if let DurableSinkState::Poisoned(first_cause) = &self.state {
+            return Err(RecordFailure::SinkPoisoned {
+                first_cause: first_cause.clone(),
+            });
         }
-        self.file.write_all(line)?;
-        #[cfg(test)]
-        if self.forced_failure == Some(ForcedFailure::Sync) {
-            return Err(io::Error::other("injected sync failure"));
+
+        let result = (|| -> Result<(), (CommitPhase, io::Error)> {
+            #[cfg(test)]
+            match self.forced_failure {
+                Some(ForcedFailure::Write) => {
+                    return Err((
+                        CommitPhase::Write,
+                        io::Error::other("injected write failure"),
+                    ));
+                }
+                Some(ForcedFailure::PartialWrite(bytes)) => {
+                    let bytes = bytes.min(line.len());
+                    self.file
+                        .write_all(&line[..bytes])
+                        .map_err(|source| (CommitPhase::Write, source))?;
+                    return Err((
+                        CommitPhase::Write,
+                        io::Error::other("injected partial write failure"),
+                    ));
+                }
+                Some(ForcedFailure::Sync) | None => {}
+            }
+
+            self.file
+                .write_all(line)
+                .map_err(|source| (CommitPhase::Write, source))?;
+            #[cfg(test)]
+            if self.forced_failure == Some(ForcedFailure::Sync) {
+                return Err((CommitPhase::Sync, io::Error::other("injected sync failure")));
+            }
+            self.file
+                .sync_data()
+                .map_err(|source| (CommitPhase::Sync, source))
+        })();
+
+        match result {
+            Ok(()) => Ok(()),
+            Err((phase, source)) => {
+                let cause: Arc<str> = Arc::from(source.to_string());
+                self.state = DurableSinkState::Poisoned(PoisonCause::CommitIndeterminate {
+                    phase,
+                    cause: Arc::clone(&cause),
+                });
+                Err(RecordFailure::CommitIndeterminate { phase, cause })
+            }
         }
-        self.file.sync_data()
     }
 }
 
@@ -630,7 +723,7 @@ impl DecisionEvidenceRecorder {
 
     fn append(&self, record: EncodedEvidenceRecord) -> Result<AppendReceipt, RecordFailure> {
         #[cfg(test)]
-        {
+        let inject_failure = {
             let attempt = {
                 let mut attempts = self
                     .test_attempts
@@ -640,30 +733,25 @@ impl DecisionEvidenceRecorder {
                 *attempt += 1;
                 *attempt
             };
-            if *self
+            *self
                 .test_failure
                 .lock()
                 .expect("test failure mutex must not be poisoned")
                 == Some((record.purpose, attempt))
-            {
-                return Err(RecordFailure::AppendFailed(
-                    io::Error::other(format!(
-                        "injected {:?} append failure on attempt {attempt}",
-                        record.purpose
-                    ))
-                    .into(),
-                ));
-            }
-        }
+        };
         let sink_kind = sink_for_purpose(record.purpose);
         let sink = match sink_kind {
             KnownSink::Machine => &self.machine,
             KnownSink::Observation => &self.observation,
         };
-        sink.lock()
-            .expect("decision-evidence sink mutex must not be poisoned")
-            .append(&record.line)
-            .map_err(|source| RecordFailure::AppendFailed(source.into()))?;
+        let mut sink = sink
+            .lock()
+            .expect("decision-evidence sink mutex must not be poisoned");
+        #[cfg(test)]
+        if inject_failure {
+            sink.forced_failure = Some(ForcedFailure::Write);
+        }
+        sink.append(&record.line)?;
         Ok(AppendReceipt {
             purpose: record.purpose,
             sink: sink_kind,
@@ -685,12 +773,13 @@ fn assert_contract_policy(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForcedFailure {
     Write,
+    PartialWrite(usize),
     Sync,
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs::OpenOptions;
+    use std::{fs, fs::OpenOptions, path::PathBuf};
 
     use super::*;
 
@@ -711,13 +800,42 @@ mod tests {
         DecisionEvidenceRecorder::from_files(machine, observation, 4096)
     }
 
+    fn recorder_with_paths() -> (
+        tempfile::TempDir,
+        DecisionEvidenceRecorder,
+        PathBuf,
+        PathBuf,
+    ) {
+        let directory = tempfile::tempdir().expect("tempdir must exist");
+        let machine_path = directory.path().join("machine.jsonl");
+        let observation_path = directory.path().join("observation.jsonl");
+        let machine = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&machine_path)
+            .expect("machine sink must open");
+        let observation = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&observation_path)
+            .expect("observation sink must open");
+        (
+            directory,
+            DecisionEvidenceRecorder::from_files(machine, observation, 4096),
+            machine_path,
+            observation_path,
+        )
+    }
+
     fn record(purpose: KnownPurpose) -> EncodedEvidenceRecord {
         EncodedEvidenceRecord::try_new(purpose, b"{}\n".to_vec()).expect("test record must encode")
     }
 
     #[test]
     fn receipt_exists_only_after_write_and_sync_succeed() {
-        let recorder = recorder();
+        let (_directory, recorder, machine_path, observation_path) = recorder_with_paths();
         let receipt = recorder
             .record_blocking(
                 KnownProducer::OrderExecutionEntryIntent,
@@ -728,35 +846,94 @@ mod tests {
         assert_eq!(receipt.sink, KnownSink::Machine);
         assert_eq!(receipt.bytes, 3);
 
+        assert_eq!(fs::read(&machine_path).unwrap(), b"{}\n");
+
+        let observation_receipt = recorder.record_observation(
+            KnownProducer::EdgeTakerBlockedStrategyInput,
+            record(KnownPurpose::BlockedStrategyInputObservation),
+        );
+        assert!(matches!(
+            observation_receipt,
+            ObservationRecordOutcome::Appended(_)
+        ));
+        assert_eq!(fs::read(&observation_path).unwrap(), b"{}\n");
+    }
+
+    #[test]
+    fn partial_write_is_commit_indeterminate_and_poison_refuses_later_io() {
+        let (_directory, recorder, machine_path, observation_path) = recorder_with_paths();
+
         recorder
             .machine
             .lock()
             .expect("machine sink mutex must not be poisoned")
-            .forced_failure = Some(ForcedFailure::Write);
+            .forced_failure = Some(ForcedFailure::PartialWrite(1));
         assert!(matches!(
             recorder.record_blocking(
                 KnownProducer::OrderExecutionEntryIntent,
                 record(KnownPurpose::EntryOrderIntent),
             ),
-            Err(RecordFailure::AppendFailed(_))
+            Err(RecordFailure::CommitIndeterminate {
+                phase: CommitPhase::Write,
+                ..
+            })
         ));
+        let retained = fs::read(&machine_path).unwrap();
+        assert_eq!(retained, b"{");
 
+        assert!(matches!(
+            recorder.record_blocking(
+                KnownProducer::OrderExecutionEntryIntent,
+                record(KnownPurpose::EntryOrderIntent),
+            ),
+            Err(RecordFailure::SinkPoisoned { .. })
+        ));
+        assert_eq!(fs::read(&machine_path).unwrap(), retained);
+
+        assert!(matches!(
+            recorder.record_observation(
+                KnownProducer::EdgeTakerBlockedStrategyInput,
+                record(KnownPurpose::BlockedStrategyInputObservation),
+            ),
+            ObservationRecordOutcome::Appended(_)
+        ));
+        assert_eq!(fs::read(&observation_path).unwrap(), b"{}\n");
+    }
+
+    #[test]
+    fn sync_failure_is_commit_indeterminate_and_poison_refuses_later_io() {
+        let (_directory, recorder, machine_path, _observation_path) = recorder_with_paths();
         recorder
             .machine
             .lock()
             .expect("machine sink mutex must not be poisoned")
             .forced_failure = Some(ForcedFailure::Sync);
+
         assert!(matches!(
             recorder.record_blocking(
                 KnownProducer::OrderExecutionEntryIntent,
                 record(KnownPurpose::EntryOrderIntent),
             ),
-            Err(RecordFailure::AppendFailed(_))
+            Err(RecordFailure::CommitIndeterminate {
+                phase: CommitPhase::Sync,
+                ..
+            })
         ));
+        let retained = fs::read(&machine_path).unwrap();
+        assert_eq!(retained, b"{}\n");
+
+        assert!(matches!(
+            recorder.record_blocking(
+                KnownProducer::OrderExecutionEntryIntent,
+                record(KnownPurpose::EntryOrderIntent),
+            ),
+            Err(RecordFailure::SinkPoisoned { .. })
+        ));
+        assert_eq!(fs::read(&machine_path).unwrap(), retained);
     }
 
     #[test]
-    fn observation_failures_report_once_per_purpose_until_success() {
+    fn observation_poison_reports_once_per_purpose_and_never_resumes() {
         let recorder = recorder();
         recorder
             .observation
@@ -796,20 +973,7 @@ mod tests {
                 KnownProducer::EdgeTakerBlockedStrategyInput,
                 record(KnownPurpose::BlockedStrategyInputObservation),
             ),
-            ObservationRecordOutcome::Appended(_)
-        ));
-
-        recorder
-            .observation
-            .lock()
-            .expect("observation sink mutex must not be poisoned")
-            .forced_failure = Some(ForcedFailure::Sync);
-        assert!(matches!(
-            recorder.record_observation(
-                KnownProducer::EdgeTakerBlockedStrategyInput,
-                record(KnownPurpose::BlockedStrategyInputObservation),
-            ),
-            ObservationRecordOutcome::FailureReported(_)
+            ObservationRecordOutcome::FailureSuppressed
         ));
     }
 
@@ -819,6 +983,16 @@ mod tests {
             EncodedEvidenceRecord::try_new(KnownPurpose::EntryOrderIntent, b"{}".to_vec()),
             Err(RecordFailure::Rejected(_))
         ));
+
+        let recorder = recorder();
+        assert!(
+            recorder
+                .record_blocking(
+                    KnownProducer::OrderExecutionEntryIntent,
+                    record(KnownPurpose::EntryOrderIntent),
+                )
+                .is_ok()
+        );
     }
 
     #[test]

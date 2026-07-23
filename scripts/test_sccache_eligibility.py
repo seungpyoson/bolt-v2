@@ -268,21 +268,19 @@ def main() -> int:
             f"SCCACHE_REGION={LOCATION['region']}",
             f"SCCACHE_S3_KEY_PREFIX={LOCATION['key_prefix']}",
             "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true",
-            f"SCCACHE_IDLE_TIMEOUT={LOCATION['idle_timeout_seconds']}",
-            "SCCACHE_IGNORE_SERVER_IO_ERROR=1",
         }
         for label, event_name, github_ref, expected_environment in (
             (
                 "pull request",
                 "pull_request",
                 "refs/pull/1488/merge",
-                common_cache_environment | {"SCCACHE_S3_RW_MODE=READ_ONLY"},
+                common_cache_environment,
             ),
             (
                 "main push",
                 "push",
                 "refs/heads/main",
-                common_cache_environment | {"SCCACHE_S3_RW_MODE=READ_WRITE"},
+                common_cache_environment,
             ),
             ("feature push", "push", "refs/heads/feature", set()),
         ):
@@ -300,6 +298,19 @@ def main() -> int:
                 raise AssertionError(
                     f"{label}: expected environment {expected_environment!r}, got {environment!r}"
                 )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                **common_environment,
+                "SCCACHE_ACTIVE": "yes",
+                "GITHUB_EVENT_NAME": "pull_request",
+                "GITHUB_REF": "refs/pull/1488/merge",
+            },
+            clear=True,
+        ), contextlib.redirect_stdout(io.StringIO()):
+            if sccache_eligibility.main() == 0:
+                raise AssertionError("invalid active input must fail closed")
 
     verify = getattr(sccache_eligibility, "verify_sccache_executable", None)
     if not callable(verify):

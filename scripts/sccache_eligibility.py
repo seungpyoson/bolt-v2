@@ -187,8 +187,12 @@ def _load_location(config_path: pathlib.Path) -> Mapping[str, object]:
 
 def main() -> int:
     config_path = pathlib.Path(os.environ["CONFIG_PATH"])
+    active_value = os.environ.get("SCCACHE_ACTIVE")
+    if active_value not in {"true", "false"}:
+        print("::error::SCCACHE_ACTIVE must be exactly true or false")
+        return 1
     eligibility = resolve_sccache_eligibility(
-        active=os.environ.get("SCCACHE_ACTIVE") == "true",
+        active=active_value == "true",
         event_name=os.environ.get("GITHUB_EVENT_NAME", ""),
         github_ref=os.environ.get("GITHUB_REF", ""),
         read_role_arn=os.environ.get("READ_ROLE_ARN", ""),
@@ -211,9 +215,6 @@ def main() -> int:
         _write_line(env_path, f"SCCACHE_REGION={eligibility.region}")
         _write_line(env_path, f"SCCACHE_S3_KEY_PREFIX={eligibility.key_prefix}")
         _write_line(env_path, "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true")
-        _write_line(env_path, f"SCCACHE_S3_RW_MODE={eligibility.cache_mode.upper()}")
-        _write_line(env_path, f"SCCACHE_IDLE_TIMEOUT={eligibility.idle_timeout_seconds}")
-        _write_line(env_path, "SCCACHE_IGNORE_SERVER_IO_ERROR=1")
 
     print(
         "sccache cache "

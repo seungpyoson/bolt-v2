@@ -16,13 +16,15 @@ use crate::bolt_v3_current_evidence::{
     AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason,
     AdmittedEntryAdmissionFact, BasketAdmissionDetails, BasketAdmissionGrantedFact,
     BasketAdmissionRejectedFact, BasketAdmissionRejectionReason, CapitalAdmissionRebuildFact,
-    CapitalAdmissionRebuildOutcome, CapitalAdmissionRejectionReason, DecisionEvidenceRecorder,
-    ForcedReductionAdmissionFact, LossGovernorHaltFact, LossHaltReason as EvidenceLossHaltReason,
-    LossSnapshotSource, LossSnapshotStaleReason as EvidenceLossSnapshotStaleReason,
-    NonBlockingRecordOutcome, OrderIntentDetails, OrderRejectFact, OrderRejectReason,
-    OrderRejectSource, RejectedEntryAdmissionFact, RiskReducingExitAdmissionFact, StaleLossReason,
-    SubmitReservationFillFact, SubmitReservationMetadataFact, VenueTruthCaptureFailureFact,
-    VenueTruthDivergenceAlarmClass as EvidenceDivergenceAlarmClass, VenueTruthDivergenceFact,
+    CapitalAdmissionRebuildOutcome, CapitalAdmissionRebuildSource, CapitalAdmissionRejectionReason,
+    DecisionEvidenceRecorder, EvidenceOrderSide, ForcedReductionAdmissionFact,
+    LossGovernorHaltFact, LossHaltReason as EvidenceLossHaltReason, LossSnapshotSource,
+    LossSnapshotStaleReason as EvidenceLossSnapshotStaleReason, NonBlockingRecordOutcome,
+    OrderIntentDetails, OrderRejectFact, OrderRejectReason, OrderRejectSource,
+    RejectedEntryAdmissionFact, RiskReducingExitAdmissionFact, StaleLossReason,
+    SubmitReservationFillFact, SubmitReservationFillSource, SubmitReservationMetadataFact,
+    VenueTruthCaptureFailureFact, VenueTruthDivergenceAlarmClass as EvidenceDivergenceAlarmClass,
+    VenueTruthDivergenceFact,
 };
 use crate::bolt_v3_evidence_sampling::{EpisodeFirstNs, evict_oldest_episodes_over_cap};
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
@@ -167,24 +169,6 @@ fn capital_admission_rejection_reason(
         ReservationRejectionReason::ReconciliationRequired => {
             CapitalAdmissionRejectionReason::ReconciliationRequired
         }
-    }
-}
-
-fn loss_snapshot_source_to_current_evidence(source: &str) -> LossSnapshotSource {
-    match source.trim() {
-        "" | "unknown" => LossSnapshotSource::Unknown,
-        "nt_loss_runtime_feed" => LossSnapshotSource::NtLossRuntimeFeed,
-        "nt_portfolio_snapshot" => LossSnapshotSource::NtPortfolioSnapshot,
-        "nt_account_snapshot" => LossSnapshotSource::NtAccountSnapshot,
-        "nt_account_and_position_snapshot" => LossSnapshotSource::NtAccountAndPositionSnapshot,
-        "nt_position_event" => LossSnapshotSource::NtPositionEvent,
-        "nt_position_changed" => LossSnapshotSource::NtPositionChanged,
-        "nt_position_closed" => LossSnapshotSource::NtPositionClosed,
-        "nt_position_adjusted" => LossSnapshotSource::NtPositionAdjusted,
-        "nt_capital_admission_state" => LossSnapshotSource::NtCapitalAdmissionState,
-        "bolt_loss_snapshot" => LossSnapshotSource::BoltLossSnapshot,
-        "loss_governor" => LossSnapshotSource::LossGovernor,
-        _ => LossSnapshotSource::Other,
     }
 }
 
@@ -388,7 +372,7 @@ pub struct BoltV3SubmitCapitalAdmissionOpenOrderReservation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
     pub observed_at_ns: u64,
-    pub evidence_label: String,
+    pub evidence_source: CapitalAdmissionRebuildSource,
     pub observed_open_order_count: usize,
     pub all_open_orders_attributed: bool,
     pub reservations: Vec<BoltV3SubmitCapitalAdmissionOpenOrderReservation>,
@@ -440,7 +424,7 @@ impl BoltV3SubmitCapitalAdmissionRebuildDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BoltV3SubmitCapitalAdmissionRebuildAuditContext {
     observed_at_ns: u64,
-    source: String,
+    source: CapitalAdmissionRebuildSource,
     observed_open_order_count: usize,
     all_open_orders_attributed: bool,
 }
@@ -454,7 +438,7 @@ pub struct BoltV3SubmitCapitalAdmissionFillUpdate {
     pub fill_quantity: Decimal,
     pub observed_at_ns: u64,
     pub reconciliation: bool,
-    pub evidence_label: String,
+    pub evidence_source: SubmitReservationFillSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1014,7 +998,7 @@ impl BoltV3SubmitAdmissionState {
         self.rebuild_capital_admission_open_order_snapshot(
             BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
                 observed_at_ns: now_ns,
-                evidence_label: "bolt_recovered_open_order_reservations".to_string(),
+                evidence_source: CapitalAdmissionRebuildSource::BoltRecoveredOpenOrderReservations,
                 observed_open_order_count: open_order_reservations.len(),
                 all_open_orders_attributed: true,
                 reservations: open_order_reservations,
@@ -1029,14 +1013,14 @@ impl BoltV3SubmitAdmissionState {
         now_ns: u64,
     ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
         let rebuilt_order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
-            source: snapshot.evidence_label.clone(),
+            source: snapshot.evidence_source.as_str().to_string(),
             observed_at_ns: snapshot.observed_at_ns,
             open_order_count: snapshot.observed_open_order_count,
             all_open_orders_attributed: snapshot.all_open_orders_attributed,
         };
         let audit_context = BoltV3SubmitCapitalAdmissionRebuildAuditContext {
             observed_at_ns: snapshot.observed_at_ns,
-            source: snapshot.evidence_label.clone(),
+            source: snapshot.evidence_source,
             observed_open_order_count: snapshot.observed_open_order_count,
             all_open_orders_attributed: snapshot.all_open_orders_attributed,
         };
@@ -1069,7 +1053,7 @@ impl BoltV3SubmitAdmissionState {
             refresh_capital_admission_reservation_snapshot_with_source(
                 capital_admission,
                 snapshot.observed_at_ns,
-                snapshot.evidence_label,
+                snapshot.evidence_source.as_str().to_string(),
                 false,
             );
             let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
@@ -1227,7 +1211,7 @@ impl BoltV3SubmitAdmissionState {
         };
         let audit = CapitalAdmissionRebuildFact {
             observed_at_ns: context.observed_at_ns,
-            source: context.source.clone(),
+            source: context.source,
             observed_open_order_count: context.observed_open_order_count,
             all_open_orders_attributed: context.all_open_orders_attributed,
             outcome,
@@ -1249,7 +1233,7 @@ impl BoltV3SubmitAdmissionState {
             refresh_capital_admission_reservation_snapshot_with_source(
                 capital_admission,
                 context.observed_at_ns,
-                context.source.clone(),
+                context.source.as_str().to_string(),
                 false,
             );
         }
@@ -1445,9 +1429,11 @@ impl BoltV3SubmitAdmissionState {
             remaining_liability,
             observed_at_ns: lifecycle_observed_at_ns,
             evidence_label: if clamped {
-                "nt_order_fill_clamped".to_string()
+                SubmitReservationFillSource::NtOrderFillClamped
+                    .as_str()
+                    .to_string()
             } else {
-                update.evidence_label.clone()
+                update.evidence_source.as_str().to_string()
             },
             kind: if remaining_quantity > Decimal::ZERO {
                 CapitalAdmissionLifecycleKind::LiveResidual
@@ -1460,11 +1446,18 @@ impl BoltV3SubmitAdmissionState {
             submit_reservation_id: index.submit_reservation_id.clone(),
             trade_id: update.trade_id.clone(),
             instrument_id: update.instrument_id.clone(),
-            side: compiled_order_side_evidence_value(update.side).to_string(),
+            side: match update.side {
+                BoltV3CompiledOrderSide::Buy => EvidenceOrderSide::Buy,
+                BoltV3CompiledOrderSide::Sell => EvidenceOrderSide::Sell,
+            },
             fill_quantity: update.fill_quantity.to_string(),
             observed_at_ns: update.observed_at_ns,
             reconciliation: update.reconciliation,
-            source: update.evidence_label.clone(),
+            source: if clamped {
+                SubmitReservationFillSource::NtOrderFillClamped
+            } else {
+                update.evidence_source
+            },
         };
         if self
             .decision_evidence
@@ -1886,8 +1879,7 @@ impl BoltV3SubmitAdmissionState {
             snapshot_source: evaluation
                 .loss_snapshot_diagnostics
                 .as_ref()
-                .and_then(|diagnostics| diagnostics.snapshot_source.as_deref())
-                .map(loss_snapshot_source_to_current_evidence),
+                .and_then(|diagnostics| diagnostics.snapshot_source),
             per_trade_pnl_present: evaluation
                 .loss_snapshot_diagnostics
                 .as_ref()
@@ -2049,7 +2041,11 @@ impl BoltV3SubmitAdmissionState {
             admission_outcome: Some(evaluation.outcome),
             raw_reason_text: None,
             instrument_id: request.instrument_id.clone(),
-            order_side: Some(side_key.to_string()),
+            order_side: Some(match request.order_side {
+                OrderSide::NoOrderSide => EvidenceOrderSide::Unspecified,
+                OrderSide::Buy => EvidenceOrderSide::Buy,
+                OrderSide::Sell => EvidenceOrderSide::Sell,
+            }),
             raw_price: None,
             raw_quantity: Some(request.order_quantity.to_string()),
             raw_maker_amount: None,
@@ -2095,8 +2091,8 @@ impl BoltV3SubmitAdmissionState {
             None => StaleLossReason::MissingSnapshot,
         };
         let source_for_key = snapshot
-            .map(|snapshot| snapshot.source.as_str())
-            .filter(|source| !source.trim().is_empty())
+            .and_then(|snapshot| snapshot.source)
+            .map(LossSnapshotSource::as_str)
             .unwrap_or("none");
         let stable_halt_key = format!("{}:{}", stale_loss_reason_key(stale_reason), source_for_key);
 
@@ -2131,7 +2127,7 @@ impl BoltV3SubmitAdmissionState {
                 }
             }),
             max_snapshot_age_ns: loss_policy.max_snapshot_age_ns,
-            snapshot_source: snapshot.map(|snapshot| snapshot.source.clone()),
+            snapshot_source: snapshot.and_then(|snapshot| snapshot.source),
             has_per_trade_pnl: snapshot.is_some_and(|snapshot| snapshot.per_trade_pnl.is_some()),
             has_daily_pnl: snapshot.is_some_and(|snapshot| snapshot.daily_pnl.is_some()),
             has_rolling_pnl: snapshot.is_some_and(|snapshot| snapshot.rolling_pnl.is_some()),
@@ -4291,17 +4287,13 @@ mod loss_governor_halt_evidence_tests {
     }
 
     #[test]
-    fn empty_loss_snapshot_sources_normalize_to_unknown_evidence() {
-        for source in ["", " ", "\t\n", "unknown"] {
-            assert_eq!(
-                loss_snapshot_source_to_current_evidence(source),
-                LossSnapshotSource::Unknown
-            );
-        }
+    fn loss_snapshot_source_labels_are_stable_typed_projections() {
         assert_eq!(
-            loss_snapshot_source_to_current_evidence("unregistered-source"),
-            LossSnapshotSource::Other
+            LossSnapshotSource::NtLossRuntimeFeed.as_str(),
+            "nt_loss_runtime_feed"
         );
+        assert_eq!(LossSnapshotSource::Unknown.as_str(), "unknown");
+        assert_eq!(LossSnapshotSource::Other.as_str(), "other");
     }
 
     #[derive(Default)]
@@ -4343,8 +4335,6 @@ mod loss_governor_halt_evidence_tests {
     static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> =
         std::sync::OnceLock::new();
     static CAPTURING_LOGGER_OBSERVERS: Mutex<()> = Mutex::new(());
-    static NEXT_LOSS_HALT_SOURCE_ID: AtomicU64 = AtomicU64::new(0);
-
     fn install_capturing_logger() -> &'static CapturingLogger {
         static INSTALL_OUTCOME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let logger =
@@ -4358,9 +4348,9 @@ mod loss_governor_halt_evidence_tests {
         *logger
     }
 
-    fn stale_loss_snapshot(source: String) -> LossSnapshot {
+    fn stale_loss_snapshot() -> LossSnapshot {
         LossSnapshot {
-            source,
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::ZERO),
             daily_pnl: None,
@@ -4535,10 +4525,6 @@ mod loss_governor_halt_evidence_tests {
             .expect("capturing logger observer mutex poisoned");
         logger.reset();
 
-        let source = format!(
-            "loss_halt_admission_write_failure_source_{}",
-            NEXT_LOSS_HALT_SOURCE_ID.fetch_add(1, Ordering::SeqCst)
-        );
         let writer = failing_evidence();
         let admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
             writer.clone(),
@@ -4550,7 +4536,7 @@ mod loss_governor_halt_evidence_tests {
                 max_drawdown: None,
             },
         );
-        admission.update_loss_snapshot(stale_loss_snapshot(source.clone()));
+        admission.update_loss_snapshot(stale_loss_snapshot());
         let request = entry_request(
             "strategy-loss-halt-log-guard".to_string(),
             "client-order-loss-halt-log-guard".to_string(),

@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
-    facts::{LossGovernorHaltFact, StaleLossReason},
+    facts::{LossGovernorHaltFact, LossSnapshotSource, StaleLossReason},
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
 };
@@ -68,10 +68,6 @@ fn validate_fact(fact: &LossGovernorHaltFact) -> Result<(), RecordFailure> {
         || fact.stable_halt_key.trim().is_empty()
         || fact.retry_count == 0
         || !fact.retry_count.is_power_of_two()
-        || fact
-            .snapshot_source
-            .as_ref()
-            .is_some_and(|source| source.trim().is_empty())
         || timestamps
             .into_iter()
             .flatten()
@@ -104,7 +100,7 @@ struct HaltV1 {
     admission_now_ns: u64,
     snapshot_age_ns: Option<u64>,
     max_snapshot_age_ns: u64,
-    snapshot_source: Option<String>,
+    snapshot_source: Option<SnapshotSourceV1>,
     has_per_trade_pnl: bool,
     has_daily_pnl: bool,
     has_rolling_pnl: bool,
@@ -130,7 +126,7 @@ impl HaltV1 {
             admission_now_ns: fact.admission_now_ns,
             snapshot_age_ns: fact.snapshot_age_ns,
             max_snapshot_age_ns: fact.max_snapshot_age_ns,
-            snapshot_source: fact.snapshot_source,
+            snapshot_source: fact.snapshot_source.map(SnapshotSourceV1::from_fact),
             has_per_trade_pnl: fact.has_per_trade_pnl,
             has_daily_pnl: fact.has_daily_pnl,
             has_rolling_pnl: fact.has_rolling_pnl,
@@ -156,7 +152,7 @@ impl HaltV1 {
             admission_now_ns: self.admission_now_ns,
             snapshot_age_ns: self.snapshot_age_ns,
             max_snapshot_age_ns: self.max_snapshot_age_ns,
-            snapshot_source: self.snapshot_source,
+            snapshot_source: self.snapshot_source.map(SnapshotSourceV1::into_fact),
             has_per_trade_pnl: self.has_per_trade_pnl,
             has_daily_pnl: self.has_daily_pnl,
             has_rolling_pnl: self.has_rolling_pnl,
@@ -172,6 +168,62 @@ impl HaltV1 {
             stable_halt_key: self.stable_halt_key,
             retry_count: self.retry_count,
             elapsed_since_first_halt_ns: self.elapsed_since_first_halt_ns,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SnapshotSourceV1 {
+    NtLossRuntimeFeed,
+    NtPortfolioSnapshot,
+    NtAccountSnapshot,
+    NtAccountAndPositionSnapshot,
+    NtPositionEvent,
+    NtPositionChanged,
+    NtPositionClosed,
+    NtPositionAdjusted,
+    NtCapitalAdmissionState,
+    BoltLossSnapshot,
+    LossGovernor,
+    Unknown,
+    Other,
+}
+
+impl SnapshotSourceV1 {
+    fn from_fact(value: LossSnapshotSource) -> Self {
+        match value {
+            LossSnapshotSource::NtLossRuntimeFeed => Self::NtLossRuntimeFeed,
+            LossSnapshotSource::NtPortfolioSnapshot => Self::NtPortfolioSnapshot,
+            LossSnapshotSource::NtAccountSnapshot => Self::NtAccountSnapshot,
+            LossSnapshotSource::NtAccountAndPositionSnapshot => Self::NtAccountAndPositionSnapshot,
+            LossSnapshotSource::NtPositionEvent => Self::NtPositionEvent,
+            LossSnapshotSource::NtPositionChanged => Self::NtPositionChanged,
+            LossSnapshotSource::NtPositionClosed => Self::NtPositionClosed,
+            LossSnapshotSource::NtPositionAdjusted => Self::NtPositionAdjusted,
+            LossSnapshotSource::NtCapitalAdmissionState => Self::NtCapitalAdmissionState,
+            LossSnapshotSource::BoltLossSnapshot => Self::BoltLossSnapshot,
+            LossSnapshotSource::LossGovernor => Self::LossGovernor,
+            LossSnapshotSource::Unknown => Self::Unknown,
+            LossSnapshotSource::Other => Self::Other,
+        }
+    }
+
+    fn into_fact(self) -> LossSnapshotSource {
+        match self {
+            Self::NtLossRuntimeFeed => LossSnapshotSource::NtLossRuntimeFeed,
+            Self::NtPortfolioSnapshot => LossSnapshotSource::NtPortfolioSnapshot,
+            Self::NtAccountSnapshot => LossSnapshotSource::NtAccountSnapshot,
+            Self::NtAccountAndPositionSnapshot => LossSnapshotSource::NtAccountAndPositionSnapshot,
+            Self::NtPositionEvent => LossSnapshotSource::NtPositionEvent,
+            Self::NtPositionChanged => LossSnapshotSource::NtPositionChanged,
+            Self::NtPositionClosed => LossSnapshotSource::NtPositionClosed,
+            Self::NtPositionAdjusted => LossSnapshotSource::NtPositionAdjusted,
+            Self::NtCapitalAdmissionState => LossSnapshotSource::NtCapitalAdmissionState,
+            Self::BoltLossSnapshot => LossSnapshotSource::BoltLossSnapshot,
+            Self::LossGovernor => LossSnapshotSource::LossGovernor,
+            Self::Unknown => LossSnapshotSource::Unknown,
+            Self::Other => LossSnapshotSource::Other,
         }
     }
 }

@@ -11,7 +11,7 @@ use super::{
 };
 use crate::bolt_v3_current_evidence::{
     facts::{
-        BlockedStrategyInputObservationFact, StrategyInputDetails,
+        BlockedStrategyInputObservationFact, EvidenceOrderSide, OutcomeSide, StrategyInputDetails,
         StrategyInputMarketSelectionOutcome, StrategyInputRvState, SubmissionLinkage,
         SubmitLinkedStrategyInputSnapshotFact,
     },
@@ -99,7 +99,32 @@ struct StrategyInputDetailsWireV1<PurposeNumeric> {
     fast_venue_incoherent: bool,
     lead_agreement_corr: Option<String>,
     fee_rate_basis_points: PurposeNumeric,
-    selected_side: Option<String>,
+    selected_side: Option<SelectedSideV1>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SelectedSideV1 {
+    Up,
+    Down,
+}
+
+impl From<OutcomeSide> for SelectedSideV1 {
+    fn from(value: OutcomeSide) -> Self {
+        match value {
+            OutcomeSide::Up => Self::Up,
+            OutcomeSide::Down => Self::Down,
+        }
+    }
+}
+
+impl From<SelectedSideV1> for OutcomeSide {
+    fn from(value: SelectedSideV1) -> Self {
+        match value {
+            SelectedSideV1::Up => Self::Up,
+            SelectedSideV1::Down => Self::Down,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -128,10 +153,36 @@ enum StrategyInputRvStateWireV1 {
 #[serde(deny_unknown_fields)]
 pub(super) struct SubmissionLinkageWireV1 {
     instrument_id: String,
-    order_side: String,
+    order_side: SubmissionOrderSideV1,
     price: String,
     quantity: String,
     client_order_id: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SubmissionOrderSideV1 {
+    Unspecified,
+    Buy,
+    Sell,
+}
+
+impl SubmissionOrderSideV1 {
+    fn from_fact(value: EvidenceOrderSide) -> Self {
+        match value {
+            EvidenceOrderSide::Unspecified => Self::Unspecified,
+            EvidenceOrderSide::Buy => Self::Buy,
+            EvidenceOrderSide::Sell => Self::Sell,
+        }
+    }
+
+    fn into_fact(self) -> EvidenceOrderSide {
+        match self {
+            Self::Unspecified => EvidenceOrderSide::Unspecified,
+            Self::Buy => EvidenceOrderSide::Buy,
+            Self::Sell => EvidenceOrderSide::Sell,
+        }
+    }
 }
 
 pub(super) fn encode_blocked(
@@ -338,7 +389,7 @@ where
             fee_rate_basis_points: value
                 .fee_rate_basis_points
                 .validated("fee_rate_basis_points")?,
-            selected_side: optional_text(value.selected_side, "selected_side")?,
+            selected_side: value.selected_side.map(Into::into),
         })
     }
 }
@@ -442,7 +493,7 @@ where
             fee_rate_basis_points: value
                 .fee_rate_basis_points
                 .validated("fee_rate_basis_points")?,
-            selected_side: optional_text(value.selected_side, "selected_side")?,
+            selected_side: value.selected_side.map(Into::into),
         })
     }
 }
@@ -531,9 +582,13 @@ impl TryFrom<SubmissionLinkage> for SubmissionLinkageWireV1 {
     type Error = anyhow::Error;
 
     fn try_from(value: SubmissionLinkage) -> Result<Self> {
+        ensure!(
+            value.order_side != EvidenceOrderSide::Unspecified,
+            "submission.order_side must be specified"
+        );
         Ok(Self {
             instrument_id: required_text(value.instrument_id, "submission.instrument_id")?,
-            order_side: required_text(value.order_side, "submission.order_side")?,
+            order_side: SubmissionOrderSideV1::from_fact(value.order_side),
             price: required_number(value.price, "submission.price")?,
             quantity: required_number(value.quantity, "submission.quantity")?,
             client_order_id: required_text(value.client_order_id, "submission.client_order_id")?,
@@ -545,9 +600,13 @@ impl TryFrom<SubmissionLinkageWireV1> for SubmissionLinkage {
     type Error = anyhow::Error;
 
     fn try_from(value: SubmissionLinkageWireV1) -> Result<Self> {
+        ensure!(
+            !matches!(value.order_side, SubmissionOrderSideV1::Unspecified),
+            "submission.order_side must be specified"
+        );
         Ok(Self {
             instrument_id: required_text(value.instrument_id, "submission.instrument_id")?,
-            order_side: required_text(value.order_side, "submission.order_side")?,
+            order_side: value.order_side.into_fact(),
             price: required_number(value.price, "submission.price")?,
             quantity: required_number(value.quantity, "submission.quantity")?,
             client_order_id: required_text(value.client_order_id, "submission.client_order_id")?,

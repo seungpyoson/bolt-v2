@@ -800,12 +800,12 @@ fn managed_partial_entry_blocks_normal_exit_until_entry_order_resolves() {
 
         assert_eq!(
             decision.blocked_reason,
-            Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING),
+            Some(EvidenceExitBlockedReason::EntryOrderStillWorking),
             "{instrument_id}"
         );
         assert_eq!(
             decision.evaluation.blocked_reason,
-            Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING),
+            Some(EvidenceExitBlockedReason::EntryOrderStillWorking),
             "{instrument_id}"
         );
         assert_eq!(decision.instrument_id, None, "{instrument_id}");
@@ -1048,7 +1048,7 @@ fn non_resting_entry_fill_does_not_keep_pending_entry_from_cache_state() {
     );
     assert_eq!(
         strategy.exit_submission_decision_at(1_200).blocked_reason,
-        Some(EXIT_BLOCK_REASON_EXIT_HOLD)
+        Some(EvidenceExitBlockedReason::ExitHold)
     );
 }
 
@@ -2618,7 +2618,7 @@ fn entry_fill_reconcile_branches_record_lifecycle_evidence() {
                     == crate::bolt_v3_current_evidence::OrderLifecycleTransition::EntryReconcilePending
                     && record.client_order_id.as_deref() == Some("ENTRY-FILL-UNSUPPORTED-SIDE")
                     && record.position_id.as_deref() == Some("P-FILL-UNSUPPORTED-SIDE")
-                    && record.order_side.as_deref() == Some("Sell")
+                    && record.order_side == Some(EvidenceOrderSide::Sell)
                     && record.filled_quantity.is_some()
                     && record.outcome
                         == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::EntryReconcilePending
@@ -3452,7 +3452,7 @@ fn unknown_recovered_position_lifecycle_blocks_instead_of_liquidating_by_default
     assert_eq!(decision.quantity, None);
     assert_eq!(
         decision.blocked_reason,
-        Some(EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN)
+        Some(EvidenceExitBlockedReason::PositionIntervalUnknown)
     );
 }
 
@@ -3764,7 +3764,7 @@ fn position_truth_recovery_after_terminal_flat_records_rematerialization_evidenc
                     == crate::bolt_v3_current_evidence::OrderLifecycleTransition::PositionTruthRematerialized
                     && record.outcome
                         == crate::bolt_v3_current_evidence::OrderLifecycleOutcome::Managed
-                    && record.source == "position_event"
+                    && record.source == OrderLifecycleSource::PositionEvent
                     && record.client_order_id.as_deref() == Some("ENTRY-REMATERIALIZED-001")
                     && record.position_id.as_deref() == Some("P-REMATERIALIZED-001")
                     && record.residual_quantity.as_deref() == Some("5.00")

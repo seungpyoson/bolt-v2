@@ -2,7 +2,10 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
-    facts::{SubmitReservationFillFact, SubmitReservationMetadataFact},
+    facts::{
+        EvidenceOrderSide, SubmitReservationFillFact, SubmitReservationFillSource,
+        SubmitReservationMetadataFact,
+    },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
 };
@@ -79,6 +82,11 @@ pub(super) fn encode_fill(
 }
 
 fn validate_fill(fact: &SubmitReservationFillFact) -> Result<(), RecordFailure> {
+    if fact.side == EvidenceOrderSide::Unspecified {
+        return Err(RecordFailure::Rejected(anyhow::anyhow!(
+            "submit reservation fill side must be specified"
+        )));
+    }
     validate_nonempty(
         "submit reservation fill",
         [
@@ -86,9 +94,7 @@ fn validate_fill(fact: &SubmitReservationFillFact) -> Result<(), RecordFailure> 
             fact.submit_reservation_id.as_str(),
             fact.trade_id.as_str(),
             fact.instrument_id.as_str(),
-            fact.side.as_str(),
             fact.fill_quantity.as_str(),
-            fact.source.as_str(),
         ],
         fact.observed_at_ns,
     )
@@ -221,11 +227,11 @@ struct FillV1 {
     submit_reservation_id: String,
     trade_id: String,
     instrument_id: String,
-    side: String,
+    side: FillOrderSideV1,
     fill_quantity: String,
     observed_at_ns: u64,
     reconciliation: bool,
-    source: String,
+    source: FillSourceV1,
 }
 
 impl FillV1 {
@@ -235,11 +241,11 @@ impl FillV1 {
             submit_reservation_id: fact.submit_reservation_id,
             trade_id: fact.trade_id,
             instrument_id: fact.instrument_id,
-            side: fact.side,
+            side: FillOrderSideV1::from_fact(fact.side),
             fill_quantity: fact.fill_quantity,
             observed_at_ns: fact.observed_at_ns,
             reconciliation: fact.reconciliation,
-            source: fact.source,
+            source: FillSourceV1::from_fact(fact.source),
         }
     }
 
@@ -249,11 +255,60 @@ impl FillV1 {
             submit_reservation_id: self.submit_reservation_id,
             trade_id: self.trade_id,
             instrument_id: self.instrument_id,
-            side: self.side,
+            side: self.side.into_fact(),
             fill_quantity: self.fill_quantity,
             observed_at_ns: self.observed_at_ns,
             reconciliation: self.reconciliation,
-            source: self.source,
+            source: self.source.into_fact(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FillOrderSideV1 {
+    Unspecified,
+    Buy,
+    Sell,
+}
+
+impl FillOrderSideV1 {
+    fn from_fact(value: EvidenceOrderSide) -> Self {
+        match value {
+            EvidenceOrderSide::Unspecified => Self::Unspecified,
+            EvidenceOrderSide::Buy => Self::Buy,
+            EvidenceOrderSide::Sell => Self::Sell,
+        }
+    }
+
+    fn into_fact(self) -> EvidenceOrderSide {
+        match self {
+            Self::Unspecified => EvidenceOrderSide::Unspecified,
+            Self::Buy => EvidenceOrderSide::Buy,
+            Self::Sell => EvidenceOrderSide::Sell,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FillSourceV1 {
+    NtOrderFill,
+    NtOrderFillClamped,
+}
+
+impl FillSourceV1 {
+    fn from_fact(value: SubmitReservationFillSource) -> Self {
+        match value {
+            SubmitReservationFillSource::NtOrderFill => Self::NtOrderFill,
+            SubmitReservationFillSource::NtOrderFillClamped => Self::NtOrderFillClamped,
+        }
+    }
+
+    fn into_fact(self) -> SubmitReservationFillSource {
+        match self {
+            Self::NtOrderFill => SubmitReservationFillSource::NtOrderFill,
+            Self::NtOrderFillClamped => SubmitReservationFillSource::NtOrderFillClamped,
         }
     }
 }

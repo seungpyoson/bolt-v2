@@ -18,15 +18,9 @@ use crate::{
 };
 
 use super::{
-    EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING, EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING,
-    EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE, EXIT_BLOCK_REASON_EXIT_HOLD,
-    EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID, EXIT_BLOCK_REASON_EXIT_PRICE_MISSING,
-    EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE,
-    EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED, EXIT_BLOCK_REASON_NO_OPEN_POSITION,
-    EXIT_BLOCK_REASON_OPEN_POSITION_MISSING, EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED,
-    EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN, entry_decision::ForcedFlatEvidenceInputs,
-    forced_flat_reason_to_evidence, option_evidence_number, orders::ConfiguredNtOrderTemplate,
-    orders::ExitOrderExecutionConfig, outcome_side_to_evidence, selection::SelectionPhase,
+    entry_decision::ForcedFlatEvidenceInputs, forced_flat_reason_to_evidence,
+    option_evidence_number, orders::ConfiguredNtOrderTemplate, orders::ExitOrderExecutionConfig,
+    outcome_side_to_evidence, selection::SelectionPhase,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,7 +31,7 @@ pub(super) struct ExitEvaluation {
     pub(super) hold_ev_bps: Option<f64>,
     pub(super) exit_ev_bps: Option<f64>,
     pub(super) exit_decision: Option<ExitDecision>,
-    pub(super) blocked_reason: Option<&'static str>,
+    pub(super) blocked_reason: Option<EvidenceExitBlockedReason>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,7 +76,7 @@ pub(super) struct ExitSubmissionDecision {
     pub(super) trigger_instrument_id: Option<InstrumentId>,
     pub(super) trailing_offset: Option<f64>,
     pub(super) trailing_offset_type: Option<TrailingOffsetType>,
-    pub(super) blocked_reason: Option<&'static str>,
+    pub(super) blocked_reason: Option<EvidenceExitBlockedReason>,
     pub(super) forced_flat_reasons: Vec<ForcedFlatReason>,
 }
 
@@ -237,7 +231,7 @@ pub(super) struct ExitEvaluationLogFields {
     pub(super) submission_price: Option<f64>,
     pub(super) submission_quantity: Option<Quantity>,
     pub(super) submission_client_order_id: Option<ClientOrderId>,
-    pub(super) submission_blocked_reason: Option<&'static str>,
+    pub(super) submission_blocked_reason: Option<EvidenceExitBlockedReason>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,35 +332,22 @@ pub(super) fn exit_decision_details(
     }
 }
 
-pub(super) fn exit_block_reason_to_evidence(reason: &str) -> EvidenceExitBlockedReason {
+pub(super) const fn exit_block_reason_label(reason: EvidenceExitBlockedReason) -> &'static str {
     match reason {
-        EXIT_BLOCK_REASON_NO_OPEN_POSITION => EvidenceExitBlockedReason::NoOpenPosition,
-        EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING => EvidenceExitBlockedReason::ExitAlreadyPending,
-        EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING => {
-            EvidenceExitBlockedReason::EntryOrderStillWorking
+        EvidenceExitBlockedReason::NoOpenPosition => "no_open_position",
+        EvidenceExitBlockedReason::ExitAlreadyPending => "exit_already_pending",
+        EvidenceExitBlockedReason::EntryOrderStillWorking => "entry_order_still_working",
+        EvidenceExitBlockedReason::ExitDecisionUnavailable => "exit_decision_unavailable",
+        EvidenceExitBlockedReason::ExitHold => "exit_hold",
+        EvidenceExitBlockedReason::PositionIntervalEnded => "position_interval_ended",
+        EvidenceExitBlockedReason::PositionIntervalUnknown => "position_interval_unknown",
+        EvidenceExitBlockedReason::OpenPositionMissing => "open_position_missing",
+        EvidenceExitBlockedReason::ExitOrderConfigInvalid => "exit_order_config_invalid",
+        EvidenceExitBlockedReason::ExitQuoteQuantityUnsupported => {
+            "exit_quote_quantity_unsupported"
         }
-        EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE => {
-            EvidenceExitBlockedReason::ExitDecisionUnavailable
-        }
-        EXIT_BLOCK_REASON_EXIT_HOLD => EvidenceExitBlockedReason::ExitHold,
-        EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED => {
-            EvidenceExitBlockedReason::PositionIntervalEnded
-        }
-        EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN => {
-            EvidenceExitBlockedReason::PositionIntervalUnknown
-        }
-        EXIT_BLOCK_REASON_OPEN_POSITION_MISSING => EvidenceExitBlockedReason::OpenPositionMissing,
-        EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID => {
-            EvidenceExitBlockedReason::ExitOrderConfigInvalid
-        }
-        EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED => {
-            EvidenceExitBlockedReason::ExitQuoteQuantityUnsupported
-        }
-        EXIT_BLOCK_REASON_EXIT_PRICE_MISSING => EvidenceExitBlockedReason::ExitPriceMissing,
-        EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE => {
-            EvidenceExitBlockedReason::ExitQuantityNotPositive
-        }
-        _ => unreachable!("unknown exit blocked reason `{reason}`"),
+        EvidenceExitBlockedReason::ExitPriceMissing => "exit_price_missing",
+        EvidenceExitBlockedReason::ExitQuantityNotPositive => "exit_quantity_not_positive",
     }
 }
 
@@ -378,7 +359,7 @@ pub(super) fn exit_block_reason_to_evidence(reason: &str) -> EvidenceExitBlocked
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ExitOutcomeKey {
     pub(super) exit_decision: ExitDecisionDisposition,
-    pub(super) submission_blocked_reason: Option<&'static str>,
+    pub(super) submission_blocked_reason: Option<EvidenceExitBlockedReason>,
     pub(super) rv_gate_result: EvidenceRvGateResult,
 }
 

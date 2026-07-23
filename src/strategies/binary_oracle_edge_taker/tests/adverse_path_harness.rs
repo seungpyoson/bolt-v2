@@ -2155,7 +2155,7 @@ fn lifecycle_write_failure_preserves_transition_and_source_context() {
         .expect_err("fixture lifecycle writer should fail");
     let rendered = format!("{error:#}");
     assert!(rendered.contains("SettlementBookingTerminal"));
-    assert!(rendered.contains(ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL));
+    assert!(rendered.contains("settlement_booking_terminal"));
 }
 
 #[test]
@@ -2294,14 +2294,14 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
                 strategy_id: strategy.config.strategy_id.clone(),
                 transition: OrderLifecycleTransition::SettlementBookingTerminal,
                 outcome: OrderLifecycleOutcome::Flat,
-                source: "settlement_booking".to_string(),
+                source: OrderLifecycleSource::SettlementBookingTerminal,
                 market_id: recovered_position.lifecycle.market_id_owned(),
                 instrument_id: Some(instrument_id.to_string()),
                 position_id: Some(position_id.to_string()),
                 client_order_id: None,
                 prior_client_order_id: None,
                 raw_reason_text: Some("durable terminal booking error".to_string()),
-                order_side: Some("buy".to_string()),
+                order_side: Some(EvidenceOrderSide::Buy),
                 filled_quantity: None,
                 residual_quantity: Some("0".to_string()),
                 ts_event_ns: Some(2_000_u64.saturating_mul(NANOS_PER_MILLI_U64)),
@@ -2431,7 +2431,7 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
             product_id: prediction_market_product_id_from_instrument_id(&instrument_id)
                 .expect("fixture instrument id should derive product id"),
             outcome_side: crate::bolt_v3_current_evidence::OutcomeSide::Up,
-            entry_order_side: OrderSide::Buy.to_string(),
+            entry_order_side: EvidenceOrderSide::Buy,
             quantity: "10".to_string(),
             entry_price: "0.45".to_string(),
             family_key: crate::bolt_v3_market_families::updown::KEY.to_string(),

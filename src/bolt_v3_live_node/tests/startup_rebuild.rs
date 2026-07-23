@@ -331,7 +331,7 @@ fn manual_recovery_evidence_clears_live_reducing_state_after_fresh_snapshot() {
         .borrow_mut()
         .set_trading_state(TradingState::Reducing);
     runtime.submit_admission.update_loss_snapshot(LossSnapshot {
-        source: "nt_loss_runtime_feed".to_string(),
+        source: Some(crate::bolt_v3_loss_governor::LossSnapshotSource::NtLossRuntimeFeed),
         observed_at_ns: 2_000,
         per_trade_pnl: Some(Decimal::ZERO),
         daily_pnl: Some(Decimal::ZERO),

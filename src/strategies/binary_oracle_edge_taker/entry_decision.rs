@@ -12,7 +12,7 @@ use crate::{
         BlockedStrategyInputObservationFact, EntryBlockReason as EvidenceEntryBlockReason,
         EntryPricingBlockReason as EvidenceEntryPricingBlockReason,
         EntryRealizedVolatilitySnapshotFact, EntrySkipFact,
-        EntrySkipReason as EvidenceEntrySkipReason,
+        EntrySkipReason as EvidenceEntrySkipReason, EvidenceSelectionPhase,
         RealizedVolAggregation as EvidenceRealizedVolAggregation,
         RealizedVolBlockReason as EvidenceRealizedVolBlockReason,
         RealizedVolPricingComponent as EvidenceRealizedVolPricingComponent,
@@ -419,7 +419,10 @@ impl BlockedStrategyInputDedupeKey {
             price_to_beat_source: details.price_to_beat_source.clone(),
             gate_blocked_by: details.gate_blocked_by.clone(),
             pricing_blocked_by: details.pricing_blocked_by.clone(),
-            selected_side: details.selected_side.clone(),
+            selected_side: details.selected_side.map(|side| match side {
+                crate::bolt_v3_current_evidence::OutcomeSide::Up => "up".to_string(),
+                crate::bolt_v3_current_evidence::OutcomeSide::Down => "down".to_string(),
+            }),
             fast_venue_name: details.fast_venue_name.clone(),
             fast_venue_available: details.fast_venue_available,
             reference_current_price_source_id: details.reference_current_price_source_id.clone(),
@@ -473,7 +476,11 @@ pub(super) fn entry_skip_fact(
             .map(entry_pricing_block_reason_to_evidence)
             .collect(),
         market_id: fields.market_id.clone(),
-        phase: format!("{:?}", fields.phase),
+        phase: match fields.phase {
+            SelectionPhase::Active => EvidenceSelectionPhase::Active,
+            SelectionPhase::Freeze => EvidenceSelectionPhase::Freeze,
+            SelectionPhase::Idle => EvidenceSelectionPhase::Idle,
+        },
         seconds_to_market_end: fields.seconds_to_expiry,
         spot_price: option_evidence_number(fields.spot_price),
         reference_current_price: option_evidence_number(fields.reference_current_price),

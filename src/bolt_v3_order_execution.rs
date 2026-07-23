@@ -9,7 +9,7 @@ use nautilus_common::{
 };
 use nautilus_core::Params;
 use nautilus_model::{
-    enums::OrderSide,
+    enums::{OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
     events::OrderFillVoided,
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId},
     instruments::InstrumentAny,
@@ -24,9 +24,10 @@ use crate::{
     bolt_v3_capital_admission::ProductAdmissionSnapshot,
     bolt_v3_capital_admission_state::capital_admission_source_is_accepted_venue_truth,
     bolt_v3_current_evidence::{
-        DecisionEvidenceRecorder, EntryOrderIntentFact, NonBlockingRecordOutcome,
-        OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome, OrderIntentDetails,
-        OrderIntentOrderFields, RiskReducingExitOrderIntentFact,
+        DecisionEvidenceRecorder, EntryOrderIntentFact, EvidenceOrderSide, EvidenceOrderType,
+        EvidenceTimeInForce, EvidenceTrailingOffsetType, EvidenceTriggerType,
+        NonBlockingRecordOutcome, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
+        OrderIntentDetails, OrderIntentOrderFields, RiskReducingExitOrderIntentFact,
     },
     bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
     bolt_v3_maker_order_dispatch::{
@@ -345,7 +346,7 @@ pub fn order_intent_details_from_compiled_order(
         strategy_id,
         instrument_id: order.instrument_id().to_string(),
         client_order_id: order.client_order_id().to_string(),
-        order_side: order.order_side().to_string(),
+        order_side: evidence_order_side(order.order_side()),
         price: order
             .price()
             .map(|price| price.to_string())
@@ -360,19 +361,80 @@ pub fn order_intent_details_from_compiled_order(
 
 fn order_intent_order_fields(order: &OrderAny) -> OrderIntentOrderFields {
     OrderIntentOrderFields {
-        order_type: order.order_type().to_string(),
-        time_in_force: order.time_in_force().to_string(),
+        order_type: evidence_order_type(order.order_type()),
+        time_in_force: evidence_time_in_force(order.time_in_force()),
         price: order.price().map(|price| price.to_string()),
         trigger_price: order.trigger_price().map(|price| price.to_string()),
         activation_price: order.activation_price().map(|price| price.to_string()),
-        trigger_type: order.trigger_type().map(|value| value.to_string()),
+        trigger_type: order.trigger_type().map(evidence_trigger_type),
         trigger_instrument_id: order.trigger_instrument_id().map(|value| value.to_string()),
         trailing_offset: order.trailing_offset().map(|value| value.to_string()),
-        trailing_offset_type: order.trailing_offset_type().map(|value| value.to_string()),
+        trailing_offset_type: order
+            .trailing_offset_type()
+            .map(evidence_trailing_offset_type),
         expire_time_unix_nanos: order.expire_time().map(|value| value.as_u64().to_string()),
         is_post_only: order.is_post_only(),
         is_reduce_only: order.is_reduce_only(),
         is_quote_quantity: order.is_quote_quantity(),
+    }
+}
+
+fn evidence_order_side(value: OrderSide) -> EvidenceOrderSide {
+    match value {
+        OrderSide::NoOrderSide => EvidenceOrderSide::Unspecified,
+        OrderSide::Buy => EvidenceOrderSide::Buy,
+        OrderSide::Sell => EvidenceOrderSide::Sell,
+    }
+}
+
+fn evidence_order_type(value: OrderType) -> EvidenceOrderType {
+    match value {
+        OrderType::Market => EvidenceOrderType::Market,
+        OrderType::Limit => EvidenceOrderType::Limit,
+        OrderType::StopMarket => EvidenceOrderType::StopMarket,
+        OrderType::StopLimit => EvidenceOrderType::StopLimit,
+        OrderType::MarketToLimit => EvidenceOrderType::MarketToLimit,
+        OrderType::MarketIfTouched => EvidenceOrderType::MarketIfTouched,
+        OrderType::LimitIfTouched => EvidenceOrderType::LimitIfTouched,
+        OrderType::TrailingStopMarket => EvidenceOrderType::TrailingStopMarket,
+        OrderType::TrailingStopLimit => EvidenceOrderType::TrailingStopLimit,
+    }
+}
+
+fn evidence_time_in_force(value: TimeInForce) -> EvidenceTimeInForce {
+    match value {
+        TimeInForce::Gtc => EvidenceTimeInForce::Gtc,
+        TimeInForce::Ioc => EvidenceTimeInForce::Ioc,
+        TimeInForce::Fok => EvidenceTimeInForce::Fok,
+        TimeInForce::Gtd => EvidenceTimeInForce::Gtd,
+        TimeInForce::Day => EvidenceTimeInForce::Day,
+        TimeInForce::AtTheOpen => EvidenceTimeInForce::AtTheOpen,
+        TimeInForce::AtTheClose => EvidenceTimeInForce::AtTheClose,
+    }
+}
+
+fn evidence_trigger_type(value: TriggerType) -> EvidenceTriggerType {
+    match value {
+        TriggerType::NoTrigger => EvidenceTriggerType::NoTrigger,
+        TriggerType::Default => EvidenceTriggerType::Default,
+        TriggerType::LastPrice => EvidenceTriggerType::LastPrice,
+        TriggerType::MarkPrice => EvidenceTriggerType::MarkPrice,
+        TriggerType::IndexPrice => EvidenceTriggerType::IndexPrice,
+        TriggerType::BidAsk => EvidenceTriggerType::BidAsk,
+        TriggerType::DoubleLast => EvidenceTriggerType::DoubleLast,
+        TriggerType::DoubleBidAsk => EvidenceTriggerType::DoubleBidAsk,
+        TriggerType::LastOrBidAsk => EvidenceTriggerType::LastOrBidAsk,
+        TriggerType::MidPoint => EvidenceTriggerType::MidPoint,
+    }
+}
+
+fn evidence_trailing_offset_type(value: TrailingOffsetType) -> EvidenceTrailingOffsetType {
+    match value {
+        TrailingOffsetType::NoTrailingOffset => EvidenceTrailingOffsetType::NoTrailingOffset,
+        TrailingOffsetType::Price => EvidenceTrailingOffsetType::Price,
+        TrailingOffsetType::BasisPoints => EvidenceTrailingOffsetType::BasisPoints,
+        TrailingOffsetType::Ticks => EvidenceTrailingOffsetType::Ticks,
+        TrailingOffsetType::PriceTier => EvidenceTrailingOffsetType::PriceTier,
     }
 }
 

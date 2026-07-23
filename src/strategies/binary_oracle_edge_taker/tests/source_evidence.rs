@@ -1015,7 +1015,7 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
         details.down_instrument_id.as_deref(),
         Some("condition-MKT-1-MKT-1-DOWN.POLYMARKET")
     );
-    assert_eq!(details.selected_side.as_deref(), Some("up"));
+    assert_eq!(details.selected_side, Some(EvidenceOutcomeSide::Up));
     assert!(
         details
             .up_worst_case_edge_basis_points
@@ -2013,7 +2013,7 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
         "exit decision evidence must preserve the down-side fee input"
     );
     assert!(
-        !decision.submission.order_side.is_empty(),
+        decision.submission.order_side != EvidenceOrderSide::Unspecified,
         "exit decision evidence must preserve the submitted order side"
     );
     assert!(
@@ -2865,7 +2865,7 @@ fn minimal_exit_submission_decision() -> ExitSubmissionDecision {
             hold_ev_bps: None,
             exit_ev_bps: None,
             exit_decision: Some(ExitDecision::Hold),
-            blocked_reason: Some(EXIT_BLOCK_REASON_EXIT_HOLD),
+            blocked_reason: Some(EvidenceExitBlockedReason::ExitHold),
         },
         instrument_id: None,
         order_type: None,
@@ -2885,7 +2885,7 @@ fn minimal_exit_submission_decision() -> ExitSubmissionDecision {
         trigger_instrument_id: None,
         trailing_offset: None,
         trailing_offset_type: None,
-        blocked_reason: Some(EXIT_BLOCK_REASON_EXIT_HOLD),
+        blocked_reason: Some(EvidenceExitBlockedReason::ExitHold),
         forced_flat_reasons: vec![],
     }
 }
@@ -3910,11 +3910,11 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     // dynamic branch-coverage harness.
     let mut decisions = Vec::new();
     for blocked_reason in [
-        EXIT_BLOCK_REASON_NO_OPEN_POSITION,
-        EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING,
-        EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED,
-        EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN,
-        EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING,
+        EvidenceExitBlockedReason::NoOpenPosition,
+        EvidenceExitBlockedReason::ExitAlreadyPending,
+        EvidenceExitBlockedReason::PositionIntervalEnded,
+        EvidenceExitBlockedReason::PositionIntervalUnknown,
+        EvidenceExitBlockedReason::EntryOrderStillWorking,
     ] {
         let mut evaluation = base.clone();
         evaluation.forced_flat_reasons.clear();
@@ -3993,14 +3993,14 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     let intentionally_non_recordable = &decisions[0];
     assert_eq!(
         intentionally_non_recordable.blocked_reason,
-        Some(EXIT_BLOCK_REASON_NO_OPEN_POSITION)
+        Some(EvidenceExitBlockedReason::NoOpenPosition)
     );
     assert!(intentionally_non_recordable.forced_flat_reasons.is_empty());
     assert_eq!(
         decisions
             .iter()
             .filter(|decision| {
-                decision.blocked_reason == Some(EXIT_BLOCK_REASON_NO_OPEN_POSITION)
+                decision.blocked_reason == Some(EvidenceExitBlockedReason::NoOpenPosition)
                     && decision.forced_flat_reasons.is_empty()
             })
             .count(),

@@ -1566,7 +1566,7 @@ fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used()
 
     assert_eq!(
         decision.blocked_reason,
-        Some("exit_quote_quantity_unsupported")
+        Some(EvidenceExitBlockedReason::ExitQuoteQuantityUnsupported)
     );
     assert_eq!(decision.quantity, None);
     assert_eq!(decision.is_quote_quantity, None);
@@ -2749,22 +2749,22 @@ fn task5_entry_order_plan_uses_configured_tif_and_side_specific_best_price() {
 #[test]
 fn expected_exit_submission_blocks_do_not_warn() {
     assert!(!should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_NO_OPEN_POSITION
+        EvidenceExitBlockedReason::NoOpenPosition
     )));
     assert!(!should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
+        EvidenceExitBlockedReason::ExitAlreadyPending
     )));
     assert!(!should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
+        EvidenceExitBlockedReason::EntryOrderStillWorking
     )));
     assert!(!should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_EXIT_HOLD
+        EvidenceExitBlockedReason::ExitHold
     )));
     assert!(!should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN
+        EvidenceExitBlockedReason::PositionIntervalUnknown
     )));
     assert!(should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_EXIT_PRICE_MISSING
+        EvidenceExitBlockedReason::ExitPriceMissing
     )));
 }
 
@@ -2893,7 +2893,10 @@ fn quarantined_legacy_short_position_blocks_exit_submission() {
     // exit evaluation blocks with the precise NoOpenPosition reason. The decision
     // trace surfaces that real reason rather than the generic ExitDecisionUnavailable
     // (which previously masked it via an unconditional clobber).
-    assert_eq!(decision.blocked_reason, Some("no_open_position"));
+    assert_eq!(
+        decision.blocked_reason,
+        Some(EvidenceExitBlockedReason::NoOpenPosition)
+    );
 }
 
 #[test]

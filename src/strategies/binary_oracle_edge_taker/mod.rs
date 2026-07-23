@@ -36,13 +36,13 @@ use crate::{
     },
     bolt_v3_current_evidence::{
         BlockedStrategyInputObservationFact, EntrySkipReason as EvidenceEntrySkipReason,
-        ExitEvaluationDecision, ExitEvaluationFact, ExitHoldDecisionFact, ExitHoldOutcome,
-        ExitSubmissionDecisionFact, ExitSubmissionOutcome,
-        ExitTriggerSource as EvidenceExitTriggerSource,
+        EvidenceOrderSide, ExitBlockedReason as EvidenceExitBlockedReason, ExitEvaluationDecision,
+        ExitEvaluationFact, ExitHoldDecisionFact, ExitHoldOutcome, ExitSubmissionDecisionFact,
+        ExitSubmissionOutcome, ExitTriggerSource as EvidenceExitTriggerSource,
         ExposureOccupancy as EvidenceExposureOccupancy,
         ForcedFlatReason as EvidenceForcedFlatReason, NonBlockingRecordOutcome,
         ObservationRecordOutcome, OrderIntentDetails, OrderLifecycleFact, OrderLifecycleOutcome,
-        OrderLifecycleTransition, OutcomeSide as EvidenceOutcomeSide,
+        OrderLifecycleSource, OrderLifecycleTransition, OutcomeSide as EvidenceOutcomeSide,
         RvGateResult as EvidenceRvGateResult, SettlementBookingErrorFact,
         SettlementBookingErrorReason, SettlementFact, StrategyInputDetails, StrategyInputRvState,
         SubmissionLinkage, SubmitLinkedStrategyInputSnapshotFact, TerminalSettlementFact,
@@ -118,7 +118,7 @@ use crate::{
         TakerPricingState as PricingState,
     },
     bolt_v3_taker_updown_signal::{
-        SideSelectionInputs, UncertaintyBandInputs, choose_entry_side, outcome_side_evidence_label,
+        SideSelectionInputs, UncertaintyBandInputs, choose_entry_side,
         time_uncertainty_probability, uncertainty_band_probability,
     },
     bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
@@ -193,7 +193,7 @@ use self::exit_decision::{
     ExitDecision, ExitDecisionDedupeKey, ExitDecisionDisposition, ExitEvaluation,
     ExitEvaluationLogFields, ExitEvaluationTriggerContext, ExitOutcomeKey,
     ExitRealizedVolatilityGateReceipt, ExitSubmissionDecision, evaluate_exit_decision,
-    exit_block_reason_to_evidence, exit_decision_details, exit_decision_evidence_from_optional,
+    exit_block_reason_label, exit_decision_details, exit_decision_evidence_from_optional,
 };
 
 mod orders;
@@ -238,17 +238,26 @@ struct ExecutableEntryProbe {
     fee_bps: f64,
 }
 
-const ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY: &str = "selection_boundary";
-const ORDER_LIFECYCLE_SOURCE_ENTRY_FILL: &str = "entry_fill";
-const ORDER_LIFECYCLE_SOURCE_POSITION_EVENT: &str = "position_event";
-const ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP: &str = "restart_bootstrap";
-const ORDER_LIFECYCLE_SOURCE_ORDER_DENIED: &str = "order_denied";
-const ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED: &str = "order_rejected";
-const ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED: &str = "order_canceled";
-const ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED: &str = "order_expired";
-const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY: &str = "settlement_evidence_recovery";
-const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL: &str = "settlement_booking_terminal";
-const ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS: &str = "reconcile_pass";
+const ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY: OrderLifecycleSource =
+    OrderLifecycleSource::SelectionBoundary;
+const ORDER_LIFECYCLE_SOURCE_ENTRY_FILL: OrderLifecycleSource = OrderLifecycleSource::EntryFill;
+const ORDER_LIFECYCLE_SOURCE_POSITION_EVENT: OrderLifecycleSource =
+    OrderLifecycleSource::PositionEvent;
+const ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP: OrderLifecycleSource =
+    OrderLifecycleSource::RestartBootstrap;
+const ORDER_LIFECYCLE_SOURCE_ORDER_DENIED: OrderLifecycleSource = OrderLifecycleSource::OrderDenied;
+const ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED: OrderLifecycleSource =
+    OrderLifecycleSource::OrderRejected;
+const ORDER_LIFECYCLE_SOURCE_ORDER_CANCELED: OrderLifecycleSource =
+    OrderLifecycleSource::OrderCanceled;
+const ORDER_LIFECYCLE_SOURCE_ORDER_EXPIRED: OrderLifecycleSource =
+    OrderLifecycleSource::OrderExpired;
+const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY: OrderLifecycleSource =
+    OrderLifecycleSource::SettlementEvidenceRecovery;
+const ORDER_LIFECYCLE_SOURCE_SETTLEMENT_BOOKING_TERMINAL: OrderLifecycleSource =
+    OrderLifecycleSource::SettlementBookingTerminal;
+const ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS: OrderLifecycleSource =
+    OrderLifecycleSource::ReconcilePass;
 const ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON: &str =
     "preserved fail-closed: fill observed, awaiting position truth";
 
@@ -256,7 +265,7 @@ const ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON: &str =
 struct OrderLifecycleEvidenceInput {
     transition: OrderLifecycleTransition,
     outcome: OrderLifecycleOutcome,
-    source: &'static str,
+    source: OrderLifecycleSource,
     market_id: Option<String>,
     instrument_id: Option<InstrumentId>,
     position_id: Option<PositionId>,
@@ -274,7 +283,7 @@ struct PendingEntryTerminalEvidenceInput {
     pending: PendingEntryState,
     transition: OrderLifecycleTransition,
     outcome: OrderLifecycleOutcome,
-    source: &'static str,
+    source: OrderLifecycleSource,
     raw_reason_text: Option<String>,
     filled_quantity: Option<Quantity>,
     ts_event_ns: u64,
@@ -285,7 +294,7 @@ struct PendingEntryTerminalEventInput {
     client_order_id: ClientOrderId,
     event_instrument_id: InstrumentId,
     transition: OrderLifecycleTransition,
-    source: &'static str,
+    source: OrderLifecycleSource,
     raw_reason_text: Option<String>,
     ts_event_ns: u64,
     terminal_proves_zero_fill: bool,
@@ -1318,7 +1327,7 @@ impl BinaryOracleEdgeTaker {
             instrument_id: position.instrument_id.to_string(),
             product_id: ids.product_id,
             outcome_side: outcome_side_to_evidence(computation.outcome_side),
-            entry_order_side: position.entry_order_side.to_string(),
+            entry_order_side: evidence_order_side(position.entry_order_side),
             quantity: position.quantity.to_string(),
             entry_price: evidence_number(position.avg_px_open),
             family_key: self.config.rotating_market_family.clone(),
@@ -2979,7 +2988,7 @@ impl BinaryOracleEdgeTaker {
             strategy_id: self.config.strategy_id.clone(),
             transition: input.transition,
             outcome: input.outcome,
-            source: input.source.to_string(),
+            source: input.source,
             market_id: input.market_id,
             instrument_id: input
                 .instrument_id
@@ -2992,7 +3001,7 @@ impl BinaryOracleEdgeTaker {
                 .prior_client_order_id
                 .map(|client_order_id| client_order_id.to_string()),
             raw_reason_text: input.raw_reason_text,
-            order_side: input.order_side.map(|order_side| format!("{order_side:?}")),
+            order_side: input.order_side.map(evidence_order_side),
             filled_quantity: input.filled_quantity.map(|quantity| quantity.to_string()),
             residual_quantity: input.residual_quantity.map(|quantity| quantity.to_string()),
             ts_event_ns: input.ts_event_ns,
@@ -3009,7 +3018,7 @@ impl BinaryOracleEdgeTaker {
             NonBlockingRecordOutcome::Failed(error) => Err(anyhow::Error::from(error))
                 .with_context(|| {
                     format!(
-                        "order lifecycle evidence write failed: transition={:?} source={}",
+                        "order lifecycle evidence write failed: transition={:?} source={:?}",
                         evidence.transition, evidence.source
                     )
                 }),
@@ -4022,7 +4031,7 @@ impl BinaryOracleEdgeTaker {
         {
             return Ok(());
         }
-        if decision.blocked_reason == Some(EXIT_BLOCK_REASON_NO_OPEN_POSITION)
+        if decision.blocked_reason == Some(EvidenceExitBlockedReason::NoOpenPosition)
             && decision.forced_flat_reasons.is_empty()
         {
             return Ok(());
@@ -4035,9 +4044,7 @@ impl BinaryOracleEdgeTaker {
             &fields,
             self.exit_forced_flat_evidence_inputs(),
         );
-        let blocked_reason = fields
-            .submission_blocked_reason
-            .map(exit_block_reason_to_evidence);
+        let blocked_reason = fields.submission_blocked_reason;
         let disposition = if action_chosen {
             if details.forced_flat_reasons.is_empty() {
                 ExitDecisionDisposition::Exit
@@ -4065,10 +4072,9 @@ impl BinaryOracleEdgeTaker {
                     .instrument_id
                     .expect("action chosen has instrument")
                     .to_string(),
-                order_side: decision
-                    .order_side
-                    .expect("action chosen has order side")
-                    .to_string(),
+                order_side: evidence_order_side(
+                    decision.order_side.expect("action chosen has order side"),
+                ),
                 price: evidence_number(decision.price.expect("action chosen has price")),
                 quantity: decision
                     .quantity
@@ -4539,7 +4545,7 @@ impl BinaryOracleEdgeTaker {
         &mut self,
         spec: PositionMaterializationSpec,
         ts_event_ns: u64,
-        source: &'static str,
+        source: OrderLifecycleSource,
     ) {
         let PositionMaterializationSpec {
             instrument_id,
@@ -4768,7 +4774,7 @@ impl BinaryOracleEdgeTaker {
         client_order_id: ClientOrderId,
         event_instrument_id: InstrumentId,
         transition: OrderLifecycleTransition,
-        source: &'static str,
+        source: OrderLifecycleSource,
         raw_reason_text: Option<String>,
         ts_event_ns: u64,
     ) {
@@ -5291,11 +5297,11 @@ impl BinaryOracleEdgeTaker {
         };
 
         if self.managed_position().is_none() {
-            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_NO_OPEN_POSITION);
+            evaluation.blocked_reason = Some(EvidenceExitBlockedReason::NoOpenPosition);
             return evaluation;
         }
         if self.exposure.exit_pending().is_some() {
-            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING);
+            evaluation.blocked_reason = Some(EvidenceExitBlockedReason::ExitAlreadyPending);
             return evaluation;
         }
 
@@ -5303,14 +5309,14 @@ impl BinaryOracleEdgeTaker {
             .managed_position()
             .is_some_and(|managed| managed.position.lifecycle.interval_ended_at(now_ms))
         {
-            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED);
+            evaluation.blocked_reason = Some(EvidenceExitBlockedReason::PositionIntervalEnded);
             return evaluation;
         }
         if self
             .managed_position()
             .is_some_and(|managed| managed.position.lifecycle.interval_end_ms().is_none())
         {
-            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN);
+            evaluation.blocked_reason = Some(EvidenceExitBlockedReason::PositionIntervalUnknown);
             return evaluation;
         }
 
@@ -5324,7 +5330,7 @@ impl BinaryOracleEdgeTaker {
             .and_then(|managed| managed.pending_entry.as_ref())
             .is_some()
         {
-            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING);
+            evaluation.blocked_reason = Some(EvidenceExitBlockedReason::EntryOrderStillWorking);
             return evaluation;
         }
 
@@ -5334,7 +5340,7 @@ impl BinaryOracleEdgeTaker {
         };
 
         let Ok(order_config) = self.normal_exit_order_execution_config() else {
-            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID);
+            evaluation.blocked_reason = Some(EvidenceExitBlockedReason::ExitOrderConfigInvalid);
             return evaluation;
         };
         evaluation.hold_ev_bps = evaluation
@@ -5417,7 +5423,7 @@ impl BinaryOracleEdgeTaker {
             forced_flat_reasons,
         };
 
-        if blocked_reason == Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING) {
+        if blocked_reason == Some(EvidenceExitBlockedReason::EntryOrderStillWorking) {
             return decision;
         }
 
@@ -5427,34 +5433,34 @@ impl BinaryOracleEdgeTaker {
             // decision trace names the real cause; only synthesize the generic
             // ExitDecisionUnavailable when the evaluation supplied no reason at all.
             decision.blocked_reason =
-                blocked_reason.or(Some(EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE));
+                blocked_reason.or(Some(EvidenceExitBlockedReason::ExitDecisionUnavailable));
             return decision;
         };
         if exit_decision == ExitDecision::Hold {
-            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_HOLD);
+            decision.blocked_reason = Some(EvidenceExitBlockedReason::ExitHold);
             return decision;
         }
 
         let Some(open_position) = self.managed_position().map(|managed| &managed.position) else {
-            decision.blocked_reason = Some(EXIT_BLOCK_REASON_OPEN_POSITION_MISSING);
+            decision.blocked_reason = Some(EvidenceExitBlockedReason::OpenPositionMissing);
             return decision;
         };
         let Ok(order_config) = self.exit_order_execution_config(forced_flat) else {
-            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID);
+            decision.blocked_reason = Some(EvidenceExitBlockedReason::ExitOrderConfigInvalid);
             return decision;
         };
         if order_config.order_template.is_quote_quantity {
-            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED);
+            decision.blocked_reason = Some(EvidenceExitBlockedReason::ExitQuoteQuantityUnsupported);
             return decision;
         }
         let Some((order_side, price)) =
             self.current_exit_order_for_open_position_with_config(&order_config)
         else {
-            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_PRICE_MISSING);
+            decision.blocked_reason = Some(EvidenceExitBlockedReason::ExitPriceMissing);
             return decision;
         };
         if !is_positive_finite(open_position.quantity.as_f64()) {
-            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE);
+            decision.blocked_reason = Some(EvidenceExitBlockedReason::ExitQuantityNotPositive);
             return decision;
         }
 
@@ -5610,7 +5616,9 @@ impl BinaryOracleEdgeTaker {
                     fields.submission_price,
                     fields.submission_quantity,
                     fields.submission_client_order_id,
-                    fields.submission_blocked_reason,
+                    fields
+                        .submission_blocked_reason
+                        .map(exit_block_reason_label),
                 );
             } else {
                 log::debug!(
@@ -5651,7 +5659,9 @@ impl BinaryOracleEdgeTaker {
                     fields.submission_price,
                     fields.submission_quantity,
                     fields.submission_client_order_id,
-                    fields.submission_blocked_reason,
+                    fields
+                        .submission_blocked_reason
+                        .map(exit_block_reason_label),
                 );
             }
         } else {
@@ -5693,7 +5703,9 @@ impl BinaryOracleEdgeTaker {
                 fields.submission_price,
                 fields.submission_quantity,
                 fields.submission_client_order_id,
-                fields.submission_blocked_reason,
+                fields
+                    .submission_blocked_reason
+                    .map(exit_block_reason_label),
             );
         }
     }
@@ -6092,8 +6104,7 @@ impl BinaryOracleEdgeTaker {
                 selected_side: decision
                     .evaluation
                     .selected_side
-                    .map(outcome_side_evidence_label)
-                    .map(str::to_string),
+                    .map(outcome_side_to_evidence),
             },
         })
     }
@@ -6347,11 +6358,11 @@ impl BinaryOracleEdgeTaker {
                     self.pricing.last_lead_agreement_corr,
                 ),
                 fee_rate_basis_points: evidence_number(fee_rate_basis_points),
-                selected_side: Some(outcome_side_evidence_label(selected_side).to_string()),
+                selected_side: Some(outcome_side_to_evidence(selected_side)),
             },
             submission: SubmissionLinkage {
                 instrument_id: instrument_id.to_string(),
-                order_side: order_side.to_string(),
+                order_side: evidence_order_side(order_side),
                 price: price.to_string(),
                 quantity: quantity.to_string(),
                 client_order_id: client_order_id.to_string(),
@@ -6429,7 +6440,7 @@ impl BinaryOracleEdgeTaker {
         let Some(normalized_quantity) =
             normalize_base_order_quantity(self.context.execution_venue(), &instrument, quantity)
         else {
-            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE);
+            decision.blocked_reason = Some(EvidenceExitBlockedReason::ExitQuantityNotPositive);
             self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
             self.log_exit_evaluation(now_ms, trigger_context, &decision);
             return Ok((None, decision));
@@ -6575,9 +6586,7 @@ impl BinaryOracleEdgeTaker {
                     } else {
                         ExitHoldOutcome::Hold
                     },
-                    blocked_reason: log_fields
-                        .submission_blocked_reason
-                        .map(exit_block_reason_to_evidence),
+                    blocked_reason: log_fields.submission_blocked_reason,
                 }
             };
 
@@ -6600,11 +6609,7 @@ impl BinaryOracleEdgeTaker {
                 .iter()
                 .map(|reason| (*reason).into())
                 .collect(),
-            rv_source_diagnostics: receipt
-                .source_diagnostics
-                .iter()
-                .map(|diagnostic| format!("{}:{:?}", diagnostic.source_id, diagnostic.status))
-                .collect(),
+            rv_source_diagnostics: receipt.source_diagnostics.clone(),
             rv_gate_result: receipt.gate_result,
             rv_as_of_minus_now_ms,
             spot_price: option_evidence_number(log_fields.spot_price),
@@ -6626,7 +6631,7 @@ impl BinaryOracleEdgeTaker {
             forced_flat_reasons: log_fields
                 .forced_flat_reasons
                 .iter()
-                .map(|reason| format!("{reason:?}"))
+                .map(forced_flat_reason_to_evidence)
                 .collect(),
         })
     }
@@ -8115,19 +8120,6 @@ const EVIDENCE_REASON_RECOVERY_BOOTSTRAP_POSITION_MISSING_ORIGINAL_FEE_RATE: &st
     "recovery_bootstrap_position_missing_original_fee_rate";
 const EVIDENCE_REASON_POSITION_STATE_MISSING_ORIGINAL_FEE_RATE: &str =
     "position_state_missing_original_fee_rate";
-const EXIT_BLOCK_REASON_NO_OPEN_POSITION: &str = "no_open_position";
-const EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING: &str = "exit_already_pending";
-const EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING: &str = "entry_order_still_working";
-const EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE: &str = "exit_decision_unavailable";
-const EXIT_BLOCK_REASON_EXIT_HOLD: &str = "exit_hold";
-const EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED: &str = "position_interval_ended";
-const EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN: &str = "position_interval_unknown";
-const EXIT_BLOCK_REASON_OPEN_POSITION_MISSING: &str = "open_position_missing";
-const EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID: &str = "exit_order_config_invalid";
-const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quantity_unsupported";
-const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";
-const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";
-
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 struct LeadVenueSignal {
@@ -8260,17 +8252,20 @@ fn settlement_position_realized_pnl_observation(
 fn venue_truth_settlement_explanation_from_evidence(
     evidence: &SettlementFact,
 ) -> Result<VenueTruthSettlementExplanation> {
-    let entry_order_side = settlement_order_side_from_evidence(&evidence.entry_order_side)
-        .with_context(|| {
-            format!(
-                "settlement evidence entry_order_side parse failed for key `{}`",
+    let entry_order_side = match evidence.entry_order_side {
+        EvidenceOrderSide::Buy => OrderSide::Buy,
+        EvidenceOrderSide::Sell => OrderSide::Sell,
+        EvidenceOrderSide::Unspecified => {
+            anyhow::bail!(
+                "settlement evidence has unspecified entry_order_side for key `{}`",
                 evidence.settlement_key
             )
-        })?;
+        }
+    };
     let position_side =
         expected_position_side_for_entry_order(entry_order_side).ok_or_else(|| {
             anyhow::anyhow!(
-                "invalid settlement evidence entry_order_side `{}` has no position side for key `{}`",
+                "invalid settlement evidence entry_order_side `{:?}` has no position side for key `{}`",
                 evidence.entry_order_side,
                 evidence.settlement_key
             )
@@ -8305,10 +8300,11 @@ fn venue_truth_settlement_explanation_from_evidence(
     })
 }
 
-fn settlement_order_side_from_evidence(value: &str) -> Result<OrderSide> {
-    match OrderSide::from_str(value.trim())? {
-        side @ (OrderSide::Buy | OrderSide::Sell) => Ok(side),
-        _ => anyhow::bail!("unsupported settlement entry_order_side `{value}`"),
+fn evidence_order_side(value: OrderSide) -> EvidenceOrderSide {
+    match value {
+        OrderSide::NoOrderSide => EvidenceOrderSide::Unspecified,
+        OrderSide::Buy => EvidenceOrderSide::Buy,
+        OrderSide::Sell => EvidenceOrderSide::Sell,
     }
 }
 
@@ -8371,13 +8367,18 @@ fn should_report_one_position_gate_violation(occupancy: ExposureOccupancy) -> bo
     )
 }
 
-fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
-    !matches!(reason, Some(reason) if reason == EXIT_BLOCK_REASON_NO_OPEN_POSITION
-        || reason == EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
-        || reason == EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
-        || reason == EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED
-        || reason == EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN
-        || reason == EXIT_BLOCK_REASON_EXIT_HOLD)
+fn should_warn_on_exit_submission_block(reason: Option<EvidenceExitBlockedReason>) -> bool {
+    !matches!(
+        reason,
+        Some(
+            EvidenceExitBlockedReason::NoOpenPosition
+                | EvidenceExitBlockedReason::ExitAlreadyPending
+                | EvidenceExitBlockedReason::EntryOrderStillWorking
+                | EvidenceExitBlockedReason::PositionIntervalEnded
+                | EvidenceExitBlockedReason::PositionIntervalUnknown
+                | EvidenceExitBlockedReason::ExitHold
+        )
+    )
 }
 
 fn classify_entry_reject_reason(raw_reason: &str) -> Option<EntryRejectClass> {

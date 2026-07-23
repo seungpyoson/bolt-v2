@@ -146,8 +146,8 @@ fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth
 #[test]
 fn live_operator_health_surface_reads_midrun_observation_poison_from_recorder() {
     use crate::bolt_v3_current_evidence::{
-        ObservationRecordOutcome, RequoteActionCostClass, RequoteThrottleBlockReason,
-        RequoteThrottleBound, RequoteThrottleObservationFact,
+        EvidenceRequoteLeg, ObservationRecordOutcome, RequoteActionCostClass,
+        RequoteThrottleBlockReason, RequoteThrottleBound, RequoteThrottleObservationFact,
     };
 
     let writer = Arc::new(DecisionEvidenceRecorder::recording());
@@ -157,7 +157,7 @@ fn live_operator_health_surface_reads_midrun_observation_poison_from_recorder() 
         strategy_id: "strategy-1".to_string(),
         family_key: "family-1".to_string(),
         market_id: Some("market-1".to_string()),
-        leg: "up".to_string(),
+        leg: EvidenceRequoteLeg::Yes,
         now_ms: 6,
         observed_at_ns: 7,
         action_cost_class: RequoteActionCostClass::CancelResubmit,

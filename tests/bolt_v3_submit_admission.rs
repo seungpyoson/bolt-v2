@@ -8,7 +8,8 @@ use bolt_v2::bolt_v3_current_evidence::{
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_loss_governor::{
-    LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
+    LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSnapshotSource,
+    LossSourceObservationTimestamps,
 };
 use bolt_v2::bolt_v3_order_execution::order_intent_details_from_compiled_order;
 use bolt_v2::bolt_v3_providers::FeeProvider;
@@ -1696,7 +1697,7 @@ fn stale_loss_halt_records_future_dated_reason_with_no_age() {
         },
     );
     admission.update_loss_snapshot(LossSnapshot {
-        source: "nt_loss_runtime_feed".to_string(),
+        source: Some(LossSnapshotSource::NtLossRuntimeFeed),
         observed_at_ns: 9_000,
         per_trade_pnl: Some(Decimal::ZERO),
         daily_pnl: Some(Decimal::ZERO),
@@ -1793,7 +1794,10 @@ fn single_order_reject_records_order_reject_evidence_on_reject_outcome() {
     );
     assert_eq!(reject.raw_reason_text, None);
     assert_eq!(reject.instrument_id, request.instrument_id);
-    assert_eq!(reject.order_side.as_deref(), Some("buy"));
+    assert_eq!(
+        reject.order_side,
+        Some(bolt_v2::bolt_v3_current_evidence::EvidenceOrderSide::Buy)
+    );
     assert_eq!(reject.raw_price, None);
     assert_eq!(reject.raw_quantity.as_deref(), Some("1"));
     assert_eq!(reject.raw_maker_amount, None);
@@ -1847,7 +1851,7 @@ fn loss_governor_halt_is_mece_with_order_reject_evidence() {
         },
     );
     loss_admission.update_loss_snapshot(LossSnapshot {
-        source: "nt_loss_runtime_feed".to_string(),
+        source: Some(LossSnapshotSource::NtLossRuntimeFeed),
         observed_at_ns: 1_000,
         per_trade_pnl: Some(Decimal::ZERO),
         daily_pnl: Some(Decimal::ZERO),

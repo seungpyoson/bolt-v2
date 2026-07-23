@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
     facts::{
-        OrderLifecycleFact, OrderLifecycleOutcome, OrderLifecycleTransition, OutcomeSide,
-        SettlementBookingErrorFact, SettlementBookingErrorReason, SettlementFact,
-        TerminalSettlementFact,
+        EvidenceOrderSide, OrderLifecycleFact, OrderLifecycleOutcome, OrderLifecycleSource,
+        OrderLifecycleTransition, OutcomeSide, SettlementBookingErrorFact,
+        SettlementBookingErrorReason, SettlementFact, TerminalSettlementFact,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -47,7 +47,6 @@ fn validate_settlement(fact: &SettlementFact) -> Result<(), RecordFailure> {
             fact.position_id.as_str(),
             fact.instrument_id.as_str(),
             fact.product_id.as_str(),
-            fact.entry_order_side.as_str(),
             fact.quantity.as_str(),
             fact.entry_price.as_str(),
             fact.family_key.as_str(),
@@ -60,7 +59,13 @@ fn validate_settlement(fact: &SettlementFact) -> Result<(), RecordFailure> {
             fact.settlement_currency.as_str(),
         ],
         fact.resolution_ts_event_ns,
-    )
+    )?;
+    if fact.entry_order_side == EvidenceOrderSide::Unspecified {
+        return Err(RecordFailure::Rejected(anyhow::anyhow!(
+            "settlement entry order side must be specified"
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn encode_terminal(
@@ -146,7 +151,7 @@ fn validate_booking_error(fact: &SettlementBookingErrorFact) -> Result<(), Recor
 fn validate_terminal(fact: &TerminalSettlementFact) -> Result<(), RecordFailure> {
     if fact.settlement_key.trim().is_empty()
         || fact.lifecycle.strategy_id.trim().is_empty()
-        || fact.lifecycle.source.trim().is_empty()
+        || fact.lifecycle.order_side == Some(EvidenceOrderSide::Unspecified)
         || fact
             .lifecycle
             .ts_event_ns
@@ -158,7 +163,6 @@ fn validate_terminal(fact: &TerminalSettlementFact) -> Result<(), RecordFailure>
             fact.lifecycle.client_order_id.as_deref(),
             fact.lifecycle.prior_client_order_id.as_deref(),
             fact.lifecycle.raw_reason_text.as_deref(),
-            fact.lifecycle.order_side.as_deref(),
             fact.lifecycle.filled_quantity.as_deref(),
             fact.lifecycle.residual_quantity.as_deref(),
         ]
@@ -202,7 +206,7 @@ struct SettlementV1 {
     instrument_id: String,
     product_id: String,
     outcome_side: OutcomeSideV1,
-    entry_order_side: String,
+    entry_order_side: SettlementOrderSideV1,
     quantity: String,
     entry_price: String,
     family_key: String,
@@ -229,7 +233,7 @@ impl SettlementV1 {
                 OutcomeSide::Up => OutcomeSideV1::Up,
                 OutcomeSide::Down => OutcomeSideV1::Down,
             },
-            entry_order_side: fact.entry_order_side,
+            entry_order_side: SettlementOrderSideV1::from_fact(fact.entry_order_side),
             quantity: fact.quantity,
             entry_price: fact.entry_price,
             family_key: fact.family_key,
@@ -256,7 +260,7 @@ impl SettlementV1 {
                 OutcomeSideV1::Up => OutcomeSide::Up,
                 OutcomeSideV1::Down => OutcomeSide::Down,
             },
-            entry_order_side: self.entry_order_side,
+            entry_order_side: self.entry_order_side.into_fact(),
             quantity: self.quantity,
             entry_price: self.entry_price,
             family_key: self.family_key,
@@ -268,6 +272,32 @@ impl SettlementV1 {
             terminal_value: self.terminal_value,
             realized_pnl: self.realized_pnl,
             settlement_currency: self.settlement_currency,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SettlementOrderSideV1 {
+    Unspecified,
+    Buy,
+    Sell,
+}
+
+impl SettlementOrderSideV1 {
+    fn from_fact(value: EvidenceOrderSide) -> Self {
+        match value {
+            EvidenceOrderSide::Unspecified => Self::Unspecified,
+            EvidenceOrderSide::Buy => Self::Buy,
+            EvidenceOrderSide::Sell => Self::Sell,
+        }
+    }
+
+    fn into_fact(self) -> EvidenceOrderSide {
+        match self {
+            Self::Unspecified => EvidenceOrderSide::Unspecified,
+            Self::Buy => EvidenceOrderSide::Buy,
+            Self::Sell => EvidenceOrderSide::Sell,
         }
     }
 }
@@ -390,19 +420,95 @@ impl TerminalBookingErrorV1 {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TerminalLifecycleSourceV1 {
+    SelectionBoundary,
+    EntryFill,
+    PositionEvent,
+    RestartBootstrap,
+    OrderDenied,
+    OrderRejected,
+    OrderCanceled,
+    OrderExpired,
+    SettlementEvidenceRecovery,
+    SettlementBookingTerminal,
+    ReconcilePass,
+}
+
+impl TerminalLifecycleSourceV1 {
+    fn from_fact(value: OrderLifecycleSource) -> Self {
+        match value {
+            OrderLifecycleSource::SelectionBoundary => Self::SelectionBoundary,
+            OrderLifecycleSource::EntryFill => Self::EntryFill,
+            OrderLifecycleSource::PositionEvent => Self::PositionEvent,
+            OrderLifecycleSource::RestartBootstrap => Self::RestartBootstrap,
+            OrderLifecycleSource::OrderDenied => Self::OrderDenied,
+            OrderLifecycleSource::OrderRejected => Self::OrderRejected,
+            OrderLifecycleSource::OrderCanceled => Self::OrderCanceled,
+            OrderLifecycleSource::OrderExpired => Self::OrderExpired,
+            OrderLifecycleSource::SettlementEvidenceRecovery => Self::SettlementEvidenceRecovery,
+            OrderLifecycleSource::SettlementBookingTerminal => Self::SettlementBookingTerminal,
+            OrderLifecycleSource::ReconcilePass => Self::ReconcilePass,
+        }
+    }
+
+    fn into_fact(self) -> OrderLifecycleSource {
+        match self {
+            Self::SelectionBoundary => OrderLifecycleSource::SelectionBoundary,
+            Self::EntryFill => OrderLifecycleSource::EntryFill,
+            Self::PositionEvent => OrderLifecycleSource::PositionEvent,
+            Self::RestartBootstrap => OrderLifecycleSource::RestartBootstrap,
+            Self::OrderDenied => OrderLifecycleSource::OrderDenied,
+            Self::OrderRejected => OrderLifecycleSource::OrderRejected,
+            Self::OrderCanceled => OrderLifecycleSource::OrderCanceled,
+            Self::OrderExpired => OrderLifecycleSource::OrderExpired,
+            Self::SettlementEvidenceRecovery => OrderLifecycleSource::SettlementEvidenceRecovery,
+            Self::SettlementBookingTerminal => OrderLifecycleSource::SettlementBookingTerminal,
+            Self::ReconcilePass => OrderLifecycleSource::ReconcilePass,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TerminalLifecycleOrderSideV1 {
+    Unspecified,
+    Buy,
+    Sell,
+}
+
+impl TerminalLifecycleOrderSideV1 {
+    fn from_fact(value: EvidenceOrderSide) -> Self {
+        match value {
+            EvidenceOrderSide::Unspecified => Self::Unspecified,
+            EvidenceOrderSide::Buy => Self::Buy,
+            EvidenceOrderSide::Sell => Self::Sell,
+        }
+    }
+
+    fn into_fact(self) -> EvidenceOrderSide {
+        match self {
+            Self::Unspecified => EvidenceOrderSide::Unspecified,
+            Self::Buy => EvidenceOrderSide::Buy,
+            Self::Sell => EvidenceOrderSide::Sell,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TerminalLifecycleV1 {
     strategy_id: String,
     transition: LifecycleTransitionV1,
     outcome: LifecycleOutcomeV1,
-    source: String,
+    source: TerminalLifecycleSourceV1,
     market_id: Option<String>,
     instrument_id: Option<String>,
     position_id: Option<String>,
     client_order_id: Option<String>,
     prior_client_order_id: Option<String>,
     raw_reason_text: Option<String>,
-    order_side: Option<String>,
+    order_side: Option<TerminalLifecycleOrderSideV1>,
     filled_quantity: Option<String>,
     residual_quantity: Option<String>,
     ts_event_ns: Option<u64>,
@@ -414,14 +520,14 @@ impl TerminalLifecycleV1 {
             strategy_id: fact.strategy_id,
             transition: LifecycleTransitionV1::from_fact(fact.transition),
             outcome: LifecycleOutcomeV1::from_fact(fact.outcome),
-            source: fact.source,
+            source: TerminalLifecycleSourceV1::from_fact(fact.source),
             market_id: fact.market_id,
             instrument_id: fact.instrument_id,
             position_id: fact.position_id,
             client_order_id: fact.client_order_id,
             prior_client_order_id: fact.prior_client_order_id,
             raw_reason_text: fact.raw_reason_text,
-            order_side: fact.order_side,
+            order_side: fact.order_side.map(TerminalLifecycleOrderSideV1::from_fact),
             filled_quantity: fact.filled_quantity,
             residual_quantity: fact.residual_quantity,
             ts_event_ns: fact.ts_event_ns,
@@ -433,14 +539,14 @@ impl TerminalLifecycleV1 {
             strategy_id: self.strategy_id,
             transition: self.transition.into_fact(),
             outcome: self.outcome.into_fact(),
-            source: self.source,
+            source: self.source.into_fact(),
             market_id: self.market_id,
             instrument_id: self.instrument_id,
             position_id: self.position_id,
             client_order_id: self.client_order_id,
             prior_client_order_id: self.prior_client_order_id,
             raw_reason_text: self.raw_reason_text,
-            order_side: self.order_side,
+            order_side: self.order_side.map(TerminalLifecycleOrderSideV1::into_fact),
             filled_quantity: self.filled_quantity,
             residual_quantity: self.residual_quantity,
             ts_event_ns: self.ts_event_ns,

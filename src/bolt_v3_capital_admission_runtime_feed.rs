@@ -21,6 +21,7 @@ use crate::{
         OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
         VenueSpendabilitySnapshot,
     },
+    bolt_v3_current_evidence::SubmitReservationFillSource,
     bolt_v3_observed_dedupe::prune_observed_dedupe_entries,
     bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id,
     bolt_v3_submit_admission::{
@@ -466,7 +467,7 @@ impl CapitalAdmissionRuntimeFeed {
                 fill_quantity,
                 observed_at_ns,
                 reconciliation: fill.reconciliation,
-                evidence_label: "nt_order_fill".to_string(),
+                evidence_source: SubmitReservationFillSource::NtOrderFill,
             },
             observed_at_ns,
         );

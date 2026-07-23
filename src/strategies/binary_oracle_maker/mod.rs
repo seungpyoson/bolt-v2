@@ -29,8 +29,8 @@ use crate::bolt_v3_strategy_context::StrategyBuildContext;
 
 use crate::{
     bolt_v3_current_evidence::{
-        ObservationRecordOutcome, RequoteActionCostClass, RequoteThrottleBlockReason,
-        RequoteThrottleBound, RequoteThrottleObservationFact,
+        EvidenceRequoteLeg, ObservationRecordOutcome, RequoteActionCostClass,
+        RequoteThrottleBlockReason, RequoteThrottleBound, RequoteThrottleObservationFact,
     },
     bolt_v3_loss_governor::LossAdmissionDecision,
     bolt_v3_maker_market_selection::MakerMarketPortfolioPolicy,
@@ -88,8 +88,6 @@ pub use config::{
 /// `RUNTIME_BINDING.key`, validation-binding key, and operator TOML
 /// `strategy_archetype` value are all this single constant.
 pub const KEY: &str = "binary_oracle_maker";
-const REQUOTE_THROTTLE_LEG_YES: &str = "yes";
-const REQUOTE_THROTTLE_LEG_NO: &str = "no";
 const REQUOTE_THROTTLE_FRESH_SUBMIT_SUBMIT_COST: u64 = 1;
 const REQUOTE_THROTTLE_FRESH_SUBMIT_REST_COST: u64 = 1;
 const REQUOTE_THROTTLE_CANCEL_RESUBMIT_SUBMIT_COST: u64 = 1;
@@ -151,7 +149,10 @@ fn requote_throttle_observation(
         strategy_id,
         family_key: family_key.to_string(),
         market_id: Some(family_key.to_string()),
-        leg: requote_throttle_leg_label(leg).to_string(),
+        leg: match leg {
+            Leg::Yes => EvidenceRequoteLeg::Yes,
+            Leg::No => EvidenceRequoteLeg::No,
+        },
         now_ms,
         observed_at_ns: now_ms.saturating_mul(NANOS_PER_MILLI_U64),
         action_cost_class,
@@ -696,13 +697,6 @@ fn requote_throttle_bound(
         return RequoteThrottleBound::RestCallWindow;
     }
     RequoteThrottleBound::WindowCap
-}
-
-fn requote_throttle_leg_label(leg: Leg) -> &'static str {
-    match leg {
-        Leg::Yes => REQUOTE_THROTTLE_LEG_YES,
-        Leg::No => REQUOTE_THROTTLE_LEG_NO,
-    }
 }
 
 /// Inputs for one intent-only quote cycle on an active market. Bundles the

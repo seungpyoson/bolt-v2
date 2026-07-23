@@ -12,8 +12,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
-    EntryOrderIntentFact, PositiveFiniteEvidenceReadCap, ShadowPnlEvent,
-    SubmitLinkedStrategyInputSnapshotFact, read_shadow_pnl_events,
+    EntryOrderIntentFact, OutcomeSide as EvidenceOutcomeSide, PositiveFiniteEvidenceReadCap,
+    ShadowPnlEvent, SubmitLinkedStrategyInputSnapshotFact, read_shadow_pnl_events,
 };
 use crate::bolt_v3_market_families::OutcomeSide;
 use crate::bolt_v3_taker_updown_signal::outcome_side_evidence_label;
@@ -128,24 +128,16 @@ pub fn build_shadow_pnl_report(
 
     for trade in chains {
         let settlement = settlement_for_trade(&settlements, &trade)?;
-        let selected_side = trade
-            .snapshot
-            .details
-            .selected_side
-            .as_deref()
-            .ok_or_else(|| {
-                anyhow!(
-                    "missing selected_side for {}",
-                    trade.intent.details.client_order_id
-                )
-            })?;
-        if !outcome_side_is_recognized(selected_side) {
-            return Err(anyhow!(
-                "evidence selected_side {:?} for {} is invalid: not a recognized binary outcome side",
-                selected_side,
+        let selected_side = trade.snapshot.details.selected_side.ok_or_else(|| {
+            anyhow!(
+                "missing selected_side for {}",
                 trade.intent.details.client_order_id
-            ));
-        }
+            )
+        })?;
+        let selected_side = match selected_side {
+            EvidenceOutcomeSide::Up => "up",
+            EvidenceOutcomeSide::Down => "down",
+        };
         let entry_price = parse_decimal(&trade.intent.details.price)?;
         let quantity = parse_decimal(&trade.intent.details.quantity)?;
         let settlement_price = parse_decimal(&settlement.settlement_price)?;

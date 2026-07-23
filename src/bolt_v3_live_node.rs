@@ -165,8 +165,8 @@ use crate::{
         LoadedStrategy, nautilus_startup_bound_secs, resolve_root_relative_path,
     },
     bolt_v3_current_evidence::{
-        DecisionEvidenceRecorder, DecisionEvidenceRuntime, ObservationStreamStatus,
-        ReservationRecoveryFacts,
+        CapitalAdmissionRebuildSource, DecisionEvidenceRecorder, DecisionEvidenceRuntime,
+        ObservationStreamStatus, ReservationRecoveryFacts,
     },
     bolt_v3_iv::{
         config::IvRootConfig,
@@ -1664,7 +1664,7 @@ impl BoltV3LiveNodeRuntime {
             .rebuild_capital_admission_open_order_snapshot(
                 BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
                     observed_at_ns: now_ns,
-                    evidence_label: "nt_open_order_cache".to_string(),
+                    evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
                     observed_open_order_count: open_order_snapshots.len(),
                     all_open_orders_attributed,
                     reservations,

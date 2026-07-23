@@ -765,7 +765,8 @@ mod tests {
         ReservationReleaseRequest, ReservationRequest, ReservationRevalueRequest,
     };
     use crate::bolt_v3_loss_governor::{
-        LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
+        LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSnapshotSource,
+        LossSourceObservationTimestamps,
     };
 
     use super::{
@@ -1051,7 +1052,7 @@ mod tests {
     #[test]
     fn sizer_rejects_when_loss_governor_rejects() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-10, 0)),
             daily_pnl: None,
@@ -1086,7 +1087,7 @@ mod tests {
     #[test]
     fn sizer_rejects_when_capital_reservation_rejects() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1122,7 +1123,7 @@ mod tests {
     #[test]
     fn sizer_accepts_when_loss_liability_and_reservation_pass() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1200,7 +1201,7 @@ mod tests {
     #[test]
     fn sizer_rejects_when_min_remaining_pool_balance_would_be_breached() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1263,7 +1264,7 @@ mod tests {
     #[test]
     fn restart_requires_rebuilt_open_order_reservations_before_admission() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1300,7 +1301,7 @@ mod tests {
     #[test]
     fn reserve_to_submit_is_single_serialized_critical_section() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1678,7 +1679,7 @@ mod tests {
     #[test]
     fn admission_gate_fails_closed_until_reconciled_and_rejects_release() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1725,7 +1726,7 @@ mod tests {
     #[test]
     fn restart_rebuilds_open_order_reservations_before_reopening_gate() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1768,7 +1769,7 @@ mod tests {
     #[test]
     fn restart_rebuild_with_no_open_orders_reopens_gate_with_zero_reservations() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1804,7 +1805,7 @@ mod tests {
     #[test]
     fn failed_restart_rebuild_keeps_gate_closed_without_partial_reservations() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1856,7 +1857,7 @@ mod tests {
     #[test]
     fn failed_restart_rebuild_discards_reservations_staged_before_later_failure() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1909,7 +1910,7 @@ mod tests {
     #[test]
     fn failed_restart_rebuild_after_prior_success_clears_stale_reservations() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,

@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use super::{decode, encode_line, validate_envelope, validate_recorded_at};
 use crate::bolt_v3_current_evidence::{
     facts::{
-        AdmissionDecisionOutcome, AdmissionRejectionReason, OrderRejectFact, OrderRejectReason,
-        OrderRejectSource,
+        AdmissionDecisionOutcome, AdmissionRejectionReason, EvidenceOrderSide, OrderRejectFact,
+        OrderRejectReason, OrderRejectSource,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -50,7 +50,6 @@ pub(super) fn decode_fact(line: &str, line_number: usize) -> Result<OrderRejectF
 fn validate_fact(fact: &OrderRejectFact) -> Result<(), RecordFailure> {
     let optional_strings = [
         fact.raw_reason_text.as_deref(),
-        fact.order_side.as_deref(),
         fact.raw_price.as_deref(),
         fact.raw_quantity.as_deref(),
         fact.raw_maker_amount.as_deref(),
@@ -77,6 +76,7 @@ fn validate_fact(fact: &OrderRejectFact) -> Result<(), RecordFailure> {
             .into_iter()
             .flatten()
             .any(|value| value.trim().is_empty())
+        || fact.order_side == Some(EvidenceOrderSide::Unspecified)
         || !(admission_shape || observed_shape)
     {
         return Err(RecordFailure::Rejected(anyhow::anyhow!(
@@ -105,7 +105,7 @@ struct OrderRejectWireV1 {
     admission_outcome: Option<AdmissionOutcomeV1>,
     raw_reason_text: Option<String>,
     instrument_id: String,
-    order_side: Option<String>,
+    order_side: Option<OrderSideV1>,
     raw_price: Option<String>,
     raw_quantity: Option<String>,
     raw_maker_amount: Option<String>,
@@ -133,7 +133,7 @@ impl OrderRejectWireV1 {
             admission_outcome: fact.admission_outcome.map(AdmissionOutcomeV1::from_fact),
             raw_reason_text: fact.raw_reason_text,
             instrument_id: fact.instrument_id,
-            order_side: fact.order_side,
+            order_side: fact.order_side.map(OrderSideV1::from_fact),
             raw_price: fact.raw_price,
             raw_quantity: fact.raw_quantity,
             raw_maker_amount: fact.raw_maker_amount,
@@ -161,7 +161,7 @@ impl OrderRejectWireV1 {
             admission_outcome: self.admission_outcome.map(AdmissionOutcomeV1::into_fact),
             raw_reason_text: self.raw_reason_text,
             instrument_id: self.instrument_id,
-            order_side: self.order_side,
+            order_side: self.order_side.map(OrderSideV1::into_fact),
             raw_price: self.raw_price,
             raw_quantity: self.raw_quantity,
             raw_maker_amount: self.raw_maker_amount,
@@ -179,6 +179,32 @@ impl OrderRejectWireV1 {
             backoff_cooldown_state: self.backoff_cooldown_state,
             stable_episode_key: self.stable_episode_key,
             elapsed_ns: self.elapsed_ns,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OrderSideV1 {
+    Unspecified,
+    Buy,
+    Sell,
+}
+
+impl OrderSideV1 {
+    fn from_fact(value: EvidenceOrderSide) -> Self {
+        match value {
+            EvidenceOrderSide::Unspecified => Self::Unspecified,
+            EvidenceOrderSide::Buy => Self::Buy,
+            EvidenceOrderSide::Sell => Self::Sell,
+        }
+    }
+
+    fn into_fact(self) -> EvidenceOrderSide {
+        match self {
+            Self::Unspecified => EvidenceOrderSide::Unspecified,
+            Self::Buy => EvidenceOrderSide::Buy,
+            Self::Sell => EvidenceOrderSide::Sell,
         }
     }
 }

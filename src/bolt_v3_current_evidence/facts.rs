@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+pub use crate::bolt_v3_loss_governor::LossSnapshotSource;
+
 pub use crate::bolt_v3_fair_value_pricing::RvGateResult;
 
 use anyhow::{Context, Result, ensure};
@@ -32,11 +34,11 @@ pub struct SubmitReservationFillFact {
     pub submit_reservation_id: String,
     pub trade_id: String,
     pub instrument_id: String,
-    pub side: String,
+    pub side: EvidenceOrderSide,
     pub fill_quantity: String,
     pub observed_at_ns: u64,
     pub reconciliation: bool,
-    pub source: String,
+    pub source: SubmitReservationFillSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,17 +60,71 @@ pub enum OrderIntentClampOutcome {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceOrderSide {
+    Unspecified,
+    Buy,
+    Sell,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceOrderType {
+    Market,
+    Limit,
+    StopMarket,
+    StopLimit,
+    MarketToLimit,
+    MarketIfTouched,
+    LimitIfTouched,
+    TrailingStopMarket,
+    TrailingStopLimit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceTimeInForce {
+    Gtc,
+    Ioc,
+    Fok,
+    Gtd,
+    Day,
+    AtTheOpen,
+    AtTheClose,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceTriggerType {
+    NoTrigger,
+    Default,
+    LastPrice,
+    MarkPrice,
+    IndexPrice,
+    BidAsk,
+    DoubleLast,
+    DoubleBidAsk,
+    LastOrBidAsk,
+    MidPoint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceTrailingOffsetType {
+    NoTrailingOffset,
+    Price,
+    BasisPoints,
+    Ticks,
+    PriceTier,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderIntentOrderFields {
-    pub order_type: String,
-    pub time_in_force: String,
+    pub order_type: EvidenceOrderType,
+    pub time_in_force: EvidenceTimeInForce,
     pub price: Option<String>,
     pub trigger_price: Option<String>,
     pub activation_price: Option<String>,
-    pub trigger_type: Option<String>,
+    pub trigger_type: Option<EvidenceTriggerType>,
     pub trigger_instrument_id: Option<String>,
     pub trailing_offset: Option<String>,
-    pub trailing_offset_type: Option<String>,
+    pub trailing_offset_type: Option<EvidenceTrailingOffsetType>,
     pub expire_time_unix_nanos: Option<String>,
     pub is_post_only: bool,
     pub is_reduce_only: bool,
@@ -80,7 +136,7 @@ pub struct OrderIntentDetails {
     pub strategy_id: String,
     pub instrument_id: String,
     pub client_order_id: String,
-    pub order_side: String,
+    pub order_side: EvidenceOrderSide,
     pub price: String,
     pub quantity: String,
     pub clamp_outcome: Option<OrderIntentClampOutcome>,
@@ -154,10 +210,40 @@ pub enum CapitalAdmissionRebuildOutcome {
     Rejected(CapitalAdmissionRejectionReason),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapitalAdmissionRebuildSource {
+    NtOpenOrderCache,
+    BoltRecoveredOpenOrderReservations,
+}
+
+impl CapitalAdmissionRebuildSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NtOpenOrderCache => "nt_open_order_cache",
+            Self::BoltRecoveredOpenOrderReservations => "bolt_recovered_open_order_reservations",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitReservationFillSource {
+    NtOrderFill,
+    NtOrderFillClamped,
+}
+
+impl SubmitReservationFillSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NtOrderFill => "nt_order_fill",
+            Self::NtOrderFillClamped => "nt_order_fill_clamped",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapitalAdmissionRebuildFact {
     pub observed_at_ns: u64,
-    pub source: String,
+    pub source: CapitalAdmissionRebuildSource,
     pub observed_open_order_count: usize,
     pub all_open_orders_attributed: bool,
     pub outcome: CapitalAdmissionRebuildOutcome,
@@ -188,12 +274,18 @@ pub enum RequoteThrottleBlockReason {
     RequoteBudgetExhausted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceRequoteLeg {
+    Yes,
+    No,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequoteThrottleObservationFact {
     pub strategy_id: String,
     pub family_key: String,
     pub market_id: Option<String>,
-    pub leg: String,
+    pub leg: EvidenceRequoteLeg,
     pub now_ms: u64,
     pub observed_at_ns: u64,
     pub action_cost_class: RequoteActionCostClass,
@@ -252,7 +344,7 @@ pub struct LossGovernorHaltFact {
     pub admission_now_ns: u64,
     pub snapshot_age_ns: Option<u64>,
     pub max_snapshot_age_ns: u64,
-    pub snapshot_source: Option<String>,
+    pub snapshot_source: Option<LossSnapshotSource>,
     pub has_per_trade_pnl: bool,
     pub has_daily_pnl: bool,
     pub has_rolling_pnl: bool,
@@ -277,23 +369,6 @@ pub enum LossHaltReason {
     RollingLossLimit,
     MaxDrawdownLimit,
     StaleLossSnapshot,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LossSnapshotSource {
-    NtLossRuntimeFeed,
-    NtPortfolioSnapshot,
-    NtAccountSnapshot,
-    NtAccountAndPositionSnapshot,
-    NtPositionEvent,
-    NtPositionChanged,
-    NtPositionClosed,
-    NtPositionAdjusted,
-    NtCapitalAdmissionState,
-    BoltLossSnapshot,
-    LossGovernor,
-    Unknown,
-    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -400,7 +475,7 @@ pub struct OrderRejectFact {
     pub admission_outcome: Option<AdmissionDecisionOutcome>,
     pub raw_reason_text: Option<String>,
     pub instrument_id: String,
-    pub order_side: Option<String>,
+    pub order_side: Option<EvidenceOrderSide>,
     pub raw_price: Option<String>,
     pub raw_quantity: Option<String>,
     pub raw_maker_amount: Option<String>,
@@ -628,7 +703,7 @@ pub struct EntrySkipFact {
     pub gate_blocked_by: Vec<EntryBlockReason>,
     pub pricing_blocked_by: Vec<EntryPricingBlockReason>,
     pub market_id: Option<String>,
-    pub phase: String,
+    pub phase: EvidenceSelectionPhase,
     pub seconds_to_market_end: Option<u64>,
     pub spot_price: Option<String>,
     pub reference_current_price: Option<String>,
@@ -723,7 +798,7 @@ pub struct StrategyInputDetails<PurposeNumeric> {
     pub fast_venue_incoherent: bool,
     pub lead_agreement_corr: Option<String>,
     pub fee_rate_basis_points: PurposeNumeric,
-    pub selected_side: Option<String>,
+    pub selected_side: Option<OutcomeSide>,
 }
 
 pub type BlockedStrategyInputDetails = StrategyInputDetails<Option<String>>;
@@ -737,7 +812,7 @@ pub struct BlockedStrategyInputObservationFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubmissionLinkage {
     pub instrument_id: String,
-    pub order_side: String,
+    pub order_side: EvidenceOrderSide,
     pub price: String,
     pub quantity: String,
     pub client_order_id: String,
@@ -759,7 +834,7 @@ pub enum ExitTriggerSource {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ExitBlockedReason {
     NoOpenPosition,
     ExitAlreadyPending,
@@ -878,7 +953,7 @@ pub struct ExitEvaluationFact {
     pub rv_snapshot_receive_watermark_ms: Option<i64>,
     pub rv_max_source_age_ms: Option<u64>,
     pub rv_blockers: Vec<RealizedVolBlockReason>,
-    pub rv_source_diagnostics: Vec<String>,
+    pub rv_source_diagnostics: Vec<RealizedVolatilitySourceDiagnosticFact>,
     pub rv_gate_result: RvGateResult,
     pub rv_as_of_minus_now_ms: Option<i64>,
     pub spot_price: Option<String>,
@@ -895,13 +970,20 @@ pub struct ExitEvaluationFact {
     pub hold_ev_bps: Option<String>,
     pub exit_ev_bps: Option<String>,
     pub decision: ExitEvaluationDecision,
-    pub forced_flat_reasons: Vec<String>,
+    pub forced_flat_reasons: Vec<ForcedFlatReason>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeSide {
     Up,
     Down,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceSelectionPhase {
+    Active,
+    Freeze,
+    Idle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -913,7 +995,7 @@ pub struct SettlementFact {
     pub instrument_id: String,
     pub product_id: String,
     pub outcome_side: OutcomeSide,
-    pub entry_order_side: String,
+    pub entry_order_side: EvidenceOrderSide,
     pub quantity: String,
     pub entry_price: String,
     pub family_key: String,
@@ -979,19 +1061,34 @@ pub enum OrderLifecycleOutcome {
     Flat,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderLifecycleSource {
+    SelectionBoundary,
+    EntryFill,
+    PositionEvent,
+    RestartBootstrap,
+    OrderDenied,
+    OrderRejected,
+    OrderCanceled,
+    OrderExpired,
+    SettlementEvidenceRecovery,
+    SettlementBookingTerminal,
+    ReconcilePass,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderLifecycleFact {
     pub strategy_id: String,
     pub transition: OrderLifecycleTransition,
     pub outcome: OrderLifecycleOutcome,
-    pub source: String,
+    pub source: OrderLifecycleSource,
     pub market_id: Option<String>,
     pub instrument_id: Option<String>,
     pub position_id: Option<String>,
     pub client_order_id: Option<String>,
     pub prior_client_order_id: Option<String>,
     pub raw_reason_text: Option<String>,
-    pub order_side: Option<String>,
+    pub order_side: Option<EvidenceOrderSide>,
     pub filled_quantity: Option<String>,
     pub residual_quantity: Option<String>,
     pub ts_event_ns: Option<u64>,

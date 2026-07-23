@@ -1908,7 +1908,7 @@ mod tests {
                 let mut blockers = value.as_ref().clone();
                 blockers.details.gate_blocked_by = entry_block_coverage_values();
                 blockers.details.pricing_blocked_by = entry_pricing_coverage_values();
-                blockers.details.selected_side = Some("up".to_string());
+                blockers.details.selected_side = Some(OutcomeSide::Up);
                 cases.push(CurrentFact::BlockedStrategyInputObservation(Box::new(
                     blockers,
                 )));
@@ -1969,7 +1969,7 @@ mod tests {
                 let mut blockers = value.as_ref().clone();
                 blockers.details.gate_blocked_by = entry_block_coverage_values();
                 blockers.details.pricing_blocked_by = entry_pricing_coverage_values();
-                blockers.details.selected_side = Some("up".to_string());
+                blockers.details.selected_side = Some(OutcomeSide::Up);
                 cases.push(CurrentFact::SubmitLinkedStrategyInputSnapshot(Box::new(
                     blockers,
                 )));
@@ -2079,7 +2079,8 @@ mod tests {
                 present.snapshot_present = true;
                 present.snapshot_observed_at_ns = Some(10);
                 present.snapshot_age_ns = Some(2);
-                present.snapshot_source = Some("nt_account_snapshot".to_string());
+                present.snapshot_source =
+                    Some(super::super::facts::LossSnapshotSource::NtAccountSnapshot);
                 present.last_account_state_ts_ns = Some(10);
                 present.last_portfolio_snapshot_ts_ns = Some(10);
                 present.last_position_event_ts_ns = Some(10);
@@ -2296,7 +2297,7 @@ mod tests {
                     .collect();
                 blockers.forced_flat_reasons = ForcedFlatReason::wire_coverage_values()
                     .into_iter()
-                    .map(|(_, wire)| wire.to_string())
+                    .map(|(reason, _)| reason)
                     .collect();
                 cases.push(CurrentFact::ExitEvaluation(Box::new(blockers)));
                 cases.extend(
@@ -2440,10 +2441,10 @@ mod tests {
         present.order_fields.price = Some("0.4".to_string());
         present.order_fields.trigger_price = Some("0.5".to_string());
         present.order_fields.activation_price = Some("0.5".to_string());
-        present.order_fields.trigger_type = Some("last_price".to_string());
+        present.order_fields.trigger_type = Some(EvidenceTriggerType::LastPrice);
         present.order_fields.trigger_instrument_id = Some("YES-USD.POLYMARKET".to_string());
         present.order_fields.trailing_offset = Some("0.01".to_string());
-        present.order_fields.trailing_offset_type = Some("price".to_string());
+        present.order_fields.trailing_offset_type = Some(EvidenceTrailingOffsetType::Price);
         present.order_fields.expire_time_unix_nanos = Some("1000000000".to_string());
         vec![nulls, present]
     }
@@ -2636,7 +2637,7 @@ mod tests {
 
         let mut present = nulls.clone();
         present.raw_reason_text = Some("venue rejected order".to_string());
-        present.order_side = Some("buy".to_string());
+        present.order_side = Some(EvidenceOrderSide::Buy);
         present.raw_price = Some("0.5".to_string());
         present.raw_quantity = Some("2".to_string());
         present.raw_maker_amount = Some("1".to_string());
@@ -2674,7 +2675,7 @@ mod tests {
         present.client_order_id = Some("client-order-coverage".to_string());
         present.prior_client_order_id = Some("prior-client-order-coverage".to_string());
         present.raw_reason_text = Some("lifecycle transition".to_string());
-        present.order_side = Some("buy".to_string());
+        present.order_side = Some(EvidenceOrderSide::Buy);
         present.filled_quantity = Some("1".to_string());
         present.residual_quantity = Some("1".to_string());
         present.ts_event_ns = Some(10);
@@ -2916,7 +2917,7 @@ mod tests {
             instrument_id: "YES-USD.POLYMARKET".to_string(),
             product_id: "product-1".to_string(),
             outcome_side: super::super::facts::OutcomeSide::Up,
-            entry_order_side: "buy".to_string(),
+            entry_order_side: EvidenceOrderSide::Buy,
             quantity: "1".to_string(),
             entry_price: "0.4".to_string(),
             family_key: "family-1".to_string(),
@@ -2954,14 +2955,14 @@ mod tests {
                 transition:
                     super::super::facts::OrderLifecycleTransition::SettlementBookingTerminal,
                 outcome: super::super::facts::OrderLifecycleOutcome::Flat,
-                source: "settlement_booking".to_string(),
+                source: OrderLifecycleSource::SettlementBookingTerminal,
                 market_id: Some("market-1".to_string()),
                 instrument_id: Some("YES-USD.POLYMARKET".to_string()),
                 position_id: Some("position-1".to_string()),
                 client_order_id: None,
                 prior_client_order_id: None,
                 raw_reason_text: Some("terminal".to_string()),
-                order_side: Some("buy".to_string()),
+                order_side: Some(EvidenceOrderSide::Buy),
                 filled_quantity: Some("1".to_string()),
                 residual_quantity: Some("0".to_string()),
                 ts_event_ns: Some(4),
@@ -2974,15 +2975,15 @@ mod tests {
             strategy_id: "strategy-1".to_string(),
             instrument_id: "YES-USD.POLYMARKET".to_string(),
             client_order_id: "client-1".to_string(),
-            order_side: "buy".to_string(),
+            order_side: EvidenceOrderSide::Buy,
             price: "0.4".to_string(),
             quantity: "2".to_string(),
             clamp_outcome: Some(OrderIntentClampOutcome::NotEvaluated {
                 reason: OrderIntentClampNotEvaluatedReason::NoVenueTruth,
             }),
             order_fields: OrderIntentOrderFields {
-                order_type: "limit".to_string(),
-                time_in_force: "gtc".to_string(),
+                order_type: EvidenceOrderType::Limit,
+                time_in_force: EvidenceTimeInForce::Gtc,
                 price: Some("0.4".to_string()),
                 trigger_price: None,
                 activation_price: None,
@@ -3016,7 +3017,7 @@ mod tests {
     fn capital_rebuild() -> CapitalAdmissionRebuildFact {
         CapitalAdmissionRebuildFact {
             observed_at_ns: 5,
-            source: "venue_reconciliation".to_string(),
+            source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
             observed_open_order_count: 2,
             all_open_orders_attributed: true,
             outcome: super::super::facts::CapitalAdmissionRebuildOutcome::Accepted,
@@ -3031,7 +3032,7 @@ mod tests {
             strategy_id: "strategy-1".to_string(),
             family_key: "family-1".to_string(),
             market_id: Some("market-1".to_string()),
-            leg: "up".to_string(),
+            leg: EvidenceRequoteLeg::Yes,
             now_ms: 6,
             observed_at_ns: 7,
             action_cost_class: super::super::facts::RequoteActionCostClass::CancelResubmit,
@@ -3077,7 +3078,7 @@ mod tests {
             admission_now_ns: 12,
             snapshot_age_ns: Some(2),
             max_snapshot_age_ns: 1,
-            snapshot_source: Some("nt_account_snapshot".to_string()),
+            snapshot_source: Some(super::super::facts::LossSnapshotSource::NtAccountSnapshot),
             has_per_trade_pnl: true,
             has_daily_pnl: true,
             has_rolling_pnl: true,
@@ -3131,7 +3132,7 @@ mod tests {
             admission_outcome: None,
             raw_reason_text: Some("minimum notional rejected".to_string()),
             instrument_id: "YES-USD.POLYMARKET".to_string(),
-            order_side: Some("buy".to_string()),
+            order_side: Some(EvidenceOrderSide::Buy),
             raw_price: Some("0.4".to_string()),
             raw_quantity: Some("1".to_string()),
             raw_maker_amount: None,
@@ -3162,7 +3163,7 @@ mod tests {
                 super::super::facts::EntryPricingBlockReason::RealizedVolNotReady,
             ],
             market_id: Some("market-1".to_string()),
-            phase: "Active".to_string(),
+            phase: EvidenceSelectionPhase::Active,
             seconds_to_market_end: Some(60),
             spot_price: Some("100".to_string()),
             reference_current_price: Some("100".to_string()),
@@ -4071,11 +4072,11 @@ mod tests {
             submit_reservation_id: "reservation-1".to_string(),
             trade_id: "trade-1".to_string(),
             instrument_id: "YES-USD.POLYMARKET".to_string(),
-            side: "buy".to_string(),
+            side: EvidenceOrderSide::Buy,
             fill_quantity: "0.5".to_string(),
             observed_at_ns: 2,
             reconciliation: false,
-            source: "execution_event".to_string(),
+            source: SubmitReservationFillSource::NtOrderFill,
         };
         let encoded_fill =
             <CurrentCodecs as CodecFor<identities::SubmitReservationFillV1>>::encode(
@@ -4496,7 +4497,7 @@ mod tests {
             details: strategy_input_details(str::to_string),
             submission: SubmissionLinkage {
                 instrument_id: "YES-USD.POLYMARKET".to_string(),
-                order_side: "buy".to_string(),
+                order_side: EvidenceOrderSide::Buy,
                 price: "0.4".to_string(),
                 quantity: "1".to_string(),
                 client_order_id: "client-1".to_string(),
@@ -4533,7 +4534,7 @@ mod tests {
             outcome: ExitSubmissionOutcome::Exit,
             submission: SubmissionLinkage {
                 instrument_id: "YES-USD.POLYMARKET".to_string(),
-                order_side: "sell".to_string(),
+                order_side: EvidenceOrderSide::Sell,
                 price: "0.6".to_string(),
                 quantity: "1".to_string(),
                 client_order_id: "exit-1".to_string(),
@@ -4596,7 +4597,7 @@ mod tests {
             rv_snapshot_receive_watermark_ms: None,
             rv_max_source_age_ms: Some(1_000),
             rv_blockers: vec![RealizedVolBlockReason::NotWarm],
-            rv_source_diagnostics: vec!["source_waiting".to_string()],
+            rv_source_diagnostics: rv_source_diagnostics(),
             rv_gate_result: RvGateResult::MissingSnapshot,
             rv_as_of_minus_now_ms: None,
             spot_price: Some("100".to_string()),

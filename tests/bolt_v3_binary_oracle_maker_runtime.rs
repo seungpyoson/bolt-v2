@@ -4,8 +4,8 @@ use anyhow::Result;
 use bolt_v2::{
     bolt_v3_config::ReferencePriceProvider,
     bolt_v3_current_evidence::{
-        AdmissionDecisionOutcome, DecisionEvidenceRecorder, RequoteActionCostClass,
-        RequoteThrottleBlockReason, RequoteThrottleBound,
+        AdmissionDecisionOutcome, DecisionEvidenceRecorder, EvidenceRequoteLeg,
+        RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
     },
     bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshotDiagnostics},
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
@@ -257,7 +257,7 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
     let throttle = &throttles[0];
     assert_eq!(throttle.strategy_id, "maker-strategy");
     assert_eq!(throttle.family_key, static_binary_event::KEY);
-    assert_eq!(throttle.leg, "no");
+    assert_eq!(throttle.leg, EvidenceRequoteLeg::No);
     assert_eq!(
         throttle.action_cost_class,
         RequoteActionCostClass::FreshSubmit

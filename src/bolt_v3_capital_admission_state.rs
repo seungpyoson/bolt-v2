@@ -327,10 +327,11 @@ pub fn validate_nt_derived_capital_admission_state(
     }
 
     if let Some(loss_snapshot) = &state.loss_snapshot {
-        validate_source(
-            &loss_snapshot.source,
-            CapitalAdmissionStateEvidenceKind::LossSnapshot,
-        )?;
+        if loss_snapshot.source.is_none() {
+            return Err(CapitalAdmissionStateError::UnattributedState(
+                CapitalAdmissionStateEvidenceKind::LossSnapshot,
+            ));
+        }
         validate_freshness(
             loss_snapshot.observed_at_ns,
             now_ns,
@@ -409,7 +410,11 @@ fn evidence_sources(
     if let Some(loss_snapshot) = &state.loss_snapshot {
         sources.push(CapitalAdmissionStateEvidenceSource {
             kind: CapitalAdmissionStateEvidenceKind::LossSnapshot,
-            source: loss_snapshot.source.clone(),
+            source: loss_snapshot
+                .source
+                .expect("validated loss snapshot source must exist")
+                .as_str()
+                .to_string(),
             observed_at_ns: loss_snapshot.observed_at_ns,
         });
     }
@@ -424,7 +429,9 @@ mod tests {
     use crate::bolt_v3_capital_admission::{
         PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot,
     };
-    use crate::bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps};
+    use crate::bolt_v3_loss_governor::{
+        LossSnapshot, LossSnapshotSource, LossSourceObservationTimestamps,
+    };
 
     use super::{
         CapitalAdmissionStateError, CapitalAdmissionStateEvidenceKind,
@@ -495,7 +502,7 @@ mod tests {
 
     fn loss_snapshot() -> LossSnapshot {
         LossSnapshot {
-            source: "bolt_loss_snapshot".to_string(),
+            source: Some(LossSnapshotSource::BoltLossSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::ZERO),
             daily_pnl: Some(Decimal::ZERO),
@@ -624,7 +631,7 @@ mod tests {
             {
                 let mut candidate = state();
                 let mut snapshot = loss_snapshot();
-                snapshot.source = " ".to_string();
+                snapshot.source = None;
                 candidate.loss_snapshot = Some(snapshot);
                 (candidate, CapitalAdmissionStateEvidenceKind::LossSnapshot)
             },

@@ -7,11 +7,11 @@ use super::{decode, encode_line, validate_envelope, validate_recorded_at};
 use crate::bolt_v3_current_evidence::{
     facts::{
         BinaryOutcomeEdgeBlockReason, EntryBlockReason, EntryPricingBlockReason,
-        EntryRealizedVolatilitySnapshotFact, EntrySkipFact, EntrySkipReason, ExposureOccupancy,
-        ForcedFlatReason, OutcomeSide, RealizedVolAggregation, RealizedVolBlockReason,
-        RealizedVolPricingComponent, RealizedVolSampleKind, RealizedVolSourceClass,
-        RealizedVolSourceRejectReason, RealizedVolSourceStatus,
-        RealizedVolatilitySourceDiagnosticFact, RvGateResult,
+        EntryRealizedVolatilitySnapshotFact, EntrySkipFact, EntrySkipReason,
+        EvidenceSelectionPhase, ExposureOccupancy, ForcedFlatReason, OutcomeSide,
+        RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
+        RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceRejectReason,
+        RealizedVolSourceStatus, RealizedVolatilitySourceDiagnosticFact, RvGateResult,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -37,7 +37,7 @@ struct EntrySkipV1Wire {
     gate_blocked_by: Vec<EntryBlockReasonV1>,
     pricing_blocked_by: Vec<EntryPricingBlockReasonV1>,
     market_id: Option<String>,
-    phase: String,
+    phase: SelectionPhaseV1,
     seconds_to_market_end: Option<u64>,
     spot_price: Option<String>,
     reference_current_price: Option<String>,
@@ -66,6 +66,34 @@ struct EntrySkipV1Wire {
     frozen: bool,
     metadata_matches_selection: bool,
     fast_venue_incoherent: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SelectionPhaseV1 {
+    Active,
+    Freeze,
+    Idle,
+}
+
+impl From<EvidenceSelectionPhase> for SelectionPhaseV1 {
+    fn from(value: EvidenceSelectionPhase) -> Self {
+        match value {
+            EvidenceSelectionPhase::Active => Self::Active,
+            EvidenceSelectionPhase::Freeze => Self::Freeze,
+            EvidenceSelectionPhase::Idle => Self::Idle,
+        }
+    }
+}
+
+impl From<SelectionPhaseV1> for EvidenceSelectionPhase {
+    fn from(value: SelectionPhaseV1) -> Self {
+        match value {
+            SelectionPhaseV1::Active => Self::Active,
+            SelectionPhaseV1::Freeze => Self::Freeze,
+            SelectionPhaseV1::Idle => Self::Idle,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -364,7 +392,7 @@ impl TryFrom<&EntrySkipFact> for EntrySkipV1Wire {
                 .map(Into::into)
                 .collect(),
             market_id: optional_text(&value.market_id, "market_id")?,
-            phase: required_text(&value.phase, "phase")?,
+            phase: value.phase.into(),
             seconds_to_market_end: value.seconds_to_market_end,
             spot_price: optional_number(&value.spot_price, "spot_price")?,
             reference_current_price: optional_number(
@@ -443,7 +471,7 @@ impl TryFrom<EntrySkipV1Wire> for EntrySkipFact {
                 .map(Into::into)
                 .collect(),
             market_id: optional_text(&value.market_id, "market_id")?,
-            phase: required_text(&value.phase, "phase")?,
+            phase: value.phase.into(),
             seconds_to_market_end: value.seconds_to_market_end,
             spot_price: optional_number(&value.spot_price, "spot_price")?,
             reference_current_price: optional_number(

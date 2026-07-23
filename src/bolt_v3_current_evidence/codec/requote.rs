@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
     facts::{
-        RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
-        RequoteThrottleObservationFact,
+        EvidenceRequoteLeg, RequoteActionCostClass, RequoteThrottleBlockReason,
+        RequoteThrottleBound, RequoteThrottleObservationFact,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -57,7 +57,6 @@ pub(super) fn decode_fact(
 fn validate_fact(fact: &RequoteThrottleObservationFact) -> Result<(), RecordFailure> {
     if fact.strategy_id.trim().is_empty()
         || fact.family_key.trim().is_empty()
-        || fact.leg.trim().is_empty()
         || fact
             .market_id
             .as_ref()
@@ -93,7 +92,7 @@ struct ObservationV1 {
     strategy_id: String,
     family_key: String,
     market_id: Option<String>,
-    leg: String,
+    leg: LegV1,
     now_ms: u64,
     observed_at_ns: u64,
     action_cost_class: ActionCostClassV1,
@@ -114,7 +113,7 @@ impl ObservationV1 {
             strategy_id: fact.strategy_id,
             family_key: fact.family_key,
             market_id: fact.market_id,
-            leg: fact.leg,
+            leg: LegV1::from_fact(fact.leg),
             now_ms: fact.now_ms,
             observed_at_ns: fact.observed_at_ns,
             action_cost_class: ActionCostClassV1::from_fact(fact.action_cost_class),
@@ -141,7 +140,7 @@ impl ObservationV1 {
             strategy_id: self.strategy_id,
             family_key: self.family_key,
             market_id: self.market_id,
-            leg: self.leg,
+            leg: self.leg.into_fact(),
             now_ms: self.now_ms,
             observed_at_ns: self.observed_at_ns,
             action_cost_class: self.action_cost_class.into_fact(),
@@ -156,6 +155,29 @@ impl ObservationV1 {
             rest_window_ms: self.rest_window_ms,
             min_interval_ms: self.min_interval_ms,
         })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LegV1 {
+    Yes,
+    No,
+}
+
+impl LegV1 {
+    fn from_fact(value: EvidenceRequoteLeg) -> Self {
+        match value {
+            EvidenceRequoteLeg::Yes => Self::Yes,
+            EvidenceRequoteLeg::No => Self::No,
+        }
+    }
+
+    fn into_fact(self) -> EvidenceRequoteLeg {
+        match self {
+            Self::Yes => EvidenceRequoteLeg::Yes,
+            Self::No => EvidenceRequoteLeg::No,
+        }
     }
 }
 

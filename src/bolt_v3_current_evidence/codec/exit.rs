@@ -137,7 +137,7 @@ struct ExitEvaluationWireV1 {
     rv_snapshot_receive_watermark_ms: Option<i64>,
     rv_max_source_age_ms: Option<u64>,
     rv_blockers: Vec<RealizedVolBlockReasonV1>,
-    rv_source_diagnostics: Vec<String>,
+    rv_source_diagnostics: Vec<RealizedVolatilitySourceDiagnosticV1Wire>,
     rv_gate_result: RvGateResultV1,
     rv_as_of_minus_now_ms: Option<i64>,
     spot_price: Option<String>,
@@ -154,7 +154,7 @@ struct ExitEvaluationWireV1 {
     hold_ev_bps: Option<String>,
     exit_ev_bps: Option<String>,
     decision: ExitEvaluationDecisionV1,
-    forced_flat_reasons: Vec<String>,
+    forced_flat_reasons: Vec<ForcedFlatReasonV1>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -566,10 +566,11 @@ impl TryFrom<ExitEvaluationFact> for ExitEvaluationWireV1 {
             rv_snapshot_receive_watermark_ms: value.rv_snapshot_receive_watermark_ms,
             rv_max_source_age_ms: value.rv_max_source_age_ms,
             rv_blockers: value.rv_blockers.into_iter().map(Into::into).collect(),
-            rv_source_diagnostics: canonical_texts(
-                value.rv_source_diagnostics,
-                "rv_source_diagnostics",
-            )?,
+            rv_source_diagnostics: value
+                .rv_source_diagnostics
+                .iter()
+                .map(RealizedVolatilitySourceDiagnosticV1Wire::try_from)
+                .collect::<Result<_>>()?,
             rv_gate_result: value.rv_gate_result.into(),
             rv_as_of_minus_now_ms: value.rv_as_of_minus_now_ms,
             spot_price: optional_number(value.spot_price, "spot_price")?,
@@ -595,7 +596,11 @@ impl TryFrom<ExitEvaluationFact> for ExitEvaluationWireV1 {
             hold_ev_bps: optional_number(value.hold_ev_bps, "hold_ev_bps")?,
             exit_ev_bps: optional_number(value.exit_ev_bps, "exit_ev_bps")?,
             decision: value.decision.try_into()?,
-            forced_flat_reasons: canonical_texts(value.forced_flat_reasons, "forced_flat_reasons")?,
+            forced_flat_reasons: value
+                .forced_flat_reasons
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         })
     }
 }
@@ -619,10 +624,11 @@ impl TryFrom<ExitEvaluationWireV1> for ExitEvaluationFact {
             rv_snapshot_receive_watermark_ms: value.rv_snapshot_receive_watermark_ms,
             rv_max_source_age_ms: value.rv_max_source_age_ms,
             rv_blockers: value.rv_blockers.into_iter().map(Into::into).collect(),
-            rv_source_diagnostics: canonical_texts(
-                value.rv_source_diagnostics,
-                "rv_source_diagnostics",
-            )?,
+            rv_source_diagnostics: value
+                .rv_source_diagnostics
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_>>()?,
             rv_gate_result: value.rv_gate_result.into(),
             rv_as_of_minus_now_ms: value.rv_as_of_minus_now_ms,
             spot_price: optional_number(value.spot_price, "spot_price")?,
@@ -648,7 +654,11 @@ impl TryFrom<ExitEvaluationWireV1> for ExitEvaluationFact {
             hold_ev_bps: optional_number(value.hold_ev_bps, "hold_ev_bps")?,
             exit_ev_bps: optional_number(value.exit_ev_bps, "exit_ev_bps")?,
             decision: value.decision.try_into()?,
-            forced_flat_reasons: canonical_texts(value.forced_flat_reasons, "forced_flat_reasons")?,
+            forced_flat_reasons: value
+                .forced_flat_reasons
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         };
         validate_evaluation_times(&fact)?;
         Ok(fact)
@@ -812,12 +822,4 @@ fn required_number(value: String, field: &str) -> Result<String> {
 
 fn optional_number(value: Option<String>, field: &str) -> Result<Option<String>> {
     value.map(|value| required_number(value, field)).transpose()
-}
-
-fn canonical_texts(values: Vec<String>, field: &str) -> Result<Vec<String>> {
-    values
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| required_text(value, &format!("{field}[{index}]")))
-        .collect()
 }

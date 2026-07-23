@@ -5,9 +5,9 @@ use crate::bolt_v3_current_evidence::{
     facts::{
         AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason,
         AdmittedEntryAdmissionFact, CapitalAdmissionRebuildFact, CapitalAdmissionRebuildOutcome,
-        CapitalAdmissionRejectionReason, ForcedReductionAdmissionFact, LossHaltReason,
-        LossSnapshotSource, LossSnapshotStaleReason, RejectedEntryAdmissionFact,
-        RiskReducingExitAdmissionFact,
+        CapitalAdmissionRebuildSource, CapitalAdmissionRejectionReason,
+        ForcedReductionAdmissionFact, LossHaltReason, LossSnapshotSource, LossSnapshotStaleReason,
+        RejectedEntryAdmissionFact, RiskReducingExitAdmissionFact,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -59,7 +59,6 @@ pub(super) fn decode_capital_rebuild(
 
 fn validate_fact(fact: &CapitalAdmissionRebuildFact) -> Result<(), RecordFailure> {
     if fact.observed_at_ns == 0
-        || fact.source.trim().is_empty()
         || fact.live_reserved_liability.trim().is_empty()
         || fact.recovered_reservation_count > fact.attempted_reservation_count
     {
@@ -85,7 +84,7 @@ struct CapitalAdmissionRebuildLineV1 {
 #[serde(deny_unknown_fields)]
 struct CapitalAdmissionRebuildV1 {
     observed_at_ns: u64,
-    source: String,
+    source: CapitalAdmissionRebuildSourceV1,
     observed_open_order_count: u64,
     all_open_orders_attributed: bool,
     outcome: CapitalAdmissionRebuildOutcomeV1,
@@ -98,7 +97,7 @@ impl CapitalAdmissionRebuildV1 {
     fn from_fact(fact: CapitalAdmissionRebuildFact) -> Result<Self, RecordFailure> {
         Ok(Self {
             observed_at_ns: fact.observed_at_ns,
-            source: fact.source,
+            source: CapitalAdmissionRebuildSourceV1::from_fact(fact.source),
             observed_open_order_count: u64::try_from(fact.observed_open_order_count).map_err(
                 |source| {
                     RecordFailure::Rejected(anyhow::anyhow!(
@@ -129,7 +128,7 @@ impl CapitalAdmissionRebuildV1 {
     fn into_fact(self) -> Result<CapitalAdmissionRebuildFact> {
         Ok(CapitalAdmissionRebuildFact {
             observed_at_ns: self.observed_at_ns,
-            source: self.source,
+            source: self.source.into_fact(),
             observed_open_order_count: usize::try_from(self.observed_open_order_count)
                 .context("observed_open_order_count does not fit usize")?,
             all_open_orders_attributed: self.all_open_orders_attributed,
@@ -140,6 +139,33 @@ impl CapitalAdmissionRebuildV1 {
                 .context("recovered_reservation_count does not fit usize")?,
             live_reserved_liability: self.live_reserved_liability,
         })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CapitalAdmissionRebuildSourceV1 {
+    NtOpenOrderCache,
+    BoltRecoveredOpenOrderReservations,
+}
+
+impl CapitalAdmissionRebuildSourceV1 {
+    fn from_fact(value: CapitalAdmissionRebuildSource) -> Self {
+        match value {
+            CapitalAdmissionRebuildSource::NtOpenOrderCache => Self::NtOpenOrderCache,
+            CapitalAdmissionRebuildSource::BoltRecoveredOpenOrderReservations => {
+                Self::BoltRecoveredOpenOrderReservations
+            }
+        }
+    }
+
+    fn into_fact(self) -> CapitalAdmissionRebuildSource {
+        match self {
+            Self::NtOpenOrderCache => CapitalAdmissionRebuildSource::NtOpenOrderCache,
+            Self::BoltRecoveredOpenOrderReservations => {
+                CapitalAdmissionRebuildSource::BoltRecoveredOpenOrderReservations
+            }
+        }
     }
 }
 

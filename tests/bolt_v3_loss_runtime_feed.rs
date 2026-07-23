@@ -426,8 +426,8 @@ fn stale_loss_halt_emits_populated_loss_governor_halt_evidence() {
     assert_eq!(evidence.snapshot_age_ns, Some(1_101));
     assert_eq!(evidence.max_snapshot_age_ns, 1_000);
     assert_eq!(
-        evidence.snapshot_source.as_deref(),
-        Some("nt_loss_runtime_feed")
+        evidence.snapshot_source,
+        Some(LossSnapshotSource::NtLossRuntimeFeed)
     );
     assert!(evidence.has_per_trade_pnl);
     assert!(evidence.has_daily_pnl);
@@ -1041,7 +1041,7 @@ fn loss_policy() -> LossGovernorPolicy {
 
 fn loss_snapshot_at(observed_at_ns: u64) -> LossSnapshot {
     LossSnapshot {
-        source: "nt_loss_runtime_feed".to_string(),
+        source: Some(LossSnapshotSource::NtLossRuntimeFeed),
         observed_at_ns,
         per_trade_pnl: Some(Decimal::ZERO),
         daily_pnl: Some(Decimal::ZERO),

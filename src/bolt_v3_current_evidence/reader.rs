@@ -93,7 +93,7 @@ fn read_current_evidence_records(
     path: &Path,
     max_bytes: PositiveFiniteEvidenceReadCap,
 ) -> Result<Vec<RecordedCurrentFact>> {
-    read_consumer_records(path, max_bytes, None, None)
+    read_consumer_records(path, max_bytes, None, None, FinalLinePolicy::Strict)
 }
 
 pub fn read_backtest_run_guard_events(
@@ -106,6 +106,7 @@ pub fn read_backtest_run_guard_events(
         max_bytes,
         Some(KnownConsumer::BacktestRunGuardV1),
         Some(stream.known_sink()),
+        FinalLinePolicy::Strict,
     )?
     .into_iter()
     .map(|record| {
@@ -122,10 +123,16 @@ fn read_consumer_records(
     max_bytes: PositiveFiniteEvidenceReadCap,
     consumer: Option<KnownConsumer>,
     expected_sink: Option<KnownSink>,
+    final_line_policy: FinalLinePolicy,
 ) -> Result<Vec<RecordedCurrentFact>> {
     let mut file = File::open(path)
         .with_context(|| format!("open current decision evidence `{}`", path.display()))?;
-    let lines = read_framed_lines(&mut file, max_bytes, "current decision evidence")?;
+    let lines = read_framed_lines(
+        &mut file,
+        max_bytes,
+        "current decision evidence",
+        final_line_policy,
+    )?;
     let mut records = Vec::new();
     for (index, line) in lines.into_iter().enumerate() {
         let line_number = index + 1;
@@ -183,6 +190,7 @@ pub fn read_shadow_pnl_events(
         max_bytes,
         Some(KnownConsumer::ShadowPnlV1),
         Some(KnownSink::Machine),
+        FinalLinePolicy::IgnoreUncommittedTail,
     )?
     .into_iter()
     .map(|record| into_shadow_pnl_event(record.fact))
@@ -315,7 +323,7 @@ pub(super) fn validate_stream(
         KnownSink::Observation => "observation evidence",
     };
     file.seek(SeekFrom::Start(0))?;
-    let lines = read_framed_lines(file, max_bytes, stream)?;
+    let lines = read_framed_lines(file, max_bytes, stream, FinalLinePolicy::Strict)?;
     let mut recovery = StartupRecoveryProjections::default();
     for (index, line) in lines.into_iter().enumerate() {
         let line_number = index + 1;
@@ -446,12 +454,13 @@ fn read_framed_lines(
     reader: &mut impl Read,
     max_bytes: PositiveFiniteEvidenceReadCap,
     stream: &str,
+    final_line_policy: FinalLinePolicy,
 ) -> Result<Vec<String>> {
-    let mut bytes = String::new();
+    let mut bytes = Vec::new();
     let read_limit = max_bytes.sentinel();
     reader
         .take(read_limit)
-        .read_to_string(&mut bytes)
+        .read_to_end(&mut bytes)
         .with_context(|| format!("read {stream}"))?;
     let consumed = bytes.len() as u64;
     ensure!(
@@ -460,9 +469,23 @@ fn read_framed_lines(
         max_bytes.get()
     );
     ensure!(
-        bytes.is_empty() || bytes.ends_with('\n'),
+        bytes.is_empty()
+            || bytes.ends_with(b"\n")
+            || final_line_policy == FinalLinePolicy::IgnoreUncommittedTail,
         "{stream} has a non-newline-terminated final record"
     );
+    if !bytes.is_empty()
+        && !bytes.ends_with(b"\n")
+        && final_line_policy == FinalLinePolicy::IgnoreUncommittedTail
+    {
+        bytes.truncate(
+            bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |index| index + 1),
+        );
+    }
+    let bytes = String::from_utf8(bytes).with_context(|| format!("decode {stream} as UTF-8"))?;
     bytes
         .split_terminator('\n')
         .enumerate()
@@ -478,11 +501,17 @@ fn read_framed_lines(
         .collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinalLinePolicy {
+    Strict,
+    IgnoreUncommittedTail,
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
 
-    use super::{PositiveFiniteEvidenceReadCap, read_framed_lines};
+    use super::{FinalLinePolicy, PositiveFiniteEvidenceReadCap, read_framed_lines};
 
     #[test]
     fn consuming_read_enforces_cap_without_trusting_metadata() {
@@ -491,9 +520,42 @@ mod tests {
             &mut source,
             PositiveFiniteEvidenceReadCap::new(4).expect("positive finite cap"),
             "growing stream",
+            FinalLinePolicy::Strict,
         )
         .expect_err("bytes consumed beyond the cap must fail");
 
         assert!(error.to_string().contains("exceeds configured byte cap"));
+    }
+
+    #[test]
+    fn diagnostic_read_ignores_only_the_uncommitted_final_record() {
+        let mut source = Cursor::new(b"first\npartial \xF0\x9F");
+        let lines = read_framed_lines(
+            &mut source,
+            PositiveFiniteEvidenceReadCap::new(64).expect("positive finite cap"),
+            "live diagnostic stream",
+            FinalLinePolicy::IgnoreUncommittedTail,
+        )
+        .expect("partial UTF-8 in the uncommitted tail must not corrupt committed records");
+
+        assert_eq!(lines, vec!["first"]);
+    }
+
+    #[test]
+    fn strict_read_rejects_an_uncommitted_final_record() {
+        let mut source = Cursor::new(b"first\npartial");
+        let error = read_framed_lines(
+            &mut source,
+            PositiveFiniteEvidenceReadCap::new(64).expect("positive finite cap"),
+            "startup stream",
+            FinalLinePolicy::Strict,
+        )
+        .expect_err("startup validation must reject a torn final record");
+
+        assert!(
+            error
+                .to_string()
+                .contains("non-newline-terminated final record")
+        );
     }
 }

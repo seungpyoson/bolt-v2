@@ -328,11 +328,13 @@ pub(super) fn fixture_loaded_config() -> LoadedBoltV3Config {
     let root_text = include_str!("../../../tests/fixtures/bolt_v3/root.toml");
     let mut root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
     let catalog_id = NEXT_TEST_CATALOG_ID.fetch_add(1, Ordering::Relaxed);
-    root.persistence.catalog_directory = std::env::temp_dir()
-        .join(format!(
-            "bolt-v3-live-node-test-catalog-{}-{catalog_id}",
-            std::process::id()
-        ))
+    let catalog_directory = std::env::temp_dir().join(format!(
+        "bolt-v3-live-node-test-catalog-{}-{catalog_id}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&catalog_directory).expect("test catalog should create");
+    root.persistence.catalog_directory = std::fs::canonicalize(catalog_directory)
+        .expect("test catalog should canonicalize")
         .to_string_lossy()
         .to_string();
     let loaded = LoadedBoltV3Config {

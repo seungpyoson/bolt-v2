@@ -24,10 +24,10 @@ use crate::{
     bolt_v3_capital_admission::ProductAdmissionSnapshot,
     bolt_v3_capital_admission_state::capital_admission_source_is_accepted_venue_truth,
     bolt_v3_current_evidence::{
-        DecisionEvidenceRecorder, EntryOrderIntentFact, EvidenceOrderSide, EvidenceOrderType,
-        EvidenceTimeInForce, EvidenceTrailingOffsetType, EvidenceTriggerType,
-        NonBlockingRecordOutcome, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
-        OrderIntentDetails, OrderIntentOrderFields, RiskReducingExitOrderIntentFact,
+        EntryOrderIntentFact, EvidenceOrderSide, EvidenceOrderType, EvidenceTimeInForce,
+        EvidenceTrailingOffsetType, EvidenceTriggerType, NonBlockingRecordOutcome,
+        OrderExecutionEvidence, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
+        OrderIntentDetails, OrderIntentOrderFields, RecordFailure, RiskReducingExitOrderIntentFact,
     },
     bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
     bolt_v3_maker_order_dispatch::{
@@ -42,6 +42,51 @@ use crate::{
         build_submit_admission_request_from_order,
     },
 };
+
+pub trait OrderIntentEvidence {
+    fn record_entry_order_intent(
+        &self,
+        fact: EntryOrderIntentFact,
+    ) -> Result<crate::bolt_v3_current_evidence::AppendReceipt, RecordFailure>;
+
+    fn record_risk_reducing_exit_order_intent(
+        &self,
+        fact: RiskReducingExitOrderIntentFact,
+    ) -> NonBlockingRecordOutcome;
+}
+
+impl OrderIntentEvidence for OrderExecutionEvidence {
+    fn record_entry_order_intent(
+        &self,
+        fact: EntryOrderIntentFact,
+    ) -> Result<crate::bolt_v3_current_evidence::AppendReceipt, RecordFailure> {
+        self.record_entry_order_intent(fact)
+    }
+
+    fn record_risk_reducing_exit_order_intent(
+        &self,
+        fact: RiskReducingExitOrderIntentFact,
+    ) -> NonBlockingRecordOutcome {
+        self.record_risk_reducing_exit_order_intent(fact)
+    }
+}
+
+#[cfg(any(test, feature = "test-current-evidence-inspection"))]
+impl OrderIntentEvidence for crate::bolt_v3_current_evidence::DecisionEvidenceRecorder {
+    fn record_entry_order_intent(
+        &self,
+        fact: EntryOrderIntentFact,
+    ) -> Result<crate::bolt_v3_current_evidence::AppendReceipt, RecordFailure> {
+        self.record_entry_order_intent(fact)
+    }
+
+    fn record_risk_reducing_exit_order_intent(
+        &self,
+        fact: RiskReducingExitOrderIntentFact,
+    ) -> NonBlockingRecordOutcome {
+        self.record_risk_reducing_exit_order_intent(fact)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -316,7 +361,7 @@ impl BoltV3OrderExecutionPolicy {
 }
 
 fn record_order_intent(
-    recorder: &DecisionEvidenceRecorder,
+    recorder: &dyn OrderIntentEvidence,
     intent_kind: BoltV3SubmitIntentKind,
     details: OrderIntentDetails,
 ) -> Result<()> {
@@ -620,7 +665,7 @@ fn floor_decimal_to_quantity_precision(value: Decimal, precision: u8) -> Result<
 }
 
 pub struct BoltV3SubmitRoutingRequest<'a> {
-    decision_evidence: &'a DecisionEvidenceRecorder,
+    decision_evidence: &'a dyn OrderIntentEvidence,
     submit_admission: &'a BoltV3SubmitAdmissionState,
     intent: OrderIntentDetails,
     request: BoltV3SubmitAdmissionRequest,
@@ -628,7 +673,7 @@ pub struct BoltV3SubmitRoutingRequest<'a> {
 
 impl<'a> BoltV3SubmitRoutingRequest<'a> {
     pub fn new(
-        decision_evidence: &'a DecisionEvidenceRecorder,
+        decision_evidence: &'a dyn OrderIntentEvidence,
         submit_admission: &'a BoltV3SubmitAdmissionState,
         intent: OrderIntentDetails,
         request: BoltV3SubmitAdmissionRequest,
@@ -714,7 +759,7 @@ pub(crate) fn route_kill_switch_flatten_command_with_sink<S>(
     policy: BoltV3OrderExecutionPolicy,
     sink: &mut S,
     order_factory: &mut OrderFactory,
-    decision_evidence: &DecisionEvidenceRecorder,
+    decision_evidence: &dyn OrderIntentEvidence,
     submit_admission: &BoltV3SubmitAdmissionState,
     context: BoltV3KillSwitchFlattenRoutingContext<'_>,
     command: &BoltV3KillSwitchFlattenCommand,
@@ -782,7 +827,7 @@ fn flatten_client_order_id(command: &BoltV3KillSwitchFlattenCommand) -> ClientOr
 pub fn route_maker_order_command<S>(
     policy: BoltV3OrderExecutionPolicy,
     strategy: &mut S,
-    decision_evidence: &DecisionEvidenceRecorder,
+    decision_evidence: &dyn OrderIntentEvidence,
     submit_admission: &BoltV3SubmitAdmissionState,
     context: BoltV3MakerOrderRoutingContext<'_>,
     input: MakerOrderDispatchInput<'_>,
@@ -1039,7 +1084,7 @@ where
 fn route_maker_order_command_with_runtime<R>(
     policy: BoltV3OrderExecutionPolicy,
     runtime: &mut R,
-    decision_evidence: &DecisionEvidenceRecorder,
+    decision_evidence: &dyn OrderIntentEvidence,
     submit_admission: &BoltV3SubmitAdmissionState,
     context: BoltV3MakerOrderRoutingContext<'_>,
     input: MakerOrderDispatchInput<'_>,
@@ -1063,7 +1108,7 @@ where
 {
     policy: BoltV3OrderExecutionPolicy,
     runtime: &'a mut R,
-    decision_evidence: &'a DecisionEvidenceRecorder,
+    decision_evidence: &'a dyn OrderIntentEvidence,
     submit_admission: &'a BoltV3SubmitAdmissionState,
     context: BoltV3MakerOrderRoutingContext<'a>,
 }
@@ -1794,7 +1839,10 @@ mod tests {
     #[test]
     fn live_risk_reducing_exit_reaches_nt_when_order_intent_evidence_fails() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        writer.fail_risk_reducing_exit_order_intent_writes_for_test();
+        writer.fail_purpose_on_attempt_for_test(
+            crate::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::RiskReducingExitOrderIntent,
+            1,
+        );
         let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
         let mut sink = RecordingVenueMutationSink::default();
         let order = limit_exit_order(

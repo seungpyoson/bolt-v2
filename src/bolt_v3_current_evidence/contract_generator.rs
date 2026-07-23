@@ -488,16 +488,19 @@ pub fn render_contract(contract: &ContractRegistry) -> String {
     render_enum(
         &mut output,
         "KnownProducer",
+        "pub(crate)",
         wire.producers.iter().map(|row| row.id.as_str()),
     );
     render_enum(
         &mut output,
         "KnownPurpose",
+        "pub",
         wire.purposes.iter().map(|row| row.id.as_str()),
     );
     render_enum(
         &mut output,
         "KnownIdentity",
+        "pub(crate)",
         wire.identities.iter().map(|row| row.id.as_str()),
     );
     output.push_str("#[cfg(test)]\npub(crate) const ALL_IDENTITIES: &[KnownIdentity] = &[\n");
@@ -519,19 +522,27 @@ pub fn render_contract(contract: &ContractRegistry) -> String {
     render_enum(
         &mut output,
         "KnownFact",
+        "pub(crate)",
         wire.facts.iter().map(|row| row.id.as_str()),
     );
     render_enum(
         &mut output,
         "KnownConsumer",
+        "pub(crate)",
         wire.consumers.iter().map(|row| row.id.as_str()),
     );
     render_enum(
         &mut output,
         "KnownSink",
+        "pub(crate)",
         wire.sinks.iter().map(|row| row.id.as_str()),
     );
-    render_enum(&mut output, "EffectPolicy", EFFECT_POLICIES.iter().copied());
+    render_enum(
+        &mut output,
+        "EffectPolicy",
+        "pub(crate)",
+        EFFECT_POLICIES.iter().copied(),
+    );
 
     output.push_str(concat!(
         "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n",
@@ -674,8 +685,15 @@ pub fn render_contract(contract: &ContractRegistry) -> String {
     output
 }
 
-fn render_enum<'a>(output: &mut String, name: &str, ids: impl Iterator<Item = &'a str>) {
-    output.push_str(&format!("#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]\npub(crate) enum {name} {{\n"));
+fn render_enum<'a>(
+    output: &mut String,
+    name: &str,
+    visibility: &str,
+    ids: impl Iterator<Item = &'a str>,
+) {
+    output.push_str(&format!(
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]\n{visibility} enum {name} {{\n"
+    ));
     for id in ids {
         output.push_str(&format!("    {},\n", rust_variant(id)));
     }

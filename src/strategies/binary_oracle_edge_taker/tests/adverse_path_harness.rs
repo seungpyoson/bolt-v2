@@ -2154,8 +2154,8 @@ fn lifecycle_write_failure_preserves_transition_and_source_context() {
         })
         .expect_err("fixture lifecycle writer should fail");
     let rendered = format!("{error:#}");
-    assert!(rendered.contains("SettlementBookingTerminal"));
-    assert!(rendered.contains("settlement_booking_terminal"));
+    assert!(rendered.contains("transition=SettlementBookingTerminal"));
+    assert!(rendered.contains("source=SettlementBookingTerminal"));
 }
 
 #[test]

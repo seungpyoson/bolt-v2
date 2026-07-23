@@ -55,6 +55,7 @@ use ahash::AHashMap;
 use anyhow::Result;
 use log::LevelFilter;
 use nautilus_common::{
+    cache::Cache,
     component::Component,
     enums::Environment,
     logging::logger::LoggerConfig,
@@ -137,6 +138,8 @@ pub fn assert_bolt_v3_logging_ready_for_run() -> Result<(), BoltV3LoggingNotRead
     Ok(())
 }
 
+#[cfg(test)]
+use crate::bolt_v3_current_evidence::DecisionEvidenceRecorder;
 use crate::{
     bolt_v3_adapters::{
         BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters,
@@ -165,7 +168,7 @@ use crate::{
         LoadedStrategy, nautilus_startup_bound_secs, resolve_root_relative_path,
     },
     bolt_v3_current_evidence::{
-        CapitalAdmissionRebuildSource, DecisionEvidenceRecorder, DecisionEvidenceRuntime,
+        CapitalAdmissionRebuildSource, DecisionEvidenceRuntime, DecisionEvidenceStatusView,
         ObservationStreamStatus, ReservationRecoveryFacts,
     },
     bolt_v3_iv::{
@@ -355,7 +358,8 @@ pub struct BoltV3LiveNodeRuntime {
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
     input_health_configured_source_count: usize,
     settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence_runtime: DecisionEvidenceRuntime,
+    decision_evidence: DecisionEvidenceStatusView,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -493,6 +497,7 @@ enum BoltV3OperatorHealthTransitionEmission {
 
 struct BoltV3DecisionEvidenceProducerGuards {
     loss_protection_guards: BoltV3LossProtectionRuntimeGuards,
+    loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
     capital_admission_runtime_feed_subscription: Option<CapitalAdmissionRuntimeFeedSubscription>,
     venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
@@ -511,10 +516,12 @@ impl BoltV3DecisionEvidenceProducerStopper for BoltV3DecisionEvidenceProducerGua
         Box::pin(async move {
             let Self {
                 loss_protection_guards,
+                loss_runtime_feed_subscription,
                 order_reject_observer_feed_subscription,
                 capital_admission_runtime_feed_subscription,
                 venue_truth_runtime_guard,
             } = self;
+            drop(loss_runtime_feed_subscription);
             drop(order_reject_observer_feed_subscription);
             drop(capital_admission_runtime_feed_subscription);
             if let Some(guard) = venue_truth_runtime_guard {
@@ -582,7 +589,7 @@ fn live_operator_health_surface(
     input_health_configured_source_count: usize,
     input_health: Option<BoltV3InputHealth>,
     settlement_health: BoltV3SettlementHealth,
-    decision_evidence: &DecisionEvidenceRecorder,
+    decision_evidence: &DecisionEvidenceStatusView,
 ) -> BoltV3OperatorHealthSurface {
     let reject_observer = order_reject_observer_feed.map_or_else(
         BoltV3RejectObserverHealth::not_configured,
@@ -615,7 +622,21 @@ fn live_operator_health_surface(
             BoltV3InputHealth::unobserved(input_health_configured_source_count)
         }),
         settlement_health,
-        match decision_evidence.observation_stream_status() {
+        match decision_evidence
+            .machine_stream_status()
+            .expect("live decision-evidence runtime must own the machine status view")
+        {
+            ObservationStreamStatus::Available => {
+                BoltV3DecisionEvidenceObservationHealth::available()
+            }
+            ObservationStreamStatus::Poisoned { cause } => {
+                BoltV3DecisionEvidenceObservationHealth::poisoned(cause.as_ref())
+            }
+        },
+        match decision_evidence
+            .observation_stream_status()
+            .expect("live decision-evidence runtime must own the observation status view")
+        {
             ObservationStreamStatus::Available => {
                 BoltV3DecisionEvidenceObservationHealth::available()
             }
@@ -838,7 +859,8 @@ struct BoltV3LiveNodeRuntimeComponents {
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
     input_health_configured_source_count: usize,
     settlement_health: Arc<Mutex<BoltV3SettlementHealth>>,
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence_runtime: DecisionEvidenceRuntime,
+    decision_evidence: DecisionEvidenceStatusView,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -873,6 +895,7 @@ impl BoltV3LiveNodeRuntime {
             input_health_configured_source_count: runtime_components
                 .input_health_configured_source_count,
             settlement_health: runtime_components.settlement_health,
+            decision_evidence_runtime: runtime_components.decision_evidence_runtime,
             decision_evidence: runtime_components.decision_evidence,
             redaction_values: runtime_components.redaction_values,
         }
@@ -1392,6 +1415,7 @@ impl BoltV3LiveNodeRuntime {
     ) -> BoltV3DecisionEvidenceProducerGuards {
         BoltV3DecisionEvidenceProducerGuards {
             loss_protection_guards,
+            loss_runtime_feed_subscription: self.loss_runtime_feed_subscription.take(),
             order_reject_observer_feed_subscription: self
                 .order_reject_observer_feed_subscription
                 .take(),
@@ -1409,9 +1433,12 @@ impl BoltV3LiveNodeRuntime {
     where
         P: BoltV3DecisionEvidenceProducerStopper,
     {
-        drain_after_stopping_decision_evidence_producers(producer_guards, || Ok(()))
-            .await
-            .map_err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain)
+        drain_after_stopping_decision_evidence_producers(producer_guards, || {
+            self.decision_evidence_runtime.close();
+            Ok(())
+        })
+        .await
+        .map_err(BoltV3LiveNodeError::DecisionEvidenceShutdownDrain)
     }
 
     pub fn nt_risk_trading_state(&self) -> TradingState {
@@ -1517,8 +1544,24 @@ impl BoltV3LiveNodeRuntime {
         &self,
         now_ns: u64,
     ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
+        Self::rebuild_capital_admission_from_nt_cache_parts(
+            &self.node.kernel().cache(),
+            self.capital_admission_runtime_feed.as_ref(),
+            self.submit_reservation_recovery.as_ref(),
+            self.submit_admission.as_ref(),
+            now_ns,
+        )
+    }
+
+    fn rebuild_capital_admission_from_nt_cache_parts(
+        cache: &Rc<RefCell<Cache>>,
+        capital_admission_runtime_feed: Option<&Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
+        submit_reservation_recovery: Option<&Arc<ReservationRecoveryFacts>>,
+        submit_admission: &BoltV3SubmitAdmissionState,
+        now_ns: u64,
+    ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
         let (account_id, binary_instrument_ids, collateral_currency) =
-            match self.capital_admission_runtime_feed.as_ref() {
+            match capital_admission_runtime_feed {
                 Some(feed) => {
                     let feed = feed
                         .lock()
@@ -1531,7 +1574,6 @@ impl BoltV3LiveNodeRuntime {
                 }
                 None => (None, None, None),
             };
-        let cache = self.node.kernel().cache();
         let cache = cache.borrow();
         let open_order_snapshots = match account_id.as_ref() {
             Some(account_id) => cache
@@ -1600,7 +1642,7 @@ impl BoltV3LiveNodeRuntime {
 
         let account_cache_is_authoritative = cached_account_balances.is_some();
         // Seed live NT order and position state before rebuilding reservations from the same snapshot.
-        if let Some(feed) = self.capital_admission_runtime_feed.as_ref() {
+        if let Some(feed) = capital_admission_runtime_feed {
             seed_capital_admission_runtime_feed_from_nt_cache(
                 feed,
                 cached_account_balances,
@@ -1615,7 +1657,7 @@ impl BoltV3LiveNodeRuntime {
         let recovered_reservations = if open_order_snapshots.is_empty() {
             None
         } else {
-            self.submit_reservation_recovery.as_ref()
+            submit_reservation_recovery
         };
         let mut reservations = Vec::with_capacity(open_order_snapshots.len());
         let mut all_open_orders_attributed =
@@ -1642,8 +1684,7 @@ impl BoltV3LiveNodeRuntime {
                 )
                 .cloned()
                 .unwrap_or_default();
-            let Some(reservation) = self
-                .submit_admission
+            let Some(reservation) = submit_admission
                 .capital_admission_open_order_reservation_from_attribution(
                     evidence,
                     metadata,
@@ -1659,18 +1700,16 @@ impl BoltV3LiveNodeRuntime {
             reservations.clear();
         }
 
-        let mut rebuild = self
-            .submit_admission
-            .rebuild_capital_admission_open_order_snapshot(
-                BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
-                    observed_at_ns: now_ns,
-                    evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
-                    observed_open_order_count: open_order_snapshots.len(),
-                    all_open_orders_attributed,
-                    reservations,
-                },
-                now_ns,
-            );
+        let mut rebuild = submit_admission.rebuild_capital_admission_open_order_snapshot(
+            BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
+                observed_at_ns: now_ns,
+                evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+                observed_open_order_count: open_order_snapshots.len(),
+                all_open_orders_attributed,
+                reservations,
+            },
+            now_ns,
+        );
         if let Some(missing) = missing_nt_account_cache_balance {
             rebuild = rebuild.with_missing_nt_account_cache_balance(
                 missing.account_id,
@@ -2272,11 +2311,13 @@ struct LiveNodeStartupWatchdogBounds {
     /// How often to re-check the trader-running launch invariant. Sourced from
     /// config-owned poll intervals (not a business threshold / retry budget).
     trader_invariant_poll: Duration,
+    registered_client_labels: Vec<String>,
 }
 
 #[derive(Debug)]
 enum LiveNodeRunStartupOutcome {
     Finished(Result<(), anyhow::Error>),
+    StartupGuardFailed(BoltV3LiveNodeError),
     StartupTimeout {
         timeout_secs: u64,
         node_state: String,
@@ -2371,24 +2412,27 @@ fn trader_not_started_stop_outcome(
     }
 }
 
-async fn live_node_run_startup_watchdog<F, State, TraderRunning, Stop>(
+async fn live_node_run_startup_watchdog<F, State, TraderRunning, Stop, OnRunning>(
     mut run_future: Pin<&mut F>,
     capture_failure_receiver: &mut Option<tokio::sync::oneshot::Receiver<()>>,
     node_state: State,
     trader_running: TraderRunning,
     mut request_stop: Stop,
+    mut on_running: OnRunning,
     bounds: LiveNodeStartupWatchdogBounds,
-    registered_client_labels: Vec<String>,
 ) -> LiveNodeRunStartupOutcome
 where
     F: Future<Output = Result<(), anyhow::Error>>,
     State: Fn() -> NodeState,
     TraderRunning: Fn() -> bool,
     Stop: FnMut(),
+    OnRunning: FnMut() -> Result<(), BoltV3LiveNodeError>,
 {
+    let registered_client_labels = bounds.registered_client_labels;
     let startup_deadline = tokio::time::sleep(bounds.startup_timeout);
     tokio::pin!(startup_deadline);
     let mut startup_deadline_fired = false;
+    let mut running_guard_completed = false;
     // Poll so a fail-open Running-without-trader launch aborts promptly rather
     // than waiting the full startup timeout. Interval is config-owned; this is
     // detection cadence, not a retry/backoff threshold.
@@ -2422,6 +2466,26 @@ where
                         node_state,
                         registered_client_labels,
                     );
+                }
+                if matches!(state, NodeState::Running) && !running_guard_completed {
+                    if let Err(error) = on_running() {
+                        let stop_result = stop_live_node_startup_with_grace(
+                            run_future.as_mut(),
+                            &mut request_stop,
+                            bounds.shutdown_grace,
+                            "post-reconciliation capital-admission rebuild",
+                        )
+                        .await;
+                        if stop_result.is_none() {
+                            log::error!(
+                                "LiveNode post-reconciliation capital-admission rebuild failed \
+                                 and shutdown grace elapsed ({:?})",
+                                bounds.shutdown_grace
+                            );
+                        }
+                        break LiveNodeRunStartupOutcome::StartupGuardFailed(error);
+                    }
+                    running_guard_completed = true;
                 }
             }
             _ = &mut startup_deadline, if !startup_deadline_fired => {
@@ -2577,19 +2641,6 @@ pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let startup_rebuild_observed_at_ns =
-        current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
-    let startup_rebuild =
-        runtime.rebuild_capital_admission_from_nt_cache(startup_rebuild_observed_at_ns);
-    // A no-open-order startup may legitimately recover nothing: NT only
-    // populates the account/portfolio cache once its runner loop performs
-    // startup reconciliation, and the live runtime feed re-seeds the
-    // portfolio from on_account events after entry. Pre-existing open orders
-    // are different: if they cannot be attributed to recovered reservation
-    // metadata, submit admission would start with an unreconciled ledger and
-    // could double-allocate capital, so fail closed before entering NT's
-    // loop. This is a reconciliation guard, not the removed start gate.
-    fail_closed_on_unreconciled_startup_rebuild(startup_rebuild)?;
     // Wire the durable kill-switch loss protection for the whole run: subscribe
     // the accumulator to position events and spawn its halt-action retry loop.
     // The guard unsubscribes and aborts the retry task on drop.
@@ -2607,6 +2658,21 @@ pub async fn run_bolt_v3_live_node(
         .map_err(|_| BoltV3LiveNodeError::StrategyFreeStartTimeoutOverflow)?;
     let startup_shutdown_grace_secs = live_node_startup_shutdown_grace_secs(loaded)?;
     let startup_client_labels = live_node_startup_client_labels(runtime);
+    let reconciliation_cache = runtime.node.kernel().cache();
+    let reconciliation_feed = runtime.capital_admission_runtime_feed.clone();
+    let reconciliation_evidence = runtime.submit_reservation_recovery.clone();
+    let reconciliation_admission = Arc::clone(&runtime.submit_admission);
+    let mut post_reconciliation_guard = move || {
+        let observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
+        let decision = BoltV3LiveNodeRuntime::rebuild_capital_admission_from_nt_cache_parts(
+            &reconciliation_cache,
+            reconciliation_feed.as_ref(),
+            reconciliation_evidence.as_ref(),
+            reconciliation_admission.as_ref(),
+            observed_at_ns,
+        );
+        fail_closed_on_unreconciled_startup_rebuild(decision)
+    };
 
     let run_outcome = {
         let node = &mut runtime.node;
@@ -2621,6 +2687,7 @@ pub async fn run_bolt_v3_live_node(
             || node_handle.state(),
             || trader.borrow().is_running(),
             || node_handle.stop(),
+            &mut post_reconciliation_guard,
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_secs(startup_timeout_secs),
                 shutdown_grace: Duration::from_secs(startup_shutdown_grace_secs),
@@ -2630,8 +2697,8 @@ pub async fn run_bolt_v3_live_node(
                         .persistence
                         .runtime_capture_start_poll_interval_ms,
                 ),
+                registered_client_labels: startup_client_labels,
             },
-            startup_client_labels,
         )
         .await
     };
@@ -2644,6 +2711,15 @@ pub async fn run_bolt_v3_live_node(
     let run_and_capture_result = match run_outcome {
         LiveNodeRunStartupOutcome::Finished(run_result) => {
             classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
+        }
+        LiveNodeRunStartupOutcome::StartupGuardFailed(error) => {
+            if let Err(shutdown_error) = shutdown_result {
+                log::error!(
+                    "NT runtime capture shutdown failed after startup guard failure: \
+                     {shutdown_error}"
+                );
+            }
+            Err(error)
         }
         LiveNodeRunStartupOutcome::StartupTimeout {
             timeout_secs,
@@ -2716,7 +2792,7 @@ pub async fn run_bolt_v3_live_node(
 fn fail_closed_on_unreconciled_startup_rebuild(
     startup_rebuild: BoltV3SubmitCapitalAdmissionRebuildDecision,
 ) -> Result<(), BoltV3LiveNodeError> {
-    if !startup_rebuild.accepted && startup_rebuild.attempted_reservation_count > 0 {
+    if !startup_rebuild.accepted {
         return Err(BoltV3LiveNodeError::StartupCapitalAdmissionRebuild(
             startup_rebuild,
         ));
@@ -2949,7 +3025,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             message: error.to_string(),
         })
     })?;
-    let decision_evidence = evidence_runtime.recorder();
+    let decision_evidence_status = evidence_runtime.status_view();
     let reservation_recovery = evidence_runtime.reservation_recovery();
     let settlement_recovery = evidence_runtime.settlement_recovery();
     let booking_recovery = evidence_runtime.booking_recovery();
@@ -3000,7 +3076,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     };
     let submit_admission = Arc::new(
         BoltV3SubmitAdmissionState::new_with_live_submit_limits_and_optional_controls(
-            decision_evidence.clone(),
+            evidence_runtime.submit_admission_evidence(),
             live_submit_approval_limits,
             loss_policy.clone(),
             capital_admission,
@@ -3029,7 +3105,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         };
     let order_reject_observer_feed = order_reject_observer_account_id.map(|account_id| {
         Arc::new(Mutex::new(BoltV3OrderRejectObserverFeed::new(
-            decision_evidence.clone(),
+            evidence_runtime.order_reject_observer_evidence(),
             account_id,
         )))
     });
@@ -3050,7 +3126,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let submit_admission = submit_admission.clone();
         let logger = operator_health_transition_logger.clone();
         let settlement_health = settlement_health.clone();
-        let decision_evidence = decision_evidence.clone();
+        let decision_evidence = decision_evidence_status.clone();
         let venue_truth_configured = capital_admission_runtime_feed.is_some();
         Arc::new(move |reason, input_health| {
             let settlement_health = settlement_health_snapshot(&settlement_health)?;
@@ -3079,6 +3155,25 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             }
         })
     };
+    {
+        let emit_operator_health_surface = emit_operator_health_surface.clone();
+        evidence_runtime
+            .register_health_transition_publisher(Arc::new(move |transition| {
+                let reason = transition.operator_health_reason();
+                if let Err(error) = emit_operator_health_surface(reason, None) {
+                    log::error!(
+                        "decision-evidence health transition failed: reason={reason} error={error:#}"
+                    );
+                }
+            }))
+            .map_err(|message| {
+                BoltV3LiveNodeError::StrategyRegistration(
+                    BoltV3StrategyRegistrationError::Evidence {
+                        message: message.to_string(),
+                    },
+                )
+            })?;
+    }
     let input_health_transition_emitter: BoltV3InputHealthTransitionEmitter = {
         let emit_operator_health_surface = emit_operator_health_surface.clone();
         let input_health_accumulator = input_health_accumulator.clone();
@@ -3179,6 +3274,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         booking_recovery,
         settlement_health_transition_emitter: Some(settlement_health_transition_emitter),
     };
+    let strategy_evidence = evidence_runtime.strategy_evidence_handles();
     let iv_runtime = loaded
         .root
         .iv
@@ -3231,7 +3327,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             resolved,
             crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
-            decision_evidence.clone(),
+            strategy_evidence.clone(),
             iv_runtime,
         )
     } else {
@@ -3241,7 +3337,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             resolved,
             crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
-            decision_evidence.clone(),
+            strategy_evidence,
         )
     }
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
@@ -3295,7 +3391,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let loss_protection = configure_bolt_v3_kill_switch_loss_protection(
         loaded,
         &node,
-        decision_evidence.clone(),
+        evidence_runtime.order_execution_evidence(),
         submit_admission.clone(),
     )?;
     debug_assert!(
@@ -3351,7 +3447,8 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             operator_health_transition_logger,
             input_health_configured_source_count,
             settlement_health,
-            decision_evidence,
+            decision_evidence_runtime: evidence_runtime,
+            decision_evidence: decision_evidence_status,
             redaction_values: resolved.redaction_values(),
         },
     );

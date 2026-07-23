@@ -8,7 +8,7 @@ use crate::bolt_v3_config::{
     BoltV3RootConfig, ClientBlock, LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey,
 };
 use crate::bolt_v3_current_evidence::{
-    BookingRecoveryFacts, DecisionEvidenceRecorder, SettlementRecoveryFacts,
+    BookingRecoveryFacts, SettlementRecoveryFacts, StrategyEvidenceHandles,
 };
 use crate::bolt_v3_iv::{
     config::IvProfile,
@@ -21,7 +21,7 @@ use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
 use crate::bolt_v3_providers::{FeeProvider, resolve_fee_provider};
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle;
-use crate::bolt_v3_strategy_context::StrategyBuildContext;
+use crate::bolt_v3_strategy_context::{StrategyBuildContext, StrategyDecisionEvidence};
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_common::{actor::DataActorNative, component::Component};
 use nautilus_live::node::LiveNode;
@@ -175,11 +175,36 @@ pub struct StrategyRuntimeBinding {
     pub key: &'static str,
     pub strategy_kind: &'static str,
     pub capabilities: StrategyRuntimeCapabilities,
+    pub evidence_capability: StrategyEvidenceCapability,
     pub prepare:
         for<'a> fn(
             StrategyRegistrationContext<'a>,
         )
             -> Result<PreparedStrategyRegistration, BoltV3StrategyRegistrationError>,
+}
+
+impl StrategyRuntimeBinding {
+    fn registration_contract(self) -> StrategyRegistrationContract {
+        StrategyRegistrationContract {
+            strategy_kind: self.strategy_kind,
+            capabilities: self.capabilities,
+            evidence_capability: self.evidence_capability,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct StrategyRegistrationContract {
+    pub strategy_kind: &'static str,
+    pub capabilities: StrategyRuntimeCapabilities,
+    pub evidence_capability: StrategyEvidenceCapability,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StrategyEvidenceCapability {
+    EdgeTaker,
+    Maker,
+    None,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -200,7 +225,7 @@ pub struct BoltV3StrategyExecutionControls {
 
 #[derive(Clone)]
 pub struct StrategyRegistrationRuntimeResources {
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence: StrategyEvidenceHandles,
     iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
     realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
     execution_controls: BoltV3StrategyExecutionControls,
@@ -208,13 +233,13 @@ pub struct StrategyRegistrationRuntimeResources {
 
 impl StrategyRegistrationRuntimeResources {
     pub fn new(
-        decision_evidence: Arc<DecisionEvidenceRecorder>,
+        decision_evidence: impl Into<StrategyEvidenceHandles>,
         iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
         realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
         execution_controls: BoltV3StrategyExecutionControls,
     ) -> Self {
         Self {
-            decision_evidence,
+            decision_evidence: decision_evidence.into(),
             iv_query_handles,
             realized_volatility_runtime,
             execution_controls,
@@ -227,7 +252,7 @@ pub struct StrategyRegistrationContext<'a> {
     pub strategy: &'a LoadedStrategy,
     pub strategy_kind: &'static str,
     pub capabilities: StrategyRuntimeCapabilities,
-    pub decision_evidence: Arc<DecisionEvidenceRecorder>,
+    pub decision_evidence: StrategyDecisionEvidence,
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
@@ -374,18 +399,33 @@ impl<'a> StrategyRegistrationContext<'a> {
     pub fn new(
         loaded: &LoadedBoltV3Config,
         strategy: &'a LoadedStrategy,
-        strategy_kind: &'static str,
-        capabilities: StrategyRuntimeCapabilities,
+        contract: StrategyRegistrationContract,
         resolved: &ResolvedBoltV3Secrets,
         preparation_config: Arc<StrategyPreparationConfig>,
         runtime_resources: StrategyRegistrationRuntimeResources,
     ) -> Result<Self, BoltV3StrategyRegistrationError> {
+        let StrategyRegistrationContract {
+            strategy_kind,
+            capabilities,
+            evidence_capability,
+        } = contract;
         let StrategyRegistrationRuntimeResources {
             decision_evidence,
             iv_query_handles,
             realized_volatility_runtime,
             execution_controls,
         } = runtime_resources;
+        let decision_evidence = match evidence_capability {
+            StrategyEvidenceCapability::EdgeTaker => StrategyDecisionEvidence::edge_taker(
+                decision_evidence.edge_taker(),
+                decision_evidence.order_execution(),
+            ),
+            StrategyEvidenceCapability::Maker => StrategyDecisionEvidence::maker(
+                decision_evidence.maker(),
+                decision_evidence.order_execution(),
+            ),
+            StrategyEvidenceCapability::None => StrategyDecisionEvidence::None,
+        };
         let BoltV3StrategyExecutionControls {
             submit_admission,
             order_execution_policy,
@@ -924,7 +964,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence: impl Into<StrategyEvidenceHandles>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     if loaded.strategies.is_empty() {
         return Ok(BoltV3StrategyRegistrationSummary::empty());
@@ -942,7 +982,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
         resolved,
         bindings,
         execution_controls,
-        decision_evidence,
+        decision_evidence.into(),
         iv_query_handles,
     )
 }
@@ -953,7 +993,7 @@ pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence: impl Into<StrategyEvidenceHandles>,
     iv_runtime: &IvRuntimeEngine,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     if loaded.strategies.is_empty() {
@@ -970,7 +1010,7 @@ pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
         resolved,
         bindings,
         execution_controls,
-        decision_evidence,
+        decision_evidence.into(),
         iv_query_handles,
     )
 }
@@ -981,7 +1021,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence: StrategyEvidenceHandles,
     iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     let mut summary = BoltV3StrategyRegistrationSummary::empty();
@@ -1013,8 +1053,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
             let context = StrategyRegistrationContext::new(
                 loaded,
                 strategy,
-                binding.strategy_kind,
-                binding.capabilities,
+                binding.registration_contract(),
                 resolved,
                 preparation_config.clone(),
                 runtime_resources.clone(),

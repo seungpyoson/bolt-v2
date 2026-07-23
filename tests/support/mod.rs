@@ -97,6 +97,7 @@ impl TempCaseDir {
         let dirname = format!("bolt-v2-{label}-{pid}-{timestamp_nanos}-{counter}");
         let path = std::env::temp_dir().join(dirname);
         fs::create_dir_all(&path).expect("temp case dir should be created");
+        let path = fs::canonicalize(path).expect("temp case dir should canonicalize");
         Self { path }
     }
 

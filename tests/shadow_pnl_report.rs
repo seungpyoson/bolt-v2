@@ -163,9 +163,8 @@ fn shadow_pnl_report_rejects_unrecognized_winning_side() {
 
 #[test]
 fn shadow_pnl_report_rejects_unrecognized_selected_side() {
-    // selected_side is strategy-written evidence, not operator input. Any token
-    // outside the canonical binary side vocabulary means the evidence chain is
-    // corrupted and must fail loud before it can collapse to a loss.
+    // selected_side is a closed wire enum. Any token outside that vocabulary
+    // must fail at current-evidence decoding before it can reach PnL reduction.
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("order-intents.jsonl");
     let settlements_path = temp.path().join("shadow-settlements.jsonl");
@@ -215,8 +214,8 @@ fn shadow_pnl_report_rejects_unrecognized_selected_side() {
     assert!(!output.status.success(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
     assert!(
-        stderr.contains("evidence selected_side")
-            && stderr.contains("not a recognized binary outcome side"),
+        stderr.contains("malformed current payload")
+            && stderr.contains("unknown variant `sideways`"),
         "{stderr}"
     );
 }
@@ -885,6 +884,7 @@ fn push_trade_lines_with_snapshot_market_id(
     admission_record["recorded_at_utc_ns"] = serde_json::json!(trade.recorded_at_utc_ns + 2);
     admission_record["decision"]["client_order_id"] = serde_json::json!(trade.client_order_id);
     admission_record["decision"]["instrument_id"] = serde_json::json!(trade.instrument_id);
+    admission_record["decision"]["reservation"] = serde_json::Value::Null;
     lines.push(
         serde_json::to_string(&admission_record).expect("admission fixture should serialize"),
     );

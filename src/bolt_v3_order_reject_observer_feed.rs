@@ -8,7 +8,7 @@ use nautilus_model::{events::OrderEventAny, identifiers::AccountId};
 
 use crate::{
     bolt_v3_current_evidence::{
-        DecisionEvidenceRecorder, NonBlockingRecordOutcome, OrderRejectFact, OrderRejectReason,
+        NonBlockingRecordOutcome, OrderRejectFact, OrderRejectObserverEvidence, OrderRejectReason,
         OrderRejectSource,
     },
     bolt_v3_evidence_sampling::{EpisodeFirstNs, evict_oldest_episodes_over_cap},
@@ -121,7 +121,7 @@ impl Drop for OrderRejectObserverFeedSubscription {
 }
 
 pub struct BoltV3OrderRejectObserverFeed {
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence: OrderRejectObserverEvidence,
     account_id: AccountId,
     episodes: BTreeMap<String, RejectObserverEpisode>,
 }
@@ -136,9 +136,12 @@ pub struct BoltV3OrderRejectObserverHealthSnapshot {
 
 impl BoltV3OrderRejectObserverFeed {
     #[must_use]
-    pub fn new(decision_evidence: Arc<DecisionEvidenceRecorder>, account_id: AccountId) -> Self {
+    pub fn new(
+        decision_evidence: impl Into<OrderRejectObserverEvidence>,
+        account_id: AccountId,
+    ) -> Self {
         Self {
-            decision_evidence,
+            decision_evidence: decision_evidence.into(),
             account_id,
             episodes: BTreeMap::new(),
         }

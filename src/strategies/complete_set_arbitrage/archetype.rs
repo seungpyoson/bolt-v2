@@ -17,8 +17,9 @@ use crate::{
     },
     bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
     bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, PreparedStrategyRegistration, StrategyRegistrationContext,
-        StrategyRuntimeBinding, StrategyRuntimeCapabilities, assemble_strategy_build_context,
+        BoltV3StrategyRegistrationError, PreparedStrategyRegistration, StrategyEvidenceCapability,
+        StrategyRegistrationContext, StrategyRuntimeBinding, StrategyRuntimeCapabilities,
+        assemble_strategy_build_context,
     },
     strategies::production_strategy_registry,
 };
@@ -33,6 +34,7 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
         realized_volatility: true,
         settlement: false,
     },
+    evidence_capability: StrategyEvidenceCapability::None,
     prepare: prepare_runtime_strategy,
 };
 

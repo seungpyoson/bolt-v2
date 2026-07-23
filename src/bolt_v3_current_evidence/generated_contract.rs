@@ -30,7 +30,7 @@ pub(crate) enum KnownProducer {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum KnownPurpose {
+pub enum KnownPurpose {
     BlockedStrategyInputObservation,
     SubmitLinkedStrategyInputSnapshot,
     EntryOrderIntent,

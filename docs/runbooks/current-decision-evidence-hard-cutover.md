@@ -41,14 +41,22 @@ The archive is never restored into an active path. Offline access uses the archi
 
 ## Current Generation
 
-Leave both configured current stream paths absent. `DecisionEvidenceRuntime::open` creates every missing parent component and both stream files through the same descriptor-relative catalog authority, synchronizes each namespace before use, applies private permissions, and validates the retained descriptors before exposing append capability. Operators must not pre-create a parallel layout through pathname-based tooling.
+Leave both configured current stream paths absent. `DecisionEvidenceRuntime::open` parses the complete
+path topology, opens and exclusively locks the catalog descriptor, creates every missing parent
+component and both stream files through that same descriptor-relative authority, synchronizes each
+namespace before use, applies private permissions, and validates the retained descriptors before
+exposing component-scoped append capability. A second process using the catalog fails before namespace
+mutation. Operators must not pre-create a parallel layout through pathname-based tooling.
 
 Startup must refuse:
 
 - any configured retired path that still exists;
 - old, unknown, mixed, malformed, blank, torn, or observation identities in the machine stream;
 - a machine stream above `recovery_evidence_max_bytes`;
-- symlinked, non-regular, aliased, or out-of-root stream paths.
+- symlinked, non-regular, noncanonical, aliased, ancestor-conflicting, or out-of-root stream paths;
+- duplicate or contradictory settlement terminal outcomes, invalid reservation/fill relationships, or
+  an NT open order without attribution in an atomic admitted fact;
+- failure to rebuild capital admission from the NT cache after NT startup reconciliation.
 
 The observation stream is not recovery input and never supplies readiness authority. Startup validates any retained observation content through the same exact-current framing, identity, sink, gate, and payload decoder. Invalid observation content is preserved byte-for-byte, reported as a poisoned observation sink, and does not block machine recovery or activation. The runtime never repairs, truncates, replaces, or extends that poisoned stream.
 
@@ -63,7 +71,20 @@ Archival begins the point of no return. Once archival starts, rollback is prohib
 
 Any machine-stream write or sync error is commit-indeterminate: some or all bytes may exist. The runtime permanently poisons that machine sink for the process lifetime and refuses later appends without touching the file. Stop the service, preserve the active stream, and diagnose it offline. A torn or otherwise invalid machine stream remains a fail-closed startup condition; recovery is pause, archive under the governed ceremony, and forward-fix—never retry, truncate, skip, or restore retired authority.
 
-A poisoned observation stream never gates machine recovery, but it is a terminal state for that active observation pathname. Startup corruption and mid-run write or sync failure both appear on `BoltV3OperatorHealthSurface.decision_evidence_observation`, while the recorder remains the sole mutable poison authority. The runtime preserves the bytes and refuses to extend the stream. Stop the service, preserve and checksum the poisoned file outside the active data root, then forward-fix to a fresh configured observation pathname under an issue-bound operator change. Do not truncate, repair, replace in place, or silently resume the poisoned sink.
+A poisoned observation stream never gates machine recovery, but it is a terminal state for that active
+observation pathname. Startup corruption and the first mid-run write or sync failure publish an
+immediate typed health transition after the sink lock is released and appear on
+`BoltV3OperatorHealthSurface.decision_evidence_observation`. Machine-sink poison likewise appears on
+the machine field and makes blocking evidence operations fail closed. The recorder remains the sole
+mutable poison authority. The runtime preserves the bytes and refuses to extend the poisoned stream.
+Stop the service, preserve and checksum it outside the active data root, then forward-fix to a fresh
+configured pathname under an issue-bound operator change. Do not truncate, repair, replace in place,
+or silently resume the poisoned sink.
+
+On controlled shutdown, action ingress and every evidence-producing subscription/task stop and join
+before the recorder closes. Closing rejects new operations, waits for accepted append and health
+publication operations, closes both streams, and releases the catalog lock. Do not treat a process
+whose catalog lock is still held as stopped.
 
 ## Accepted Losses and Remaining Gates
 

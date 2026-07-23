@@ -18,10 +18,10 @@ fn replace_once(input: &str, from: &str, to: &str) -> String {
 fn current_contract_is_closed_and_deterministic() {
     let contract = parse_contract_registry(REGISTRY).expect("current contract must parse");
     assert_eq!(contract.consumer_count(), 5);
-    assert_eq!(contract.producer_count(), 26);
-    assert_eq!(contract.purpose_count(), 25);
-    assert_eq!(contract.identity_count(), 25);
-    assert_eq!(contract.fact_count(), 25);
+    assert_eq!(contract.producer_count(), 25);
+    assert_eq!(contract.purpose_count(), 24);
+    assert_eq!(contract.identity_count(), 24);
+    assert_eq!(contract.fact_count(), 24);
 
     let first = render_contract(&contract);
     let second = render_contract(&contract);

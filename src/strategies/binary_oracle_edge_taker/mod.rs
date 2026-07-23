@@ -1111,7 +1111,8 @@ impl BinaryOracleEdgeTaker {
         );
         let committed = self
             .context
-            .decision_evidence()
+            .edge_taker_evidence()
+            .expect("edge-taker strategy must own edge-taker evidence")
             .record_settlement(evidence)?;
         self.settled_position_keys
             .insert(booking.settlement_key.clone());
@@ -1251,7 +1252,8 @@ impl BinaryOracleEdgeTaker {
         };
         if evidence_state == TerminalEvidenceState::PersistCanonical {
             self.context
-                .decision_evidence()
+                .edge_taker_evidence()
+                .expect("edge-taker strategy must own edge-taker evidence")
                 .record_terminal_settlement(terminal_evidence)
                 .context("failed to persist canonical terminal settlement evidence")?;
         }
@@ -3040,7 +3042,8 @@ impl BinaryOracleEdgeTaker {
     fn persist_order_lifecycle_record(&self, evidence: &OrderLifecycleFact) -> Result<()> {
         match self
             .context
-            .decision_evidence()
+            .edge_taker_evidence()
+            .expect("edge-taker strategy must own edge-taker evidence")
             .record_order_lifecycle(evidence.clone())
         {
             NonBlockingRecordOutcome::Appended(_) => Ok(()),
@@ -4009,7 +4012,8 @@ impl BinaryOracleEdgeTaker {
         self.last_recorded_entry_skip = Some(next_state);
         if let ObservationRecordOutcome::FailureReported(error) = self
             .context
-            .decision_evidence()
+            .edge_taker_evidence()
+            .expect("edge-taker strategy must own edge-taker evidence")
             .record_entry_skip_observation(evidence)
         {
             // An entry skip is declining new risk: a telemetry-write failure
@@ -4116,7 +4120,8 @@ impl BinaryOracleEdgeTaker {
             };
             match self
                 .context
-                .decision_evidence()
+                .edge_taker_evidence()
+                .expect("edge-taker strategy must own edge-taker evidence")
                 .record_exit_submission_decision(ExitSubmissionDecisionFact {
                     details,
                     outcome: if disposition == ExitDecisionDisposition::ExitFailClosed {
@@ -4132,7 +4137,8 @@ impl BinaryOracleEdgeTaker {
         } else {
             match self
                 .context
-                .decision_evidence()
+                .edge_taker_evidence()
+                .expect("edge-taker strategy must own edge-taker evidence")
                 .record_exit_hold_decision(ExitHoldDecisionFact {
                     details,
                     outcome: if disposition == ExitDecisionDisposition::Blocked {
@@ -5757,10 +5763,13 @@ impl BinaryOracleEdgeTaker {
         // order is fully valued and about to enter admission.
         let request = self.submit_admission_request_from_order(&intent, intent_kind, &order)?;
         let policy = self.context.order_execution_policy();
-        let decision_evidence = self.context.decision_evidence_arc();
+        let decision_evidence = self
+            .context
+            .order_execution_evidence()
+            .expect("edge-taker strategy must own order-intent evidence");
         let submit_admission = self.context.submit_admission_arc();
         let routing = BoltV3SubmitRoutingRequest::new(
-            decision_evidence.as_ref(),
+            &decision_evidence,
             submit_admission.as_ref(),
             intent,
             request,
@@ -6170,7 +6179,8 @@ impl BinaryOracleEdgeTaker {
         };
         if let ObservationRecordOutcome::FailureReported(error) = self
             .context
-            .decision_evidence()
+            .edge_taker_evidence()
+            .expect("edge-taker strategy must own edge-taker evidence")
             .record_blocked_strategy_input_observation(snapshot)
         {
             log::error!("blocked strategy-input observation failed: {error}");
@@ -6723,7 +6733,8 @@ impl BinaryOracleEdgeTaker {
 
         if let ObservationRecordOutcome::FailureReported(error) = self
             .context
-            .decision_evidence()
+            .edge_taker_evidence()
+            .expect("edge-taker strategy must own edge-taker evidence")
             .record_exit_evaluation(evidence.clone())
         {
             log::error!(
@@ -7029,7 +7040,8 @@ impl BinaryOracleEdgeTaker {
 
         if let Err(error) = self
             .context
-            .decision_evidence()
+            .edge_taker_evidence()
+            .expect("edge-taker strategy must own edge-taker evidence")
             .record_submit_linked_strategy_input_snapshot(strategy_input_snapshot)
         {
             self.clear_pending_entry_state();

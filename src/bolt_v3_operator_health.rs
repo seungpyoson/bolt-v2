@@ -383,6 +383,7 @@ pub struct BoltV3OperatorHealthSurface {
     pub venue_truth: BoltV3VenueTruthHealth,
     pub input_health: BoltV3InputHealth,
     pub settlement: BoltV3SettlementHealth,
+    pub decision_evidence_machine: BoltV3DecisionEvidenceObservationHealth,
     pub decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth,
 }
 
@@ -393,6 +394,7 @@ impl BoltV3OperatorHealthSurface {
             venue_truth: BoltV3VenueTruthHealth::not_configured(),
             input_health: BoltV3InputHealth::not_configured(),
             settlement: BoltV3SettlementHealth::not_configured(),
+            decision_evidence_machine: BoltV3DecisionEvidenceObservationHealth::not_configured(),
             decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth::not_configured(
             ),
         }
@@ -408,6 +410,7 @@ impl BoltV3OperatorHealthSurface {
             venue_truth,
             input_health,
             settlement: BoltV3SettlementHealth::not_configured(),
+            decision_evidence_machine: BoltV3DecisionEvidenceObservationHealth::not_configured(),
             decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth::not_configured(
             ),
         }
@@ -418,6 +421,7 @@ impl BoltV3OperatorHealthSurface {
         venue_truth: BoltV3VenueTruthHealth,
         input_health: BoltV3InputHealth,
         settlement: BoltV3SettlementHealth,
+        decision_evidence_machine: BoltV3DecisionEvidenceObservationHealth,
         decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth,
     ) -> Self {
         Self {
@@ -425,6 +429,7 @@ impl BoltV3OperatorHealthSurface {
             venue_truth,
             input_health,
             settlement,
+            decision_evidence_machine,
             decision_evidence_observation,
         }
     }

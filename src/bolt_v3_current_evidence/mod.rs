@@ -3,6 +3,7 @@ mod codec;
 pub mod contract_generator;
 mod facts;
 pub(crate) mod generated_contract;
+mod handles;
 mod path;
 mod path_authority;
 mod reader;
@@ -12,6 +13,13 @@ mod runtime;
 
 pub use capacity::PositiveFiniteEvidenceReadCap;
 pub use facts::*;
+#[cfg(any(test, feature = "test-current-evidence-inspection"))]
+#[doc(hidden)]
+pub use generated_contract::KnownPurpose as CurrentEvidenceTestPurpose;
+pub use handles::{
+    BasketAdmissionEvidence, EdgeTakerEvidence, MakerEvidence, OrderExecutionEvidence,
+    OrderRejectObserverEvidence, StrategyEvidenceHandles, SubmitAdmissionEvidence,
+};
 pub(crate) use path::CanonicalRelativeEvidencePath;
 #[cfg(feature = "test-current-evidence-inspection")]
 #[doc(hidden)]
@@ -21,10 +29,15 @@ pub use reader::{
     read_backtest_run_guard_events, read_shadow_pnl_events,
 };
 pub(crate) use realized_volatility::source_diagnostic_fact as realized_vol_diagnostic_fact;
+#[cfg(not(any(test, feature = "test-current-evidence-inspection")))]
+pub(crate) use record::DecisionEvidenceRecorder;
+#[cfg(any(test, feature = "test-current-evidence-inspection"))]
+#[doc(hidden)]
+pub use record::DecisionEvidenceRecorder;
+pub(crate) use record::DecisionEvidenceStatusView;
 pub use record::{
-    AppendReceipt, CommitPhase, CommittedAdmission, CommittedSettlement, DecisionEvidenceRecorder,
-    NonBlockingRecordOutcome, ObservationRecordOutcome, ObservationStreamStatus, PoisonCause,
-    RecordFailure,
+    AppendReceipt, CommitPhase, CommittedAdmission, CommittedSettlement, NonBlockingRecordOutcome,
+    ObservationRecordOutcome, ObservationStreamStatus, PoisonCause, RecordFailure,
 };
 pub use runtime::DecisionEvidenceRuntime;
 #[cfg(feature = "offline-current-evidence")]

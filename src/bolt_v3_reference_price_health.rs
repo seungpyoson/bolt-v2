@@ -1059,8 +1059,11 @@ mod tests {
             "bolt-v3-reference-price-health-{suffix}-{}",
             std::process::id()
         ));
-        loaded.root.persistence.catalog_directory =
-            catalog_directory.to_string_lossy().into_owned();
+        std::fs::create_dir_all(&catalog_directory).expect("test catalog should create");
+        loaded.root.persistence.catalog_directory = std::fs::canonicalize(catalog_directory)
+            .expect("test catalog should canonicalize")
+            .to_string_lossy()
+            .into_owned();
         crate::bolt_v3_current_evidence::prepare_test_generation(loaded);
     }
 

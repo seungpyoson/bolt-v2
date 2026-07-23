@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::bolt_v3_current_evidence::{
-    BasketAdmissionDetails, BasketAdmissionRejectedFact, BasketAdmissionRejectionReason,
-    DecisionEvidenceRecorder, NonBlockingRecordOutcome,
+    BasketAdmissionDetails, BasketAdmissionEvidence, BasketAdmissionRejectedFact,
+    BasketAdmissionRejectionReason, NonBlockingRecordOutcome,
 };
 use crate::bolt_v3_outcome_group_scanner::OutcomeGroupScanEvidence;
 use crate::bolt_v3_outcome_group_sources::outcome_group_observation_is_fresh;
@@ -113,7 +113,7 @@ pub enum BoltV3BasketAdmissionReleaseReason {
 pub struct BoltV3BasketAdmissionState {
     limits: BoltV3BasketAdmissionLimits,
     inner: Arc<Mutex<BoltV3BasketAdmissionInner>>,
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence: BasketAdmissionEvidence,
 }
 
 #[derive(Debug)]
@@ -162,7 +162,7 @@ impl Drop for BoltV3BasketAdmissionPermit {
 
 impl BoltV3BasketAdmissionState {
     pub fn new(
-        decision_evidence: Arc<DecisionEvidenceRecorder>,
+        decision_evidence: impl Into<BasketAdmissionEvidence>,
         limits: BoltV3BasketAdmissionLimits,
     ) -> Self {
         Self {
@@ -170,7 +170,7 @@ impl BoltV3BasketAdmissionState {
             inner: Arc::new(Mutex::new(BoltV3BasketAdmissionInner {
                 open_baskets: BTreeMap::new(),
             })),
-            decision_evidence,
+            decision_evidence: decision_evidence.into(),
         }
     }
 

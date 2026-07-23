@@ -95,7 +95,7 @@ fn live_operator_health_surface_renders_poisoned_reject_feed_as_degraded() {
         0,
         None,
         BoltV3SettlementHealth::nominal(),
-        &writer,
+        &DecisionEvidenceStatusView::new(&writer),
     );
 
     assert_eq!(
@@ -130,7 +130,7 @@ fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth
         0,
         None,
         BoltV3SettlementHealth::nominal(),
-        &writer,
+        &DecisionEvidenceStatusView::new(&writer),
     );
 
     assert_eq!(
@@ -183,9 +183,13 @@ fn live_operator_health_surface_reads_midrun_observation_poison_from_recorder() 
         0,
         None,
         BoltV3SettlementHealth::nominal(),
-        &writer,
+        &DecisionEvidenceStatusView::new(&writer),
     );
 
+    assert_eq!(
+        surface.decision_evidence_machine.status,
+        BoltV3OperatorHealthStatus::Nominal
+    );
     assert_eq!(
         surface.decision_evidence_observation.status,
         BoltV3OperatorHealthStatus::Degraded

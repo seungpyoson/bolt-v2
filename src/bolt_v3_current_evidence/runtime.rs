@@ -13,9 +13,16 @@ use super::{
     CanonicalRelativeEvidencePath, PositiveFiniteEvidenceReadCap,
     facts::{BookingRecoveryFacts, ReservationRecoveryFacts, SettlementRecoveryFacts},
     generated_contract::KnownSink,
+    handles::{
+        BasketAdmissionEvidence, EdgeTakerEvidence, MakerEvidence, OrderExecutionEvidence,
+        OrderRejectObserverEvidence, StrategyEvidenceHandles, SubmitAdmissionEvidence,
+    },
     path_authority::CatalogDirectory,
     reader::validate_stream,
-    record::{DecisionEvidenceRecorder, ObservationStreamStatus, PoisonCause},
+    record::{
+        DecisionEvidenceRecorder, DecisionEvidenceStatusView, HealthTransitionPublisher,
+        ObservationStreamStatus, PoisonCause,
+    },
 };
 
 #[derive(Debug)]
@@ -91,10 +98,59 @@ impl OfflineDecisionEvidenceRuntime {
         })
     }
 
-    /// Returns the same concrete recorder type used by live strategy construction.
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
     #[must_use]
     pub fn recorder(&self) -> Arc<DecisionEvidenceRecorder> {
         Arc::clone(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn submit_admission_evidence(&self) -> SubmitAdmissionEvidence {
+        SubmitAdmissionEvidence::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn basket_admission_evidence(&self) -> BasketAdmissionEvidence {
+        BasketAdmissionEvidence::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn order_execution_evidence(&self) -> OrderExecutionEvidence {
+        OrderExecutionEvidence::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn edge_taker_evidence(&self) -> EdgeTakerEvidence {
+        EdgeTakerEvidence::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn maker_evidence(&self) -> MakerEvidence {
+        MakerEvidence::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn strategy_evidence_handles(&self) -> StrategyEvidenceHandles {
+        StrategyEvidenceHandles::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn order_reject_observer_evidence(&self) -> OrderRejectObserverEvidence {
+        OrderRejectObserverEvidence::new(&self.recorder)
+    }
+}
+
+impl Drop for DecisionEvidenceRuntime {
+    fn drop(&mut self) {
+        self.recorder.close();
+    }
+}
+
+#[cfg(feature = "offline-current-evidence")]
+impl Drop for OfflineDecisionEvidenceRuntime {
+    fn drop(&mut self) {
+        self.recorder.close();
     }
 }
 
@@ -181,9 +237,62 @@ impl DecisionEvidenceRuntime {
         })
     }
 
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
     #[must_use]
     pub fn recorder(&self) -> Arc<DecisionEvidenceRecorder> {
         Arc::clone(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn submit_admission_evidence(&self) -> SubmitAdmissionEvidence {
+        SubmitAdmissionEvidence::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn basket_admission_evidence(&self) -> BasketAdmissionEvidence {
+        BasketAdmissionEvidence::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn order_execution_evidence(&self) -> OrderExecutionEvidence {
+        OrderExecutionEvidence::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn edge_taker_evidence(&self) -> EdgeTakerEvidence {
+        EdgeTakerEvidence::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn maker_evidence(&self) -> MakerEvidence {
+        MakerEvidence::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn strategy_evidence_handles(&self) -> StrategyEvidenceHandles {
+        StrategyEvidenceHandles::new(&self.recorder)
+    }
+
+    #[must_use]
+    pub fn order_reject_observer_evidence(&self) -> OrderRejectObserverEvidence {
+        OrderRejectObserverEvidence::new(&self.recorder)
+    }
+
+    pub(crate) fn status_view(&self) -> DecisionEvidenceStatusView {
+        DecisionEvidenceStatusView::new(&self.recorder)
+    }
+
+    pub(crate) fn register_health_transition_publisher(
+        &self,
+        publisher: HealthTransitionPublisher,
+    ) -> Result<(), &'static str> {
+        self.recorder
+            .register_health_transition_publisher(publisher)
+    }
+
+    pub(crate) fn close(&self) {
+        self.recorder.close();
     }
 
     #[must_use]

@@ -3,10 +3,11 @@ use std::{ops::Deref, path::PathBuf, sync::Arc};
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_current_evidence::{
-        AdmissionDecisionOutcome, AdmissionDetails, CurrentFact, DecisionEvidenceRecorder,
-        DecisionEvidenceRuntime, EntrySkipFact, LossGovernorHaltFact, OrderIntentDetails,
-        OrderRejectFact, RequoteThrottleObservationFact, ReservationAttribution,
-        VenueTruthCaptureFailureFact, VenueTruthDivergenceFact, read_current_evidence_facts,
+        AdmissionDecisionOutcome, AdmissionDetails, CurrentEvidenceTestPurpose, CurrentFact,
+        DecisionEvidenceRecorder, DecisionEvidenceRuntime, EntrySkipFact, LossGovernorHaltFact,
+        OrderIntentDetails, OrderRejectFact, RequoteThrottleObservationFact,
+        ReservationAttribution, VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
+        read_current_evidence_facts,
     },
     bolt_v3_submit_admission::BoltV3SubmitIntentKind,
 };
@@ -104,34 +105,10 @@ impl RecordingDecisionEvidenceWriter {
         self.runtime.recorder().fail_machine_writes_for_test();
     }
 
-    pub fn fail_admitted_entry_admission_writes(&self) {
+    pub fn fail_purpose_on_attempt(&self, purpose: CurrentEvidenceTestPurpose, attempt: usize) {
         self.runtime
             .recorder()
-            .fail_admitted_entry_admission_writes_for_test();
-    }
-
-    pub fn fail_basket_admission_granted_writes(&self) {
-        self.runtime
-            .recorder()
-            .fail_basket_admission_granted_writes_for_test();
-    }
-
-    pub fn fail_risk_reducing_exit_admission_writes(&self) {
-        self.runtime
-            .recorder()
-            .fail_risk_reducing_exit_admission_writes_for_test();
-    }
-
-    pub fn fail_risk_reducing_exit_order_intent_writes(&self) {
-        self.runtime
-            .recorder()
-            .fail_risk_reducing_exit_order_intent_writes_for_test();
-    }
-
-    pub fn fail_capital_admission_rebuild_writes(&self) {
-        self.runtime
-            .recorder()
-            .fail_capital_admission_rebuild_writes_for_test();
+            .fail_purpose_on_attempt_for_test(purpose, attempt);
     }
 
     pub fn facts(&self) -> Vec<CurrentFact> {
@@ -319,5 +296,8 @@ pub fn prepare_current_evidence_generation(loaded: &LoadedBoltV3Config) {
 }
 
 pub fn recording_evidence() -> Arc<DecisionEvidenceRecorder> {
-    RecordingDecisionEvidenceWriter::new().recorder()
+    Arc::new(DecisionEvidenceRecorder::recording_from_files_for_test(
+        tempfile::tempfile().expect("test machine evidence sink must open"),
+        tempfile::tempfile().expect("test observation evidence sink must open"),
+    ))
 }

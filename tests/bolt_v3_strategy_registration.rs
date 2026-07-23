@@ -818,6 +818,8 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
                 realized_volatility: true,
                 settlement: true,
             },
+            evidence_capability:
+                bolt_v2::bolt_v3_strategy_registration::StrategyEvidenceCapability::EdgeTaker,
             prepare: prepare_stub,
         },
     ];
@@ -893,6 +895,8 @@ fn settlement_registration_error_after_config_mutation(
                 realized_volatility: true,
                 settlement: true,
             },
+            evidence_capability:
+                bolt_v2::bolt_v3_strategy_registration::StrategyEvidenceCapability::EdgeTaker,
             prepare: prepare_must_not_run,
         },
     ];
@@ -985,6 +989,8 @@ fn assert_invalid_second_execution_route_fails_before_binding_preparation(
             key: "binary_oracle_edge_taker",
             strategy_kind: "stub_runtime_strategy",
             capabilities,
+            evidence_capability:
+                bolt_v2::bolt_v3_strategy_registration::StrategyEvidenceCapability::EdgeTaker,
             prepare: prepare_stub,
         },
     ];
@@ -1298,6 +1304,8 @@ fn duplicate_prepared_strategy_ids_fail_before_any_strategy_is_registered() {
                 realized_volatility: true,
                 settlement: true,
             },
+            evidence_capability:
+                bolt_v2::bolt_v3_strategy_registration::StrategyEvidenceCapability::EdgeTaker,
             prepare: prepare_duplicate,
         },
     ];
@@ -1352,6 +1360,8 @@ fn already_registered_order_id_tag_fails_before_any_new_strategy_is_registered()
                 realized_volatility: true,
                 settlement: true,
             },
+            evidence_capability:
+                bolt_v2::bolt_v3_strategy_registration::StrategyEvidenceCapability::EdgeTaker,
             prepare: prepare_existing,
         },
     ];

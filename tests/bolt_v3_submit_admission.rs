@@ -811,7 +811,10 @@ fn ungated_submit_admission_allows_production_submit() {
 #[test]
 fn admission_evidence_failure_is_typed_and_does_not_consume_submit_capacity() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    writer.fail_admitted_entry_admission_writes();
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::AdmittedEntryAdmission,
+        1,
+    );
     let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::ONE);
 
     let error = admission
@@ -1526,8 +1529,11 @@ fn valid_risk_reducing_exit_proof() -> BoltV3RiskReducingExitProof {
 }
 
 fn limited_admission(max_order_count: u32, max_notional: Decimal) -> BoltV3SubmitAdmissionState {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    limited_admission_with_writer(writer.recorder(), max_order_count, max_notional)
+    limited_admission_with_writer(
+        support::current_evidence::recording_evidence(),
+        max_order_count,
+        max_notional,
+    )
 }
 
 fn limited_admission_with_writer(
@@ -2024,7 +2030,10 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
 #[test]
 fn risk_reducing_exit_admission_continues_when_its_evidence_write_fails() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    writer.fail_risk_reducing_exit_admission_writes();
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::RiskReducingExitAdmission,
+        1,
+    );
     let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(5, 0));
 
     admission

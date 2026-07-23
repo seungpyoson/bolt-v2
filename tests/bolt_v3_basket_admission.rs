@@ -501,7 +501,10 @@ fn basket_grant_evidence_failure_rolls_back_every_leg_before_submit() {
     let mut claims = entry_claims(&group, dec!(0.9));
     attach_capital_admission(&mut claims);
     seed_capital_admission_for_claims(&submit_gate, &claims);
-    writer.fail_basket_admission_granted_writes();
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::BasketAdmissionGranted,
+        1,
+    );
 
     let error = submit_gate
         .reserve_basket_submit_slots(

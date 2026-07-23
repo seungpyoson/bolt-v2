@@ -505,8 +505,12 @@ fn try_assembly_context<'a>(
     StrategyRegistrationContext::new(
         loaded,
         &loaded.strategies[0],
-        "test_strategy",
-        capabilities,
+        bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContract {
+            strategy_kind: "test_strategy",
+            capabilities,
+            evidence_capability:
+                bolt_v2::bolt_v3_strategy_registration::StrategyEvidenceCapability::EdgeTaker,
+        },
         resolved,
         Arc::new(
             bolt_v2::bolt_v3_strategy_registration::StrategyPreparationConfig::from_root(
@@ -745,7 +749,7 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
     assert_field_type(
         context_tokens,
         "decision_evidence",
-        &["Arc", "<", "DecisionEvidenceRecorder", ">"],
+        &["StrategyDecisionEvidence"],
     );
     assert_field_type(
         context_tokens,
@@ -847,7 +851,7 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
     assert_field_type(
         runtime_resources,
         "decision_evidence",
-        &["Arc", "<", "DecisionEvidenceRecorder", ">"],
+        &["StrategyEvidenceHandles"],
     );
     assert_field_type(
         runtime_resources,

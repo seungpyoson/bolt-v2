@@ -3,7 +3,7 @@ use std::{
     fmt,
     fs::File,
     io::{self, Write},
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex, Weak},
 };
 
 use anyhow::Error;
@@ -69,6 +69,8 @@ pub enum RecordFailure {
     Rejected(Error),
     CommitIndeterminate { phase: CommitPhase, cause: Arc<str> },
     SinkPoisoned { first_cause: PoisonCause },
+    RecorderClosing,
+    RecorderClosed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +126,8 @@ impl fmt::Display for RecordFailure {
             Self::SinkPoisoned { first_cause } => {
                 write!(formatter, "evidence sink poisoned after {first_cause}")
             }
+            Self::RecorderClosing => formatter.write_str("evidence recorder is closing"),
+            Self::RecorderClosed => formatter.write_str("evidence recorder is closed"),
         }
     }
 }
@@ -132,7 +136,10 @@ impl std::error::Error for RecordFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Rejected(source) => Some(source.as_ref()),
-            Self::CommitIndeterminate { .. } | Self::SinkPoisoned { .. } => None,
+            Self::CommitIndeterminate { .. }
+            | Self::SinkPoisoned { .. }
+            | Self::RecorderClosing
+            | Self::RecorderClosed => None,
         }
     }
 }
@@ -148,6 +155,76 @@ pub enum ObservationRecordOutcome {
     Appended(AppendReceipt),
     FailureReported(RecordFailure),
     FailureSuppressed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EvidenceSinkHealthTransition {
+    pub(crate) sink: KnownSink,
+    pub(crate) cause: PoisonCause,
+}
+
+impl EvidenceSinkHealthTransition {
+    pub(crate) const fn operator_health_reason(&self) -> &'static str {
+        match self.sink {
+            KnownSink::Machine => "decision_evidence_machine_poisoned",
+            KnownSink::Observation => "decision_evidence_observation_poisoned",
+        }
+    }
+}
+
+pub(super) type HealthTransitionPublisher =
+    Arc<dyn Fn(EvidenceSinkHealthTransition) + Send + Sync + 'static>;
+
+#[derive(Default)]
+struct HealthPublicationState {
+    publisher: Option<HealthTransitionPublisher>,
+    pending: Vec<EvidenceSinkHealthTransition>,
+    delivered: BTreeSet<KnownSink>,
+}
+
+impl fmt::Debug for HealthPublicationState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HealthPublicationState")
+            .field("publisher_registered", &self.publisher.is_some())
+            .field("pending", &self.pending)
+            .field("delivered", &self.delivered)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecorderLifecyclePhase {
+    Open,
+    Closing,
+    Closed,
+}
+
+#[derive(Debug)]
+struct RecorderLifecycleState {
+    phase: RecorderLifecyclePhase,
+    active_operations: usize,
+}
+
+struct ActiveRecorderOperation<'a> {
+    recorder: &'a DecisionEvidenceRecorder,
+}
+
+impl Drop for ActiveRecorderOperation<'_> {
+    fn drop(&mut self) {
+        let mut lifecycle = self
+            .recorder
+            .lifecycle
+            .lock()
+            .expect("recorder lifecycle mutex must not be poisoned");
+        lifecycle.active_operations = lifecycle
+            .active_operations
+            .checked_sub(1)
+            .expect("active recorder operation count must not underflow");
+        if lifecycle.active_operations == 0 {
+            self.recorder.lifecycle_drained.notify_all();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -280,11 +357,41 @@ pub struct DecisionEvidenceRecorder {
     _catalog_ownership: Option<CatalogDirectory>,
     max_record_bytes: PositiveFiniteEvidenceReadCap,
     reject_episode_max_count: usize,
+    lifecycle: Mutex<RecorderLifecycleState>,
+    lifecycle_drained: Condvar,
+    health_publication: Mutex<HealthPublicationState>,
     observation_failure_episodes: Mutex<BTreeSet<KnownPurpose>>,
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     test_attempts: Mutex<std::collections::BTreeMap<KnownPurpose, usize>>,
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     test_failure: Mutex<Option<(KnownPurpose, usize)>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DecisionEvidenceStatusView {
+    recorder: Weak<DecisionEvidenceRecorder>,
+}
+
+impl DecisionEvidenceStatusView {
+    pub(crate) fn new(recorder: &Arc<DecisionEvidenceRecorder>) -> Self {
+        Self {
+            recorder: Arc::downgrade(recorder),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn machine_stream_status(&self) -> Option<ObservationStreamStatus> {
+        self.recorder
+            .upgrade()
+            .map(|recorder| recorder.machine_stream_status())
+    }
+
+    #[must_use]
+    pub(crate) fn observation_stream_status(&self) -> Option<ObservationStreamStatus> {
+        self.recorder
+            .upgrade()
+            .map(|recorder| recorder.observation_stream_status())
+    }
 }
 
 impl DecisionEvidenceRecorder {
@@ -297,16 +404,32 @@ impl DecisionEvidenceRecorder {
         reject_episode_max_count: usize,
     ) -> Self {
         assert!(reject_episode_max_count > 0);
-        let observation = match observation_poison {
-            Some(cause) => DurableSink::poisoned(observation, cause),
+        let observation = match observation_poison.as_ref() {
+            Some(cause) => DurableSink::poisoned(observation, cause.clone()),
             None => DurableSink::new(observation),
         };
+        let mut health_publication = HealthPublicationState::default();
+        if let Some(cause) = observation_poison {
+            health_publication.delivered.insert(KnownSink::Observation);
+            health_publication
+                .pending
+                .push(EvidenceSinkHealthTransition {
+                    sink: KnownSink::Observation,
+                    cause,
+                });
+        }
         Self {
             machine: Mutex::new(DurableSink::new(machine)),
             observation: Mutex::new(observation),
             _catalog_ownership: catalog_ownership,
             max_record_bytes,
             reject_episode_max_count,
+            lifecycle: Mutex::new(RecorderLifecycleState {
+                phase: RecorderLifecyclePhase::Open,
+                active_operations: 0,
+            }),
+            lifecycle_drained: Condvar::new(),
+            health_publication: Mutex::new(health_publication),
             observation_failure_episodes: Mutex::new(BTreeSet::new()),
             #[cfg(any(test, feature = "test-current-evidence-inspection"))]
             test_attempts: Mutex::new(std::collections::BTreeMap::new()),
@@ -315,11 +438,12 @@ impl DecisionEvidenceRecorder {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn recording() -> Self {
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
+    pub fn recording_from_files_for_test(machine: File, observation: File) -> Self {
         Self::from_files(
-            tempfile::tempfile().expect("test machine evidence sink must open"),
-            tempfile::tempfile().expect("test observation evidence sink must open"),
+            machine,
+            observation,
             None,
             None,
             PositiveFiniteEvidenceReadCap::new(1_048_576)
@@ -328,8 +452,104 @@ impl DecisionEvidenceRecorder {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn recording() -> Self {
+        Self::recording_from_files_for_test(
+            tempfile::tempfile().expect("test machine evidence sink must open"),
+            tempfile::tempfile().expect("test observation evidence sink must open"),
+        )
+    }
+
     pub(crate) const fn reject_episode_max_count(&self) -> usize {
         self.reject_episode_max_count
+    }
+
+    fn begin_operation(&self) -> Result<ActiveRecorderOperation<'_>, RecordFailure> {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .expect("recorder lifecycle mutex must not be poisoned");
+        match lifecycle.phase {
+            RecorderLifecyclePhase::Open => {
+                lifecycle.active_operations = lifecycle
+                    .active_operations
+                    .checked_add(1)
+                    .expect("active recorder operation count must not overflow");
+                Ok(ActiveRecorderOperation { recorder: self })
+            }
+            RecorderLifecyclePhase::Closing => Err(RecordFailure::RecorderClosing),
+            RecorderLifecyclePhase::Closed => Err(RecordFailure::RecorderClosed),
+        }
+    }
+
+    pub(super) fn close(&self) {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .expect("recorder lifecycle mutex must not be poisoned");
+        if lifecycle.phase == RecorderLifecyclePhase::Closed {
+            return;
+        }
+        lifecycle.phase = RecorderLifecyclePhase::Closing;
+        while lifecycle.active_operations != 0 {
+            lifecycle = self
+                .lifecycle_drained
+                .wait(lifecycle)
+                .expect("recorder lifecycle mutex must not be poisoned while draining");
+        }
+        lifecycle.phase = RecorderLifecyclePhase::Closed;
+    }
+
+    pub(crate) fn register_health_transition_publisher(
+        &self,
+        publisher: HealthTransitionPublisher,
+    ) -> Result<(), &'static str> {
+        let pending = {
+            let mut publication = self
+                .health_publication
+                .lock()
+                .expect("health publication mutex must not be poisoned");
+            if publication.publisher.is_some() {
+                return Err("decision-evidence health publisher is already registered");
+            }
+            publication.publisher = Some(Arc::clone(&publisher));
+            std::mem::take(&mut publication.pending)
+        };
+        for transition in pending {
+            publisher(transition);
+        }
+        Ok(())
+    }
+
+    fn publish_first_poison(&self, sink: KnownSink, cause: PoisonCause) {
+        let transition = EvidenceSinkHealthTransition { sink, cause };
+        let publisher = {
+            let mut publication = self
+                .health_publication
+                .lock()
+                .expect("health publication mutex must not be poisoned");
+            if !publication.delivered.insert(sink) {
+                return;
+            }
+            match publication.publisher.as_ref() {
+                Some(publisher) => Some(Arc::clone(publisher)),
+                None => {
+                    publication.pending.push(transition.clone());
+                    None
+                }
+            }
+        };
+        if let Some(publisher) = publisher {
+            publisher(transition);
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn machine_stream_status(&self) -> ObservationStreamStatus {
+        self.machine
+            .lock()
+            .expect("machine sink mutex must not be poisoned")
+            .status()
     }
 
     #[must_use]
@@ -366,41 +586,12 @@ impl DecisionEvidenceRecorder {
     }
 
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
-    pub(crate) fn fail_purpose_on_attempt(&self, purpose: KnownPurpose, attempt: usize) {
+    #[doc(hidden)]
+    pub fn fail_purpose_on_attempt_for_test(&self, purpose: KnownPurpose, attempt: usize) {
         *self
             .test_failure
             .lock()
             .expect("test failure mutex must not be poisoned") = Some((purpose, attempt));
-    }
-
-    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
-    #[doc(hidden)]
-    pub fn fail_admitted_entry_admission_writes_for_test(&self) {
-        self.fail_purpose_on_attempt(KnownPurpose::AdmittedEntryAdmission, 1);
-    }
-
-    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
-    #[doc(hidden)]
-    pub fn fail_basket_admission_granted_writes_for_test(&self) {
-        self.fail_purpose_on_attempt(KnownPurpose::BasketAdmissionGranted, 1);
-    }
-
-    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
-    #[doc(hidden)]
-    pub fn fail_risk_reducing_exit_admission_writes_for_test(&self) {
-        self.fail_purpose_on_attempt(KnownPurpose::RiskReducingExitAdmission, 1);
-    }
-
-    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
-    #[doc(hidden)]
-    pub fn fail_risk_reducing_exit_order_intent_writes_for_test(&self) {
-        self.fail_purpose_on_attempt(KnownPurpose::RiskReducingExitOrderIntent, 1);
-    }
-
-    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
-    #[doc(hidden)]
-    pub fn fail_capital_admission_rebuild_writes_for_test(&self) {
-        self.fail_purpose_on_attempt(KnownPurpose::CapitalAdmissionRebuild, 1);
     }
 
     #[cfg(test)]
@@ -491,6 +682,7 @@ impl DecisionEvidenceRecorder {
     ) -> Result<AppendReceipt, RecordFailure> {
         self.record_blocking(
             KnownProducer::SubmitReservationFill,
+            EffectPolicy::ReconciliationFailClosed,
             encode_reservation_fill(command)?,
         )
     }
@@ -501,6 +693,7 @@ impl DecisionEvidenceRecorder {
     ) -> Result<AppendReceipt, RecordFailure> {
         self.record_blocking(
             KnownProducer::OrderExecutionEntryIntent,
+            EffectPolicy::MustPrecedeNewRisk,
             encode_entry_order_intent(fact)?,
         )
     }
@@ -511,6 +704,7 @@ impl DecisionEvidenceRecorder {
     ) -> Result<CommittedAdmission, RecordFailure> {
         self.record_blocking(
             KnownProducer::SubmitAdmissionAdmittedEntry,
+            EffectPolicy::MustPrecedeNewRisk,
             encode_admitted_entry_admission(fact)?,
         )
         .map(|receipt| CommittedAdmission { _receipt: receipt })
@@ -521,9 +715,11 @@ impl DecisionEvidenceRecorder {
         fact: RejectedEntryAdmissionFact,
     ) -> NonBlockingRecordOutcome {
         match encode_rejected_entry_admission(fact) {
-            Ok(record) => {
-                self.record_nonblocking(KnownProducer::SubmitAdmissionRejectedEntry, record)
-            }
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::SubmitAdmissionRejectedEntry,
+                EffectPolicy::PreserveResult,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
@@ -533,7 +729,11 @@ impl DecisionEvidenceRecorder {
         fact: RiskReducingExitAdmissionFact,
     ) -> NonBlockingRecordOutcome {
         match encode_risk_reducing_exit_admission(fact) {
-            Ok(record) => self.record_nonblocking(KnownProducer::SubmitAdmissionExit, record),
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::SubmitAdmissionExit,
+                EffectPolicy::RiskReducingContinues,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
@@ -543,9 +743,11 @@ impl DecisionEvidenceRecorder {
         fact: ForcedReductionAdmissionFact,
     ) -> NonBlockingRecordOutcome {
         match encode_forced_reduction_admission(fact) {
-            Ok(record) => {
-                self.record_nonblocking(KnownProducer::SubmitAdmissionForcedReduction, record)
-            }
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::SubmitAdmissionForcedReduction,
+                EffectPolicy::RiskReducingContinues,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
@@ -555,7 +757,11 @@ impl DecisionEvidenceRecorder {
         fact: RiskReducingExitOrderIntentFact,
     ) -> NonBlockingRecordOutcome {
         match encode_risk_reducing_exit_order_intent(fact) {
-            Ok(record) => self.record_nonblocking(KnownProducer::OrderExecutionExitIntent, record),
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::OrderExecutionExitIntent,
+                EffectPolicy::RiskReducingContinues,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
@@ -566,6 +772,7 @@ impl DecisionEvidenceRecorder {
     ) -> Result<CommittedAdmission, RecordFailure> {
         self.record_blocking(
             KnownProducer::BasketAdmissionGranted,
+            EffectPolicy::MustPrecedeNewRisk,
             encode_basket_admission_granted(fact)?,
         )
         .map(|receipt| CommittedAdmission { _receipt: receipt })
@@ -576,7 +783,11 @@ impl DecisionEvidenceRecorder {
         fact: BasketAdmissionRejectedFact,
     ) -> NonBlockingRecordOutcome {
         match encode_basket_admission_rejected(fact) {
-            Ok(record) => self.record_nonblocking(KnownProducer::BasketAdmissionRejected, record),
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::BasketAdmissionRejected,
+                EffectPolicy::PreserveResult,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
@@ -587,13 +798,18 @@ impl DecisionEvidenceRecorder {
     ) -> Result<AppendReceipt, RecordFailure> {
         self.record_blocking(
             KnownProducer::CapitalAdmissionRebuild,
+            EffectPolicy::ReconciliationFailClosed,
             encode_capital_admission_rebuild(fact)?,
         )
     }
 
     pub fn record_order_lifecycle(&self, fact: OrderLifecycleFact) -> NonBlockingRecordOutcome {
         match encode_order_lifecycle(fact) {
-            Ok(record) => self.record_nonblocking(KnownProducer::EdgeTakerOrderLifecycle, record),
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::EdgeTakerOrderLifecycle,
+                EffectPolicy::PreserveResult,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
@@ -615,9 +831,11 @@ impl DecisionEvidenceRecorder {
         fact: VenueTruthCaptureFailureFact,
     ) -> NonBlockingRecordOutcome {
         match encode_venue_truth_capture_failure(fact) {
-            Ok(record) => {
-                self.record_nonblocking(KnownProducer::SubmitAdmissionVenueCaptureFailure, record)
-            }
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::SubmitAdmissionVenueCaptureFailure,
+                EffectPolicy::RiskReducingContinues,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
@@ -627,9 +845,11 @@ impl DecisionEvidenceRecorder {
         fact: VenueTruthDivergenceFact,
     ) -> NonBlockingRecordOutcome {
         match encode_venue_truth_divergence(fact) {
-            Ok(record) => {
-                self.record_nonblocking(KnownProducer::SubmitAdmissionVenueDivergence, record)
-            }
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::SubmitAdmissionVenueDivergence,
+                EffectPolicy::PreserveResult,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
@@ -639,7 +859,11 @@ impl DecisionEvidenceRecorder {
         fact: LossGovernorHaltFact,
     ) -> NonBlockingRecordOutcome {
         match encode_loss_governor_halt(fact) {
-            Ok(record) => self.record_nonblocking(KnownProducer::SubmitAdmissionLossHalt, record),
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::SubmitAdmissionLossHalt,
+                EffectPolicy::PreserveResult,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
@@ -649,16 +873,22 @@ impl DecisionEvidenceRecorder {
         fact: OrderRejectFact,
     ) -> NonBlockingRecordOutcome {
         match encode_order_reject(fact) {
-            Ok(record) => {
-                self.record_nonblocking(KnownProducer::SubmitAdmissionOrderReject, record)
-            }
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::SubmitAdmissionOrderReject,
+                EffectPolicy::PreserveResult,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
 
     pub fn record_observed_order_reject(&self, fact: OrderRejectFact) -> NonBlockingRecordOutcome {
         match encode_order_reject(fact) {
-            Ok(record) => self.record_nonblocking(KnownProducer::OrderRejectObserverFeed, record),
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::OrderRejectObserverFeed,
+                EffectPolicy::PreserveResult,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
@@ -691,6 +921,7 @@ impl DecisionEvidenceRecorder {
     ) -> Result<AppendReceipt, RecordFailure> {
         self.record_blocking(
             KnownProducer::EdgeTakerSubmitStrategyInput,
+            EffectPolicy::MustPrecedeNewRisk,
             encode_submit_linked_strategy_input_snapshot(fact)?,
         )
     }
@@ -700,9 +931,11 @@ impl DecisionEvidenceRecorder {
         fact: ExitSubmissionDecisionFact,
     ) -> NonBlockingRecordOutcome {
         match encode_exit_submission_decision(fact) {
-            Ok(record) => {
-                self.record_nonblocking(KnownProducer::EdgeTakerExitSubmitDecision, record)
-            }
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::EdgeTakerExitSubmitDecision,
+                EffectPolicy::RiskReducingContinues,
+                record,
+            ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }
@@ -729,7 +962,11 @@ impl DecisionEvidenceRecorder {
         fact: SettlementFact,
     ) -> Result<CommittedSettlement, RecordFailure> {
         let record = encode_settlement(fact.clone())?;
-        let receipt = self.record_blocking(KnownProducer::EdgeTakerSettlement, record)?;
+        let receipt = self.record_blocking(
+            KnownProducer::EdgeTakerSettlement,
+            EffectPolicy::ReconciliationFailClosed,
+            record,
+        )?;
         Ok(CommittedSettlement {
             fact,
             _receipt: receipt,
@@ -742,6 +979,7 @@ impl DecisionEvidenceRecorder {
     ) -> Result<AppendReceipt, RecordFailure> {
         self.record_blocking(
             KnownProducer::EdgeTakerTerminalSettlement,
+            EffectPolicy::ReconciliationFailClosed,
             encode_terminal_settlement(fact)?,
         )
     }
@@ -749,32 +987,20 @@ impl DecisionEvidenceRecorder {
     fn record_blocking(
         &self,
         producer: KnownProducer,
+        policy: EffectPolicy,
         record: EncodedEvidenceRecord,
     ) -> Result<AppendReceipt, RecordFailure> {
-        assert_contract_policy(
-            producer,
-            record.purpose,
-            &[
-                EffectPolicy::MustPrecedeNewRisk,
-                EffectPolicy::ReconciliationFailClosed,
-            ],
-        );
+        assert_contract_policy(producer, record.purpose, policy);
         self.append(record)
     }
 
     fn record_nonblocking(
         &self,
         producer: KnownProducer,
+        policy: EffectPolicy,
         record: EncodedEvidenceRecord,
     ) -> NonBlockingRecordOutcome {
-        assert_contract_policy(
-            producer,
-            record.purpose,
-            &[
-                EffectPolicy::PreserveResult,
-                EffectPolicy::RiskReducingContinues,
-            ],
-        );
+        assert_contract_policy(producer, record.purpose, policy);
         match self.append(record) {
             Ok(receipt) => NonBlockingRecordOutcome::Appended(receipt),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
@@ -789,7 +1015,7 @@ impl DecisionEvidenceRecorder {
         assert_contract_policy(
             producer,
             record.purpose,
-            &[EffectPolicy::ObservationBoundedFailure],
+            EffectPolicy::ObservationBoundedFailure,
         );
         let purpose = record.purpose;
         match self.append(record) {
@@ -822,6 +1048,7 @@ impl DecisionEvidenceRecorder {
     }
 
     fn append(&self, record: EncodedEvidenceRecord) -> Result<AppendReceipt, RecordFailure> {
+        let _operation = self.begin_operation()?;
         let record_bytes = u64::try_from(record.line.len()).map_err(|_| {
             RecordFailure::Rejected(anyhow::anyhow!(
                 "encoded evidence record size cannot be represented"
@@ -862,7 +1089,21 @@ impl DecisionEvidenceRecorder {
         if inject_failure {
             sink.forced_failure = Some(ForcedFailure::Write);
         }
-        sink.append(&record.line)?;
+        let append_result = sink.append(&record.line);
+        let first_poison = match &append_result {
+            Err(RecordFailure::CommitIndeterminate { phase, cause }) => {
+                Some(PoisonCause::CommitIndeterminate {
+                    phase: *phase,
+                    cause: Arc::clone(cause),
+                })
+            }
+            _ => None,
+        };
+        drop(sink);
+        if let Some(cause) = first_poison {
+            self.publish_first_poison(sink_kind, cause);
+        }
+        append_result?;
         Ok(AppendReceipt {
             purpose: record.purpose,
             sink: sink_kind,
@@ -871,13 +1112,9 @@ impl DecisionEvidenceRecorder {
     }
 }
 
-fn assert_contract_policy(
-    producer: KnownProducer,
-    purpose: KnownPurpose,
-    permitted: &[EffectPolicy],
-) {
+fn assert_contract_policy(producer: KnownProducer, purpose: KnownPurpose, expected: EffectPolicy) {
     assert_eq!(purpose_for_producer(producer), purpose);
-    assert!(permitted.contains(&effect_policy_for_purpose(purpose)));
+    assert_eq!(effect_policy_for_purpose(purpose), expected);
 }
 
 #[cfg(any(test, feature = "test-current-evidence-inspection"))]
@@ -985,6 +1222,7 @@ mod tests {
         let error = recorder
             .record_blocking(
                 KnownProducer::OrderExecutionEntryIntent,
+                EffectPolicy::MustPrecedeNewRisk,
                 record(KnownPurpose::EntryOrderIntent),
             )
             .expect_err("record larger than the recovery cap must fail");
@@ -1005,6 +1243,7 @@ mod tests {
         let receipt = recorder
             .record_blocking(
                 KnownProducer::OrderExecutionEntryIntent,
+                EffectPolicy::MustPrecedeNewRisk,
                 record(KnownPurpose::EntryOrderIntent),
             )
             .expect("healthy sink must append");
@@ -1037,6 +1276,7 @@ mod tests {
         assert!(matches!(
             recorder.record_blocking(
                 KnownProducer::OrderExecutionEntryIntent,
+                EffectPolicy::MustPrecedeNewRisk,
                 record(KnownPurpose::EntryOrderIntent),
             ),
             Err(RecordFailure::CommitIndeterminate {
@@ -1050,6 +1290,7 @@ mod tests {
         assert!(matches!(
             recorder.record_blocking(
                 KnownProducer::OrderExecutionEntryIntent,
+                EffectPolicy::MustPrecedeNewRisk,
                 record(KnownPurpose::EntryOrderIntent),
             ),
             Err(RecordFailure::SinkPoisoned { .. })
@@ -1078,6 +1319,7 @@ mod tests {
         assert!(matches!(
             recorder.record_blocking(
                 KnownProducer::OrderExecutionEntryIntent,
+                EffectPolicy::MustPrecedeNewRisk,
                 record(KnownPurpose::EntryOrderIntent),
             ),
             Err(RecordFailure::CommitIndeterminate {
@@ -1091,6 +1333,7 @@ mod tests {
         assert!(matches!(
             recorder.record_blocking(
                 KnownProducer::OrderExecutionEntryIntent,
+                EffectPolicy::MustPrecedeNewRisk,
                 record(KnownPurpose::EntryOrderIntent),
             ),
             Err(RecordFailure::SinkPoisoned { .. })
@@ -1152,6 +1395,153 @@ mod tests {
     }
 
     #[test]
+    fn first_poison_publishes_once_after_the_sink_lock_is_released() {
+        let recorder = Arc::new(recorder());
+        let status = DecisionEvidenceStatusView::new(&recorder);
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&transitions);
+        recorder
+            .register_health_transition_publisher(Arc::new(move |transition| {
+                assert!(matches!(
+                    status.observation_stream_status(),
+                    Some(ObservationStreamStatus::Poisoned { .. })
+                ));
+                captured
+                    .lock()
+                    .expect("transition capture mutex must not be poisoned")
+                    .push(transition);
+            }))
+            .expect("publisher must register once");
+        recorder.fail_observation_writes();
+
+        assert!(matches!(
+            recorder.record_observation(
+                KnownProducer::EdgeTakerBlockedStrategyInput,
+                record(KnownPurpose::BlockedStrategyInputObservation),
+            ),
+            ObservationRecordOutcome::FailureReported(_)
+        ));
+        assert!(matches!(
+            recorder.record_observation(
+                KnownProducer::EdgeTakerEntrySkip,
+                record(KnownPurpose::EntrySkipObservation),
+            ),
+            ObservationRecordOutcome::FailureReported(_)
+        ));
+        let transitions = transitions
+            .lock()
+            .expect("transition capture mutex must not be poisoned");
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].sink, KnownSink::Observation);
+    }
+
+    #[test]
+    fn startup_observation_poison_is_published_when_the_publisher_registers() {
+        let recorder = DecisionEvidenceRecorder::from_files(
+            tempfile::tempfile().expect("machine sink must open"),
+            tempfile::tempfile().expect("observation sink must open"),
+            None,
+            Some(PoisonCause::StartupContentInvalid {
+                cause: Arc::from("invalid retained observation"),
+            }),
+            PositiveFiniteEvidenceReadCap::new(1_048_576).expect("test record cap must be finite"),
+            4096,
+        );
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&transitions);
+
+        recorder
+            .register_health_transition_publisher(Arc::new(move |transition| {
+                captured
+                    .lock()
+                    .expect("transition capture mutex must not be poisoned")
+                    .push(transition);
+            }))
+            .expect("publisher must register once");
+
+        let transitions = transitions
+            .lock()
+            .expect("transition capture mutex must not be poisoned");
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].sink, KnownSink::Observation);
+        assert!(matches!(
+            transitions[0].cause,
+            PoisonCause::StartupContentInvalid { .. }
+        ));
+    }
+
+    #[test]
+    fn first_machine_poison_publishes_machine_transition() {
+        let recorder = recorder();
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&transitions);
+        recorder
+            .register_health_transition_publisher(Arc::new(move |transition| {
+                captured
+                    .lock()
+                    .expect("transition capture mutex must not be poisoned")
+                    .push(transition);
+            }))
+            .expect("publisher must register once");
+        recorder.fail_machine_writes_for_test();
+
+        assert!(matches!(
+            recorder.record_blocking(
+                KnownProducer::OrderExecutionEntryIntent,
+                EffectPolicy::MustPrecedeNewRisk,
+                record(KnownPurpose::EntryOrderIntent),
+            ),
+            Err(RecordFailure::CommitIndeterminate { .. })
+        ));
+
+        let transitions = transitions
+            .lock()
+            .expect("transition capture mutex must not be poisoned");
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].sink, KnownSink::Machine);
+    }
+
+    #[test]
+    fn closing_waits_for_active_operations_and_rejects_later_appends() {
+        use std::sync::mpsc;
+
+        let recorder = Arc::new(recorder());
+        let (active_tx, active_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let active_recorder = Arc::clone(&recorder);
+        let active = std::thread::spawn(move || {
+            let operation = active_recorder
+                .begin_operation()
+                .expect("open recorder must grant an operation");
+            active_tx.send(()).expect("active signal must send");
+            release_rx.recv().expect("release signal must arrive");
+            drop(operation);
+        });
+        active_rx.recv().expect("operation must become active");
+
+        let (closed_tx, closed_rx) = mpsc::channel();
+        let closing_recorder = Arc::clone(&recorder);
+        let closing = std::thread::spawn(move || {
+            closing_recorder.close();
+            closed_tx.send(()).expect("closed signal must send");
+        });
+        assert!(closed_rx.try_recv().is_err());
+        release_tx.send(()).expect("operation release must send");
+        active.join().expect("active operation thread must join");
+        closed_rx.recv().expect("close must finish after drain");
+        closing.join().expect("closing thread must join");
+
+        assert!(matches!(
+            recorder.record_blocking(
+                KnownProducer::OrderExecutionEntryIntent,
+                EffectPolicy::MustPrecedeNewRisk,
+                record(KnownPurpose::EntryOrderIntent),
+            ),
+            Err(RecordFailure::RecorderClosed)
+        ));
+    }
+
+    #[test]
     fn malformed_encoded_record_is_rejected_before_any_sink_call() {
         assert!(matches!(
             EncodedEvidenceRecord::try_new(KnownPurpose::EntryOrderIntent, b"{}".to_vec()),
@@ -1163,6 +1553,7 @@ mod tests {
             recorder
                 .record_blocking(
                     KnownProducer::OrderExecutionEntryIntent,
+                    EffectPolicy::MustPrecedeNewRisk,
                     record(KnownPurpose::EntryOrderIntent),
                 )
                 .is_ok()
@@ -1175,16 +1566,18 @@ mod tests {
         let recorder = recorder();
         let _ = recorder.record_blocking(
             KnownProducer::SubmitReservationFill,
+            EffectPolicy::ReconciliationFailClosed,
             record(KnownPurpose::EntryOrderIntent),
         );
     }
 
     #[test]
-    #[should_panic(expected = "assertion failed: permitted.contains")]
+    #[should_panic(expected = "assertion `left == right` failed")]
     fn effect_policy_cannot_cross_the_caller_outcome_boundary() {
         let recorder = recorder();
         let _ = recorder.record_nonblocking(
             KnownProducer::OrderExecutionEntryIntent,
+            EffectPolicy::PreserveResult,
             record(KnownPurpose::EntryOrderIntent),
         );
     }

@@ -12,18 +12,20 @@ use crate::bolt_v3_capital_admission_state::{
 use crate::bolt_v3_capital_reservation::{
     CapitalPoolSnapshot, ReservationRejectionReason, ReservationRequest,
 };
+#[cfg(test)]
+use crate::bolt_v3_current_evidence::DecisionEvidenceRecorder;
 use crate::bolt_v3_current_evidence::{
     AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason,
     AdmittedEntryAdmissionFact, BasketAdmissionDetails, BasketAdmissionGrantedFact,
     BasketAdmittedLeg, CapitalAdmissionRebuildFact, CapitalAdmissionRebuildOutcome,
     CapitalAdmissionRebuildSource, CapitalAdmissionRejectionReason, CommittedAdmission,
-    DecisionEvidenceRecorder, EvidenceOrderSide, ForcedReductionAdmissionFact,
-    LossGovernorHaltFact, LossHaltReason as EvidenceLossHaltReason, LossSnapshotSource,
+    EvidenceOrderSide, ForcedReductionAdmissionFact, LossGovernorHaltFact,
+    LossHaltReason as EvidenceLossHaltReason, LossSnapshotSource,
     LossSnapshotStaleReason as EvidenceLossSnapshotStaleReason, NonBlockingRecordOutcome,
     OrderIntentDetails, OrderRejectFact, OrderRejectReason, OrderRejectSource, RecordFailure,
     RejectedEntryAdmissionFact, ReservationAttribution, ReservationProductKind,
-    RiskReducingExitAdmissionFact, StaleLossReason, SubmitReservationFillFact,
-    SubmitReservationFillSource, VenueTruthCaptureFailureFact,
+    RiskReducingExitAdmissionFact, StaleLossReason, SubmitAdmissionEvidence,
+    SubmitReservationFillFact, SubmitReservationFillSource, VenueTruthCaptureFailureFact,
     VenueTruthDivergenceAlarmClass as EvidenceDivergenceAlarmClass, VenueTruthDivergenceFact,
 };
 #[cfg(feature = "test-current-evidence-inspection")]
@@ -221,7 +223,7 @@ fn submit_admission_order_side_key(side: OrderSide) -> &'static str {
 pub struct BoltV3SubmitAdmissionState {
     inner: Arc<Mutex<BoltV3SubmitAdmissionInner>>,
     reject_episodes: Mutex<BTreeMap<String, RejectEpisode>>,
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence: SubmitAdmissionEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -473,31 +475,36 @@ impl BoltV3SubmitCapitalAdmissionLifecycleDecision {
 }
 
 impl BoltV3SubmitAdmissionState {
-    pub fn new(decision_evidence: Arc<DecisionEvidenceRecorder>) -> Self {
+    pub fn new(decision_evidence: impl Into<SubmitAdmissionEvidence>) -> Self {
         Self::new_with_live_submit_limits(decision_evidence, BTreeMap::new())
     }
 
     pub fn new_without_live_submit_limits(
-        decision_evidence: Arc<DecisionEvidenceRecorder>,
+        decision_evidence: impl Into<SubmitAdmissionEvidence>,
     ) -> Self {
         Self::new(decision_evidence)
     }
 
     pub fn new_with_live_submit_limits(
-        decision_evidence: Arc<DecisionEvidenceRecorder>,
+        decision_evidence: impl Into<SubmitAdmissionEvidence>,
         live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     ) -> Self {
-        Self::new_with_optional_controls(decision_evidence, live_submit_approval_limits, None, None)
+        Self::new_with_optional_controls(
+            decision_evidence.into(),
+            live_submit_approval_limits,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn new_with_live_submit_limits_and_optional_controls(
-        decision_evidence: Arc<DecisionEvidenceRecorder>,
+        decision_evidence: impl Into<SubmitAdmissionEvidence>,
         live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
         loss_policy: Option<LossGovernorPolicy>,
         capital_admission: Option<BoltV3SubmitCapitalAdmissionConfig>,
     ) -> Self {
         Self::new_with_optional_controls(
-            decision_evidence,
+            decision_evidence.into(),
             live_submit_approval_limits,
             loss_policy,
             capital_admission,
@@ -505,11 +512,11 @@ impl BoltV3SubmitAdmissionState {
     }
 
     pub fn new_with_loss_governor(
-        decision_evidence: Arc<DecisionEvidenceRecorder>,
+        decision_evidence: impl Into<SubmitAdmissionEvidence>,
         loss_policy: LossGovernorPolicy,
     ) -> Self {
         Self::new_with_optional_controls(
-            decision_evidence,
+            decision_evidence.into(),
             BTreeMap::new(),
             Some(loss_policy),
             None,
@@ -517,11 +524,11 @@ impl BoltV3SubmitAdmissionState {
     }
 
     pub fn new_with_capital_admission(
-        decision_evidence: Arc<DecisionEvidenceRecorder>,
+        decision_evidence: impl Into<SubmitAdmissionEvidence>,
         capital_admission: BoltV3SubmitCapitalAdmissionConfig,
     ) -> Self {
         Self::new_with_optional_controls(
-            decision_evidence,
+            decision_evidence.into(),
             BTreeMap::new(),
             None,
             Some(capital_admission),
@@ -529,12 +536,12 @@ impl BoltV3SubmitAdmissionState {
     }
 
     pub fn new_with_loss_governor_and_capital_admission(
-        decision_evidence: Arc<DecisionEvidenceRecorder>,
+        decision_evidence: impl Into<SubmitAdmissionEvidence>,
         loss_policy: LossGovernorPolicy,
         capital_admission: BoltV3SubmitCapitalAdmissionConfig,
     ) -> Self {
         Self::new_with_optional_controls(
-            decision_evidence,
+            decision_evidence.into(),
             BTreeMap::new(),
             Some(loss_policy),
             Some(capital_admission),
@@ -542,7 +549,7 @@ impl BoltV3SubmitAdmissionState {
     }
 
     fn new_with_optional_controls(
-        decision_evidence: Arc<DecisionEvidenceRecorder>,
+        decision_evidence: SubmitAdmissionEvidence,
         live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
         loss_policy: Option<LossGovernorPolicy>,
         capital_admission: Option<BoltV3SubmitCapitalAdmissionConfig>,
@@ -1939,7 +1946,7 @@ impl BoltV3SubmitAdmissionState {
                 {
                     log::error!("rejected entry admission evidence failed: {error}");
                 }
-                Ok(RecordedAdmissionAuthority::NoSubmitAuthority)
+                Ok(RecordedAdmissionAuthority::NoExternalActionAuthority)
             }
             (BoltV3SubmitIntentKind::RiskReducingExit, outcome) => {
                 if let NonBlockingRecordOutcome::Failed(error) =
@@ -2685,7 +2692,7 @@ enum RecordedAdmissionAuthority {
     CommittedEntry(CommittedAdmission),
     RiskReducing,
     ForcedReduction,
-    NoSubmitAuthority,
+    NoExternalActionAuthority,
 }
 
 impl RecordedAdmissionAuthority {
@@ -2698,9 +2705,11 @@ impl RecordedAdmissionAuthority {
             }
             Self::RiskReducing => Ok(BoltV3SubmitEvidenceAuthority::RiskReducing),
             Self::ForcedReduction => Ok(BoltV3SubmitEvidenceAuthority::ForcedReduction),
-            Self::NoSubmitAuthority => Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                reason: "admitted submit has no evidence authority".to_string(),
-            }),
+            Self::NoExternalActionAuthority => {
+                Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                    reason: "admitted submit has no evidence authority".to_string(),
+                })
+            }
         }
     }
 }

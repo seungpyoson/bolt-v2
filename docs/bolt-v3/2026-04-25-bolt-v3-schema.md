@@ -655,9 +655,14 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - `observation_relative_path`: required relative JSONL path containing observations that startup recovery never reads.
 - `retired_relative_paths`: required list of pre-cutover paths whose presence makes startup fail closed.
 - `reject_episode_max_count`: positive bound for retained semantic-key rejection diagnostics.
-- `recovery_evidence_max_bytes`: positive mandatory byte cap for every current-evidence read, including startup validation of both machine and observation streams and offline Shadow-PnL reads.
+- `recovery_evidence_max_bytes`: positive finite mandatory byte cap for every current-evidence read and encoded write, including startup validation of both machine and observation streams and offline Shadow-PnL reads. Zero and the sentinel-overflow value are rejected.
 
-All configured paths are distinct, relative to `catalog_directory`, and may not traverse parent directories.
+All configured paths use one canonical component spelling relative to `catalog_directory`. Redundant
+separators, dot components, trailing separators, parent traversal, equality, and every
+ancestor/descendant relation among active and retired paths are rejected before filesystem mutation.
+The runtime holds a nonblocking exclusive lock on the opened catalog descriptor for the complete
+writer lifetime; a second writer fails before retired checks, parent creation, stream creation, or
+validation.
 The trading runtime has one current-format path: exact `(kind, schema_version)` plus exact `gate_id`
 selects one codec from the checked-in Rust contract generated from
 `config/decision-evidence-contract.toml`. `gate_version` is required nonempty diagnostic metadata;
@@ -665,6 +670,12 @@ it does not select or reject codecs. Old, unknown, mixed, malformed, blank, or t
 fail closed. There is no schema ordering, compatibility decoder, fallback, migration, or runtime
 path for pre-cutover evidence. The hard-cutover runbook is
 `docs/runbooks/current-decision-evidence-hard-cutover.md`.
+
+Admitted entry and basket-grant identities embed any capital-reservation attribution authorized by
+that same decision. No standalone reservation-metadata identity exists, and rejected decisions cannot
+carry reservation attribution. Startup joins embedded attribution to the reconciled NautilusTrader
+open-order cache only after NT startup reconciliation completes; an unattributed open order fails
+closed.
 
 `order_intent.order_fields` fields:
 

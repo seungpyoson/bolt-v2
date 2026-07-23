@@ -885,7 +885,7 @@ fn maker_context_with_writer(
 ) -> StrategyBuildContext {
     StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        writer,
+        bolt_v2::bolt_v3_strategy_context::StrategyDecisionEvidence::maker_for_test(writer),
         admission,
         BoltV3OrderExecutionPolicy::shadow(),
         Venue::from("MAKER.TEST"),

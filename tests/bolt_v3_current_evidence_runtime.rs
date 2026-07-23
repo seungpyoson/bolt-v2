@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, process::Command};
 
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
@@ -21,19 +21,19 @@ fn finite_cap(value: u64) -> PositiveFiniteEvidenceReadCap {
 }
 
 fn loaded_in(temp: &TempDir) -> LoadedBoltV3Config {
+    loaded_at(&std::fs::canonicalize(temp.path()).expect("temporary catalog must canonicalize"))
+}
+
+fn loaded_at(catalog: &Path) -> LoadedBoltV3Config {
     let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture config must load");
-    loaded.root.persistence.catalog_directory = std::fs::canonicalize(temp.path())
-        .expect("temporary catalog must canonicalize")
-        .display()
-        .to_string();
+    loaded.root.persistence.catalog_directory = catalog.display().to_string();
     let evidence = &loaded.root.persistence.decision_evidence;
     for relative in [
         evidence.machine_relative_path.as_str(),
         evidence.observation_relative_path.as_str(),
     ] {
-        let parent = temp
-            .path()
+        let parent = catalog
             .join(relative)
             .parent()
             .expect("evidence path must have a parent")
@@ -41,6 +41,43 @@ fn loaded_in(temp: &TempDir) -> LoadedBoltV3Config {
         fs::create_dir_all(parent).expect("evidence parent must be created");
     }
     loaded
+}
+
+#[cfg(unix)]
+const CATALOG_LOCK_CHILD_PATH: &str = "BOLT_TEST_CURRENT_EVIDENCE_CATALOG";
+#[cfg(unix)]
+const CATALOG_LOCK_CHILD_EXPECT_BLOCKED: &str = "BOLT_TEST_CURRENT_EVIDENCE_EXPECT_BLOCKED";
+
+#[cfg(unix)]
+#[test]
+fn catalog_lock_child_process() {
+    let Some(catalog) = std::env::var_os(CATALOG_LOCK_CHILD_PATH) else {
+        return;
+    };
+    let loaded = loaded_at(Path::new(&catalog));
+    let result = DecisionEvidenceRuntime::open(&loaded);
+    if std::env::var_os(CATALOG_LOCK_CHILD_EXPECT_BLOCKED).is_some() {
+        let error = result.expect_err("parent-held catalog lock must exclude this process");
+        assert!(error.to_string().contains("WriterAlreadyActive"));
+    } else {
+        result.expect("catalog lock must become available after the owning process drops it");
+    }
+}
+
+#[cfg(unix)]
+fn run_catalog_lock_child(catalog: &Path, expect_blocked: bool) {
+    let mut command = Command::new(std::env::current_exe().expect("test executable must resolve"));
+    command
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .arg("--exact")
+        .arg("catalog_lock_child_process")
+        .arg("--nocapture")
+        .env(CATALOG_LOCK_CHILD_PATH, catalog);
+    if expect_blocked {
+        command.env(CATALOG_LOCK_CHILD_EXPECT_BLOCKED, "1");
+    }
+    let status = command.status().expect("catalog-lock child must run");
+    assert!(status.success(), "catalog-lock child must pass");
 }
 
 fn machine_path(loaded: &LoadedBoltV3Config) -> std::path::PathBuf {
@@ -100,6 +137,19 @@ fn runtime_holds_exclusive_catalog_ownership_for_recorder_lifetime() {
     drop(first);
     DecisionEvidenceRuntime::open(&loaded)
         .expect("catalog ownership must release when the recorder runtime drops");
+}
+
+#[cfg(unix)]
+#[test]
+fn catalog_ownership_excludes_an_independent_process_until_runtime_drop() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let catalog = std::fs::canonicalize(temp.path()).expect("temporary catalog must canonicalize");
+    let loaded = loaded_at(&catalog);
+    let runtime = DecisionEvidenceRuntime::open(&loaded).expect("parent runtime must open");
+
+    run_catalog_lock_child(&catalog, true);
+    drop(runtime);
+    run_catalog_lock_child(&catalog, false);
 }
 
 fn reservation_attribution() -> ReservationAttribution {

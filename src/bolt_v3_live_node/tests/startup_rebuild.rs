@@ -48,11 +48,11 @@ fn startup_rebuild_does_not_recover_known_submit_reservation_from_nt_cache_witho
         "0.3",
         "4.3",
     );
+    write_admitted_entry_reservation(&loaded, &metadata);
     let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
         .expect("fixture v3 LiveNode should build");
 
     assert_eq!(runtime.capital_admission_reconciled(), Some(false));
-    write_admitted_entry_reservation(&loaded, &metadata);
     seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
     seed_accepted_open_limit_order(
         &runtime,
@@ -261,7 +261,10 @@ fn with_resolved_health_and_start_builds_reuse_one_secret_resolution() {
     // catalog directory under a tempdir so registration does not touch the
     // production `/var/lib/bolt` path, which is unwritable in CI. The
     // one-resolution property below is unaffected by this storage path.
-    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    loaded.root.persistence.catalog_directory = std::fs::canonicalize(temp.path())
+        .expect("test catalog should canonicalize")
+        .to_string_lossy()
+        .to_string();
     crate::bolt_v3_current_evidence::prepare_test_generation(&loaded);
     let secret_bearing_clients = loaded
         .root
@@ -417,10 +420,10 @@ fn startup_rebuild_rejects_attribution_when_open_quantity_exceeds_submitted() {
         "0.3",
         "4.3",
     );
+    write_admitted_entry_reservation(&loaded, &metadata);
     let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
         .expect("fixture v3 LiveNode should build");
 
-    write_admitted_entry_reservation(&loaded, &metadata);
     seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
     seed_accepted_open_limit_order(
         &runtime,

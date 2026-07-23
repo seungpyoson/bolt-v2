@@ -10,7 +10,9 @@ use nautilus_common::{
 use nautilus_model::events::OrderEventAny;
 use tokio::sync::Notify;
 
-use crate::bolt_v3_current_evidence::DecisionEvidenceRecorder;
+use crate::bolt_v3_current_evidence::OrderExecutionEvidence;
+#[cfg(test)]
+use crate::bolt_v3_current_evidence::{DecisionEvidenceRecorder, DecisionEvidenceStatusView};
 use crate::bolt_v3_operator_health::BoltV3OperatorHealthTransitionEmitter;
 use crate::bolt_v3_venue_truth::{
     VenueTruthCaptureFailureEvidence, venue_truth_capture_failure_parts,
@@ -1116,7 +1118,7 @@ impl KillSwitchLossActionSink for NtReducingLossActionSink {
 fn live_node_kill_switch_flatten_executor(
     loaded: &LoadedBoltV3Config,
     node: &LiveNode,
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence: OrderExecutionEvidence,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> Result<Option<Rc<dyn KillSwitchFlattenExecutor>>, BoltV3LiveNodeError> {
     let Some(kill_switch) = loaded
@@ -1277,7 +1279,7 @@ fn live_node_kill_switch_flatten_executor(
                     order_execution_policy,
                     &mut sink,
                     &mut order_factory,
-                    decision_evidence.as_ref(),
+                    &decision_evidence,
                     submit_admission.as_ref(),
                     BoltV3KillSwitchFlattenRoutingContext {
                         execution_client_id,
@@ -1447,7 +1449,7 @@ fn execution_clients_by_venue(loaded: &LoadedBoltV3Config) -> Result<BTreeMap<Ve
 pub(super) fn configure_bolt_v3_kill_switch_loss_protection(
     loaded: &LoadedBoltV3Config,
     node: &LiveNode,
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence: impl Into<OrderExecutionEvidence>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> Result<Option<Rc<RefCell<KillSwitchLossProtection>>>, BoltV3LiveNodeError> {
     let Some(kill_switch) = loaded
@@ -1484,7 +1486,7 @@ pub(super) fn configure_bolt_v3_kill_switch_loss_protection(
     let flatten_executor = live_node_kill_switch_flatten_executor(
         loaded,
         node,
-        decision_evidence,
+        decision_evidence.into(),
         submit_admission.clone(),
     )?;
     let action_sink: Rc<dyn KillSwitchLossActionSink> = match flatten_executor {
@@ -1820,7 +1822,7 @@ mod tests {
                     0,
                     None,
                     BoltV3SettlementHealth::nominal(),
-                    &decision_evidence,
+                    &DecisionEvidenceStatusView::new(&decision_evidence),
                 );
                 if logger.emit_surface(reason, surface)
                     == BoltV3OperatorHealthTransitionEmission::Emitted

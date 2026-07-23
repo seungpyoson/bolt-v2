@@ -105,12 +105,13 @@ async fn startup_watchdog_capture_failure_after_running_still_awaits_runner_resu
         || NodeState::Running,
         || true,
         || stop_called.set(true),
+        || Ok(()),
         LiveNodeStartupWatchdogBounds {
             startup_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(25),
             trader_invariant_poll: Duration::from_millis(50),
+            registered_client_labels: vec!["data:chainlink_reference".to_string()],
         },
-        vec!["data:chainlink_reference".to_string()],
     )
     .await;
 
@@ -148,12 +149,13 @@ async fn startup_watchdog_capture_failure_during_shutdown_preserves_runner_resul
         || NodeState::ShuttingDown,
         || true,
         || stop_called.set(true),
+        || Ok(()),
         LiveNodeStartupWatchdogBounds {
             startup_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(25),
             trader_invariant_poll: Duration::from_millis(50),
+            registered_client_labels: vec!["data:chainlink_reference".to_string()],
         },
-        vec!["data:chainlink_reference".to_string()],
     )
     .await;
 
@@ -190,12 +192,13 @@ async fn startup_watchdog_capture_failure_during_hung_startup_returns_within_shu
             || NodeState::Starting,
             || true,
             || stop_called.set(true),
+            || Ok(()),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_secs(1),
                 shutdown_grace,
                 trader_invariant_poll: Duration::from_millis(50),
+                registered_client_labels: vec!["data:chainlink_reference".to_string()],
             },
-            vec!["data:chainlink_reference".to_string()],
         ),
     )
     .await
@@ -248,12 +251,13 @@ async fn startup_watchdog_deadline_during_shutdown_preserves_runner_result() {
         || NodeState::ShuttingDown,
         || true,
         || stop_called.set(true),
+        || Ok(()),
         LiveNodeStartupWatchdogBounds {
             startup_timeout: Duration::from_millis(1),
             shutdown_grace: Duration::from_millis(100),
             trader_invariant_poll: Duration::from_millis(50),
+            registered_client_labels: vec!["data:chainlink_reference".to_string()],
         },
-        vec!["data:chainlink_reference".to_string()],
     )
     .await;
 
@@ -286,12 +290,13 @@ async fn startup_watchdog_deadline_during_hung_startup_timeout_names_shutdown_gr
             || NodeState::Starting,
             || true,
             || stop_called.set(true),
+            || Ok(()),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_millis(1),
                 shutdown_grace,
                 trader_invariant_poll: Duration::from_millis(50),
+                registered_client_labels: vec!["data:chainlink_reference".to_string()],
             },
-            vec!["data:chainlink_reference".to_string()],
         ),
     )
     .await
@@ -347,12 +352,13 @@ async fn startup_watchdog_deadline_during_shutdown_timeout_names_shutdown_grace(
             || NodeState::ShuttingDown,
             || true,
             || stop_called.set(true),
+            || Ok(()),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_millis(1),
                 shutdown_grace,
                 trader_invariant_poll: Duration::from_millis(50),
+                registered_client_labels: vec!["data:chainlink_reference".to_string()],
             },
-            vec!["data:chainlink_reference".to_string()],
         ),
     )
     .await
@@ -389,6 +395,76 @@ async fn startup_watchdog_deadline_during_shutdown_timeout_names_shutdown_grace(
             panic!("deadline during shutdown should name shutdown-grace timeout, got {other:?}")
         }
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_watchdog_runs_post_reconciliation_guard_once_before_remaining_live() {
+    let run_future = async {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        Ok(())
+    };
+    tokio::pin!(run_future);
+    let mut capture_failure_receiver = None;
+    let guard_calls = Cell::new(0_u32);
+
+    let outcome = live_node_run_startup_watchdog(
+        run_future.as_mut(),
+        &mut capture_failure_receiver,
+        || NodeState::Running,
+        || true,
+        || {},
+        || {
+            guard_calls.set(guard_calls.get() + 1);
+            Ok(())
+        },
+        LiveNodeStartupWatchdogBounds {
+            startup_timeout: Duration::from_secs(1),
+            shutdown_grace: Duration::from_millis(25),
+            trader_invariant_poll: Duration::from_millis(1),
+            registered_client_labels: Vec::new(),
+        },
+    )
+    .await;
+
+    assert!(matches!(
+        outcome,
+        LiveNodeRunStartupOutcome::Finished(Ok(()))
+    ));
+    assert_eq!(guard_calls.get(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_watchdog_stops_when_post_reconciliation_guard_fails() {
+    let run_future = std::future::pending::<Result<(), anyhow::Error>>();
+    tokio::pin!(run_future);
+    let mut capture_failure_receiver = None;
+    let stop_called = Cell::new(false);
+
+    let outcome = live_node_run_startup_watchdog(
+        run_future.as_mut(),
+        &mut capture_failure_receiver,
+        || NodeState::Running,
+        || true,
+        || stop_called.set(true),
+        || {
+            Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
+                "post-reconciliation guard failed"
+            )))
+        },
+        LiveNodeStartupWatchdogBounds {
+            startup_timeout: Duration::from_secs(1),
+            shutdown_grace: Duration::from_millis(1),
+            trader_invariant_poll: Duration::from_millis(1),
+            registered_client_labels: Vec::new(),
+        },
+    )
+    .await;
+
+    assert!(stop_called.get());
+    assert!(matches!(
+        outcome,
+        LiveNodeRunStartupOutcome::StartupGuardFailed(BoltV3LiveNodeError::Build(_))
+    ));
 }
 
 #[test]
@@ -439,15 +515,16 @@ async fn startup_watchdog_aborts_when_node_running_without_trader() {
             || NodeState::Running,
             || false,
             || stop_called.set(true),
+            || Ok(()),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_secs(10),
                 shutdown_grace,
                 trader_invariant_poll: Duration::from_millis(50),
+                registered_client_labels: vec![
+                    "data:binance_reference".to_string(),
+                    "data:polymarket_main".to_string(),
+                ],
             },
-            vec![
-                "data:binance_reference".to_string(),
-                "data:polymarket_main".to_string(),
-            ],
         ),
     )
     .await
@@ -498,12 +575,13 @@ async fn startup_watchdog_grace_timeout_still_names_trader_not_started() {
             || NodeState::Running,
             || false,
             || stop_called.set(true),
+            || Ok(()),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_secs(10),
                 shutdown_grace,
                 trader_invariant_poll: Duration::from_millis(50),
+                registered_client_labels: vec!["data:binance_reference".to_string()],
             },
-            vec!["data:binance_reference".to_string()],
         ),
     )
     .await

@@ -286,14 +286,17 @@ impl BinaryOracleMaker {
         max_fee_bps: Decimal,
     ) -> Result<MakerOrderDispatchOutcome> {
         let policy = self.context.order_execution_policy();
-        let decision_evidence = self.context.decision_evidence_arc();
+        let decision_evidence = self
+            .context
+            .order_execution_evidence()
+            .expect("maker strategy must own order-intent evidence");
         let submit_admission = self.context.submit_admission_arc();
         let strategy_id = self.config.strategy_id.clone();
         let execution_client_id = self.config.client_id.clone();
         route_maker_order_command_through_policy(
             policy,
             self,
-            decision_evidence.as_ref(),
+            &decision_evidence,
             submit_admission.as_ref(),
             BoltV3MakerOrderRoutingContext {
                 strategy_id: strategy_id.as_str(),
@@ -345,7 +348,8 @@ impl BinaryOracleMaker {
         );
         if let ObservationRecordOutcome::FailureReported(error) = self
             .context
-            .decision_evidence()
+            .maker_evidence()
+            .expect("maker strategy must own maker evidence")
             .record_requote_throttle_observation(evidence)
         {
             // A requote throttle is declining/limiting action (no new risk): a
@@ -979,13 +983,16 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
 mod tests {
     use super::*;
     use crate::{
-        bolt_v3_current_evidence::DecisionEvidenceRecorder,
+        bolt_v3_current_evidence::{
+            DecisionEvidenceRecorder, MakerEvidence, OrderExecutionEvidence,
+        },
         bolt_v3_maker_mu_estimator::{MuHealthReason, UsableMu},
         bolt_v3_market_families::OutcomeSide,
         bolt_v3_numeric::NANOS_PER_MILLI_U64,
         bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
         bolt_v3_position_contract::BoltV3PositionMarketLifecycle,
         bolt_v3_providers::FeeProvider,
+        bolt_v3_strategy_context::StrategyDecisionEvidence,
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     };
     use futures_util::{FutureExt, future::BoxFuture};
@@ -1103,9 +1110,13 @@ mod tests {
 
     fn test_context() -> StrategyBuildContext {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let evidence = StrategyDecisionEvidence::maker(
+            MakerEvidence::new(&writer),
+            OrderExecutionEvidence::new(&writer),
+        );
         StrategyBuildContext::new(
             Arc::new(NoopFeeProvider),
-            writer.clone(),
+            evidence,
             Arc::new(BoltV3SubmitAdmissionState::new(writer)),
             BoltV3OrderExecutionPolicy::shadow(),
             Venue::from("MAKER.TEST"),

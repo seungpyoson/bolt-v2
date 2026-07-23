@@ -26,14 +26,14 @@ use bolt_v2::{
     },
     bolt_v3_current_evidence::{
         AdmissionDecisionOutcome, BacktestRunGuardEvent, CurrentEvidenceStream,
-        DecisionEvidenceRecorder, OfflineDecisionEvidenceRuntime, PositiveFiniteEvidenceReadCap,
-        StrategyInputDetails, StrategyInputRvState, read_backtest_run_guard_events,
+        OfflineDecisionEvidenceRuntime, PositiveFiniteEvidenceReadCap, StrategyInputDetails,
+        StrategyInputRvState, SubmitAdmissionEvidence, read_backtest_run_guard_events,
     },
     bolt_v3_operator_artifacts::json_artifact_bytes,
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
     bolt_v3_providers::FeeProvider,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
-    bolt_v3_strategy_context::StrategyBuildContext,
+    bolt_v3_strategy_context::{StrategyBuildContext, StrategyDecisionEvidence},
     bolt_v3_strategy_registration::{
         StrategyPreparationConfig, prepare_strategy_client_routes, register_prepared_strategy_batch,
     },
@@ -261,8 +261,22 @@ impl BacktestDecisionEvidenceWriter {
         })
     }
 
-    fn recorder(&self) -> Arc<DecisionEvidenceRecorder> {
-        self.runtime.recorder()
+    fn submit_admission_evidence(&self) -> SubmitAdmissionEvidence {
+        self.runtime.submit_admission_evidence()
+    }
+
+    fn strategy_evidence(&self, registry_key: &str) -> Result<StrategyDecisionEvidence> {
+        match registry_key {
+            STRATEGY_BINARY_ORACLE_EDGE_TAKER => Ok(StrategyDecisionEvidence::edge_taker(
+                self.runtime.edge_taker_evidence(),
+                self.runtime.order_execution_evidence(),
+            )),
+            STRATEGY_BINARY_ORACLE_MAKER => Ok(StrategyDecisionEvidence::maker(
+                self.runtime.maker_evidence(),
+                self.runtime.order_execution_evidence(),
+            )),
+            _ => bail!("strategy {registry_key:?} owns no decision-evidence capability"),
+        }
     }
 
     fn state(&self) -> Result<BacktestDecisionEvidenceState> {
@@ -876,12 +890,13 @@ fn register_manifest_binary_oracle_strategy(
         manifest_evidence_reject_episode_max_count(&manifest.strategy)?,
         manifest_evidence_read_max_bytes(&manifest.strategy)?,
     )?);
-    let decision_evidence = run_guard_writer.recorder();
-    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
+    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        run_guard_writer.submit_admission_evidence(),
+    ));
     let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
     let mut build_context = StrategyBuildContext::new(
         fee_provider,
-        decision_evidence,
+        run_guard_writer.strategy_evidence(registry_key)?,
         submit_admission,
         BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
         Venue::from(manifest.venue.nt_venue.as_str()),
@@ -1044,13 +1059,13 @@ fn add_manifest_strategy(
                 manifest_evidence_read_max_bytes(strategy)?,
             )?);
             let resolved_config_hash = sha256_hex(&resolved_config_bytes);
-            let decision_evidence = run_guard_writer.recorder();
-            let submit_admission =
-                Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
+            let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(
+                run_guard_writer.submit_admission_evidence(),
+            ));
             let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
             let mut build_context = StrategyBuildContext::new(
                 fee_provider,
-                decision_evidence,
+                run_guard_writer.strategy_evidence(STRATEGY_BINARY_ORACLE_EDGE_TAKER)?,
                 submit_admission,
                 BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
                 Venue::from(manifest.venue.nt_venue.as_str()),

@@ -1199,8 +1199,10 @@ Allowed `exit_pre_submit_rejection_reason` values:
 
 Bolt-owned decision evidence uses the generated current-only contract in
 `config/decision-evidence-contract.toml`. Each producer has one registered purpose, exact current
-identity, immutable Rust codec, statically selected sink, and effect policy. The sole recorder is
-`DecisionEvidenceRecorder`; decision evidence is never handed to an NT custom-data/catalog writer.
+identity, immutable Rust codec, statically selected sink, and effect policy. One private runtime core
+owns the recorder and both streams. Component-scoped weak handles expose only the purposes registered
+to that component, and each record method asserts its exact generated effect policy. Decision evidence
+is never handed to an NT custom-data/catalog writer.
 
 The recorder appends newline-framed JSON to two configured paths beneath
 `persistence.catalog_directory`:
@@ -1208,14 +1210,37 @@ The recorder appends newline-framed JSON to two configured paths beneath
 - the machine stream is startup and recovery authority;
 - the observation stream is non-authoritative diagnostics and never gates machine recovery.
 
-The current runtime creates missing active stream parent directories and files through the same
-descriptor-relative, no-symlink authority used to open them. Retired paths are existence fences and
-are never created, decoded, repaired, or migrated.
+Configuration constructs canonical component-based relative paths and one positive finite read cap
+before filesystem mutation. Equality and ancestor/descendant conflicts across the complete active and
+retired path set fail validation. The current runtime opens the catalog descriptor, takes one
+nonblocking exclusive process lock on that descriptor, then creates missing active stream parent
+directories and files through the same descriptor-relative, no-symlink authority used to open them.
+The lock is retained until the runtime closes and prevents any second live or offline writer from
+acquiring append capability in the same catalog. Retired paths are existence fences and are never
+created, decoded, repaired, or migrated.
 
 A receipt is constructed only after the complete record write and file synchronization succeed.
 Write or synchronization ambiguity returns `CommitIndeterminate`, permanently poisons that sink for
 the process lifetime, and permits no retry through that sink. A subsequent append returns
 `SinkPoisoned` without I/O. The current runtime never reports an accepted-before-flush handoff.
+An encoded record larger than the configured recovery cap is rejected before I/O.
+
+Admission authorization and capital attribution are one append. An admitted-entry fact contains its
+optional reservation attribution, and a basket-grant fact contains its complete ordered set of
+leg attributions. Rejected decisions cannot carry attribution. A committed-admission token is created
+only after that atomic fact is synchronized and is consumed to construct the submit permit; standalone
+reservation-metadata facts do not exist.
+
+Startup settlement recovery accepts exactly one terminal outcome per settlement key. A recovered
+successful settlement replays the loss-governor and venue-truth reducers under their durable
+idempotency keys and restores flat exposure without appending again. A recovered booking-terminal
+outcome restores its terminal state without appending again. Duplicate or contradictory outcomes fail
+activation.
+
+Capital-admission reconstruction occurs only after NautilusTrader reports `Running`, which follows its
+startup reconciliation. The gate remains unreconciled and rejects submission until the reconstruction
+from the reconciled NT cache and current evidence succeeds. A reconciliation or reconstruction failure
+stops startup rather than opening the gate from a pre-reconciliation cache.
 
 Join rule:
 
@@ -1243,8 +1268,20 @@ Decision-evidence failure behavior is purpose-specific and generated from the co
 
 Machine-stream corruption or foreign content fails activation. Observation-stream corruption is
 byte-preserved and constructs a poisoned observation sink while machine recovery continues. The
-live operator-health surface reads the recorder's current observation-sink state, including poison
-acquired after startup.
+live operator-health surface reads the recorder's current machine- and observation-sink states.
+The first healthy-to-poisoned edge publishes exactly one typed transition after releasing the sink
+mutex; a startup-detected observation poison is published when the health publisher is registered.
+Episode suppression cannot hide or restore sink health.
+
+Startup validation and recovery readers reject every non-newline-terminated final record. A concurrent
+diagnostic Shadow-PnL read may encounter a writer's incomplete final append; it ignores only that
+unterminated final record and still counts its bytes against the configured cap. It never repairs or
+truncates the stream and never applies this exception to startup recovery.
+
+Shutdown first stops and joins every evidence-producing subscription and task while the core remains
+open. The core then enters closing, rejects new operations, waits for accepted append/publication
+operations, closes both streams, and releases the catalog lock. Weak component handles cannot prolong
+runtime ownership or write after closure.
 
 ## 10. Local Disk and Later Archival
 

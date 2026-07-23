@@ -6,9 +6,12 @@ use nautilus_model::{
     types::Currency,
 };
 
+#[cfg(any(test, feature = "test-current-evidence-inspection"))]
+use crate::bolt_v3_current_evidence::{DecisionEvidenceRecorder, StrategyEvidenceHandles};
 use crate::{
     bolt_v3_current_evidence::{
-        BookingRecoveryFacts, DecisionEvidenceRecorder, SettlementRecoveryFacts,
+        BookingRecoveryFacts, EdgeTakerEvidence, MakerEvidence, OrderExecutionEvidence,
+        SettlementRecoveryFacts,
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter,
     bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
@@ -70,12 +73,58 @@ impl SettlementCapability {
 #[derive(Clone)]
 pub struct StrategyBuildContext {
     fee_provider: Arc<dyn FeeProvider>,
-    decision_evidence: Arc<DecisionEvidenceRecorder>,
+    decision_evidence: StrategyDecisionEvidence,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     order_execution_policy: BoltV3OrderExecutionPolicy,
     execution_venue: Venue,
     realized_volatility: Option<RealizedVolatilityCapability>,
     settlement: Option<SettlementCapability>,
+}
+
+#[derive(Clone)]
+pub enum StrategyDecisionEvidence {
+    EdgeTaker {
+        evidence: EdgeTakerEvidence,
+        order_execution: OrderExecutionEvidence,
+    },
+    Maker {
+        evidence: MakerEvidence,
+        order_execution: OrderExecutionEvidence,
+    },
+    None,
+}
+
+impl StrategyDecisionEvidence {
+    pub fn edge_taker(
+        evidence: EdgeTakerEvidence,
+        order_execution: OrderExecutionEvidence,
+    ) -> Self {
+        Self::EdgeTaker {
+            evidence,
+            order_execution,
+        }
+    }
+
+    pub fn maker(evidence: MakerEvidence, order_execution: OrderExecutionEvidence) -> Self {
+        Self::Maker {
+            evidence,
+            order_execution,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    pub fn maker_for_test(recorder: Arc<DecisionEvidenceRecorder>) -> Self {
+        let handles = StrategyEvidenceHandles::from(recorder);
+        Self::maker(handles.maker(), handles.order_execution())
+    }
+}
+
+#[cfg(any(test, feature = "test-current-evidence-inspection"))]
+impl From<Arc<DecisionEvidenceRecorder>> for StrategyDecisionEvidence {
+    fn from(recorder: Arc<DecisionEvidenceRecorder>) -> Self {
+        let handles = StrategyEvidenceHandles::from(recorder);
+        Self::edge_taker(handles.edge_taker(), handles.order_execution())
+    }
 }
 
 impl StrategyBuildContext {
@@ -87,14 +136,14 @@ impl StrategyBuildContext {
     /// would otherwise be possible once a second venue's instruments coexist in the cache).
     pub fn new(
         fee_provider: Arc<dyn FeeProvider>,
-        decision_evidence: Arc<DecisionEvidenceRecorder>,
+        decision_evidence: impl Into<StrategyDecisionEvidence>,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
         order_execution_policy: BoltV3OrderExecutionPolicy,
         execution_venue: Venue,
     ) -> Self {
         Self {
             fee_provider,
-            decision_evidence,
+            decision_evidence: decision_evidence.into(),
             submit_admission,
             order_execution_policy,
             execution_venue,
@@ -174,12 +223,30 @@ impl StrategyBuildContext {
         self.fee_provider.clone()
     }
 
-    pub fn decision_evidence(&self) -> &DecisionEvidenceRecorder {
-        self.decision_evidence.as_ref()
+    pub(crate) fn edge_taker_evidence(&self) -> Option<EdgeTakerEvidence> {
+        match &self.decision_evidence {
+            StrategyDecisionEvidence::EdgeTaker { evidence, .. } => Some(evidence.clone()),
+            StrategyDecisionEvidence::Maker { .. } | StrategyDecisionEvidence::None => None,
+        }
     }
 
-    pub fn decision_evidence_arc(&self) -> Arc<DecisionEvidenceRecorder> {
-        self.decision_evidence.clone()
+    pub(crate) fn maker_evidence(&self) -> Option<MakerEvidence> {
+        match &self.decision_evidence {
+            StrategyDecisionEvidence::Maker { evidence, .. } => Some(evidence.clone()),
+            StrategyDecisionEvidence::EdgeTaker { .. } | StrategyDecisionEvidence::None => None,
+        }
+    }
+
+    pub(crate) fn order_execution_evidence(&self) -> Option<OrderExecutionEvidence> {
+        match &self.decision_evidence {
+            StrategyDecisionEvidence::EdgeTaker {
+                order_execution, ..
+            }
+            | StrategyDecisionEvidence::Maker {
+                order_execution, ..
+            } => Some(order_execution.clone()),
+            StrategyDecisionEvidence::None => None,
+        }
     }
 
     pub fn submit_admission(&self) -> &BoltV3SubmitAdmissionState {

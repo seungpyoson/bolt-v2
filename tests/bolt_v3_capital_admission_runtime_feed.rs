@@ -1019,7 +1019,10 @@ fn capital_admission_rebuild_evidence_failure_leaves_gate_unreconciled() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = capital_admission_configured_admission_with_writer(writer.recorder());
     admission.update_capital_admission_nt_components(fresh_components(900));
-    writer.fail_capital_admission_rebuild_writes();
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::CapitalAdmissionRebuild,
+        1,
+    );
 
     let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_000);
 
@@ -2605,7 +2608,10 @@ fn admission_evidence_failure_rolls_back_capital_reservation_before_submit() {
     arm_default(&admission);
     admission.update_capital_admission_nt_components(fresh_components(900));
     rebuild_empty_capital_admission(&admission);
-    writer.fail_admitted_entry_admission_writes();
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::AdmittedEntryAdmission,
+        1,
+    );
 
     let error = admission
         .admit_at(
@@ -3004,8 +3010,9 @@ fn poison_lock<T>(lock: &Arc<Mutex<T>>) {
 }
 
 fn capital_admission_configured_admission() -> BoltV3SubmitAdmissionState {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    capital_admission_configured_admission_with_writer(writer.recorder())
+    capital_admission_configured_admission_with_writer(
+        support::current_evidence::recording_evidence(),
+    )
 }
 
 fn capital_admission_configured_admission_with_writer(
@@ -3015,8 +3022,10 @@ fn capital_admission_configured_admission_with_writer(
 }
 
 fn polymarket_capital_admission_configured_admission() -> BoltV3SubmitAdmissionState {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    capital_admission_configured_admission_with_writer_and_venue(writer.recorder(), "POLYMARKET")
+    capital_admission_configured_admission_with_writer_and_venue(
+        support::current_evidence::recording_evidence(),
+        "POLYMARKET",
+    )
 }
 
 fn capital_admission_configured_admission_with_writer_and_venue(

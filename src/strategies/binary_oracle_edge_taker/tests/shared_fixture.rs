@@ -298,7 +298,7 @@ pub(super) fn recording_evidence_failing_blocked_attempt(
     attempt: usize,
 ) -> Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder> {
     let recorder = recording_decision_evidence();
-    recorder.fail_purpose_on_attempt(
+    recorder.fail_purpose_on_attempt_for_test(
         crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::BlockedStrategyInputObservation,
         attempt,
     );

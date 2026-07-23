@@ -103,6 +103,11 @@ def valid_document() -> dict[str, object]:
 
 
 class LoadConfigTests(unittest.TestCase):
+    def test_formats_milliseconds_for_gnu_timeout(self) -> None:
+        self.assertEqual(sccache_strict.gnu_timeout_duration(1), "0.001s")
+        self.assertEqual(sccache_strict.gnu_timeout_duration(1_000), "1s")
+        self.assertEqual(sccache_strict.gnu_timeout_duration(1_250), "1.25s")
+
     def test_loads_governed_verification_timeout(self) -> None:
         config = sccache_strict.load_document(valid_document(), repo_root=REPO_ROOT)
 
@@ -657,18 +662,37 @@ class ReleaseRecordTests(unittest.TestCase):
             }
             tag_ref = {
                 "ref": f"refs/tags/{verified.release_tag}",
+                "object": {"type": "tag", "sha": "d" * 40},
+            }
+            marker = sccache_strict.release_ownership_marker(
+                repository="seungpyoson/bolt-v2",
+                run_id="123",
+                run_attempt="1",
+                head_sha=verified.head_sha,
+                tag=verified.release_tag,
+            )
+            tag_object = {
+                "tag": verified.release_tag,
+                "sha": "d" * 40,
+                "message": marker,
                 "object": {"type": "commit", "sha": verified.head_sha},
             }
 
             with self.assertRaisesRegex(ValueError, "release is not immutable"):
-                sccache_strict.verify_release_record(verified, release, tag_ref)
+                sccache_strict.verify_release_record(
+                    verified, release, tag_ref, tag_object, marker
+                )
 
             release["immutable"] = True
-            sccache_strict.verify_release_record(verified, release, tag_ref)
+            sccache_strict.verify_release_record(
+                verified, release, tag_ref, tag_object, marker
+            )
 
-            tag_ref["object"] = {"type": "commit", "sha": "4" * 40}
+            tag_object["object"] = {"type": "commit", "sha": "4" * 40}
             with self.assertRaisesRegex(ValueError, "exact head commit"):
-                sccache_strict.verify_release_record(verified, release, tag_ref)
+                sccache_strict.verify_release_record(
+                    verified, release, tag_ref, tag_object, marker
+                )
 
 
 class ReleaseCleanupTests(unittest.TestCase):
@@ -727,6 +751,23 @@ class ReleaseCleanupTests(unittest.TestCase):
                     visited=set(),
                 )
 
+    def test_rejects_a_previously_visited_canonical_release_page(self) -> None:
+        path = "repos/owner/repo/releases"
+        link = (
+            f'<https://api.github.com/{path}?per_page=100&page=2>; rel="next", '
+            f'<https://api.github.com/{path}?per_page=100&page=4>; rel="last"'
+        )
+
+        with self.assertRaisesRegex(ValueError, "repeated"):
+            sccache_strict.validate_release_page_response(
+                self.page_response(link),
+                repository="owner/repo",
+                repository_id=123,
+                expected_page=1,
+                per_page=100,
+                visited={"repos/owner/repo/releases?per_page=100&page=2"},
+            )
+
     def test_validates_exact_tag_create_and_readback(self) -> None:
         tag_ref = {
             "ref": f"refs/tags/{self.tag}",
@@ -748,6 +789,45 @@ class ReleaseCleanupTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exact head commit"):
             sccache_strict.validate_release_tag(
                 wrong, tag=self.tag, head_sha=self.head_sha
+            )
+
+    def test_validates_owned_annotated_tag_reservation(self) -> None:
+        tag_object_sha = "d" * 40
+        tag_ref = {
+            "ref": f"refs/tags/{self.tag}",
+            "object": {"type": "tag", "sha": tag_object_sha},
+        }
+        tag_object = {
+            "tag": self.tag,
+            "sha": tag_object_sha,
+            "message": self.marker,
+            "object": {"type": "commit", "sha": self.head_sha},
+        }
+
+        sccache_strict.validate_owned_annotated_tag(
+            tag_ref,
+            tag_object,
+            tag=self.tag,
+            head_sha=self.head_sha,
+            ownership_marker=self.marker,
+        )
+
+        foreign = copy.deepcopy(tag_object)
+        foreign["message"] = "different publisher"
+        with self.assertRaisesRegex(ValueError, "ownership"):
+            sccache_strict.validate_owned_annotated_tag(
+                tag_ref,
+                foreign,
+                tag=self.tag,
+                head_sha=self.head_sha,
+                ownership_marker=self.marker,
+            )
+
+    def test_owned_tag_cleanup_requires_zero_release_records_for_tag(self) -> None:
+        sccache_strict.validate_owned_tag_cleanup([], tag=self.tag)
+        with self.assertRaisesRegex(ValueError, "release still exists"):
+            sccache_strict.validate_owned_tag_cleanup(
+                [[self.release()]], tag=self.tag
             )
 
     def release(
@@ -874,6 +954,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(output["features"], ["s3", "vendored-openssl"])
         self.assertFalse(output["default_features"])
         self.assertEqual(output["profile"], "release")
+        self.assertEqual(output["verification_timeout_duration"], "1s")
         self.assertRegex(output["derivative_identity"], r"^[0-9a-f]{64}$")
 
     def test_invalid_architecture_returns_nonzero_without_traceback(self) -> None:

@@ -269,37 +269,80 @@ def main() -> int:
             f"SCCACHE_S3_KEY_PREFIX={LOCATION['key_prefix']}",
             "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true",
             f"SCCACHE_IDLE_TIMEOUT={LOCATION['idle_timeout_seconds']}",
-            "SCCACHE_IGNORE_SERVER_IO_ERROR=1",
         }
-        for label, event_name, github_ref, expected_environment in (
+        for label, active, event_name, github_ref, expected_environment, expected_status in (
             (
                 "pull request",
+                "true",
                 "pull_request",
                 "refs/pull/1488/merge",
                 common_cache_environment | {"SCCACHE_S3_RW_MODE=READ_ONLY"},
+                0,
             ),
             (
                 "main push",
+                "true",
                 "push",
                 "refs/heads/main",
                 common_cache_environment | {"SCCACHE_S3_RW_MODE=READ_WRITE"},
+                0,
             ),
-            ("feature push", "push", "refs/heads/feature", set()),
+            ("feature push", "true", "push", "refs/heads/feature", set(), 1),
+            ("inactive job", "false", "push", "refs/heads/feature", set(), 0),
         ):
             output_path.write_text("", encoding="utf-8")
             env_path.write_text("", encoding="utf-8")
             with mock.patch.dict(
                 os.environ,
-                {**common_environment, "GITHUB_EVENT_NAME": event_name, "GITHUB_REF": github_ref},
+                {
+                    **common_environment,
+                    "SCCACHE_ACTIVE": active,
+                    "GITHUB_EVENT_NAME": event_name,
+                    "GITHUB_REF": github_ref,
+                },
                 clear=True,
             ), contextlib.redirect_stdout(io.StringIO()):
-                if sccache_eligibility.main() != 0:
-                    raise AssertionError(f"{label}: environment export failed")
+                status = sccache_eligibility.main()
+            if status != expected_status:
+                raise AssertionError(
+                    f"{label}: expected status {expected_status}, got {status}"
+                )
             environment = set(env_path.read_text(encoding="utf-8").splitlines())
             if environment != expected_environment:
                 raise AssertionError(
                     f"{label}: expected environment {expected_environment!r}, got {environment!r}"
                 )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                **common_environment,
+                "SCCACHE_ACTIVE": "yes",
+                "GITHUB_EVENT_NAME": "pull_request",
+                "GITHUB_REF": "refs/pull/1488/merge",
+            },
+            clear=True,
+        ), contextlib.redirect_stdout(io.StringIO()):
+            if sccache_eligibility.main() == 0:
+                raise AssertionError("invalid active input must fail closed")
+
+        output_path.write_text("", encoding="utf-8")
+        env_path.write_text("", encoding="utf-8")
+        with mock.patch.dict(
+            os.environ,
+            {
+                **common_environment,
+                "CONFIG_PATH": str(pathlib.Path(tmp) / "missing.toml"),
+                "SCCACHE_ACTIVE": "true",
+                "GITHUB_EVENT_NAME": "pull_request",
+                "GITHUB_REF": "refs/pull/1488/merge",
+            },
+            clear=True,
+        ), contextlib.redirect_stdout(io.StringIO()):
+            if sccache_eligibility.main() == 0:
+                raise AssertionError("missing active cache configuration must fail closed")
+        if env_path.read_text(encoding="utf-8"):
+            raise AssertionError("failed active eligibility must not export cache environment")
 
     verify = getattr(sccache_eligibility, "verify_sccache_executable", None)
     if not callable(verify):

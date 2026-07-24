@@ -90,6 +90,9 @@ jobs:
         uses: ./.github/actions/sccache-stats
         with:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
+          cache-mode: ${{ steps.sccache.outputs.cache-mode || 'none' }}
+          expected-version: ${{ steps.sccache.outputs.version || 'none' }}
+          require-compiler-requests: "true"
 
   test:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
@@ -151,6 +154,9 @@ jobs:
         uses: ./.github/actions/sccache-stats
         with:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
+          cache-mode: ${{ steps.sccache.outputs.cache-mode || 'none' }}
+          expected-version: ${{ steps.sccache.outputs.version || 'none' }}
+          require-compiler-requests: "true"
 
   build:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
@@ -205,6 +211,8 @@ jobs:
         uses: ./.github/actions/sccache-stats
         with:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
+          cache-mode: ${{ steps.sccache.outputs.cache-mode || 'none' }}
+          expected-version: ${{ steps.sccache.outputs.version || 'none' }}
           require-compiler-requests: "true"
 
   advisories:

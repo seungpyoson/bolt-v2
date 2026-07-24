@@ -53,7 +53,36 @@ jobs:
           cargo fmt --check
           cargo fmt --check --manifest-path crates/backtesting-vertical-slice/Cargo.toml
 
+  sccache_source:
+    name: sccache-source
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    timeout-minutes: 30
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.source.outputs.artifact_name }}
+      executable_sha256: ${{ steps.source.outputs.executable_sha256 }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Setup source-build environment
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+
+      - name: Build credentialless exact-source sccache
+        id: source
+        uses: ./.github/actions/sccache-build
+        with:
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
+
   clippy:
+    needs: sccache_source
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     timeout-minutes: 60
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
@@ -64,6 +93,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup environment
         uses: ./.github/actions/setup-environment
@@ -77,6 +107,8 @@ jobs:
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
           write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
+          artifact-name: ${{ needs.sccache_source.outputs.artifact_name }}
+          executable-sha256: ${{ needs.sccache_source.outputs.executable_sha256 }}
 
       - name: clippy
         run: |
@@ -93,6 +125,7 @@ jobs:
           require-compiler-requests: "true"
 
   test:
+    needs: sccache_source
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     timeout-minutes: 60
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
@@ -103,6 +136,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup environment
         id: setup
@@ -133,6 +167,8 @@ jobs:
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
           write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
+          artifact-name: ${{ needs.sccache_source.outputs.artifact_name }}
+          executable-sha256: ${{ needs.sccache_source.outputs.executable_sha256 }}
 
       - name: merge-queue behavior
         run: |
@@ -157,6 +193,7 @@ jobs:
           require-compiler-requests: "true"
 
   build:
+    needs: sccache_source
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     timeout-minutes: 60
     runs-on: ${{ vars.CI_RUNNER_MANAGED_BUILD }}
@@ -167,6 +204,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup environment
         id: setup
@@ -196,6 +234,8 @@ jobs:
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
           write-role-arn: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_CI_CACHE_ROLE_ARN || '' }}
+          artifact-name: ${{ needs.sccache_source.outputs.artifact_name }}
+          executable-sha256: ${{ needs.sccache_source.outputs.executable_sha256 }}
 
       - name: build
         env:

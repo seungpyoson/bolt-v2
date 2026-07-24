@@ -6,6 +6,14 @@ inputs:
     description: Whether the setup action enabled sccache.
     required: false
     default: "false"
+  cache-mode:
+    description: Cache access mode selected by the setup action.
+    required: false
+    default: "none"
+  expected-version:
+    description: Governed sccache release version selected by the setup action.
+    required: false
+    default: "none"
   require-compiler-requests:
     description: Fail when enabled sccache observed no compiler requests.
     required: false
@@ -18,6 +26,8 @@ runs:
       shell: bash
       env:
         SCCACHE_ENABLED: ${{ inputs.enabled }}
+        SCCACHE_CACHE_MODE: ${{ inputs.cache-mode }}
+        EXPECTED_SCCACHE_VERSION: ${{ inputs.expected-version }}
         REQUIRE_COMPILER_REQUESTS: ${{ inputs.require-compiler-requests }}
       run: |
         if [[ "$SCCACHE_ENABLED" == "false" ]]; then
@@ -25,6 +35,15 @@ runs:
         fi
         if [[ "$SCCACHE_ENABLED" != "true" ]]; then
           echo "::error::sccache enabled input must be exactly true or false"
+          exit 1
+        fi
+        if [[ "$SCCACHE_CACHE_MODE" != "read_only" \
+              && "$SCCACHE_CACHE_MODE" != "read_write" ]]; then
+          echo "::error::enabled sccache cache mode must be read_only or read_write"
+          exit 1
+        fi
+        if [[ ! "$EXPECTED_SCCACHE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::enabled sccache expected version is invalid"
           exit 1
         fi
         if [[ -z "${SCCACHE_PATH:-}" || ! -x "$SCCACHE_PATH" ]]; then
@@ -37,10 +56,10 @@ runs:
           echo "::error::official sccache JSON statistics are unavailable"
           exit 1
         fi
-        if ! jq -e '
+        if ! jq -e --arg expected_version "${EXPECTED_SCCACHE_VERSION#v}" '
           def nonnegative_integer:
             type == "number" and . >= 0 and floor == .;
-          .version == "0.16.0"
+          .version == $expected_version
           and (.stats.compile_requests | nonnegative_integer)
           and (.stats.requests_unsupported_compiler | nonnegative_integer)
           and (.stats.requests_not_compile | nonnegative_integer)
@@ -50,6 +69,8 @@ runs:
           and (all(.stats.cache_errors.counts[]; nonnegative_integer))
           and (.stats.cache_errors.adv_counts | type == "object")
           and (all(.stats.cache_errors.adv_counts[]; nonnegative_integer))
+          and (.stats.cache_misses.counts | type == "object")
+          and (all(.stats.cache_misses.counts[]; nonnegative_integer))
           and (.stats.cache_timeouts | nonnegative_integer)
           and (.stats.cache_read_errors | nonnegative_integer)
           and (.stats.cache_write_errors | nonnegative_integer)
@@ -78,13 +99,27 @@ runs:
             ([.stats.cache_errors.counts[]] | add // 0)
             + .stats.cache_timeouts
             + .stats.cache_read_errors
-            + .stats.cache_write_errors
             + .stats.dist_errors
           ' "$stats_path"
         )"
         if (( runtime_errors != 0 )); then
-          echo "::error::sccache statistics report cache, server, read, write, or timeout errors"
+          echo "::error::sccache statistics report cache, server, read, or timeout errors"
           exit 1
+        fi
+        cache_write_errors="$(jq -er '.stats.cache_write_errors' "$stats_path")"
+        cache_misses="$(jq -er '([.stats.cache_misses.counts[]] | add // 0)' "$stats_path")"
+        if [[ "$SCCACHE_CACHE_MODE" == "read_write" ]] && (( cache_write_errors != 0 )); then
+          echo "::error::read-write sccache statistics report write errors"
+          exit 1
+        fi
+        if [[ "$SCCACHE_CACHE_MODE" == "read_only" ]] \
+            && (( cache_write_errors > cache_misses )); then
+          echo "::error::read-only sccache write errors exceed ordinary cache misses"
+          exit 1
+        fi
+        if [[ "$SCCACHE_CACHE_MODE" == "read_only" ]] \
+            && (( cache_write_errors != 0 )); then
+          echo "::notice::read-only sccache rejected ${cache_write_errors} writes after ${cache_misses} cache misses"
         fi
         if [[ "$REQUIRE_COMPILER_REQUESTS" == "true" ]] && (( compile_requests == 0 )); then
           echo "::error::sccache was enabled but observed zero compiler requests"

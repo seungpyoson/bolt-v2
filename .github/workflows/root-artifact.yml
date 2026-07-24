@@ -237,6 +237,8 @@ jobs:
         uses: ./.github/actions/sccache-stats
         with:
           enabled: ${{ steps.sccache.outputs.enabled || 'false' }}
+          cache-mode: ${{ steps.sccache.outputs.cache-mode || 'none' }}
+          expected-version: ${{ steps.sccache.outputs.version || 'none' }}
           require-compiler-requests: "true"
 
       - name: Stage exactly one executable

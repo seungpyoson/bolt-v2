@@ -42,9 +42,8 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CompiledProductKind, BoltV3KillSwitchForcedReductionClaim,
     BoltV3KillSwitchForcedReductionPolicy, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
     BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
-    BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
-    BoltV3SubmitCapitalAdmissionOpenOrderReservation, BoltV3SubmitIntentKind,
-    PredictionMarketOutcomeSide,
+    BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderReservation,
+    BoltV3SubmitIntentKind, PredictionMarketOutcomeSide,
 };
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
@@ -152,20 +151,37 @@ fn runtime_feed_uses_verified_nt_msgbus_symbols() {
     let _ = std::any::type_name::<TypedHandler<OrderEventAny>>();
     let _ = std::any::type_name::<TypedHandler<PortfolioSnapshot>>();
     let _ = std::any::type_name::<TypedHandler<PositionEvent>>();
+}
 
-    let source = support::repo_text("src/bolt_v3_capital_admission_runtime_feed.rs");
-    for needle in [
-        "subscribe_account_state",
-        "subscribe_order_events",
-        "subscribe_portfolio_snapshot",
-        "subscribe_position_events",
-        "unsubscribe_account_state",
-        "unsubscribe_order_events",
-        "unsubscribe_portfolio_snapshot",
-        "unsubscribe_position_events",
-    ] {
-        assert!(source.contains(needle), "runtime feed must use `{needle}`");
-    }
+#[test]
+fn nt_projection_request_revokes_new_risk_without_erasing_committed_reservation() {
+    let admission = Arc::new(capital_admission_configured_admission());
+    arm_default(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    admission
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
+        .expect("fresh canonical NT projection should admit")
+        .commit_submitted();
+
+    admission.invalidate_capital_admission_for_nt_projection_request();
+    admission.invalidate_capital_admission_for_nt_projection_request();
+
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    assert!(
+        admission.capital_admission_has_live_reservation("client-order-1"),
+        "projection invalidation must preserve committed evidence correlation"
+    );
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert!(matches!(
+        admission.admit_at(&capital_admission_submit_request("client-order-2"), 1_001),
+        Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+            reason: BoltV3CapitalAdmissionRejectReason::ReconciliationRequired
+        })
+    ));
 }
 
 #[test]
@@ -462,8 +478,10 @@ fn provider_collateral_allowance_survives_nt_cache_projection_and_reservation_re
         Decimal::new(43, 1),
     );
     recovered_reservation.observed_at_ns = 1_350;
-    let rebuild = admission
-        .rebuild_capital_admission_open_order_reservations(vec![recovered_reservation], 1_350);
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations_for_test(
+        vec![recovered_reservation],
+        1_350,
+    );
     assert!(rebuild.accepted, "rebuild should accept: {rebuild:?}");
     let components = feed
         .canonical_nt_components(projection)
@@ -1041,7 +1059,8 @@ fn capital_admission_rebuild_evidence_failure_leaves_gate_unreconciled() {
         1,
     );
 
-    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_000);
+    let rebuild =
+        admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1_000);
 
     assert!(!rebuild.accepted);
     assert_eq!(
@@ -1271,31 +1290,6 @@ fn full_fill_event_cannot_release_reservation_before_nt_reprojection() {
 }
 
 #[test]
-fn covered_sell_open_order_recovery_uses_additive_liability_only() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    arm_default(&admission);
-    admission.update_capital_admission_nt_components(fresh_components(900));
-
-    let reservation = admission
-        .capital_admission_open_order_reservation_from_evidence(
-            BoltV3SubmitCapitalAdmissionOpenOrderEvidence {
-                client_order_id: "client-order-1".to_string(),
-                instrument_id: "instrument-yes.VENUE-A".to_string(),
-                side: BoltV3CompiledOrderSide::Sell,
-                open_quantity: Decimal::new(10, 0),
-                limit_price: Decimal::new(40, 2),
-                observed_at_ns: 1_000,
-                evidence_label: "nt_open_order_cache".to_string(),
-            },
-        )
-        .expect("covered sell recovery should reserve fee/slippage add-ons only");
-
-    assert_eq!(reservation.liability_factor, Decimal::ZERO);
-    assert_eq!(reservation.liability, Decimal::new(30, 2));
-    assert_eq!(reservation.additive_liability, Decimal::new(30, 2));
-}
-
-#[test]
 fn fill_event_account_or_instrument_mismatch_is_non_mutating() {
     let (admission, mut feed) = committed_submit_runtime_feed();
     assert!(
@@ -1337,7 +1331,7 @@ fn fill_event_for_rebuilt_reservation_records_evidence_without_revaluation() {
     components.order_lifecycle.open_order_count = 1;
     components.order_lifecycle.all_open_orders_attributed = true;
     admission.update_capital_admission_nt_components(components);
-    let rebuild = admission.rebuild_capital_admission_open_order_reservations(
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations_for_test(
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1385,8 +1379,8 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
     reservation
         .seen_trade_ids
         .insert("trade-already-committed".to_string());
-    let rebuild =
-        admission.rebuild_capital_admission_open_order_reservations(vec![reservation], 1_000);
+    let rebuild = admission
+        .rebuild_capital_admission_open_order_reservations_for_test(vec![reservation], 1_000);
     assert!(rebuild.accepted);
 
     let unseen_reconciliation = feed
@@ -1528,7 +1522,7 @@ fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
         .expect("canonical NT projection should retain the startup order");
     admission.update_capital_admission_nt_components(components);
 
-    let rebuild = admission.rebuild_capital_admission_open_order_reservations(
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations_for_test(
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1586,7 +1580,7 @@ fn full_fill_event_for_rebuilt_reservation_waits_for_nt_reprojection() {
         })
         .expect("canonical NT projection should retain the startup order");
     admission.update_capital_admission_nt_components(components);
-    let rebuild = admission.rebuild_capital_admission_open_order_reservations(
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations_for_test(
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1951,7 +1945,7 @@ fn forced_reduction_callbacks_cannot_release_live_cap_before_nt_projection() {
         BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
     ));
 
-    admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_375);
+    admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1_375);
     admission
         .admit_at(&second, 1_400)
         .expect("canonical NT projection without the order releases the live cap")
@@ -1987,7 +1981,8 @@ fn unknown_relevant_fill_latches_capital_admission_fail_closed() {
     assert_eq!(admission.capital_admission_reconciled(), Some(false));
 
     admission.update_capital_admission_nt_components(fresh_components(1_200));
-    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_200);
+    let rebuild =
+        admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1_200);
     assert!(!rebuild.accepted);
     assert_eq!(admission.capital_admission_reconciled(), Some(false));
 }
@@ -2211,7 +2206,8 @@ fn capital_admission_configured_admission_with_writer_and_venue(
 fn arm_default(_admission: &BoltV3SubmitAdmissionState) {}
 
 fn rebuild_empty_capital_admission(admission: &BoltV3SubmitAdmissionState) {
-    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_000);
+    let rebuild =
+        admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1_000);
     assert!(
         rebuild.accepted,
         "test startup rebuild should open submit admission"
@@ -2237,8 +2233,8 @@ fn apply_empty_canonical_nt_projection(
         .canonical_nt_components(projection.clone())
         .expect("canonical NT projection should be complete");
     admission.update_capital_admission_nt_components(components);
-    let rebuild =
-        admission.rebuild_capital_admission_open_order_reservations(Vec::new(), observed_at_ns);
+    let rebuild = admission
+        .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), observed_at_ns);
     assert!(
         rebuild.accepted,
         "canonical empty NT projection should rebuild the reservation ledger"

@@ -134,14 +134,14 @@ generate_missing_orders = true
 inflight_check_interval_ms = 2000
 inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_secs = 0
-open_check_lookback_mins = 60
+open_check_interval_secs = 30
+open_check_lookback_mins = 0
 open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
 single_order_query_delay_ms = 100
-position_check_interval_secs = 0
+position_check_interval_secs = 30
 position_check_lookback_mins = 60
 position_check_threshold_ms = 5000
 position_check_retries = 3
@@ -395,7 +395,7 @@ All pinned `LiveDataEngineConfig` fields are explicit in TOML and mapped into th
 
 Runtime-support guard fields are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
 
-- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `d81be0bcc7a473c45d2dc8a8885638336073a218`
+- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `38949305e6b37753323cf366d8f8f244a42c694b`
 
 | Field | Type / Rule | Maps to |
 |---|---|---|
@@ -411,7 +411,7 @@ Runtime-support guard fields are still required in TOML at the only accepted val
 | `emit_quotes_from_book_depths` | boolean | `LiveDataEngineConfig.emit_quotes_from_book_depths` |
 | `external_clients` | array of valid NT client IDs; empty maps to `None` | `LiveDataEngineConfig.external_clients` |
 | `debug` | boolean | `LiveDataEngineConfig.debug` |
-| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `d81be0bcc7a473c45d2dc8a8885638336073a218` | `LiveDataEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `38949305e6b37753323cf366d8f8f244a42c694b` | `LiveDataEngineConfig.qsize` |
 
 ### `[nautilus.exec_engine]`
 
@@ -422,14 +422,18 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - `snapshot_orders = false`
 - `snapshot_positions = false`
 - `purge_from_database = false`
-- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `d81be0bcc7a473c45d2dc8a8885638336073a218`
+- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `38949305e6b37753323cf366d8f8f244a42c694b`
 
 When any prediction-market capital pool sets `enforce_submit_admission = true`, startup recovery must
 observe the complete execution-order universe. Validation therefore requires `reconciliation = true`,
 `reconciliation_lookback_mins = 0`, empty `reconciliation_instrument_ids`, empty
 `filtered_client_order_ids`, `filter_unclaimed_external_orders = false`, and
-`generate_missing_orders = true`. Startup additionally attests exact equality between the accepted raw
-venue open-order IDs and the unique reconciled NT open-order IDs before admission can become reconciled.
+`generate_missing_orders = true`. The pinned NT Polymarket adapter fails
+reconciliation when venue orders, confirmed fills, or positions cannot be
+represented in NT. After NT reaches `Running`, Bolt projects the canonical NT
+cache and requires every admission-relevant open order to join exactly one
+committed Bolt authorization before admission can become reconciled. Bolt does
+not perform a second raw-venue reconciliation.
 
 #### `reconciliation_lookback_mins`
 
@@ -479,13 +483,13 @@ venue open-order IDs and the unique reconciled NT open-order IDs before admissio
 | `inflight_check_interval_ms` | non-negative integer | `LiveExecEngineConfig.inflight_check_interval_ms` |
 | `inflight_check_threshold_ms` | positive integer | `LiveExecEngineConfig.inflight_check_threshold_ms` |
 | `inflight_check_retries` | non-negative integer | `LiveExecEngineConfig.inflight_check_retries` |
-| `open_check_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.open_check_interval_secs` |
-| `open_check_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.open_check_lookback_mins` |
+| `open_check_interval_secs` | non-negative integer; `0` disables the timer; must be positive when capital admission is enforced | `LiveExecEngineConfig.open_check_interval_secs` |
+| `open_check_lookback_mins` | non-negative integer; `0` maps to `None` and is required when capital admission is enforced | `LiveExecEngineConfig.open_check_lookback_mins` |
 | `open_check_threshold_ms` | positive integer | `LiveExecEngineConfig.open_check_threshold_ms` |
 | `open_check_missing_retries` | non-negative integer | `LiveExecEngineConfig.open_check_missing_retries` |
 | `open_check_open_only` | boolean | `LiveExecEngineConfig.open_check_open_only` |
 | `single_order_query_delay_ms` | non-negative integer | `LiveExecEngineConfig.single_order_query_delay_ms` |
-| `position_check_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.position_check_interval_secs` |
+| `position_check_interval_secs` | non-negative integer; `0` disables the timer; must be positive when capital admission is enforced | `LiveExecEngineConfig.position_check_interval_secs` |
 | `position_check_lookback_mins` | non-negative integer; NT pins this as `u32`, so `0` passes through as a 0-minute lookback rather than mapping to `None` | `LiveExecEngineConfig.position_check_lookback_mins` |
 | `position_check_retries` | non-negative integer | `LiveExecEngineConfig.position_check_retries` |
 | `purge_closed_orders_interval_mins` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.purge_closed_orders_interval_mins` |
@@ -496,7 +500,7 @@ venue open-order IDs and the unique reconciled NT open-order IDs before admissio
 | `purge_account_events_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.purge_account_events_lookback_mins` |
 | `purge_from_database` | must be `false` | `LiveExecEngineConfig.purge_from_database` |
 | `own_books_audit_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.own_books_audit_interval_secs` |
-| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `d81be0bcc7a473c45d2dc8a8885638336073a218` | `LiveExecEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `38949305e6b37753323cf366d8f8f244a42c694b` | `LiveExecEngineConfig.qsize` |
 | `allow_overfills` | boolean | `LiveExecEngineConfig.allow_overfills` |
 | `manage_own_order_books` | boolean | `LiveExecEngineConfig.manage_own_order_books` |
 
@@ -583,7 +587,7 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - type: positive integer
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.qsize`
-- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `d81be0bcc7a473c45d2dc8a8885638336073a218`
+- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `38949305e6b37753323cf366d8f8f244a42c694b`
 
 ### `[logging]`
 
@@ -1741,14 +1745,14 @@ generate_missing_orders = true
 inflight_check_interval_ms = 2000
 inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_secs = 0
-open_check_lookback_mins = 60
+open_check_interval_secs = 30
+open_check_lookback_mins = 0
 open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
 single_order_query_delay_ms = 100
-position_check_interval_secs = 0
+position_check_interval_secs = 30
 position_check_lookback_mins = 60
 position_check_threshold_ms = 5000
 position_check_retries = 3

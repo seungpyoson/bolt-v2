@@ -805,6 +805,7 @@ macro_rules! define_rejection_outcome {
             LossGovernorHalted,
             NonPositiveNotional,
             NotionalCapExceeded,
+            ClientOrderAlreadyAuthorized,
             InvalidRiskReducingExitProof,
             CountCapExhausted,
             KillSwitchForcedReductionProofInvalid,
@@ -819,6 +820,9 @@ macro_rules! define_rejection_outcome {
                     AdmissionRejectionReason::LossGovernorHalted => Self::LossGovernorHalted,
                     AdmissionRejectionReason::NonPositiveNotional => Self::NonPositiveNotional,
                     AdmissionRejectionReason::NotionalCapExceeded => Self::NotionalCapExceeded,
+                    AdmissionRejectionReason::ClientOrderAlreadyAuthorized => {
+                        Self::ClientOrderAlreadyAuthorized
+                    }
                     AdmissionRejectionReason::InvalidRiskReducingExitProof => {
                         Self::InvalidRiskReducingExitProof
                     }
@@ -839,6 +843,9 @@ macro_rules! define_rejection_outcome {
                     Self::LossGovernorHalted => AdmissionRejectionReason::LossGovernorHalted,
                     Self::NonPositiveNotional => AdmissionRejectionReason::NonPositiveNotional,
                     Self::NotionalCapExceeded => AdmissionRejectionReason::NotionalCapExceeded,
+                    Self::ClientOrderAlreadyAuthorized => {
+                        AdmissionRejectionReason::ClientOrderAlreadyAuthorized
+                    }
                     Self::InvalidRiskReducingExitProof => {
                         AdmissionRejectionReason::InvalidRiskReducingExitProof
                     }

@@ -12,6 +12,13 @@ fn generated_registry_exposes_the_exact_official_source_facts() {
     );
     assert!(NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_schema_3_5);
     assert!(NAUTILUS_SOURCE_CAPABILITIES.binance_adapter_receive_timestamps);
+    assert!(NAUTILUS_SOURCE_CAPABILITIES.polymarket_reconciliation_rejects_unmapped_open_orders);
+    assert!(
+        NAUTILUS_SOURCE_CAPABILITIES.polymarket_reconciliation_rejects_unmapped_confirmed_fills
+    );
+    assert!(
+        NAUTILUS_SOURCE_CAPABILITIES.polymarket_reconciliation_rejects_unrepresentable_positions
+    );
 }
 
 #[test]

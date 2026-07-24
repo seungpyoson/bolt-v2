@@ -852,7 +852,8 @@ fn limited_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
         .commit_submitted();
     nt_submit_calls += 1;
 
-    let second = admission.admit(&request);
+    let second_request = with_client_order_id(submit_request(Decimal::new(1, 0)), "client-order-2");
+    let second = admission.admit(&second_request);
     if second.is_ok() {
         nt_submit_calls += 1;
     }
@@ -879,11 +880,44 @@ fn dropped_uncommitted_permit_rolls_back_live_submit_count_slot() {
     }
 
     assert_eq!(admission.admitted_order_count(), 0);
+    let mut retry = request;
+    retry.client_order_id = "client-order-2".to_string();
     admission
-        .admit(&request)
+        .admit(&retry)
         .expect("dropped permit should release the count slot for retry")
         .commit_submitted();
     assert_eq!(admission.admitted_order_count(), 1);
+}
+
+#[test]
+fn duplicate_client_order_id_rejects_before_a_second_authorization_is_recorded() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = limited_admission_with_writer(writer.recorder(), 2, Decimal::new(1, 0));
+    let request = submit_request(Decimal::new(1, 0));
+
+    admission
+        .admit(&request)
+        .expect("first unique client-order identity should admit")
+        .commit_submitted();
+    let error = admission
+        .admit(&request)
+        .expect_err("a committed client-order identity must not authorize twice");
+
+    assert_eq!(
+        error,
+        BoltV3SubmitAdmissionError::ClientOrderAlreadyAuthorized
+    );
+    let outcomes = writer
+        .admission_decisions()
+        .into_iter()
+        .map(|decision| decision.outcome)
+        .collect::<Vec<_>>();
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(outcomes[0], AdmissionDecisionOutcome::Admitted);
+    assert_eq!(
+        outcomes[1],
+        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::ClientOrderAlreadyAuthorized)
+    );
 }
 
 #[test]
@@ -913,16 +947,16 @@ fn live_submit_approval_limits_bound_provider_submit_before_nt_submit() {
     assert_eq!(admission.admitted_order_count(), 0);
 
     admission
-        .admit(&submit_request_for_execution_client(
-            "hyperliquid_perps",
-            Decimal::new(25, 0),
+        .admit(&with_client_order_id(
+            submit_request_for_execution_client("hyperliquid_perps", Decimal::new(25, 0)),
+            "hyperliquid-client-order-1",
         ))
         .expect("first order within provider approval limits should admit")
         .commit_submitted();
 
-    let exhausted = admission.admit(&submit_request_for_execution_client(
-        "hyperliquid_perps",
-        Decimal::new(1, 0),
+    let exhausted = admission.admit(&with_client_order_id(
+        submit_request_for_execution_client("hyperliquid_perps", Decimal::new(1, 0)),
+        "hyperliquid-client-order-2",
     ));
     let error = exhausted.expect_err("provider approval count must be consumed by admission");
     assert!(matches!(
@@ -1521,6 +1555,14 @@ fn submit_request_with_kind_and_exit_proof(
     }
 }
 
+fn with_client_order_id(
+    mut request: BoltV3SubmitAdmissionRequest,
+    client_order_id: &str,
+) -> BoltV3SubmitAdmissionRequest {
+    request.client_order_id = client_order_id.to_string();
+    request
+}
+
 fn valid_risk_reducing_exit_proof() -> BoltV3RiskReducingExitProof {
     BoltV3RiskReducingExitProof {
         position_id: "position-1".to_string(),
@@ -1619,7 +1661,7 @@ fn reconcile_forced_reduction_liveness(
     admission: &BoltV3SubmitAdmissionState,
     client_order_ids: impl IntoIterator<Item = &'static str>,
 ) {
-    let decision = admission.rebuild_capital_admission_open_order_snapshot(
+    let decision = admission.rebuild_capital_admission_open_order_snapshot_for_test(
         BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
             observed_at_ns: 1,
             evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
@@ -1650,10 +1692,13 @@ fn forced_reduction_request(
     notional: Decimal,
     claim: BoltV3KillSwitchForcedReductionClaim,
 ) -> BoltV3SubmitAdmissionRequest {
-    BoltV3SubmitAdmissionRequest {
-        kill_switch_forced_reduction: Some(claim),
-        ..submit_request_with_kind(notional, BoltV3SubmitIntentKind::KillSwitchForcedReduction)
-    }
+    with_client_order_id(
+        BoltV3SubmitAdmissionRequest {
+            kill_switch_forced_reduction: Some(claim),
+            ..submit_request_with_kind(notional, BoltV3SubmitIntentKind::KillSwitchForcedReduction)
+        },
+        "forced-client-order-1",
+    )
 }
 
 #[test]
@@ -2030,10 +2075,13 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
         .commit_submitted();
 
     admission
-        .admit(&submit_request_with_kind_and_exit_proof(
-            Decimal::new(264, 2),
-            BoltV3SubmitIntentKind::RiskReducingExit,
-            Some(valid_risk_reducing_exit_proof()),
+        .admit(&with_client_order_id(
+            submit_request_with_kind_and_exit_proof(
+                Decimal::new(264, 2),
+                BoltV3SubmitIntentKind::RiskReducingExit,
+                Some(valid_risk_reducing_exit_proof()),
+            ),
+            "client-order-2",
         ))
         .expect("verified risk-reducing exit should admit within provider limits")
         .commit_submitted();
@@ -2091,9 +2139,12 @@ fn unproven_risk_reducing_exit_fails_closed_before_notional_bypass() {
         .commit_submitted();
 
     let exit = admission
-        .admit(&submit_request_with_kind(
-            Decimal::new(264, 2),
-            BoltV3SubmitIntentKind::RiskReducingExit,
+        .admit(&with_client_order_id(
+            submit_request_with_kind(
+                Decimal::new(264, 2),
+                BoltV3SubmitIntentKind::RiskReducingExit,
+            ),
+            "client-order-2",
         ))
         .expect_err("unproven risk-reducing exit must not bypass the notional cap");
 
@@ -2233,9 +2284,9 @@ fn second_entry_exhausts_entry_slot_even_when_exit_slot_is_unused() {
         .commit_submitted();
 
     let second_entry = admission
-        .admit(&submit_request_with_kind(
-            Decimal::new(1, 0),
-            BoltV3SubmitIntentKind::Entry,
+        .admit(&with_client_order_id(
+            submit_request_with_kind(Decimal::new(1, 0), BoltV3SubmitIntentKind::Entry),
+            "client-order-2",
         ))
         .expect_err("second entry must not consume the independent exit slot");
 
@@ -2271,19 +2322,25 @@ fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
         .expect("entry should admit")
         .commit_submitted();
     admission
-        .admit(&submit_request_with_kind_and_exit_proof(
-            Decimal::new(264, 2),
-            BoltV3SubmitIntentKind::RiskReducingExit,
-            Some(valid_risk_reducing_exit_proof()),
+        .admit(&with_client_order_id(
+            submit_request_with_kind_and_exit_proof(
+                Decimal::new(264, 2),
+                BoltV3SubmitIntentKind::RiskReducingExit,
+                Some(valid_risk_reducing_exit_proof()),
+            ),
+            "client-order-2",
         ))
         .expect("first verified risk-reducing exit should admit")
         .commit_submitted();
 
     let second_exit = admission
-        .admit(&submit_request_with_kind_and_exit_proof(
-            Decimal::new(264, 2),
-            BoltV3SubmitIntentKind::RiskReducingExit,
-            Some(valid_risk_reducing_exit_proof()),
+        .admit(&with_client_order_id(
+            submit_request_with_kind_and_exit_proof(
+                Decimal::new(264, 2),
+                BoltV3SubmitIntentKind::RiskReducingExit,
+                Some(valid_risk_reducing_exit_proof()),
+            ),
+            "client-order-3",
         ))
         .expect_err("second verified risk-reducing exit must exhaust the exit slot");
 
@@ -2362,10 +2419,13 @@ fn latched_kill_switch_blocks_risk_reducing_exit_before_normal_admission() {
     admission.replace_kill_switch_state(halted_kill_switch_state());
 
     let exit = admission
-        .admit(&submit_request_with_kind_and_exit_proof(
-            Decimal::new(264, 2),
-            BoltV3SubmitIntentKind::RiskReducingExit,
-            Some(valid_risk_reducing_exit_proof()),
+        .admit(&with_client_order_id(
+            submit_request_with_kind_and_exit_proof(
+                Decimal::new(264, 2),
+                BoltV3SubmitIntentKind::RiskReducingExit,
+                Some(valid_risk_reducing_exit_proof()),
+            ),
+            "client-order-2",
         ))
         .expect_err("latched kill switch must block risk-reducing exit");
 
@@ -2541,20 +2601,20 @@ fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
     admission.replace_kill_switch_state(halted_kill_switch_state());
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
     reconcile_forced_reduction_liveness(&admission, []);
+    let request = |client_order_id| {
+        with_client_order_id(
+            forced_reduction_request(Decimal::new(10, 0), forced_reduction_claim("halt-1")),
+            client_order_id,
+        )
+    };
 
     admission
-        .admit(&forced_reduction_request(
-            Decimal::new(10, 0),
-            forced_reduction_claim("halt-1"),
-        ))
+        .admit(&request("forced-client-order-1"))
         .expect("first live forced reduction should be admitted")
         .commit_submitted();
 
     let capped = admission
-        .admit(&forced_reduction_request(
-            Decimal::new(10, 0),
-            forced_reduction_claim("halt-1"),
-        ))
+        .admit(&request("forced-client-order-2"))
         .expect_err("second live forced reduction should hit live cap");
     assert!(matches!(
         capped,
@@ -2564,10 +2624,7 @@ fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
     reconcile_forced_reduction_liveness(&admission, []);
 
     admission
-        .admit(&forced_reduction_request(
-            Decimal::new(10, 0),
-            forced_reduction_claim("halt-1"),
-        ))
+        .admit(&request("forced-client-order-3"))
         .expect("terminal forced reduction should release the live cap")
         .commit_submitted();
 }
@@ -2578,19 +2635,19 @@ fn dropped_uncommitted_forced_reduction_permit_rolls_back_live_cap() {
     admission.replace_kill_switch_state(halted_kill_switch_state());
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
     reconcile_forced_reduction_liveness(&admission, []);
+    let request = |client_order_id| {
+        with_client_order_id(
+            forced_reduction_request(Decimal::new(10, 0), forced_reduction_claim("halt-1")),
+            client_order_id,
+        )
+    };
 
     {
         let _permit = admission
-            .admit(&forced_reduction_request(
-                Decimal::new(10, 0),
-                forced_reduction_claim("halt-1"),
-            ))
+            .admit(&request("forced-client-order-1"))
             .expect("valid forced reduction should reserve the live cap");
         let capped = admission
-            .admit(&forced_reduction_request(
-                Decimal::new(10, 0),
-                forced_reduction_claim("halt-1"),
-            ))
+            .admit(&request("forced-client-order-2"))
             .expect_err("uncommitted forced reduction should hold the live cap");
         assert!(matches!(
             capped,
@@ -2599,10 +2656,7 @@ fn dropped_uncommitted_forced_reduction_permit_rolls_back_live_cap() {
     }
 
     admission
-        .admit(&forced_reduction_request(
-            Decimal::new(10, 0),
-            forced_reduction_claim("halt-1"),
-        ))
+        .admit(&request("forced-client-order-3"))
         .expect("dropped forced-reduction permit should release the live cap")
         .commit_submitted();
 }
@@ -2611,23 +2665,28 @@ fn dropped_uncommitted_forced_reduction_permit_rolls_back_live_cap() {
 fn admit_records_admission_decision_evidence_for_each_rejection_path() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = limited_admission_with_writer(writer.recorder(), 2, Decimal::new(1, 0));
+    let request = |client_order_id: &str, notional| {
+        let mut request = submit_request(notional);
+        request.client_order_id = client_order_id.to_string();
+        request
+    };
 
     admission
-        .admit(&submit_request(Decimal::new(1, 0)))
+        .admit(&request("client-order-1", Decimal::new(1, 0)))
         .expect("first valid submit should admit")
         .commit_submitted();
     admission
-        .admit(&submit_request(Decimal::ZERO))
+        .admit(&request("client-order-zero", Decimal::ZERO))
         .expect_err("zero notional must reject");
     admission
-        .admit(&submit_request(Decimal::new(2, 0)))
+        .admit(&request("client-order-over-notional", Decimal::new(2, 0)))
         .expect_err("over-cap notional must reject");
     admission
-        .admit(&submit_request(Decimal::new(1, 0)))
+        .admit(&request("client-order-2", Decimal::new(1, 0)))
         .expect("first within-cap submit should admit")
         .commit_submitted();
     admission
-        .admit(&submit_request(Decimal::new(1, 0)))
+        .admit(&request("client-order-over-count", Decimal::new(1, 0)))
         .expect_err("second submit must exhaust count cap");
 
     let outcomes: Vec<AdmissionDecisionOutcome> = writer

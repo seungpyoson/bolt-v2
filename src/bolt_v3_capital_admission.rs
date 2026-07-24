@@ -150,6 +150,10 @@ impl CapitalAdmissionGate {
         self.reservation_ledger.is_reconciled()
     }
 
+    pub fn invalidate_reconciliation(&mut self) {
+        self.reservation_ledger.invalidate_reconciliation();
+    }
+
     pub fn rebuild_open_order_reservations(
         &mut self,
         pool: &CapitalPoolSnapshot,

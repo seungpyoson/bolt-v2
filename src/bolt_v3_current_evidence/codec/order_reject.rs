@@ -304,6 +304,7 @@ enum AdmissionRejectionV1 {
     LossGovernorHalted,
     NonPositiveNotional,
     NotionalCapExceeded,
+    ClientOrderAlreadyAuthorized,
     InvalidRiskReducingExitProof,
     CountCapExhausted,
     KillSwitchForcedReductionProofInvalid,
@@ -318,6 +319,9 @@ impl AdmissionRejectionV1 {
             AdmissionRejectionReason::LossGovernorHalted => Self::LossGovernorHalted,
             AdmissionRejectionReason::NonPositiveNotional => Self::NonPositiveNotional,
             AdmissionRejectionReason::NotionalCapExceeded => Self::NotionalCapExceeded,
+            AdmissionRejectionReason::ClientOrderAlreadyAuthorized => {
+                Self::ClientOrderAlreadyAuthorized
+            }
             AdmissionRejectionReason::InvalidRiskReducingExitProof => {
                 Self::InvalidRiskReducingExitProof
             }
@@ -338,6 +342,9 @@ impl AdmissionRejectionV1 {
             Self::LossGovernorHalted => AdmissionRejectionReason::LossGovernorHalted,
             Self::NonPositiveNotional => AdmissionRejectionReason::NonPositiveNotional,
             Self::NotionalCapExceeded => AdmissionRejectionReason::NotionalCapExceeded,
+            Self::ClientOrderAlreadyAuthorized => {
+                AdmissionRejectionReason::ClientOrderAlreadyAuthorized
+            }
             Self::InvalidRiskReducingExitProof => {
                 AdmissionRejectionReason::InvalidRiskReducingExitProof
             }

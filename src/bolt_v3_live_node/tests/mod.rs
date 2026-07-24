@@ -402,19 +402,10 @@ fn settlement_health_is_not_configured_for_maker_only() {
 }
 
 #[test]
-fn settlement_health_is_not_configured_for_complete_set_only() {
-    let loaded = loaded_config_with_strategy_archetypes(&["complete_set_arbitrage"]);
-    let health = settlement_health_from_loaded(&loaded);
-    assert_eq!(health.status, BoltV3OperatorHealthStatus::NotConfigured);
-    assert!(!health.configured);
-}
-
-#[test]
 fn settlement_health_is_nominal_for_mixed_capabilities() {
     let loaded = loaded_config_with_strategy_archetypes(&[
         "binary_oracle_maker",
         "binary_oracle_edge_taker",
-        "complete_set_arbitrage",
     ]);
     assert_eq!(
         settlement_health_from_loaded(&loaded).status,

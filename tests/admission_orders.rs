@@ -4,7 +4,6 @@
 //! [[test]] binary; tests are unchanged, re-homed as admission_orders::<member>::.
 
 mod bolt_v3_basket_admission;
-mod bolt_v3_basket_execution;
 mod bolt_v3_capital_admission_runtime_feed;
 mod bolt_v3_order_intent;
 mod bolt_v3_order_reject_observer_feed;

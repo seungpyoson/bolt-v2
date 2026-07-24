@@ -1324,20 +1324,6 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
         count_sequence(&resolution_binding_tokens, &["root", ".", "clients"]),
         0
     );
-
-    let complete = support::repo_text("src/strategies/complete_set_arbitrage/archetype.rs");
-    let complete_tokens = tokenize(&complete);
-    let raw_complete_tokens =
-        item_body_tokens(&complete_tokens, &["pub", "fn", "raw_complete_set_config"])
-            .expect("raw complete-set config should remain inspectable");
-    assert_eq!(
-        count_sequence(&raw_complete_tokens, &["venue_for_client", "("]),
-        0
-    );
-    assert_eq!(
-        count_sequence(&raw_complete_tokens, &["LoadedBoltV3Config"]),
-        0
-    );
 }
 
 #[test]
@@ -4184,12 +4170,12 @@ fn configure_outcome_group_strategy(
     group_sources: Vec<String>,
 ) {
     let strategy = &mut loaded.strategies[0];
-    strategy.config.strategy_archetype = toml::Value::String("complete_set_arbitrage".to_string())
+    strategy.config.strategy_archetype = toml::Value::String("outcome_group_probe".to_string())
         .try_into()
-        .expect("complete-set archetype key should parse");
+        .expect("outcome-group probe archetype key should parse");
     strategy.config.execution_client_id = ClientId::from("polymarket_main");
     strategy.config.target = toml::toml! {
-        configured_target_id = "complete_set_target"
+        configured_target_id = "outcome_group_probe_target"
         kind = "static_outcome_group"
         rotating_market_family = "outcome_group"
         group_sources = group_sources

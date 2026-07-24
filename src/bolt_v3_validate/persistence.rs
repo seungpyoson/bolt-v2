@@ -156,5 +156,23 @@ pub(super) fn validate_capital_admission_reconciliation_universe(
                 .to_string(),
         );
     }
+    if execution.open_check_interval_secs == 0 {
+        errors.push(
+            "nautilus.exec_engine.open_check_interval_secs must be positive when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
+    if execution.open_check_lookback_mins != 0 {
+        errors.push(
+            "nautilus.exec_engine.open_check_lookback_mins must be 0 (unbounded) when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
+    if execution.position_check_interval_secs == 0 {
+        errors.push(
+            "nautilus.exec_engine.position_check_interval_secs must be positive when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
     errors
 }

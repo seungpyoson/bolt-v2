@@ -170,7 +170,7 @@ use crate::{
     },
     bolt_v3_current_evidence::{
         CapitalAdmissionRebuildSource, DecisionEvidenceRuntime, DecisionEvidenceStatusView,
-        ObservationStreamStatus, ReservationRecoveryFacts,
+        ObservationStreamStatus,
     },
     bolt_v3_iv::{
         config::IvRootConfig,
@@ -351,7 +351,6 @@ pub struct BoltV3LiveNodeRuntime {
     submit_admission_nt_projection_requested: Option<Arc<AtomicBool>>,
     provider_collateral_allowance_runtime_guard:
         Option<BoltV3ProviderCollateralAllowanceRuntimeGuard>,
-    submit_reservation_recovery: Arc<ReservationRecoveryFacts>,
     submit_admission_nt_reconciliation_account_ids: BTreeSet<AccountId>,
     iv_runtime: Option<IvRuntimeEngine>,
     iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
@@ -459,7 +458,6 @@ struct BoltV3LiveNodeRuntimeFeeds {
     submit_admission_nt_projection_requested: Option<Arc<AtomicBool>>,
     provider_collateral_allowance_runtime_guard:
         Option<BoltV3ProviderCollateralAllowanceRuntimeGuard>,
-    submit_reservation_recovery: Arc<ReservationRecoveryFacts>,
     submit_admission_nt_reconciliation_account_ids: BTreeSet<AccountId>,
 }
 
@@ -873,7 +871,6 @@ impl BoltV3LiveNodeRuntime {
                 .submit_admission_nt_projection_requested,
             provider_collateral_allowance_runtime_guard: feeds
                 .provider_collateral_allowance_runtime_guard,
-            submit_reservation_recovery: feeds.submit_reservation_recovery,
             submit_admission_nt_reconciliation_account_ids: feeds
                 .submit_admission_nt_reconciliation_account_ids,
             iv_runtime: runtime_components.iv_runtime,
@@ -1527,7 +1524,6 @@ impl BoltV3LiveNodeRuntime {
         Self::rebuild_capital_admission_from_nt_cache_parts(
             &self.node.kernel().cache(),
             self.capital_admission_runtime_feed.as_ref(),
-            self.submit_reservation_recovery.as_ref(),
             &self.submit_admission_nt_reconciliation_account_ids,
             self.submit_admission.as_ref(),
             now_ns,
@@ -1537,7 +1533,6 @@ impl BoltV3LiveNodeRuntime {
     fn rebuild_capital_admission_from_nt_cache_parts(
         cache: &Rc<RefCell<Cache>>,
         capital_admission_runtime_feed: Option<&Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
-        submit_reservation_recovery: &ReservationRecoveryFacts,
         reconciliation_account_ids: &BTreeSet<AccountId>,
         submit_admission: &BoltV3SubmitAdmissionState,
         now_ns: u64,
@@ -1654,26 +1649,29 @@ impl BoltV3LiveNodeRuntime {
         let mut live_non_reservation_client_order_ids = BTreeSet::new();
         let mut live_forced_reduction_client_order_ids = BTreeSet::new();
         let mut all_open_orders_attributed = projection_complete;
+        let committed_admission_authority =
+            submit_admission.committed_admission_authority_snapshot();
         for order in &open_order_snapshots {
             let Some(evidence) = nt_open_order_evidence_from_order(order, now_ns) else {
                 all_open_orders_attributed = false;
                 break;
             };
             let client_order_id = evidence.client_order_id.clone();
-            if submit_reservation_recovery.authorizes_non_reservation_order(&client_order_id) {
-                if submit_reservation_recovery.authorizes_forced_reduction_order(&client_order_id) {
+            if committed_admission_authority.authorizes_non_reservation_order(&client_order_id) {
+                if committed_admission_authority.authorizes_forced_reduction_order(&client_order_id)
+                {
                     live_forced_reduction_client_order_ids.insert(client_order_id.clone());
                 }
                 live_non_reservation_client_order_ids.insert(client_order_id);
                 continue;
             }
             let Some(metadata) =
-                submit_reservation_recovery.reservation_attribution(&client_order_id)
+                committed_admission_authority.reservation_attribution(&client_order_id)
             else {
                 all_open_orders_attributed = false;
                 break;
             };
-            let fill_trade_ids = submit_reservation_recovery
+            let fill_trade_ids = committed_admission_authority
                 .reservation_fill_trade_ids(&client_order_id, &metadata.submit_reservation_id)
                 .cloned()
                 .unwrap_or_default();
@@ -2665,7 +2663,6 @@ pub async fn run_bolt_v3_live_node(
     let startup_client_labels = live_node_startup_client_labels(runtime);
     let reconciliation_cache = runtime.node.kernel().cache();
     let reconciliation_feed = runtime.capital_admission_runtime_feed.clone();
-    let reconciliation_evidence = runtime.submit_reservation_recovery.clone();
     let reconciliation_account_ids = runtime
         .submit_admission_nt_reconciliation_account_ids
         .clone();
@@ -2683,7 +2680,6 @@ pub async fn run_bolt_v3_live_node(
         let decision = BoltV3LiveNodeRuntime::rebuild_capital_admission_from_nt_cache_parts(
             &reconciliation_cache,
             reconciliation_feed.as_ref(),
-            reconciliation_evidence.as_ref(),
             &reconciliation_account_ids,
             reconciliation_admission.as_ref(),
             observed_at_ns,
@@ -3107,7 +3103,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             resolved,
             capital_admission_runtime_feed_config.as_ref(),
         )?;
-    let submit_reservation_recovery = Arc::clone(&reservation_recovery);
     let submit_admission = Arc::new(
         BoltV3SubmitAdmissionState::new_with_live_submit_limits_and_optional_controls(
             evidence_runtime.submit_admission_evidence(),
@@ -3250,12 +3245,14 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             Some(projection_requested) => {
                 let projection_cache = node.kernel().cache();
                 let projection_feed = capital_admission_runtime_feed.clone();
-                let projection_recovery = submit_reservation_recovery.clone();
                 let projection_account_ids = submit_admission_nt_reconciliation_account_ids.clone();
                 let projection_admission = Arc::clone(&submit_admission);
+                let projection_admission_for_request = Arc::clone(&submit_admission);
                 let projection_health_emitter = operator_health_transition_emitter.clone();
                 let projection_requested = Arc::clone(projection_requested);
                 let projection_request: Rc<dyn Fn()> = Rc::new(move || {
+                    projection_admission_for_request
+                        .invalidate_capital_admission_for_nt_projection_request();
                     projection_requested.store(true, Ordering::Release);
                 });
                 let projection_trigger: Rc<dyn Fn()> = Rc::new(move || {
@@ -3272,7 +3269,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                         BoltV3LiveNodeRuntime::rebuild_capital_admission_from_nt_cache_parts(
                             &projection_cache,
                             projection_feed.as_ref(),
-                            projection_recovery.as_ref(),
                             &projection_account_ids,
                             projection_admission.as_ref(),
                             observed_at_ns,
@@ -3513,7 +3509,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             submit_admission_nt_projection_trigger,
             submit_admission_nt_projection_requested,
             provider_collateral_allowance_runtime_guard,
-            submit_reservation_recovery,
             submit_admission_nt_reconciliation_account_ids,
         },
         BoltV3LiveNodeRuntimeComponents {

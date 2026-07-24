@@ -5,7 +5,6 @@
 mod bolt_v3_chainlink_config;
 mod bolt_v3_chainlink_registration;
 mod bolt_v3_client_registration;
-mod bolt_v3_complete_set_strategy_shell;
 mod bolt_v3_controlled_connect;
 mod bolt_v3_credential_log_suppression;
 mod bolt_v3_operator_health;

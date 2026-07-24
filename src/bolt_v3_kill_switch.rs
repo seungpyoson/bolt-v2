@@ -82,20 +82,6 @@ impl KillSwitchHaltTrigger {
         }
     }
 
-    pub fn basket_execution_stuck(
-        source: impl Into<String>,
-        source_timestamp_unix_nanos: u64,
-        reason: impl Into<String>,
-    ) -> Self {
-        Self {
-            kind: KillSwitchHaltTriggerKind::BasketExecutionStuck,
-            source: source.into(),
-            source_timestamp_unix_nanos,
-            reason: reason.into(),
-            loss_halt_reason: None,
-        }
-    }
-
     pub fn provider_collateral_allowance_runtime_failure(
         source: impl Into<String>,
         source_timestamp_unix_nanos: u64,
@@ -114,7 +100,6 @@ impl KillSwitchHaltTrigger {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KillSwitchHaltTriggerKind {
     LossGovernorBreach,
-    BasketExecutionStuck,
     ProviderCollateralAllowanceRuntimeFailure,
 }
 
@@ -351,7 +336,6 @@ pub(crate) fn halt_id_for_trigger(trigger: &KillSwitchHaltTrigger) -> String {
     hasher.update([0]);
     hasher.update(match trigger.kind {
         KillSwitchHaltTriggerKind::LossGovernorBreach => b"loss_governor_breach".as_slice(),
-        KillSwitchHaltTriggerKind::BasketExecutionStuck => b"basket_execution_stuck".as_slice(),
         KillSwitchHaltTriggerKind::ProviderCollateralAllowanceRuntimeFailure => {
             b"provider_collateral_allowance_runtime_failure".as_slice()
         }

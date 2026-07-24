@@ -107,13 +107,6 @@ impl StrategyRegistry {
         Ok(())
     }
 
-    pub(crate) fn register_guarded<B: StrategyBuilder>(&mut self) -> Result<()>
-    where
-        B::Strategy: super::FillVoidPolicyGuard,
-    {
-        self.register::<B>()
-    }
-
     pub fn get(&self, kind: &str) -> Option<&StrategyRegistration> {
         self.registrations.get(kind)
     }
@@ -194,7 +187,7 @@ mod tests {
 
     impl DataActor for TestStrategy {}
 
-    crate::strategies::nautilus_strategy_with_fill_void_guard!(TestStrategy, {});
+    nautilus_trading::nautilus_strategy!(TestStrategy, {});
 
     struct AlphaBuilder;
 
@@ -308,8 +301,8 @@ mod tests {
     fn strategy_registry_registers_and_sorts_kinds() {
         let mut registry = StrategyRegistry::new();
 
-        registry.register_guarded::<BetaBuilder>().unwrap();
-        registry.register_guarded::<AlphaBuilder>().unwrap();
+        registry.register::<BetaBuilder>().unwrap();
+        registry.register::<AlphaBuilder>().unwrap();
 
         assert_eq!(registry.kinds(), vec!["alpha_runtime", "beta_runtime"]);
         assert_eq!(
@@ -323,8 +316,8 @@ mod tests {
     fn strategy_registry_rejects_duplicate_registration() {
         let mut registry = StrategyRegistry::new();
 
-        registry.register_guarded::<AlphaBuilder>().unwrap();
-        let error = registry.register_guarded::<AlphaBuilder>().unwrap_err();
+        registry.register::<AlphaBuilder>().unwrap();
+        let error = registry.register::<AlphaBuilder>().unwrap_err();
 
         assert!(error.to_string().contains("alpha_runtime"));
     }
@@ -332,7 +325,7 @@ mod tests {
     #[test]
     fn strategy_registry_dispatches_validate_and_prepare() {
         let mut registry = StrategyRegistry::new();
-        registry.register_guarded::<AlphaBuilder>().unwrap();
+        registry.register::<AlphaBuilder>().unwrap();
 
         let registration = registry.get("alpha_runtime").unwrap();
         let raw = toml::toml! {
@@ -350,7 +343,7 @@ mod tests {
     #[test]
     fn strategy_registry_validate_reports_missing_strategy_id() {
         let mut registry = StrategyRegistry::new();
-        registry.register_guarded::<AlphaBuilder>().unwrap();
+        registry.register::<AlphaBuilder>().unwrap();
 
         let registration = registry.get("alpha_runtime").unwrap();
         let raw = toml::Value::Table(Default::default());

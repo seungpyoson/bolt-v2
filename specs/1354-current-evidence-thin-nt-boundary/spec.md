@@ -71,7 +71,9 @@ configuration:
 - no client-order filter;
 - no unclaimed-order filter;
 - no position-report filter; and
-- missing-order generation enabled.
+- missing-order generation enabled;
+- ongoing open-order reconciliation enabled with an unbounded lookback; and
+- ongoing position reconciliation enabled.
 
 ### 2. One post-reconciliation projection
 
@@ -181,8 +183,9 @@ live provider or create a second reducer.
   any venue open order or relevant confirmed fill is absent from NT's
   instrument universe, or any current position cannot be represented.
 - **FR-004 — Safe NT configuration**: enforced capital admission MUST reject
-  every reconciliation setting that intentionally narrows the startup
-  universe.
+  every reconciliation setting that narrows the startup or ongoing universe,
+  disables ongoing open-order or position checks, or bounds the ongoing
+  open-order lookback.
 - **FR-005 — Post-reconciliation boundary**: canonical NT cache reads and
   admission projection MUST occur on the NT runtime thread only after NT is
   `Running`.

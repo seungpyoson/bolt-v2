@@ -101,7 +101,6 @@ use rate_limit::validate_order_rate_within_venue_egress;
 use reference_price::validate_reference_current_price;
 use risk::validate_risk_block;
 use strategy_envelope::{
-    validate_complete_set_activation_is_shadow_only,
     validate_shadow_order_execution_mode_forbids_managed_venue_actions,
     validate_target_gate_provider_references,
 };
@@ -245,10 +244,6 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                 &context, root, strategy,
             ),
         );
-        errors.extend(validate_complete_set_activation_is_shadow_only(
-            &context, root, strategy,
-        ));
-
         if let Some(surface_id) = &strategy.realized_volatility_surface_id
             && !root
                 .realized_volatility_surfaces
@@ -318,12 +313,6 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
     }
     errors.extend(validate_target_gate_provider_references(root, strategies));
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
-    errors.extend(
-        crate::bolt_v3_outcome_group_sources::validate_outcome_group_strategy_links(
-            root, strategies,
-        ),
-    );
-
     errors
 }
 

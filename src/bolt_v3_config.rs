@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_iv::config::IvRootConfig,
     bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
-    bolt_v3_outcome_group_sources::{BasketExecutionRiskBlock, OutcomeGroupSourceConfig},
+    bolt_v3_outcome_group_sources::OutcomeGroupSourceConfig,
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolCoarserGridPolicy, RealizedVolEngineConfig,
         RealizedVolEstimatorConfig, RealizedVolJumpConfig, RealizedVolJumpPolicy,
@@ -225,12 +225,8 @@ pub struct RiskBlock {
     pub live_submit_governance: Option<LiveSubmitGovernanceBlock>,
     pub loss_governor: Option<LossGovernorBlock>,
     pub capital_pools: Option<Vec<CapitalPoolBlock>>,
-    pub risk_reservation_substrate: Option<
-        crate::bolt_v3_risk_reservation_substrate::contracts::RiskReservationSubstrateConfig,
-    >,
     pub nautilus: NautilusRiskBlock,
     pub kill_switch: Option<KillSwitchConfigBlock>,
-    pub basket_execution: Option<BasketExecutionRiskBlock>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

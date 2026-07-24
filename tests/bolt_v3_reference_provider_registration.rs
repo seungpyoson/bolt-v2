@@ -48,6 +48,15 @@ fn reference_price_providers_have_websocket_frame_boundary_registry_rows() {
 }
 
 #[test]
+fn polymarket_nt_reconciliation_has_provider_boundary_registry_row() {
+    assert!(BOUNDARY_REGISTRY.iter().any(|entry| {
+        entry.adapter_id == "PolymarketExecutionClient"
+            && entry.class == BoundaryEvidenceClass::HttpResponseBody
+            && entry.feeder == BoundaryFeeder::PolymarketNtExecutionReconciliation
+    }));
+}
+
+#[test]
 fn boundary_registry_completeness_rejects_string_literal_non_reference_provider_key() {
     let planted = [ReferencePriceProviderMetadata {
         provider_key: "pyth_ws",

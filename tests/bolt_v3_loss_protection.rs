@@ -260,8 +260,10 @@ fn mixed_settlement_currency_realized_pnl_fails_closed() {
     );
     // Admission is latched into FailedManualIntervention: an integrity failure is
     // not a recoverable loss breach, it requires manual operator intervention.
+    let mut post_failure_request = entry_request();
+    post_failure_request.client_order_id = "client-order-2".to_string();
     assert!(matches!(
-        admission.admit(&entry_request()),
+        admission.admit(&post_failure_request),
         Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
             state: KillSwitchStateKind::FailedManualIntervention
         })

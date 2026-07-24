@@ -114,9 +114,10 @@ fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_ex
         .release_basket("basket-1", BoltV3BasketAdmissionReleaseReason::Terminal)
         .expect("terminal release should free basket exposure reservation");
     drop(permit);
+    let second_claims = rekey_claims(claims, "basket-2");
     let mut second_permit = basket_state
         .admit(
-            &basket_request("basket-2", &group, &scan, claims),
+            &basket_request("basket-2", &group, &scan, second_claims),
             &submit_state,
         )
         .expect("released exposure should allow the next basket");
@@ -152,14 +153,57 @@ fn dropped_basket_admission_permit_releases_open_reservation() {
         "dropping before downstream submit commit must roll back submit slots"
     );
 
+    let second_claims = rekey_claims(claims, "basket-2");
     let mut second_permit = basket_state
         .admit(
-            &basket_request("basket-2", &group, &scan, claims),
+            &basket_request("basket-2", &group, &scan, second_claims),
             &submit_state,
         )
         .expect("dropped permit should release the open basket reservation");
     second_permit.commit_submitted();
     assert_eq!(submit_state.admitted_order_count(), 2);
+}
+
+#[test]
+fn basket_client_order_identity_reuse_rejects_before_a_second_grant_is_recorded() {
+    let writer = RecordingBasketDecisionWriter::default();
+    let basket_state = BoltV3BasketAdmissionState::new(writer.recorder(), admission_limits());
+    let submit_state = submit_state(writer.recorder(), 4, dec!(10));
+    let group = fixture_group();
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
+    let claims = entry_claims(&group, dec!(0.9));
+
+    let mut first = basket_state
+        .admit(
+            &basket_request("basket-1", &group, &scan, claims.clone()),
+            &submit_state,
+        )
+        .expect("first unique basket claim set should admit");
+    first.commit_submitted();
+    basket_state
+        .release_basket("basket-1", BoltV3BasketAdmissionReleaseReason::Terminal)
+        .expect("first basket exposure should release");
+
+    let error = basket_state
+        .admit(
+            &basket_request("basket-2", &group, &scan, claims),
+            &submit_state,
+        )
+        .expect_err("committed basket client-order identities must not authorize twice");
+    assert!(matches!(
+        error,
+        BoltV3BasketAdmissionError::SubmitAdmissionFailed(_)
+    ));
+
+    let decisions = writer.basket_admission_decisions();
+    assert_eq!(
+        decisions
+            .iter()
+            .filter(|decision| { decision.outcome == RecordedBasketAdmissionOutcome::Granted })
+            .count(),
+        1,
+        "the duplicate claim set must be rejected before a second grant append"
+    );
 }
 
 #[test]
@@ -792,8 +836,8 @@ fn seed_capital_admission_for_claims(
         claims,
         observed_at_ns,
     ));
-    let rebuild =
-        submit_gate.rebuild_capital_admission_open_order_reservations(Vec::new(), observed_at_ns);
+    let rebuild = submit_gate
+        .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), observed_at_ns);
     assert!(
         rebuild.accepted,
         "empty open-order rebuild should reconcile the test capital admission"
@@ -866,6 +910,16 @@ fn entry_claims(group: &OutcomeGroup, notional: Decimal) -> Vec<BoltV3BasketSubm
             admission_evidence: None,
         })
         .collect()
+}
+
+fn rekey_claims(
+    mut claims: Vec<BoltV3BasketSubmitSlotClaim>,
+    scope: &str,
+) -> Vec<BoltV3BasketSubmitSlotClaim> {
+    for claim in &mut claims {
+        claim.client_order_id = format!("{scope}-{}", claim.client_order_id);
+    }
+    claims
 }
 
 fn risk_reducing_claim(

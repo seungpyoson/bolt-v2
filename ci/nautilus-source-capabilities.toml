@@ -1,11 +1,17 @@
 # Immutable source facts for the exact official NautilusTrader dependency.
-# build.rs binds this revision to dependencies.nautilus-binance and generates
-# the Rust registry. This is governed build evidence, not operator config.
+# build.rs binds this revision to the exact Binance and Polymarket dependencies
+# and generates the Rust registry. This is governed build evidence, not
+# operator config.
 revision = "38949305e6b37753323cf366d8f8f244a42c694b"
 
 [binance_spot]
 sbe_schema_3_5 = true
 adapter_receive_timestamps = true
+
+[polymarket_reconciliation]
+rejects_unmapped_open_orders = true
+rejects_unmapped_confirmed_fills = true
+rejects_unrepresentable_positions = true
 
 [[evidence]]
 capability = "binance_spot.sbe_schema_3_5"
@@ -18,3 +24,21 @@ capability = "binance_spot.adapter_receive_timestamps"
 cargo_test_target = "binance_sbe_quote_timestamps"
 path = "tests/binance_sbe_quote_timestamps.rs"
 sha256 = "1cce271229a01b4d391c5dc6c6c5e324957bcc2e4c57b7359bf3a0d4ff4e39b3"
+
+[[evidence]]
+capability = "polymarket_reconciliation.rejects_unmapped_open_orders"
+cargo_test_target = "polymarket_reconciliation_fail_closed"
+path = "tests/polymarket_reconciliation_fail_closed.rs"
+sha256 = "306f613adfd0f8b61ace481cbe8287ec4f285b6165bf2553771a03e62ba56a45"
+
+[[evidence]]
+capability = "polymarket_reconciliation.rejects_unmapped_confirmed_fills"
+cargo_test_target = "polymarket_reconciliation_fail_closed"
+path = "tests/polymarket_reconciliation_fail_closed.rs"
+sha256 = "306f613adfd0f8b61ace481cbe8287ec4f285b6165bf2553771a03e62ba56a45"
+
+[[evidence]]
+capability = "polymarket_reconciliation.rejects_unrepresentable_positions"
+cargo_test_target = "polymarket_reconciliation_fail_closed"
+path = "tests/polymarket_reconciliation_fail_closed.rs"
+sha256 = "306f613adfd0f8b61ace481cbe8287ec4f285b6165bf2553771a03e62ba56a45"

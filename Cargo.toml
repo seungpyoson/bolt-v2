@@ -55,12 +55,8 @@ name = "binance_sbe_quote_timestamps"
 path = "tests/binance_sbe_quote_timestamps.rs"
 
 [[test]]
-name = "bolt_v3_risk_reservation_substrate"
-path = "tests/bolt_v3_risk_reservation_substrate.rs"
-
-[[test]]
-name = "bolt_v3_risk_reservation_epoch_manager"
-path = "tests/bolt_v3_risk_reservation_epoch_manager.rs"
+name = "polymarket_reconciliation_fail_closed"
+path = "tests/polymarket_reconciliation_fail_closed.rs"
 
 [[test]]
 name = "bolt_v3_polymarket_provider_collateral_allowance"
@@ -145,6 +141,7 @@ tokio-tungstenite = "=0.29.0"
 toml = "1.1"
 
 [build-dependencies]
+sha2 = "0.10.9"
 toml = "1.1"
 
 [profile.release]

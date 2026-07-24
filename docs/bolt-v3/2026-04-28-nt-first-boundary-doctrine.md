@@ -5,8 +5,8 @@ Status: approved doctrine
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
 Last full NT doctrine audit rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last full NT doctrine audit date: 2026-04-28
-Last NT pin compatibility verified rev: `d81be0bcc7a473c45d2dc8a8885638336073a218`
-Last NT pin compatibility verified date: 2026-07-17
+Last NT pin compatibility verified rev: `38949305e6b37753323cf366d8f8f244a42c694b`
+Last NT pin compatibility verified date: 2026-07-25
 Owner: Bolt-v3 maintainers
 
 This artifact records the current Bolt-v3 boundary doctrine for
@@ -123,15 +123,17 @@ Decision to repo-rule mapping:
 The following source anchors were verified for this doctrine or a later
 compatibility slice:
 
-- `Cargo.toml` pins the official NT repository at merge commit
-  `d81be0bcc7a473c45d2dc8a8885638336073a218`. The 2026-07-17 source-correction
-  slice's declared compatibility scope is the NT 0.61 migration, the governed Binance
-  boundary evidence, and required exact-head tests. It does not re-audit all
-  NT-owned behaviors cited by this doctrine.
+- `Cargo.toml` pins the official NT repository at exact commit
+  `38949305e6b37753323cf366d8f8f244a42c694b` for upstream PR #4557. The
+  2026-07-25 compatibility scope covers the governed Binance boundary and
+  Polymarket reconciliation completeness required by the thin-NT decision-
+  evidence slice. It does not re-audit all NT-owned behaviors cited by this
+  doctrine.
 - `ci/nautilus-source-capabilities.toml` binds the selected official revision
-  to its Binance Spot schema 3:5 and adapter receive-timestamp facts. `build.rs`
-  generates the immutable Rust registry and rejects revision drift or a false
-  fact; operator TOML cannot override either capability.
+  to its Binance Spot schema 3:5, adapter receive-timestamp, and Polymarket
+  reconciliation fail-closed facts. `build.rs` verifies the bound behavior-test
+  hashes, generates the immutable Rust registry, and rejects revision drift or
+  a false fact; operator TOML cannot override any capability.
 - The NT pin-change audit and compatibility probe are recorded under
   `docs/bolt-v3/research/nt-pin-change/`; the CLOB V2 live-readiness gate
   remains open until live signing, order, fill, collateral, and fee behavior are

@@ -853,7 +853,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `d81be0bcc7a473c45d2dc8a8885638336073a218`
+  - current value: `38949305e6b37753323cf366d8f8f244a42c694b`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1399,7 +1399,7 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`d81be0bcc7a473c45d2dc8a8885638336073a218`. WebSocket frames flow through
+`38949305e6b37753323cf366d8f8f244a42c694b`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows the handler
 capturing one local clock value per decoded message and supplying it to
@@ -1409,15 +1409,18 @@ capturing one local clock value per decoded message and supplying it to
 private BBO handler arm. This NT-owned path feeds both
 `RealizedVolatilityObservation` and `StrategySignalObservation`.
 
-`ci/nautilus-source-capabilities.toml` records the two official-source facts
-for this exact revision. `build.rs` requires its revision to equal the official
-`nautilus-binance` Cargo pin and emits the immutable
+`ci/nautilus-source-capabilities.toml` records the Binance market-data facts
+and Polymarket reconciliation fail-closed facts for this exact revision.
+`build.rs` requires its revision to equal the official `nautilus-binance` and
+`nautilus-polymarket` Cargo pins, verifies each behavior-test artifact hash, and
+emits the immutable
 `NautilusSourceCapabilityRegistry` value `NAUTILUS_SOURCE_CAPABILITIES`; neither
-fact is exposed through operator TOML. Both facts are true at this pin, so the
-production runtime has one direct Binance path. It does not contain a runtime
-capability branch, timestamp substitution, or fallback provider. A later pin
-with either fact false must first add an issue-bound affected-new-risk blocker;
-the current build and source fence reject a false fact instead of silently
+capability family is exposed through operator TOML. All facts are true at this
+pin, so the production runtime has direct NT-owned Binance and Polymarket
+paths. It does not contain a runtime capability branch, timestamp substitution,
+reconciliation fallback, or alternate venue reader. A later pin with any fact
+false must first add an issue-bound affected-new-risk blocker; the current
+build and source fence reject a false fact instead of silently
 using the direct path.
 
 Bolt's `binance_sbe_quote_timestamps` harness exercises only the public parser
@@ -1539,9 +1542,11 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins the official NautilusTrader repository at
-merge commit `d81be0bcc7a473c45d2dc8a8885638336073a218` for upstream PR #4474. That
-official commit contains the Binance Spot SBE schema 3:5 instrument-loading
-fix, schema 3:5 request negotiation, and adapter receive-clock ownership.
+exact commit `38949305e6b37753323cf366d8f8f244a42c694b` for upstream PR #4557.
+That commit contains the Binance Spot SBE schema 3:5 instrument-loading fix,
+schema 3:5 request negotiation, adapter receive-clock ownership, and
+fail-closed Polymarket reconciliation for unmapped orders/fills and
+unrepresentable positions.
 The pin carries Polymarket CLOB V2 adapter support, version-tolerant Binance
 Spot REST SBE decode within schema id 3, and the Hyperliquid HIP-4 metadata
 path. The compatibility

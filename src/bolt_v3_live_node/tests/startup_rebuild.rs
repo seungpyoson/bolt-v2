@@ -170,6 +170,99 @@ fn startup_rebuild_stays_closed_for_unknown_nt_cache_order() {
 }
 
 #[test]
+fn current_process_admission_remains_attributed_on_nt_reprojection() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+    loaded.root.risk.loss_governor = None;
+    let mut runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+    runtime
+        .provider_collateral_allowance_runtime_guard
+        .take()
+        .expect("fixture should start provider collateral allowance runtime")
+        .stop_and_join();
+    seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+    runtime
+        .capital_admission_runtime_feed
+        .as_ref()
+        .expect("fixture should configure capital-admission runtime feed")
+        .lock()
+        .expect("capital-admission feed should lock")
+        .on_provider_collateral_allowance_snapshot(ProviderCollateralAllowanceSnapshot {
+            source: crate::bolt_v3_capital_admission_state::POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE
+                .to_string(),
+            observed_at_ns: 1_000,
+            venue_id: "POLYMARKET".to_string(),
+            account_id: "POLYMARKET-001".to_string(),
+            collateral_currency: "PUSD".to_string(),
+            collateral_allowance: Decimal::new(100, 0),
+        });
+    assert!(
+        runtime
+            .rebuild_capital_admission_from_nt_cache(1_050)
+            .accepted
+    );
+
+    let request = crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest {
+        strategy_id: "current-process-strategy".to_string(),
+        execution_client_id: "polymarket_main".to_string(),
+        client_order_id: "current-process-client-order".to_string(),
+        instrument_id: "condition-fixture-yes.POLYMARKET".to_string(),
+        notional: Decimal::new(4, 0),
+        order_side: OrderSide::Buy,
+        order_quantity: Decimal::new(10, 0),
+        intent_kind: crate::bolt_v3_submit_admission::BoltV3SubmitIntentKind::Entry,
+        risk_reducing_exit_proof: None,
+        kill_switch_forced_reduction: None,
+        admission_evidence: Some(
+            crate::bolt_v3_submit_admission::BoltV3CompiledOrderAdmissionEvidence {
+                venue_id: "POLYMARKET".to_string(),
+                product_kind:
+                    crate::bolt_v3_submit_admission::BoltV3CompiledProductKind::PredictionMarketBinary,
+                side: BoltV3CompiledOrderSide::Buy,
+                quantity: Decimal::new(10, 0),
+                effective_price: Decimal::new(40, 2),
+                order_kind:
+                    crate::bolt_v3_submit_admission::BoltV3CompiledOrderKind::Limit,
+                liquidity:
+                    crate::bolt_v3_submit_admission::BoltV3CompiledOrderLiquidity::Taker,
+                quote_set_id: None,
+                prediction_market_outcome: Some(
+                    crate::bolt_v3_submit_admission::PredictionMarketOutcomeSide::Yes,
+                ),
+            },
+        ),
+    };
+    runtime
+        .submit_admission
+        .admit_at(&request, 1_100)
+        .expect("current-process admission should commit")
+        .commit_submitted();
+    seed_accepted_open_limit_order(
+        &runtime,
+        generic_limit_order(
+            "current-process-client-order",
+            "condition-fixture-yes.POLYMARKET",
+            OrderSide::Buy,
+            Quantity::from(10),
+            Price::from("0.40"),
+        ),
+        "POLYMARKET-001",
+    );
+
+    let rebuild = runtime.rebuild_capital_admission_from_nt_cache(1_150);
+
+    assert!(rebuild.accepted, "{rebuild:?}");
+    assert_eq!(rebuild.rebuilt_reservation_count, 1);
+    assert_eq!(runtime.capital_admission_reconciled(), Some(true));
+    assert!(
+        runtime
+            .submit_admission
+            .capital_admission_has_live_reservation("current-process-client-order")
+    );
+}
+
+#[test]
 fn startup_rebuild_derives_forced_reduction_liveness_from_nt_and_committed_evidence() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let mut loaded = loaded_config_with_submit_sizer_recovery(temp.path());

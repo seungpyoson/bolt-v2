@@ -173,10 +173,9 @@ impl CapitalAdmissionRuntimeFeed {
         &mut self,
         snapshot: ProviderCollateralAllowanceSnapshot,
     ) {
-        let observed_at_ns = snapshot.observed_at_ns;
         if self.accept_provider_collateral_allowance(snapshot) {
             self.submit_admission
-                .invalidate_capital_admission_for_new_allowance_snapshot(observed_at_ns);
+                .invalidate_capital_admission_for_nt_projection_request();
         }
     }
 

@@ -490,8 +490,10 @@ fn stale_loss_halt_evidence_exponentially_samples_and_resets_after_accept() {
         .expect("fresh loss snapshot should reset stale-halt sampling")
         .commit_submitted();
     admission.update_loss_snapshot(loss_snapshot_at(3_000));
+    let mut recurring_stale_request = submit_request(Decimal::new(1, 0));
+    recurring_stale_request.client_order_id = "client-order-2".to_string();
     admission
-        .admit_at(&submit_request(Decimal::new(1, 0)), 4_001)
+        .admit_at(&recurring_stale_request, 4_001)
         .expect_err("recurring stale loss snapshot should restart sampling at one");
 
     let reset_records = writer.loss_governor_halts();

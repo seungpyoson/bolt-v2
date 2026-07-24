@@ -219,8 +219,6 @@ mod tests {
             registry_relative_roots(STRATEGY_KEY),
             &[
                 "src/strategies/binary_oracle_edge_taker",
-                "src/strategies/complete_set_arbitrage",
-                "src/bolt_v3_complete_set_contract.rs",
                 "src/bolt_v3_order_execution.rs",
                 "src/bolt_v3_book_sizing.rs",
                 "src/bolt_v3_binary_outcome_edge.rs",
@@ -274,35 +272,8 @@ mod tests {
                 "src/bolt_v3_outcome_group_hyperliquid.rs",
                 "src/bolt_v3_outcome_group_scanner.rs",
                 "src/bolt_v3_basket_admission.rs",
-                "src/bolt_v3_basket_execution.rs",
-                "src/bolt_v3_basket_store.rs",
-                "src/bolt_v3_complete_set_contract.rs",
                 "src/bolt_v3_market_families/outcome_group.rs",
-                "src/strategy_bindings.rs",
-                "src/strategies/complete_set_arbitrage",
             ]
-        );
-    }
-
-    #[test]
-    fn complete_set_strategy_shell_overlap_is_intentional_and_pinned() {
-        let complete_set_root = "src/strategies/complete_set_arbitrage";
-        assert!(
-            registry_relative_roots(STRATEGY_KEY).contains(&complete_set_root),
-            "complete-set shell is a production-registered strategy and must stay under strategy source integrity"
-        );
-        assert!(
-            registry_relative_roots(OUTCOME_GROUP_KEY).contains(&complete_set_root),
-            "complete-set shell is the first outcome-group consumer and must stay under outcome-group source integrity"
-        );
-        let complete_set_contract = "src/bolt_v3_complete_set_contract.rs";
-        assert!(
-            registry_relative_roots(STRATEGY_KEY).contains(&complete_set_contract),
-            "complete-set submit contract must stay under strategy source integrity"
-        );
-        assert!(
-            registry_relative_roots(OUTCOME_GROUP_KEY).contains(&complete_set_contract),
-            "shared complete-set projections must stay under outcome-group source integrity"
         );
     }
 
@@ -317,9 +288,6 @@ mod tests {
             vec![
                 "src/bolt_v3_atomic_io.rs".to_string(),
                 "src/bolt_v3_basket_admission.rs".to_string(),
-                "src/bolt_v3_basket_execution.rs".to_string(),
-                "src/bolt_v3_basket_store.rs".to_string(),
-                "src/bolt_v3_complete_set_contract.rs".to_string(),
                 "src/bolt_v3_market_families/outcome_group.rs".to_string(),
                 "src/bolt_v3_outcome_group_hyperliquid.rs".to_string(),
                 "src/bolt_v3_outcome_group_polymarket.rs".to_string(),
@@ -327,14 +295,8 @@ mod tests {
                 "src/bolt_v3_outcome_group_scanner.rs".to_string(),
                 "src/bolt_v3_outcome_group_sources.rs".to_string(),
                 "src/bolt_v3_outcome_groups.rs".to_string(),
-                "src/strategies/complete_set_arbitrage/archetype.rs".to_string(),
-                "src/strategies/complete_set_arbitrage/mod.rs".to_string(),
-                "src/strategies/complete_set_arbitrage/tests/event_forwarding.rs".to_string(),
-                "src/strategies/complete_set_arbitrage/tests/mod.rs".to_string(),
-                "src/strategies/complete_set_arbitrage/tests/shell.rs".to_string(),
-                "src/strategy_bindings.rs".to_string(),
             ],
-            "Task 12 covers the cycle-free proof leaf alongside shared outcome-group roots"
+            "outcome-group integrity covers only shared source, scan, and admission policy"
         );
     }
 

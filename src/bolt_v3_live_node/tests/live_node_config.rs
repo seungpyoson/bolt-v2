@@ -757,14 +757,14 @@ fn live_node_config_maps_explicit_nt_runtime_defaults_from_v3_root() {
     assert_eq!(cfg.exec_engine.inflight_check_interval_ms, 2_000);
     assert_eq!(cfg.exec_engine.inflight_check_threshold_ms, 5_000);
     assert_eq!(cfg.exec_engine.inflight_check_retries, 5);
-    assert_eq!(cfg.exec_engine.open_check_interval_secs, None);
-    assert_eq!(cfg.exec_engine.open_check_lookback_mins, Some(60));
+    assert_eq!(cfg.exec_engine.open_check_interval_secs, Some(30.0));
+    assert_eq!(cfg.exec_engine.open_check_lookback_mins, None);
     assert_eq!(cfg.exec_engine.open_check_threshold_ms, 5_000);
     assert_eq!(cfg.exec_engine.open_check_missing_retries, 5);
     assert!(cfg.exec_engine.open_check_open_only);
     assert_eq!(cfg.exec_engine.max_single_order_queries_per_cycle, 10);
     assert_eq!(cfg.exec_engine.single_order_query_delay_ms, 100);
-    assert_eq!(cfg.exec_engine.position_check_interval_secs, None);
+    assert_eq!(cfg.exec_engine.position_check_interval_secs, Some(30.0));
     assert_eq!(cfg.exec_engine.position_check_lookback_mins, 60);
     assert_eq!(cfg.exec_engine.position_check_threshold_ms, 5_000);
     assert_eq!(cfg.exec_engine.position_check_retries, 3);

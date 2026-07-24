@@ -3,8 +3,6 @@ pub mod bolt_v3_application_resource_ledger;
 pub mod bolt_v3_archetypes;
 pub mod bolt_v3_atomic_io;
 pub mod bolt_v3_basket_admission;
-pub mod bolt_v3_basket_execution;
-pub mod bolt_v3_basket_store;
 pub mod bolt_v3_binary_outcome_edge;
 pub mod bolt_v3_binary_settlement;
 pub mod bolt_v3_binary_settlement_runtime;
@@ -13,7 +11,6 @@ pub mod bolt_v3_capital_admission;
 pub mod bolt_v3_capital_admission_runtime_feed;
 pub mod bolt_v3_capital_reservation;
 pub mod bolt_v3_client_registration;
-pub mod bolt_v3_complete_set_contract;
 pub mod bolt_v3_config;
 pub mod bolt_v3_current_evidence;
 pub mod bolt_v3_deploy_target;
@@ -82,7 +79,6 @@ pub mod bolt_v3_realized_volatility;
 pub mod bolt_v3_realized_volatility_runtime;
 pub mod bolt_v3_reference_price;
 pub mod bolt_v3_reference_price_health;
-pub mod bolt_v3_risk_reservation_substrate;
 // Re-exported at crate root so backtesting consumers can name these
 // reconstruction types without writing the snake_case module path. The
 // backtesting-vertical-slice sample-venue source fence forbids the literal

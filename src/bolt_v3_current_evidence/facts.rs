@@ -396,6 +396,7 @@ pub enum AdmissionRejectionReason {
     LossGovernorHalted,
     NonPositiveNotional,
     NotionalCapExceeded,
+    ClientOrderAlreadyAuthorized,
     InvalidRiskReducingExitProof,
     CountCapExhausted,
     KillSwitchForcedReductionProofInvalid,
@@ -1111,7 +1112,7 @@ pub struct TerminalSettlementFact {
     pub lifecycle: OrderLifecycleFact,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ReservationRecoveryFacts {
     reservation_attribution: BTreeMap<String, ReservationAttribution>,
     reservation_fill_trade_ids: BTreeMap<(String, String), BTreeSet<String>>,
@@ -1163,12 +1164,18 @@ impl ReservationRecoveryFacts {
     }
 
     #[must_use]
+    pub fn authorizes_order(&self, client_order_id: &str) -> bool {
+        self.reservation_attribution.contains_key(client_order_id)
+            || self.authorizes_non_reservation_order(client_order_id)
+    }
+
+    #[must_use]
     pub fn authorizes_forced_reduction_order(&self, client_order_id: &str) -> bool {
         self.admitted_forced_reduction_client_order_ids
             .contains(client_order_id)
     }
 
-    pub(super) fn apply(&mut self, fact: ReservationRecoveryEvent) -> Result<()> {
+    pub(crate) fn apply(&mut self, fact: ReservationRecoveryEvent) -> Result<()> {
         match fact {
             ReservationRecoveryEvent::AdmittedEntry(admission) => {
                 if let Some(reservation) = admission.reservation {
@@ -1401,7 +1408,7 @@ impl BookingRecoveryFacts {
 }
 
 #[derive(Debug)]
-pub(super) enum ReservationRecoveryEvent {
+pub(crate) enum ReservationRecoveryEvent {
     AdmittedEntry(Box<AdmittedEntryAdmissionFact>),
     BasketGranted(BasketAdmissionGrantedFact),
     RiskReducingExit(Box<RiskReducingExitAdmissionFact>),

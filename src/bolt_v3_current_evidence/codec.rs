@@ -1022,6 +1022,7 @@ mod tests {
             LossGovernorHalted => "loss_governor_halted",
             NonPositiveNotional => "non_positive_notional",
             NotionalCapExceeded => "notional_cap_exceeded",
+            ClientOrderAlreadyAuthorized => "client_order_already_authorized",
             InvalidRiskReducingExitProof => "invalid_risk_reducing_exit_proof",
             CountCapExhausted => "count_cap_exhausted",
             KillSwitchForcedReductionProofInvalid =>

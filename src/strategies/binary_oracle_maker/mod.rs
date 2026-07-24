@@ -961,7 +961,7 @@ impl DataActor for BinaryOracleMaker {
     }
 }
 
-crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleMaker, {});
+nautilus_trading::nautilus_strategy!(BinaryOracleMaker, {});
 
 impl StrategyBuilder for BinaryOracleMakerBuilder {
     type Strategy = BinaryOracleMaker;

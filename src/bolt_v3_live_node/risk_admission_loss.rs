@@ -1794,8 +1794,8 @@ mod tests {
             (components, allowance_observed_at_ns)
         };
         admission.update_capital_admission_nt_components(components.clone());
-        let rebuild =
-            admission.rebuild_capital_admission_open_order_reservations(Vec::new(), observed_at_ns);
+        let rebuild = admission
+            .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), observed_at_ns);
         assert!(
             rebuild.accepted,
             "canonical empty NT projection should rebuild the reservation ledger"
@@ -2075,7 +2075,8 @@ mod tests {
             BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 2, Decimal::new(10, 0))
                 .expect("forced reduction policy should be valid"),
         );
-        let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1);
+        let rebuild =
+            admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1);
         assert!(rebuild.accepted);
         admission
     }

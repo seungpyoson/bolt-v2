@@ -350,17 +350,13 @@ fn disable_strategy_free_data_client_live_subsystems(loaded: &mut LoadedBoltV3Co
         live_submit_governance,
         loss_governor,
         capital_pools,
-        risk_reservation_substrate,
         nautilus: _,
         kill_switch,
-        basket_execution,
     } = &mut loaded.root.risk;
     *live_submit_governance = None;
     *loss_governor = None;
     *capital_pools = None;
-    *risk_reservation_substrate = None;
     *kill_switch = None;
-    *basket_execution = None;
 }
 
 fn data_client_scope_requires_secrets(client: &ClientBlock) -> bool {

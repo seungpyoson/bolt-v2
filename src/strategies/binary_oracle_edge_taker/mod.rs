@@ -7390,7 +7390,7 @@ impl BinaryOracleEdgeTaker {
     }
 }
 
-crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleEdgeTaker, {
+nautilus_trading::nautilus_strategy!(BinaryOracleEdgeTaker, {
     fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) {
         self.handle_order_filled(event);
     }

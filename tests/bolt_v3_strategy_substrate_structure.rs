@@ -8,7 +8,6 @@ use rust_source_tokens::{Token, count_sequence, item_body_tokens, item_header, t
 const ARCHETYPES: &[&str] = &[
     "src/strategies/binary_oracle_edge_taker/archetype.rs",
     "src/strategies/binary_oracle_maker/archetype.rs",
-    "src/strategies/complete_set_arbitrage/archetype.rs",
 ];
 
 const STRATEGY_MUTATION_AUTHORITY_NAMES: &[&str] = &[

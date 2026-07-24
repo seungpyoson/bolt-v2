@@ -6,11 +6,11 @@ mod lifecycle;
 mod loss;
 mod order_intent;
 mod order_reject;
+mod provider_collateral_allowance;
 mod requote;
 mod reservation;
 mod settlement;
 mod strategy_input;
-mod venue_truth;
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -21,11 +21,10 @@ use super::{
         BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, CurrentFact,
         EntryOrderIntentFact, EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact,
         ExitSubmissionDecisionFact, ForcedReductionAdmissionFact, LossGovernorHaltFact,
-        OrderLifecycleFact, OrderRejectFact, RejectedEntryAdmissionFact,
-        RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
+        OrderLifecycleFact, OrderRejectFact, ProviderCollateralAllowanceCaptureFailureFact,
+        RejectedEntryAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
         RiskReducingExitOrderIntentFact, SettlementFact, SubmitLinkedStrategyInputSnapshotFact,
-        SubmitReservationFillFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
-        VenueTruthDivergenceFact,
+        SubmitReservationFillFact, TerminalSettlementFact,
     },
     generated_contract::{
         IdentityDescriptor, KnownIdentity, KnownPurpose, current_identity_for_purpose,
@@ -208,35 +207,19 @@ impl CodecFor<identities::RequoteThrottleObservationV1> for CurrentCodecs {
     }
 }
 
-impl CodecFor<identities::VenueTruthCaptureFailureV1> for CurrentCodecs {
-    type Input = VenueTruthCaptureFailureFact;
-    type Fact = VenueTruthCaptureFailureFact;
+impl CodecFor<identities::ProviderCollateralAllowanceCaptureFailureV1> for CurrentCodecs {
+    type Input = ProviderCollateralAllowanceCaptureFailureFact;
+    type Fact = ProviderCollateralAllowanceCaptureFailureFact;
 
     fn encode(
         input: &Self::Input,
         recorded_at_utc_ns: i64,
     ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-        venue_truth::encode_capture_failure(input.clone(), recorded_at_utc_ns)
+        provider_collateral_allowance::encode_capture_failure(input.clone(), recorded_at_utc_ns)
     }
 
     fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
-        venue_truth::decode_capture_failure(line, line_number)
-    }
-}
-
-impl CodecFor<identities::VenueTruthDivergenceV1> for CurrentCodecs {
-    type Input = VenueTruthDivergenceFact;
-    type Fact = VenueTruthDivergenceFact;
-
-    fn encode(
-        input: &Self::Input,
-        recorded_at_utc_ns: i64,
-    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-        venue_truth::encode_divergence(input.clone(), recorded_at_utc_ns)
-    }
-
-    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
-        venue_truth::decode_divergence(line, line_number)
+        provider_collateral_allowance::decode_capture_failure(line, line_number)
     }
 }
 
@@ -525,19 +508,10 @@ pub(crate) fn encode_requote_throttle_observation(
     )
 }
 
-pub(crate) fn encode_venue_truth_capture_failure(
-    fact: VenueTruthCaptureFailureFact,
+pub(crate) fn encode_provider_collateral_allowance_capture_failure(
+    fact: ProviderCollateralAllowanceCaptureFailureFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    <CurrentCodecs as CodecFor<identities::VenueTruthCaptureFailureV1>>::encode(
-        &fact,
-        current_utc_ns()?,
-    )
-}
-
-pub(crate) fn encode_venue_truth_divergence(
-    fact: VenueTruthDivergenceFact,
-) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    <CurrentCodecs as CodecFor<identities::VenueTruthDivergenceV1>>::encode(
+    <CurrentCodecs as CodecFor<identities::ProviderCollateralAllowanceCaptureFailureV1>>::encode(
         &fact,
         current_utc_ns()?,
     )
@@ -750,15 +724,12 @@ pub(super) fn decode_current_fact(
                 identities::TerminalSettlementV1,
             >>::decode(line, line_number)?))
         }
-        KnownIdentity::VenueTruthCaptureFailureV1 => {
-            CurrentFact::VenueTruthCaptureFailure(<CurrentCodecs as CodecFor<
-                identities::VenueTruthCaptureFailureV1,
-            >>::decode(line, line_number)?)
-        }
-        KnownIdentity::VenueTruthDivergenceV1 => {
-            CurrentFact::VenueTruthDivergence(<CurrentCodecs as CodecFor<
-                identities::VenueTruthDivergenceV1,
-            >>::decode(line, line_number)?)
+        KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1 => {
+            CurrentFact::ProviderCollateralAllowanceCaptureFailure(<CurrentCodecs as CodecFor<
+                identities::ProviderCollateralAllowanceCaptureFailureV1,
+            >>::decode(
+                line, line_number
+            )?)
         }
     })
 }
@@ -899,7 +870,7 @@ mod tests {
     unit_wire_coverage!(
         OrderIntentClampNotEvaluatedReason,
         [
-            NoVenueTruth => "no_venue_truth",
+            NoCanonicalNtPosition => "no_canonical_nt_position",
             ForeignInstrument => "foreign_instrument",
             NonSellOrderSide => "non_sell_order_side"
         ]
@@ -912,7 +883,7 @@ mod tests {
                 Self::Clamped { .. } => "clamped",
             Self::Rejected => Self::Rejected => "rejected",
             Self::NotEvaluated {
-                reason: OrderIntentClampNotEvaluatedReason::NoVenueTruth,
+                reason: OrderIntentClampNotEvaluatedReason::NoCanonicalNtPosition,
             } => Self::NotEvaluated { .. } => "not_evaluated"
         ]
     );
@@ -930,6 +901,13 @@ mod tests {
             MissingSettlementRules => "missing_settlement_rules",
             RetryBudgetExceeded => "retry_budget_exceeded",
             SubmitSlots => "submit_slots"
+        ]
+    );
+    unit_wire_coverage!(
+        BasketAdmissionIntentKind,
+        [
+            Entry => "entry",
+            RiskReducingExit => "risk_reducing_exit"
         ]
     );
     unit_wire_coverage!(
@@ -979,37 +957,15 @@ mod tests {
         [RequoteBudgetExhausted => "requote_budget_exhausted"]
     );
     unit_wire_coverage!(
-        VenueTruthDivergenceAlarmClass,
+        ProviderCollateralAllowanceCaptureEndpoint,
         [
-            TrueDivergence => "true_divergence",
-            OrderingViolation => "ordering_violation",
-            SilentChannel => "silent_channel"
+            ProviderCollateralAllowanceSnapshot => "provider_collateral_allowance_snapshot",
+            ClobBalanceAllowance => "clob_balance_allowance"
         ]
     );
     unit_wire_coverage!(
-        VenueTruthCaptureEndpoint,
-        [
-            VenueTruthSnapshot => "venue_truth_snapshot",
-            ClobBalanceAllowance => "clob_balance_allowance",
-            ClobOpenOrders => "clob_open_orders",
-            DataApiPositions => "data_api_positions"
-        ]
-    );
-    unit_wire_coverage!(
-        VenueTruthCaptureErrorClass,
+        ProviderCollateralAllowanceCaptureErrorClass,
         [Unknown => "unknown", TransportOrDecode => "transport_or_decode"]
-    );
-    unit_wire_coverage!(
-        VenueTruthDivergenceDomain,
-        [
-            AccountChanged => "account_changed",
-            OrderingViolation => "ordering_violation",
-            UnexplainedOpenOrderDelta => "unexplained_open_order_delta",
-            UnexplainedPositionDelta => "unexplained_position_delta",
-            UnexplainedCollateralBalanceDelta => "unexplained_collateral_balance_delta",
-            UnexplainedCollateralAllowanceDelta =>
-                "unexplained_collateral_allowance_delta"
-        ]
     );
     unit_wire_coverage!(
         StaleLossReason,
@@ -1454,11 +1410,8 @@ mod tests {
             }
             KnownIdentity::SettlementV1 => frozen_corpus!("settlement.jsonl"),
             KnownIdentity::TerminalSettlementV1 => frozen_corpus!("terminal_settlement.jsonl"),
-            KnownIdentity::VenueTruthCaptureFailureV1 => {
-                frozen_corpus!("venue_truth_capture_failure.jsonl")
-            }
-            KnownIdentity::VenueTruthDivergenceV1 => {
-                frozen_corpus!("venue_truth_divergence.jsonl")
+            KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1 => {
+                frozen_corpus!("provider_collateral_allowance_capture_failure.jsonl")
             }
         }
     }
@@ -1533,8 +1486,7 @@ mod tests {
             | KnownIdentity::CapitalAdmissionRebuildV1
             | KnownIdentity::SubmitReservationFillV1
             | KnownIdentity::SettlementV1
-            | KnownIdentity::VenueTruthCaptureFailureV1
-            | KnownIdentity::VenueTruthDivergenceV1 => None,
+            | KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1 => None,
         }
     }
 
@@ -1651,16 +1603,11 @@ mod tests {
             >>::encode(
                 value.as_ref(), recorded_at_utc_ns
             ),
-            CurrentFact::VenueTruthCaptureFailure(value) => <CurrentCodecs as CodecFor<
-                identities::VenueTruthCaptureFailureV1,
-            >>::encode(
-                &value, recorded_at_utc_ns
-            ),
-            CurrentFact::VenueTruthDivergence(value) => <CurrentCodecs as CodecFor<
-                identities::VenueTruthDivergenceV1,
-            >>::encode(
-                &value, recorded_at_utc_ns
-            ),
+            CurrentFact::ProviderCollateralAllowanceCaptureFailure(value) => {
+                <CurrentCodecs as CodecFor<
+                    identities::ProviderCollateralAllowanceCaptureFailureV1,
+                >>::encode(&value, recorded_at_utc_ns)
+            }
         }
     }
 
@@ -2035,18 +1982,6 @@ mod tests {
                 present_market.market_id = Some("market-coverage".to_string());
                 cases.push(CurrentFact::RequoteThrottleObservation(present_market));
             }
-            CurrentFact::VenueTruthDivergence(value) => {
-                for (domain, _) in VenueTruthDivergenceDomain::wire_coverage_values() {
-                    let mut case = value.clone();
-                    case.domain = domain;
-                    cases.push(CurrentFact::VenueTruthDivergence(case));
-                }
-                for (alarm_class, _) in VenueTruthDivergenceAlarmClass::wire_coverage_values() {
-                    let mut case = value.clone();
-                    case.alarm_class = alarm_class;
-                    cases.push(CurrentFact::VenueTruthDivergence(case));
-                }
-            }
             CurrentFact::LossGovernorHalt(value) => {
                 for (stale_reason, _) in StaleLossReason::wire_coverage_values() {
                     let mut case = value.clone();
@@ -2365,18 +2300,34 @@ mod tests {
                 for leg in &mut without_reservations.admitted_legs {
                     leg.reservation = None;
                 }
-                cases.push(CurrentFact::BasketAdmissionGranted(without_reservations));
+                cases.push(CurrentFact::BasketAdmissionGranted(
+                    without_reservations.clone(),
+                ));
+                for (intent_kind, _) in BasketAdmissionIntentKind::wire_coverage_values() {
+                    let mut case = without_reservations.clone();
+                    case.admitted_legs
+                        .last_mut()
+                        .expect("basket coverage requires at least one admitted leg")
+                        .intent_kind = intent_kind;
+                    if case != without_reservations {
+                        cases.push(CurrentFact::BasketAdmissionGranted(case));
+                    }
+                }
             }
-            CurrentFact::VenueTruthCaptureFailure(value) => {
-                for (endpoint, _) in VenueTruthCaptureEndpoint::wire_coverage_values() {
+            CurrentFact::ProviderCollateralAllowanceCaptureFailure(value) => {
+                for (endpoint, _) in
+                    ProviderCollateralAllowanceCaptureEndpoint::wire_coverage_values()
+                {
                     let mut case = value.clone();
                     case.endpoint = endpoint;
-                    cases.push(CurrentFact::VenueTruthCaptureFailure(case));
+                    cases.push(CurrentFact::ProviderCollateralAllowanceCaptureFailure(case));
                 }
-                for (error_class, _) in VenueTruthCaptureErrorClass::wire_coverage_values() {
+                for (error_class, _) in
+                    ProviderCollateralAllowanceCaptureErrorClass::wire_coverage_values()
+                {
                     let mut case = value.clone();
                     case.error_class = error_class;
-                    cases.push(CurrentFact::VenueTruthCaptureFailure(case));
+                    cases.push(CurrentFact::ProviderCollateralAllowanceCaptureFailure(case));
                 }
             }
             CurrentFact::SubmitReservationFill(_) => {}
@@ -2965,7 +2916,7 @@ mod tests {
             price: "0.4".to_string(),
             quantity: "2".to_string(),
             clamp_outcome: Some(OrderIntentClampOutcome::NotEvaluated {
-                reason: OrderIntentClampNotEvaluatedReason::NoVenueTruth,
+                reason: OrderIntentClampNotEvaluatedReason::NoCanonicalNtPosition,
             }),
             order_fields: OrderIntentOrderFields {
                 order_type: EvidenceOrderType::Limit,
@@ -3034,25 +2985,14 @@ mod tests {
         }
     }
 
-    fn venue_capture_failure() -> VenueTruthCaptureFailureFact {
-        VenueTruthCaptureFailureFact {
-            source: "venue_truth".to_string(),
+    fn provider_collateral_allowance_capture_failure()
+    -> ProviderCollateralAllowanceCaptureFailureFact {
+        ProviderCollateralAllowanceCaptureFailureFact {
+            source: "provider_collateral_allowance".to_string(),
             observed_at_ns: 8,
-            endpoint: super::super::facts::VenueTruthCaptureEndpoint::VenueTruthSnapshot,
-            error_class: super::super::facts::VenueTruthCaptureErrorClass::Unknown,
+            endpoint: super::super::facts::ProviderCollateralAllowanceCaptureEndpoint::ProviderCollateralAllowanceSnapshot,
+            error_class: super::super::facts::ProviderCollateralAllowanceCaptureErrorClass::Unknown,
             captures_missed: 1,
-        }
-    }
-
-    fn venue_divergence() -> VenueTruthDivergenceFact {
-        VenueTruthDivergenceFact {
-            source: "venue_truth".to_string(),
-            observed_at_ns: 9,
-            account_id: "POLYMARKET-001".to_string(),
-            domain: super::super::facts::VenueTruthDivergenceDomain::UnexplainedOpenOrderDelta,
-            venue_value: "2".to_string(),
-            prior_accepted_value: "1".to_string(),
-            alarm_class: super::super::facts::VenueTruthDivergenceAlarmClass::TrueDivergence,
         }
     }
 
@@ -3314,10 +3254,8 @@ mod tests {
         assert_domain!(RequoteActionCostClass);
         assert_domain!(RequoteThrottleBound);
         assert_domain!(RequoteThrottleBlockReason);
-        assert_domain!(VenueTruthCaptureEndpoint);
-        assert_domain!(VenueTruthCaptureErrorClass);
-        assert_domain!(VenueTruthDivergenceAlarmClass);
-        assert_domain!(VenueTruthDivergenceDomain);
+        assert_domain!(ProviderCollateralAllowanceCaptureEndpoint);
+        assert_domain!(ProviderCollateralAllowanceCaptureErrorClass);
         assert_domain!(StaleLossReason);
         assert_domain!(LossHaltReason);
         assert_domain!(LossSnapshotSource);
@@ -3729,8 +3667,7 @@ mod tests {
             KnownIdentity::RequoteThrottleObservationV1,
             KnownIdentity::SettlementV1,
             KnownIdentity::TerminalSettlementV1,
-            KnownIdentity::VenueTruthCaptureFailureV1,
-            KnownIdentity::VenueTruthDivergenceV1,
+            KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1,
         ]);
         assert_eq!(
             covered_identities,
@@ -3825,19 +3762,20 @@ mod tests {
         requote["observation"]["submit_command_cap"] = 0.into();
         mutation_is_rejected(KnownIdentity::RequoteThrottleObservationV1, &requote);
 
-        let mut venue_truth = positive_value(KnownIdentity::VenueTruthDivergenceV1);
-        venue_truth["divergence"]["field"] = "account_id".into();
-        mutation_is_rejected(KnownIdentity::VenueTruthDivergenceV1, &venue_truth);
-        let mut venue_truth = positive_value(KnownIdentity::VenueTruthDivergenceV1);
-        venue_truth["divergence"]["missing_explanation"] = "unknown_explanation".into();
-        mutation_is_rejected(KnownIdentity::VenueTruthDivergenceV1, &venue_truth);
-
-        let mut capture = positive_value(KnownIdentity::VenueTruthCaptureFailureV1);
+        let mut capture =
+            positive_value(KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1);
         capture["capture_failure"]["endpoint"] = "unknown_endpoint".into();
-        mutation_is_rejected(KnownIdentity::VenueTruthCaptureFailureV1, &capture);
-        let mut capture = positive_value(KnownIdentity::VenueTruthCaptureFailureV1);
+        mutation_is_rejected(
+            KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1,
+            &capture,
+        );
+        let mut capture =
+            positive_value(KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1);
         capture["capture_failure"]["error_class"] = "unknown_error_class".into();
-        mutation_is_rejected(KnownIdentity::VenueTruthCaptureFailureV1, &capture);
+        mutation_is_rejected(
+            KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1,
+            &capture,
+        );
 
         let mut settlement = positive_value(KnownIdentity::SettlementV1);
         settlement["settlement"]["settlement_key"] = "".into();
@@ -3883,27 +3821,24 @@ mod tests {
         };
 
         for identity in ALL_IDENTITIES.iter().copied() {
-            let line = positive_corpus(identity)
-                .lines()
-                .next()
-                .expect("positive corpus must contain a baseline record");
-            let mut recovery = StartupRecoveryProjections::default();
-            apply_startup_recovery_projections(identity, line, 1, &mut recovery).unwrap_or_else(
-                |error| panic!("{identity:?} must have a typed reducer: {error:#}"),
-            );
+            let mut projected_any = [false; 3];
+            for (line_number, line) in positive_corpus(identity).lines().enumerate() {
+                let mut recovery = StartupRecoveryProjections::default();
+                apply_startup_recovery_projections(identity, line, line_number + 1, &mut recovery)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{identity:?} canonical case {} must have a typed reducer: {error:#}",
+                            line_number + 1
+                        )
+                    });
+                projected_any[0] |= !recovery.reservation.is_empty();
+                projected_any[1] |= !recovery.settlement.is_empty();
+                projected_any[2] |= !recovery.booking.is_empty();
+            }
             for (consumer, projected) in [
-                (
-                    KnownConsumer::ReservationRecoveryV1,
-                    !recovery.reservation.is_empty(),
-                ),
-                (
-                    KnownConsumer::SettlementRecoveryV1,
-                    !recovery.settlement.is_empty(),
-                ),
-                (
-                    KnownConsumer::BookingRecoveryV1,
-                    !recovery.booking.is_empty(),
-                ),
+                (KnownConsumer::ReservationRecoveryV1, projected_any[0]),
+                (KnownConsumer::SettlementRecoveryV1, projected_any[1]),
+                (KnownConsumer::BookingRecoveryV1, projected_any[2]),
             ] {
                 let relevant = matches!(
                     disposition_for(fact_for_identity(identity), consumer),
@@ -4168,11 +4103,13 @@ mod tests {
                 super::super::facts::BasketAdmittedLeg {
                     client_order_id: "client-yes".to_string(),
                     instrument_id: "YES-USD.POLYMARKET".to_string(),
+                    intent_kind: super::super::facts::BasketAdmissionIntentKind::Entry,
                     reservation: None,
                 },
                 super::super::facts::BasketAdmittedLeg {
                     client_order_id: "client-no".to_string(),
                     instrument_id: "NO-USD.POLYMARKET".to_string(),
+                    intent_kind: super::super::facts::BasketAdmissionIntentKind::Entry,
                     reservation: None,
                 },
             ],
@@ -4275,49 +4212,22 @@ mod tests {
     }
 
     #[test]
-    fn venue_truth_identities_are_distinct_and_round_trip() {
-        let failure = venue_capture_failure();
-        let failure_record =
-            <CurrentCodecs as CodecFor<identities::VenueTruthCaptureFailureV1>>::encode(
-                &failure, 21,
-            )
-            .expect("valid capture failure must encode");
+    fn provider_collateral_allowance_capture_failure_round_trips() {
+        let failure = provider_collateral_allowance_capture_failure();
+        let failure_record = <CurrentCodecs as CodecFor<
+            identities::ProviderCollateralAllowanceCaptureFailureV1,
+        >>::encode(&failure, 21)
+        .expect("valid capture failure must encode");
         let failure_line = std::str::from_utf8(failure_record.line())
             .expect("encoded evidence must be UTF-8")
             .trim_end_matches('\n');
         assert_eq!(
-            <CurrentCodecs as CodecFor<identities::VenueTruthCaptureFailureV1>>::decode(
+            <CurrentCodecs as CodecFor<identities::ProviderCollateralAllowanceCaptureFailureV1>>::decode(
                 failure_line,
                 1,
             )
             .expect("capture failure must decode"),
             failure
-        );
-
-        let divergence = venue_divergence();
-        let divergence_record =
-            <CurrentCodecs as CodecFor<identities::VenueTruthDivergenceV1>>::encode(
-                &divergence,
-                22,
-            )
-            .expect("valid divergence must encode");
-        let divergence_line = std::str::from_utf8(divergence_record.line())
-            .expect("encoded evidence must be UTF-8")
-            .trim_end_matches('\n');
-        assert_eq!(
-            <CurrentCodecs as CodecFor<identities::VenueTruthDivergenceV1>>::decode(
-                divergence_line,
-                1,
-            )
-            .expect("divergence must decode"),
-            divergence
-        );
-        assert!(
-            <CurrentCodecs as CodecFor<identities::VenueTruthCaptureFailureV1>>::decode(
-                divergence_line,
-                1,
-            )
-            .is_err()
         );
     }
 

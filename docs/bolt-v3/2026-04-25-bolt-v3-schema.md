@@ -248,7 +248,6 @@ http_timeout_secs = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
 max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_ms = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_ms = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
-ack_timeout_secs = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
 fee_cache_ttl_secs = 300 # NT: PolymarketExecClientConfig fee cache TTL
 transport_backend = "sockudo" # NT: PolymarketExecClientConfig.transport_backend
 
@@ -962,12 +961,6 @@ bolt parses this string enum and maps it to the current pinned Nautilus/Polymark
 
 - type: positive integer
 - required: yes
-
-#### `ack_timeout_secs`
-
-- type: positive integer
-- required: yes
-- maps directly to the pinned Polymarket execution-client acknowledgment timeout field
 
 #### Additional Polymarket execution fields
 
@@ -1862,7 +1855,6 @@ http_timeout_secs = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
 max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_ms = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_ms = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
-ack_timeout_secs = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
 fee_cache_ttl_secs = 300 # NT: PolymarketExecClientConfig fee cache TTL
 transport_backend = "sockudo" # NT: PolymarketExecClientConfig.transport_backend
 

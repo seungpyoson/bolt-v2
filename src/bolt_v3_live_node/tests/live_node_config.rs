@@ -839,65 +839,6 @@ fn live_node_config_maps_non_empty_nt_max_notional_per_order() {
 }
 
 #[test]
-fn venue_spendability_source_config_reads_configured_capital_pool_source() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let mut loaded = fixture_loaded_config();
-    write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
-    let config = capital_admission_venue_spendability_source_config_from_loaded(&loaded)
-        .expect("source config should build")
-        .expect("fixture should configure source");
-
-    let snapshot = capital_admission_venue_spendability_snapshot_from_source_config(&config)
-        .expect("configured source should be accepted");
-
-    assert_eq!(snapshot.source, "operator_venue_spendability");
-    assert_eq!(snapshot.spendable_collateral, Decimal::from(20));
-    assert_eq!(snapshot.collateral_allowance, Decimal::from(12));
-}
-
-#[test]
-#[should_panic(expected = "capital admission venue spendability feed lock poisoned")]
-fn venue_spendability_refresh_panics_on_poisoned_capital_admission_feed_lock() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let mut loaded = fixture_loaded_config();
-    write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
-    let config = capital_admission_venue_spendability_source_config_from_loaded(&loaded)
-        .expect("source config should build")
-        .expect("fixture should configure source");
-    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
-        .expect("fixture v3 LiveNode should build");
-    let feed = runtime
-        .capital_admission_runtime_feed
-        .as_ref()
-        .expect("fixture should configure capital-admission runtime feed");
-    poison_mutex(feed);
-
-    let _ = refresh_capital_admission_venue_spendability_from_source(feed, &config);
-}
-
-#[test]
-fn venue_spendability_source_config_fails_closed_on_sha_mismatch() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let mut loaded = fixture_loaded_config();
-    write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
-    let mut config = capital_admission_venue_spendability_source_config_from_loaded(&loaded)
-        .expect("source config should build")
-        .expect("fixture should configure source");
-    config.expected_sha256 =
-        "0000000000000000000000000000000000000000000000000000000000000000".to_string();
-
-    let error = capital_admission_venue_spendability_snapshot_from_source_config(&config)
-        .expect_err("hash mismatch must fail closed");
-    let rendered = error.to_string();
-
-    assert!(
-        rendered.contains("capital admission venue spendability source rejected")
-            && rendered.contains("Sha256Mismatch"),
-        "startup error should name rejected spendability evidence, got: {rendered}"
-    );
-}
-
-#[test]
 fn live_node_config_maps_log_levels_from_uppercase_strings() {
     let loaded = fixture_loaded_config();
     let cfg = make_live_node_config(&loaded);

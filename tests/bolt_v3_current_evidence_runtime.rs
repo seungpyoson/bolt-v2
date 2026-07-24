@@ -3,13 +3,16 @@ use std::{fs, path::Path, process::Command};
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_current_evidence::{
-        AdmissionDetails, AdmittedEntryAdmissionFact, CurrentEvidenceStream,
-        DecisionEvidenceRuntime, EvidenceOrderSide, EvidenceRequoteLeg, ObservationRecordOutcome,
-        ObservationStreamStatus, OrderLifecycleFact, OrderLifecycleOutcome, OrderLifecycleSource,
-        OrderLifecycleTransition, OutcomeSide, PositiveFiniteEvidenceReadCap, RecordFailure,
-        RecoveredSettlementOutcome, RequoteActionCostClass, RequoteThrottleBlockReason,
-        RequoteThrottleBound, RequoteThrottleObservationFact, ReservationAttribution,
-        ReservationProductKind, SettlementBookingErrorFact, SettlementBookingErrorReason,
+        AdmissionDecisionOutcome, AdmissionDetails, AdmittedEntryAdmissionFact,
+        BasketAdmissionDetails, BasketAdmissionGrantedFact, BasketAdmissionIntentKind,
+        BasketAdmittedLeg, CurrentEvidenceStream, DecisionEvidenceRuntime, EvidenceOrderSide,
+        EvidenceRequoteLeg, ForcedReductionAdmissionFact, NonBlockingRecordOutcome,
+        ObservationRecordOutcome, ObservationStreamStatus, OrderLifecycleFact,
+        OrderLifecycleOutcome, OrderLifecycleSource, OrderLifecycleTransition, OutcomeSide,
+        PositiveFiniteEvidenceReadCap, RecordFailure, RecoveredSettlementOutcome,
+        RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
+        RequoteThrottleObservationFact, ReservationAttribution, ReservationProductKind,
+        RiskReducingExitAdmissionFact, SettlementBookingErrorFact, SettlementBookingErrorReason,
         SettlementFact, ShadowPnlEvent, SubmitReservationFillFact, SubmitReservationFillSource,
         TerminalSettlementFact, read_backtest_run_guard_events, read_shadow_pnl_events,
     },
@@ -174,32 +177,36 @@ fn reservation_attribution() -> ReservationAttribution {
 
 fn admitted_entry_with_reservation() -> AdmittedEntryAdmissionFact {
     AdmittedEntryAdmissionFact {
-        details: AdmissionDetails {
-            strategy_id: "strategy-1".to_string(),
-            execution_client_id: "execution-1".to_string(),
-            client_order_id: "client-1".to_string(),
-            instrument_id: "YES-USD.POLYMARKET".to_string(),
-            notional: "1".to_string(),
-            loss_halt_reasons: Vec::new(),
-            snapshot_present: false,
-            snapshot_observed_at_ns: None,
-            admission_now_ns: 1,
-            snapshot_age_ns: None,
-            max_snapshot_age_ns: None,
-            snapshot_source: None,
-            per_trade_pnl_present: false,
-            daily_pnl_present: false,
-            rolling_pnl_present: false,
-            current_equity_present: false,
-            peak_equity_present: false,
-            last_account_state_observed_at_ns: None,
-            last_portfolio_snapshot_observed_at_ns: None,
-            last_position_event_observed_at_ns: None,
-            stale_reason: None,
-            loss_snapshot_observed_at_ns: None,
-            loss_eval_now_ns: None,
-        },
+        details: admission_details("client-1"),
         reservation: Some(reservation_attribution()),
+    }
+}
+
+fn admission_details(client_order_id: &str) -> AdmissionDetails {
+    AdmissionDetails {
+        strategy_id: "strategy-1".to_string(),
+        execution_client_id: "execution-1".to_string(),
+        client_order_id: client_order_id.to_string(),
+        instrument_id: "YES-USD.POLYMARKET".to_string(),
+        notional: "1".to_string(),
+        loss_halt_reasons: Vec::new(),
+        snapshot_present: false,
+        snapshot_observed_at_ns: None,
+        admission_now_ns: 1,
+        snapshot_age_ns: None,
+        max_snapshot_age_ns: None,
+        snapshot_source: None,
+        per_trade_pnl_present: false,
+        daily_pnl_present: false,
+        rolling_pnl_present: false,
+        current_equity_present: false,
+        peak_equity_present: false,
+        last_account_state_observed_at_ns: None,
+        last_portfolio_snapshot_observed_at_ns: None,
+        last_position_event_observed_at_ns: None,
+        stale_reason: None,
+        loss_snapshot_observed_at_ns: None,
+        loss_eval_now_ns: None,
     }
 }
 
@@ -531,6 +538,87 @@ fn open_strictly_decodes_current_recovery_facts() {
     assert!(
         format!("{error:#}").contains("malformed current payload"),
         "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn recovery_projects_every_committed_non_reservation_authorization() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let loaded = loaded_in(&temp);
+    let initial = DecisionEvidenceRuntime::open(&loaded).expect("fresh current streams must open");
+    let recorder = initial.recorder();
+
+    let _entry = recorder
+        .record_admitted_entry_admission(AdmittedEntryAdmissionFact {
+            details: admission_details("entry-unreserved"),
+            reservation: None,
+        })
+        .expect("unreserved entry admission must append");
+    assert!(matches!(
+        recorder.record_risk_reducing_exit_admission(RiskReducingExitAdmissionFact {
+            details: admission_details("risk-reducing"),
+            outcome: AdmissionDecisionOutcome::Admitted,
+        }),
+        NonBlockingRecordOutcome::Appended(_)
+    ));
+    assert!(matches!(
+        recorder.record_forced_reduction_admission(ForcedReductionAdmissionFact {
+            details: admission_details("forced-reduction"),
+            outcome: AdmissionDecisionOutcome::Admitted,
+        }),
+        NonBlockingRecordOutcome::Appended(_)
+    ));
+    let _basket = recorder
+        .record_basket_admission_granted(BasketAdmissionGrantedFact {
+            details: BasketAdmissionDetails {
+                strategy_id: "strategy-1".to_string(),
+                execution_client_id: "execution-1".to_string(),
+                basket_id: "basket-1".to_string(),
+                group_id: "group-1".to_string(),
+                leg_instrument_ids: vec![
+                    "YES-USD.POLYMARKET".to_string(),
+                    "NO-USD.POLYMARKET".to_string(),
+                ],
+                total_notional: "2".to_string(),
+                leg_order_count: 2,
+            },
+            admitted_legs: vec![
+                BasketAdmittedLeg {
+                    client_order_id: "basket-entry".to_string(),
+                    instrument_id: "YES-USD.POLYMARKET".to_string(),
+                    intent_kind: BasketAdmissionIntentKind::Entry,
+                    reservation: None,
+                },
+                BasketAdmittedLeg {
+                    client_order_id: "basket-risk-reducing".to_string(),
+                    instrument_id: "NO-USD.POLYMARKET".to_string(),
+                    intent_kind: BasketAdmissionIntentKind::RiskReducingExit,
+                    reservation: None,
+                },
+            ],
+        })
+        .expect("basket admission must append");
+    drop(recorder);
+    drop(initial);
+
+    let runtime =
+        DecisionEvidenceRuntime::open(&loaded).expect("committed authorizations must recover");
+    let recovery = runtime.reservation_recovery();
+    for client_order_id in [
+        "entry-unreserved",
+        "risk-reducing",
+        "forced-reduction",
+        "basket-entry",
+        "basket-risk-reducing",
+    ] {
+        assert!(
+            recovery.authorizes_non_reservation_order(client_order_id),
+            "{client_order_id} must remain authorized after restart"
+        );
+    }
+    assert!(
+        recovery.authorizes_forced_reduction_order("forced-reduction"),
+        "forced-reduction liveness must remain distinguishable"
     );
 }
 

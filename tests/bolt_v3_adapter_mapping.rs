@@ -604,7 +604,6 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(exec.max_retries, 3);
     assert_eq!(exec.retry_delay_initial_ms, 250);
     assert_eq!(exec.retry_delay_max_ms, 2000);
-    assert_eq!(exec.ack_timeout_secs, 5);
     assert_eq!(exec.transport_backend, TransportBackend::Sockudo);
 }
 
@@ -1485,7 +1484,6 @@ http_timeout_secs = 60
 max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
-ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 "#;

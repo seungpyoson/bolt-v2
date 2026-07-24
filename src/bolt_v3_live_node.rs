@@ -43,11 +43,14 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
-    path::{Path, PathBuf},
+    path::Path,
     pin::Pin,
     rc::Rc,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -150,13 +153,11 @@ use crate::{
         ProductAdmissionSnapshot, ProductKind,
     },
     bolt_v3_capital_admission_runtime_feed::{
-        CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
-        CapitalAdmissionRuntimeFeedSubscription, subscribe_capital_admission_runtime_feed,
+        CapitalAdmissionNtCacheProjection, CapitalAdmissionRuntimeFeed,
+        CapitalAdmissionRuntimeFeedConfig, SubmitAdmissionNtProjectionSubscription,
+        subscribe_submit_admission_nt_projection,
     },
-    bolt_v3_capital_admission_state::{
-        VenueSpendabilityIdentity, VenueSpendabilitySnapshot, VenueSpendabilitySourceFileRequest,
-        venue_spendability_snapshot_from_json_file,
-    },
+    bolt_v3_capital_admission_state::ProviderCollateralAllowanceSnapshot,
     bolt_v3_capital_reservation::CapitalPoolSnapshot,
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
@@ -165,7 +166,7 @@ use crate::{
         BoltV3RootConfig, CapitalPoolBlock, ClientBlock, DataClientReadinessProbeBlock,
         DataClientReadinessProbeBookType, DataClientReadinessProbeMarketDataKind,
         DataClientReadinessProbeQuoteTargetSource, LiveSubmitGovernanceMode, LoadedBoltV3Config,
-        LoadedStrategy, nautilus_startup_bound_secs, resolve_root_relative_path,
+        LoadedStrategy, nautilus_startup_bound_secs,
     },
     bolt_v3_current_evidence::{
         CapitalAdmissionRebuildSource, DecisionEvidenceRuntime, DecisionEvidenceStatusView,
@@ -214,9 +215,9 @@ use crate::{
         BoltV3DecisionEvidenceObservationHealth, BoltV3InputHealth,
         BoltV3InputHealthSourceTransition, BoltV3InputHealthTransitionEmitter,
         BoltV3MissingInputSource, BoltV3OperatorHealthSurface,
-        BoltV3OperatorHealthTransitionEmitter, BoltV3RejectObserverHealth, BoltV3SettlementHealth,
-        BoltV3SettlementHealthTransition, BoltV3SettlementHealthTransitionEmitter,
-        BoltV3VenueTruthHealth, node_scoped_runtime_source_announcements,
+        BoltV3OperatorHealthTransitionEmitter, BoltV3ProviderCollateralAllowanceHealth,
+        BoltV3RejectObserverHealth, BoltV3SettlementHealth, BoltV3SettlementHealthTransition,
+        BoltV3SettlementHealthTransitionEmitter, node_scoped_runtime_source_announcements,
         runtime_source_announcements,
     },
     bolt_v3_order_reject_observer_feed::{
@@ -246,7 +247,7 @@ use crate::{
         BoltV3CompiledOrderSide, BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState,
         BoltV3SubmitCapitalAdmissionConfig,
         BoltV3SubmitCapitalAdmissionMissingNtAccountCacheBalance,
-        BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
+        BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
         BoltV3SubmitCapitalAdmissionOpenOrderSnapshot, BoltV3SubmitCapitalAdmissionRebuildDecision,
     },
     bolt_v3_validate::parse_decimal_string,
@@ -285,20 +286,15 @@ pub use live_node_config::{
     connect_bolt_v3_clients, disconnect_bolt_v3_clients, make_bolt_v3_live_node_builder,
     make_live_node_config, wire_bolt_v3_runtime_capture,
 };
-#[cfg(test)]
-use risk_admission_loss::capital_admission_venue_spendability_snapshot_from_source_config;
 use risk_admission_loss::{
-    BoltV3CapitalAdmissionVenueSpendabilitySourceConfig, BoltV3LossProtectionRuntimeGuards,
-    BoltV3VenueTruthRuntimeGuard, capital_admission_config_from_loaded,
-    capital_admission_runtime_feed_config_from_loaded,
-    capital_admission_venue_spendability_source_config_from_loaded,
+    BoltV3LossProtectionRuntimeGuards, BoltV3ProviderCollateralAllowanceRuntimeGuard,
+    capital_admission_config_from_loaded, capital_admission_runtime_feed_config_from_loaded,
     configure_bolt_v3_kill_switch_loss_protection, loss_governor_halt_action_handler_from_node,
     loss_governor_halt_action_policy_from_loaded, loss_governor_policy_from_loaded,
     loss_governor_runtime_feed_config_from_loaded, order_reject_observer_account_id_from_loaded,
-    recover_kill_switch_state_before_live_node_build,
-    refresh_capital_admission_venue_spendability_from_source, spawn_venue_truth_runtime,
-    sync_nt_trading_state_for_kill_switch, venue_truth_runtime_config_from_loaded,
-    wire_bolt_v3_loss_protection_runtime,
+    provider_collateral_allowance_runtime_config_from_loaded,
+    recover_kill_switch_state_before_live_node_build, spawn_provider_collateral_allowance_runtime,
+    sync_nt_trading_state_for_kill_switch, wire_bolt_v3_loss_protection_runtime,
 };
 #[cfg(test)]
 pub(crate) use secrets_builders::build_bolt_v3_strategy_free_live_node_for_data_clients_with_summary;
@@ -330,6 +326,8 @@ pub fn current_build_head_sha() -> Option<&'static str> {
 }
 
 const OPERATOR_HEALTH_REASON_LIVE_NODE_STARTUP: &str = stringify!(live_node_startup);
+const OPERATOR_HEALTH_REASON_SUBMIT_ADMISSION_NT_PROJECTION: &str =
+    stringify!(submit_admission_nt_projection);
 const OPERATOR_HEALTH_REJECT_OBSERVER_READ_ERROR: &str =
     stringify!(order_reject_observer_feed_lock_poisoned);
 const OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR: &str =
@@ -348,11 +346,13 @@ pub struct BoltV3LiveNodeRuntime {
     order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
     capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
-    capital_admission_runtime_feed_subscription: Option<CapitalAdmissionRuntimeFeedSubscription>,
-    venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
-    capital_admission_venue_spendability_source:
-        Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>,
-    submit_reservation_recovery: Option<Arc<ReservationRecoveryFacts>>,
+    submit_admission_nt_projection_subscription: Option<SubmitAdmissionNtProjectionSubscription>,
+    submit_admission_nt_projection_trigger: Option<Rc<dyn Fn()>>,
+    submit_admission_nt_projection_requested: Option<Arc<AtomicBool>>,
+    provider_collateral_allowance_runtime_guard:
+        Option<BoltV3ProviderCollateralAllowanceRuntimeGuard>,
+    submit_reservation_recovery: Arc<ReservationRecoveryFacts>,
+    submit_admission_nt_reconciliation_account_ids: BTreeSet<AccountId>,
     iv_runtime: Option<IvRuntimeEngine>,
     iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
     operator_health_transition_logger: BoltV3OperatorHealthTransitionLogger,
@@ -405,7 +405,6 @@ type BoltV3LiveSettlementLossProtectionSlot =
 #[derive(Clone)]
 struct BoltV3LiveSettlementRuntimeSink {
     loss_protection: Option<BoltV3LiveSettlementLossProtectionSlot>,
-    capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
 }
 
 impl std::fmt::Debug for BoltV3LiveSettlementRuntimeSink {
@@ -417,10 +416,6 @@ impl std::fmt::Debug for BoltV3LiveSettlementRuntimeSink {
                     .loss_protection
                     .as_ref()
                     .is_some_and(|loss_protection| loss_protection.borrow().is_some()),
-            )
-            .field(
-                stringify!(capital_admission_runtime_feed),
-                &self.capital_admission_runtime_feed.is_some(),
             )
             .finish()
     }
@@ -440,31 +435,14 @@ impl BoltV3SettlementRuntimeSink for BoltV3LiveSettlementRuntimeSink {
         }
         Ok(())
     }
-
-    fn record_venue_truth_settlement(
-        &self,
-        explanation: crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation,
-    ) -> Result<()> {
-        if let Some(feed) = self.capital_admission_runtime_feed.as_ref() {
-            feed.lock()
-                .expect("capital admission runtime feed lock poisoned")
-                .record_venue_truth_settlement(explanation)?;
-        }
-        Ok(())
-    }
 }
 
 fn settlement_runtime_sink_handle(
     loss_protection: Option<BoltV3LiveSettlementLossProtectionSlot>,
-    capital_admission_runtime_feed: Option<&Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
 ) -> Option<BoltV3SettlementRuntimeSinkHandle> {
-    if loss_protection.is_none() && capital_admission_runtime_feed.is_none() {
-        return None;
-    }
-    let sink: BoltV3SettlementRuntimeSinkHandle = Rc::new(BoltV3LiveSettlementRuntimeSink {
-        loss_protection,
-        capital_admission_runtime_feed: capital_admission_runtime_feed.cloned(),
-    });
+    loss_protection.as_ref()?;
+    let sink: BoltV3SettlementRuntimeSinkHandle =
+        Rc::new(BoltV3LiveSettlementRuntimeSink { loss_protection });
     Some(sink)
 }
 
@@ -476,11 +454,13 @@ struct BoltV3LiveNodeRuntimeFeeds {
     order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
     capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
-    capital_admission_runtime_feed_subscription: Option<CapitalAdmissionRuntimeFeedSubscription>,
-    venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
-    capital_admission_venue_spendability_source:
-        Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>,
-    submit_reservation_recovery: Option<Arc<ReservationRecoveryFacts>>,
+    submit_admission_nt_projection_subscription: Option<SubmitAdmissionNtProjectionSubscription>,
+    submit_admission_nt_projection_trigger: Option<Rc<dyn Fn()>>,
+    submit_admission_nt_projection_requested: Option<Arc<AtomicBool>>,
+    provider_collateral_allowance_runtime_guard:
+        Option<BoltV3ProviderCollateralAllowanceRuntimeGuard>,
+    submit_reservation_recovery: Arc<ReservationRecoveryFacts>,
+    submit_admission_nt_reconciliation_account_ids: BTreeSet<AccountId>,
 }
 
 #[derive(Clone)]
@@ -499,8 +479,9 @@ struct BoltV3DecisionEvidenceProducerGuards {
     loss_protection_guards: BoltV3LossProtectionRuntimeGuards,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
-    capital_admission_runtime_feed_subscription: Option<CapitalAdmissionRuntimeFeedSubscription>,
-    venue_truth_runtime_guard: Option<BoltV3VenueTruthRuntimeGuard>,
+    submit_admission_nt_projection_subscription: Option<SubmitAdmissionNtProjectionSubscription>,
+    provider_collateral_allowance_runtime_guard:
+        Option<BoltV3ProviderCollateralAllowanceRuntimeGuard>,
 }
 
 trait BoltV3DecisionEvidenceProducerStopper {
@@ -518,13 +499,13 @@ impl BoltV3DecisionEvidenceProducerStopper for BoltV3DecisionEvidenceProducerGua
                 loss_protection_guards,
                 loss_runtime_feed_subscription,
                 order_reject_observer_feed_subscription,
-                capital_admission_runtime_feed_subscription,
-                venue_truth_runtime_guard,
+                submit_admission_nt_projection_subscription,
+                provider_collateral_allowance_runtime_guard,
             } = self;
             drop(loss_runtime_feed_subscription);
             drop(order_reject_observer_feed_subscription);
-            drop(capital_admission_runtime_feed_subscription);
-            if let Some(guard) = venue_truth_runtime_guard {
+            drop(submit_admission_nt_projection_subscription);
+            if let Some(guard) = provider_collateral_allowance_runtime_guard {
                 guard.stop_and_join();
             }
             loss_protection_guards.stop_and_join().await;
@@ -585,7 +566,7 @@ impl BoltV3OperatorHealthTransitionLogger {
 fn live_operator_health_surface(
     order_reject_observer_feed: Option<&Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
     submit_admission: &BoltV3SubmitAdmissionState,
-    venue_truth_configured: bool,
+    provider_collateral_allowance_configured: bool,
     input_health_configured_source_count: usize,
     input_health: Option<BoltV3InputHealth>,
     settlement_health: BoltV3SettlementHealth,
@@ -600,22 +581,24 @@ fn live_operator_health_surface(
             }
         },
     );
-    let venue_truth = if venue_truth_configured {
+    let provider_collateral_allowance = if provider_collateral_allowance_configured {
         match submit_admission.operator_health_snapshot() {
-            Ok(snapshot) => BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(
-                &snapshot.kill_switch_state,
-                snapshot.capital_admission_state.as_ref(),
-            ),
-            Err(_) => BoltV3VenueTruthHealth::read_error_without_snapshot(
+            Ok(snapshot) => {
+                BoltV3ProviderCollateralAllowanceHealth::from_configured_kill_switch_and_capital_state(
+                    &snapshot.kill_switch_state,
+                    snapshot.capital_admission_state.as_ref(),
+                )
+            }
+            Err(_) => BoltV3ProviderCollateralAllowanceHealth::read_error_without_snapshot(
                 OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR,
             ),
         }
     } else {
-        BoltV3VenueTruthHealth::not_configured()
+        BoltV3ProviderCollateralAllowanceHealth::not_configured()
     };
     BoltV3OperatorHealthSurface::from_live_parts(
         reject_observer,
-        venue_truth,
+        provider_collateral_allowance,
         input_health.unwrap_or_else(|| {
             // If no live transition emitter has produced a source observation yet,
             // keep the surface fail-closed as Unobserved for the configured sources.
@@ -883,12 +866,16 @@ impl BoltV3LiveNodeRuntime {
             order_reject_observer_feed: feeds.order_reject_observer_feed,
             order_reject_observer_feed_subscription: feeds.order_reject_observer_feed_subscription,
             capital_admission_runtime_feed: feeds.capital_admission_runtime_feed,
-            capital_admission_runtime_feed_subscription: feeds
-                .capital_admission_runtime_feed_subscription,
-            venue_truth_runtime_guard: feeds.venue_truth_runtime_guard,
-            capital_admission_venue_spendability_source: feeds
-                .capital_admission_venue_spendability_source,
+            submit_admission_nt_projection_subscription: feeds
+                .submit_admission_nt_projection_subscription,
+            submit_admission_nt_projection_trigger: feeds.submit_admission_nt_projection_trigger,
+            submit_admission_nt_projection_requested: feeds
+                .submit_admission_nt_projection_requested,
+            provider_collateral_allowance_runtime_guard: feeds
+                .provider_collateral_allowance_runtime_guard,
             submit_reservation_recovery: feeds.submit_reservation_recovery,
+            submit_admission_nt_reconciliation_account_ids: feeds
+                .submit_admission_nt_reconciliation_account_ids,
             iv_runtime: runtime_components.iv_runtime,
             iv_event_bindings: runtime_components.iv_event_bindings,
             operator_health_transition_logger: runtime_components.operator_health_transition_logger,
@@ -1387,8 +1374,8 @@ impl BoltV3LiveNodeRuntime {
             && self.order_reject_observer_feed_subscription.is_some()
     }
 
-    pub fn venue_truth_runtime_configured(&self) -> bool {
-        self.venue_truth_runtime_guard.is_some()
+    pub fn provider_collateral_allowance_runtime_configured(&self) -> bool {
+        self.provider_collateral_allowance_runtime_guard.is_some()
     }
 
     pub fn operator_health_surface(
@@ -1431,10 +1418,12 @@ impl BoltV3LiveNodeRuntime {
             order_reject_observer_feed_subscription: self
                 .order_reject_observer_feed_subscription
                 .take(),
-            capital_admission_runtime_feed_subscription: self
-                .capital_admission_runtime_feed_subscription
+            submit_admission_nt_projection_subscription: self
+                .submit_admission_nt_projection_subscription
                 .take(),
-            venue_truth_runtime_guard: self.venue_truth_runtime_guard.take(),
+            provider_collateral_allowance_runtime_guard: self
+                .provider_collateral_allowance_runtime_guard
+                .take(),
         }
     }
 
@@ -1512,29 +1501,7 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn capital_admission_runtime_feed_configured(&self) -> bool {
         self.capital_admission_runtime_feed.is_some()
-            && self.capital_admission_runtime_feed_subscription.is_some()
-    }
-
-    pub fn capital_admission_venue_spendability_source_configured(&self) -> bool {
-        self.capital_admission_venue_spendability_source.is_some()
-    }
-
-    pub fn submit_reservation_recovery_configured(&self) -> bool {
-        self.submit_reservation_recovery.is_some()
-    }
-
-    pub fn refresh_capital_admission_venue_spendability_from_configured_source(
-        &self,
-    ) -> Result<Option<BoltV3SubmitCapitalAdmissionNtComponents>, BoltV3LiveNodeError> {
-        let Some(config) = self.capital_admission_venue_spendability_source.as_ref() else {
-            return Ok(None);
-        };
-        let Some(feed) = self.capital_admission_runtime_feed.as_ref() else {
-            return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
-                "capital admission venue spendability source configured without runtime feed"
-            )));
-        };
-        refresh_capital_admission_venue_spendability_from_source(feed, config)
+            && self.submit_admission_nt_projection_subscription.is_some()
     }
 
     pub fn capital_admission_reconciled(&self) -> Option<bool> {
@@ -1552,6 +1519,7 @@ impl BoltV3LiveNodeRuntime {
     /// cannot be attributed, the snapshot is marked not-all-attributed so
     /// the caller fails closed rather than arming with an unreconciled
     /// ledger.
+    #[cfg(test)]
     pub fn rebuild_capital_admission_from_nt_cache(
         &self,
         now_ns: u64,
@@ -1560,6 +1528,7 @@ impl BoltV3LiveNodeRuntime {
             &self.node.kernel().cache(),
             self.capital_admission_runtime_feed.as_ref(),
             self.submit_reservation_recovery.as_ref(),
+            &self.submit_admission_nt_reconciliation_account_ids,
             self.submit_admission.as_ref(),
             now_ns,
         )
@@ -1568,58 +1537,47 @@ impl BoltV3LiveNodeRuntime {
     fn rebuild_capital_admission_from_nt_cache_parts(
         cache: &Rc<RefCell<Cache>>,
         capital_admission_runtime_feed: Option<&Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
-        submit_reservation_recovery: Option<&Arc<ReservationRecoveryFacts>>,
+        submit_reservation_recovery: &ReservationRecoveryFacts,
+        reconciliation_account_ids: &BTreeSet<AccountId>,
         submit_admission: &BoltV3SubmitAdmissionState,
         now_ns: u64,
     ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
-        let (account_id, binary_instrument_ids, collateral_currency, accepted_venue_open_order_ids) =
-            match capital_admission_runtime_feed {
-                Some(feed) => {
-                    let feed = feed
-                        .lock()
-                        .expect("capital admission rebuild configuration feed lock poisoned");
-                    (
-                        Some(feed.configured_account_id()),
-                        feed.configured_binary_instrument_ids(),
-                        Some(feed.configured_collateral_currency()),
-                        feed.accepted_venue_open_order_ids(),
-                    )
-                }
-                None => (None, None, None, None),
-            };
-        let cache = cache.borrow();
-        let open_order_snapshots = match account_id.as_ref() {
-            Some(account_id) => cache
-                .orders_open(None, None, None, Some(account_id), None)
-                .into_iter()
-                .map(|order| order.cloned())
-                .collect::<Vec<_>>(),
-            None => cache
-                .orders_open(None, None, None, None, None)
-                .into_iter()
-                .map(|order| order.cloned())
-                .collect::<Vec<_>>(),
+        let (
+            account_id,
+            binary_instrument_ids,
+            collateral_currency,
+            accepted_allowance_observed_at_ns,
+        ) = match capital_admission_runtime_feed {
+            Some(feed) => {
+                let feed = feed
+                    .lock()
+                    .expect("capital admission rebuild configuration feed lock poisoned");
+                (
+                    Some(feed.configured_account_id()),
+                    feed.configured_binary_instrument_ids(),
+                    Some(feed.configured_collateral_currency()),
+                    feed.accepted_allowance_observed_at_ns(),
+                )
+            }
+            None => (None, None, None, None),
         };
+        let cache = cache.borrow();
+        let open_order_snapshots = reconciliation_account_ids
+            .iter()
+            .flat_map(|account_id| {
+                cache
+                    .orders_open(None, None, None, Some(account_id), None)
+                    .into_iter()
+                    .map(|order| order.cloned())
+            })
+            .collect::<Vec<_>>();
         let open_client_order_ids = open_order_snapshots
             .iter()
             .map(|order| order.client_order_id().to_string())
             .collect::<Vec<_>>();
-        let reconciled_venue_and_client_order_ids = open_order_snapshots
-            .iter()
-            .filter_map(|order| {
-                order.venue_order_id().map(|venue_order_id| {
-                    (
-                        venue_order_id.to_string(),
-                        order.client_order_id().to_string(),
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
-        let venue_order_universe_attested = capital_admission_runtime_feed.is_none()
-            || venue_nt_open_order_sets_match(
-                accepted_venue_open_order_ids.as_ref(),
-                &reconciled_venue_and_client_order_ids,
-            );
+        let unique_open_client_order_ids =
+            open_client_order_ids.iter().collect::<BTreeSet<_>>().len()
+                == open_client_order_ids.len();
         let cached_account_balances = match (account_id.as_ref(), collateral_currency.as_deref()) {
             (Some(account_id), Some(collateral_currency)) => {
                 cache.account_owned(account_id).and_then(|account| {
@@ -1669,51 +1627,54 @@ impl BoltV3LiveNodeRuntime {
             };
         drop(cache);
 
-        let account_cache_is_authoritative = cached_account_balances.is_some();
-        // Seed live NT order and position state before rebuilding reservations from the same snapshot.
-        if let Some(feed) = capital_admission_runtime_feed {
-            seed_capital_admission_runtime_feed_from_nt_cache(
-                feed,
-                CapitalAdmissionNtCacheSeed {
-                    cached_account_balances,
-                    account_cache_is_authoritative,
-                    open_client_order_ids: &open_client_order_ids,
-                    reconciled_venue_and_client_order_ids: &reconciled_venue_and_client_order_ids,
-                    yes_position,
-                    no_position,
-                    observed_at_ns: now_ns,
-                },
-            );
+        let canonical_projection = CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns,
+            account_balances: cached_account_balances,
+            open_client_order_ids: open_client_order_ids.clone(),
+            yes_position,
+            no_position,
+            observed_at_ns: now_ns,
+        };
+        let canonical_components = capital_admission_runtime_feed.map(|feed| {
+            feed.lock()
+                .expect("capital admission canonical NT projection feed lock poisoned")
+                .canonical_nt_components(canonical_projection.clone())
+        });
+        let projection_complete = canonical_components
+            .as_ref()
+            .is_none_or(std::result::Result::is_ok)
+            && unique_open_client_order_ids;
+        if let Some(Ok(components)) = canonical_components.as_ref() {
+            submit_admission.update_capital_admission_nt_components(components.clone());
+        } else if let Some(Err(error)) = canonical_components.as_ref() {
+            log::warn!("capital admission canonical NT projection rejected: {error:?}");
         }
 
-        let recovered_reservations = if open_order_snapshots.is_empty() {
-            None
-        } else {
-            submit_reservation_recovery
-        };
         let mut reservations = Vec::with_capacity(open_order_snapshots.len());
-        let mut all_open_orders_attributed = venue_order_universe_attested
-            && (open_order_snapshots.is_empty() || recovered_reservations.is_some());
+        let mut live_non_reservation_client_order_ids = BTreeSet::new();
+        let mut live_forced_reduction_client_order_ids = BTreeSet::new();
+        let mut all_open_orders_attributed = projection_complete;
         for order in &open_order_snapshots {
-            let Some(recovered_reservations) = recovered_reservations.as_ref() else {
-                all_open_orders_attributed = false;
-                break;
-            };
             let Some(evidence) = nt_open_order_evidence_from_order(order, now_ns) else {
                 all_open_orders_attributed = false;
                 break;
             };
+            let client_order_id = evidence.client_order_id.clone();
+            if submit_reservation_recovery.authorizes_non_reservation_order(&client_order_id) {
+                if submit_reservation_recovery.authorizes_forced_reduction_order(&client_order_id) {
+                    live_forced_reduction_client_order_ids.insert(client_order_id.clone());
+                }
+                live_non_reservation_client_order_ids.insert(client_order_id);
+                continue;
+            }
             let Some(metadata) =
-                recovered_reservations.reservation_attribution(&evidence.client_order_id)
+                submit_reservation_recovery.reservation_attribution(&client_order_id)
             else {
                 all_open_orders_attributed = false;
                 break;
             };
-            let fill_trade_ids = recovered_reservations
-                .reservation_fill_trade_ids(
-                    &evidence.client_order_id,
-                    &metadata.submit_reservation_id,
-                )
+            let fill_trade_ids = submit_reservation_recovery
+                .reservation_fill_trade_ids(&client_order_id, &metadata.submit_reservation_id)
                 .cloned()
                 .unwrap_or_default();
             let Some(reservation) = submit_admission
@@ -1730,6 +1691,8 @@ impl BoltV3LiveNodeRuntime {
         }
         if !all_open_orders_attributed {
             reservations.clear();
+            live_non_reservation_client_order_ids.clear();
+            live_forced_reduction_client_order_ids.clear();
         }
 
         let mut rebuild = submit_admission.rebuild_capital_admission_open_order_snapshot(
@@ -1739,6 +1702,8 @@ impl BoltV3LiveNodeRuntime {
                 observed_open_order_count: open_order_snapshots.len(),
                 all_open_orders_attributed,
                 reservations,
+                live_non_reservation_client_order_ids,
+                live_forced_reduction_client_order_ids,
             },
             now_ns,
         );
@@ -1748,59 +1713,23 @@ impl BoltV3LiveNodeRuntime {
                 missing.collateral_currency,
             );
         }
+        if let Some(Ok(mut components)) = canonical_components {
+            components.order_lifecycle.all_open_orders_attributed =
+                all_open_orders_attributed && rebuild.accepted;
+            if rebuild.accepted
+                && let Some(accepted_allowance_observed_at_ns) = accepted_allowance_observed_at_ns
+            {
+                submit_admission
+                    .update_capital_admission_nt_components_after_accepted_allowance_snapshot(
+                        components,
+                        accepted_allowance_observed_at_ns,
+                    );
+            } else {
+                submit_admission.update_capital_admission_nt_components(components);
+            }
+        }
         rebuild
     }
-}
-
-struct CapitalAdmissionNtCacheSeed<'a> {
-    cached_account_balances: Option<(Decimal, Decimal)>,
-    account_cache_is_authoritative: bool,
-    open_client_order_ids: &'a [String],
-    reconciled_venue_and_client_order_ids: &'a [(String, String)],
-    yes_position: Decimal,
-    no_position: Decimal,
-    observed_at_ns: u64,
-}
-
-fn seed_capital_admission_runtime_feed_from_nt_cache(
-    feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
-    seed: CapitalAdmissionNtCacheSeed<'_>,
-) {
-    let mut feed = feed
-        .lock()
-        .expect("capital admission rebuild cache seed feed lock poisoned");
-    if let Some((free_collateral, total_equity)) = seed.cached_account_balances {
-        feed.seed_account_portfolio_snapshot(free_collateral, total_equity, seed.observed_at_ns);
-    }
-    if seed.account_cache_is_authoritative || !seed.open_client_order_ids.is_empty() {
-        feed.attest_reconciled_nt_open_orders(seed.reconciled_venue_and_client_order_ids);
-        feed.seed_cache_snapshot(
-            seed.open_client_order_ids.to_vec(),
-            seed.yes_position,
-            seed.no_position,
-            seed.observed_at_ns,
-        );
-    }
-}
-
-fn venue_nt_open_order_sets_match(
-    accepted_venue_open_order_ids: Option<&BTreeSet<String>>,
-    reconciled_venue_and_client_order_ids: &[(String, String)],
-) -> bool {
-    let Some(accepted_venue_open_order_ids) = accepted_venue_open_order_ids else {
-        return false;
-    };
-    let reconciled_venue_open_order_ids = reconciled_venue_and_client_order_ids
-        .iter()
-        .map(|(venue_order_id, _)| venue_order_id.clone())
-        .collect::<BTreeSet<_>>();
-    let reconciled_client_order_ids = reconciled_venue_and_client_order_ids
-        .iter()
-        .map(|(_, client_order_id)| client_order_id)
-        .collect::<BTreeSet<_>>();
-    reconciled_venue_open_order_ids.len() == reconciled_venue_and_client_order_ids.len()
-        && reconciled_client_order_ids.len() == reconciled_venue_and_client_order_ids.len()
-        && accepted_venue_open_order_ids == &reconciled_venue_open_order_ids
 }
 
 fn nt_open_order_evidence_from_order(
@@ -2405,6 +2334,24 @@ fn live_node_trader_running_invariant(node_state: NodeState, trader_running: boo
     !matches!(node_state, NodeState::Running) || trader_running
 }
 
+fn dispatch_requested_submit_admission_nt_projection(
+    node_state: NodeState,
+    trigger: Option<&Rc<dyn Fn()>>,
+    requested: Option<&Arc<AtomicBool>>,
+) -> bool {
+    if !matches!(node_state, NodeState::Running) {
+        return false;
+    }
+    let (Some(trigger), Some(requested)) = (trigger, requested) else {
+        return false;
+    };
+    if !requested.swap(false, Ordering::AcqRel) {
+        return false;
+    }
+    trigger();
+    true
+}
+
 async fn live_node_capture_failure_signal(
     receiver: &mut Option<tokio::sync::oneshot::Receiver<()>>,
 ) {
@@ -2719,13 +2666,25 @@ pub async fn run_bolt_v3_live_node(
     let reconciliation_cache = runtime.node.kernel().cache();
     let reconciliation_feed = runtime.capital_admission_runtime_feed.clone();
     let reconciliation_evidence = runtime.submit_reservation_recovery.clone();
+    let reconciliation_account_ids = runtime
+        .submit_admission_nt_reconciliation_account_ids
+        .clone();
     let reconciliation_admission = Arc::clone(&runtime.submit_admission);
+    let requested_projection_trigger = runtime
+        .submit_admission_nt_projection_trigger
+        .as_ref()
+        .map(Rc::clone);
+    let requested_projection_flag = runtime
+        .submit_admission_nt_projection_requested
+        .as_ref()
+        .map(Arc::clone);
     let mut post_reconciliation_guard = move || {
         let observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
         let decision = BoltV3LiveNodeRuntime::rebuild_capital_admission_from_nt_cache_parts(
             &reconciliation_cache,
             reconciliation_feed.as_ref(),
             reconciliation_evidence.as_ref(),
+            &reconciliation_account_ids,
             reconciliation_admission.as_ref(),
             observed_at_ns,
         );
@@ -2742,7 +2701,15 @@ pub async fn run_bolt_v3_live_node(
         live_node_run_startup_watchdog(
             run_future.as_mut(),
             &mut capture_failure_receiver,
-            || node_handle.state(),
+            || {
+                let state = node_handle.state();
+                dispatch_requested_submit_admission_nt_projection(
+                    state,
+                    requested_projection_trigger.as_ref(),
+                    requested_projection_flag.as_ref(),
+                );
+                state
+            },
             || trader.borrow().is_running(),
             || node_handle.stop(),
             &mut post_reconciliation_guard,
@@ -3116,22 +3083,31 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
     let capital_admission_runtime_feed_config =
         capital_admission_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
-    let order_reject_observer_account_id = order_reject_observer_account_id_from_loaded(loaded);
-    let capital_admission_venue_spendability_source =
-        capital_admission_venue_spendability_source_config_from_loaded(loaded)?;
-    let venue_truth_runtime_config = venue_truth_runtime_config_from_loaded(
-        loaded,
-        resolved,
-        capital_admission_runtime_feed_config.as_ref(),
-    )?;
-    let venue_truth_order_event_mapper = venue_truth_runtime_config
+    let mut submit_admission_nt_reconciliation_account_ids = loaded
+        .root
+        .risk
+        .kill_switch
         .as_ref()
-        .map(|config| config.order_event_mapper.clone());
-    let submit_reservation_recovery = if capital_admission_runtime_feed_config.is_some() {
-        Some(Arc::clone(&reservation_recovery))
-    } else {
-        None
-    };
+        .filter(|kill_switch| kill_switch.enabled)
+        .map(|kill_switch| {
+            kill_switch
+                .account_ids
+                .iter()
+                .map(|account_id| AccountId::from(account_id.as_str()))
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    if let Some(config) = capital_admission_runtime_feed_config.as_ref() {
+        submit_admission_nt_reconciliation_account_ids.insert(config.account_id);
+    }
+    let order_reject_observer_account_id = order_reject_observer_account_id_from_loaded(loaded);
+    let provider_collateral_allowance_runtime_config =
+        provider_collateral_allowance_runtime_config_from_loaded(
+            loaded,
+            resolved,
+            capital_admission_runtime_feed_config.as_ref(),
+        )?;
+    let submit_reservation_recovery = Arc::clone(&reservation_recovery);
     let submit_admission = Arc::new(
         BoltV3SubmitAdmissionState::new_with_live_submit_limits_and_optional_controls(
             evidence_runtime.submit_admission_evidence(),
@@ -3140,27 +3116,19 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             capital_admission,
         ),
     );
+    submit_admission.install_recovered_admission_authority(Arc::clone(&reservation_recovery));
     // Latch the recovered kill-switch state into submit admission before any
     // submit-capable strategy runtime is registered, so a recovered halt blocks
     // submits from the first registered strategy onward.
     if let Some(state) = kill_switch_startup_state.as_ref() {
         submit_admission.replace_kill_switch_state(state.clone());
     }
-    let (capital_admission_runtime_feed, capital_admission_runtime_feed_subscription) =
-        match capital_admission_runtime_feed_config {
-            Some(config) => {
-                let feed = Arc::new(Mutex::new(
-                    CapitalAdmissionRuntimeFeed::new_with_venue_truth_order_event_mapper(
-                        config,
-                        submit_admission.clone(),
-                        venue_truth_order_event_mapper.clone(),
-                    ),
-                ));
-                let subscription = subscribe_capital_admission_runtime_feed(feed.clone());
-                (Some(feed), Some(subscription))
-            }
-            None => (None, None),
-        };
+    let capital_admission_runtime_feed = capital_admission_runtime_feed_config.map(|config| {
+        Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
+            config,
+            submit_admission.clone(),
+        )))
+    });
     let order_reject_observer_feed = order_reject_observer_account_id.map(|account_id| {
         Arc::new(Mutex::new(BoltV3OrderRejectObserverFeed::new(
             evidence_runtime.order_reject_observer_evidence(),
@@ -3185,13 +3153,13 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let logger = operator_health_transition_logger.clone();
         let settlement_health = settlement_health.clone();
         let decision_evidence = decision_evidence_status.clone();
-        let venue_truth_configured = capital_admission_runtime_feed.is_some();
+        let provider_collateral_allowance_configured = capital_admission_runtime_feed.is_some();
         Arc::new(move |reason, input_health| {
             let settlement_health = settlement_health_snapshot(&settlement_health)?;
             let surface = live_operator_health_surface(
                 order_reject_observer_feed.as_ref(),
                 &submit_admission,
-                venue_truth_configured,
+                provider_collateral_allowance_configured,
                 input_health_configured_source_count,
                 input_health,
                 settlement_health,
@@ -3274,15 +3242,72 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
+    let submit_admission_nt_projection_requested =
+        (!submit_admission_nt_reconciliation_account_ids.is_empty())
+            .then(|| Arc::new(AtomicBool::new(false)));
+    let (submit_admission_nt_projection_subscription, submit_admission_nt_projection_trigger) =
+        match submit_admission_nt_projection_requested.as_ref() {
+            Some(projection_requested) => {
+                let projection_cache = node.kernel().cache();
+                let projection_feed = capital_admission_runtime_feed.clone();
+                let projection_recovery = submit_reservation_recovery.clone();
+                let projection_account_ids = submit_admission_nt_reconciliation_account_ids.clone();
+                let projection_admission = Arc::clone(&submit_admission);
+                let projection_health_emitter = operator_health_transition_emitter.clone();
+                let projection_requested = Arc::clone(projection_requested);
+                let projection_request: Rc<dyn Fn()> = Rc::new(move || {
+                    projection_requested.store(true, Ordering::Release);
+                });
+                let projection_trigger: Rc<dyn Fn()> = Rc::new(move || {
+                    let observed_at_ns = match current_unix_nanos() {
+                        Ok(observed_at_ns) => observed_at_ns,
+                        Err(error) => {
+                            log::error!(
+                                "capital-admission NT projection clock failed after canonical NT event: {error:#}"
+                            );
+                            return;
+                        }
+                    };
+                    let decision =
+                        BoltV3LiveNodeRuntime::rebuild_capital_admission_from_nt_cache_parts(
+                            &projection_cache,
+                            projection_feed.as_ref(),
+                            projection_recovery.as_ref(),
+                            &projection_account_ids,
+                            projection_admission.as_ref(),
+                            observed_at_ns,
+                        );
+                    if !decision.accepted {
+                        log::warn!(
+                            "capital-admission NT projection remained unreconciled after canonical NT event: {:?}",
+                            decision.reason
+                        );
+                    }
+                    projection_health_emitter(
+                        OPERATOR_HEALTH_REASON_SUBMIT_ADMISSION_NT_PROJECTION,
+                    );
+                });
+                let subscription = subscribe_submit_admission_nt_projection(
+                    capital_admission_runtime_feed.clone(),
+                    projection_request,
+                );
+                (Some(subscription), Some(projection_trigger))
+            }
+            None => (None, None),
+        };
     // Sync the recovered kill-switch state into NT's RiskEngine trading state so
     // the NT risk engine and the submit-admission latch agree on the halt. The
     // loss-protection seed below can override this for fail-closed cases.
     if let Some(state) = kill_switch_startup_state.as_ref() {
         sync_nt_trading_state_for_kill_switch(&mut node, state);
     }
-    let node_scoped_source_announcements =
-        node_scoped_runtime_source_announcements(loaded, venue_truth_runtime_config.is_some());
-    if let Some(announcement) = &node_scoped_source_announcements.venue_truth_rest_capture {
+    let node_scoped_source_announcements = node_scoped_runtime_source_announcements(
+        loaded,
+        provider_collateral_allowance_runtime_config.is_some(),
+    );
+    if let Some(announcement) =
+        &node_scoped_source_announcements.provider_collateral_allowance_rest_capture
+    {
         log::warn!(
             "bolt-v3 runtime feed announcement: {}",
             serde_json::to_string(announcement)
@@ -3300,30 +3325,17 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         Rc::new(RefCell::new(None));
     let settlement_runtime_sink_backends =
         BoltV3SettlementRuntimeSinkBackends::from_root(&loaded.root);
-    debug_assert!(
-        !settlement_runtime_sink_backends.capital_admission_runtime_feed()
-            || capital_admission_runtime_feed.is_some(),
-        "capital-admission settlement sink backend must match runtime feed construction"
-    );
     let settlement_runtime_sink = settlement_runtime_sink_handle(
         settlement_runtime_sink_backends
             .loss_protection()
             .then(|| settlement_loss_protection_slot.clone()),
-        settlement_runtime_sink_backends
-            .capital_admission_runtime_feed()
-            .then_some(capital_admission_runtime_feed.as_ref())
-            .flatten(),
     );
     debug_assert_eq!(
         settlement_runtime_sink.is_some(),
         settlement_runtime_sink_backends.will_configure_runtime_sink()
     );
-    let settlement_recovery = settlement_runtime_sink
-        .is_some()
-        .then(|| Arc::clone(&settlement_recovery));
-    let booking_recovery = settlement_runtime_sink
-        .is_some()
-        .then(|| Arc::clone(&booking_recovery));
+    let settlement_recovery = Some(Arc::clone(&settlement_recovery));
+    let booking_recovery = Some(Arc::clone(&booking_recovery));
     let strategy_execution_controls = BoltV3StrategyExecutionControls {
         submit_admission: submit_admission.clone(),
         order_execution_policy,
@@ -3419,21 +3431,25 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                 .expect("runtime source announcement should serialize")
         );
     }
-    let venue_truth_runtime_guard = match (
-        venue_truth_runtime_config,
+    let provider_collateral_allowance_runtime_guard = match (
+        provider_collateral_allowance_runtime_config,
         capital_admission_runtime_feed.as_ref(),
     ) {
-        (Some(config), Some(feed)) => Some(spawn_venue_truth_runtime(
+        (Some(config), Some(feed)) => Some(spawn_provider_collateral_allowance_runtime(
             config,
             feed.clone(),
             submit_admission.clone(),
             node.handle(),
             Some(operator_health_transition_emitter.clone()),
+            submit_admission_nt_projection_requested
+                .as_ref()
+                .expect("capital admission feed should own a projection request signal")
+                .clone(),
         )),
         (None, _) => None,
         (Some(_), None) => {
             return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
-                "venue truth runtime requires the capital admission runtime feed"
+                "provider collateral allowance runtime requires the capital admission runtime feed"
             )));
         }
     };
@@ -3493,10 +3509,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             order_reject_observer_feed,
             order_reject_observer_feed_subscription,
             capital_admission_runtime_feed,
-            capital_admission_runtime_feed_subscription,
-            venue_truth_runtime_guard,
-            capital_admission_venue_spendability_source,
+            submit_admission_nt_projection_subscription,
+            submit_admission_nt_projection_trigger,
+            submit_admission_nt_projection_requested,
+            provider_collateral_allowance_runtime_guard,
             submit_reservation_recovery,
+            submit_admission_nt_reconciliation_account_ids,
         },
         BoltV3LiveNodeRuntimeComponents {
             iv_runtime,
@@ -3509,7 +3527,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             redaction_values: resolved.redaction_values(),
         },
     );
-    runtime.refresh_capital_admission_venue_spendability_from_configured_source()?;
     Ok((runtime, summary))
 }
 

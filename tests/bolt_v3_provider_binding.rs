@@ -3982,8 +3982,11 @@ fn provider_binding_projects_bounded_polymarket_gamma_query_source() {
     let params = data.filters[0]
         .query_params()
         .expect("Gamma query source should use NT GammaQueryFilter");
-    assert_eq!(params.tag_id, Some("sports-tag".to_string()));
-    assert_eq!(params.sports_market_types, Some("moneyline".to_string()));
+    assert_eq!(params.tag_id, Some(vec![42]));
+    assert_eq!(
+        params.sports_market_types,
+        Some(vec!["moneyline".to_string()])
+    );
     assert_eq!(params.max_markets, Some(3));
     assert!(
         data.new_market_filter.is_none(),
@@ -4029,7 +4032,7 @@ fn provider_binding_accepts_polymarket_gamma_event_query_without_tag() {
     assert_eq!(event_queries[0].1.tag_id, None);
     assert_eq!(
         event_queries[0].1.sports_market_types,
-        Some("moneyline".to_string())
+        Some(vec!["moneyline".to_string()])
     );
     assert_eq!(event_queries[0].1.max_markets, Some(3));
     assert!(
@@ -4217,7 +4220,7 @@ fn outcome_gamma_query_source(source_id: &str) -> OutcomeGroupSourceConfig {
         search: None,
         event_query: None,
         market_query: None,
-        tag_id: Some("sports-tag".to_string()),
+        tag_id: Some("42".to_string()),
         sports_market_types: Some(vec!["moneyline".to_string()]),
         max_events: None,
         max_markets: 3,

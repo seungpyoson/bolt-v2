@@ -6,8 +6,8 @@ use bolt_v2::{
         AdmissionDecisionOutcome, AdmissionDetails, CurrentEvidenceTestPurpose, CurrentFact,
         DecisionEvidenceRecorder, DecisionEvidenceRuntime, EntrySkipFact, LossGovernorHaltFact,
         OrderIntentDetails, OrderRejectFact, PositiveFiniteEvidenceReadCap,
-        RequoteThrottleObservationFact, ReservationAttribution, VenueTruthCaptureFailureFact,
-        VenueTruthDivergenceFact, read_current_evidence_facts,
+        ProviderCollateralAllowanceCaptureFailureFact, RequoteThrottleObservationFact,
+        ReservationAttribution, read_current_evidence_facts,
     },
     bolt_v3_submit_admission::BoltV3SubmitIntentKind,
 };
@@ -245,21 +245,13 @@ impl RecordingDecisionEvidenceWriter {
             .collect()
     }
 
-    pub fn venue_truth_capture_failures(&self) -> Vec<VenueTruthCaptureFailureFact> {
+    pub fn provider_collateral_allowance_capture_failures(
+        &self,
+    ) -> Vec<ProviderCollateralAllowanceCaptureFailureFact> {
         self.facts()
             .into_iter()
             .filter_map(|fact| match fact {
-                CurrentFact::VenueTruthCaptureFailure(fact) => Some(fact),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub fn venue_truth_divergences(&self) -> Vec<VenueTruthDivergenceFact> {
-        self.facts()
-            .into_iter()
-            .filter_map(|fact| match fact {
-                CurrentFact::VenueTruthDivergence(fact) => Some(fact),
+                CurrentFact::ProviderCollateralAllowanceCaptureFailure(fact) => Some(fact),
                 _ => None,
             })
             .collect()

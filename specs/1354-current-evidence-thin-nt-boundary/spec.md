@@ -1,286 +1,274 @@
 # Feature Specification: Thin NautilusTrader Boundary for Current Decision Evidence
 
 **Issue**: [#1354](https://github.com/seungpyoson/bolt-v2/issues/1354)
-**Pull Request**: [#1505](https://github.com/seungpyoson/bolt-v2/pull/1505)
+**Bolt PR**: [#1505](https://github.com/seungpyoson/bolt-v2/pull/1505)
+**Required NT PR**: [nautilus_trader#4557](https://github.com/nautechsystems/nautilus_trader/pull/4557)
 **Branch**: `codex/1354-current-evidence-rebuild`
-**Status**: Proposed — external architecture review is required before implementation
+**Status**: Implemented; internal adversarial review and exact-head verification pending
 
 ## Purpose
 
-PR #1505 replaces the previous decision-evidence format with a current-only,
-typed, durable contract. During implementation review, Bolt's capital-admission
-runtime feed was found to maintain its own live-order set, client/venue order
-mapping, terminal-event history, and order-lifecycle snapshot.
+PR #1505 introduces current-only, typed, durable decision evidence. Its first
+capital-admission implementation also recreated part of NautilusTrader's order,
+fill, position, and reconciliation state inside Bolt. That was the wrong
+boundary.
 
-That is too much authority. NautilusTrader (NT) already owns order lifecycle,
-fills, positions, cache state, execution reconciliation, and venue translation.
-Bolt must remain a thin fail-closed admission and evidence layer over those NT
-surfaces.
+NT owns adapter protocols, execution, orders, fills, positions, accounts,
+portfolio state, cache state, and reconciliation. Bolt owns only:
 
-This specification closes that boundary once. It does not add another event
-journal, order state machine, reconciliation engine, or compatibility path.
+- TOML/SSM composition;
+- strategy intent and Bolt admission policy;
+- the decision evidence proving Bolt authorized an action;
+- reservation policy derived from current NT state; and
+- one provider fact NT does not represent, currently collateral allowance.
 
-## Selected Architecture
+This specification deletes the Bolt shadow lifecycle. It introduces no
+compatibility path, alternate venue reconciliation, or second order ledger.
 
-Bolt computes a typed capital-admission projection from:
+## Governing Invariant
 
-1. a canonical NT account/order/position snapshot;
-2. Bolt's committed admission evidence and reservation policy; and
-3. provider-specific readiness facts that NT does not expose, such as venue
-   allowance or an accepted raw-venue attestation.
-
-NT events may trigger recomputation. Bolt does not replay those events into a
-second order-lifecycle model.
-
-An accepted venue snapshot is an attestation that NT reconciliation observed
-the complete admission-relevant venue universe. It does not become a second
-live order authority. A venue/NT disagreement closes admission; Bolt does not
-merge, timestamp-rank, or choose between competing order histories.
-
-The governing safety rule is:
-
-> No disagreement, missing relation, event ordering, crash, or restart may
-> construct new-risk authority. When the authoritative inputs cannot be joined,
-> admission is unreconciled and new risk is unavailable.
+> NT is the sole live lifecycle authority. Bolt may construct new-risk
+> capability only from a post-reconciliation NT snapshot joined to committed
+> Bolt authorization evidence and current provider-only allowance. Missing
+> or unavailable input leaves admission unreconciled.
 
 ## Authority Contract
 
-| Concern | Sole authority | Bolt's permitted use | Bolt must not |
+| Concern | Sole authority | Bolt may | Bolt must not |
 |---|---|---|---|
-| Order existence and status | NT cache/order model | Read a canonical snapshot | Maintain a parallel live-order set |
-| Fill and remaining quantity | NT order/fill state | Derive current reservation liability | Reconstruct fill progress from a private event ledger |
-| Position and account state | NT cache/portfolio | Derive exposure and available capital | Maintain a competing position or balance history |
-| Adapter and venue reconciliation | NT | Wait for completion and inspect the result | Implement an alternate reconciliation engine |
-| Venue raw snapshot | Provider readiness boundary | Attest NT snapshot completeness; supply provider-only spendability facts | Replace NT lifecycle state or become a live order ledger |
-| Bolt action authorization | Current decision evidence | Prove that Bolt authorized a risk-changing action | Infer authorization from NT state alone |
-| Capital reservation policy | Bolt submit admission | Compute liability for evidence-attributed NT orders | Redefine NT order lifecycle |
-| Admission readiness | Bolt submit admission | Permit new risk only after the join succeeds | Remain ready during any unresolved mismatch |
+| Adapter protocol and venue translation | NT | Configure and call NT | Reimplement provider execution semantics |
+| Order existence/status | NT cache | Read a post-reconciliation snapshot | Keep a parallel live-order set |
+| Fill/remaining quantity | NT order and fill state | Derive current reservation liability | Rebuild progress from callback history |
+| Positions/accounts/portfolio | NT | Read a canonical snapshot | Maintain a competing position or balance reducer |
+| Venue reconciliation | NT | Require successful, complete reconciliation | Query venue orders and reconcile them again |
+| Polymarket collateral allowance | Provider REST fact | Supply the approval allowance missing from NT | Supply balances or carry order, fill, or position lifecycle |
+| Action authorization | Bolt decision evidence | Prove Bolt admitted an NT order | Infer authorization from NT state alone |
+| Reservation/admission policy | Bolt | Join attributed NT orders to configured policy | Redefine NT lifecycle |
 
-## Required State
+## Selected Architecture
 
-Bolt may retain only state it owns:
+### 1. Complete reconciliation is an NT guarantee
 
-- committed decision-evidence projections;
-- Bolt reservation identifiers and policy inputs;
-- the latest successfully constructed admission projection;
-- provider-only readiness facts not represented by NT;
-- a typed reconciled/unreconciled admission result and health reason.
+The Polymarket adapter previously returned successful partial reconciliation
+reports when venue open orders or relevant confirmed fills referenced
+instruments absent from NT's loaded map. It could also omit an unrepresentable
+current position. That cannot be repaired safely in Bolt without rebuilding NT
+reconciliation.
 
-NT snapshots and projection are evaluated on the NT owner thread. A provider
-worker may publish an immutable readiness fact and may monotonically revoke
-admission while reprojection is pending. It may not read NT's thread-confined
-cache, mutate lifecycle, or reopen admission. Only a fresh projection on the NT
-owner thread may construct reconciled admission capability.
+The required upstream fix is `nautilus_trader#4557`. The shared NT order and
+fill report builders now return an error when any venue open order or relevant
+confirmed fill cannot be mapped, so every reconciliation caller must propagate
+the incomplete-universe failure. Mass-status generation also fails when any
+current position cannot be represented. Bolt pins the exact
+official-repository commit containing that behavior.
 
-The following current structures are not valid long-lived Bolt authorities and
-must be removed or reduced to ephemeral values derived from one NT snapshot:
+When capital admission is enforced, Bolt also requires an admission-safe NT
+configuration:
 
-- a Bolt-maintained live-order universe;
-- a Bolt-maintained client-order-to-venue-order lifecycle map;
-- terminal-order history used to decide which NT orders exist;
-- an order-lifecycle snapshot selected by source strings or timestamps;
-- event-derived position deltas that compete with the NT position snapshot.
+- reconciliation enabled;
+- unbounded reconciliation lookback;
+- no reconciliation instrument filter;
+- no client-order filter;
+- no unclaimed-order filter;
+- no position-report filter; and
+- missing-order generation enabled.
 
-Deduplication used solely to make a Bolt evidence append idempotent may remain,
-but it must not decide NT lifecycle or admission state.
+### 2. One post-reconciliation projection
 
-## User Scenarios and Acceptance
+Bolt computes admission from ephemeral values read on the NT runtime thread
+after `NodeState::Running`:
 
-### Story 1 — Safe startup reconstruction (P1)
+- configured account;
+- NT open orders and their current quantities;
+- NT yes/no positions;
+- NT account/portfolio values used by existing policy;
+- committed Bolt admission attribution;
+- current provider collateral allowance; and
+- configured Bolt capital policy.
 
-After NT startup reconciliation completes, Bolt joins the canonical NT snapshot
-to committed admission evidence and provider readiness facts.
+The result is either a complete projection or a typed unreconciled state.
+Only the complete result can expose new-risk capability.
 
-**Acceptance scenarios**
+Bolt retains the resulting admission state it owns. It does not retain NT
+orders, fills, positions, terminal histories, or source/timestamp arbitration
+as competing lifecycle authority.
 
-1. Given every admission-relevant NT open order has matching committed Bolt
-   attribution and the accepted venue attestation names the same venue-order
-   universe, the projection is reconciled and may construct admission
-   capability.
-2. Given an NT open order has no committed Bolt attribution, startup remains
-   unreconciled and constructs no new-risk capability.
-3. Given the venue attestation and NT snapshot differ in either direction,
-   startup remains unreconciled and constructs no new-risk capability.
-4. Given no capital-admission runtime is configured, unrelated execution
-   remains unchanged.
+### 3. Events request projection; they do not mutate lifecycle
 
-### Story 2 — Thin live lifecycle handling (P1)
+NT order, fill, position, account, and portfolio callbacks only request a fresh
+projection. Provider allowance updates do the same.
 
-NT remains responsible for applying order and fill events. Bolt recomputes its
-admission projection from the resulting canonical NT state.
+Every trigger converges on one `AtomicBool` request:
 
-**Acceptance scenarios**
+1. the producer publishes its owned fact;
+2. provider failure/update immediately revokes readiness where required;
+3. the NT runtime watchdog observes the request;
+4. it waits until NT is `Running`;
+5. it reads the current NT cache on the NT thread; and
+6. it rebuilds the whole Bolt admission projection.
 
-1. A live or terminal NT event may trigger recomputation but cannot directly
-   add or remove an order from a Bolt-owned lifecycle set.
-2. A fill changes Bolt liability only through the current NT order/fill state
-   joined to the matching Bolt reservation.
-3. An unknown or unjoinable order/fill closes admission and emits typed health;
-   it does not create a guessed reservation or silently release liability.
-4. Duplicate or reordered NT events produce the same Bolt projection as the
-   canonical NT snapshot and do not require Bolt event-order logic.
-
-### Story 3 — Provider attestation without parallel authority (P1)
-
-Venue truth verifies the completeness of NT's reconciled view and provides only
-provider facts absent from NT.
-
-**Acceptance scenarios**
-
-1. A matching venue/NT order identity set permits the evidence join to proceed.
-2. A mismatching set closes admission without mutating NT-derived lifecycle,
-   positions, or reservations.
-3. A later matching attestation permits a fresh full projection; it does not
-   patch the previous mismatch incrementally.
-4. Capture failure or semantic divergence leaves risk-reducing behavior under
-   its existing policy but cannot authorize new risk.
-5. A snapshot arriving on the provider worker revokes admission until the NT
-   owner thread consumes it and completes a fresh projection.
-
-### Story 4 — Restart equivalence (P1)
-
-Restart reconstruction produces the same admission decision as an uninterrupted
-run given the same canonical NT state, committed evidence, policy, and provider
-readiness facts.
-
-**Acceptance scenarios**
-
-1. No process-local event history is required to reconstruct admission.
-2. A crash before an NT lifecycle transition is reflected in canonical state
-   produces the pre-transition projection.
-3. A crash after NT reflects the transition produces the post-transition
-   projection.
-4. Machine-evidence corruption continues to fail activation; observation
-   corruption remains non-authoritative.
-
-## Transition Contract
-
-Each row describes the only permitted Bolt reaction. “Reproject” means build a
-complete result from current authorities; it never means mutate a shadow order
+No callback payload adds/removes an order or applies a fill to Bolt lifecycle
 state.
 
-| Input or boundary | Required Bolt behavior | Forbidden behavior |
-|---|---|---|
-| NT reconciliation not complete | Admission unreconciled | Infer completeness from an empty cache |
-| Accepted venue snapshot before NT reconciliation | Retain only as readiness input; do not open admission | Treat it as live lifecycle state |
-| Provider snapshot arrives on its worker thread | Publish immutable input and revoke admission pending NT-thread projection | Read NT cache or reopen admission from the worker |
-| NT reconciliation complete; venue/NT sets match | Join NT orders to Bolt evidence and reproject | Copy the set into a second live-order ledger |
-| Venue-only order | Admission unreconciled; typed mismatch | Ignore it or invent a Bolt order |
-| NT-only order | Admission unreconciled; typed mismatch | Treat the venue snapshot as stale and continue |
-| NT order without Bolt attribution | Admission unreconciled | Infer authorization from order presence |
-| Bolt attribution without an NT open order | Inert for current reservation reconstruction | Invent an NT order or live reservation |
-| NT live-order event | Trigger projection from canonical NT state | Append to a Bolt lifecycle set |
-| NT fill event | Record required Bolt evidence, then derive liability from canonical NT state | Maintain an independent filled-quantity history as authority |
-| NT terminal event | Derive absence/status and reservation outcome from canonical NT state | Remove from a Bolt order set solely because a raw callback arrived |
-| Duplicate/reordered callback | Same projection as canonical NT state | Add timestamp/source precedence logic |
-| Venue capture failure/divergence | Close new-risk admission; publish typed health | Modify NT lifecycle or choose the latest source |
-| Restart | Rebuild from NT + committed evidence + provider readiness | Require process-local event or terminal history |
-| Any unclassifiable input | Fail closed with a typed reason | Default, wildcard repair, or best-effort admission |
+### 4. Provider input is allowance only
+
+Polymarket's provider worker returns one typed `ProviderCollateralAllowanceSnapshot`.
+It contains only the allowance, source identity, account/venue/currency
+identity, and observation time needed by Bolt policy. The provider-reported
+balance from the combined REST response is deliberately discarded; NT remains
+the balance authority.
+
+There is one production source: the registered Polymarket runtime provider.
+The previous file-based source is deleted. The provider input contains no open
+orders, positions, client/venue mappings, or causal reconciliation data.
+The unused pre-run provider query APIs for orders, positions, balances, and
+allowances are deleted; they cannot become a second lifecycle or account
+authority later.
+
+### 5. Evidence remains Bolt-owned
+
+Bolt records the action authorization and operational audit facts it owns.
+Current NT open orders must join to committed admission attribution.
+
+- NT order with matching committed attribution: eligible for projection.
+- NT order without committed attribution: admission stays unreconciled.
+- committed attribution without an NT open order: inert for current liability.
+- fill audit without predecessor attribution: machine evidence fails closed.
+
+Evidence deduplication may prevent duplicate Bolt facts. It must not decide
+whether an NT order exists or is live.
+
+### 6. Restart uses the same authorities
+
+Restart waits for complete NT reconciliation, then rebuilds from:
+
+1. the canonical NT snapshot;
+2. committed current-only Bolt evidence;
+3. Bolt policy; and
+4. a fresh provider collateral allowance snapshot.
+
+No process-local callback history is required. BTE supplies NT-equivalent
+snapshot inputs to the same Bolt policy/evidence types; it does not emulate the
+live provider or create a second reducer.
+
+## Required Failure Behavior
+
+| Condition | Required result |
+|---|---|
+| NT startup reconciliation incomplete or failed | No new-risk capability |
+| NT adapter cannot map a venue open order | NT reconciliation fails; Bolt never projects |
+| NT adapter cannot map a relevant confirmed fill | NT reconciliation fails; Bolt never projects |
+| Admission-unsafe reconciliation config | Configuration rejected |
+| Projection requested before NT is `Running` | Request remains pending |
+| NT open order lacks committed Bolt attribution | Typed unreconciled result |
+| Provider allowance missing, stale, or failed | New-risk admission unavailable |
+| Provider update arrives off the NT thread | Revoke/request only; never read NT cache |
+| Duplicate/reordered callbacks | Same result as the same canonical NT snapshot |
+| Bolt attribution has no NT order | Inert; no invented reservation |
+| Restart | Fresh full projection; no inherited process-local lifecycle |
+| Machine evidence corruption | Activation fails closed |
+| Observation evidence corruption | Recording poisoned; machine authority unchanged |
 
 ## Functional Requirements
 
-- **FR-001 — NT ownership**: NT MUST remain the only live authority for order
-  existence, lifecycle, fills, positions, accounts, portfolio state, adapter
-  behavior, and reconciliation.
-- **FR-002 — No shadow OMS**: Bolt MUST NOT maintain a parallel order-lifecycle
-  state machine, live-order universe, terminal-order ledger, or event-derived
-  position authority.
-- **FR-003 — One projection**: Capital admission MUST consume one typed
-  projection built from a single canonical NT snapshot, committed Bolt
-  evidence, Bolt reservation policy, and provider-only readiness facts.
-- **FR-004 — Events are triggers**: NT callbacks MAY trigger projection or
-  evidence recording but MUST NOT become a second lifecycle source.
-- **FR-005 — Attestation only**: Venue open-order data MUST be used only to
-  attest NT reconciliation completeness. It MUST NOT replace or incrementally
-  mutate NT lifecycle state.
-- **FR-006 — Exact join**: Every admission-relevant NT open order MUST join to
-  its committed Bolt attribution. Any missing, duplicate, or contradictory
-  relation MUST leave admission unreconciled.
-- **FR-007 — No disagreement authority**: Venue/NT mismatch, unknown external
-  activity, unavailable canonical state, or failed provider capture MUST expose
-  zero new-risk capability.
-- **FR-008 — Reprojection**: Recovery from a mismatch MUST use a fresh complete
-  projection. No patch, fallback, cached-success inheritance, or latest-source
-  selection is permitted.
-- **FR-009 — Restart equivalence**: Process-local callback history MUST NOT be
+- **FR-001 — NT ownership**: NT MUST be the only live authority for adapters,
+  venue reconciliation, orders, fills, positions, accounts, portfolio, and
+  cache lifecycle.
+- **FR-002 — No Bolt shadow OMS**: Bolt MUST NOT maintain a live-order set,
+  client/venue lifecycle map, terminal-order ledger, fill-progress reducer, or
+  event-derived position authority.
+- **FR-003 — Upstream completeness**: Polymarket reconciliation MUST fail if
+  any venue open order or relevant confirmed fill is absent from NT's
+  instrument universe, or any current position cannot be represented.
+- **FR-004 — Safe NT configuration**: enforced capital admission MUST reject
+  every reconciliation setting that intentionally narrows the startup
+  universe.
+- **FR-005 — Post-reconciliation boundary**: canonical NT cache reads and
+  admission projection MUST occur on the NT runtime thread only after NT is
+  `Running`.
+- **FR-006 — Trigger-only callbacks**: NT and provider callbacks MAY request
+  projection and record owned evidence, but MUST NOT mutate Bolt lifecycle
+  mirrors.
+- **FR-007 — One provider fact**: live provider input MUST be the registered
+  allowance snapshot. No file fallback or raw venue-order attestation may
+  exist.
+- **FR-008 — Exact authorization join**: every admission-relevant NT open
+  order MUST have one valid committed Bolt attribution.
+- **FR-009 — Fail closed**: unavailable reconciliation, provider input, or
+  evidence relation MUST expose zero new-risk capability.
+- **FR-010 — Fresh recovery**: readiness may return only after a fresh complete
+  projection; no cached success, patch, or latest-source arbitration.
+- **FR-011 — Restart equivalence**: process-local callback history MUST NOT be
   necessary for restart reconstruction.
-- **FR-010 — Same path**: Live and backtesting MUST use the same admission
-  projection types and decision rules. Test-only data construction may supply
-  NT-equivalent snapshots but not an alternate reducer.
-- **FR-011 — Existing evidence guarantees**: Current-only identity closure,
-  machine/observation separation, append/sync receipt honesty, poisoning,
-  positive finite caps, process ownership, component handles, and hard-cutover
-  behavior MUST remain unchanged unless this specification explicitly requires
-  a compatible signature change.
-- **FR-012 — Delete replaced paths**: Existing source/timestamp arbitration and
-  shadow lifecycle mutation paths MUST be deleted, not retained behind a mode,
-  feature, fallback, or compatibility adapter.
-- **FR-013 — Typed failure**: Every rejected join or unavailable authority MUST
-  produce a stable typed reason suitable for tests and operator health.
-- **FR-014 — No adjacent implementation**: Rotation, total retained capacity,
-  retirement, durable ordinals, and restart append-retry exact-once remain
-  owned by #1385 and MUST NOT be implemented here.
-- **FR-015 — Thread ownership**: Canonical NT snapshot reads, projection, and
-  construction of reconciled admission capability MUST occur on the NT owner
-  thread. Provider workers MAY revoke admission and publish immutable readiness
-  inputs, but MUST NOT read NT's thread-confined cache or reopen admission.
+- **FR-012 — Same Bolt contract**: live and BTE MUST use the same admission
+  policy, evidence facts, codecs, and consumer projections.
+- **FR-013 — Existing evidence guarantees**: atomic admission, sync-before-
+  receipt, poisoning, finite caps, single-writer ownership, typed producer
+  capabilities, and hard-cutover behavior MUST remain intact.
+- **FR-014 — Deletion**: replaced lifecycle/reconciliation code MUST be
+  deleted, not retained behind a feature, mode, fallback, or compatibility
+  adapter.
+- **FR-015 — Scope**: rotation, retained capacity, retirement, durable
+  ordinals, and restart append-retry exact-once remain in #1385.
 
 ## Explicit Non-Goals
 
-- Reimplementing NT reconciliation or an order management system.
-- Adding a Bolt acknowledgement journal.
-- Persisting venue snapshots as lifecycle authority.
-- Defining new provider protocols or adapter behavior.
-- Changing execution, submission, cancellation, or strategy intent mechanics.
-- Adding a compatibility decoder for pre-cutover evidence.
-- Implementing #1385 capacity or exact-once work.
+- Reimplementing NT reconciliation in Bolt.
+- Adding a Bolt venue acknowledgement journal.
+- Persisting provider snapshots as lifecycle authority.
+- Adding another allowance source.
+- Changing NT submission or cancellation mechanics.
+- Adding historical decision-evidence decoding.
+- Implementing #1385.
 - Authorizing live cutover.
 
-## Evidence Requirements
+## Required Evidence
 
-Tests must verify Bolt behavior, not source text.
+Tests verify behavior, not source text.
 
-- A table-driven authority-join suite covers every transition-contract row.
-- Permutation tests cover duplicate, delayed, reordered, and missing callbacks
-  while holding the canonical NT snapshot constant; the result must not change.
-- Differential tests compare uninterrupted and restart projections.
-- Integration tests prove a venue/NT/evidence mismatch exposes zero new-risk
-  capability and a later complete match uses a fresh projection.
-- Concurrency tests prove a provider update revokes admission before handoff,
-  cannot reopen it on the worker, and reopens only after NT-thread projection.
-- Existing evidence, settlement, poison, shutdown, cap, BTE, and generated
-  contract tests remain green.
-- Exact-head advisory formatting, production clippy, root/BTE tests, and
-  release builds are terminal green before native review.
-
-No source-scanning or implementation-shape tests may be introduced.
+- Upstream NT tests: one or more unmapped open orders or relevant confirmed
+  fills fail every applicable reconciliation caller; an unrepresentable
+  current position also fails mass-status reconciliation.
+- Bolt config table: every universe-narrowing NT reconciliation option fails
+  closed when capital admission is enforced.
+- Runtime timing test: projection requests coalesce, remain pending while NT is
+  `Starting`, and run once when NT is `Running`.
+- Provider test: the runtime source produces only typed allowance input.
+- Admission tests: attributed NT orders reconstruct liability; unattributed
+  orders fail closed; orphan evidence is inert.
+- Callback tests: duplicate and reordered triggers do not change the result for
+  an unchanged NT snapshot.
+- Restart tests: uninterrupted and restarted projections agree for the same
+  authoritative inputs.
+- Existing evidence, poison, settlement, shutdown, cap, generated-contract,
+  root, and BTE suites remain green.
+- Exact-head advisory formatting, production clippy, tests, and release builds
+  are terminal green before native review.
 
 ## Success Criteria
 
-- **SC-001**: Every transition-contract row has executable behavioral evidence.
-- **SC-002**: Duplicate or reordered callbacks cannot change admission when the
-  canonical NT snapshot is unchanged.
-- **SC-003**: Every disagreement or missing join exposes zero new-risk
-  capability.
-- **SC-004**: Restart and uninterrupted projections are equal for the same
-  authoritative inputs.
-- **SC-005**: No production component requires a Bolt-maintained open-order,
-  terminal-event, or position-delta history to decide admission.
-- **SC-006**: Live and BTE use one projection and one decision path.
-- **SC-007**: External architecture review has no substantiated unresolved
-  Critical, High, or Medium finding.
-- **SC-008**: Final internal review identifies no remaining duplicate NT
-  authority, fallback, or unmodeled lifecycle boundary.
-- **SC-009**: No provider or background thread can read NT's thread-confined
-  cache or construct reconciled admission capability.
+- No Bolt production type decides live order, fill, position, or reconciliation
+  state independently of NT.
+- No provider input contains NT-owned lifecycle data.
+- No provider input carries an alternate balance value.
+- No file/fallback allowance path remains.
+- No pre-`Running` path can consume a projection request or reopen admission.
+- Every NT open order used by admission joins to committed Bolt evidence.
+- The pinned NT adapter cannot silently return a partial open-order, confirmed
+  fill, or current-position universe.
+- Live and BTE use one Bolt policy/evidence contract.
+- Internal adversarial review has no unresolved substantive finding.
+- External architecture review has no unresolved Critical, High, or Medium
+  finding.
 
-## Relations and Scope
+## Scope Relations
 
-This is the NT-boundary closure required for PR #1505's current-only
-decision-evidence slice. PR #1505 still does not claim to close all of #1354.
+This is the thin-NT-boundary closure required for PR #1505's current-only
+decision-evidence slice. The NT correctness change is isolated in
+`nautilus_trader#4557`; Bolt consumes it through an exact official-repository
+pin.
 
 Issue #1385 retains rotation, total retained capacity, retirement, durable
-ordinals, and restart append-retry exact-once.
-
-The external live-cutover prerequisites and accepted loss of pre-cutover
-recovery continuity remain unchanged.
+ordinals, and restart append-retry exact-once. Live-cutover quiescence,
+archival, exact-artifact proof, and operator authorization remain separate
+operational prerequisites.

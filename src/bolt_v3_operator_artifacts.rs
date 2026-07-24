@@ -35,9 +35,6 @@ pub enum BoltV3OperatorArtifactError {
     PreRunClobV2SourceInvalid {
         field: &'static str,
     },
-    PreRunVenueAccountStateSourceInvalid {
-        field: &'static str,
-    },
     DecisionEvidenceSourceInvalid {
         message: String,
     },
@@ -71,12 +68,6 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             }
             Self::PreRunClobV2SourceInvalid { field } => {
                 write!(f, "pre-run CLOB v2 source field `{field}` is invalid")
-            }
-            Self::PreRunVenueAccountStateSourceInvalid { field } => {
-                write!(
-                    f,
-                    "pre-run venue account state source field `{field}` is invalid"
-                )
             }
             Self::DecisionEvidenceSourceInvalid { message } => f.write_str(message),
             Self::Serialize(source) => write!(f, "failed to serialize artifact: {source}"),

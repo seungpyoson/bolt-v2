@@ -79,9 +79,11 @@ fn trade_transport_config_keeps_capital_admission_execution_client_without_strat
         .expect("fixture should configure capital pools")[0]
         .enforce_submit_admission = true;
 
-    let scoped =
-        trade_transport_loaded_config(&loaded, RealizedVolatilityTransportScope::Subscribed)
-            .expect("capital admission venue truth requires the venue execution client");
+    let scoped = trade_transport_loaded_config(
+        &loaded,
+        RealizedVolatilityTransportScope::Subscribed,
+    )
+    .expect("capital admission provider collateral allowance requires the venue execution client");
 
     assert!(scoped.root.clients.contains_key("polymarket_main"));
 }

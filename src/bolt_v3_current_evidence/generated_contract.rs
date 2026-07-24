@@ -25,8 +25,7 @@ pub(crate) enum KnownProducer {
     MakerRequoteThrottle,
     EdgeTakerSettlement,
     EdgeTakerTerminalSettlement,
-    SubmitAdmissionVenueCaptureFailure,
-    SubmitAdmissionVenueDivergence,
+    SubmitAdmissionProviderCollateralAllowanceCaptureFailure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -53,8 +52,7 @@ pub enum KnownPurpose {
     RequoteThrottleObservation,
     Settlement,
     TerminalSettlement,
-    VenueTruthCaptureFailure,
-    VenueTruthDivergence,
+    ProviderCollateralAllowanceCaptureFailure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -81,8 +79,7 @@ pub(crate) enum KnownIdentity {
     RequoteThrottleObservationV1,
     SettlementV1,
     TerminalSettlementV1,
-    VenueTruthCaptureFailureV1,
-    VenueTruthDivergenceV1,
+    ProviderCollateralAllowanceCaptureFailureV1,
 }
 
 #[cfg(test)]
@@ -109,8 +106,7 @@ pub(crate) const ALL_IDENTITIES: &[KnownIdentity] = &[
     KnownIdentity::RequoteThrottleObservationV1,
     KnownIdentity::SettlementV1,
     KnownIdentity::TerminalSettlementV1,
-    KnownIdentity::VenueTruthCaptureFailureV1,
-    KnownIdentity::VenueTruthDivergenceV1,
+    KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1,
 ];
 
 pub(crate) mod identities {
@@ -159,9 +155,7 @@ pub(crate) mod identities {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct TerminalSettlementV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct VenueTruthCaptureFailureV1;
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct VenueTruthDivergenceV1;
+    pub(crate) struct ProviderCollateralAllowanceCaptureFailureV1;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -188,8 +182,7 @@ pub(crate) enum KnownFact {
     RequoteThrottleObservationV1,
     SettlementV1,
     TerminalSettlementV1,
-    VenueTruthCaptureFailureV1,
-    VenueTruthDivergenceV1,
+    ProviderCollateralAllowanceCaptureFailureV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -257,8 +250,9 @@ pub(crate) const fn current_identity_for_purpose(purpose: KnownPurpose) -> Known
         KnownPurpose::RequoteThrottleObservation => KnownIdentity::RequoteThrottleObservationV1,
         KnownPurpose::Settlement => KnownIdentity::SettlementV1,
         KnownPurpose::TerminalSettlement => KnownIdentity::TerminalSettlementV1,
-        KnownPurpose::VenueTruthCaptureFailure => KnownIdentity::VenueTruthCaptureFailureV1,
-        KnownPurpose::VenueTruthDivergence => KnownIdentity::VenueTruthDivergenceV1,
+        KnownPurpose::ProviderCollateralAllowanceCaptureFailure => {
+            KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1
+        }
     }
 }
 
@@ -286,8 +280,7 @@ pub(crate) const fn sink_for_purpose(purpose: KnownPurpose) -> KnownSink {
         KnownPurpose::RequoteThrottleObservation => KnownSink::Observation,
         KnownPurpose::Settlement => KnownSink::Machine,
         KnownPurpose::TerminalSettlement => KnownSink::Machine,
-        KnownPurpose::VenueTruthCaptureFailure => KnownSink::Machine,
-        KnownPurpose::VenueTruthDivergence => KnownSink::Machine,
+        KnownPurpose::ProviderCollateralAllowanceCaptureFailure => KnownSink::Machine,
     }
 }
 
@@ -315,8 +308,9 @@ pub(crate) const fn effect_policy_for_purpose(purpose: KnownPurpose) -> EffectPo
         KnownPurpose::RequoteThrottleObservation => EffectPolicy::ObservationBoundedFailure,
         KnownPurpose::Settlement => EffectPolicy::ReconciliationFailClosed,
         KnownPurpose::TerminalSettlement => EffectPolicy::ReconciliationFailClosed,
-        KnownPurpose::VenueTruthCaptureFailure => EffectPolicy::RiskReducingContinues,
-        KnownPurpose::VenueTruthDivergence => EffectPolicy::PreserveResult,
+        KnownPurpose::ProviderCollateralAllowanceCaptureFailure => {
+            EffectPolicy::RiskReducingContinues
+        }
     }
 }
 
@@ -349,8 +343,9 @@ pub(crate) const fn purpose_for_producer(producer: KnownProducer) -> KnownPurpos
         KnownProducer::MakerRequoteThrottle => KnownPurpose::RequoteThrottleObservation,
         KnownProducer::EdgeTakerSettlement => KnownPurpose::Settlement,
         KnownProducer::EdgeTakerTerminalSettlement => KnownPurpose::TerminalSettlement,
-        KnownProducer::SubmitAdmissionVenueCaptureFailure => KnownPurpose::VenueTruthCaptureFailure,
-        KnownProducer::SubmitAdmissionVenueDivergence => KnownPurpose::VenueTruthDivergence,
+        KnownProducer::SubmitAdmissionProviderCollateralAllowanceCaptureFailure => {
+            KnownPurpose::ProviderCollateralAllowanceCaptureFailure
+        }
     }
 }
 
@@ -382,8 +377,9 @@ pub(crate) const fn purpose_for_identity(identity: KnownIdentity) -> KnownPurpos
         KnownIdentity::RequoteThrottleObservationV1 => KnownPurpose::RequoteThrottleObservation,
         KnownIdentity::SettlementV1 => KnownPurpose::Settlement,
         KnownIdentity::TerminalSettlementV1 => KnownPurpose::TerminalSettlement,
-        KnownIdentity::VenueTruthCaptureFailureV1 => KnownPurpose::VenueTruthCaptureFailure,
-        KnownIdentity::VenueTruthDivergenceV1 => KnownPurpose::VenueTruthDivergence,
+        KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1 => {
+            KnownPurpose::ProviderCollateralAllowanceCaptureFailure
+        }
     }
 }
 
@@ -415,8 +411,9 @@ pub(crate) const fn fact_for_identity(identity: KnownIdentity) -> KnownFact {
         KnownIdentity::RequoteThrottleObservationV1 => KnownFact::RequoteThrottleObservationV1,
         KnownIdentity::SettlementV1 => KnownFact::SettlementV1,
         KnownIdentity::TerminalSettlementV1 => KnownFact::TerminalSettlementV1,
-        KnownIdentity::VenueTruthCaptureFailureV1 => KnownFact::VenueTruthCaptureFailureV1,
-        KnownIdentity::VenueTruthDivergenceV1 => KnownFact::VenueTruthDivergenceV1,
+        KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1 => {
+            KnownFact::ProviderCollateralAllowanceCaptureFailureV1
+        }
     }
 }
 
@@ -532,13 +529,8 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
             schema_version: 16,
             gate_id: "bolt_v3.settlement",
         },
-        KnownIdentity::VenueTruthCaptureFailureV1 => IdentityDescriptor {
-            kind: "venue_truth_capture_failure",
-            schema_version: 17,
-            gate_id: "bolt_v3.capital_admission_rebuild",
-        },
-        KnownIdentity::VenueTruthDivergenceV1 => IdentityDescriptor {
-            kind: "venue_truth_divergence",
+        KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1 => IdentityDescriptor {
+            kind: "provider_collateral_allowance_capture_failure",
             schema_version: 17,
             gate_id: "bolt_v3.capital_admission_rebuild",
         },
@@ -623,7 +615,7 @@ pub(crate) const fn disposition_for(
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::RiskReducingExitAdmissionV1, KnownConsumer::ReservationRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
+            ConsumerDisposition::Relevant(KnownFact::RiskReducingExitAdmissionV1)
         }
         (KnownFact::RiskReducingExitAdmissionV1, KnownConsumer::SettlementRecoveryV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
@@ -635,7 +627,7 @@ pub(crate) const fn disposition_for(
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::ForcedReductionAdmissionV1, KnownConsumer::ReservationRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
+            ConsumerDisposition::Relevant(KnownFact::ForcedReductionAdmissionV1)
         }
         (KnownFact::ForcedReductionAdmissionV1, KnownConsumer::SettlementRecoveryV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
@@ -814,28 +806,19 @@ pub(crate) const fn disposition_for(
         (KnownFact::TerminalSettlementV1, KnownConsumer::ShadowPnlV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
-        (KnownFact::VenueTruthCaptureFailureV1, KnownConsumer::ReservationRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::VenueTruthCaptureFailureV1, KnownConsumer::SettlementRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::VenueTruthCaptureFailureV1, KnownConsumer::BookingRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::VenueTruthCaptureFailureV1, KnownConsumer::ShadowPnlV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::VenueTruthDivergenceV1, KnownConsumer::ReservationRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::VenueTruthDivergenceV1, KnownConsumer::SettlementRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::VenueTruthDivergenceV1, KnownConsumer::BookingRecoveryV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
-        }
-        (KnownFact::VenueTruthDivergenceV1, KnownConsumer::ShadowPnlV1) => {
+        (
+            KnownFact::ProviderCollateralAllowanceCaptureFailureV1,
+            KnownConsumer::ReservationRecoveryV1,
+        ) => ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22"),
+        (
+            KnownFact::ProviderCollateralAllowanceCaptureFailureV1,
+            KnownConsumer::SettlementRecoveryV1,
+        ) => ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22"),
+        (
+            KnownFact::ProviderCollateralAllowanceCaptureFailureV1,
+            KnownConsumer::BookingRecoveryV1,
+        ) => ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22"),
+        (KnownFact::ProviderCollateralAllowanceCaptureFailureV1, KnownConsumer::ShadowPnlV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::BlockedStrategyInputObservationV1, KnownConsumer::BacktestRunGuardV1) => {
@@ -904,12 +887,10 @@ pub(crate) const fn disposition_for(
         (KnownFact::TerminalSettlementV1, KnownConsumer::BacktestRunGuardV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
         }
-        (KnownFact::VenueTruthCaptureFailureV1, KnownConsumer::BacktestRunGuardV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
-        }
-        (KnownFact::VenueTruthDivergenceV1, KnownConsumer::BacktestRunGuardV1) => {
-            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest")
-        }
+        (
+            KnownFact::ProviderCollateralAllowanceCaptureFailureV1,
+            KnownConsumer::BacktestRunGuardV1,
+        ) => ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_23_backtest"),
     }
 }
 
@@ -980,11 +961,8 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "terminal_settlement" && schema_version == 16 {
         return Some(KnownIdentity::TerminalSettlementV1);
     }
-    if kind == "venue_truth_capture_failure" && schema_version == 17 {
-        return Some(KnownIdentity::VenueTruthCaptureFailureV1);
-    }
-    if kind == "venue_truth_divergence" && schema_version == 17 {
-        return Some(KnownIdentity::VenueTruthDivergenceV1);
+    if kind == "provider_collateral_allowance_capture_failure" && schema_version == 17 {
+        return Some(KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1);
     }
     None
 }

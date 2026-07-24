@@ -1514,15 +1514,13 @@ configured_source_param = "configured-value"
                 .runtime
                 .capital_admission_runtime_feed_configured()
         );
-        assert!(!health_run.runtime.venue_truth_runtime_configured());
-        assert!(!health_run.runtime.order_reject_observer_feed_configured());
-        assert!(!health_run.runtime.kill_switch_loss_protection_configured());
         assert!(
             !health_run
                 .runtime
-                .capital_admission_venue_spendability_source_configured()
+                .provider_collateral_allowance_runtime_configured()
         );
-        assert!(!health_run.runtime.submit_reservation_recovery_configured());
+        assert!(!health_run.runtime.order_reject_observer_feed_configured());
+        assert!(!health_run.runtime.kill_switch_loss_protection_configured());
     }
 
     #[test]

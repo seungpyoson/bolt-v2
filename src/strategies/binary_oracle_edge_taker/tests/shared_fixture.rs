@@ -308,7 +308,6 @@ pub(super) fn recording_evidence_failing_blocked_attempt(
 #[derive(Debug, Default)]
 pub(super) struct RecordingSettlementRuntimeSink {
     loss_observations: Mutex<Vec<crate::bolt_v3_loss_protection::PositionRealizedPnlObservation>>,
-    venue_explanations: Mutex<Vec<crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation>>,
 }
 
 impl RecordingSettlementRuntimeSink {
@@ -318,15 +317,6 @@ impl RecordingSettlementRuntimeSink {
         self.loss_observations
             .lock()
             .expect("recording settlement sink loss mutex poisoned")
-            .clone()
-    }
-
-    pub(super) fn venue_explanations(
-        &self,
-    ) -> Vec<crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation> {
-        self.venue_explanations
-            .lock()
-            .expect("recording settlement sink venue mutex poisoned")
             .clone()
     }
 }
@@ -342,17 +332,6 @@ impl crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSink
             .lock()
             .expect("recording settlement sink loss mutex poisoned")
             .push(observation);
-        Ok(())
-    }
-
-    fn record_venue_truth_settlement(
-        &self,
-        explanation: crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation,
-    ) -> Result<()> {
-        self.venue_explanations
-            .lock()
-            .expect("recording settlement sink venue mutex poisoned")
-            .push(explanation);
         Ok(())
     }
 }

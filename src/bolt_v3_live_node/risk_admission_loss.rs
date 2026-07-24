@@ -14,8 +14,9 @@ use crate::bolt_v3_current_evidence::OrderExecutionEvidence;
 #[cfg(test)]
 use crate::bolt_v3_current_evidence::{DecisionEvidenceRecorder, DecisionEvidenceStatusView};
 use crate::bolt_v3_operator_health::BoltV3OperatorHealthTransitionEmitter;
-use crate::bolt_v3_venue_truth::{
-    VenueTruthCaptureFailureEvidence, venue_truth_capture_failure_parts,
+use crate::bolt_v3_provider_collateral_allowance::{
+    ProviderCollateralAllowanceCaptureFailureEvidence,
+    provider_collateral_allowance_capture_failure_parts,
 };
 use crate::{
     bolt_v3_config::{KillSwitchFlattenConfigBlock, KillSwitchFlattenRouteKindConfig},
@@ -39,13 +40,10 @@ use crate::{
 
 use super::*;
 
-const OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE: &str =
-    stringify!(venue_truth_capture_failure);
-const OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_RECOVERY: &str =
-    stringify!(venue_truth_capture_recovery);
-const OPERATOR_HEALTH_REASON_VENUE_TRUTH_RUNTIME_FAILURE: &str =
-    stringify!(venue_truth_runtime_failure);
-const OPERATOR_HEALTH_REASON_VENUE_TRUTH_DIVERGENCE: &str = stringify!(venue_truth_divergence);
+const OPERATOR_HEALTH_REASON_PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE: &str =
+    stringify!(provider_collateral_allowance_capture_failure);
+const OPERATOR_HEALTH_REASON_PROVIDER_COLLATERAL_ALLOWANCE_RUNTIME_FAILURE: &str =
+    stringify!(provider_collateral_allowance_runtime_failure);
 
 struct ClosureKillSwitchFlattenExecutor<F: Fn(&KillSwitchLossAction) -> Result<()>> {
     execute_flatten: F,
@@ -60,30 +58,20 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct BoltV3CapitalAdmissionVenueSpendabilitySourceConfig {
-    pub(super) path: PathBuf,
-    pub(super) max_bytes: u64,
-    pub(super) expected_sha256: String,
-    pub(super) venue_id: String,
-    pub(super) account_id: String,
-    pub(super) collateral_currency: String,
-}
-
-pub(super) struct BoltV3VenueTruthRuntimeConfig {
-    pub(super) source: Arc<dyn crate::bolt_v3_venue_truth::VenueTruthSnapshotSource>,
-    pub(super) order_event_mapper: Arc<dyn crate::bolt_v3_venue_truth::VenueTruthOrderEventMapper>,
+pub(super) struct BoltV3ProviderCollateralAllowanceRuntimeConfig {
+    pub(super) source: Arc<
+        dyn crate::bolt_v3_provider_collateral_allowance::ProviderCollateralAllowanceSnapshotSource,
+    >,
     pub(super) poll_interval_ms: u64,
-    pub(super) kill_switch_store: KillSwitchStore,
 }
 
-pub(super) struct BoltV3VenueTruthRuntimeGuard {
+pub(super) struct BoltV3ProviderCollateralAllowanceRuntimeGuard {
     shutdown_requested: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
-impl BoltV3VenueTruthRuntimeGuard {
+impl BoltV3ProviderCollateralAllowanceRuntimeGuard {
     pub(super) fn stop_and_join(mut self) {
         self.stop_and_join_inner();
     }
@@ -94,12 +82,12 @@ impl BoltV3VenueTruthRuntimeGuard {
         if let Some(handle) = self.handle.take()
             && let Err(error) = handle.join()
         {
-            log::error!("venue truth runtime thread join failed: {error:?}");
+            log::error!("provider collateral allowance runtime thread join failed: {error:?}");
         }
     }
 }
 
-impl Drop for BoltV3VenueTruthRuntimeGuard {
+impl Drop for BoltV3ProviderCollateralAllowanceRuntimeGuard {
     fn drop(&mut self) {
         self.stop_and_join_inner();
     }
@@ -124,11 +112,11 @@ pub(super) fn loss_governor_runtime_feed_config_from_loaded(
     }))
 }
 
-pub(super) fn venue_truth_runtime_config_from_loaded(
+pub(super) fn provider_collateral_allowance_runtime_config_from_loaded(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     feed_config: Option<&CapitalAdmissionRuntimeFeedConfig>,
-) -> Result<Option<BoltV3VenueTruthRuntimeConfig>, BoltV3LiveNodeError> {
+) -> Result<Option<BoltV3ProviderCollateralAllowanceRuntimeConfig>, BoltV3LiveNodeError> {
     let Some(feed_config) = feed_config else {
         return Ok(None);
     };
@@ -136,7 +124,7 @@ pub(super) fn venue_truth_runtime_config_from_loaded(
     else {
         return Ok(None);
     };
-    let Some(build_source) = binding.build_venue_truth_runtime_source else {
+    let Some(build_source) = binding.build_provider_collateral_allowance_runtime_source else {
         return Ok(None);
     };
     let matching_clients = loaded
@@ -150,14 +138,14 @@ pub(super) fn venue_truth_runtime_config_from_loaded(
     let (client_key, client) = match matching_clients.as_slice() {
         [] => {
             return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
-                "capital admission requires a configured execution client for venue truth on venue `{}`",
+                "capital admission requires a configured execution client for provider collateral allowance on venue `{}`",
                 feed_config.venue_id
             )));
         }
         [(client_key, client)] => (client_key.as_str(), *client),
         _ => {
             return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
-                "capital admission requires one execution client for venue truth on venue `{}`; found {}",
+                "capital admission requires one execution client for provider collateral allowance on venue `{}`; found {}",
                 feed_config.venue_id,
                 matching_clients
                     .iter()
@@ -167,49 +155,30 @@ pub(super) fn venue_truth_runtime_config_from_loaded(
             )));
         }
     };
-    let source = build_source(crate::bolt_v3_providers::ProviderVenueTruthSourceContext {
-        client_key,
-        client,
-        resolved,
-        collateral_currency: feed_config.collateral_currency.as_str(),
-    })
+    let source = build_source(
+        crate::bolt_v3_providers::ProviderCollateralAllowanceSourceContext {
+            client_key,
+            client,
+            resolved,
+            collateral_currency: feed_config.collateral_currency.as_str(),
+        },
+    )
     .map_err(BoltV3LiveNodeError::Build)?;
 
-    Ok(Some(BoltV3VenueTruthRuntimeConfig {
+    Ok(Some(BoltV3ProviderCollateralAllowanceRuntimeConfig {
         source: source.source,
-        order_event_mapper: source.order_event_mapper,
         poll_interval_ms: source.poll_interval_ms,
-        kill_switch_store: venue_truth_kill_switch_store_from_loaded(loaded)?,
     }))
 }
 
-fn venue_truth_kill_switch_store_from_loaded(
-    loaded: &LoadedBoltV3Config,
-) -> Result<KillSwitchStore, BoltV3LiveNodeError> {
-    let Some(kill_switch) = loaded
-        .root
-        .risk
-        .kill_switch
-        .as_ref()
-        .filter(|kill_switch| kill_switch.enabled)
-    else {
-        return Err(BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
-            "risk.kill_switch.enabled=true is required when venue truth is enforced"
-        )));
-    };
-    Ok(KillSwitchStore::from_root_config_path(
-        &loaded.root_path,
-        kill_switch,
-    ))
-}
-
-pub(super) fn spawn_venue_truth_runtime(
-    config: BoltV3VenueTruthRuntimeConfig,
+pub(super) fn spawn_provider_collateral_allowance_runtime(
+    config: BoltV3ProviderCollateralAllowanceRuntimeConfig,
     feed: Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     stop_handle: LiveNodeHandle,
     health_emitter: Option<BoltV3OperatorHealthTransitionEmitter>,
-) -> BoltV3VenueTruthRuntimeGuard {
+    nt_projection_requested: Arc<AtomicBool>,
+) -> BoltV3ProviderCollateralAllowanceRuntimeGuard {
     let shutdown_requested = Arc::new(AtomicBool::new(false));
     let shutdown_notify = Arc::new(Notify::new());
     let thread_shutdown_requested = Arc::clone(&shutdown_requested);
@@ -218,7 +187,7 @@ pub(super) fn spawn_venue_truth_runtime(
     let spawn_stop_handle = stop_handle.clone();
     let spawn_health_emitter = health_emitter.clone();
     let handle = std::thread::Builder::new()
-        .name("bolt-v3-venue-truth-runtime".to_string())
+        .name("bolt-v3-provider-allowance-runtime".to_string())
         .spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -226,55 +195,72 @@ pub(super) fn spawn_venue_truth_runtime(
             {
                 Ok(runtime) => runtime,
                 Err(error) => {
-                    halt_for_venue_truth(
+                    halt_for_provider_collateral_allowance(
                         &spawn_submit_admission,
                         &spawn_stop_handle,
                         0,
-                        format!("venue truth runtime build failed: {error:#}"),
+                        format!("provider collateral allowance runtime build failed: {error:#}"),
                         spawn_health_emitter.as_ref(),
                     );
                     return;
                 }
             };
-            runtime.block_on(run_venue_truth_runtime(
+            runtime.block_on(run_provider_collateral_allowance_runtime(
                 config,
-                feed,
-                spawn_submit_admission,
-                spawn_stop_handle,
-                thread_shutdown_requested,
-                thread_shutdown_notify,
-                spawn_health_emitter,
+                ProviderCollateralAllowanceRuntimeContext {
+                    feed,
+                    submit_admission: spawn_submit_admission,
+                    stop_handle: spawn_stop_handle,
+                    shutdown_requested: thread_shutdown_requested,
+                    shutdown_notify: thread_shutdown_notify,
+                    health_emitter: spawn_health_emitter,
+                    nt_projection_requested,
+                },
             ));
         });
     let handle = match handle {
         Ok(handle) => Some(handle),
         Err(error) => {
-            halt_for_venue_truth(
+            halt_for_provider_collateral_allowance(
                 &submit_admission,
                 &stop_handle,
                 0,
-                format!("venue truth runtime thread spawn failed: {error:#}"),
+                format!("provider collateral allowance runtime thread spawn failed: {error:#}"),
                 health_emitter.as_ref(),
             );
             None
         }
     };
-    BoltV3VenueTruthRuntimeGuard {
+    BoltV3ProviderCollateralAllowanceRuntimeGuard {
         shutdown_requested,
         shutdown_notify,
         handle,
     }
 }
 
-async fn run_venue_truth_runtime(
-    config: BoltV3VenueTruthRuntimeConfig,
+struct ProviderCollateralAllowanceRuntimeContext {
     feed: Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     stop_handle: LiveNodeHandle,
     shutdown_requested: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
     health_emitter: Option<BoltV3OperatorHealthTransitionEmitter>,
+    nt_projection_requested: Arc<AtomicBool>,
+}
+
+async fn run_provider_collateral_allowance_runtime(
+    config: BoltV3ProviderCollateralAllowanceRuntimeConfig,
+    context: ProviderCollateralAllowanceRuntimeContext,
 ) {
+    let ProviderCollateralAllowanceRuntimeContext {
+        feed,
+        submit_admission,
+        stop_handle,
+        shutdown_requested,
+        shutdown_notify,
+        health_emitter,
+        nt_projection_requested,
+    } = context;
     let mut interval = tokio::time::interval(Duration::from_millis(config.poll_interval_ms));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut captures_missed = 0_u64;
@@ -292,11 +278,11 @@ async fn run_venue_truth_runtime(
         let captured_at = match current_unix_nanos() {
             Ok(value) => value,
             Err(error) => {
-                halt_for_venue_truth(
+                halt_for_provider_collateral_allowance(
                     &submit_admission,
                     &stop_handle,
                     0,
-                    format!("clock failed before venue truth poll: {error:#}"),
+                    format!("clock failed before provider collateral allowance poll: {error:#}"),
                     health_emitter.as_ref(),
                 );
                 break;
@@ -310,86 +296,62 @@ async fn run_venue_truth_runtime(
             Ok(snapshot) => snapshot,
             Err(error) => {
                 captures_missed = captures_missed.saturating_add(1);
-                handle_venue_truth_capture_failure(
+                handle_provider_collateral_allowance_capture_failure(
                     &submit_admission,
                     captured_at,
                     captures_missed,
                     &error,
                 );
                 if let Some(health_emitter) = health_emitter.as_ref() {
-                    health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE);
+                    health_emitter(
+                        OPERATOR_HEALTH_REASON_PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE,
+                    );
                 }
                 continue;
             }
         };
         captures_missed = 0;
-        let reconcile = reconcile_venue_truth_snapshot_with_health_emission(
-            &feed,
-            snapshot,
-            health_emitter.as_ref(),
-        );
-        if let Err(divergence) = reconcile {
-            halt_for_venue_truth_divergence(
-                &submit_admission,
-                &config.kill_switch_store,
-                &stop_handle,
-                *divergence,
-                health_emitter.as_ref(),
-            );
-            break;
-        }
+        record_provider_collateral_allowance_snapshot(&feed, snapshot);
+        nt_projection_requested.store(true, Ordering::Release);
     }
 }
 
-fn reconcile_venue_truth_snapshot_with_health_emission(
+fn record_provider_collateral_allowance_snapshot(
     feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
-    snapshot: crate::bolt_v3_venue_truth::VenueTruthSnapshot,
-    health_emitter: Option<&BoltV3OperatorHealthTransitionEmitter>,
-) -> Result<
-    Option<BoltV3SubmitCapitalAdmissionNtComponents>,
-    Box<crate::bolt_v3_venue_truth::VenueTruthDivergence>,
-> {
-    let reconcile = reconcile_venue_truth_snapshot(feed, snapshot)?;
-    if let Some(health_emitter) = health_emitter {
-        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_RECOVERY);
-    }
-    Ok(reconcile)
-}
-
-fn reconcile_venue_truth_snapshot(
-    feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
-    snapshot: crate::bolt_v3_venue_truth::VenueTruthSnapshot,
-) -> Result<
-    Option<BoltV3SubmitCapitalAdmissionNtComponents>,
-    Box<crate::bolt_v3_venue_truth::VenueTruthDivergence>,
-> {
+    snapshot: ProviderCollateralAllowanceSnapshot,
+) {
     let mut feed = feed
         .lock()
-        .expect("venue truth reconcile feed lock poisoned");
-    feed.on_venue_truth_snapshot(snapshot)
+        .expect("provider collateral allowance snapshot feed lock poisoned");
+    feed.on_provider_collateral_allowance_snapshot(snapshot);
 }
 
-fn handle_venue_truth_capture_failure(
+fn handle_provider_collateral_allowance_capture_failure(
     submit_admission: &BoltV3SubmitAdmissionState,
     observed_at_ns: u64,
     captures_missed: u64,
     error: &anyhow::Error,
 ) {
-    log::error!("venue truth poll failed: {error:#}");
-    submit_admission.suspend_capital_admission_for_venue_truth_capture_failure(
-        venue_truth_capture_failure_evidence(observed_at_ns, captures_missed, error),
+    log::error!("provider collateral allowance poll failed: {error:#}");
+    submit_admission.suspend_capital_admission_for_provider_collateral_allowance_capture_failure(
+        provider_collateral_allowance_capture_failure_evidence(
+            observed_at_ns,
+            captures_missed,
+            error,
+        ),
     );
 }
 
-fn venue_truth_capture_failure_evidence(
+fn provider_collateral_allowance_capture_failure_evidence(
     observed_at_ns: u64,
     captures_missed: u64,
     error: &anyhow::Error,
-) -> VenueTruthCaptureFailureEvidence {
-    let (endpoint, error_class) = venue_truth_capture_failure_parts(error);
-    VenueTruthCaptureFailureEvidence {
-        source: crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE
-            .to_string(),
+) -> ProviderCollateralAllowanceCaptureFailureEvidence {
+    let (endpoint, error_class) = provider_collateral_allowance_capture_failure_parts(error);
+    ProviderCollateralAllowanceCaptureFailureEvidence {
+        source:
+            crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE
+                .to_string(),
         observed_at_ns,
         endpoint,
         error_class,
@@ -397,79 +359,29 @@ fn venue_truth_capture_failure_evidence(
     }
 }
 
-fn halt_for_venue_truth(
+fn halt_for_provider_collateral_allowance(
     submit_admission: &BoltV3SubmitAdmissionState,
     stop_handle: &LiveNodeHandle,
     source_timestamp_unix_nanos: u64,
     reason: String,
     health_emitter: Option<&BoltV3OperatorHealthTransitionEmitter>,
 ) {
-    let state = latch_non_durable_venue_truth_runtime_failure(
+    let state = latch_non_durable_provider_collateral_allowance_runtime_failure(
         submit_admission,
         source_timestamp_unix_nanos,
         reason,
     );
     log::error!(
-        "venue truth runtime failure latched memory-only kill switch: {:?}",
+        "provider collateral allowance runtime failure latched memory-only kill switch: {:?}",
         state.kind()
     );
     if let Some(health_emitter) = health_emitter {
-        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_RUNTIME_FAILURE);
+        health_emitter(OPERATOR_HEALTH_REASON_PROVIDER_COLLATERAL_ALLOWANCE_RUNTIME_FAILURE);
     }
     stop_handle.stop();
 }
 
-fn halt_for_venue_truth_divergence(
-    submit_admission: &BoltV3SubmitAdmissionState,
-    kill_switch_store: &KillSwitchStore,
-    stop_handle: &LiveNodeHandle,
-    divergence: crate::bolt_v3_venue_truth::VenueTruthDivergence,
-    health_emitter: Option<&BoltV3OperatorHealthTransitionEmitter>,
-) {
-    let state =
-        durably_halt_for_venue_truth_divergence(submit_admission, kill_switch_store, divergence);
-    log::error!(
-        "venue truth divergence latched kill switch: {:?}",
-        state.kind()
-    );
-    if let Some(health_emitter) = health_emitter {
-        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_DIVERGENCE);
-    }
-    stop_handle.stop();
-}
-
-fn durably_halt_for_venue_truth_divergence(
-    submit_admission: &BoltV3SubmitAdmissionState,
-    kill_switch_store: &KillSwitchStore,
-    divergence: crate::bolt_v3_venue_truth::VenueTruthDivergence,
-) -> KillSwitchState {
-    let source = crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE;
-    let reason = format!(
-        "venue truth divergence: {:?} alarm_class={:?}",
-        divergence.kind, divergence.alarm_class
-    );
-    let trigger = KillSwitchHaltTrigger::venue_truth_divergence(
-        source,
-        divergence.current_captured_at.as_u64(),
-        reason,
-    );
-    let evidence = divergence.evidence(source);
-    let evidence_write_error = submit_admission
-        .record_venue_truth_divergence_evidence(&evidence)
-        .err()
-        .map(|error| {
-            log::error!("failed to record venue truth divergence evidence: {error:#}");
-            format!("venue truth divergence evidence write failed: {error:#}")
-        });
-    durably_halt_for_venue_truth_trigger(
-        submit_admission,
-        kill_switch_store,
-        trigger,
-        evidence_write_error,
-    )
-}
-
-fn latch_non_durable_venue_truth_runtime_failure(
+fn latch_non_durable_provider_collateral_allowance_runtime_failure(
     submit_admission: &BoltV3SubmitAdmissionState,
     source_timestamp_unix_nanos: u64,
     reason: String,
@@ -478,8 +390,9 @@ fn latch_non_durable_venue_truth_runtime_failure(
     if current.kind() != KillSwitchStateKind::Armed {
         return current;
     }
-    let source = crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE;
-    let trigger = KillSwitchHaltTrigger::venue_truth_divergence(
+    let source =
+        crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE;
+    let trigger = KillSwitchHaltTrigger::provider_collateral_allowance_runtime_failure(
         source,
         source_timestamp_unix_nanos,
         reason.clone(),
@@ -488,214 +401,26 @@ fn latch_non_durable_venue_truth_runtime_failure(
     let failed = transition_kill_switch_state(
         KillSwitchState::Armed,
         KillSwitchEvent::HaltTriggered(trigger),
-        venue_truth_kill_switch_transition_context(false, false),
+        provider_collateral_allowance_kill_switch_transition_context(false, false),
     )
     .and_then(|halting| {
         transition_kill_switch_state(
             halting,
             KillSwitchEvent::HaltActionDispatchFailed { reason },
-            venue_truth_kill_switch_transition_context(false, false),
+            provider_collateral_allowance_kill_switch_transition_context(false, false),
         )
     })
     .unwrap_or_else(|error| KillSwitchState::FailedManualIntervention {
         halt_id: fallback_halt_id,
-        reason: format!("venue truth runtime fail-closed transition failed: {error:?}"),
+        reason: format!(
+            "provider collateral allowance runtime fail-closed transition failed: {error:?}"
+        ),
     });
     submit_admission.replace_kill_switch_state(failed.clone());
     failed
 }
 
-fn durably_halt_for_venue_truth_trigger(
-    submit_admission: &BoltV3SubmitAdmissionState,
-    kill_switch_store: &KillSwitchStore,
-    trigger: KillSwitchHaltTrigger,
-    evidence_write_error: Option<String>,
-) -> KillSwitchState {
-    let current = match kill_switch_store.load_recovery_state() {
-        Ok(KillSwitchRecoveryState::Recovered(state))
-        | Ok(KillSwitchRecoveryState::FailClosed {
-            state: Some(state), ..
-        }) => state,
-        Ok(KillSwitchRecoveryState::FailClosed {
-            reason,
-            state: None,
-        }) => {
-            let failed = venue_truth_failed_manual_intervention_state(
-                &trigger,
-                format!("kill switch recovery failed without state: {reason:?}"),
-            );
-            return persist_venue_truth_failed_state(
-                submit_admission,
-                kill_switch_store,
-                failed,
-                "kill switch recovery failed without state",
-            );
-        }
-        Err(error) => {
-            let failed = venue_truth_failed_manual_intervention_state(
-                &trigger,
-                format!("kill switch recovery load failed: {error:?}"),
-            );
-            return persist_venue_truth_failed_state(
-                submit_admission,
-                kill_switch_store,
-                failed,
-                "kill switch recovery load failed",
-            );
-        }
-    };
-    if current.kind() != KillSwitchStateKind::Armed {
-        submit_admission.replace_kill_switch_state(current.clone());
-        return current;
-    }
-
-    let halting = match transition_kill_switch_state(
-        current,
-        KillSwitchEvent::HaltTriggered(trigger.clone()),
-        venue_truth_kill_switch_transition_context(false, false),
-    ) {
-        Ok(state) => state,
-        Err(error) => {
-            let failed = venue_truth_failed_manual_intervention_state(
-                &trigger,
-                format!("venue truth halt transition failed: {error:?}"),
-            );
-            return persist_venue_truth_failed_state(
-                submit_admission,
-                kill_switch_store,
-                failed,
-                "venue truth halt transition failed",
-            );
-        }
-    };
-
-    if let Some(error) = evidence_write_error {
-        let failed = venue_truth_failed_from_halting(halting, error);
-        return persist_venue_truth_failed_state(
-            submit_admission,
-            kill_switch_store,
-            failed,
-            "venue truth evidence write failed",
-        );
-    }
-
-    if let Err(error) = kill_switch_store.write_state(&halting) {
-        let failed = venue_truth_failed_from_halting(
-            halting,
-            format!("kill switch state write failed: {error:?}"),
-        );
-        return persist_venue_truth_failed_state(
-            submit_admission,
-            kill_switch_store,
-            failed,
-            "kill switch halting state write failed",
-        );
-    }
-
-    let halted = match transition_kill_switch_state(
-        halting,
-        KillSwitchEvent::DurableHaltEvidenceRecorded,
-        venue_truth_kill_switch_transition_context(true, true),
-    ) {
-        Ok(state) => state,
-        Err(error) => {
-            let failed = venue_truth_failed_manual_intervention_state(
-                &trigger,
-                format!("venue truth halt transition failed: {error:?}"),
-            );
-            return persist_venue_truth_failed_state(
-                submit_admission,
-                kill_switch_store,
-                failed,
-                "venue truth halted transition failed",
-            );
-        }
-    };
-    if let Err(error) = kill_switch_store.write_state(&halted) {
-        let KillSwitchState::Halted { halt_id, .. } = halted else {
-            unreachable!();
-        };
-        let failed = KillSwitchState::FailedManualIntervention {
-            halt_id,
-            reason: format!("kill switch state write failed: {error:?}"),
-        };
-        return persist_venue_truth_failed_state(
-            submit_admission,
-            kill_switch_store,
-            failed,
-            "kill switch halted state write failed",
-        );
-    }
-    submit_admission.replace_kill_switch_state(halted.clone());
-    halted
-}
-
-fn persist_venue_truth_failed_state(
-    submit_admission: &BoltV3SubmitAdmissionState,
-    kill_switch_store: &KillSwitchStore,
-    failed: KillSwitchState,
-    context: &str,
-) -> KillSwitchState {
-    let state = match kill_switch_store.write_state(&failed) {
-        Ok(()) => failed,
-        Err(error) => {
-            log::error!(
-                "failed to persist venue truth fail-closed kill switch state after {context}: {error:#}"
-            );
-            venue_truth_failed_state_with_persist_error(failed, context, &error)
-        }
-    };
-    submit_admission.replace_kill_switch_state(state.clone());
-    state
-}
-
-fn venue_truth_failed_state_with_persist_error(
-    state: KillSwitchState,
-    context: &str,
-    error: &impl std::fmt::Debug,
-) -> KillSwitchState {
-    match state {
-        KillSwitchState::FailedManualIntervention { halt_id, reason } => {
-            KillSwitchState::FailedManualIntervention {
-                halt_id,
-                reason: format!(
-                    "{reason}; fail-closed kill switch state write failed after {context}: {error:?}"
-                ),
-            }
-        }
-        other => other,
-    }
-}
-
-fn venue_truth_failed_from_halting(state: KillSwitchState, reason: String) -> KillSwitchState {
-    let halt_id = match &state {
-        KillSwitchState::Halting { halt_id, .. } => halt_id.clone(),
-        _ => unreachable!("venue truth fail-closed transition requires halting state"),
-    };
-    match transition_kill_switch_state(
-        state,
-        KillSwitchEvent::DurableHaltEvidenceWriteFailed { reason },
-        venue_truth_kill_switch_transition_context(false, false),
-    ) {
-        Ok(state) => state,
-        Err(error) => KillSwitchState::FailedManualIntervention {
-            halt_id,
-            reason: format!("venue truth fail-closed transition failed: {error:?}"),
-        },
-    }
-}
-
-fn venue_truth_failed_manual_intervention_state(
-    trigger: &KillSwitchHaltTrigger,
-    reason: String,
-) -> KillSwitchState {
-    KillSwitchState::FailedManualIntervention {
-        halt_id: crate::bolt_v3_kill_switch::halt_id_for_trigger(trigger),
-        reason,
-    }
-}
-
-fn venue_truth_kill_switch_transition_context(
+fn provider_collateral_allowance_kill_switch_transition_context(
     state_write_succeeded: bool,
     durable_halt_evidence_recorded: bool,
 ) -> KillSwitchTransitionContext {
@@ -734,12 +459,9 @@ pub(super) fn capital_admission_runtime_feed_config_from_loaded(
                 yes_position: Decimal::ZERO,
                 no_position: Decimal::ZERO,
                 collateral_allowance: Decimal::ZERO,
-                conditional_token_allowance: Decimal::ZERO,
                 collateral_coupled_group_id: product.collateral_coupled_group_id.clone(),
             },
         ),
-        startup_observed_at_ns,
-        dedupe_retention_ns: pool.dedupe_retention_ns,
     })
 }
 
@@ -749,74 +471,6 @@ pub(super) fn order_reject_observer_account_id_from_loaded(
     let pools = loaded.root.risk.capital_pools.as_ref()?;
     let pool = pools.iter().find(|pool| pool.enforce_submit_admission)?;
     Some(pool.account_id)
-}
-
-pub(super) fn capital_admission_venue_spendability_source_config_from_loaded(
-    loaded: &LoadedBoltV3Config,
-) -> Result<Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>, BoltV3LiveNodeError> {
-    let Some(pool) = loaded
-        .root
-        .risk
-        .capital_pools
-        .as_ref()
-        .and_then(|pools| pools.iter().find(|pool| pool.enforce_submit_admission))
-    else {
-        return Ok(None);
-    };
-    let has_source_binding = pool.venue_spendability_source_path.is_some()
-        || pool.venue_spendability_source_sha256.is_some()
-        || pool.venue_spendability_source_max_bytes.is_some();
-    if !has_source_binding {
-        return Ok(None);
-    }
-    let (Some(path_value), Some(expected_sha256), Some(max_bytes)) = (
-        pool.venue_spendability_source_path.as_ref(),
-        pool.venue_spendability_source_sha256.as_ref(),
-        pool.venue_spendability_source_max_bytes,
-    ) else {
-        return Err(BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
-            "risk.capital_pools venue_spendability_source path, sha256, and max_bytes must be configured together"
-        )));
-    };
-    Ok(Some(BoltV3CapitalAdmissionVenueSpendabilitySourceConfig {
-        path: resolve_root_relative_path(&loaded.root_path, path_value),
-        max_bytes,
-        expected_sha256: expected_sha256.clone(),
-        venue_id: pool.venue_id.clone(),
-        account_id: pool.account_id.to_string(),
-        collateral_currency: pool.collateral_currency.clone(),
-    }))
-}
-
-pub(super) fn capital_admission_venue_spendability_snapshot_from_source_config(
-    config: &BoltV3CapitalAdmissionVenueSpendabilitySourceConfig,
-) -> Result<VenueSpendabilitySnapshot, BoltV3LiveNodeError> {
-    venue_spendability_snapshot_from_json_file(VenueSpendabilitySourceFileRequest {
-        path: &config.path,
-        max_bytes: config.max_bytes,
-        expected_sha256: &config.expected_sha256,
-        identity: VenueSpendabilityIdentity {
-            venue_id: &config.venue_id,
-            account_id: &config.account_id,
-            collateral_currency: &config.collateral_currency,
-        },
-    })
-    .map_err(|error| {
-        BoltV3LiveNodeError::Build(anyhow::anyhow!(
-            "capital admission venue spendability source rejected: {error:?}"
-        ))
-    })
-}
-
-pub(super) fn refresh_capital_admission_venue_spendability_from_source(
-    feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
-    config: &BoltV3CapitalAdmissionVenueSpendabilitySourceConfig,
-) -> Result<Option<BoltV3SubmitCapitalAdmissionNtComponents>, BoltV3LiveNodeError> {
-    let snapshot = capital_admission_venue_spendability_snapshot_from_source_config(config)?;
-    let mut feed = feed
-        .lock()
-        .expect("capital admission venue spendability feed lock poisoned");
-    Ok(feed.on_venue_spendability_snapshot(snapshot))
 }
 
 pub(super) fn capital_admission_config_from_loaded(
@@ -1684,7 +1338,6 @@ fn required_loss_governor_decimal(
 mod tests {
     use std::{
         cell::RefCell,
-        collections::BTreeMap,
         panic::{AssertUnwindSafe, catch_unwind},
         rc::Rc,
         sync::Mutex,
@@ -1699,28 +1352,29 @@ mod tests {
         },
         bolt_v3_capital_admission_runtime_feed::{
             CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
-            POLYMARKET_VENUE_TRUTH_REST_SOURCE,
+            POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE,
         },
         bolt_v3_capital_admission_state::{
             OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
-            VenueSpendabilitySnapshot,
+            ProviderCollateralAllowanceSnapshot,
         },
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
-        bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState, KillSwitchStateKind},
+        bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind},
         bolt_v3_kill_switch_store::{KillSwitchRecoveryState, KillSwitchStore},
         bolt_v3_order_execution::{
             BoltV3KillSwitchFlattenRoutingContext, BoltV3NtSubmitOnlySink,
             BoltV3OrderExecutionPolicy, route_kill_switch_flatten_command_with_sink,
         },
         bolt_v3_order_intent::NtOrderTemplate,
+        bolt_v3_provider_collateral_allowance::{
+            ProviderCollateralAllowanceCaptureEndpoint,
+            ProviderCollateralAllowanceCaptureEndpointError,
+            ProviderCollateralAllowanceCaptureErrorClass,
+        },
         bolt_v3_submit_admission::{
             BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
             BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
-        },
-        bolt_v3_venue_truth::{
-            VenueTruthCaptureEndpoint, VenueTruthCaptureEndpointError, VenueTruthCaptureErrorClass,
-            VenueTruthDivergence, VenueTruthDivergenceAlarmClass, VenueTruthDivergenceDomain,
-            VenueTruthDivergenceKind, VenueTruthSnapshot,
+            BoltV3SubmitCapitalAdmissionNtComponents,
         },
     };
     use anyhow::Result;
@@ -1734,39 +1388,40 @@ mod tests {
         identifiers::{AccountId, InstrumentId, PositionId, StrategyId, Symbol, TraderId},
         instruments::{BinaryOption, InstrumentAny},
         orders::Order,
-        types::{Currency, Money, Price, Quantity},
+        types::{Currency, Price, Quantity},
     };
     use ustr::Ustr;
 
     #[test]
-    fn venue_truth_capture_failure_evidence_uses_production_endpoint_error_parts() {
-        let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
-            VenueTruthCaptureEndpoint::ClobBalanceAllowance,
-            VenueTruthCaptureErrorClass::TransportOrDecode,
+    fn provider_collateral_allowance_capture_failure_evidence_uses_production_endpoint_error_parts()
+    {
+        let error = anyhow::anyhow!(ProviderCollateralAllowanceCaptureEndpointError::new(
+            ProviderCollateralAllowanceCaptureEndpoint::ClobBalanceAllowance,
+            ProviderCollateralAllowanceCaptureErrorClass::TransportOrDecode,
             anyhow::anyhow!("transport failed"),
         ))
-        .context("poll venue truth");
+        .context("poll provider collateral allowance");
 
-        let evidence = venue_truth_capture_failure_evidence(1_100, 3, &error);
+        let evidence = provider_collateral_allowance_capture_failure_evidence(1_100, 3, &error);
 
         assert_eq!(
             evidence.source,
-            crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE
+            crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE
         );
         assert_eq!(evidence.observed_at_ns, 1_100);
         assert_eq!(
             evidence.endpoint,
-            VenueTruthCaptureEndpoint::ClobBalanceAllowance
+            ProviderCollateralAllowanceCaptureEndpoint::ClobBalanceAllowance
         );
         assert_eq!(
             evidence.error_class,
-            VenueTruthCaptureErrorClass::TransportOrDecode
+            ProviderCollateralAllowanceCaptureErrorClass::TransportOrDecode
         );
         assert_eq!(evidence.captures_missed, 3);
     }
 
     #[test]
-    fn venue_truth_capture_failure_handler_suspends_without_durable_halt() {
+    fn provider_collateral_allowance_capture_failure_handler_suspends_without_durable_halt() {
         let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
             Arc::new(DecisionEvidenceRecorder::recording()),
             BoltV3SubmitCapitalAdmissionConfig {
@@ -1789,13 +1444,13 @@ mod tests {
                 dedupe_retention_ns: 500,
             },
         );
-        let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
-            VenueTruthCaptureEndpoint::ClobOpenOrders,
-            VenueTruthCaptureErrorClass::TransportOrDecode,
+        let error = anyhow::anyhow!(ProviderCollateralAllowanceCaptureEndpointError::new(
+            ProviderCollateralAllowanceCaptureEndpoint::ClobBalanceAllowance,
+            ProviderCollateralAllowanceCaptureErrorClass::TransportOrDecode,
             anyhow::anyhow!("transport failed"),
         ));
 
-        handle_venue_truth_capture_failure(&admission, 1_200, 2, &error);
+        handle_provider_collateral_allowance_capture_failure(&admission, 1_200, 2, &error);
 
         assert_eq!(
             admission.kill_switch_state_kind(),
@@ -1805,7 +1460,8 @@ mod tests {
     }
 
     #[test]
-    fn venue_truth_failure_recovery_repeat_failure_emits_three_health_transitions() {
+    fn provider_collateral_allowance_failure_recovery_repeat_failure_emits_three_health_transitions()
+     {
         let decision_evidence = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
             decision_evidence.clone(),
@@ -1841,28 +1497,30 @@ mod tests {
                 }
             })
         };
-        let mut baseline = test_venue_truth_snapshot();
-        baseline.captured_at = UnixNanos::from(1_100);
-        reconcile_venue_truth_snapshot(&feed, baseline)
-            .expect("initial venue truth snapshot should seed nominal health");
+        let mut baseline = test_provider_collateral_allowance_snapshot();
+        baseline.observed_at_ns = 1_100;
+        record_provider_collateral_allowance_snapshot(&feed, baseline);
+        apply_empty_canonical_nt_projection(&feed, &admission, 1_150);
         assert_eq!(admission.capital_admission_reconciled(), Some(true));
 
-        let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
-            VenueTruthCaptureEndpoint::ClobOpenOrders,
-            VenueTruthCaptureErrorClass::TransportOrDecode,
+        let error = anyhow::anyhow!(ProviderCollateralAllowanceCaptureEndpointError::new(
+            ProviderCollateralAllowanceCaptureEndpoint::ClobBalanceAllowance,
+            ProviderCollateralAllowanceCaptureErrorClass::TransportOrDecode,
             anyhow::anyhow!("transport failed"),
         ));
 
-        handle_venue_truth_capture_failure(&admission, 1_200, 1, &error);
-        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE);
+        handle_provider_collateral_allowance_capture_failure(&admission, 1_200, 1, &error);
+        health_emitter(OPERATOR_HEALTH_REASON_PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE);
 
-        let mut recovery = test_venue_truth_snapshot();
-        recovery.captured_at = UnixNanos::from(1_300);
-        reconcile_venue_truth_snapshot_with_health_emission(&feed, recovery, Some(&health_emitter))
-            .expect("accepted venue truth snapshot should reconcile");
+        let mut recovery = test_provider_collateral_allowance_snapshot();
+        recovery.observed_at_ns = 1_300;
+        record_provider_collateral_allowance_snapshot(&feed, recovery);
+        assert_eq!(admission.capital_admission_reconciled(), Some(false));
+        apply_empty_canonical_nt_projection(&feed, &admission, 1_350);
+        health_emitter(OPERATOR_HEALTH_REASON_SUBMIT_ADMISSION_NT_PROJECTION);
 
-        handle_venue_truth_capture_failure(&admission, 1_400, 1, &error);
-        health_emitter(OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE);
+        handle_provider_collateral_allowance_capture_failure(&admission, 1_400, 1, &error);
+        health_emitter(OPERATOR_HEALTH_REASON_PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE);
 
         let emissions = emissions
             .lock()
@@ -1871,15 +1529,15 @@ mod tests {
         assert_eq!(
             emissions,
             vec![
-                OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE,
-                OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_RECOVERY,
-                OPERATOR_HEALTH_REASON_VENUE_TRUTH_CAPTURE_FAILURE,
+                OPERATOR_HEALTH_REASON_PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE,
+                OPERATOR_HEALTH_REASON_SUBMIT_ADMISSION_NT_PROJECTION,
+                OPERATOR_HEALTH_REASON_PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE,
             ]
         );
     }
 
     #[test]
-    fn venue_truth_divergence_halt_persists_halted_from_recovered_store() {
+    fn provider_collateral_allowance_runtime_failure_latches_without_writing_durable_halt() {
         let temp = tempfile::tempdir().expect("tempdir should create");
         let store = KillSwitchStore::new(temp.path().join("kill-switch.json"), 65_536);
         store
@@ -1890,178 +1548,10 @@ mod tests {
             test_capital_admission_config(),
         );
 
-        let state = durably_halt_for_venue_truth_divergence(
-            &admission,
-            &store,
-            test_venue_truth_divergence(),
-        );
-
-        assert_eq!(state.kind(), KillSwitchStateKind::Halted);
-        assert_eq!(
-            admission.kill_switch_state_kind(),
-            KillSwitchStateKind::Halted
-        );
-        let recovered = store
-            .load_recovery_state()
-            .expect("persisted venue truth halt should load");
-        let KillSwitchRecoveryState::Recovered(KillSwitchState::Halted { trigger, .. }) = recovered
-        else {
-            panic!("venue truth divergence should persist a recovered halted state");
-        };
-        assert_eq!(
-            trigger.kind,
-            crate::bolt_v3_kill_switch::KillSwitchHaltTriggerKind::VenueTruthDivergence
-        );
-        assert!(trigger.reason.contains("alarm_class=TrueDivergence"));
-    }
-
-    #[test]
-    fn venue_truth_divergence_halt_records_decision_evidence_fields() {
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        let store = KillSwitchStore::new(temp.path().join("kill-switch.json"), 65_536);
-        store
-            .write_state(&KillSwitchState::Armed)
-            .expect("recovered armed state should persist");
-        let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-            writer.clone(),
-            test_capital_admission_config(),
-        );
-
-        let state = durably_halt_for_venue_truth_divergence(
-            &admission,
-            &store,
-            test_venue_truth_divergence(),
-        );
-
-        assert_eq!(state.kind(), KillSwitchStateKind::Halted);
-        let records = writer
-            .recorded_facts()
-            .expect("current venue-divergence evidence should decode")
-            .into_iter()
-            .filter_map(|fact| match fact {
-                crate::bolt_v3_current_evidence::CurrentFact::VenueTruthDivergence(record) => {
-                    Some(record)
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(records.len(), 1);
-        let evidence = &records[0];
-        assert_eq!(
-            evidence.source,
-            crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE
-        );
-        assert_eq!(evidence.account_id, "ACCOUNT-001");
-        assert_eq!(
-            evidence.domain,
-            crate::bolt_v3_current_evidence::VenueTruthDivergenceDomain::UnexplainedCollateralBalanceDelta
-        );
-        assert_eq!(evidence.venue_value, "75");
-        assert_eq!(evidence.prior_accepted_value, "100");
-        assert_eq!(
-            evidence.alarm_class,
-            crate::bolt_v3_current_evidence::VenueTruthDivergenceAlarmClass::TrueDivergence
-        );
-    }
-
-    #[test]
-    fn venue_truth_divergence_halt_does_not_downgrade_existing_non_armed_store_state() {
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        let store = KillSwitchStore::new(temp.path().join("kill-switch.json"), 65_536);
-        let existing = KillSwitchState::Halted {
-            halt_id: "existing-halt".to_string(),
-            trigger: KillSwitchHaltTrigger::loss_governor_breach(
-                "loss-governor",
-                1_000,
-                "daily loss cap breached",
-            ),
-        };
-        store
-            .write_state(&existing)
-            .expect("existing halted state should persist");
-        let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(DecisionEvidenceRecorder::recording()),
-            test_capital_admission_config(),
-        );
-
-        let state = durably_halt_for_venue_truth_divergence(
-            &admission,
-            &store,
-            test_venue_truth_divergence(),
-        );
-
-        assert_eq!(state, existing);
-        assert_eq!(
-            admission.kill_switch_state_kind(),
-            KillSwitchStateKind::Halted
-        );
-        assert_eq!(
-            store
-                .load_recovery_state()
-                .expect("existing halted state should remain readable"),
-            KillSwitchRecoveryState::Recovered(existing)
-        );
-    }
-
-    #[test]
-    fn venue_truth_divergence_evidence_write_failure_latches_fail_closed() {
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        let store = KillSwitchStore::new(temp.path().join("kill-switch.json"), 65_536);
-        store
-            .write_state(&KillSwitchState::Armed)
-            .expect("recovered armed state should persist");
-        let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        writer.fail_machine_writes_for_test();
-        let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-            writer,
-            test_capital_admission_config(),
-        );
-
-        let state = durably_halt_for_venue_truth_divergence(
-            &admission,
-            &store,
-            test_venue_truth_divergence(),
-        );
-
-        assert_eq!(state.kind(), KillSwitchStateKind::FailedManualIntervention);
-        assert_eq!(
-            admission.kill_switch_state_kind(),
-            KillSwitchStateKind::FailedManualIntervention
-        );
-        let recovered = store
-            .load_recovery_state()
-            .expect("fail-closed venue truth halt should load");
-        let KillSwitchRecoveryState::FailClosed {
-            state: Some(KillSwitchState::FailedManualIntervention { reason, .. }),
-            ..
-        } = recovered
-        else {
-            panic!("evidence write failure should persist a fail-closed state");
-        };
-        assert!(
-            reason.contains("venue truth divergence evidence write failed")
-                && reason.contains("evidence commit indeterminate during write"),
-            "persisted fail-closed state should carry the evidence persistence failure: {reason}"
-        );
-    }
-
-    #[test]
-    fn venue_truth_runtime_failure_latches_without_writing_durable_halt() {
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        let store = KillSwitchStore::new(temp.path().join("kill-switch.json"), 65_536);
-        store
-            .write_state(&KillSwitchState::Armed)
-            .expect("recovered armed state should persist");
-        let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(DecisionEvidenceRecorder::recording()),
-            test_capital_admission_config(),
-        );
-
-        let state = latch_non_durable_venue_truth_runtime_failure(
+        let state = latch_non_durable_provider_collateral_allowance_runtime_failure(
             &admission,
             1_300,
-            "clock failed before venue truth poll".to_string(),
+            "clock failed before provider collateral allowance poll".to_string(),
         );
 
         assert_eq!(state.kind(), KillSwitchStateKind::FailedManualIntervention);
@@ -2074,55 +1564,6 @@ mod tests {
                 .load_recovery_state()
                 .expect("runtime-failure should leave durable baseline readable"),
             KillSwitchRecoveryState::Recovered(KillSwitchState::Armed)
-        );
-    }
-
-    #[test]
-    fn venue_truth_divergence_kill_switch_write_failure_latches_fail_closed() {
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        let path = temp.path().join("kill-switch.json");
-        let bootstrap_store = KillSwitchStore::new(path.clone(), 65_536);
-        bootstrap_store
-            .write_state(&KillSwitchState::Armed)
-            .expect("recovered armed state should persist");
-        let armed_state_bytes = std::fs::metadata(&path)
-            .expect("armed state metadata should read")
-            .len();
-        let constrained_store = KillSwitchStore::new(path, armed_state_bytes);
-        let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-            Arc::new(DecisionEvidenceRecorder::recording()),
-            test_capital_admission_config(),
-        );
-
-        let state = durably_halt_for_venue_truth_divergence(
-            &admission,
-            &constrained_store,
-            test_venue_truth_divergence(),
-        );
-
-        assert_eq!(state.kind(), KillSwitchStateKind::FailedManualIntervention);
-        let KillSwitchState::FailedManualIntervention { reason, .. } = &state else {
-            panic!("write failure should return failed manual intervention");
-        };
-        assert!(
-            reason.contains("kill switch state write failed"),
-            "returned state should carry the original halted-state persistence failure: {reason}"
-        );
-        assert!(
-            reason.contains("fail-closed kill switch state write failed"),
-            "returned state should also carry the failed fail-closed persistence attempt: {reason}"
-        );
-        assert_eq!(
-            admission.kill_switch_state_kind(),
-            KillSwitchStateKind::FailedManualIntervention
-        );
-        let recovered = bootstrap_store
-            .load_recovery_state()
-            .expect("preexisting armed state should remain readable");
-        assert_eq!(
-            recovered,
-            KillSwitchRecoveryState::Recovered(KillSwitchState::Armed),
-            "when nothing can persist, the store must not pretend a durable halt exists"
         );
     }
 
@@ -2287,8 +1728,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "venue truth reconcile feed lock poisoned")]
-    fn venue_truth_reconcile_feed_lock_poison_panics() {
+    #[should_panic(expected = "provider collateral allowance snapshot feed lock poisoned")]
+    fn provider_collateral_allowance_snapshot_feed_lock_poison_panics() {
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
             Arc::new(DecisionEvidenceRecorder::recording()),
             BoltV3SubmitCapitalAdmissionConfig {
@@ -2317,12 +1758,53 @@ mod tests {
         )));
         let poisoned = catch_unwind(AssertUnwindSafe(|| {
             let _guard = feed.lock().unwrap();
-            panic!("poison venue truth reconcile feed lock");
+            panic!("poison provider collateral allowance reconcile feed lock");
         }));
         assert!(poisoned.is_err());
         assert!(feed.lock().is_err());
 
-        let _ = reconcile_venue_truth_snapshot(&feed, test_venue_truth_snapshot());
+        record_provider_collateral_allowance_snapshot(
+            &feed,
+            test_provider_collateral_allowance_snapshot(),
+        );
+    }
+
+    fn apply_empty_canonical_nt_projection(
+        feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
+        admission: &BoltV3SubmitAdmissionState,
+        observed_at_ns: u64,
+    ) {
+        let (mut components, allowance_observed_at_ns) = {
+            let feed = feed
+                .lock()
+                .expect("provider collateral allowance snapshot feed should lock");
+            let allowance_observed_at_ns = feed
+                .accepted_allowance_observed_at_ns()
+                .expect("provider collateral allowance must precede NT projection");
+            let components = feed
+                .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+                    accepted_allowance_observed_at_ns: Some(allowance_observed_at_ns),
+                    account_balances: Some((Decimal::new(100, 0), Decimal::new(100, 0))),
+                    open_client_order_ids: Vec::new(),
+                    yes_position: Decimal::ZERO,
+                    no_position: Decimal::ZERO,
+                    observed_at_ns,
+                })
+                .expect("canonical empty NT projection should be complete");
+            (components, allowance_observed_at_ns)
+        };
+        admission.update_capital_admission_nt_components(components.clone());
+        let rebuild =
+            admission.rebuild_capital_admission_open_order_reservations(Vec::new(), observed_at_ns);
+        assert!(
+            rebuild.accepted,
+            "canonical empty NT projection should rebuild the reservation ledger"
+        );
+        components.order_lifecycle.all_open_orders_attributed = true;
+        admission.update_capital_admission_nt_components_after_accepted_allowance_snapshot(
+            components,
+            allowance_observed_at_ns,
+        );
     }
 
     fn test_capital_admission_config() -> BoltV3SubmitCapitalAdmissionConfig {
@@ -2361,37 +1843,20 @@ mod tests {
                     yes_position: Decimal::ZERO,
                     no_position: Decimal::ZERO,
                     collateral_allowance: Decimal::ZERO,
-                    conditional_token_allowance: Decimal::ZERO,
                     collateral_coupled_group_id: "group-1".to_string(),
                 },
             ),
-            startup_observed_at_ns: 900,
-            dedupe_retention_ns: 500,
         }
     }
 
-    fn test_venue_truth_divergence() -> VenueTruthDivergence {
-        VenueTruthDivergence {
-            kind: VenueTruthDivergenceKind::UnexplainedCollateralDelta,
-            alarm_class: VenueTruthDivergenceAlarmClass::TrueDivergence,
-            previous_captured_at: Some(UnixNanos::from(1_000)),
-            current_captured_at: UnixNanos::from(1_200),
+    fn test_provider_collateral_allowance_snapshot() -> ProviderCollateralAllowanceSnapshot {
+        ProviderCollateralAllowanceSnapshot {
+            source: POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string(),
+            observed_at_ns: 1_200,
+            venue_id: "VENUE-A".to_string(),
             account_id: "ACCOUNT-001".to_string(),
-            domain: VenueTruthDivergenceDomain::UnexplainedCollateralBalanceDelta,
-            venue_value: "75".to_string(),
-            prior_accepted_value: "100".to_string(),
-        }
-    }
-
-    fn test_venue_truth_snapshot() -> VenueTruthSnapshot {
-        let currency = Currency::from("USD");
-        VenueTruthSnapshot {
-            captured_at: UnixNanos::from(1_200),
-            account_id: AccountId::from("ACCOUNT-001"),
-            collateral_balance: Money::new(50.0, currency),
-            collateral_allowance: Money::new(50.0, currency),
-            open_orders: BTreeMap::new(),
-            positions_by_product_id: BTreeMap::new(),
+            collateral_currency: "USD".to_string(),
+            collateral_allowance: Decimal::new(50, 0),
         }
     }
 
@@ -2503,10 +1968,6 @@ mod tests {
     impl RoutingFlattenExecutor {
         fn new(writer: Arc<DecisionEvidenceRecorder>, venue_position: Decimal) -> Self {
             let admission = flatten_admission_with_yes_position(writer.clone(), venue_position);
-            admission.configure_kill_switch_forced_reduction_policy(
-                BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 2, Decimal::new(10, 0))
-                    .expect("forced reduction policy should be valid"),
-            );
             Self {
                 writer,
                 admission,
@@ -2607,9 +2068,13 @@ mod tests {
         let mut components = flatten_capital_admission_components();
         let ProductAdmissionSnapshot::PredictionMarketBinary(product) =
             &mut components.product_state;
-        product.source = POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string();
+        product.source = POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string();
         product.yes_position = yes_position;
         admission.update_capital_admission_nt_components(components);
+        admission.configure_kill_switch_forced_reduction_policy(
+            BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 2, Decimal::new(10, 0))
+                .expect("forced reduction policy should be valid"),
+        );
         let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1);
         assert!(rebuild.accepted);
         admission
@@ -2653,13 +2118,12 @@ mod tests {
                 free_collateral: Decimal::new(100, 0),
                 total_equity: Decimal::new(100, 0),
             },
-            venue_spendability: VenueSpendabilitySnapshot {
+            provider_collateral_allowance: ProviderCollateralAllowanceSnapshot {
                 source: "nt_account_free_collateral".to_string(),
                 observed_at_ns: 0,
                 venue_id: "VENUE-A".to_string(),
                 account_id: "ACCOUNT-001".to_string(),
                 collateral_currency: "USD".to_string(),
-                spendable_collateral: Decimal::new(100, 0),
                 collateral_allowance: Decimal::new(100, 0),
             },
             order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
@@ -2677,7 +2141,6 @@ mod tests {
                     yes_position: Decimal::ZERO,
                     no_position: Decimal::ZERO,
                     collateral_allowance: Decimal::new(100, 0),
-                    conditional_token_allowance: Decimal::new(100, 0),
                     collateral_coupled_group_id: "group-1".to_string(),
                 },
             ),

@@ -2,8 +2,8 @@ use crate::support;
 
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_current_evidence::{
-    AdmissionDecisionOutcome, AdmissionRejectionReason, DecisionEvidenceRecorder,
-    OrderRejectReason, OrderRejectSource, StaleLossReason,
+    AdmissionDecisionOutcome, AdmissionRejectionReason, CapitalAdmissionRebuildSource,
+    DecisionEvidenceRecorder, OrderRejectReason, OrderRejectSource, StaleLossReason,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
@@ -19,9 +19,10 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3LiveSubmitApprovalLimits, BoltV3QuoteQuantityAdmissionInput,
     BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
     BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState,
-    BoltV3SubmitIntentKind, OrderValuationContext, build_submit_admission_request_from_order,
-    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
-    market_style_admission_ceiling_notional, rounded_order_admission_notional,
+    BoltV3SubmitCapitalAdmissionOpenOrderSnapshot, BoltV3SubmitIntentKind, OrderValuationContext,
+    build_submit_admission_request_from_order, conservative_quote_quantity_admission_notional,
+    fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
+    rounded_order_admission_notional,
 };
 use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_model::data::{QuoteTick, TradeTick};
@@ -33,7 +34,10 @@ use nautilus_model::instruments::{BinaryOption, InstrumentAny};
 use nautilus_model::orders::{LimitOrder, MarketOrder, MarketToLimitOrder, OrderAny};
 use nautilus_model::types::{Currency, Price, Quantity};
 use rust_decimal::Decimal;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use ustr::Ustr;
 
 fn binary_option_with_max_price(instrument_id: InstrumentId) -> InstrumentAny {
@@ -1564,13 +1568,13 @@ fn halted_kill_switch_state() -> KillSwitchState {
     }
 }
 
-fn venue_truth_halted_kill_switch_state() -> KillSwitchState {
+fn provider_collateral_allowance_halted_kill_switch_state() -> KillSwitchState {
     KillSwitchState::Halted {
-        halt_id: "venue-truth-halt".to_string(),
-        trigger: KillSwitchHaltTrigger::venue_truth_divergence(
-            "polymarket_venue_truth_rest",
+        halt_id: "provider-allowance-halt".to_string(),
+        trigger: KillSwitchHaltTrigger::provider_collateral_allowance_runtime_failure(
+            "polymarket_allowance_rest",
             1_200,
-            "venue truth divergence: UnexplainedCollateralDelta alarm_class=TrueDivergence",
+            "provider collateral allowance runtime_failure: UnexplainedCollateralDelta alarm_class=TrueRuntimeFailure",
         ),
     }
 }
@@ -1609,6 +1613,28 @@ fn forced_reduction_policy() -> BoltV3KillSwitchForcedReductionPolicy {
         Decimal::new(10, 0),
     )
     .expect("valid forced-reduction policy should construct")
+}
+
+fn reconcile_forced_reduction_liveness(
+    admission: &BoltV3SubmitAdmissionState,
+    client_order_ids: impl IntoIterator<Item = &'static str>,
+) {
+    let decision = admission.rebuild_capital_admission_open_order_snapshot(
+        BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
+            observed_at_ns: 1,
+            evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+            observed_open_order_count: 0,
+            all_open_orders_attributed: true,
+            reservations: Vec::new(),
+            live_non_reservation_client_order_ids: BTreeSet::new(),
+            live_forced_reduction_client_order_ids: client_order_ids
+                .into_iter()
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>(),
+        },
+        1,
+    );
+    assert!(decision.accepted);
 }
 
 fn forced_reduction_claim(halt_id: &str) -> BoltV3KillSwitchForcedReductionClaim {
@@ -2363,10 +2389,10 @@ fn latched_kill_switch_blocks_risk_reducing_exit_before_normal_admission() {
 }
 
 #[test]
-fn venue_truth_latch_blocks_all_normal_submit_classes() {
+fn provider_collateral_allowance_latch_blocks_all_normal_submit_classes() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = limited_admission_with_writer(writer.recorder(), 10, Decimal::new(10, 0));
-    admission.replace_kill_switch_state(venue_truth_halted_kill_switch_state());
+    admission.replace_kill_switch_state(provider_collateral_allowance_halted_kill_switch_state());
 
     for request in [
         submit_request_with_kind(Decimal::new(1, 1), BoltV3SubmitIntentKind::Entry),
@@ -2378,7 +2404,7 @@ fn venue_truth_latch_blocks_all_normal_submit_classes() {
     ] {
         let error = admission
             .admit(&request)
-            .expect_err("venue truth latch must block normal submit class");
+            .expect_err("provider collateral allowance latch must block normal submit class");
 
         assert!(matches!(
             error,
@@ -2422,6 +2448,7 @@ fn forced_reduction_requires_halt_action_and_policy_proof_before_cap_bypass() {
 fn forced_reduction_is_only_admissible_while_kill_switch_is_latched() {
     let admission = limited_admission(1, Decimal::new(1, 0));
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
+    reconcile_forced_reduction_liveness(&admission, []);
 
     let error = admission
         .admit(&forced_reduction_request(
@@ -2449,6 +2476,7 @@ fn valid_forced_reduction_while_latched_bypasses_normal_count_and_notional_caps(
         .commit_submitted();
     admission.replace_kill_switch_state(halted_kill_switch_state());
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
+    reconcile_forced_reduction_liveness(&admission, []);
 
     admission
         .admit(&forced_reduction_request(
@@ -2485,6 +2513,7 @@ fn valid_forced_reduction_while_flattening_uses_matching_halt_policy_proof() {
         halt_id: "halt-1".to_string(),
     });
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
+    reconcile_forced_reduction_liveness(&admission, []);
 
     admission
         .admit(&forced_reduction_request(
@@ -2511,6 +2540,7 @@ fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
     let admission = limited_admission(1, Decimal::new(1, 0));
     admission.replace_kill_switch_state(halted_kill_switch_state());
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
+    reconcile_forced_reduction_liveness(&admission, []);
 
     admission
         .admit(&forced_reduction_request(
@@ -2531,10 +2561,7 @@ fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
         BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
     ));
 
-    assert!(
-        admission.record_kill_switch_forced_reduction_terminal("client-order-1"),
-        "terminal release should consume the tracked forced-reduction client order id"
-    );
+    reconcile_forced_reduction_liveness(&admission, []);
 
     admission
         .admit(&forced_reduction_request(
@@ -2550,6 +2577,7 @@ fn dropped_uncommitted_forced_reduction_permit_rolls_back_live_cap() {
     let admission = limited_admission(1, Decimal::new(1, 0));
     admission.replace_kill_switch_state(halted_kill_switch_state());
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
+    reconcile_forced_reduction_liveness(&admission, []);
 
     {
         let _permit = admission

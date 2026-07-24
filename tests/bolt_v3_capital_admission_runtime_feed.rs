@@ -1,30 +1,40 @@
 use crate::support;
 
 use std::{
+    cell::Cell,
     panic::AssertUnwindSafe,
+    rc::Rc,
     sync::{Arc, Mutex},
 };
 
 use bolt_v2::bolt_v3_capital_admission::{
-    CapitalAdmissionLifecycleAction, CapitalAdmissionPolicy, FeeSlippagePolicy,
-    PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot, ProductKind,
+    CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
+    ProductAdmissionSnapshot, ProductKind,
 };
 use bolt_v2::bolt_v3_capital_admission_runtime_feed::{
+    CapitalAdmissionNtCacheProjection, CapitalAdmissionProjectionError,
     CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
-    POLYMARKET_VENUE_TRUTH_REST_SOURCE, subscribe_capital_admission_runtime_feed,
+    POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE, subscribe_submit_admission_nt_projection,
 };
 use bolt_v2::bolt_v3_capital_admission_state::{
     NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
-    PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
+    PortfolioCapitalAdmissionSnapshot, ProviderCollateralAllowanceSnapshot,
+    ReservationLedgerSnapshot,
 };
 use bolt_v2::bolt_v3_capital_reservation::{CapitalPoolSnapshot, ReservationRejectionReason};
 use bolt_v2::bolt_v3_current_evidence::{
-    DecisionEvidenceRecorder, VenueTruthCaptureEndpoint as EvidenceCaptureEndpoint,
-    VenueTruthCaptureErrorClass as EvidenceCaptureErrorClass,
+    DecisionEvidenceRecorder,
+    ProviderCollateralAllowanceCaptureEndpoint as EvidenceCaptureEndpoint,
+    ProviderCollateralAllowanceCaptureErrorClass as EvidenceCaptureErrorClass,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
+use bolt_v2::bolt_v3_provider_collateral_allowance::{
+    ProviderCollateralAllowanceCaptureEndpoint, ProviderCollateralAllowanceCaptureErrorClass,
+    ProviderCollateralAllowanceCaptureFailureEvidence,
+};
 use bolt_v2::bolt_v3_providers::polymarket::{
-    PolymarketVenueTruthInput, build_polymarket_venue_truth_snapshot,
+    PolymarketProviderCollateralAllowanceInput,
+    build_polymarket_provider_collateral_allowance_snapshot,
 };
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CapitalAdmissionRejectReason, BoltV3CompiledOrderAdmissionEvidence,
@@ -35,10 +45,6 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
     BoltV3SubmitCapitalAdmissionOpenOrderReservation, BoltV3SubmitIntentKind,
     PredictionMarketOutcomeSide,
-};
-use bolt_v2::bolt_v3_venue_truth::{
-    VenueTruthCaptureEndpoint, VenueTruthCaptureErrorClass, VenueTruthCaptureFailureEvidence,
-    VenueTruthSettlementExplanation, VenueTruthSnapshot,
 };
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
@@ -55,8 +61,7 @@ use nautilus_model::{
     },
     events::{
         AccountState, OrderAccepted, OrderCanceled, OrderDenied, OrderEventAny, OrderExpired,
-        OrderFilled, OrderRejected, OrderSubmitted, PortfolioSnapshot, PositionAdjusted,
-        PositionEvent,
+        OrderFilled, OrderRejected, PortfolioSnapshot, PositionAdjusted, PositionEvent,
     },
     identifiers::{
         AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId, TraderId,
@@ -64,17 +69,74 @@ use nautilus_model::{
     },
     types::{AccountBalance, Currency, Money, Price, Quantity},
 };
-use nautilus_polymarket::{
-    common::enums::{
-        PolymarketOrderSide, PolymarketOrderStatus, PolymarketOrderType, PolymarketOutcome,
-    },
-    http::{
-        models::{DataApiPosition, PolymarketOpenOrder},
-        query::BalanceAllowance,
-    },
-};
+use nautilus_polymarket::http::query::BalanceAllowance;
 use rust_decimal::Decimal;
 use ustr::Ustr;
+
+fn no_op_nt_projection() -> Rc<dyn Fn()> {
+    Rc::new(|| {})
+}
+
+trait CapitalAdmissionRuntimeFeedCanonicalNtFixture {
+    fn project_account_fixture(
+        &mut self,
+        account_state: &AccountState,
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents>;
+
+    fn project_portfolio_fixture(
+        &mut self,
+        portfolio_snapshot: &PortfolioSnapshot,
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents>;
+}
+
+impl CapitalAdmissionRuntimeFeedCanonicalNtFixture for CapitalAdmissionRuntimeFeed {
+    fn project_account_fixture(
+        &mut self,
+        account_state: &AccountState,
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
+        if account_state.account_id != self.configured_account_id() {
+            return None;
+        }
+        let collateral_currency = self.configured_collateral_currency();
+        let balance = account_state
+            .balances
+            .iter()
+            .find(|balance| balance.currency.code.as_str() == collateral_currency)?;
+        self.canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: self.accepted_allowance_observed_at_ns(),
+            account_balances: Some((balance.free.as_decimal(), balance.total.as_decimal())),
+            open_client_order_ids: Vec::new(),
+            yes_position: Decimal::ZERO,
+            no_position: Decimal::ZERO,
+            observed_at_ns: account_state.ts_event.as_u64(),
+        })
+        .ok()
+    }
+
+    fn project_portfolio_fixture(
+        &mut self,
+        portfolio_snapshot: &PortfolioSnapshot,
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
+        if portfolio_snapshot.account_id != self.configured_account_id() {
+            return None;
+        }
+        let collateral_currency = self.configured_collateral_currency();
+        let total_equity = portfolio_snapshot
+            .total_equity
+            .iter()
+            .find(|money| money.currency.code.as_str() == collateral_currency)
+            .map(|money| money.as_decimal())?;
+        self.canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: self.accepted_allowance_observed_at_ns(),
+            account_balances: Some((total_equity, total_equity)),
+            open_client_order_ids: Vec::new(),
+            yes_position: Decimal::ZERO,
+            no_position: Decimal::ZERO,
+            observed_at_ns: portfolio_snapshot.ts_event.as_u64(),
+        })
+        .ok()
+    }
+}
 
 #[test]
 fn runtime_feed_uses_verified_nt_msgbus_symbols() {
@@ -110,7 +172,7 @@ fn runtime_feed_uses_verified_nt_msgbus_symbols() {
 #[should_panic(expected = "capital admission runtime order-event feed lock poisoned")]
 fn subscribed_order_event_panics_on_poisoned_capital_admission_feed_lock() {
     let feed = poisoned_capital_admission_runtime_feed();
-    let _subscription = subscribe_capital_admission_runtime_feed(feed);
+    let _subscription = subscribe_submit_admission_nt_projection(Some(feed), no_op_nt_projection());
 
     publish_order_event(
         switchboard::get_event_order_topic(StrategyId::from("strategy-a")),
@@ -119,49 +181,80 @@ fn subscribed_order_event_panics_on_poisoned_capital_admission_feed_lock() {
 }
 
 #[test]
-#[should_panic(expected = "capital admission runtime position-event feed lock poisoned")]
-fn subscribed_position_event_panics_on_poisoned_capital_admission_feed_lock() {
+fn subscribed_position_event_requests_projection_without_locking_feed() {
     let feed = poisoned_capital_admission_runtime_feed();
-    let _subscription = subscribe_capital_admission_runtime_feed(feed);
+    let projection_count = Rc::new(Cell::new(0));
+    let count = Rc::clone(&projection_count);
+    let _subscription = subscribe_submit_admission_nt_projection(
+        Some(feed),
+        Rc::new(move || count.set(count.get() + 1)),
+    );
 
     publish_position_event(
         "events.position.ACCOUNT-001".into(),
         &adjusted_position_event(AccountId::from("ACCOUNT-001"), 1_100),
     );
+    assert_eq!(projection_count.get(), 1);
 }
 
 #[test]
-#[should_panic(expected = "capital admission runtime account-state feed lock poisoned")]
-fn subscribed_account_state_panics_on_poisoned_capital_admission_feed_lock() {
+fn order_event_requests_submit_projection_without_capital_feed() {
+    let projection_count = Rc::new(Cell::new(0));
+    let count = Rc::clone(&projection_count);
+    let _subscription =
+        subscribe_submit_admission_nt_projection(None, Rc::new(move || count.set(count.get() + 1)));
+
+    publish_order_event(
+        switchboard::get_event_order_topic(StrategyId::from("strategy-a")),
+        &OrderEventAny::Canceled(order_canceled_event("client-order-1", 1_100)),
+    );
+
+    assert_eq!(projection_count.get(), 1);
+}
+
+#[test]
+fn subscribed_account_state_requests_projection_without_locking_feed() {
     let feed = poisoned_capital_admission_runtime_feed();
-    let _subscription = subscribe_capital_admission_runtime_feed(feed);
+    let projection_count = Rc::new(Cell::new(0));
+    let count = Rc::clone(&projection_count);
+    let _subscription = subscribe_submit_admission_nt_projection(
+        Some(feed),
+        Rc::new(move || count.set(count.get() + 1)),
+    );
 
     publish_account_state(
         "events.account.ACCOUNT-001".into(),
         &account_state(AccountId::from("ACCOUNT-001"), "USD", 1_100, 45.0),
     );
+    assert_eq!(projection_count.get(), 1);
 }
 
 #[test]
-#[should_panic(expected = "capital admission runtime portfolio-snapshot feed lock poisoned")]
-fn subscribed_portfolio_snapshot_panics_on_poisoned_capital_admission_feed_lock() {
+fn subscribed_portfolio_snapshot_requests_projection_without_locking_feed() {
     let feed = poisoned_capital_admission_runtime_feed();
-    let _subscription = subscribe_capital_admission_runtime_feed(feed);
+    let projection_count = Rc::new(Cell::new(0));
+    let count = Rc::clone(&projection_count);
+    let _subscription = subscribe_submit_admission_nt_projection(
+        Some(feed),
+        Rc::new(move || count.set(count.get() + 1)),
+    );
 
     publish_portfolio_snapshot(
         "events.portfolio.ACCOUNT-001".into(),
         &portfolio_snapshot(AccountId::from("ACCOUNT-001"), "USD", 1_100, 45.0),
     );
+    assert_eq!(projection_count.get(), 1);
 }
 
 #[test]
-fn subscribed_account_and_portfolio_events_remain_advisory_without_venue_truth() {
+fn subscribed_account_and_portfolio_events_remain_advisory_without_provider_collateral_allowance() {
     let admission = Arc::new(capital_admission_configured_admission());
     let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
         runtime_feed_config(),
         admission.clone(),
     )));
-    let mut subscription = subscribe_capital_admission_runtime_feed(feed);
+    let mut subscription =
+        subscribe_submit_admission_nt_projection(Some(feed), no_op_nt_projection());
 
     publish_account_state(
         "events.account.ACCOUNT-001".into(),
@@ -181,148 +274,120 @@ fn subscribed_account_and_portfolio_events_remain_advisory_without_venue_truth()
 }
 
 #[test]
-fn polymarket_venue_truth_snapshot_alone_promotes_money_readiness() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-
-    let components = feed
-        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
-            1_200,
-            Decimal::new(45_000_000, 0),
-            Decimal::new(40_000_000, 0),
-        ))
-        .expect("initial venue truth baseline should be explainable")
-        .expect("accepted venue truth alone should publish money components");
-
-    assert_eq!(
-        components.venue_spendability.source,
-        "polymarket_venue_truth_rest"
-    );
-    assert_eq!(
-        components.venue_spendability.spendable_collateral,
-        Decimal::new(45, 0)
-    );
-    assert_eq!(
-        components.venue_spendability.collateral_allowance,
-        Decimal::new(40, 0)
-    );
-    assert_eq!(components.portfolio.source, "polymarket_venue_truth_rest");
-    assert_eq!(components.portfolio.free_collateral, Decimal::new(45, 0));
-    assert_eq!(components.portfolio.total_equity, Decimal::new(45, 0));
-    assert_eq!(
-        admission
-            .capital_admission_state_snapshot()
-            .expect("promoted components should update admission")
-            .venue_spendability
-            .source,
-        "polymarket_venue_truth_rest"
-    );
-}
-
-#[test]
-fn polymarket_venue_truth_snapshot_requires_matching_nt_order_attestation() {
+fn polymarket_provider_collateral_allowance_snapshot_alone_cannot_publish_money_readiness() {
     let admission = Arc::new(polymarket_capital_admission_configured_admission());
     let mut feed =
         CapitalAdmissionRuntimeFeed::new(polymarket_runtime_feed_config(), admission.clone());
 
-    let components = feed
-        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot_with_orders_and_positions(
+    feed.on_provider_collateral_allowance_snapshot(
+        polymarket_provider_collateral_allowance_snapshot(
             1_200,
             Decimal::new(45_000_000, 0),
             Decimal::new(40_000_000, 0),
-        ))
-        .expect("initial venue truth baseline should be explainable")
-        .expect("accepted venue truth alone should publish full money components");
-
-    assert_eq!(
-        components.order_lifecycle.source,
-        POLYMARKET_VENUE_TRUTH_REST_SOURCE
+        ),
     );
+    assert_eq!(feed.accepted_allowance_observed_at_ns(), Some(1_200));
+    assert_eq!(admission.capital_admission_state_snapshot(), None);
+}
+
+#[test]
+fn provider_collateral_allowance_combines_with_nt_owned_order_and_position_state() {
+    let admission = Arc::new(polymarket_capital_admission_configured_admission());
+    let mut feed =
+        CapitalAdmissionRuntimeFeed::new(polymarket_runtime_feed_config(), admission.clone());
+
+    feed.on_provider_collateral_allowance_snapshot(
+        polymarket_provider_collateral_allowance_snapshot(
+            1_200,
+            Decimal::new(45_000_000, 0),
+            Decimal::new(40_000_000, 0),
+        ),
+    );
+
+    let components = feed
+        .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: Some(1_200),
+            account_balances: Some((Decimal::new(45, 0), Decimal::new(45, 0))),
+            open_client_order_ids: vec!["client-order-1".to_string()],
+            yes_position: Decimal::new(99, 0),
+            no_position: Decimal::new(88, 0),
+            observed_at_ns: 1_300,
+        })
+        .expect("fresh provider collateral allowance and canonical NT state should combine");
+
+    assert_eq!(components.order_lifecycle.source, "nt_open_order_cache");
     assert_eq!(components.order_lifecycle.open_order_count, 1);
     assert!(
         !components.order_lifecycle.all_open_orders_attributed,
-        "raw venue orders are not admission-safe until NT reports the same order universe"
+        "Bolt evidence recovery, not provider data, must attribute NT open orders"
     );
 
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
-    assert_eq!(product.source, POLYMARKET_VENUE_TRUTH_REST_SOURCE);
-    assert_eq!(product.observed_at_ns, 1_200);
-    assert_eq!(product.yes_position, Decimal::new(7, 0));
-    assert_eq!(product.no_position, Decimal::new(2, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(9, 0));
+    assert_eq!(product.source, "nt_position_cache");
+    assert_eq!(product.observed_at_ns, 1_300);
+    assert_eq!(product.yes_position, Decimal::new(99, 0));
+    assert_eq!(product.no_position, Decimal::new(88, 0));
     assert_eq!(product.collateral_allowance, Decimal::new(40, 0));
-
-    let mut recovered_reservation = open_order_reservation(
-        "client-order-1",
-        "client-order-1#recovered",
-        Decimal::new(43, 1),
-    );
-    recovered_reservation.instrument_id = "condition-yes123.POLYMARKET".to_string();
-    recovered_reservation.observed_at_ns = 1_250;
-    let rebuild = admission
-        .rebuild_capital_admission_open_order_reservations(vec![recovered_reservation], 1_250);
-    assert!(
-        rebuild.accepted,
-        "matching attribution must rebuild: {rebuild:?}"
-    );
-    feed.attest_reconciled_nt_open_orders(&[(
-        "venue-order-1".to_string(),
-        "client-order-1".to_string(),
-    )]);
-    let attested = feed
-        .seed_cache_snapshot(
-            vec!["client-order-1".to_string()],
-            Decimal::new(99, 0),
-            Decimal::new(88, 0),
-            1_300,
-        )
-        .expect("matching NT and venue order universes should republish");
-    assert!(attested.order_lifecycle.all_open_orders_attributed);
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = attested.product_state;
-    assert_eq!(product.yes_position, Decimal::new(7, 0));
-    assert_eq!(product.no_position, Decimal::new(2, 0));
 }
 
 #[test]
-fn venue_truth_settlement_recorded_through_feed_explains_next_capture() {
+fn canonical_nt_projection_rejects_incomplete_stale_or_duplicate_inputs() {
     let admission = Arc::new(polymarket_capital_admission_configured_admission());
     let mut feed =
         CapitalAdmissionRuntimeFeed::new(polymarket_runtime_feed_config(), admission.clone());
+    let projection = CapitalAdmissionNtCacheProjection {
+        accepted_allowance_observed_at_ns: feed.accepted_allowance_observed_at_ns(),
+        account_balances: Some((Decimal::new(45, 0), Decimal::new(45, 0))),
+        open_client_order_ids: Vec::new(),
+        yes_position: Decimal::ZERO,
+        no_position: Decimal::ZERO,
+        observed_at_ns: 1_300,
+    };
 
-    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot_with_position(
-        1_000,
-        Decimal::new(50_000_000, 0),
-        Decimal::new(40_000_000, 0),
-        "yes123",
-        Decimal::new(4, 0),
-    ))
-    .expect("baseline venue truth should reconcile");
-    feed.record_venue_truth_settlement(VenueTruthSettlementExplanation {
-        settlement_key: "yes123:P-FEED-SETTLEMENT".to_string(),
-        market_id: "condition".to_string(),
-        product_id: "yes123".to_string(),
-        side: OrderSide::Sell,
-        settled_quantity: Decimal::new(4, 0),
-        payout_per_share: Decimal::ONE,
-        collateral_payout: Decimal::new(4, 0),
-    })
-    .expect("settlement should record through the production feed");
+    assert_eq!(
+        feed.canonical_nt_components(projection.clone()),
+        Err(CapitalAdmissionProjectionError::MissingProviderCollateralAllowance)
+    );
 
-    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
-        1_100,
-        Decimal::new(54_000_000, 0),
-        Decimal::new(40_000_000, 0),
-    ))
-    .expect("booked settlement should explain the next venue capture");
+    feed.on_provider_collateral_allowance_snapshot(
+        polymarket_provider_collateral_allowance_snapshot(
+            1_200,
+            Decimal::new(45_000_000, 0),
+            Decimal::new(40_000_000, 0),
+        ),
+    );
+    let mut current = projection;
+    current.accepted_allowance_observed_at_ns = Some(1_200);
 
-    assert!(
-        admission.capital_admission_state_snapshot().is_some(),
-        "accepted settlement capture should keep capital admission published"
+    let mut missing_balance = current.clone();
+    missing_balance.account_balances = None;
+    assert_eq!(
+        feed.canonical_nt_components(missing_balance),
+        Err(CapitalAdmissionProjectionError::MissingNtAccountBalances)
+    );
+
+    let mut stale_generation = current.clone();
+    stale_generation.accepted_allowance_observed_at_ns = Some(1_100);
+    assert_eq!(
+        feed.canonical_nt_components(stale_generation),
+        Err(
+            CapitalAdmissionProjectionError::AllowanceGenerationMismatch {
+                accepted: Some(1_200),
+                projected: Some(1_100),
+            }
+        )
+    );
+
+    current.open_client_order_ids =
+        vec!["client-order-1".to_string(), "client-order-1".to_string()];
+    assert_eq!(
+        feed.canonical_nt_components(current),
+        Err(CapitalAdmissionProjectionError::DuplicateNtClientOrderId)
     );
 }
 
 #[test]
-fn accepted_venue_truth_rejects_stale_nt_live_order_attribution() {
+fn canonical_nt_projection_rejects_stale_callback_attribution() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     admission.update_capital_admission_nt_components(fresh_components(900));
@@ -339,70 +404,57 @@ fn accepted_venue_truth_rejects_stale_nt_live_order_attribution() {
         .expect("test reservation should be admitted after rebuilding the startup gate")
         .commit_submitted();
 
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_200, 100,
+    ));
     let components = feed
-        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
-            1_200,
-            Decimal::new(100_000_000, 0),
-            Decimal::new(100_000_000, 0),
-        ))
-        .expect("initial venue truth baseline should be explainable")
-        .expect("accepted venue truth should publish components");
+        .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: Some(1_200),
+            account_balances: Some((Decimal::new(100, 0), Decimal::new(100, 0))),
+            open_client_order_ids: Vec::new(),
+            yes_position: Decimal::ZERO,
+            no_position: Decimal::ZERO,
+            observed_at_ns: 1_250,
+        })
+        .expect("canonical empty NT projection should be complete");
 
-    assert_eq!(
-        components.order_lifecycle.source,
-        POLYMARKET_VENUE_TRUTH_REST_SOURCE
-    );
+    assert_eq!(components.order_lifecycle.source, "nt_open_order_cache");
     assert_eq!(
         components.order_lifecycle.open_order_count, 0,
-        "accepted venue truth open-order count must not be overwritten by stale NT attribution memory"
+        "canonical NT open-order count must not be overwritten by stale callback memory"
     );
     assert!(
-        !components.order_lifecycle.all_open_orders_attributed,
-        "raw-empty and NT-nonempty order universes must remain unreconciled"
+        components.order_lifecycle.all_open_orders_attributed,
+        "raw order callbacks must not survive into the canonical empty NT projection"
     );
 }
 
 #[test]
-fn accepted_venue_truth_survives_later_nt_cache_seed_and_reservation_rebuild() {
+fn provider_collateral_allowance_survives_nt_cache_projection_and_reservation_rebuild() {
     let admission = Arc::new(polymarket_capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed =
         CapitalAdmissionRuntimeFeed::new(polymarket_runtime_feed_config(), admission.clone());
 
-    let components = feed
-        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot_with_orders_and_positions(
+    feed.on_provider_collateral_allowance_snapshot(
+        polymarket_provider_collateral_allowance_snapshot(
             1_200,
             Decimal::new(100_000_000, 0),
             Decimal::new(100_000_000, 0),
-        ))
-        .expect("initial venue truth baseline should be explainable")
-        .expect("accepted venue truth should publish components");
-    assert_eq!(
-        components.order_lifecycle.source,
-        POLYMARKET_VENUE_TRUTH_REST_SOURCE
+        ),
     );
-
-    feed.attest_reconciled_nt_open_orders(&[(
-        "venue-order-1".to_string(),
-        "client-order-1".to_string(),
-    )]);
-    let seeded_components = feed
-        .seed_cache_snapshot(
-            vec!["client-order-1".to_string()],
-            Decimal::new(99, 0),
-            Decimal::new(88, 0),
-            1_300,
-        )
-        .expect("accepted venue truth remains sufficient after advisory NT cache seed");
-    assert_eq!(
-        seeded_components.order_lifecycle.source,
-        POLYMARKET_VENUE_TRUTH_REST_SOURCE
-    );
-    assert_eq!(seeded_components.order_lifecycle.open_order_count, 1);
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = seeded_components.product_state;
-    assert_eq!(product.source, POLYMARKET_VENUE_TRUTH_REST_SOURCE);
-    assert_eq!(product.yes_position, Decimal::new(7, 0));
-    assert_eq!(product.no_position, Decimal::new(2, 0));
+    let projection = CapitalAdmissionNtCacheProjection {
+        accepted_allowance_observed_at_ns: Some(1_200),
+        account_balances: Some((Decimal::new(100, 0), Decimal::new(100, 0))),
+        open_client_order_ids: vec!["client-order-1".to_string()],
+        yes_position: Decimal::new(99, 0),
+        no_position: Decimal::new(88, 0),
+        observed_at_ns: 1_300,
+    };
+    let components = feed
+        .canonical_nt_components(projection.clone())
+        .expect("canonical NT projection should be complete before reservation rebuild");
+    admission.update_capital_admission_nt_components(components);
 
     let mut recovered_reservation = open_order_reservation(
         "client-order-1",
@@ -413,15 +465,25 @@ fn accepted_venue_truth_survives_later_nt_cache_seed_and_reservation_rebuild() {
     let rebuild = admission
         .rebuild_capital_admission_open_order_reservations(vec![recovered_reservation], 1_350);
     assert!(rebuild.accepted, "rebuild should accept: {rebuild:?}");
+    let components = feed
+        .canonical_nt_components(projection)
+        .expect("canonical NT projection should remain complete after reservation rebuild");
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.source, "nt_position_cache");
+    assert_eq!(product.yes_position, Decimal::new(99, 0));
+    assert_eq!(product.no_position, Decimal::new(88, 0));
     let state = admission
         .capital_admission_state_snapshot()
-        .expect("accepted venue truth should remain capital admission state");
+        .expect("accepted rebuild should publish capital admission state");
     assert_eq!(
         state.order_lifecycle.source,
-        POLYMARKET_VENUE_TRUTH_REST_SOURCE
+        "bolt_recovered_open_order_reservations"
     );
     assert_eq!(state.order_lifecycle.open_order_count, 1);
-    assert!(state.order_lifecycle.all_open_orders_attributed);
+    assert!(
+        state.order_lifecycle.all_open_orders_attributed,
+        "only the evidence-backed reservation rebuild may mark NT orders attributed"
+    );
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
@@ -429,136 +491,105 @@ fn accepted_venue_truth_survives_later_nt_cache_seed_and_reservation_rebuild() {
 }
 
 #[test]
-fn accepted_venue_truth_portfolio_survives_later_nt_portfolio_and_account_seed() {
+fn provider_collateral_allowance_snapshot_cannot_replace_nt_portfolio_or_position_state() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
+    seed_provider_collateral_allowance(&mut feed, 1_000);
     let components = feed
-        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
-            1_200,
-            Decimal::new(45_000_000, 0),
-            Decimal::new(40_000_000, 0),
-        ))
-        .expect("initial venue truth baseline should be explainable")
-        .expect("accepted venue truth should publish components");
-    assert_eq!(
-        components.portfolio.source,
-        POLYMARKET_VENUE_TRUTH_REST_SOURCE
-    );
-    assert_eq!(components.portfolio.free_collateral, Decimal::new(45, 0));
+        .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: feed.accepted_allowance_observed_at_ns(),
+            account_balances: Some((Decimal::new(88, 0), Decimal::new(99, 0))),
+            open_client_order_ids: Vec::new(),
+            yes_position: Decimal::new(11, 0),
+            no_position: Decimal::new(3, 0),
+            observed_at_ns: 1_150,
+        })
+        .expect("canonical NT projection should combine with provider collateral allowance");
+    admission.update_capital_admission_nt_components(components);
 
-    let portfolio_components = feed
-        .on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            1_300,
-            99.0,
-        ))
-        .expect("advisory NT portfolio should republish accepted venue truth");
-    assert_eq!(
-        portfolio_components.portfolio.source,
-        POLYMARKET_VENUE_TRUTH_REST_SOURCE
-    );
-    assert_eq!(
-        portfolio_components.portfolio.free_collateral,
-        Decimal::new(45, 0)
-    );
-
-    let seeded_components = feed
-        .seed_account_portfolio_snapshot(Decimal::new(88, 0), Decimal::new(88, 0), 1_400)
-        .expect("advisory account seed should republish accepted venue truth");
-    assert_eq!(
-        seeded_components.portfolio.source,
-        POLYMARKET_VENUE_TRUTH_REST_SOURCE
-    );
-    assert_eq!(
-        seeded_components.portfolio.free_collateral,
-        Decimal::new(45, 0)
-    );
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_200, 40,
+    ));
 
     let state = admission
         .capital_admission_state_snapshot()
-        .expect("accepted venue truth should remain published");
-    assert_eq!(state.portfolio.source, POLYMARKET_VENUE_TRUTH_REST_SOURCE);
-    assert_eq!(state.portfolio.free_collateral, Decimal::new(45, 0));
+        .expect("canonical NT state should remain published");
+    assert_eq!(state.portfolio.source, "nt_account_cache");
+    assert_eq!(state.portfolio.free_collateral, Decimal::new(88, 0));
+    assert_eq!(state.portfolio.total_equity, Decimal::new(99, 0));
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_position_cache");
+    assert_eq!(product.yes_position, Decimal::new(11, 0));
+    assert_eq!(product.no_position, Decimal::new(3, 0));
 }
 
 #[test]
-fn polymarket_venue_truth_allowance_is_not_min_clamped_by_nt_account_free_collateral() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission);
+fn polymarket_allowance_is_not_min_clamped_by_nt_account_free_collateral() {
+    let admission = Arc::new(polymarket_capital_admission_configured_admission());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(polymarket_runtime_feed_config(), admission);
 
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        1_000,
-        10.0,
-    ));
-    let _ = feed.on_portfolio_snapshot(&portfolio_snapshot(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        1_050,
-        10.0,
-    ));
-
-    let components = feed
-        .on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
+    feed.on_provider_collateral_allowance_snapshot(
+        polymarket_provider_collateral_allowance_snapshot(
             1_200,
             Decimal::new(45_000_000, 0),
             Decimal::new(40_000_000, 0),
-        ))
-        .expect("initial venue truth baseline should be explainable")
-        .expect("accepted venue truth should publish components");
+        ),
+    );
+    let components = feed
+        .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: Some(1_200),
+            account_balances: Some((Decimal::new(10, 0), Decimal::new(10, 0))),
+            open_client_order_ids: Vec::new(),
+            yes_position: Decimal::ZERO,
+            no_position: Decimal::ZERO,
+            observed_at_ns: 1_250,
+        })
+        .expect("canonical NT state should combine with provider-only allowance");
 
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
     assert_eq!(
         product.collateral_allowance,
         Decimal::new(40, 0),
-        "accepted venue truth allowance must not be min-clamped by stale NT free collateral"
+        "provider allowance must not be min-clamped by NT free collateral"
     );
 }
 
 #[test]
-fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes() {
+fn provider_worker_cannot_reopen_admission_without_nt_projection() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let admission = Arc::new(capital_admission_configured_admission_with_writer(
         writer.recorder(),
     ));
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let _ = feed.on_account_state(&account_state(
+    let _ = feed.project_account_fixture(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
         900,
         100.0,
     ));
-    let _ = feed.on_portfolio_snapshot(&portfolio_snapshot(
+    let _ = feed.project_portfolio_fixture(&portfolio_snapshot(
         AccountId::from("ACCOUNT-001"),
         "USD",
         950,
         100.0,
     ));
-    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
-        1_000,
-        Decimal::new(100_000_000, 0),
-        Decimal::new(100_000_000, 0),
-    ))
-    .expect("initial venue-truth baseline should reconcile")
-    .expect("account, portfolio, and venue truth should publish components");
-    feed.seed_open_order_cache(Vec::<String>::new(), 1_025)
-        .expect("empty startup cache should publish attributed order lifecycle");
-    rebuild_empty_capital_admission(&admission);
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_000, 100,
+    ));
+    apply_empty_canonical_nt_projection(&mut feed, &admission, 1_025);
     admission
         .admit_at(&capital_admission_submit_request("client-order-1"), 1_050)
         .expect("fresh sizing state should admit before degraded venue authority")
         .commit_submitted();
 
-    admission.suspend_capital_admission_for_venue_truth_capture_failure(
-        VenueTruthCaptureFailureEvidence {
-            source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+    admission.suspend_capital_admission_for_provider_collateral_allowance_capture_failure(
+        ProviderCollateralAllowanceCaptureFailureEvidence {
+            source: POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string(),
             observed_at_ns: 1_100,
-            endpoint: VenueTruthCaptureEndpoint::ClobBalanceAllowance,
-            error_class: VenueTruthCaptureErrorClass::TransportOrDecode,
+            endpoint: ProviderCollateralAllowanceCaptureEndpoint::ClobBalanceAllowance,
+            error_class: ProviderCollateralAllowanceCaptureErrorClass::TransportOrDecode,
             captures_missed: 1,
         },
     );
@@ -568,7 +599,7 @@ fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes()
         KillSwitchStateKind::Armed
     );
     assert_eq!(admission.capital_admission_reconciled(), Some(false));
-    let capture_failures = writer.venue_truth_capture_failures();
+    let capture_failures = writer.provider_collateral_allowance_capture_failures();
     assert_eq!(capture_failures.len(), 1);
     assert_eq!(
         capture_failures[0].endpoint,
@@ -589,7 +620,7 @@ fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes()
         "degraded venue authority must suspend risk-reducing exits too"
     );
 
-    let _ = feed.on_account_state(&account_state(
+    let _ = feed.project_account_fixture(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
         1_150,
@@ -600,62 +631,53 @@ fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes()
         Some(false),
         "NT-driven publish from the long-lived feed must not clear capture-failure suspension"
     );
-    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
-        1_200,
-        Decimal::new(100_000_000, 0),
-        Decimal::new(100_000_000, 0),
-    ))
-    .expect("successful venue-truth capture should reconcile")
-    .expect("accepted venue truth should publish components");
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_200, 100,
+    ));
 
-    assert_eq!(admission.capital_admission_reconciled(), Some(true));
+    assert_eq!(
+        admission.capital_admission_reconciled(),
+        Some(false),
+        "provider-thread success may update readiness input but only an NT-backed projection may reopen admission"
+    );
 }
 
 #[test]
-fn accepted_capture_at_failure_watermark_does_not_clear_capture_failure_suspension() {
+fn accepted_allowance_at_failure_watermark_does_not_clear_capture_failure_suspension() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
-    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
-        1_000,
-        Decimal::new(100_000_000, 0),
-        Decimal::new(100_000_000, 0),
-    ))
-    .expect("initial venue-truth baseline should reconcile")
-    .expect("accepted venue truth should publish components");
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_000, 100,
+    ));
+    apply_empty_canonical_nt_projection(&mut feed, &admission, 1_025);
 
-    admission.suspend_capital_admission_for_venue_truth_capture_failure(
-        VenueTruthCaptureFailureEvidence {
-            source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+    admission.suspend_capital_admission_for_provider_collateral_allowance_capture_failure(
+        ProviderCollateralAllowanceCaptureFailureEvidence {
+            source: POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string(),
             observed_at_ns: 1_100,
-            endpoint: VenueTruthCaptureEndpoint::ClobBalanceAllowance,
-            error_class: VenueTruthCaptureErrorClass::TransportOrDecode,
+            endpoint: ProviderCollateralAllowanceCaptureEndpoint::ClobBalanceAllowance,
+            error_class: ProviderCollateralAllowanceCaptureErrorClass::TransportOrDecode,
             captures_missed: 1,
         },
     );
     assert_eq!(admission.capital_admission_reconciled(), Some(false));
 
-    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
-        1_100,
-        Decimal::new(100_000_000, 0),
-        Decimal::new(100_000_000, 0),
-    ))
-    .expect("equal-watermark capture should reconcile")
-    .expect("accepted venue truth should publish components");
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_100, 100,
+    ));
+    apply_empty_canonical_nt_projection(&mut feed, &admission, 1_100);
     assert_eq!(
         admission.capital_admission_reconciled(),
         Some(false),
-        "accepted_capture == failure_observed must not clear degraded-authority suspension"
+        "accepted allowance at the failure watermark must not clear suspension"
     );
 
-    feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
-        1_101,
-        Decimal::new(100_000_000, 0),
-        Decimal::new(100_000_000, 0),
-    ))
-    .expect("strictly later capture should reconcile")
-    .expect("accepted venue truth should publish components");
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_101, 100,
+    ));
+    apply_empty_canonical_nt_projection(&mut feed, &admission, 1_101);
     assert_eq!(admission.capital_admission_reconciled(), Some(true));
 }
 
@@ -674,7 +696,8 @@ fn capital_admission_runtime_subscription_drop_unsubscribes_all_handlers() {
         runtime_feed_config(),
         admission.clone(),
     )));
-    let mut subscription = subscribe_capital_admission_runtime_feed(feed.clone());
+    let mut subscription =
+        subscribe_submit_admission_nt_projection(Some(feed.clone()), no_op_nt_projection());
     subscription.unsubscribe_all();
 
     publish_account_state(
@@ -702,12 +725,6 @@ fn capital_admission_runtime_subscription_drop_unsubscribes_all_handlers() {
         admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
-    assert_eq!(
-        feed.lock()
-            .expect("feed mutex should not be poisoned")
-            .latest_terminal_observed_at_ns(),
-        None
-    );
 }
 
 #[test]
@@ -715,41 +732,37 @@ fn feed_waits_for_matching_account_identity_before_publish() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
-    assert!(
-        feed.on_venue_truth_snapshot(polymarket_venue_truth_snapshot(
-            1_000,
-            Decimal::new(45_000_000, 0),
-            Decimal::new(40_000_000, 0),
-        ))
-        .expect("matching venue truth snapshot should reconcile")
-        .is_some()
-    );
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_000, 40,
+    ));
+    assert_eq!(admission.capital_admission_state_snapshot(), None);
+    let components = feed
+        .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: Some(1_000),
+            account_balances: Some((Decimal::new(45, 0), Decimal::new(50, 0))),
+            open_client_order_ids: Vec::new(),
+            yes_position: Decimal::ZERO,
+            no_position: Decimal::ZERO,
+            observed_at_ns: 1_010,
+        })
+        .expect("matching NT projection should publish after provider attestation");
+    admission.update_capital_admission_nt_components(components);
     assert!(admission.capital_admission_state_snapshot().is_some());
 
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let mut wrong_account_venue_truth = polymarket_venue_truth_snapshot(
-        1_025,
-        Decimal::new(45_000_000, 0),
-        Decimal::new(40_000_000, 0),
-    );
-    wrong_account_venue_truth.account_id = AccountId::from("OTHER-ACCOUNT");
-    assert!(
-        feed.on_venue_truth_snapshot(wrong_account_venue_truth)
-            .expect("wrong-account initial venue truth should not be a reconciliation divergence")
-            .is_none()
-    );
-    assert!(
-        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(1_050, 45, 40))
-            .is_none(),
-        "wrong-account venue truth must not seed portfolio/product state for a later matching spendability snapshot"
-    );
+    let mut wrong_account_allowance = provider_collateral_allowance_snapshot(1_025, 40);
+    wrong_account_allowance.account_id = "OTHER-ACCOUNT".to_string();
+    feed.on_provider_collateral_allowance_snapshot(wrong_account_allowance);
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_050, 40,
+    ));
     assert_eq!(admission.capital_admission_state_snapshot(), None);
 
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
+        feed.project_portfolio_fixture(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
             "USD",
             1_100,
@@ -762,7 +775,7 @@ fn feed_waits_for_matching_account_identity_before_publish() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
-        feed.on_account_state(&account_state(
+        feed.project_account_fixture(&account_state(
             AccountId::from("OTHER-ACCOUNT"),
             "USD",
             1_200,
@@ -775,7 +788,7 @@ fn feed_waits_for_matching_account_identity_before_publish() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
-        feed.on_account_state(&account_state(
+        feed.project_account_fixture(&account_state(
             AccountId::from("ACCOUNT-001"),
             "USD",
             1_300,
@@ -788,7 +801,7 @@ fn feed_waits_for_matching_account_identity_before_publish() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
+        feed.project_portfolio_fixture(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
             "USD",
             1_400,
@@ -800,19 +813,19 @@ fn feed_waits_for_matching_account_identity_before_publish() {
 }
 
 #[test]
-fn feed_does_not_derive_default_venue_spendability_from_nt_account_free_collateral() {
+fn feed_does_not_derive_default_provider_collateral_allowance_from_nt_account_free_collateral() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
-        feed.on_account_state(&account_state(
+        feed.project_account_fixture(&account_state(
             AccountId::from("ACCOUNT-001"),
             "USD",
             1_000,
             45.0,
         ))
         .is_none(),
-        "NT AccountState is advisory-only and must not create venue spendability"
+        "NT AccountState is advisory-only and must not create provider collateral allowance"
     );
     assert_eq!(admission.capital_admission_state_snapshot(), None);
 }
@@ -822,46 +835,58 @@ fn feed_derives_collateral_allowance_from_venue_allowance() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
-    assert!(
-        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(950, 30, 25))
-            .is_none()
-    );
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(950, 25));
     let components = feed
-        .on_account_state(&account_state(
+        .project_account_fixture(&account_state(
             AccountId::from("ACCOUNT-001"),
             "USD",
             1_000,
             100.0,
         ))
-        .expect("account and spendability should publish components");
+        .expect("fixture projection should include provider collateral allowance");
 
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
     assert_eq!(product.collateral_allowance, Decimal::new(25, 0));
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("published components should update admission sizing state");
     assert_eq!(
-        state.venue_spendability.spendable_collateral,
-        Decimal::new(30, 0)
-    );
-    assert_eq!(
-        state.venue_spendability.collateral_allowance,
+        components
+            .provider_collateral_allowance
+            .collateral_allowance,
         Decimal::new(25, 0)
     );
 }
 
 #[test]
-fn account_update_does_not_make_external_venue_spendability_fresh() {
+fn new_provider_collateral_allowance_snapshot_revokes_admission_until_nt_reprojection() {
+    let admission = Arc::new(capital_admission_configured_admission());
+    arm_default(&admission);
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_000, 100,
+    ));
+    apply_empty_canonical_nt_projection(&mut feed, &admission, 1_025);
+    assert_eq!(admission.capital_admission_reconciled(), Some(true));
+
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_100, 100,
+    ));
+
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    assert!(matches!(
+        admission.admit_at(&capital_admission_submit_request("client-order-1"), 1_101),
+        Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+            reason: BoltV3CapitalAdmissionRejectReason::ReconciliationRequired
+        })
+    ));
+}
+
+#[test]
+fn account_update_does_not_make_external_provider_collateral_allowance_fresh() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission);
 
-    assert!(
-        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(100, 30, 25))
-            .is_none()
-    );
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(100, 25));
     let components = feed
-        .on_account_state(&account_state(
+        .project_account_fixture(&account_state(
             AccountId::from("ACCOUNT-001"),
             "USD",
             10_000,
@@ -870,7 +895,7 @@ fn account_update_does_not_make_external_venue_spendability_fresh() {
         .expect("account and venue state should publish");
 
     assert_eq!(
-        components.venue_spendability.observed_at_ns, 100,
+        components.provider_collateral_allowance.observed_at_ns, 100,
         "fresh NT account state must not refresh externally sourced venue evidence"
     );
 }
@@ -879,17 +904,15 @@ fn account_update_does_not_make_external_venue_spendability_fresh() {
 fn recomputed_product_allowance_carries_fresh_component_timestamp() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut config = runtime_feed_config();
-    config.startup_observed_at_ns = 0;
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
     product.observed_at_ns = 0;
     let mut feed = CapitalAdmissionRuntimeFeed::new(config, admission);
 
-    assert!(
-        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(10_000, 30, 25))
-            .is_none()
-    );
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        10_000, 25,
+    ));
     let components = feed
-        .on_account_state(&account_state(
+        .project_account_fixture(&account_state(
             AccountId::from("ACCOUNT-001"),
             "USD",
             10_000,
@@ -906,59 +929,33 @@ fn recomputed_product_allowance_carries_fresh_component_timestamp() {
 }
 
 #[test]
-fn feed_does_not_use_spendable_collateral_as_product_allowance() {
+fn feed_ignores_provider_allowance_identity_mismatch_until_matching_snapshot_arrives() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
-    assert!(
-        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(950, 25, 30))
-            .is_none()
-    );
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        900, 100,
+    ));
     let components = feed
-        .on_account_state(&account_state(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            1_000,
-            100.0,
-        ))
-        .expect("complete spendability/account state should publish");
-
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
-    assert_eq!(
-        product.collateral_allowance,
-        Decimal::new(30, 0),
-        "product allowance comes from venue allowance and is not min-clamped by spendable collateral"
-    );
-}
-
-#[test]
-fn feed_ignores_spendability_identity_mismatch_until_matching_snapshot_arrives() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-
-    assert!(
-        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(900, 100, 100))
-            .is_none()
-    );
-    assert!(
-        feed.on_account_state(&account_state(
+        .project_account_fixture(&account_state(
             AccountId::from("ACCOUNT-001"),
             "USD",
             950,
-            100.0
+            100.0,
         ))
-        .is_some()
-    );
+        .expect("canonical NT projection should combine with provider input");
+    admission.update_capital_admission_nt_components(components);
 
-    let mut mismatched = venue_spendability_snapshot(1_100, 100, 100);
+    let mut mismatched = provider_collateral_allowance_snapshot(1_100, 100);
     mismatched.venue_id = "VENUE-B".to_string();
-    let components = feed
-        .on_venue_spendability_snapshot(mismatched)
-        .expect("mismatched spendability must not clear the last valid state");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
+    feed.on_provider_collateral_allowance_snapshot(mismatched);
+    let state = admission
+        .capital_admission_state_snapshot()
+        .expect("mismatched allowance must not clear the last valid state");
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.collateral_allowance, Decimal::new(100, 0));
     assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
+        feed.project_portfolio_fixture(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
             "USD",
             1_200,
@@ -967,35 +964,44 @@ fn feed_ignores_spendability_identity_mismatch_until_matching_snapshot_arrives()
         .is_some()
     );
 
-    assert!(
-        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(1_300, 50, 50))
-            .is_some()
-    );
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_300, 50,
+    ));
+    let components = feed
+        .project_account_fixture(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_350,
+            100.0,
+        ))
+        .expect("next canonical NT projection should combine the accepted provider input");
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(50, 0));
 }
 
 #[test]
-fn feed_ignores_older_spendability_snapshot_after_newer_one() {
+fn feed_ignores_older_allowance_snapshot_after_newer_one() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
-    assert!(
-        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(1_000, 100, 40))
-            .is_none()
-    );
-    assert!(
-        feed.on_account_state(&account_state(
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        1_000, 40,
+    ));
+    let components = feed
+        .project_account_fixture(&account_state(
             AccountId::from("ACCOUNT-001"),
             "USD",
             1_050,
-            100.0
+            100.0,
         ))
-        .is_some()
-    );
+        .expect("canonical NT projection should combine with provider input");
+    admission.update_capital_admission_nt_components(components);
 
-    let components = feed
-        .on_venue_spendability_snapshot(venue_spendability_snapshot(900, 100, 5))
-        .expect("older spendability should not clear or regress the latest snapshot");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
+    feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(900, 5));
+    let state = admission
+        .capital_admission_state_snapshot()
+        .expect("older allowance should not clear or regress the latest snapshot");
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.collateral_allowance, Decimal::new(40, 0));
 }
 
@@ -1005,7 +1011,7 @@ fn feed_ignores_account_state_for_other_collateral_currency() {
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
+        feed.project_portfolio_fixture(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
             "USD",
             1_000,
@@ -1014,7 +1020,7 @@ fn feed_ignores_account_state_for_other_collateral_currency() {
         .is_none()
     );
     assert!(
-        feed.on_account_state(&account_state(
+        feed.project_account_fixture(&account_state(
             AccountId::from("ACCOUNT-001"),
             "EUR",
             1_100,
@@ -1023,45 +1029,6 @@ fn feed_ignores_account_state_for_other_collateral_currency() {
         .is_none()
     );
     assert_eq!(admission.capital_admission_state_snapshot(), None);
-}
-
-#[test]
-fn capital_admission_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        1_000,
-        45.0,
-    ));
-    seed_venue_spendability(&mut feed, 1_050);
-    assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            1_100,
-            50.0
-        ))
-        .is_some()
-    );
-    assert!(
-        feed.seed_open_order_cache(Vec::<String>::new(), 1_200)
-            .is_some()
-    );
-
-    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_200);
-
-    assert!(rebuild.accepted);
-    assert_eq!(admission.capital_admission_reconciled(), Some(true));
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("cache seed should publish sizing components");
-    assert_eq!(state.order_lifecycle.source, "nt_open_order_cache");
-    assert_eq!(state.order_lifecycle.observed_at_ns, 1_200);
-    assert_eq!(state.order_lifecycle.open_order_count, 0);
-    assert!(state.order_lifecycle.all_open_orders_attributed);
 }
 
 #[test]
@@ -1089,174 +1056,50 @@ fn capital_admission_rebuild_evidence_failure_leaves_gate_unreconciled() {
 }
 
 #[test]
-fn account_state_after_empty_startup_cache_reconciles_empty_gate_without_portfolio_snapshot() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
+fn terminal_callback_cannot_reopen_gate_without_fresh_nt_projection() {
+    let admission = Arc::new(polymarket_capital_admission_configured_admission());
+    let mut feed =
+        CapitalAdmissionRuntimeFeed::new(polymarket_runtime_feed_config(), admission.clone());
 
-    seed_venue_spendability(&mut feed, 950);
-    assert!(
-        feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
-            .is_none()
+    feed.on_provider_collateral_allowance_snapshot(
+        polymarket_provider_collateral_allowance_snapshot(
+            1_200,
+            Decimal::new(45_000_000, 0),
+            Decimal::new(40_000_000, 0),
+        ),
     );
-    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_000);
-    assert!(!rebuild.accepted);
-    assert_eq!(admission.capital_admission_reconciled(), Some(false));
-
-    assert!(
-        feed.on_account_state(&account_state(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            1_100,
-            100.0,
-        ))
-        .is_some()
-    );
-
-    assert_eq!(admission.capital_admission_reconciled(), Some(true));
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("account state should publish sizing state");
-    assert_eq!(state.portfolio.source, "nt_account_state");
-    assert_eq!(state.order_lifecycle.open_order_count, 0);
-    assert!(state.order_lifecycle.all_open_orders_attributed);
-    admission
-        .admit_at(&capital_admission_submit_request("client-order-1"), 1_150)
-        .expect("empty startup cache plus account state should admit")
-        .commit_submitted();
-}
-
-#[test]
-fn account_state_after_unattributed_live_order_keeps_gate_unreconciled() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-
-    seed_venue_spendability(&mut feed, 950);
-    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
-        "external-client-order",
-        1_000,
-        AccountId::from("ACCOUNT-001"),
-    )));
-
-    assert!(
-        feed.on_account_state(&account_state(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            1_100,
-            100.0,
-        ))
-        .is_some()
-    );
-
-    assert_eq!(admission.capital_admission_reconciled(), Some(false));
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("account state should publish unreconciled sizing state");
-    assert_eq!(state.order_lifecycle.open_order_count, 1);
-    assert!(!state.order_lifecycle.all_open_orders_attributed);
-    assert_eq!(
-        admission
-            .admit_at(&capital_admission_submit_request("client-order-1"), 1_150)
-            .expect_err("unattributed live order must keep submit admission closed"),
-        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
-            reason: BoltV3CapitalAdmissionRejectReason::ReconciliationRequired,
-        }
-    );
-}
-
-#[test]
-fn unattributed_live_order_after_empty_reconcile_recloses_gate() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-
-    seed_venue_spendability(&mut feed, 950);
-    assert!(
-        feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
-            .is_none()
-    );
-    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_000);
-    assert!(!rebuild.accepted);
-    assert_eq!(admission.capital_admission_reconciled(), Some(false));
-
-    assert!(
-        feed.on_account_state(&account_state(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            1_100,
-            100.0,
-        ))
-        .is_some()
-    );
-    assert_eq!(admission.capital_admission_reconciled(), Some(true));
-
-    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
-        "external-client-order",
-        1_200,
-        AccountId::from("ACCOUNT-001"),
-    )));
-
-    assert_eq!(admission.capital_admission_reconciled(), Some(false));
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("unattributed live order should publish unreconciled sizing state");
-    assert_eq!(state.order_lifecycle.open_order_count, 1);
-    assert!(!state.order_lifecycle.all_open_orders_attributed);
-    assert_eq!(
-        admission
-            .admit_at(&capital_admission_submit_request("client-order-1"), 1_250)
-            .expect_err("unattributed live order must re-close submit admission"),
-        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
-            reason: BoltV3CapitalAdmissionRejectReason::ReconciliationRequired,
-        }
-    );
-}
-
-#[test]
-fn terminal_event_after_unattributed_live_order_reopens_empty_gate() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-
-    seed_venue_spendability(&mut feed, 950);
-    assert!(
-        feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
-            .is_none()
-    );
-    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_000);
-    assert!(!rebuild.accepted);
-    assert_eq!(admission.capital_admission_reconciled(), Some(false));
-
-    assert!(
-        feed.on_account_state(&account_state(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            1_100,
-            100.0,
-        ))
-        .is_some()
-    );
-    assert_eq!(admission.capital_admission_reconciled(), Some(true));
-
-    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
-        "external-client-order",
-        1_200,
-        AccountId::from("ACCOUNT-001"),
-    )));
+    let components = feed
+        .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: Some(1_200),
+            account_balances: Some((Decimal::new(100, 0), Decimal::new(100, 0))),
+            open_client_order_ids: vec!["client-order-1".to_string()],
+            yes_position: Decimal::ZERO,
+            no_position: Decimal::ZERO,
+            observed_at_ns: 1_250,
+        })
+        .expect("canonical projection should expose the unattributed NT order");
+    admission.update_capital_admission_nt_components(components);
     assert_eq!(admission.capital_admission_reconciled(), Some(false));
 
     let _ = feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
-        "external-client-order",
+        "client-order-1",
         1_300,
     )));
 
-    assert_eq!(admission.capital_admission_reconciled(), Some(true));
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
     let state = admission
         .capital_admission_state_snapshot()
-        .expect("terminal event should publish reconciled empty lifecycle");
-    assert_eq!(state.order_lifecycle.open_order_count, 0);
-    assert!(state.order_lifecycle.all_open_orders_attributed);
-    admission
-        .admit_at(&capital_admission_submit_request("client-order-1"), 1_350)
-        .expect("empty terminal lifecycle should reopen submit admission")
-        .commit_submitted();
+        .expect("terminal callback should preserve the last canonical NT projection");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(!state.order_lifecycle.all_open_orders_attributed);
+    assert_eq!(
+        admission
+            .admit_at(&capital_admission_submit_request("client-order-1"), 1_350)
+            .expect_err("only a fresh canonical NT projection may reopen admission"),
+        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+            reason: BoltV3CapitalAdmissionRejectReason::VenueMismatch,
+        }
+    );
 }
 
 #[test]
@@ -1264,15 +1107,15 @@ fn capital_admission_cache_seed_updates_configured_yes_no_inventory() {
     let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
-    let _ = feed.on_account_state(&account_state(
+    let _ = feed.project_account_fixture(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
         1_000,
         45.0,
     ));
-    seed_venue_spendability(&mut feed, 1_050);
+    seed_provider_collateral_allowance(&mut feed, 1_050);
     assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
+        feed.project_portfolio_fixture(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
             "USD",
             1_100,
@@ -1280,15 +1123,17 @@ fn capital_admission_cache_seed_updates_configured_yes_no_inventory() {
         ))
         .is_some()
     );
-    assert!(
-        feed.seed_cache_snapshot(
-            Vec::<String>::new(),
-            Decimal::new(7, 0),
-            Decimal::new(2, 0),
-            1_200
-        )
-        .is_some()
-    );
+    let components = feed
+        .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: feed.accepted_allowance_observed_at_ns(),
+            account_balances: Some((Decimal::new(50, 0), Decimal::new(50, 0))),
+            open_client_order_ids: Vec::new(),
+            yes_position: Decimal::new(7, 0),
+            no_position: Decimal::new(2, 0),
+            observed_at_ns: 1_200,
+        })
+        .expect("canonical NT projection should publish configured product inventory");
+    admission.update_capital_admission_nt_components(components);
 
     let state = admission
         .capital_admission_state_snapshot()
@@ -1301,199 +1146,13 @@ fn capital_admission_cache_seed_updates_configured_yes_no_inventory() {
 }
 
 #[test]
-fn cache_seed_and_concurrent_order_event_do_not_double_count() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        1_000,
-        45.0,
-    ));
-    seed_venue_spendability(&mut feed, 1_050);
-    assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            1_100,
-            50.0
-        ))
-        .is_some()
-    );
-
-    let _ = feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
-        "client-order-A",
-        1_200,
-        AccountId::from("ACCOUNT-001"),
-    )));
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("live order event should publish lifecycle state");
-    assert_eq!(state.order_lifecycle.open_order_count, 1);
-
-    assert!(
-        feed.seed_open_order_cache(vec!["client-order-A".to_string()], 1_300)
-            .is_some()
-    );
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("cache seed should keep lifecycle state");
-    assert_eq!(state.order_lifecycle.open_order_count, 1);
-
-    let _ = feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
-        "client-order-A",
-        1_400,
-    )));
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("terminal event should publish lifecycle state");
-    assert_eq!(state.order_lifecycle.open_order_count, 0);
-
-    assert!(
-        feed.seed_open_order_cache(vec!["client-order-A".to_string()], 1_500)
-            .is_some()
-    );
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("stale cache seed should not resurrect terminal order");
-    assert_eq!(state.order_lifecycle.open_order_count, 0);
-}
-
-#[test]
-fn account_bound_live_order_events_update_open_order_count() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    arm_default(&admission);
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        1_000,
-        45.0,
-    ));
-    seed_venue_spendability(&mut feed, 1_050);
-    assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            1_100,
-            50.0
-        ))
-        .is_some()
-    );
-    assert!(
-        feed.seed_open_order_cache(Vec::<String>::new(), 1_120)
-            .is_some()
-    );
-    rebuild_empty_capital_admission(&admission);
-    let mut request = capital_admission_submit_request("client-order-1");
-    request.instrument_id = "instrument-yes.VENUE-A".to_string();
-    admission
-        .admit_at(&request, 1_150)
-        .expect("fresh sizing state should admit")
-        .commit_submitted();
-    assert_eq!(
-        admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::new(43, 1))
-    );
-
-    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
-        "client-order-1",
-        1_200,
-        AccountId::from("ACCOUNT-001"),
-    )));
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("submitted event should publish lifecycle state");
-    assert_eq!(state.order_lifecycle.open_order_count, 1);
-
-    let decision = feed
-        .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
-            "client-order-1",
-            1_300,
-        )))
-        .expect("terminal event should release matching reservation");
-
-    assert!(decision.accepted);
-    assert!(!decision.unknown_reservation);
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("terminal event should publish lifecycle state");
-    assert_eq!(state.order_lifecycle.open_order_count, 0);
-    assert_eq!(
-        admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::ZERO)
-    );
-}
-
-#[test]
-fn live_order_event_for_submit_owned_reservation_keeps_second_submit_open() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    arm_default(&admission);
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        1_000,
-        45.0,
-    ));
-    seed_venue_spendability(&mut feed, 1_050);
-    assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            1_100,
-            50.0
-        ))
-        .is_some()
-    );
-    assert!(
-        feed.seed_open_order_cache(Vec::<String>::new(), 1_120)
-            .is_some()
-    );
-    rebuild_empty_capital_admission(&admission);
-
-    admission
-        .admit_at(&capital_admission_submit_request("client-order-1"), 1_150)
-        .expect("first fresh submit should admit")
-        .commit_submitted();
-    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
-        "client-order-1",
-        1_200,
-        AccountId::from("ACCOUNT-001"),
-    )));
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("submitted event should publish lifecycle state");
-    assert_eq!(state.order_lifecycle.open_order_count, 1);
-    assert!(state.order_lifecycle.all_open_orders_attributed);
-
-    admission
-        .admit_at(&capital_admission_submit_request("client-order-2"), 1_250)
-        .expect("submit-owned live order must not close admission for the next order")
-        .commit_submitted();
-
-    assert_eq!(
-        admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::new(86, 1))
-    );
-}
-
-#[test]
-fn partial_fill_event_revalues_residual_reservation() {
+fn partial_fill_event_records_evidence_without_revaluing_nt_derived_reservation() {
     let (admission, mut feed) = committed_submit_runtime_feed();
     feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
         "client-order-1",
         1_050,
         AccountId::from("ACCOUNT-001"),
     )));
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("accepted order should publish lifecycle");
-    assert_eq!(state.order_lifecycle.open_order_count, 1);
 
     let decision = feed
         .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
@@ -1505,631 +1164,110 @@ fn partial_fill_event_revalues_residual_reservation() {
             OrderSide::Buy,
             InstrumentId::from("instrument-yes.VENUE-A"),
         )))
-        .expect("matching fill should update residual liability");
+        .expect("matching fill should record Bolt audit evidence");
 
     assert!(decision.accepted);
-    assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Revalued);
-    assert_eq!(
-        admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::new(27, 1))
-    );
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("partial fill should keep live lifecycle");
-    assert_eq!(state.order_lifecycle.open_order_count, 1);
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.source, "nt_order_fill");
-    assert_eq!(product.observed_at_ns, 1_100);
-    assert_eq!(product.yes_position, Decimal::new(4, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(4, 0));
-}
-
-#[test]
-fn unknown_external_fill_updates_product_position_once_without_reservation_lifecycle() {
-    let (admission, mut feed) = committed_submit_runtime_feed();
-    assert_eq!(
-        admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::new(43, 1))
-    );
-
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "external-order-1",
-            "external-trade-1",
-            1_100,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(3),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
     let state = admission
         .capital_admission_state_snapshot()
-        .expect("unknown external fill should still publish observed product state");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.source, "nt_order_fill");
-    assert_eq!(product.observed_at_ns, 1_100);
-    assert_eq!(product.yes_position, Decimal::new(3, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(3, 0));
-
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "external-order-1",
-            "external-trade-1",
-            1_200,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(3),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("duplicate external trade id should not mutate product state");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.observed_at_ns, 1_100);
-    assert_eq!(product.yes_position, Decimal::new(3, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(3, 0));
-}
-
-#[test]
-fn external_fill_replay_after_dedupe_retention_expires_does_not_double_count_product_position() {
-    let (admission, mut feed) = committed_submit_runtime_feed();
-
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "external-order-1",
-            "external-trade-1",
-            1_100,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(3),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "external-order-1",
-            "external-trade-1",
-            1_700,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(3),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("post-retention duplicate external fill should leave product state intact");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.observed_at_ns, 1_100);
-    assert_eq!(product.yes_position, Decimal::new(3, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(3, 0));
-}
-
-#[test]
-fn authoritative_reseed_rearms_external_fill_accounting_after_retention_latch() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    arm_default(&admission);
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        900,
-        100.0,
-    ));
-    seed_venue_spendability(&mut feed, 950);
-    assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            975,
-            100.0,
-        ))
-        .is_some()
-    );
-    assert!(
-        feed.seed_cache_snapshot(Vec::<String>::new(), Decimal::ZERO, Decimal::ZERO, 1_000)
-            .is_some()
-    );
-    rebuild_empty_capital_admission(&admission);
-
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "external-order-1",
-            "external-trade-1",
-            1_100,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(3),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "external-order-1",
-            "external-trade-1",
-            1_700,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(3),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "external-order-2",
-            "external-trade-2",
-            1_800,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(2),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("latched external fill should preserve pre-reseed product state");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.observed_at_ns, 1_100);
-    assert_eq!(product.yes_position, Decimal::new(3, 0));
-
-    assert!(
-        feed.seed_cache_snapshot(Vec::<String>::new(), Decimal::ZERO, Decimal::ZERO, 1_900)
-            .is_some()
-    );
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "external-order-2",
-            "external-trade-2",
-            2_000,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(2),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("authoritative reseed should re-arm external fill accounting");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.observed_at_ns, 2_000);
-    assert_eq!(product.yes_position, Decimal::new(2, 0));
-}
-
-#[test]
-fn known_fill_retention_expiry_does_not_block_distinct_external_fill() {
-    let (admission, mut feed) = committed_submit_runtime_feed();
-    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
-        "client-order-1",
-        1_050,
-        AccountId::from("ACCOUNT-001"),
-    )));
-
-    feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-        "client-order-1",
-        "known-trade-1",
-        1_100,
-        AccountId::from("ACCOUNT-001"),
-        Quantity::from(10),
-        OrderSide::Buy,
-        InstrumentId::from("instrument-yes.VENUE-A"),
-    )))
-    .expect("matching known fill should release reservation");
-
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "external-order-1",
-            "external-trade-1",
-            1_700,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(2),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("distinct external fill should update after known-fill retention expiry");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.observed_at_ns, 1_700);
-    assert_eq!(product.yes_position, Decimal::new(12, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(12, 0));
-}
-
-#[test]
-fn known_fill_replay_after_dedupe_retention_expires_does_not_apply_external_delta() {
-    let (admission, mut feed) = committed_submit_runtime_feed();
-    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
-        "client-order-1",
-        1_050,
-        AccountId::from("ACCOUNT-001"),
-    )));
-
-    feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-        "client-order-1",
-        "known-trade-1",
-        1_100,
-        AccountId::from("ACCOUNT-001"),
-        Quantity::from(10),
-        OrderSide::Buy,
-        InstrumentId::from("instrument-yes.VENUE-A"),
-    )))
-    .expect("matching known fill should release reservation");
-
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "client-order-1",
-            "known-trade-1",
-            1_700,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(10),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("post-retention known duplicate should preserve product state");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.observed_at_ns, 1_100);
-    assert_eq!(product.yes_position, Decimal::new(10, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(10, 0));
-}
-
-#[test]
-fn external_fill_dedupe_keys_by_instrument_and_trade_id() {
-    let (admission, mut feed) = committed_submit_runtime_feed();
-
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "external-order-1",
-            "shared-trade-1",
-            1_100,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(3),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "external-order-2",
-            "shared-trade-1",
-            1_200,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(2),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-no.VENUE-A"),
-        )))
-        .is_none()
-    );
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("same venue trade id on a different instrument should still publish");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.observed_at_ns, 1_200);
-    assert_eq!(product.yes_position, Decimal::new(3, 0));
-    assert_eq!(product.no_position, Decimal::new(2, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(5, 0));
-}
-
-#[test]
-fn unknown_reconciliation_fill_does_not_replay_seeded_product_position() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    arm_default(&admission);
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        900,
-        100.0,
-    ));
-    seed_venue_spendability(&mut feed, 925);
-    assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            950,
-            100.0,
-        ))
-        .is_some()
-    );
-    assert!(
-        feed.seed_cache_snapshot(
-            Vec::<String>::new(),
-            Decimal::new(3, 0),
-            Decimal::ZERO,
-            1_000
-        )
-        .is_some()
-    );
-    rebuild_empty_capital_admission(&admission);
-
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(
-            order_filled_event_with_reconciliation(
-                "external-order-1",
-                "external-trade-1",
-                1_100,
-                AccountId::from("ACCOUNT-001"),
-                Quantity::from(3),
-                OrderSide::Buy,
-                InstrumentId::from("instrument-yes.VENUE-A"),
-                true,
-            )
-        ))
-        .is_none()
-    );
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("reconciliation fill should preserve seeded product state");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_ne!(product.source, "nt_order_fill");
-    assert_eq!(product.yes_position, Decimal::new(3, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::ZERO);
-}
-
-#[test]
-fn full_fill_event_releases_reservation_and_closes_live_order_count() {
-    let (admission, mut feed) = committed_submit_runtime_feed();
-    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
-        "client-order-1",
-        1_050,
-        AccountId::from("ACCOUNT-001"),
-    )));
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("accepted order should publish lifecycle");
-    assert_eq!(state.order_lifecycle.open_order_count, 1);
-
-    let decision = feed
-        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "client-order-1",
-            "trade-1",
-            1_100,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(10),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .expect("matching full fill should release reservation");
-
-    assert!(decision.accepted);
-    assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
-    assert_eq!(
-        admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::ZERO)
-    );
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("full fill should publish lifecycle");
+        .expect("canonical NT projection should remain available");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
-    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
-}
-
-#[test]
-fn duplicate_known_full_fill_trade_id_does_not_apply_external_delta_after_release() {
-    let (admission, mut feed) = committed_submit_runtime_feed();
-    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
-        "client-order-1",
-        1_050,
-        AccountId::from("ACCOUNT-001"),
-    )));
-
-    feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-        "client-order-1",
-        "trade-1",
-        1_100,
-        AccountId::from("ACCOUNT-001"),
-        Quantity::from(10),
-        OrderSide::Buy,
-        InstrumentId::from("instrument-yes.VENUE-A"),
-    )))
-    .expect("matching full fill should release reservation");
-
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "client-order-1",
-            "trade-1",
-            1_200,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(10),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("duplicate known trade id should not mutate product state");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.observed_at_ns, 1_100);
-    assert_eq!(product.yes_position, Decimal::new(10, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(10, 0));
-}
-
-#[test]
-fn distinct_post_cancel_fill_updates_product_position_after_terminal_release() {
-    let (admission, mut feed) = committed_submit_runtime_feed();
-    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
-        "client-order-1",
-        1_050,
-        AccountId::from("ACCOUNT-001"),
-    )));
-
-    let partial = feed
-        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "client-order-1",
-            "trade-1",
-            1_100,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(4),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .expect("partial fill should revalue reservation");
-    assert!(partial.accepted);
-    assert_eq!(partial.action, CapitalAdmissionLifecycleAction::Revalued);
-
-    let terminal = feed
-        .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
-            "client-order-1",
-            1_200,
-        )))
-        .expect("cancel should release residual reservation");
-    assert!(terminal.accepted);
-    assert_eq!(terminal.action, CapitalAdmissionLifecycleAction::Released);
-
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "client-order-1",
-            "trade-1",
-            1_300,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(4),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("post-terminal duplicate fill should not mutate product state");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.observed_at_ns, 1_100);
-    assert_eq!(product.yes_position, Decimal::new(4, 0));
-
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "client-order-1",
-            "trade-2",
-            1_400,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(2),
-            OrderSide::Buy,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .is_none()
-    );
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("distinct post-terminal fill should publish product state");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.source, "nt_order_fill");
-    assert_eq!(product.observed_at_ns, 1_400);
-    assert_eq!(product.yes_position, Decimal::new(6, 0));
-    assert_eq!(product.conditional_token_allowance, Decimal::new(6, 0));
-}
-
-#[test]
-fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    arm_default(&admission);
-    let mut config = runtime_feed_config();
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
-    product.conditional_token_allowance = Decimal::new(10, 0);
-    let mut feed = CapitalAdmissionRuntimeFeed::new(config, admission.clone());
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        900,
-        100.0,
-    ));
-    seed_venue_spendability(&mut feed, 925);
-    assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            950,
-            100.0,
-        ))
-        .is_some()
-    );
-    assert!(
-        feed.seed_cache_snapshot(
-            Vec::<String>::new(),
-            Decimal::new(10, 0),
-            Decimal::ZERO,
-            1_000
-        )
-        .is_some()
-    );
-    rebuild_empty_capital_admission(&admission);
-
-    admission
-        .admit_at(
-            &capital_admission_sell_submit_request("client-order-1"),
-            1_010,
-        )
-        .expect("sell within seeded YES inventory should admit")
-        .commit_submitted();
-    assert_eq!(
-        admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::new(30, 2))
-    );
-    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
-        "client-order-1",
-        1_050,
-        AccountId::from("ACCOUNT-001"),
-    )));
-    let decision = feed
-        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "client-order-1",
-            "trade-1",
-            1_100,
-            AccountId::from("ACCOUNT-001"),
-            Quantity::from(10),
-            OrderSide::Sell,
-            InstrumentId::from("instrument-yes.VENUE-A"),
-        )))
-        .expect("matching sell fill should release the first order");
-    assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("sell fill should publish updated inventory");
-    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.source, "nt_order_fill");
-    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.source, "nt_position_cache");
+    assert_eq!(product.observed_at_ns, 1_000);
     assert_eq!(product.yes_position, Decimal::ZERO);
-    assert_eq!(product.conditional_token_allowance, Decimal::ZERO);
+}
 
-    let second = admission
-        .admit_at(
-            &capital_admission_sell_submit_request("client-order-2"),
-            1_150,
-        )
-        .expect_err("sell above post-fill inventory should reject");
-    assert_eq!(
-        second,
-        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
-            reason: BoltV3CapitalAdmissionRejectReason::CapitalAdmissionRejected,
-        }
+#[test]
+fn unknown_raw_fill_preserves_nt_position_and_latches_admission_fail_closed() {
+    let admission = Arc::new(capital_admission_configured_admission());
+    arm_default(&admission);
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let _ = feed.project_account_fixture(&account_state(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        900,
+        100.0,
+    ));
+    seed_provider_collateral_allowance(&mut feed, 925);
+    assert!(
+        feed.project_portfolio_fixture(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
     );
+    let components = feed
+        .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: feed.accepted_allowance_observed_at_ns(),
+            account_balances: Some((Decimal::new(100, 0), Decimal::new(100, 0))),
+            open_client_order_ids: Vec::new(),
+            yes_position: Decimal::new(3, 0),
+            no_position: Decimal::ZERO,
+            observed_at_ns: 1_000,
+        })
+        .expect("canonical NT projection should publish seeded product state");
+    admission.update_capital_admission_nt_components(components);
+    rebuild_empty_capital_admission(&admission);
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "external-order-1",
+            "external-trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(3),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("relevant unknown fill must produce a fail-closed decision");
+    assert!(!decision.accepted);
+    assert!(decision.unknown_reservation);
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+
+    let state = admission
+        .capital_admission_state_snapshot()
+        .expect("raw fill callback should preserve canonical NT product state");
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_position_cache");
+    assert_eq!(product.observed_at_ns, 1_000);
+    assert_eq!(product.yes_position, Decimal::new(3, 0));
+}
+
+#[test]
+fn full_fill_event_cannot_release_reservation_before_nt_reprojection() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(10),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("matching full fill should record Bolt audit evidence");
+
+    assert!(decision.accepted);
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    let state = admission
+        .capital_admission_state_snapshot()
+        .expect("canonical NT lifecycle should remain available");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
 }
 
 #[test]
@@ -2191,26 +1329,14 @@ fn fill_event_account_or_instrument_mismatch_is_non_mutating() {
 }
 
 #[test]
-fn fill_event_for_rebuilt_reservation_revalues_residual() {
+fn fill_event_for_rebuilt_reservation_records_evidence_without_revaluation() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        900,
-        100.0,
-    ));
-    seed_venue_spendability(&mut feed, 925);
-    assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            950,
-            100.0,
-        ))
-        .is_some()
-    );
+    let mut components = fresh_components(1_000);
+    components.order_lifecycle.open_order_count = 1;
+    components.order_lifecycle.all_open_orders_attributed = true;
+    admission.update_capital_admission_nt_components(components);
     let rebuild = admission.rebuild_capital_admission_open_order_reservations(
         vec![open_order_reservation(
             "client-order-1",
@@ -2231,48 +1357,39 @@ fn fill_event_for_rebuilt_reservation_revalues_residual() {
             OrderSide::Buy,
             InstrumentId::from("instrument-yes.VENUE-A"),
         )))
-        .expect("rebuilt reservation metadata should support residual revalue");
+        .expect("rebuilt reservation metadata should support fill audit evidence");
     assert!(decision.accepted);
-    assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Revalued);
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::new(27, 1))
+        Some(Decimal::new(43, 1))
     );
-    assert_eq!(feed.latest_terminal_observed_at_ns(), None);
 }
 
 #[test]
 fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
-    let admission = Arc::new(capital_admission_configured_admission());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
+    let admission = Arc::new(capital_admission_configured_admission_with_writer(
+        writer.recorder(),
+    ));
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        900,
-        100.0,
-    ));
-    seed_venue_spendability(&mut feed, 925);
-    assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            950,
-            100.0,
-        ))
-        .is_some()
-    );
+    let mut components = fresh_components(1_000);
+    components.order_lifecycle.open_order_count = 1;
+    components.order_lifecycle.all_open_orders_attributed = true;
+    admission.update_capital_admission_nt_components(components);
     let mut reservation = open_order_reservation(
         "client-order-1",
         "client-order-1#rebuilt",
         Decimal::new(43, 1),
     );
-    reservation.recovered_from_startup = true;
+    reservation
+        .seen_trade_ids
+        .insert("trade-already-committed".to_string());
     let rebuild =
         admission.rebuild_capital_admission_open_order_reservations(vec![reservation], 1_000);
     assert!(rebuild.accepted);
 
-    let reconciliation = feed
+    let unseen_reconciliation = feed
         .on_order_event(&OrderEventAny::Filled(
             order_filled_event_with_reconciliation(
                 "client-order-1",
@@ -2285,9 +1402,19 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
                 true,
             ),
         ))
-        .expect("startup reconciliation fill should be accepted as already accounted");
-    assert!(reconciliation.accepted);
-    assert_eq!(reconciliation.action, CapitalAdmissionLifecycleAction::None);
+        .expect("unseen startup reconciliation fill must be durably recorded");
+    assert!(unseen_reconciliation.accepted);
+    assert_eq!(
+        writer
+            .facts()
+            .into_iter()
+            .filter(|fact| matches!(
+                fact,
+                bolt_v2::bolt_v3_current_evidence::CurrentFact::SubmitReservationFill(_)
+            ))
+            .count(),
+        1
+    );
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
@@ -2305,27 +1432,52 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
         )))
         .expect("seen reconciliation trade id should stay idempotent");
     assert!(duplicate.accepted);
-    assert_eq!(duplicate.action, CapitalAdmissionLifecycleAction::None);
+    let already_committed = feed
+        .on_order_event(&OrderEventAny::Filled(
+            order_filled_event_with_reconciliation(
+                "client-order-1",
+                "trade-already-committed",
+                1_250,
+                AccountId::from("ACCOUNT-001"),
+                Quantity::from(4),
+                OrderSide::Buy,
+                InstrumentId::from("instrument-yes.VENUE-A"),
+                true,
+            ),
+        ))
+        .expect("a fill recovered from committed evidence must remain idempotent");
+    assert!(already_committed.accepted);
+    assert_eq!(
+        writer
+            .facts()
+            .into_iter()
+            .filter(|fact| matches!(
+                fact,
+                bolt_v2::bolt_v3_current_evidence::CurrentFact::SubmitReservationFill(_)
+            ))
+            .count(),
+        1,
+        "only the unseen reconciliation fill may append"
+    );
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
 
-    let terminal = feed
-        .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+    assert!(
+        feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
             "client-order-1",
             1_300,
         )))
-        .expect("terminal event should release recovered startup reservation");
-    assert!(terminal.accepted);
-    assert_eq!(terminal.action, CapitalAdmissionLifecycleAction::Released);
+        .is_none()
+    );
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::ZERO)
+        Some(Decimal::new(43, 1))
     );
 
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+    let _duplicate_after_terminal = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
             "client-order-1",
             "trade-1",
             1_400,
@@ -2334,14 +1486,13 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
             OrderSide::Buy,
             InstrumentId::from("instrument-yes.VENUE-A"),
         )))
-        .is_none()
-    );
+        .expect("raw terminal callback cannot delete the NT-derived reservation");
     let state = admission
         .capital_admission_state_snapshot()
         .expect("post-terminal duplicate reconciliation fill should not mutate product state");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_ne!(product.source, "nt_order_fill");
-    assert_eq!(product.yes_position, Decimal::ZERO);
+    assert_eq!(product.yes_position, Decimal::new(10, 0));
 }
 
 #[test]
@@ -2349,15 +1500,15 @@ fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let _ = feed.on_account_state(&account_state(
+    let _ = feed.project_account_fixture(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
         900,
         100.0,
     ));
-    seed_venue_spendability(&mut feed, 925);
+    seed_provider_collateral_allowance(&mut feed, 925);
     assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
+        feed.project_portfolio_fixture(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
             "USD",
             950,
@@ -2365,10 +1516,17 @@ fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
         ))
         .is_some()
     );
-    assert!(
-        feed.seed_open_order_cache(vec!["client-order-1".to_string()], 1_000)
-            .is_some()
-    );
+    let components = feed
+        .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: feed.accepted_allowance_observed_at_ns(),
+            account_balances: Some((Decimal::new(100, 0), Decimal::new(100, 0))),
+            open_client_order_ids: vec!["client-order-1".to_string()],
+            yes_position: Decimal::ZERO,
+            no_position: Decimal::ZERO,
+            observed_at_ns: 1_000,
+        })
+        .expect("canonical NT projection should retain the startup order");
+    admission.update_capital_admission_nt_components(components);
 
     let rebuild = admission.rebuild_capital_admission_open_order_reservations(
         vec![open_order_reservation(
@@ -2397,19 +1555,19 @@ fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
 }
 
 #[test]
-fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attribution() {
+fn full_fill_event_for_rebuilt_reservation_waits_for_nt_reprojection() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let _ = feed.on_account_state(&account_state(
+    let _ = feed.project_account_fixture(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
         900,
         100.0,
     ));
-    seed_venue_spendability(&mut feed, 925);
+    seed_provider_collateral_allowance(&mut feed, 925);
     assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
+        feed.project_portfolio_fixture(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
             "USD",
             950,
@@ -2417,96 +1575,17 @@ fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attributio
         ))
         .is_some()
     );
-    assert!(
-        feed.seed_open_order_cache(vec!["client-order-1".to_string()], 1_000)
-            .is_some()
-    );
-
-    let rebuild = admission.rebuild_capital_admission_open_order_reservations(
-        vec![open_order_reservation(
-            "client-order-1",
-            "client-order-1#rebuilt",
-            Decimal::new(43, 1),
-        )],
-        1_000,
-    );
-    assert!(rebuild.accepted);
-
-    assert!(
-        feed.on_account_state(&account_state(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            1_050,
-            100.0,
-        ))
-        .is_some()
-    );
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("account refresh should preserve rebuilt NT state");
-    assert_eq!(state.order_lifecycle.open_order_count, 1);
-    assert!(state.order_lifecycle.all_open_orders_attributed);
-
-    admission
-        .admit_at(&capital_admission_submit_request("client-order-2"), 1_100)
-        .expect("account refresh should not erase attributed startup rebuild")
-        .commit_submitted();
-    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
-        "client-order-2",
-        1_150,
-        AccountId::from("ACCOUNT-001"),
-    )));
-
-    let state = admission
-        .capital_admission_state_snapshot()
-        .expect("second submit event should preserve rebuilt NT state");
-    assert_eq!(state.order_lifecycle.open_order_count, 2);
-    assert!(state.order_lifecycle.all_open_orders_attributed);
-
-    let mut third_request = capital_admission_submit_request("client-order-3");
-    third_request.notional = Decimal::new(4, 1);
-    third_request.order_quantity = Decimal::new(1, 0);
-    third_request
-        .admission_evidence
-        .as_mut()
-        .expect("third request should carry admission evidence")
-        .quantity = Decimal::new(1, 0);
-    admission
-        .admit_at(&third_request, 1_200)
-        .expect("submitted event should not erase attributed startup rebuild")
-        .commit_submitted();
-    assert_eq!(
-        admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::new(930, 2))
-    );
-}
-
-#[test]
-fn full_fill_event_for_rebuilt_reservation_releases_and_closes_live_order_count() {
-    let admission = Arc::new(capital_admission_configured_admission());
-    arm_default(&admission);
-    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        900,
-        100.0,
-    ));
-    seed_venue_spendability(&mut feed, 925);
-    assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            950,
-            100.0,
-        ))
-        .is_some()
-    );
-    assert!(
-        feed.seed_open_order_cache(vec!["client-order-1".to_string()], 1_000)
-            .is_some()
-    );
+    let components = feed
+        .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: feed.accepted_allowance_observed_at_ns(),
+            account_balances: Some((Decimal::new(100, 0), Decimal::new(100, 0))),
+            open_client_order_ids: vec!["client-order-1".to_string()],
+            yes_position: Decimal::ZERO,
+            no_position: Decimal::ZERO,
+            observed_at_ns: 1_000,
+        })
+        .expect("canonical NT projection should retain the startup order");
+    admission.update_capital_admission_nt_components(components);
     let rebuild = admission.rebuild_capital_admission_open_order_reservations(
         vec![open_order_reservation(
             "client-order-1",
@@ -2527,24 +1606,22 @@ fn full_fill_event_for_rebuilt_reservation_releases_and_closes_live_order_count(
             OrderSide::Buy,
             InstrumentId::from("instrument-yes.VENUE-A"),
         )))
-        .expect("rebuilt reservation full fill should release");
+        .expect("rebuilt reservation full fill should record audit evidence");
 
     assert!(decision.accepted);
-    assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::ZERO)
+        Some(Decimal::new(43, 1))
     );
-    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
     let state = admission
         .capital_admission_state_snapshot()
-        .expect("fill release should publish updated lifecycle state");
-    assert_eq!(state.order_lifecycle.open_order_count, 0);
+        .expect("canonical NT lifecycle should remain available");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
     assert!(state.order_lifecycle.all_open_orders_attributed);
 }
 
 #[test]
-fn duplicate_fill_trade_id_with_different_runtime_instrument_is_non_mutating() {
+fn duplicate_trade_id_with_conflicting_runtime_instrument_latches_fail_closed() {
     let (admission, mut feed) = committed_submit_runtime_feed();
     assert!(
         feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
@@ -2558,8 +1635,8 @@ fn duplicate_fill_trade_id_with_different_runtime_instrument_is_non_mutating() {
         )))
         .is_some()
     );
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
             "client-order-1",
             "trade-1",
             1_200,
@@ -2568,16 +1645,18 @@ fn duplicate_fill_trade_id_with_different_runtime_instrument_is_non_mutating() {
             OrderSide::Buy,
             InstrumentId::from("instrument-no.VENUE-A"),
         )))
-        .is_none()
-    );
+        .expect("conflicting duplicate fill must produce a fail-closed decision");
+    assert!(!decision.accepted);
+    assert!(decision.unknown_reservation);
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::new(27, 1))
+        Some(Decimal::ZERO)
     );
 }
 
 #[test]
-fn terminal_event_after_partial_fill_releases_residual_reservation() {
+fn terminal_event_after_partial_fill_cannot_release_without_nt_reprojection() {
     let (admission, mut feed) = committed_submit_runtime_feed();
     feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
         "client-order-1",
@@ -2597,17 +1676,16 @@ fn terminal_event_after_partial_fill_releases_residual_reservation() {
         .is_some()
     );
 
-    let terminal = feed
-        .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+    assert!(
+        feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
             "client-order-1",
             1_200,
         )))
-        .expect("terminal after partial fill should release residual");
-
-    assert_eq!(terminal.action, CapitalAdmissionLifecycleAction::Released);
+        .is_none()
+    );
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::ZERO)
+        Some(Decimal::new(43, 1))
     );
     let state = admission
         .capital_admission_state_snapshot()
@@ -2616,7 +1694,7 @@ fn terminal_event_after_partial_fill_releases_residual_reservation() {
 }
 
 #[test]
-fn terminal_nt_order_event_releases_committed_submit_reservation() {
+fn terminal_nt_order_event_cannot_release_committed_reservation_without_reprojection() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     admission.update_capital_admission_nt_components(fresh_components(900));
@@ -2631,23 +1709,16 @@ fn terminal_nt_order_event_releases_committed_submit_reservation() {
     );
 
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let decision = feed
-        .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+    assert!(
+        feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
             "client-order-1",
             1_100,
         )))
-        .expect("terminal event for configured account should produce lifecycle decision");
-
-    assert!(decision.accepted);
-    assert!(!decision.unknown_reservation);
-    assert_eq!(
-        admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::ZERO)
+        .is_none()
     );
     assert_eq!(
-        feed.latest_terminal_observed_at_ns(),
-        Some(1_100),
-        "feed should expose latest accepted terminal NT event timestamp"
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
     );
 }
 
@@ -2692,17 +1763,17 @@ fn admission_evidence_failure_rolls_back_capital_reservation_before_submit() {
 }
 
 #[test]
-fn configured_submit_sizer_rejects_stale_venue_spendability_before_nt_submit() {
+fn configured_submit_sizer_rejects_stale_provider_collateral_allowance_before_nt_submit() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut components = fresh_components(900);
-    components.venue_spendability.observed_at_ns = 100;
+    components.provider_collateral_allowance.observed_at_ns = 100;
     admission.update_capital_admission_nt_components(components);
     rebuild_empty_capital_admission(&admission);
 
     let error = admission
         .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
-        .expect_err("stale venue spendability evidence must reject");
+        .expect_err("stale provider collateral allowance evidence must reject");
 
     assert!(matches!(
         error,
@@ -2713,7 +1784,7 @@ fn configured_submit_sizer_rejects_stale_venue_spendability_before_nt_submit() {
 }
 
 #[test]
-fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
+fn subscribed_terminal_nt_order_event_only_requests_nt_reprojection() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     admission.update_capital_admission_nt_components(fresh_components(900));
@@ -2727,7 +1798,8 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
         runtime_feed_config(),
         admission.clone(),
     )));
-    let mut subscription = subscribe_capital_admission_runtime_feed(feed.clone());
+    let mut subscription =
+        subscribe_submit_admission_nt_projection(Some(feed.clone()), no_op_nt_projection());
 
     publish_order_event(
         switchboard::get_event_order_topic(StrategyId::from("strategy-a")),
@@ -2737,18 +1809,12 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
 
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::ZERO)
-    );
-    assert_eq!(
-        feed.lock()
-            .expect("feed mutex should not be poisoned")
-            .latest_terminal_observed_at_ns(),
-        Some(1_100)
+        Some(Decimal::new(43, 1))
     );
 }
 
 #[test]
-fn denied_nt_order_event_without_account_releases_matching_committed_submit_reservation() {
+fn denied_nt_order_event_without_account_cannot_release_reservation() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     admission.update_capital_admission_nt_components(fresh_components(900));
@@ -2759,25 +1825,22 @@ fn denied_nt_order_event_without_account_releases_matching_committed_submit_rese
         .commit_submitted();
 
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let decision = feed
-        .on_order_event(&OrderEventAny::Denied(order_denied_event(
+    assert!(
+        feed.on_order_event(&OrderEventAny::Denied(order_denied_event(
             "client-order-1",
             1_100,
         )))
-        .expect("account-less denied event should be matched by committed reservation id");
-
-    assert!(decision.accepted);
-    assert!(!decision.unknown_reservation);
+        .is_none()
+    );
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::ZERO)
+        Some(Decimal::new(43, 1))
     );
-    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
 }
 
 #[test]
-fn rejected_and_expired_nt_order_events_release_matching_committed_submit_reservations() {
-    assert_terminal_event_releases(
+fn rejected_and_expired_nt_order_events_cannot_release_without_reprojection() {
+    assert_terminal_event_does_not_release(
         "client-order-rejected",
         OrderEventAny::Rejected(order_rejected_event(
             "client-order-rejected",
@@ -2785,7 +1848,7 @@ fn rejected_and_expired_nt_order_events_release_matching_committed_submit_reserv
             AccountId::from("ACCOUNT-001"),
         )),
     );
-    assert_terminal_event_releases(
+    assert_terminal_event_does_not_release(
         "client-order-expired",
         OrderEventAny::Expired(order_expired_event(
             "client-order-expired",
@@ -2820,16 +1883,17 @@ fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
         admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
-    assert_eq!(feed.latest_terminal_observed_at_ns(), None);
 }
 
 #[test]
-fn forced_reduction_terminal_nt_order_event_releases_live_forced_reduction_cap() {
+fn forced_reduction_callbacks_cannot_release_live_cap_before_nt_projection() {
     let admission = Arc::new(capital_admission_configured_admission());
     admission.replace_kill_switch_state(KillSwitchState::Flattening {
         halt_id: "halt-001".to_string(),
     });
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
     let first = forced_reduction_submit_request("halt-001", "forced-reduction-1");
     let second = forced_reduction_submit_request("halt-001", "forced-reduction-2");
     let third = forced_reduction_submit_request("halt-001", "forced-reduction-3");
@@ -2854,32 +1918,78 @@ fn forced_reduction_terminal_nt_order_event_releases_live_forced_reduction_cap()
             1_100,
         )))
         .is_none(),
-        "forced-reduction terminal release is independent of capital-reservation ownership"
+        "callbacks only request a new NT projection"
     );
 
-    admission
+    let still_capped = admission
         .admit_at(&second, 1_200)
-        .expect("terminal forced-reduction order event should release the live cap")
-        .commit_submitted();
+        .expect_err("terminal callback cannot release the NT-derived live cap");
+    assert!(matches!(
+        still_capped,
+        BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
+    ));
 
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
-            "forced-reduction-2",
-            "forced-reduction-trade-2",
+    let forced_fill = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "forced-reduction-1",
+            "forced-reduction-trade-1",
             1_300,
             AccountId::from("ACCOUNT-001"),
             Quantity::from(1),
             OrderSide::Sell,
             InstrumentId::from("instrument-yes.VENUE-A"),
         )))
-        .is_none(),
-        "filled forced-reduction terminals also release outside capital ownership"
-    );
+        .expect("committed forced-reduction authorization should classify its fill");
+    assert!(forced_fill.accepted);
+    assert!(!forced_fill.unknown_reservation);
 
+    let still_capped_after_fill = admission
+        .admit_at(&second, 1_350)
+        .expect_err("partial fill must leave the live cap occupied");
+    assert!(matches!(
+        still_capped_after_fill,
+        BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
+    ));
+
+    admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_375);
     admission
-        .admit_at(&third, 1_400)
-        .expect("filled forced-reduction order event should release the live cap")
+        .admit_at(&second, 1_400)
+        .expect("canonical NT projection without the order releases the live cap")
         .commit_submitted();
+
+    let third_capped = admission
+        .admit_at(&third, 1_450)
+        .expect_err("newly submitted forced reduction occupies the canonical live cap");
+    assert!(matches!(
+        third_capped,
+        BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
+    ));
+}
+
+#[test]
+fn unknown_relevant_fill_latches_capital_admission_fail_closed() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "unknown-client-order",
+            "unknown-trade",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(1),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("a relevant unknown fill must return a fail-closed decision");
+
+    assert!(!decision.accepted);
+    assert!(decision.unknown_reservation);
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+
+    admission.update_capital_admission_nt_components(fresh_components(1_200));
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_200);
+    assert!(!rebuild.accepted);
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
 }
 
 #[test]
@@ -2907,10 +2017,9 @@ fn account_less_non_denied_terminal_nt_order_event_is_ignored() {
         admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
-    assert_eq!(feed.latest_terminal_observed_at_ns(), None);
 }
 
-fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
+fn assert_terminal_event_does_not_release(client_order_id: &str, event: OrderEventAny) {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     admission.update_capital_admission_nt_components(fresh_components(900));
@@ -2920,19 +2029,12 @@ fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
-    let observed_at_ns = event.ts_event().as_u64();
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let decision = feed
-        .on_order_event(&event)
-        .expect("terminal event should release matching committed reservation");
-
-    assert!(decision.accepted);
-    assert!(!decision.unknown_reservation);
+    assert!(feed.on_order_event(&event).is_none());
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::ZERO)
+        Some(Decimal::new(43, 1))
     );
-    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(observed_at_ns));
 }
 
 fn runtime_feed_config() -> CapitalAdmissionRuntimeFeedConfig {
@@ -2949,12 +2051,9 @@ fn runtime_feed_config() -> CapitalAdmissionRuntimeFeedConfig {
                 yes_position: Decimal::ZERO,
                 no_position: Decimal::ZERO,
                 collateral_allowance: Decimal::ZERO,
-                conditional_token_allowance: Decimal::ZERO,
                 collateral_coupled_group_id: "group-1".to_string(),
             },
         ),
-        startup_observed_at_ns: 900,
-        dedupe_retention_ns: 500,
     }
 }
 
@@ -3120,6 +2219,40 @@ fn rebuild_empty_capital_admission(admission: &BoltV3SubmitAdmissionState) {
     assert_eq!(admission.capital_admission_reconciled(), Some(true));
 }
 
+fn apply_empty_canonical_nt_projection(
+    feed: &mut CapitalAdmissionRuntimeFeed,
+    admission: &BoltV3SubmitAdmissionState,
+    observed_at_ns: u64,
+) {
+    let accepted_allowance_observed_at_ns = feed.accepted_allowance_observed_at_ns();
+    let projection = CapitalAdmissionNtCacheProjection {
+        accepted_allowance_observed_at_ns,
+        account_balances: Some((Decimal::new(100, 0), Decimal::new(100, 0))),
+        open_client_order_ids: Vec::new(),
+        yes_position: Decimal::ZERO,
+        no_position: Decimal::ZERO,
+        observed_at_ns,
+    };
+    let components = feed
+        .canonical_nt_components(projection.clone())
+        .expect("canonical NT projection should be complete");
+    admission.update_capital_admission_nt_components(components);
+    let rebuild =
+        admission.rebuild_capital_admission_open_order_reservations(Vec::new(), observed_at_ns);
+    assert!(
+        rebuild.accepted,
+        "canonical empty NT projection should rebuild the reservation ledger"
+    );
+    let components = feed
+        .canonical_nt_components(projection)
+        .expect("rebuilt canonical NT projection should be complete");
+    admission.update_capital_admission_nt_components_after_accepted_allowance_snapshot(
+        components,
+        accepted_allowance_observed_at_ns
+            .expect("provider collateral allowance should precede canonical projection"),
+    );
+}
+
 fn open_order_reservation(
     client_order_id: &str,
     submit_reservation_id: &str,
@@ -3138,7 +2271,6 @@ fn open_order_reservation(
         liability_factor: Decimal::new(4, 1),
         additive_liability: Decimal::new(3, 1),
         seen_trade_ids: Default::default(),
-        recovered_from_startup: false,
         observed_at_ns: 1_000,
         evidence_label: "nt_open_order_cache".to_string(),
     }
@@ -3149,27 +2281,8 @@ fn committed_submit_runtime_feed() -> (Arc<BoltV3SubmitAdmissionState>, CapitalA
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
-    let _ = feed.on_account_state(&account_state(
-        AccountId::from("ACCOUNT-001"),
-        "USD",
-        900,
-        100.0,
-    ));
-    seed_venue_spendability(&mut feed, 925);
-    assert!(
-        feed.on_portfolio_snapshot(&portfolio_snapshot(
-            AccountId::from("ACCOUNT-001"),
-            "USD",
-            950,
-            100.0,
-        ))
-        .is_some()
-    );
-    assert!(
-        feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
-            .is_some()
-    );
-    rebuild_empty_capital_admission(&admission);
+    seed_provider_collateral_allowance(&mut feed, 925);
+    apply_empty_canonical_nt_projection(&mut feed, &admission, 1_000);
     admission
         .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
         .expect("fresh capital admission state and capacity should admit")
@@ -3271,7 +2384,7 @@ fn fresh_capital_admission_state(observed_at_ns: u64) -> NtDerivedCapitalAdmissi
             free_collateral: Decimal::new(100, 0),
             total_equity: Decimal::new(100, 0),
         },
-        venue_spendability: venue_spendability_snapshot(observed_at_ns, 100, 100),
+        provider_collateral_allowance: provider_collateral_allowance_snapshot(observed_at_ns, 100),
         order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
             source: "nt_open_order_cache".to_string(),
             observed_at_ns,
@@ -3287,7 +2400,6 @@ fn fresh_capital_admission_state(observed_at_ns: u64) -> NtDerivedCapitalAdmissi
                 yes_position: Decimal::new(10, 0),
                 no_position: Decimal::ZERO,
                 collateral_allowance: Decimal::new(100, 0),
-                conditional_token_allowance: Decimal::new(10, 0),
                 collateral_coupled_group_id: "group-1".to_string(),
             },
         ),
@@ -3306,141 +2418,51 @@ fn fresh_components(observed_at_ns: u64) -> BoltV3SubmitCapitalAdmissionNtCompon
         source: state.source,
         observed_at_ns: state.observed_at_ns,
         portfolio: state.portfolio,
-        venue_spendability: state.venue_spendability,
+        provider_collateral_allowance: state.provider_collateral_allowance,
         order_lifecycle: state.order_lifecycle,
         product_state: state.product_state,
         loss_snapshot: state.loss_snapshot,
     }
 }
 
-fn seed_venue_spendability(feed: &mut CapitalAdmissionRuntimeFeed, observed_at_ns: u64) {
-    let _ =
-        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(observed_at_ns, 100, 100));
+fn seed_provider_collateral_allowance(feed: &mut CapitalAdmissionRuntimeFeed, observed_at_ns: u64) {
+    let _ = feed.on_provider_collateral_allowance_snapshot(provider_collateral_allowance_snapshot(
+        observed_at_ns,
+        100,
+    ));
 }
 
-fn venue_spendability_snapshot(
+fn provider_collateral_allowance_snapshot(
     observed_at_ns: u64,
-    spendable_collateral: i64,
     collateral_allowance: i64,
-) -> VenueSpendabilitySnapshot {
-    VenueSpendabilitySnapshot {
-        source: "operator-venue-spendability".to_string(),
+) -> ProviderCollateralAllowanceSnapshot {
+    ProviderCollateralAllowanceSnapshot {
+        source: "operator-venue-allowance".to_string(),
         observed_at_ns,
         venue_id: "VENUE-A".to_string(),
         account_id: "ACCOUNT-001".to_string(),
         collateral_currency: "USD".to_string(),
-        spendable_collateral: Decimal::new(spendable_collateral, 0),
         collateral_allowance: Decimal::new(collateral_allowance, 0),
     }
 }
 
-fn polymarket_venue_truth_snapshot(
+fn polymarket_provider_collateral_allowance_snapshot(
     captured_at: u64,
     balance: Decimal,
     allowance: Decimal,
-) -> VenueTruthSnapshot {
-    build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
-        captured_at: UnixNanos::from(captured_at),
-        account_id: AccountId::from("ACCOUNT-001"),
-        collateral_currency: Currency::from("USD"),
-        collateral: BalanceAllowance {
-            balance,
-            allowance: Some(allowance),
-        },
-        open_orders: Vec::new(),
-        positions: Vec::new(),
-    })
-    .expect("test venue truth snapshot should be valid")
-}
-
-fn polymarket_venue_truth_snapshot_with_orders_and_positions(
-    captured_at: u64,
-    balance: Decimal,
-    allowance: Decimal,
-) -> VenueTruthSnapshot {
-    build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
-        captured_at: UnixNanos::from(captured_at),
-        account_id: AccountId::from("ACCOUNT-001"),
-        collateral_currency: Currency::from("USD"),
-        collateral: BalanceAllowance {
-            balance,
-            allowance: Some(allowance),
-        },
-        open_orders: vec![polymarket_open_order(
-            "venue-order-1",
-            "condition",
-            "yes123",
-            Decimal::new(10, 0),
-            Decimal::new(4, 0),
-        )],
-        positions: vec![
-            DataApiPosition {
-                asset: "yes123".to_string(),
-                condition_id: "condition".to_string(),
-                size: Decimal::new(7, 0),
-                avg_price: Some(Decimal::new(42, 2)),
+) -> ProviderCollateralAllowanceSnapshot {
+    build_polymarket_provider_collateral_allowance_snapshot(
+        PolymarketProviderCollateralAllowanceInput {
+            captured_at: UnixNanos::from(captured_at),
+            account_id: AccountId::from("ACCOUNT-001"),
+            collateral_currency: Currency::from("USD"),
+            collateral: BalanceAllowance {
+                balance,
+                allowance: Some(allowance),
             },
-            DataApiPosition {
-                asset: "no456".to_string(),
-                condition_id: "condition".to_string(),
-                size: Decimal::new(2, 0),
-                avg_price: Some(Decimal::new(58, 2)),
-            },
-        ],
-    })
-    .expect("test venue truth snapshot should be valid")
-}
-
-fn polymarket_venue_truth_snapshot_with_position(
-    captured_at: u64,
-    balance: Decimal,
-    allowance: Decimal,
-    asset: &str,
-    size: Decimal,
-) -> VenueTruthSnapshot {
-    build_polymarket_venue_truth_snapshot(PolymarketVenueTruthInput {
-        captured_at: UnixNanos::from(captured_at),
-        account_id: AccountId::from("ACCOUNT-001"),
-        collateral_currency: Currency::from("USD"),
-        collateral: BalanceAllowance {
-            balance,
-            allowance: Some(allowance),
         },
-        open_orders: Vec::new(),
-        positions: vec![DataApiPosition {
-            asset: asset.to_string(),
-            condition_id: "condition".to_string(),
-            size,
-            avg_price: Some(Decimal::new(42, 2)),
-        }],
-    })
-    .expect("test venue truth snapshot should be valid")
-}
-
-fn polymarket_open_order(
-    id: &str,
-    market: &str,
-    asset_id: &str,
-    original_size: Decimal,
-    size_matched: Decimal,
-) -> PolymarketOpenOrder {
-    PolymarketOpenOrder {
-        associate_trades: None,
-        id: id.to_string(),
-        status: PolymarketOrderStatus::Live,
-        market: Ustr::from(market),
-        original_size,
-        outcome: PolymarketOutcome::yes(),
-        maker_address: "maker".to_string(),
-        owner: "owner".to_string(),
-        price: Decimal::new(42, 2),
-        side: PolymarketOrderSide::Buy,
-        size_matched,
-        asset_id: Ustr::from(asset_id),
-        expiration: None,
-        order_type: PolymarketOrderType::GTC,
-        created_at: 1_000,
-    }
+    )
+    .expect("test provider collateral allowance snapshot should be valid")
 }
 
 fn order_canceled_event(client_order_id: &str, ts_event: u64) -> OrderCanceled {
@@ -3474,23 +2496,6 @@ fn order_accepted_event(
         UnixNanos::from(ts_event),
         UnixNanos::from(ts_event),
         false,
-    )
-}
-
-fn order_submitted_event(
-    client_order_id: &str,
-    ts_event: u64,
-    account_id: AccountId,
-) -> OrderSubmitted {
-    OrderSubmitted::new(
-        TraderId::from("TRADER-001"),
-        StrategyId::from("strategy-a"),
-        InstrumentId::from("instrument-yes.VENUE-A"),
-        ClientOrderId::from(client_order_id),
-        account_id,
-        UUID4::default(),
-        UnixNanos::from(ts_event),
-        UnixNanos::from(ts_event),
     )
 }
 

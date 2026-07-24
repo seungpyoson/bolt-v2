@@ -1232,17 +1232,19 @@ only after that atomic fact is synchronized and is consumed to construct the sub
 reservation-metadata facts do not exist.
 
 Startup settlement recovery accepts exactly one terminal outcome per settlement key. A recovered
-successful settlement replays the loss-governor and venue-truth reducers under their durable
-idempotency keys and restores flat exposure without appending again. A recovered booking-terminal
+successful settlement replays the loss-governor reducer under its durable idempotency key and
+restores flat exposure without appending again. A recovered booking-terminal
 outcome restores its terminal state without appending again. Duplicate or contradictory outcomes fail
 activation.
 
 Capital-admission reconstruction occurs only after NautilusTrader reports `Running`, which follows its
 startup reconciliation. The gate remains unreconciled and rejects submission until the reconstruction
-from the reconciled NT cache and current evidence succeeds. The accepted raw venue snapshot's open-order
-ID set must exactly equal the reconciled NT cache's unique venue-order ID set, and every member must have
-a unique client-order ID with committed admission attribution. A reconciliation, set-attestation, or
-reconstruction failure stops startup rather than opening the gate from an incomplete cache.
+from the reconciled NT cache, current evidence, and provider-only collateral allowance succeeds.
+NautilusTrader's Polymarket mass-status construction fails if any venue open order cannot be mapped into
+its instrument universe or any current venue position cannot be represented as an NT quantity; Bolt does
+not query or reconcile venue orders, positions, balances, or fills again. Every open NT order must
+have a unique client-order ID with committed admission attribution. A reconciliation or reconstruction
+failure keeps admission unreconciled rather than opening the gate from incomplete state.
 
 Join rule:
 

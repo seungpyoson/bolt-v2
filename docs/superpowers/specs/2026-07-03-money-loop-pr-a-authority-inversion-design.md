@@ -1,5 +1,11 @@
 # Money Loop PR-A Authority Inversion Design
 
+> **Superseded architecture (2026-07-24).** Do not implement this document.
+> The active design is
+> `specs/1354-current-evidence-thin-nt-boundary/spec.md`: NautilusTrader owns
+> order/fill/position lifecycle and reconciliation; Bolt consumes only
+> post-reconciliation NT state plus provider-only collateral spendability.
+
 Part of #1179.
 
 ## Goal

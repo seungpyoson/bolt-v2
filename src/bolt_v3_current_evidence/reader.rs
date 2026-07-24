@@ -228,8 +228,7 @@ fn into_shadow_pnl_event(fact: CurrentFact) -> Result<ShadowPnlEvent> {
         | CurrentFact::RequoteThrottleObservation(_)
         | CurrentFact::Settlement(_)
         | CurrentFact::TerminalSettlement(_)
-        | CurrentFact::VenueTruthCaptureFailure(_)
-        | CurrentFact::VenueTruthDivergence(_) => Err(anyhow!(
+        | CurrentFact::ProviderCollateralAllowanceCaptureFailure(_) => Err(anyhow!(
             "fact {registered_fact:?} is registered as relevant to Shadow PnL but has no typed reducer"
         )),
     }
@@ -282,8 +281,7 @@ pub(super) fn into_backtest_run_guard_event(fact: CurrentFact) -> Result<Backtes
         | CurrentFact::OrderLifecycle(_)
         | CurrentFact::Settlement(_)
         | CurrentFact::TerminalSettlement(_)
-        | CurrentFact::VenueTruthCaptureFailure(_)
-        | CurrentFact::VenueTruthDivergence(_) => Err(anyhow!(
+        | CurrentFact::ProviderCollateralAllowanceCaptureFailure(_) => Err(anyhow!(
             "fact {registered_fact:?} is registered as relevant to the backtest run guard but has no typed reducer"
         )),
     }
@@ -391,6 +389,12 @@ pub(super) fn apply_startup_recovery_projections(
             }
             CurrentFact::BasketAdmissionGranted(value) => {
                 ReservationRecoveryEvent::BasketGranted(value.clone())
+            }
+            CurrentFact::RiskReducingExitAdmission(value) => {
+                ReservationRecoveryEvent::RiskReducingExit(value.clone())
+            }
+            CurrentFact::ForcedReductionAdmission(value) => {
+                ReservationRecoveryEvent::ForcedReduction(value.clone())
             }
             CurrentFact::SubmitReservationFill(value) => {
                 ReservationRecoveryEvent::Fill(value.clone())

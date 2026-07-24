@@ -96,13 +96,13 @@ impl KillSwitchHaltTrigger {
         }
     }
 
-    pub fn venue_truth_divergence(
+    pub fn provider_collateral_allowance_runtime_failure(
         source: impl Into<String>,
         source_timestamp_unix_nanos: u64,
         reason: impl Into<String>,
     ) -> Self {
         Self {
-            kind: KillSwitchHaltTriggerKind::VenueTruthDivergence,
+            kind: KillSwitchHaltTriggerKind::ProviderCollateralAllowanceRuntimeFailure,
             source: source.into(),
             source_timestamp_unix_nanos,
             reason: reason.into(),
@@ -115,7 +115,7 @@ impl KillSwitchHaltTrigger {
 pub enum KillSwitchHaltTriggerKind {
     LossGovernorBreach,
     BasketExecutionStuck,
-    VenueTruthDivergence,
+    ProviderCollateralAllowanceRuntimeFailure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,7 +352,9 @@ pub(crate) fn halt_id_for_trigger(trigger: &KillSwitchHaltTrigger) -> String {
     hasher.update(match trigger.kind {
         KillSwitchHaltTriggerKind::LossGovernorBreach => b"loss_governor_breach".as_slice(),
         KillSwitchHaltTriggerKind::BasketExecutionStuck => b"basket_execution_stuck".as_slice(),
-        KillSwitchHaltTriggerKind::VenueTruthDivergence => b"venue_truth_divergence".as_slice(),
+        KillSwitchHaltTriggerKind::ProviderCollateralAllowanceRuntimeFailure => {
+            b"provider_collateral_allowance_runtime_failure".as_slice()
+        }
     });
     hasher.update([0]);
     hasher.update(trigger.source.as_bytes());

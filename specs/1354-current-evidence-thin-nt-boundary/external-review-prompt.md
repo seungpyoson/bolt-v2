@@ -1,143 +1,165 @@
-# External Architecture Review Request: PR #1505 Thin NT Boundary
+# External Review Request: PR #1505 Thin NT Boundary
 
-Conduct a fresh, read-only architecture review of the specification package for
-PR #1505's #1354 current-decision-evidence slice.
+Conduct one fresh, read-only, class-complete architecture and implementation
+review of Bolt PR #1505 and its required NautilusTrader dependency.
 
-This review occurs before further production implementation. Review the design,
-not merely the current code symptoms.
+This is a closure review, not another open-ended point-finding round. Review
+the selected authority boundary across both changes, sweep siblings for every
+finding, and state whether the implementation is ready for native review.
 
 ## Review Identity
 
-Repository:
-`https://github.com/seungpyoson/bolt-v2`
+Bolt repository: `https://github.com/seungpyoson/bolt-v2`
+Bolt PR: `https://github.com/seungpyoson/bolt-v2/pull/1505`
+Bolt base: `d7a79229e7593f5a81940f30405db3f0dc2166a1`
+Bolt exact head: `<INSERT_PUSHED_EXACT_HEAD>`
+NT PR: `https://github.com/nautechsystems/nautilus_trader/pull/4557`
+NT exact commit: `38949305e6b37753323cf366d8f8f244a42c694b`
 
-Pull request:
-`https://github.com/seungpyoson/bolt-v2/pull/1505`
+At review start, verify and report:
 
-Base:
-`d7a79229e7593f5a81940f30405db3f0dc2166a1`
+- live Bolt PR head equals the requested exact head;
+- Bolt merge base equals the requested base;
+- NT PR head contains the requested exact commit;
+- review snapshot/worktree is clean; and
+- exact-head advisory status.
 
-At invocation, record and report:
-
-- the exact review head;
-- confirmation that the worktree or archive is clean;
-- the exact merge base; and
-- the specification files reviewed.
-
-Do not modify files, branches, reviews, comments, the PR, or other GitHub state.
+Read only. Do not modify files, branches, comments, reviews, PRs, or other
+GitHub state.
 
 ## Governing Inputs
 
-Read `AGENTS.md` first. Then review:
+Read Bolt `AGENTS.md` first. Then read:
 
 - `specs/1354-current-evidence-thin-nt-boundary/spec.md`
 - `specs/1354-current-evidence-thin-nt-boundary/plan.md`
 - `specs/1354-current-evidence-thin-nt-boundary/external-review-resolution.md`
+- the exact Bolt three-dot diff and current production call graph;
+- NT PR #4557's exact diff and every Polymarket order, fill, position, and
+  mass-status reconciliation caller.
 
-Use current production code only to verify feasibility and identify conflicting
-authority:
+Inspect at least:
 
 - `src/bolt_v3_capital_admission_runtime_feed.rs`
-- `src/bolt_v3_submit_admission.rs`
-- `src/bolt_v3_live_node.rs`
 - `src/bolt_v3_capital_admission.rs`
 - `src/bolt_v3_capital_admission_state.rs`
-- current decision-evidence recovery consumers
-- the pinned NautilusTrader order/cache/reconciliation surfaces
+- `src/bolt_v3_submit_admission.rs`
+- `src/bolt_v3_live_node.rs`
+- `src/bolt_v3_providers/polymarket.rs`
+- `src/bolt_v3_providers/polymarket/provider_collateral_allowance_runtime_source.rs`
+- current decision-evidence facts, recorder, consumers, and contract
+- Bolt and BTE Cargo manifests/locks and NT source-capability binding
+- NT `crates/adapters/polymarket/src/execution/reconciliation.rs`
 
-The current pinned NT execution engine appears to update its cached order before
-publishing the corresponding order event. Verify that ordering and its fill,
-position, account, reconciliation, and message-bus siblings rather than
-assuming it applies uniformly.
+## Selected Architecture
 
-## Problem Being Resolved
+NT is the sole owner of adapter protocols, venue reconciliation, orders, fills,
+positions, accounts, portfolio, and cache lifecycle.
 
-NT is supposed to own orders, fills, positions, accounts, lifecycle,
-reconciliation, adapters, and venue translation.
+Bolt owns only configuration/registration, strategy intent, shared admission
+policy, committed action-authorization evidence, and provider facts NT does not
+represent.
 
-Bolt currently also maintains a live-order set, client/venue mapping,
-terminal-event history, order-lifecycle snapshot, and event-derived position
-changes for capital admission. Repeated reviews found temporal and
-reconciliation defects because that state partially duplicates NT.
+The implementation must have this shape:
 
-The proposed correction is intentionally thinner:
-
-- NT canonical state is the sole live lifecycle authority.
-- Bolt owns only its durable authorization evidence, reservation policy, and
-  admission decision.
-- Venue truth attests NT reconciliation completeness and provides only facts
-  absent from NT; it is not a second lifecycle authority.
-- Raw callbacks trigger reprojection rather than mutate a Bolt lifecycle model.
-- Any failed join or authority disagreement exposes zero new-risk capability.
+1. NT Polymarket reconciliation fails if any venue open order or relevant
+   confirmed fill cannot map into NT's instrument universe, or if any current
+   position cannot be represented. The shared order/fill builders make this
+   failure mandatory for every caller.
+2. Bolt requires an admission-safe NT reconciliation configuration.
+3. Bolt reads one ephemeral NT snapshot on the NT runtime thread, only after
+   `NodeState::Running`.
+4. NT lifecycle callbacks may record Bolt-owned audit evidence, but lifecycle
+   changes only request a fresh projection; provider updates revoke readiness
+   and request that same projection.
+5. Provider input contains collateral allowance only.
+6. Bolt joins NT open orders to committed Bolt admission attribution and fails
+   closed on any missing relation.
+7. No Bolt live-order set, fill reducer, position reducer, venue-order
+   attestation, or causal reconciliation remains.
+8. Live and BTE share one Bolt admission/evidence contract.
 
 ## Hard Constraints
 
-- NO HARDCODES, NO DUAL PATHS, and NO DEBTS.
-- Do not rebuild NT-owned order, fill, position, account, adapter, or
-  reconciliation behavior.
-- Do not add a Bolt event or acknowledgement journal.
-- Do not make venue truth a parallel order-lifecycle authority.
-- Do not add a compatibility decoder, fallback, alternate reducer, or runtime
-  mode.
-- Tests verify behavior, never source structure.
-- Preserve current evidence append/sync, poison, recovery, cap, ownership, and
-  hard-cutover guarantees unless a compatible signature change is necessary.
-- Do not implement #1385 rotation, capacity, retirement, ordinals, or restart
-  append-retry exact-once.
-- External review is architecture evidence, not merge authority.
+- NO HARDCODES, NO DUAL PATHS, NO DEBTS.
+- Prefer deletion and existing NT surfaces.
+- Do not recommend a Bolt venue-order query or reconciliation engine.
+- Do not add an acknowledgement journal, compatibility decoder, fallback,
+  alternate provider source, runtime mode, or second reducer.
+- Tests verify behavior, not source tokens.
+- Preserve current evidence durability, poisoning, finite caps, single-writer
+  ownership, producer capabilities, settlement recovery, and hard-cutover
+  semantics.
+- Do not implement #1385 rotation, retained capacity, retirement, durable
+  ordinals, or restart append-retry exact-once.
+- External review is evidence, not merge authority.
 
-## Required Review Questions
+## Required Review Classes
 
-1. Does the authority table leave NT as the sole owner of general order
-   lifecycle and reconciliation?
-2. Is the proposed Bolt projection genuinely thinner than the current
-   event-mutated mirror, or does it recreate NT state under another name?
-3. Can the implementation obtain a canonical NT snapshot after reconciliation
-   and at live trigger boundaries using existing pinned NT surfaces?
-4. Can raw callbacks be treated as triggers without missing a risk-changing
-   transition or observing NT cache before NT applies the event?
-5. Is venue truth limited to completeness attestation and provider-only facts?
-6. Can every venue/NT/evidence disagreement prevent new-risk capability without
-   requiring a second lifecycle authority?
-7. Is deriving reservation liability from canonical NT state plus committed
-   Bolt evidence sufficient for partial fills, terminal orders, unknown external
-   activity, and restart?
-8. Does the transition table cover duplicate, delayed, missing, reordered, and
-   contradictory inputs without source/timestamp precedence?
-9. Is restart reconstruction equivalent to uninterrupted execution without
-   process-local callback history?
-10. Do live and BTE share one projection without creating a mock-only alternate
-    authority?
-11. Can provider-thread inputs revoke admission and reach an existing NT-thread
-    dispatch surface without reading the thread-confined NT cache, reopening
-    admission off-thread, or creating a second journal?
-12. Does any required correction introduce a fallback, compatibility lane,
-    duplicated state, verifier ecosystem, or #1385 work?
-13. What invariant class, authority boundary, or lifecycle transition remains
-    unmodeled?
+Adjudicate every class below:
+
+1. **NT authority** — Can any Bolt production state still decide general order,
+   fill, position, account, or reconciliation state independently of NT?
+2. **NT reconciliation completeness** — Does NT #4557 close silent partial
+   open-order, relevant confirmed-fill, and current-position reconciliation,
+   including every builder caller and error-propagation path?
+3. **Configuration closure** — Can any configured NT filter/lookback setting
+   still make the admission universe incomplete?
+4. **Temporal/thread boundary** — Can projection run before reconciliation,
+   off the NT thread, or against a cache state older than the triggering event?
+5. **Provider boundary** — Does provider input contain only facts absent from
+   NT, with one live source and no file/fallback lane?
+6. **Authorization join** — Can an unattributed NT order, orphan evidence,
+   duplicate relation, partial fill, or terminal order create incorrect
+   liability or new-risk capability?
+7. **Recovery equivalence** — Does restart reconstruct the same Bolt state from
+   NT + committed evidence + provider collateral allowance without callback history?
+8. **Evidence integrity** — Did the deletions preserve contract closure,
+   append/sync ordering, poison behavior, caps, ownership, and consumer
+   validation?
+9. **Concurrency/lifecycle** — Can callbacks, health emission, shutdown, or
+   projection requests deadlock, race readiness, lose a required reprojection,
+   or outlive their authority?
+10. **BTE parity** — Does BTE reuse the same Bolt types/rules without pretending
+    to be live NT or creating a mock-only authority?
+11. **Dependency/governance** — Is Bolt pinned to one exact official NT source,
+    with no fork fallback or unregistered source fact?
+12. **Scope** — Is any present correctness defect incorrectly deferred to the
+    runbook or #1385, or is adjacent work hidden in this slice?
 
 ## Finding Requirements
 
 For every substantive finding provide:
 
-- severity: Critical, High, Medium, or Low;
-- violated requirement or transition row;
-- exact file/section and current-code evidence where applicable;
-- a concrete failure sequence;
-- root cause;
+- severity;
+- invariant class;
+- exact file, symbol, and line evidence;
+- concrete failure sequence;
 - sibling sweep performed;
-- the smallest systematic correction consistent with the hard constraints; and
-- behavior/integration proof required to close the class.
+- root cause;
+- smallest systematic correction consistent with the hard constraints;
+- whether it blocks native-review readiness; and
+- proof required to close the whole class.
+
+Explicitly distinguish:
+
+- verified present defects;
+- rejected or overstated concerns;
+- deterministic verification failures;
+- environment limitations;
+- accepted hard-cutover losses;
+- operational live-cutover prerequisites; and
+- genuine #1385 work.
 
 Do not:
 
-- produce stylistic findings;
-- recommend per-event or per-purpose wrapper proliferation;
+- manufacture style findings;
+- repeat a known issue without checking the exact head;
+- recommend per-purpose wrapper or verifier proliferation;
 - recommend source-scanning tests;
-- treat tracking or documentation as resolution of a current correctness gap;
-- defer current correctness to #1385;
-- assume an empty NT cache proves venue emptiness; or
-- recommend that Bolt independently adjudicate general NT lifecycle.
+- treat tracking/documentation as fixing present correctness;
+- infer venue emptiness from an empty NT cache; or
+- move NT-owned lifecycle logic back into Bolt.
 
 ## Required Output
 
@@ -147,22 +169,20 @@ End with:
 
 Choose exactly one:
 
-- `ACCEPT DESIGN`
-- `REVISE DESIGN`
+- `READY FOR NATIVE REVIEW`
+- `CHANGES REQUIRED`
 
-### B. Required changes
+### B. Required implementation sequence
 
-Give one dependency-ordered list. If no changes are required, state `None`.
+Give one dependency-ordered list, or `None`.
 
-### C. Rejected or overstated concerns
+### C. Architecture statement
 
-Identify proposed findings that are not defects and explain why.
+State plainly whether Bolt is now the thinnest safe layer over NT and identify
+any remaining duplicated authority.
 
 ### D. Missing-class challenge
 
-Name one still-unreviewed authority or lifecycle boundary, or state with
-specific evidence that the requested boundary set is complete.
-
-Do not approve implementation merely because current CI is green. This review
-is complete only when the specification is coherent and implementable as the
-thinnest safe layer over NT.
+Name one concrete still-unreviewed lifecycle/authority boundary, or state with
+specific evidence that the requested class set is complete. Do not manufacture
+a speculative boundary merely to satisfy this section.

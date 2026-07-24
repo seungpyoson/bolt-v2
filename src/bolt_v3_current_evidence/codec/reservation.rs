@@ -289,21 +289,18 @@ impl FillOrderSideV1 {
 #[serde(rename_all = "snake_case")]
 enum FillSourceV1 {
     NtOrderFill,
-    NtOrderFillClamped,
 }
 
 impl FillSourceV1 {
     fn from_fact(value: SubmitReservationFillSource) -> Self {
         match value {
             SubmitReservationFillSource::NtOrderFill => Self::NtOrderFill,
-            SubmitReservationFillSource::NtOrderFillClamped => Self::NtOrderFillClamped,
         }
     }
 
     fn into_fact(self) -> SubmitReservationFillSource {
         match self {
             Self::NtOrderFill => SubmitReservationFillSource::NtOrderFill,
-            Self::NtOrderFillClamped => SubmitReservationFillSource::NtOrderFillClamped,
         }
     }
 }

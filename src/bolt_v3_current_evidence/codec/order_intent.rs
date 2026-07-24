@@ -440,7 +440,7 @@ impl EntryClampOutcomeV1 {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum EntryClampReasonV1 {
-    NoVenueTruth,
+    NoCanonicalNtPosition,
     ForeignInstrument,
     NonSellOrderSide,
 }
@@ -448,7 +448,9 @@ enum EntryClampReasonV1 {
 impl EntryClampReasonV1 {
     fn from_fact(reason: OrderIntentClampNotEvaluatedReason) -> Self {
         match reason {
-            OrderIntentClampNotEvaluatedReason::NoVenueTruth => Self::NoVenueTruth,
+            OrderIntentClampNotEvaluatedReason::NoCanonicalNtPosition => {
+                Self::NoCanonicalNtPosition
+            }
             OrderIntentClampNotEvaluatedReason::ForeignInstrument => Self::ForeignInstrument,
             OrderIntentClampNotEvaluatedReason::NonSellOrderSide => Self::NonSellOrderSide,
         }
@@ -456,7 +458,9 @@ impl EntryClampReasonV1 {
 
     fn into_fact(self) -> OrderIntentClampNotEvaluatedReason {
         match self {
-            Self::NoVenueTruth => OrderIntentClampNotEvaluatedReason::NoVenueTruth,
+            Self::NoCanonicalNtPosition => {
+                OrderIntentClampNotEvaluatedReason::NoCanonicalNtPosition
+            }
             Self::ForeignInstrument => OrderIntentClampNotEvaluatedReason::ForeignInstrument,
             Self::NonSellOrderSide => OrderIntentClampNotEvaluatedReason::NonSellOrderSide,
         }
@@ -618,7 +622,7 @@ impl ExitClampOutcomeV1 {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ExitClampReasonV1 {
-    NoVenueTruth,
+    NoCanonicalNtPosition,
     ForeignInstrument,
     NonSellOrderSide,
 }
@@ -626,7 +630,9 @@ enum ExitClampReasonV1 {
 impl ExitClampReasonV1 {
     fn from_fact(reason: OrderIntentClampNotEvaluatedReason) -> Self {
         match reason {
-            OrderIntentClampNotEvaluatedReason::NoVenueTruth => Self::NoVenueTruth,
+            OrderIntentClampNotEvaluatedReason::NoCanonicalNtPosition => {
+                Self::NoCanonicalNtPosition
+            }
             OrderIntentClampNotEvaluatedReason::ForeignInstrument => Self::ForeignInstrument,
             OrderIntentClampNotEvaluatedReason::NonSellOrderSide => Self::NonSellOrderSide,
         }
@@ -634,7 +640,9 @@ impl ExitClampReasonV1 {
 
     fn into_fact(self) -> OrderIntentClampNotEvaluatedReason {
         match self {
-            Self::NoVenueTruth => OrderIntentClampNotEvaluatedReason::NoVenueTruth,
+            Self::NoCanonicalNtPosition => {
+                OrderIntentClampNotEvaluatedReason::NoCanonicalNtPosition
+            }
             Self::ForeignInstrument => OrderIntentClampNotEvaluatedReason::ForeignInstrument,
             Self::NonSellOrderSide => OrderIntentClampNotEvaluatedReason::NonSellOrderSide,
         }

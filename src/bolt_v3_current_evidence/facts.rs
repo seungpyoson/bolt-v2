@@ -47,7 +47,7 @@ pub struct SubmitReservationFillFact {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderIntentClampNotEvaluatedReason {
-    NoVenueTruth,
+    NoCanonicalNtPosition,
     ForeignInstrument,
     NonSellOrderSide,
 }
@@ -178,7 +178,14 @@ pub struct BasketAdmissionGrantedFact {
 pub struct BasketAdmittedLeg {
     pub client_order_id: String,
     pub instrument_id: String,
+    pub intent_kind: BasketAdmissionIntentKind,
     pub reservation: Option<ReservationAttribution>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BasketAdmissionIntentKind {
+    Entry,
+    RiskReducingExit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,14 +247,12 @@ impl CapitalAdmissionRebuildSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubmitReservationFillSource {
     NtOrderFill,
-    NtOrderFillClamped,
 }
 
 impl SubmitReservationFillSource {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NtOrderFill => "nt_order_fill",
-            Self::NtOrderFillClamped => "nt_order_fill_clamped",
         }
     }
 }
@@ -313,54 +318,24 @@ pub struct RequoteThrottleObservationFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VenueTruthCaptureEndpoint {
-    VenueTruthSnapshot,
+pub enum ProviderCollateralAllowanceCaptureEndpoint {
+    ProviderCollateralAllowanceSnapshot,
     ClobBalanceAllowance,
-    ClobOpenOrders,
-    DataApiPositions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VenueTruthCaptureErrorClass {
+pub enum ProviderCollateralAllowanceCaptureErrorClass {
     Unknown,
     TransportOrDecode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VenueTruthCaptureFailureFact {
+pub struct ProviderCollateralAllowanceCaptureFailureFact {
     pub source: String,
     pub observed_at_ns: u64,
-    pub endpoint: VenueTruthCaptureEndpoint,
-    pub error_class: VenueTruthCaptureErrorClass,
+    pub endpoint: ProviderCollateralAllowanceCaptureEndpoint,
+    pub error_class: ProviderCollateralAllowanceCaptureErrorClass,
     pub captures_missed: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VenueTruthDivergenceAlarmClass {
-    TrueDivergence,
-    OrderingViolation,
-    SilentChannel,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VenueTruthDivergenceDomain {
-    AccountChanged,
-    OrderingViolation,
-    UnexplainedOpenOrderDelta,
-    UnexplainedPositionDelta,
-    UnexplainedCollateralBalanceDelta,
-    UnexplainedCollateralAllowanceDelta,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VenueTruthDivergenceFact {
-    pub source: String,
-    pub observed_at_ns: u64,
-    pub account_id: String,
-    pub domain: VenueTruthDivergenceDomain,
-    pub venue_value: String,
-    pub prior_accepted_value: String,
-    pub alarm_class: VenueTruthDivergenceAlarmClass,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1140,12 +1115,19 @@ pub struct TerminalSettlementFact {
 pub struct ReservationRecoveryFacts {
     reservation_attribution: BTreeMap<String, ReservationAttribution>,
     reservation_fill_trade_ids: BTreeMap<(String, String), BTreeSet<String>>,
+    admitted_unreserved_entry_client_order_ids: BTreeSet<String>,
+    admitted_risk_reducing_client_order_ids: BTreeSet<String>,
+    admitted_forced_reduction_client_order_ids: BTreeSet<String>,
 }
 
 impl ReservationRecoveryFacts {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.reservation_attribution.is_empty() && self.reservation_fill_trade_ids.is_empty()
+        self.reservation_attribution.is_empty()
+            && self.reservation_fill_trade_ids.is_empty()
+            && self.admitted_unreserved_entry_client_order_ids.is_empty()
+            && self.admitted_risk_reducing_client_order_ids.is_empty()
+            && self.admitted_forced_reduction_client_order_ids.is_empty()
     }
 
     #[must_use]
@@ -1168,18 +1150,70 @@ impl ReservationRecoveryFacts {
         ))
     }
 
+    #[must_use]
+    pub fn authorizes_non_reservation_order(&self, client_order_id: &str) -> bool {
+        self.admitted_unreserved_entry_client_order_ids
+            .contains(client_order_id)
+            || self
+                .admitted_risk_reducing_client_order_ids
+                .contains(client_order_id)
+            || self
+                .admitted_forced_reduction_client_order_ids
+                .contains(client_order_id)
+    }
+
+    #[must_use]
+    pub fn authorizes_forced_reduction_order(&self, client_order_id: &str) -> bool {
+        self.admitted_forced_reduction_client_order_ids
+            .contains(client_order_id)
+    }
+
     pub(super) fn apply(&mut self, fact: ReservationRecoveryEvent) -> Result<()> {
         match fact {
             ReservationRecoveryEvent::AdmittedEntry(admission) => {
                 if let Some(reservation) = admission.reservation {
                     self.insert_attribution(reservation)?;
+                } else {
+                    self.insert_non_reservation_authorization(
+                        admission.details.client_order_id,
+                        RecoveredNonReservationAuthorization::UnreservedEntry,
+                    )?;
                 }
             }
             ReservationRecoveryEvent::BasketGranted(grant) => {
                 for leg in grant.admitted_legs {
                     if let Some(reservation) = leg.reservation {
                         self.insert_attribution(reservation)?;
+                    } else {
+                        let authorization = match leg.intent_kind {
+                            BasketAdmissionIntentKind::Entry => {
+                                RecoveredNonReservationAuthorization::UnreservedEntry
+                            }
+                            BasketAdmissionIntentKind::RiskReducingExit => {
+                                RecoveredNonReservationAuthorization::RiskReducing
+                            }
+                        };
+                        self.insert_non_reservation_authorization(
+                            leg.client_order_id,
+                            authorization,
+                        )?;
                     }
+                }
+            }
+            ReservationRecoveryEvent::RiskReducingExit(admission) => {
+                if admission.outcome == AdmissionDecisionOutcome::Admitted {
+                    self.insert_non_reservation_authorization(
+                        admission.details.client_order_id,
+                        RecoveredNonReservationAuthorization::RiskReducing,
+                    )?;
+                }
+            }
+            ReservationRecoveryEvent::ForcedReduction(admission) => {
+                if admission.outcome == AdmissionDecisionOutcome::Admitted {
+                    self.insert_non_reservation_authorization(
+                        admission.details.client_order_id,
+                        RecoveredNonReservationAuthorization::ForcedReduction,
+                    )?;
                 }
             }
             ReservationRecoveryEvent::Fill(fill) => {
@@ -1219,10 +1253,65 @@ impl ReservationRecoveryFacts {
             "duplicate submit-reservation attribution for client_order_id `{}`",
             attribution.client_order_id
         );
+        ensure!(
+            !self
+                .admitted_risk_reducing_client_order_ids
+                .contains(&attribution.client_order_id)
+                && !self
+                    .admitted_unreserved_entry_client_order_ids
+                    .contains(&attribution.client_order_id)
+                && !self
+                    .admitted_forced_reduction_client_order_ids
+                    .contains(&attribution.client_order_id),
+            "submit-reservation attribution for client_order_id `{}` conflicts with a non-reservation admission",
+            attribution.client_order_id
+        );
         self.reservation_attribution
             .insert(attribution.client_order_id.clone(), attribution);
         Ok(())
     }
+
+    fn insert_non_reservation_authorization(
+        &mut self,
+        client_order_id: String,
+        authorization: RecoveredNonReservationAuthorization,
+    ) -> Result<()> {
+        ensure!(
+            !self.reservation_attribution.contains_key(&client_order_id)
+                && !self
+                    .admitted_unreserved_entry_client_order_ids
+                    .contains(&client_order_id)
+                && !self
+                    .admitted_risk_reducing_client_order_ids
+                    .contains(&client_order_id)
+                && !self
+                    .admitted_forced_reduction_client_order_ids
+                    .contains(&client_order_id),
+            "duplicate or conflicting admission authorization for client_order_id `{client_order_id}`"
+        );
+        match authorization {
+            RecoveredNonReservationAuthorization::UnreservedEntry => {
+                self.admitted_unreserved_entry_client_order_ids
+                    .insert(client_order_id);
+            }
+            RecoveredNonReservationAuthorization::RiskReducing => {
+                self.admitted_risk_reducing_client_order_ids
+                    .insert(client_order_id);
+            }
+            RecoveredNonReservationAuthorization::ForcedReduction => {
+                self.admitted_forced_reduction_client_order_ids
+                    .insert(client_order_id);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveredNonReservationAuthorization {
+    UnreservedEntry,
+    RiskReducing,
+    ForcedReduction,
 }
 
 #[derive(Debug, Default)]
@@ -1315,6 +1404,8 @@ impl BookingRecoveryFacts {
 pub(super) enum ReservationRecoveryEvent {
     AdmittedEntry(Box<AdmittedEntryAdmissionFact>),
     BasketGranted(BasketAdmissionGrantedFact),
+    RiskReducingExit(Box<RiskReducingExitAdmissionFact>),
+    ForcedReduction(Box<ForcedReductionAdmissionFact>),
     Fill(SubmitReservationFillFact),
 }
 
@@ -1363,8 +1454,7 @@ mod current_fact {
         RequoteThrottleObservation(RequoteThrottleObservationFact),
         Settlement(SettlementFact),
         TerminalSettlement(Box<TerminalSettlementFact>),
-        VenueTruthCaptureFailure(VenueTruthCaptureFailureFact),
-        VenueTruthDivergence(VenueTruthDivergenceFact),
+        ProviderCollateralAllowanceCaptureFailure(ProviderCollateralAllowanceCaptureFailureFact),
     }
 
     impl CurrentFact {
@@ -1396,8 +1486,9 @@ mod current_fact {
                 Self::RequoteThrottleObservation(_) => KnownFact::RequoteThrottleObservationV1,
                 Self::Settlement(_) => KnownFact::SettlementV1,
                 Self::TerminalSettlement(_) => KnownFact::TerminalSettlementV1,
-                Self::VenueTruthCaptureFailure(_) => KnownFact::VenueTruthCaptureFailureV1,
-                Self::VenueTruthDivergence(_) => KnownFact::VenueTruthDivergenceV1,
+                Self::ProviderCollateralAllowanceCaptureFailure(_) => {
+                    KnownFact::ProviderCollateralAllowanceCaptureFailureV1
+                }
             }
         }
     }

@@ -34,8 +34,7 @@ use std::os::unix::io::AsRawFd;
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{
-        assert_bolt_v3_logging_ready_for_run, build_bolt_v3_live_node_with_summary,
-        build_bolt_v3_strategy_free_live_node_with_summary,
+        build_bolt_v3_live_node_with_summary, build_bolt_v3_strategy_free_live_node_with_summary,
     },
     bolt_v3_providers::{
         binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
@@ -227,40 +226,12 @@ fn subprocess_reference_health_does_not_poison_parent_nt_logger_for_later_kernel
                 "subprocess_reference_health_does_not_poison_parent_nt_logger_for_later_kernel",
                 "parent",
             );
-            run_logger_survival_child(
-                "subprocess_reference_health_does_not_poison_parent_nt_logger_for_later_kernel",
-                "poisoned-parent",
-            );
         }
         Some("health-probe") => {
             build_stop_drop_strategy_free_logger_probe("bolt-v3-logger-survival-health-probe");
         }
-        Some("poisoned-parent") => {
-            let abort_error = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
-            let captured_error = abort_error.clone();
-            let (_stdout, _stderr) = capture_standard_streams(|| {
-                build_stop_drop_strategy_free_logger_probe("bolt-v3-logger-survival-health-probe");
-                let error = assert_bolt_v3_logging_ready_for_run()
-                    .expect_err("dead NT logging must abort before the real node runs");
-                captured_error.borrow_mut().replace(error.to_string());
-            });
-            let abort_error = abort_error
-                .borrow()
-                .clone()
-                .expect("old in-process probe shape must produce a logging abort");
-            assert!(
-                abort_error.contains("bolt-v3 logging is not initialized before node run")
-                    && abort_error.contains("max_level=Off"),
-                "logging abort must name the dead logger state, got: {abort_error}"
-            );
-        }
         Some("parent") => {
             let (_stdout, stderr) = capture_standard_streams(|| {
-                // Differential mutation for the old launch-health pattern:
-                // replace this subprocess call with `build_stop_drop_strategy_free_logger_probe(...)`
-                // in this parent process. Dropping that strategy-free kernel drops NT's last
-                // `LogGuard`, closes `LOGGER_TX`/`LOGGER_HANDLE`, and sets `log::max_level(Off)`;
-                // the later kernel then cannot emit this sentinel.
                 run_logger_survival_child(
                     "subprocess_reference_health_does_not_poison_parent_nt_logger_for_later_kernel",
                     "health-probe",

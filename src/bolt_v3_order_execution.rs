@@ -22,7 +22,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bolt_v3_capital_admission::ProductAdmissionSnapshot,
-    bolt_v3_capital_admission_state::capital_admission_source_is_accepted_venue_truth,
     bolt_v3_current_evidence::{
         EntryOrderIntentFact, EvidenceOrderSide, EvidenceOrderType, EvidenceTimeInForce,
         EvidenceTrailingOffsetType, EvidenceTriggerType, NonBlockingRecordOutcome,
@@ -503,15 +502,15 @@ fn clamp_risk_reducing_exit_to_venue_position(
         });
         return Ok((intent, request, order));
     }
-    let venue_position = match venue_truth_exit_position(submit_admission, &request) {
-        VenueTruthExitPosition::Position(position) => position,
-        VenueTruthExitPosition::NoVenueTruth => {
+    let venue_position = match canonical_nt_exit_position(submit_admission, &request) {
+        CanonicalNtExitPosition::Position(position) => position,
+        CanonicalNtExitPosition::Missing => {
             intent.clamp_outcome = Some(OrderIntentClampOutcome::NotEvaluated {
-                reason: OrderIntentClampNotEvaluatedReason::NoVenueTruth,
+                reason: OrderIntentClampNotEvaluatedReason::NoCanonicalNtPosition,
             });
             return Ok((intent, request, order));
         }
-        VenueTruthExitPosition::ForeignInstrument => {
+        CanonicalNtExitPosition::ForeignInstrument => {
             intent.clamp_outcome = Some(OrderIntentClampOutcome::NotEvaluated {
                 reason: OrderIntentClampNotEvaluatedReason::ForeignInstrument,
             });
@@ -634,29 +633,26 @@ fn rejected_exit_clamp(
     }
 }
 
-enum VenueTruthExitPosition {
+enum CanonicalNtExitPosition {
     Position(Decimal),
-    NoVenueTruth,
+    Missing,
     ForeignInstrument,
 }
 
-fn venue_truth_exit_position(
+fn canonical_nt_exit_position(
     submit_admission: &BoltV3SubmitAdmissionState,
     request: &BoltV3SubmitAdmissionRequest,
-) -> VenueTruthExitPosition {
+) -> CanonicalNtExitPosition {
     let Some(state) = submit_admission.capital_admission_state_snapshot() else {
-        return VenueTruthExitPosition::NoVenueTruth;
+        return CanonicalNtExitPosition::Missing;
     };
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    if !capital_admission_source_is_accepted_venue_truth(&product.source) {
-        return VenueTruthExitPosition::NoVenueTruth;
-    }
     if request.instrument_id == product.yes_instrument_id {
-        VenueTruthExitPosition::Position(product.yes_position)
+        CanonicalNtExitPosition::Position(product.yes_position)
     } else if request.instrument_id == product.no_instrument_id {
-        VenueTruthExitPosition::Position(product.no_position)
+        CanonicalNtExitPosition::Position(product.no_position)
     } else {
-        VenueTruthExitPosition::ForeignInstrument
+        CanonicalNtExitPosition::ForeignInstrument
     }
 }
 
@@ -1301,11 +1297,11 @@ mod tests {
         },
         bolt_v3_capital_admission_runtime_feed::{
             CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
-            POLYMARKET_VENUE_TRUTH_REST_SOURCE,
+            POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE,
         },
         bolt_v3_capital_admission_state::{
             OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
-            VenueSpendabilitySnapshot,
+            ProviderCollateralAllowanceSnapshot,
         },
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
         bolt_v3_current_evidence::{
@@ -1795,7 +1791,10 @@ mod tests {
     #[test]
     fn live_risk_reducing_exit_clamps_submitted_quantity_to_venue_position() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::new(3, 0),
+        );
 
         let mut sink = RecordingVenueMutationSink::default();
         let order = limit_exit_order("O-19700101-000000-001-EXIT-CLAMP-1", Quantity::new(5.0, 2));
@@ -1843,7 +1842,10 @@ mod tests {
             crate::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::RiskReducingExitOrderIntent,
             1,
         );
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::new(3, 0),
+        );
         let mut sink = RecordingVenueMutationSink::default();
         let order = limit_exit_order(
             "O-19700101-000000-001-EXIT-EVIDENCE-FAILURE-1",
@@ -1880,7 +1882,7 @@ mod tests {
     }
 
     #[test]
-    fn risk_reducing_exit_without_venue_truth_records_not_evaluated_reason() {
+    fn risk_reducing_exit_without_provider_collateral_allowance_records_not_evaluated_reason() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
             writer.clone(),
@@ -1911,7 +1913,9 @@ mod tests {
                 order,
                 BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
             )
-            .expect("missing venue truth should pass through with explicit evidence");
+            .expect(
+                "missing provider collateral allowance should pass through with explicit evidence",
+            );
 
         assert_eq!(outcome, BoltV3SubmitRoutingOutcome::Submitted);
         assert_eq!(sink.submitted_order_quantities, vec![Quantity::new(5.0, 2)]);
@@ -1920,7 +1924,7 @@ mod tests {
         assert_eq!(
             records[0].clamp_outcome,
             Some(OrderIntentClampOutcome::NotEvaluated {
-                reason: OrderIntentClampNotEvaluatedReason::NoVenueTruth,
+                reason: OrderIntentClampNotEvaluatedReason::NoCanonicalNtPosition,
             })
         );
     }
@@ -1928,7 +1932,8 @@ mod tests {
     #[test]
     fn risk_reducing_exit_for_foreign_instrument_records_not_evaluated_reason() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let admission = venue_truth_admission_with_yes_position(writer, Decimal::new(3, 0));
+        let admission =
+            provider_collateral_allowance_admission_with_yes_position(writer, Decimal::new(3, 0));
         let order = limit_exit_order_for_instrument(
             "O-19700101-000000-001-EXIT-FOREIGN-1",
             InstrumentId::from("instrument-foreign.VENUE-A"),
@@ -1958,7 +1963,8 @@ mod tests {
     #[test]
     fn clamp_eligible_non_sell_order_records_not_evaluated_reason() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let admission = venue_truth_admission_with_yes_position(writer, Decimal::new(3, 0));
+        let admission =
+            provider_collateral_allowance_admission_with_yes_position(writer, Decimal::new(3, 0));
         let order = limit_order("O-19700101-000000-001-FLAT-BUY-1");
         let intent = exit_intent_for_order(&order);
         let mut request = risk_reducing_exit_submit_request_for_order(
@@ -1990,7 +1996,10 @@ mod tests {
     #[test]
     fn zero_venue_position_rejects_with_rejected_clamp_evidence() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::ZERO);
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::ZERO,
+        );
         let mut sink = RecordingVenueMutationSink::default();
         let order = limit_exit_order(
             "O-19700101-000000-001-EXIT-REJECTED-1",
@@ -2036,7 +2045,8 @@ mod tests {
     #[test]
     fn kill_switch_forced_reduction_clamps_to_venue_position() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let admission = venue_truth_admission_with_yes_position(writer, Decimal::new(3, 0));
+        let admission =
+            provider_collateral_allowance_admission_with_yes_position(writer, Decimal::new(3, 0));
         let order = limit_exit_order(
             "O-19700101-000000-001-FORCED-CLAMP-1",
             Quantity::new(5.0, 2),
@@ -2080,7 +2090,8 @@ mod tests {
     #[test]
     fn kill_switch_forced_reduction_within_venue_position_records_within_bounds() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let admission = venue_truth_admission_with_yes_position(writer, Decimal::new(8, 0));
+        let admission =
+            provider_collateral_allowance_admission_with_yes_position(writer, Decimal::new(8, 0));
         let order = limit_exit_order(
             "O-19700101-000000-001-FORCED-WITHIN-1",
             Quantity::new(3.0, 2),
@@ -2113,7 +2124,10 @@ mod tests {
     #[test]
     fn kill_switch_flatten_command_routes_forced_reduction_through_clamped_submit() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::new(3, 0),
+        );
         admission.replace_kill_switch_state(KillSwitchState::Flattening {
             halt_id: "halt-001".to_string(),
         });
@@ -2121,6 +2135,7 @@ mod tests {
             BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 2, Decimal::new(10, 0))
                 .expect("forced reduction policy should be valid"),
         );
+        reconcile_no_live_forced_reductions(admission.as_ref(), 2);
         let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
         let claim = BoltV3KillSwitchForcedReductionClaim::new(
             "halt-001",
@@ -2202,7 +2217,10 @@ mod tests {
     #[test]
     fn kill_switch_flatten_command_rejects_zero_venue_position_with_clamp_evidence() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::ZERO);
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::ZERO,
+        );
         admission.replace_kill_switch_state(KillSwitchState::Flattening {
             halt_id: "halt-001".to_string(),
         });
@@ -2210,6 +2228,7 @@ mod tests {
             BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 2, Decimal::new(10, 0))
                 .expect("forced reduction policy should be valid"),
         );
+        reconcile_no_live_forced_reductions(admission.as_ref(), 2);
         let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
         let claim = BoltV3KillSwitchForcedReductionClaim::new(
             "halt-001",
@@ -2293,13 +2312,17 @@ mod tests {
     }
 
     #[test]
-    fn two_halt_cycles_release_terminal_forced_reduction_and_second_submits_clamped() {
+    fn two_halt_cycles_require_reconciled_terminal_absence_before_second_submit() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::new(3, 0),
+        );
         admission.configure_kill_switch_forced_reduction_policy(
             BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 1, Decimal::new(10, 0))
                 .expect("forced reduction policy should be valid"),
         );
+        reconcile_no_live_forced_reductions(admission.as_ref(), 2);
         let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
         let mut feed = CapitalAdmissionRuntimeFeed::new(
             capital_admission_runtime_feed_config(),
@@ -2326,8 +2349,9 @@ mod tests {
         ));
         assert!(
             feed.on_order_event(&first_terminal).is_none(),
-            "forced-reduction terminal release should not require capital-reservation ownership"
+            "terminal callbacks must not mutate canonical forced-reduction liveness"
         );
+        reconcile_no_live_forced_reductions(admission.as_ref(), 1_101);
         admission.replace_kill_switch_state(KillSwitchState::Armed);
 
         let second = flatten_command_for_halt("halt-002", "POSITION-002");
@@ -2340,7 +2364,7 @@ mod tests {
             &second,
         )
         .expect(
-            "second halt should submit after the first terminal releases the forced-reduction cap",
+            "second halt should submit after NT reconciliation proves the first order is no longer live",
         );
 
         assert_eq!(
@@ -2800,13 +2824,12 @@ mod tests {
                 free_collateral: Decimal::new(100, 0),
                 total_equity: Decimal::new(100, 0),
             },
-            venue_spendability: VenueSpendabilitySnapshot {
+            provider_collateral_allowance: ProviderCollateralAllowanceSnapshot {
                 source: "nt_account_free_collateral".to_string(),
                 observed_at_ns: 0,
                 venue_id: "VENUE-A".to_string(),
                 account_id: "ACCOUNT-001".to_string(),
                 collateral_currency: "USD".to_string(),
-                spendable_collateral: Decimal::new(100, 0),
                 collateral_allowance: Decimal::new(100, 0),
             },
             order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
@@ -2824,7 +2847,6 @@ mod tests {
                     yes_position: Decimal::ZERO,
                     no_position: Decimal::ZERO,
                     collateral_allowance: Decimal::new(100, 0),
-                    conditional_token_allowance: Decimal::new(100, 0),
                     collateral_coupled_group_id: "group-1".to_string(),
                 },
             ),
@@ -2832,7 +2854,7 @@ mod tests {
         }
     }
 
-    fn venue_truth_admission_with_yes_position(
+    fn provider_collateral_allowance_admission_with_yes_position(
         writer: Arc<DecisionEvidenceRecorder>,
         yes_position: Decimal,
     ) -> Arc<BoltV3SubmitAdmissionState> {
@@ -2843,12 +2865,24 @@ mod tests {
         let mut components = capital_admission_components();
         let ProductAdmissionSnapshot::PredictionMarketBinary(product) =
             &mut components.product_state;
-        product.source = POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string();
+        product.source = POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string();
         product.yes_position = yes_position;
         admission.update_capital_admission_nt_components(components);
         let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1);
         assert!(rebuild.accepted);
         admission
+    }
+
+    fn reconcile_no_live_forced_reductions(
+        admission: &BoltV3SubmitAdmissionState,
+        observed_at_ns: u64,
+    ) {
+        let rebuild =
+            admission.rebuild_capital_admission_open_order_reservations(Vec::new(), observed_at_ns);
+        assert!(
+            rebuild.accepted,
+            "canonical NT open-order projection should reconcile forced-reduction liveness"
+        );
     }
 
     fn capital_admission_runtime_feed_config() -> CapitalAdmissionRuntimeFeedConfig {
@@ -2865,12 +2899,9 @@ mod tests {
                     yes_position: Decimal::ZERO,
                     no_position: Decimal::ZERO,
                     collateral_allowance: Decimal::ZERO,
-                    conditional_token_allowance: Decimal::ZERO,
                     collateral_coupled_group_id: "group-1".to_string(),
                 },
             ),
-            startup_observed_at_ns: 0,
-            dedupe_retention_ns: u64::MAX,
         }
     }
 

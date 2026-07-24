@@ -901,7 +901,6 @@ fn shared_runtime_public_apis_expose_no_taker_private_or_nt_handle_types() {
     ];
     for relative in [
         "src/bolt_v3_settlement_booking.rs",
-        "src/bolt_v3_runtime_reconcile.rs",
         "src/bolt_v3_reference_price_health.rs",
     ] {
         let tokens = source_tokens(relative);

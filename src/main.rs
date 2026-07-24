@@ -29,8 +29,8 @@ use bolt_v2::{
         LaunchIdentity, WrittenOperatorArtifact, is_lowercase_git_sha, read_launch_identity,
     },
     bolt_v3_operator_health::{
-        BoltV3InputHealth, BoltV3OperatorHealthSurface, BoltV3RejectObserverHealth,
-        BoltV3VenueTruthHealth,
+        BoltV3InputHealth, BoltV3OperatorHealthSurface, BoltV3ProviderCollateralAllowanceHealth,
+        BoltV3RejectObserverHealth,
     },
     bolt_v3_prod_profile::{
         GENERATOR_FORMAT_VERSION, ProductionInvariants, generate_live_config, live_config_path,
@@ -1349,20 +1349,24 @@ fn ops_status_operator_health_from_loaded(
     } else {
         BoltV3RejectObserverHealth::not_configured()
     };
-    let venue_truth = if capital_admission_configured {
-        BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(
+    let provider_collateral_allowance = if capital_admission_configured {
+        BoltV3ProviderCollateralAllowanceHealth::from_configured_kill_switch_and_capital_state(
             &kill_switch_state,
             None,
         )
     } else {
-        BoltV3VenueTruthHealth::not_configured()
+        BoltV3ProviderCollateralAllowanceHealth::not_configured()
     };
     let input_health = if reference_source_count == 0 {
         BoltV3InputHealth::not_configured()
     } else {
         BoltV3InputHealth::unobserved(reference_source_count)
     };
-    BoltV3OperatorHealthSurface::from_parts(reject_observer, venue_truth, input_health)
+    BoltV3OperatorHealthSurface::from_parts(
+        reject_observer,
+        provider_collateral_allowance,
+        input_health,
+    )
 }
 
 fn run_ops_status(

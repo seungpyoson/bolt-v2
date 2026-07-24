@@ -6,11 +6,11 @@ use super::{
     CommittedAdmission, CommittedSettlement, DecisionEvidenceRecorder, EntryOrderIntentFact,
     EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitSubmissionDecisionFact,
     ForcedReductionAdmissionFact, LossGovernorHaltFact, NonBlockingRecordOutcome,
-    ObservationRecordOutcome, OrderLifecycleFact, OrderRejectFact, RecordFailure,
-    RejectedEntryAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
-    RiskReducingExitOrderIntentFact, SettlementFact, SubmitLinkedStrategyInputSnapshotFact,
-    SubmitReservationFillFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
-    VenueTruthDivergenceFact,
+    ObservationRecordOutcome, OrderLifecycleFact, OrderRejectFact,
+    ProviderCollateralAllowanceCaptureFailureFact, RecordFailure, RejectedEntryAdmissionFact,
+    RequoteThrottleObservationFact, RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact,
+    SettlementFact, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
+    TerminalSettlementFact,
 };
 
 fn closed() -> RecordFailure {
@@ -243,22 +243,12 @@ impl SubmitAdmissionEvidence {
         self.recorder()?.record_capital_admission_rebuild(fact)
     }
 
-    pub fn record_venue_truth_capture_failure(
+    pub fn record_provider_collateral_allowance_capture_failure(
         &self,
-        fact: VenueTruthCaptureFailureFact,
+        fact: ProviderCollateralAllowanceCaptureFailureFact,
     ) -> NonBlockingRecordOutcome {
         match self.recorder() {
-            Ok(recorder) => recorder.record_venue_truth_capture_failure(fact),
-            Err(error) => NonBlockingRecordOutcome::Failed(error),
-        }
-    }
-
-    pub fn record_venue_truth_divergence(
-        &self,
-        fact: VenueTruthDivergenceFact,
-    ) -> NonBlockingRecordOutcome {
-        match self.recorder() {
-            Ok(recorder) => recorder.record_venue_truth_divergence(fact),
+            Ok(recorder) => recorder.record_provider_collateral_allowance_capture_failure(fact),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }

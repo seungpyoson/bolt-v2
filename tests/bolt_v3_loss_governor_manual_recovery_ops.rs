@@ -931,17 +931,20 @@ fn manual_recovery_refuses_missing_loss_snapshot_and_audits() {
 fn manual_recovery_refuses_non_loss_governor_halt_without_downgrading() {
     let (loaded, _temp) = loaded_with_enabled_loss_governor("state/kill-switch.json");
     let store = runtime_store(&loaded);
-    let venue_truth_halt = KillSwitchState::Halted {
-        halt_id: "halt-venue-truth-1".to_string(),
-        trigger: KillSwitchHaltTrigger::venue_truth_divergence(
-            "venue-truth",
+    let provider_collateral_allowance_halt = KillSwitchState::Halted {
+        halt_id: "halt-provider-allowance-1".to_string(),
+        trigger: KillSwitchHaltTrigger::provider_collateral_allowance_runtime_failure(
+            "provider-allowance",
             2_000,
-            "causal venue truth diverged",
+            "causal provider collateral allowance diverged",
         ),
     };
     store
-        .write_state_with_loss_snapshot(&venue_truth_halt, Some(&zero_loss_snapshot()))
-        .expect("latched venue-truth halt should persist");
+        .write_state_with_loss_snapshot(
+            &provider_collateral_allowance_halt,
+            Some(&zero_loss_snapshot()),
+        )
+        .expect("latched provider-allowance halt should persist");
 
     let error = recover_loss_governor_manual_halt(&loaded, valid_command())
         .expect_err("loss-governor recovery must not clear another halt class");
@@ -956,7 +959,7 @@ fn manual_recovery_refuses_non_loss_governor_halt_without_downgrading() {
         store
             .load_recovery_state()
             .expect("store should remain readable"),
-        KillSwitchRecoveryState::Recovered(venue_truth_halt)
+        KillSwitchRecoveryState::Recovered(provider_collateral_allowance_halt)
     );
     assert_single_refused_audit(&store, "non-loss-governor");
 }

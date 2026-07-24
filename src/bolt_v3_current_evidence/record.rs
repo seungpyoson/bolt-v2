@@ -19,21 +19,20 @@ use super::codec::{
     encode_capital_admission_rebuild, encode_entry_order_intent, encode_entry_skip_observation,
     encode_exit_evaluation, encode_exit_hold_decision, encode_exit_submission_decision,
     encode_forced_reduction_admission, encode_loss_governor_halt, encode_order_lifecycle,
-    encode_order_reject, encode_rejected_entry_admission, encode_requote_throttle_observation,
-    encode_reservation_fill, encode_risk_reducing_exit_admission,
-    encode_risk_reducing_exit_order_intent, encode_settlement,
+    encode_order_reject, encode_provider_collateral_allowance_capture_failure,
+    encode_rejected_entry_admission, encode_requote_throttle_observation, encode_reservation_fill,
+    encode_risk_reducing_exit_admission, encode_risk_reducing_exit_order_intent, encode_settlement,
     encode_submit_linked_strategy_input_snapshot, encode_terminal_settlement,
-    encode_venue_truth_capture_failure, encode_venue_truth_divergence,
 };
 use super::facts::{
     AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
     BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, EntryOrderIntentFact,
     EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitSubmissionDecisionFact,
     ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
-    RejectedEntryAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
-    RiskReducingExitOrderIntentFact, SettlementFact, SubmitLinkedStrategyInputSnapshotFact,
-    SubmitReservationFillFact, TerminalSettlementFact, VenueTruthCaptureFailureFact,
-    VenueTruthDivergenceFact,
+    ProviderCollateralAllowanceCaptureFailureFact, RejectedEntryAdmissionFact,
+    RequoteThrottleObservationFact, RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact,
+    SettlementFact, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
+    TerminalSettlementFact,
 };
 use super::generated_contract::{
     EffectPolicy, KnownProducer, KnownPurpose, KnownSink, effect_policy_for_purpose,
@@ -892,28 +891,14 @@ impl DecisionEvidenceRecorder {
         }
     }
 
-    pub fn record_venue_truth_capture_failure(
+    pub fn record_provider_collateral_allowance_capture_failure(
         &self,
-        fact: VenueTruthCaptureFailureFact,
+        fact: ProviderCollateralAllowanceCaptureFailureFact,
     ) -> NonBlockingRecordOutcome {
-        match encode_venue_truth_capture_failure(fact) {
+        match encode_provider_collateral_allowance_capture_failure(fact) {
             Ok(record) => self.record_nonblocking(
-                KnownProducer::SubmitAdmissionVenueCaptureFailure,
+                KnownProducer::SubmitAdmissionProviderCollateralAllowanceCaptureFailure,
                 EffectPolicy::RiskReducingContinues,
-                record,
-            ),
-            Err(error) => NonBlockingRecordOutcome::Failed(error),
-        }
-    }
-
-    pub fn record_venue_truth_divergence(
-        &self,
-        fact: VenueTruthDivergenceFact,
-    ) -> NonBlockingRecordOutcome {
-        match encode_venue_truth_divergence(fact) {
-            Ok(record) => self.record_nonblocking(
-                KnownProducer::SubmitAdmissionVenueDivergence,
-                EffectPolicy::PreserveResult,
                 record,
             ),
             Err(error) => NonBlockingRecordOutcome::Failed(error),

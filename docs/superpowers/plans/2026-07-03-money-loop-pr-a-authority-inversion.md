@@ -1,5 +1,10 @@
 # Money Loop PR-A Authority Inversion Implementation Plan
 
+> **Superseded plan (2026-07-24).** Do not execute this plan. Use
+> `specs/1354-current-evidence-thin-nt-boundary/plan.md`. The selected boundary
+> deletes Bolt venue/order reconciliation and keeps NautilusTrader as the sole
+> lifecycle authority.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make Polymarket venue REST observations the continuous runtime authority for money state after causal reconciliation, and latch a whole-node halt on any venue delta unexplainable by recorded orders, fills, terminal events, or already-booked settlements.

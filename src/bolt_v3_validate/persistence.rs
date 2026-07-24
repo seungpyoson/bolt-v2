@@ -138,6 +138,12 @@ pub(super) fn validate_capital_admission_reconciliation_universe(
                 .to_string(),
         );
     }
+    if execution.filter_position_reports {
+        errors.push(
+            "nautilus.exec_engine.filter_position_reports must be false when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
     if !execution.filtered_client_order_ids.is_empty() {
         errors.push(
             "nautilus.exec_engine.filtered_client_order_ids must be empty when risk.capital_pools enables submit admission enforcement"

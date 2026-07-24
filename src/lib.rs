@@ -83,7 +83,6 @@ pub mod bolt_v3_realized_volatility_runtime;
 pub mod bolt_v3_reference_price;
 pub mod bolt_v3_reference_price_health;
 pub mod bolt_v3_risk_reservation_substrate;
-pub mod bolt_v3_runtime_reconcile;
 // Re-exported at crate root so backtesting consumers can name these
 // reconstruction types without writing the snake_case module path. The
 // backtesting-vertical-slice sample-venue source fence forbids the literal
@@ -91,6 +90,7 @@ pub mod bolt_v3_runtime_reconcile;
 // fence-clean, the module path is not.
 pub use bolt_v3_reference_price::{ReferencePriceUpdate, ReferenceQuoteProvenance};
 pub mod bolt_v3_capital_admission_state;
+pub mod bolt_v3_provider_collateral_allowance;
 pub mod bolt_v3_requote_budget;
 pub mod bolt_v3_secrets;
 pub mod bolt_v3_settlement_booking;
@@ -104,7 +104,6 @@ pub mod bolt_v3_taker_updown_signal;
 pub mod bolt_v3_timestamp_domain;
 pub mod bolt_v3_trade_flow;
 pub mod bolt_v3_validate;
-pub mod bolt_v3_venue_truth;
 pub mod bolt_v3_wire_boundary;
 mod bounded_config_read;
 pub mod execution_state;

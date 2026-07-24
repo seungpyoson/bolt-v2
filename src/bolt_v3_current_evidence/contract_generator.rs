@@ -647,26 +647,33 @@ pub fn render_contract(contract: &ContractRegistry) -> String {
         "    match (fact, consumer) {\n",
     ));
     for row in &wire.dispositions {
-        output.push_str(&format!(
-            "        (KnownFact::{}, KnownConsumer::{}) => {{\n            ",
-            rust_variant(&row.fact),
-            rust_variant(&row.consumer)
-        ));
-        if row.action == "relevant" {
-            output.push_str(&format!(
-                "ConsumerDisposition::Relevant(KnownFact::{})\n        }}\n",
+        let fact = rust_variant(&row.fact);
+        let consumer = rust_variant(&row.consumer);
+        let header = format!("        (KnownFact::{fact}, KnownConsumer::{consumer})");
+        let disposition = if row.action == "relevant" {
+            format!(
+                "ConsumerDisposition::Relevant(KnownFact::{})",
                 rust_variant(
                     row.event_variant
                         .as_deref()
                         .expect("validated relevant event")
                 )
-            ));
+            )
         } else {
-            output.push_str(&format!(
-                "ConsumerDisposition::Irrelevant({:?})\n        }}\n",
+            format!(
+                "ConsumerDisposition::Irrelevant({:?})",
                 row.owner_ruling
                     .as_deref()
                     .expect("validated irrelevant ruling")
+            )
+        };
+        if header.chars().count() + " => {".chars().count() <= 100 {
+            output.push_str(&format!(
+                "{header} => {{\n            {disposition}\n        }}\n"
+            ));
+        } else {
+            output.push_str(&format!(
+                "        (\n            KnownFact::{fact},\n            KnownConsumer::{consumer},\n        ) => {disposition},\n"
             ));
         }
     }

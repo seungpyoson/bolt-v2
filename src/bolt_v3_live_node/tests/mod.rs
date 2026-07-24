@@ -15,7 +15,7 @@ use crate::bolt_v3_iv::error::IvRejectReason;
 use crate::bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps};
 use crate::bolt_v3_operator_health::{
     BoltV3InputHealth, BoltV3OperatorHealthStatus, BoltV3OperatorHealthSurface,
-    BoltV3RejectObserverHealth, BoltV3SettlementHealth, BoltV3VenueTruthHealth,
+    BoltV3ProviderCollateralAllowanceHealth, BoltV3RejectObserverHealth, BoltV3SettlementHealth,
 };
 use crate::bolt_v3_providers::hyperliquid::{
     ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
@@ -109,13 +109,14 @@ fn live_operator_health_surface_renders_poisoned_reject_feed_as_degraded() {
 }
 
 #[test]
-fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth_read_error() {
+fn live_operator_health_surface_renders_poisoned_submit_admission_as_provider_collateral_allowance_read_error()
+ {
     let writer = Arc::new(DecisionEvidenceRecorder::recording());
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
     let capital_admission = capital_admission_config_from_loaded(&loaded)
         .expect("fixture capital admission config should parse")
-        .expect("fixture should configure venue-truth capital admission");
+        .expect("fixture should configure provider-allowance capital admission");
     let submit_admission =
         BoltV3SubmitAdmissionState::new_with_capital_admission(writer.clone(), capital_admission);
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -134,11 +135,11 @@ fn live_operator_health_surface_renders_poisoned_submit_admission_as_venue_truth
     );
 
     assert_eq!(
-        surface.venue_truth.status,
+        surface.provider_collateral_allowance.status,
         BoltV3OperatorHealthStatus::Degraded
     );
     assert_eq!(
-        surface.venue_truth.read_error.as_deref(),
+        surface.provider_collateral_allowance.read_error.as_deref(),
         Some(OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR)
     );
 }
@@ -336,7 +337,7 @@ fn operator_health_transition_logger_dedupes_identical_and_emits_changed_surface
     let nominal = BoltV3OperatorHealthSurface::not_configured();
     let changed = BoltV3OperatorHealthSurface::from_parts(
         BoltV3RejectObserverHealth::unobserved(),
-        BoltV3VenueTruthHealth::not_configured(),
+        BoltV3ProviderCollateralAllowanceHealth::not_configured(),
         BoltV3InputHealth::not_configured(),
     );
 
@@ -532,45 +533,6 @@ fn settlement_health_snapshot_returns_context_for_poisoned_lock() {
         error
             .to_string()
             .contains("settlement health lock poisoned")
-    );
-}
-
-#[test]
-fn settlement_runtime_sink_panics_on_poisoned_capital_admission_feed() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
-    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
-        .expect("fixture v3 LiveNode should build");
-    let feed = runtime
-        .capital_admission_runtime_feed
-        .as_ref()
-        .expect("fixture should configure capital-admission feed")
-        .clone();
-    poison_mutex(&feed);
-    let sink = BoltV3LiveSettlementRuntimeSink {
-        loss_protection: None,
-        capital_admission_runtime_feed: Some(feed),
-    };
-
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        sink.record_venue_truth_settlement(
-            crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation {
-                settlement_key: "poisoned-settlement".to_string(),
-                market_id: "poisoned-market".to_string(),
-                product_id: "poisoned-product".to_string(),
-                side: OrderSide::Sell,
-                settled_quantity: Decimal::ONE,
-                payout_per_share: Decimal::ONE,
-                collateral_payout: Decimal::ONE,
-            },
-        )
-        .expect("poisoned feed must panic before returning a result");
-    }))
-    .expect_err("poisoned capital-admission feed must panic");
-
-    assert!(
-        crate::panic_payload_message(panic.as_ref())
-            .contains("capital admission runtime feed lock poisoned")
     );
 }
 

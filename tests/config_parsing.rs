@@ -190,7 +190,6 @@ http_timeout_secs = 60
 max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
-ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 "#;
@@ -215,7 +214,6 @@ http_timeout_secs = 60
 max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
-ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 "#;
@@ -5826,7 +5824,6 @@ http_timeout_secs = 60
 max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
-ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 "#;
@@ -6282,7 +6279,6 @@ http_timeout_secs = 0
 max_retries = 0
 retry_delay_initial_ms = 0
 retry_delay_max_ms = 0
-ack_timeout_secs = 0
 fee_cache_ttl_secs = 0
 transport_backend = "sockudo"
 
@@ -6305,7 +6301,6 @@ passphrase_ssm_path = "/bolt/polymarket/api-passphrase"
         "clients.polymarket_main.execution.max_retries must be a positive integer",
         "clients.polymarket_main.execution.retry_delay_initial_ms must be a positive integer",
         "clients.polymarket_main.execution.retry_delay_max_ms must be a positive integer",
-        "clients.polymarket_main.execution.ack_timeout_secs must be a positive integer",
         "clients.polymarket_main.execution.fee_cache_ttl_secs must be a positive integer",
     ];
     for needle in expected {
@@ -7219,19 +7214,6 @@ fn replace_in_fixture_section(section_header: &str, replacements: &[(&str, &str)
     rewritten.join("\n")
 }
 
-fn root_with_venue_spendability_source_binding(path: &str, sha256: &str, max_bytes: u64) -> String {
-    replace_in_fixture_root(
-        "enforce_submit_admission = false",
-        "enforce_submit_admission = true",
-    )
-    .replace(
-        "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\n\n[risk.capital_pools.prediction_market_binary]",
-        &format!(
-            "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\nvenue_spendability_source_path = \"{path}\"\nvenue_spendability_source_sha256 = \"{sha256}\"\nvenue_spendability_source_max_bytes = {max_bytes}\n\n[risk.capital_pools.prediction_market_binary]"
-        ),
-    )
-}
-
 #[test]
 fn parses_loss_governor_halt_actions_from_root_fixture() {
     use bolt_v2::{
@@ -7436,7 +7418,7 @@ fn rejects_enabled_loss_governor_non_positive_thresholds() {
 }
 
 #[test]
-fn enforced_submit_admission_uses_nt_account_spendability_without_source_binding() {
+fn enforced_polymarket_submit_admission_uses_registered_live_allowance_source() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let source = replace_in_fixture_root(
@@ -7448,10 +7430,32 @@ fn enforced_submit_admission_uses_nt_account_spendability_without_source_binding
     let messages = validate_root_only(&root);
 
     assert!(
-        !messages
-            .iter()
-            .any(|message| message.contains("venue_spendability_source")),
-        "enforced submit admission should use NT account spendability without requiring a source binding: {messages:#?}"
+        messages.iter().all(|message| {
+            !message.contains("registered live provider collateral allowance source")
+        }),
+        "Polymarket submit admission should use its registered live allowance source: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_rejects_provider_without_live_allowance_source() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    )
+    .replace("venue_id = \"POLYMARKET\"", "venue_id = \"BINANCE\"");
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("unsupported allowance provider fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.capital_pools[polymarket-prediction-live].venue_id")
+                && message.contains("registered live provider collateral allowance source")
+        }),
+        "enforced admission must reject providers without the single live allowance path: {messages:#?}"
     );
 }
 
@@ -7733,54 +7737,6 @@ max_slippage_liability = "0.20"
                 && message.contains("unique")
         }),
         "capital pools sharing venue/account must fail validation: {messages:#?}"
-    );
-}
-
-#[test]
-fn enforced_submit_admission_rejects_invalid_venue_spendability_source_sha256() {
-    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
-
-    let source = root_with_venue_spendability_source_binding(
-        "/var/lib/bolt/operator-evidence/venue-spendability.json",
-        "ABC",
-        16_384,
-    );
-    let root: BoltV3RootConfig =
-        toml::from_str(&source).expect("source-binding fixture should parse");
-    let messages = validate_root_only(&root);
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains(
-                "risk.capital_pools[polymarket-prediction-live].venue_spendability_source_sha256",
-            ) && message.contains("lowercase sha256")
-        }),
-        "invalid venue spendability source sha256 must fail at config load: {messages:#?}"
-    );
-}
-
-#[test]
-fn enforced_submit_admission_rejects_incomplete_venue_spendability_source_binding() {
-    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
-
-    let source = replace_in_fixture_root(
-        "enforce_submit_admission = false",
-        "enforce_submit_admission = true",
-    )
-    .replace(
-        "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\n\n[risk.capital_pools.prediction_market_binary]",
-        "max_snapshot_age_ns = 5000000000\ndedupe_retention_ns = 60000000000\nvenue_spendability_source_path = \"/var/lib/bolt/operator-evidence/venue-spendability.json\"\nvenue_spendability_source_sha256 = \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\n\n[risk.capital_pools.prediction_market_binary]",
-    );
-    let root: BoltV3RootConfig =
-        toml::from_str(&source).expect("incomplete source-binding fixture should parse");
-    let messages = validate_root_only(&root);
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("risk.capital_pools[polymarket-prediction-live].venue_spendability_source_max_bytes")
-                && message.contains("must be positive")
-        }),
-        "source binding must require positive max bytes with path and sha: {messages:#?}"
     );
 }
 
@@ -8236,6 +8192,12 @@ fn capital_admission_requires_an_unfiltered_complete_nt_reconciliation_universe(
             "filter_unclaimed_external_orders",
             Box::new(|root| {
                 root.nautilus.exec_engine.filter_unclaimed_external_orders = true;
+            }),
+        ),
+        (
+            "filter_position_reports",
+            Box::new(|root| {
+                root.nautilus.exec_engine.filter_position_reports = true;
             }),
         ),
         (

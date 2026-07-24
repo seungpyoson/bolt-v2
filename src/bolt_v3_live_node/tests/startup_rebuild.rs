@@ -3,45 +3,37 @@
 use super::*;
 
 #[test]
-fn venue_and_nt_open_order_universes_must_match_exactly() {
-    let raw = BTreeSet::from(["venue-1".to_string(), "venue-2".to_string()]);
-    assert!(venue_nt_open_order_sets_match(
-        Some(&raw),
-        &[
-            ("venue-1".to_string(), "client-1".to_string()),
-            ("venue-2".to_string(), "client-2".to_string()),
-        ],
+fn nt_projection_requests_coalesce_and_run_only_on_the_runtime_thread() {
+    let calls = Rc::new(Cell::new(0_u32));
+    let calls_for_trigger = Rc::clone(&calls);
+    let trigger: Rc<dyn Fn()> = Rc::new(move || calls_for_trigger.set(calls_for_trigger.get() + 1));
+    let requested = Arc::new(AtomicBool::new(false));
+
+    assert!(!dispatch_requested_submit_admission_nt_projection(
+        NodeState::Starting,
+        Some(&trigger),
+        Some(&requested),
     ));
-    assert!(!venue_nt_open_order_sets_match(
-        Some(&raw),
-        &[("venue-1".to_string(), "client-1".to_string())],
+    requested.store(true, Ordering::Release);
+    requested.store(true, Ordering::Release);
+    assert!(!dispatch_requested_submit_admission_nt_projection(
+        NodeState::Starting,
+        Some(&trigger),
+        Some(&requested),
     ));
-    assert!(!venue_nt_open_order_sets_match(
-        Some(&raw),
-        &[
-            ("venue-1".to_string(), "client-1".to_string()),
-            ("venue-3".to_string(), "client-3".to_string()),
-        ],
+    assert_eq!(calls.get(), 0);
+    assert!(dispatch_requested_submit_admission_nt_projection(
+        NodeState::Running,
+        Some(&trigger),
+        Some(&requested),
     ));
-    assert!(!venue_nt_open_order_sets_match(
-        None,
-        &[("venue-1".to_string(), "client-1".to_string())],
+    assert_eq!(calls.get(), 1);
+    assert!(!dispatch_requested_submit_admission_nt_projection(
+        NodeState::Running,
+        Some(&trigger),
+        Some(&requested),
     ));
-    assert!(!venue_nt_open_order_sets_match(
-        Some(&BTreeSet::from(["venue-1".to_string()])),
-        &[
-            ("venue-1".to_string(), "client-1".to_string()),
-            ("venue-1".to_string(), "client-2".to_string()),
-        ],
-    ));
-    assert!(!venue_nt_open_order_sets_match(
-        Some(&raw),
-        &[
-            ("venue-1".to_string(), "client-1".to_string()),
-            ("venue-2".to_string(), "client-1".to_string()),
-        ],
-    ));
-    assert!(venue_nt_open_order_sets_match(Some(&BTreeSet::new()), &[]));
+    assert_eq!(calls.get(), 1);
 }
 
 #[test]
@@ -78,7 +70,8 @@ fn live_node_surfaces_poisoned_observation_stream_without_gating_startup() {
 }
 
 #[test]
-fn startup_rebuild_does_not_recover_known_submit_reservation_from_nt_cache_without_venue_truth() {
+fn startup_rebuild_does_not_recover_known_submit_reservation_from_nt_cache_without_provider_collateral_allowance()
+ {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
     let metadata = fixture_reservation_attribution(
@@ -132,7 +125,7 @@ fn startup_rebuild_does_not_recover_known_submit_reservation_from_nt_cache_witho
         !runtime
             .submit_admission
             .capital_admission_has_live_reservation("startup-known-client-order"),
-        "NT cache alone must not install recovered reservations without accepted venue truth"
+        "NT cache alone must not install reservations without committed Bolt attribution"
     );
 }
 
@@ -177,6 +170,51 @@ fn startup_rebuild_stays_closed_for_unknown_nt_cache_order() {
 }
 
 #[test]
+fn startup_rebuild_derives_forced_reduction_liveness_from_nt_and_committed_evidence() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+    for pool in loaded
+        .root
+        .risk
+        .capital_pools
+        .as_mut()
+        .expect("fixture should configure capital pools")
+    {
+        pool.enforce_submit_admission = false;
+    }
+    write_admitted_forced_reduction(
+        &loaded,
+        "startup-forced-reduction",
+        "condition-fixture-yes.POLYMARKET",
+    );
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+    assert!(!runtime.capital_admission_configured());
+    assert!(!runtime.capital_admission_runtime_feed_configured());
+    seed_accepted_open_limit_order(
+        &runtime,
+        generic_limit_order(
+            "startup-forced-reduction",
+            "condition-fixture-yes.POLYMARKET",
+            OrderSide::Sell,
+            Quantity::from(1),
+            Price::from("0.40"),
+        ),
+        "POLYMARKET-001",
+    );
+
+    let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
+
+    assert!(rebuild.accepted);
+    assert_eq!(
+        runtime
+            .submit_admission
+            .reconciled_live_forced_reduction_order_count(),
+        Some(1)
+    );
+}
+
+#[test]
 fn startup_rebuild_guard_aborts_before_live_node_run_for_unattributed_open_orders() {
     let rebuild = BoltV3SubmitCapitalAdmissionRebuildDecision {
         accepted: false,
@@ -216,29 +254,17 @@ fn startup_rebuild_reports_missing_nt_account_cache_balance() {
     );
     assert_eq!(runtime.capital_admission_reconciled(), Some(false));
 
-    let feed = runtime
-        .capital_admission_runtime_feed
-        .as_ref()
-        .expect("fixture should configure capital-admission runtime feed");
-    let account_state = account_state_event("POLYMARKET-001", "PUSD", 100.0, 100.0, 2_100);
-    assert!(
-        feed.lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .on_account_state(&account_state)
-            .is_none(),
-        "NT account state is advisory-only and cannot publish money readiness without venue truth"
-    );
     assert_eq!(
         runtime.capital_admission_reconciled(),
         Some(false),
-        "NT account state cannot convert missing startup venue truth into readiness"
+        "missing canonical NT account state must keep admission closed"
     );
     assert!(
         runtime
             .submit_admission
             .capital_admission_state_snapshot()
             .is_none(),
-        "NT account state must not publish capital admission state before accepted venue truth"
+        "NT account state must not publish admission without provider collateral allowance"
     );
 }
 
@@ -259,7 +285,7 @@ fn startup_rebuild_panics_on_poisoned_capital_admission_config_feed_lock() {
 }
 
 #[test]
-#[should_panic(expected = "capital admission rebuild cache seed feed lock poisoned")]
+#[should_panic(expected = "capital admission canonical NT projection feed lock poisoned")]
 fn startup_rebuild_seed_panics_on_poisoned_capital_admission_feed_lock() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
@@ -271,18 +297,17 @@ fn startup_rebuild_seed_panics_on_poisoned_capital_admission_feed_lock() {
         .expect("fixture should configure capital-admission runtime feed");
     poison_mutex(feed);
 
-    seed_capital_admission_runtime_feed_from_nt_cache(
-        feed,
-        CapitalAdmissionNtCacheSeed {
-            cached_account_balances: Some((Decimal::ONE, Decimal::ONE)),
-            account_cache_is_authoritative: true,
-            open_client_order_ids: &[],
-            reconciled_venue_and_client_order_ids: &[],
+    let _ = feed
+        .lock()
+        .expect("capital admission canonical NT projection feed lock poisoned")
+        .canonical_nt_components(CapitalAdmissionNtCacheProjection {
+            accepted_allowance_observed_at_ns: None,
+            account_balances: Some((Decimal::ONE, Decimal::ONE)),
+            open_client_order_ids: Vec::new(),
             yes_position: Decimal::ZERO,
             no_position: Decimal::ZERO,
             observed_at_ns: 2_000,
-        },
-    );
+        });
 }
 
 #[test]
@@ -404,7 +429,7 @@ fn manual_recovery_evidence_clears_live_reducing_state_after_fresh_snapshot() {
 }
 
 #[test]
-fn startup_rebuild_nt_cached_balance_is_advisory_without_venue_truth() {
+fn startup_rebuild_nt_cached_balance_is_advisory_without_provider_collateral_allowance() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
     let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
@@ -448,7 +473,7 @@ fn startup_rebuild_nt_cached_balance_is_advisory_without_venue_truth() {
             .submit_admission
             .capital_admission_state_snapshot()
             .is_none(),
-        "cached NT balance is advisory and cannot seed capital admission without accepted venue truth"
+        "NT balance alone cannot seed admission without provider collateral allowance"
     );
 }
 

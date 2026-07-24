@@ -428,8 +428,17 @@ async fn captures_broad_nt_runtime_jsonl_records_outside_hot_path() {
                     .join("portfolio_snapshot")
                     .join("snapshots.jsonl"),
             );
-            assert_eq!(portfolio_rows.len(), 1);
-            let portfolio_row = &portfolio_rows[0];
+            let matching_portfolio_rows = portfolio_rows
+                .iter()
+                .filter(|row| row["ts_event"] == 5 && row["ts_init"] == 5)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                matching_portfolio_rows.len(),
+                1,
+                "the explicitly published portfolio snapshot must be captured exactly once: \
+                 {portfolio_rows:?}"
+            );
+            let portfolio_row = matching_portfolio_rows[0];
             assert_eq!(portfolio_row["account_id"], "POLYMARKET-001");
             assert_eq!(portfolio_row["account_type"], "BETTING");
             assert_eq!(portfolio_row["base_currency"], "USD");

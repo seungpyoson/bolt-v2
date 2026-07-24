@@ -28,7 +28,9 @@ use nautilus_polymarket::{
 };
 
 type GammaQueryBuilder =
-    fn(&HashMap<String, String>) -> nautilus_polymarket::http::query::GetGammaMarketsParams;
+    fn(
+        &HashMap<String, String>,
+    ) -> anyhow::Result<nautilus_polymarket::http::query::GetGammaMarketsParams>;
 type BookSnapshotParser =
     fn(&PolymarketBookSnapshot, InstrumentId, u8, u8, UnixNanos) -> anyhow::Result<OrderBookDeltas>;
 type BookDeltaParser =

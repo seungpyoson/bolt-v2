@@ -20,7 +20,7 @@ use bolt_v2::{
     },
     bolt_v3_capital_admission_state::{
         OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
-        VenueSpendabilitySnapshot,
+        ProviderCollateralAllowanceSnapshot,
     },
     bolt_v3_capital_reservation::CapitalPoolSnapshot,
     bolt_v3_current_evidence::{
@@ -930,13 +930,12 @@ fn capital_admission_components(
             free_collateral: dec!(100),
             total_equity: dec!(100),
         },
-        venue_spendability: VenueSpendabilitySnapshot {
-            source: "basket-admission-test-spendability".to_string(),
+        provider_collateral_allowance: ProviderCollateralAllowanceSnapshot {
+            source: "basket-admission-test-allowance".to_string(),
             observed_at_ns,
             venue_id: "POLYMARKET".to_string(),
             account_id: "POLYMARKET-001".to_string(),
             collateral_currency: "USDC".to_string(),
-            spendable_collateral: dec!(100),
             collateral_allowance: dec!(100),
         },
         order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
@@ -954,7 +953,6 @@ fn capital_admission_components(
                 yes_position: Decimal::ZERO,
                 no_position: Decimal::ZERO,
                 collateral_allowance: dec!(100),
-                conditional_token_allowance: dec!(100),
                 collateral_coupled_group_id: "basket-admission-group".to_string(),
             },
         ),

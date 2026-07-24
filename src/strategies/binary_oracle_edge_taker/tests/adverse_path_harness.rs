@@ -9,17 +9,15 @@ use crate::{
     bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::QuoteSide,
-    bolt_v3_venue_truth::{VenueTruthReconciler, VenueTruthReconciliation},
 };
 use nautilus_model::{
     events::{OrderAccepted, OrderEventAny, OrderSubmitted},
     identifiers::{AccountId, VenueOrderId},
     position::Position,
-    types::Money,
 };
 use nautilus_trading::Strategy;
 use serde_json::{Value, json};
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 pub(super) const PRECISION_REJECT_REASON: &str = "invalid amounts, the market buy orders maker amount supports a max accuracy of 2 decimals, taker amount a max of 4 decimals";
 pub(super) const BALANCE_REJECT_REASON: &str =
@@ -51,17 +49,11 @@ impl crate::bolt_v3_loss_protection::KillSwitchLossActionSink for NoopLossAction
 
 struct DurableLossSettlementRuntimeSink {
     loss_protection: RefCell<crate::bolt_v3_loss_protection::KillSwitchLossProtection>,
-    venue_explanations: RefCell<Vec<crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation>>,
 }
 
 impl std::fmt::Debug for DurableLossSettlementRuntimeSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DurableLossSettlementRuntimeSink")
-            .field(
-                "venue_explanations",
-                &self.venue_explanations.borrow().len(),
-            )
-            .finish()
+        f.debug_struct("DurableLossSettlementRuntimeSink").finish()
     }
 }
 
@@ -69,7 +61,6 @@ impl DurableLossSettlementRuntimeSink {
     fn new(loss_protection: crate::bolt_v3_loss_protection::KillSwitchLossProtection) -> Self {
         Self {
             loss_protection: RefCell::new(loss_protection),
-            venue_explanations: RefCell::new(Vec::new()),
         }
     }
 
@@ -81,10 +72,6 @@ impl DurableLossSettlementRuntimeSink {
             .expect("durable loss-governor state should be readable")
             .loss_protection
             .expect("loss-governor snapshot should be persisted")
-    }
-
-    fn venue_explanation_count(&self) -> usize {
-        self.venue_explanations.borrow().len()
     }
 }
 
@@ -100,43 +87,28 @@ impl crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSink
             .record_position_realized_pnl(observation)?;
         Ok(())
     }
-
-    fn record_venue_truth_settlement(
-        &self,
-        explanation: crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation,
-    ) -> Result<()> {
-        self.venue_explanations.borrow_mut().push(explanation);
-        Ok(())
-    }
 }
 
 #[derive(Debug, Default)]
-struct VenueTruthFailingSettlementRuntimeSink {
+struct LossFailingSettlementRuntimeSink {
     loss_observations: RefCell<Vec<crate::bolt_v3_loss_protection::PositionRealizedPnlObservation>>,
 }
 
-impl VenueTruthFailingSettlementRuntimeSink {
+impl LossFailingSettlementRuntimeSink {
     fn loss_observation_count(&self) -> usize {
         self.loss_observations.borrow().len()
     }
 }
 
 impl crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSink
-    for VenueTruthFailingSettlementRuntimeSink
+    for LossFailingSettlementRuntimeSink
 {
     fn record_loss_governor_position_realized_pnl(
         &self,
         observation: crate::bolt_v3_loss_protection::PositionRealizedPnlObservation,
     ) -> Result<()> {
         self.loss_observations.borrow_mut().push(observation);
-        Ok(())
-    }
-
-    fn record_venue_truth_settlement(
-        &self,
-        _explanation: crate::bolt_v3_venue_truth::VenueTruthSettlementExplanation,
-    ) -> Result<()> {
-        anyhow::bail!("venue-truth settlement sink failed")
+        anyhow::bail!("synthetic loss-governor reducer failure")
     }
 }
 
@@ -1505,13 +1477,18 @@ fn booked_settlement_routes_to_runtime_sink_and_flattening() {
         .recorded_facts()
         .expect("recorded current evidence must decode");
     let loss_observations = sink.loss_observations();
-    let venue_explanations = sink.venue_explanations();
     assert_eq!(settlement_evidence_count(&events), 1);
     assert_eq!(loss_observations.len(), 1);
-    assert_eq!(venue_explanations.len(), 1);
+    let settlement_key = events
+        .iter()
+        .find_map(|event| match event {
+            CurrentFact::Settlement(fact) => Some(fact.settlement_key.as_str()),
+            _ => None,
+        })
+        .expect("settlement fact should carry the reducer idempotency key");
     assert_eq!(
         loss_observations[0].event_id.as_deref(),
-        Some(venue_explanations[0].settlement_key.as_str())
+        Some(settlement_key)
     );
     assert!(matches!(strategy.exposure, ExposureState::Flat));
 
@@ -1525,11 +1502,10 @@ fn booked_settlement_routes_to_runtime_sink_and_flattening() {
         "same settlement key must suppress duplicate booking after runtime calls"
     );
     assert_eq!(sink.loss_observations().len(), 1);
-    assert_eq!(sink.venue_explanations().len(), 1);
 }
 
 #[test]
-fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
+fn loss_reducer_failure_after_settled_key_insert_enters_blind_recovery() {
     assert_reality_fixtures();
 
     let evidence = recording_decision_evidence();
@@ -1540,7 +1516,7 @@ fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
         evidence.clone(),
         submit_admission,
     );
-    let sink = Rc::new(VenueTruthFailingSettlementRuntimeSink::default());
+    let sink = Rc::new(LossFailingSettlementRuntimeSink::default());
     let sink_handle: crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle =
         sink.clone();
     strategy.context = strategy
@@ -1561,7 +1537,7 @@ fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
     let position_id = position.position_id.to_string();
 
     try_emit_resolution_update(&mut strategy, 3_101.0)
-        .expect("post-evidence venue-truth sink failure should fail closed without bubbling");
+        .expect("post-evidence loss-reducer failure should fail closed without bubbling");
 
     let events = evidence
         .recorded_facts()
@@ -1580,7 +1556,7 @@ fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
                         && evidence.position_id.as_deref() == Some(position_id.as_str())
             )
         }),
-        "post-settled-key venue-truth failure must write durable blind-recovery lifecycle evidence: {events:?}"
+        "post-settled-key loss-reducer failure must write durable blind-recovery lifecycle evidence: {events:?}"
     );
     assert_eq!(sink.loss_observation_count(), 1);
     assert!(
@@ -1590,7 +1566,7 @@ fn settlement_sink_failure_after_settled_key_insert_enters_blind_recovery() {
                 reason: BlindRecoveryReason::SettlementEvidenceRecoveryFailed
             })
         ),
-        "post-settled-key venue-truth failure must enter blind settlement recovery; exposure={:?}",
+        "post-settled-key loss-reducer failure must enter blind settlement recovery; exposure={:?}",
         strategy.exposure
     );
 
@@ -1636,7 +1612,6 @@ fn assert_settlement_evidence_failure_precedes_runtime_effects(
         .expect_err("settlement evidence failure must stop before runtime reducers");
 
     assert!(sink.loss_observations().is_empty());
-    assert!(sink.venue_explanations().is_empty());
     assert!(
         !strategy.settled_position_keys.contains(&settlement_key),
         "an uncommitted settlement must not latch its idempotency key"
@@ -1644,88 +1619,13 @@ fn assert_settlement_evidence_failure_precedes_runtime_effects(
 }
 
 #[test]
-fn settlement_write_failure_precedes_loss_and_venue_runtime_effects() {
+fn settlement_write_failure_precedes_loss_runtime_effects() {
     assert_settlement_evidence_failure_precedes_runtime_effects(failing_decision_evidence());
 }
 
 #[test]
-fn settlement_sync_failure_precedes_loss_and_venue_runtime_effects() {
+fn settlement_sync_failure_precedes_loss_runtime_effects() {
     assert_settlement_evidence_failure_precedes_runtime_effects(sync_failing_decision_evidence());
-}
-
-#[test]
-fn booked_settlement_explains_shared_product_id_venue_truth_snapshot() {
-    assert_reality_fixtures();
-
-    let evidence = recording_decision_evidence();
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
-    );
-    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
-        evidence.clone(),
-        submit_admission,
-    );
-    let sink = Rc::new(RecordingSettlementRuntimeSink::default());
-    attach_settlement_runtime_sink(&mut strategy, sink.clone());
-    let (_cache, _clock) = register_test_strategy_with_clock(&mut strategy);
-    let instrument_id = held_instrument_id(&strategy, Leg::Yes);
-    let product_id = prediction_market_product_id_from_instrument_id(&instrument_id)
-        .expect("fixture instrument id should derive a prediction-market product id");
-    materialize_configured_position(
-        &mut strategy,
-        instrument_id,
-        PositionId::from("P-PRODUCT-DOMAIN"),
-        Quantity::new(10.0, 2),
-        0.45,
-    );
-
-    emit_resolution_update(&mut strategy, 3_101.0);
-
-    let settlement_events = evidence
-        .recorded_facts()
-        .expect("recorded current evidence must decode");
-    let settlement = settlement_events
-        .iter()
-        .find_map(|event| match event {
-            CurrentFact::Settlement(settlement) => Some(settlement),
-            _ => None,
-        })
-        .expect("strategy should record settlement evidence");
-    assert_eq!(settlement.product_id, product_id);
-    let explanation = sink
-        .venue_explanations()
-        .into_iter()
-        .next()
-        .expect("runtime sink should receive a venue-truth settlement explanation");
-    assert_eq!(explanation.product_id, product_id);
-
-    let mut reconciler = VenueTruthReconciler::new();
-    assert_eq!(
-        reconciler
-            .reconcile_snapshot(venue_truth_snapshot(
-                1_000,
-                Decimal::new(50, 0),
-                Decimal::new(50, 0),
-                Some((&product_id, Decimal::new(10, 0))),
-            ))
-            .expect("venue-source baseline should be accepted"),
-        VenueTruthReconciliation::BaselineAccepted
-    );
-    reconciler
-        .record_settlement(explanation)
-        .expect("strategy settlement explanation should record");
-
-    assert_eq!(
-        reconciler
-            .reconcile_snapshot(venue_truth_snapshot(
-                1_100,
-                Decimal::new(60, 0),
-                Decimal::new(50, 0),
-                None,
-            ))
-            .expect("settlement should explain the shared product-id snapshot delta"),
-        VenueTruthReconciliation::DeltaExplained
-    );
 }
 
 #[test]
@@ -1788,7 +1688,6 @@ fn losing_settlement_moves_durable_loss_governor() {
             .contains_key(&settlement_key),
         "settlement-key dedupe entry should persist with the realized-PnL snapshot: {loss_snapshot:?}"
     );
-    assert_eq!(sink.venue_explanation_count(), 1);
     assert!(matches!(strategy.exposure, ExposureState::Flat));
 }
 
@@ -1878,7 +1777,6 @@ fn missing_settlement_account_records_booking_error_from_config_derived_fixture(
     assert_eq!(settlement_evidence_count(&events), 0);
     assert_eq!(settlement_booking_error_count(&events), 1);
     assert!(sink.loss_observations().is_empty());
-    assert!(sink.venue_explanations().is_empty());
     // #1349: terminal booking-error releases single-exposure occupancy.
     assert!(matches!(strategy.exposure, ExposureState::Flat));
     assert_eq!(terminal_settlement_lifecycle_count(&events), 1);
@@ -2458,22 +2356,18 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
     strategy.bootstrap_recovery_from_cache();
 
     let loss_observations = sink.loss_observations();
-    let explanations = sink.venue_explanations();
     assert_eq!(
         loss_observations.len(),
         1,
-        "recovery state: exposure={:?} settled_keys={:?} venue_explanations={:?}",
+        "recovery state: exposure={:?} settled_keys={:?}",
         strategy.exposure,
-        strategy.settled_position_keys,
-        explanations
+        strategy.settled_position_keys
     );
     assert_eq!(
         loss_observations[0].event_id.as_deref(),
         Some(settlement_key.as_str()),
         "recovered settlement must replay the loss reducer with the durable settlement key"
     );
-    assert_eq!(explanations.len(), 1);
-    assert_eq!(explanations[0].settlement_key, settlement_key);
     assert!(strategy.settled_position_keys.contains(&settlement_key));
     assert!(
         matches!(strategy.exposure, ExposureState::Flat),
@@ -2558,7 +2452,7 @@ fn hold_to_resolution_case(
         .expect("recorded current evidence must decode");
     // For this harness, the Settlement evidence record is the booking record
     // being asserted. The durable cash-surface pin (loss-governor accumulator /
-    // venue-truth balance) is owned by PR-D acceptance on #1179.
+    // provider-allowance balance) is owned by PR-D acceptance on #1179.
     let settlement_evidence_matches_expected =
         settlement_evidence_matches(&evidence_events, expected.realized_pnl);
 
@@ -2935,29 +2829,6 @@ fn settlement_evidence_matches(events: &[CurrentFact], expected_realized_pnl: f6
                 )
         )
     })
-}
-
-fn venue_truth_snapshot(
-    captured_at: u64,
-    balance: Decimal,
-    allowance: Decimal,
-    position: Option<(&str, Decimal)>,
-) -> crate::bolt_v3_venue_truth::VenueTruthSnapshot {
-    let mut positions_by_product_id = BTreeMap::new();
-    if let Some((product_id, quantity)) = position {
-        positions_by_product_id.insert(product_id.to_string(), quantity);
-    }
-
-    crate::bolt_v3_venue_truth::VenueTruthSnapshot {
-        captured_at: UnixNanos::from(captured_at),
-        account_id: AccountId::from("POLYMARKET-001"),
-        collateral_balance: Money::from_decimal(balance, Currency::pUSD())
-            .expect("venue-truth fixture balance should construct"),
-        collateral_allowance: Money::from_decimal(allowance, Currency::pUSD())
-            .expect("venue-truth fixture allowance should construct"),
-        open_orders: BTreeMap::new(),
-        positions_by_product_id,
-    }
 }
 
 fn assert_incident_lifecycle_counts() {

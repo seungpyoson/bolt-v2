@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
     facts::{
-        BasketAdmissionDetails, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
-        BasketAdmissionRejectionReason, BasketAdmittedLeg,
+        BasketAdmissionDetails, BasketAdmissionGrantedFact, BasketAdmissionIntentKind,
+        BasketAdmissionRejectedFact, BasketAdmissionRejectionReason, BasketAdmittedLeg,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -135,6 +135,11 @@ fn validate_admitted_legs(fact: &BasketAdmissionGrantedFact) -> Result<(), Recor
             )));
         }
         if let Some(reservation) = leg.reservation.as_ref() {
+            if leg.intent_kind != BasketAdmissionIntentKind::Entry {
+                return Err(RecordFailure::Rejected(anyhow::anyhow!(
+                    "risk-reducing basket legs cannot carry capital reservation attribution"
+                )));
+            }
             validate_attribution(reservation)?;
             if reservation.client_order_id != leg.client_order_id
                 || reservation.instrument_id != leg.instrument_id
@@ -219,7 +224,15 @@ impl GrantedDecisionV1 {
 struct BasketAdmittedLegV1 {
     client_order_id: String,
     instrument_id: String,
+    intent_kind: BasketAdmissionIntentKindV1,
     reservation: Option<ReservationAttributionV1>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BasketAdmissionIntentKindV1 {
+    Entry,
+    RiskReducingExit,
 }
 
 impl BasketAdmittedLegV1 {
@@ -227,6 +240,12 @@ impl BasketAdmittedLegV1 {
         Self {
             client_order_id: fact.client_order_id,
             instrument_id: fact.instrument_id,
+            intent_kind: match fact.intent_kind {
+                BasketAdmissionIntentKind::Entry => BasketAdmissionIntentKindV1::Entry,
+                BasketAdmissionIntentKind::RiskReducingExit => {
+                    BasketAdmissionIntentKindV1::RiskReducingExit
+                }
+            },
             reservation: fact.reservation.map(ReservationAttributionV1::from_fact),
         }
     }
@@ -235,6 +254,12 @@ impl BasketAdmittedLegV1 {
         BasketAdmittedLeg {
             client_order_id: self.client_order_id,
             instrument_id: self.instrument_id,
+            intent_kind: match self.intent_kind {
+                BasketAdmissionIntentKindV1::Entry => BasketAdmissionIntentKind::Entry,
+                BasketAdmissionIntentKindV1::RiskReducingExit => {
+                    BasketAdmissionIntentKind::RiskReducingExit
+                }
+            },
             reservation: self.reservation.map(ReservationAttributionV1::into_fact),
         }
     }

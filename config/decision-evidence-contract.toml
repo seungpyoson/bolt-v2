@@ -257,24 +257,15 @@ current_identity = "terminal_settlement_v1"
 current_fact = "terminal_settlement_v1"
 
 [[purposes]]
-id = "venue_truth_capture_failure"
+id = "provider_collateral_allowance_capture_failure"
 owner = "bolt_v3_decision_evidence"
 duties = ["reconciliation", "action"]
 effect_policy = "risk_reducing_continues"
 sink = "machine"
 novelty_capability = "prohibited"
-current_identity = "venue_truth_capture_failure_v1"
-current_fact = "venue_truth_capture_failure_v1"
+current_identity = "provider_collateral_allowance_capture_failure_v1"
+current_fact = "provider_collateral_allowance_capture_failure_v1"
 
-[[purposes]]
-id = "venue_truth_divergence"
-owner = "bolt_v3_decision_evidence"
-duties = ["action"]
-effect_policy = "preserve_result"
-sink = "machine"
-novelty_capability = "prohibited"
-current_identity = "venue_truth_divergence_v1"
-current_fact = "venue_truth_divergence_v1"
 
 [[producers]]
 id = "edge_taker_blocked_strategy_input"
@@ -369,12 +360,9 @@ id = "edge_taker_terminal_settlement"
 purpose = "terminal_settlement"
 
 [[producers]]
-id = "submit_admission_venue_capture_failure"
-purpose = "venue_truth_capture_failure"
+id = "submit_admission_provider_collateral_allowance_capture_failure"
+purpose = "provider_collateral_allowance_capture_failure"
 
-[[producers]]
-id = "submit_admission_venue_divergence"
-purpose = "venue_truth_divergence"
 
 [[identities]]
 id = "blocked_strategy_input_observation_v1"
@@ -531,18 +519,12 @@ schema_version = 16
 gate_id = "bolt_v3.settlement"
 
 [[identities]]
-id = "venue_truth_capture_failure_v1"
-purpose = "venue_truth_capture_failure"
-kind = "venue_truth_capture_failure"
+id = "provider_collateral_allowance_capture_failure_v1"
+purpose = "provider_collateral_allowance_capture_failure"
+kind = "provider_collateral_allowance_capture_failure"
 schema_version = 17
 gate_id = "bolt_v3.capital_admission_rebuild"
 
-[[identities]]
-id = "venue_truth_divergence_v1"
-purpose = "venue_truth_divergence"
-kind = "venue_truth_divergence"
-schema_version = 17
-gate_id = "bolt_v3.capital_admission_rebuild"
 
 [[facts]]
 id = "blocked_strategy_input_observation_v1"
@@ -633,12 +615,9 @@ id = "terminal_settlement_v1"
 identity = "terminal_settlement_v1"
 
 [[facts]]
-id = "venue_truth_capture_failure_v1"
-identity = "venue_truth_capture_failure_v1"
+id = "provider_collateral_allowance_capture_failure_v1"
+identity = "provider_collateral_allowance_capture_failure_v1"
 
-[[facts]]
-id = "venue_truth_divergence_v1"
-identity = "venue_truth_divergence_v1"
 
 [[dispositions]]
 fact = "blocked_strategy_input_observation_v1"
@@ -787,8 +766,8 @@ owner_ruling = "current_contract_owner_ruling_2026_07_22"
 [[dispositions]]
 fact = "risk_reducing_exit_admission_v1"
 consumer = "reservation_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
+action = "relevant"
+event_variant = "risk_reducing_exit_admission_v1"
 
 [[dispositions]]
 fact = "risk_reducing_exit_admission_v1"
@@ -811,8 +790,8 @@ owner_ruling = "current_contract_owner_ruling_2026_07_22"
 [[dispositions]]
 fact = "forced_reduction_admission_v1"
 consumer = "reservation_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
+action = "relevant"
+event_variant = "forced_reduction_admission_v1"
 
 [[dispositions]]
 fact = "forced_reduction_admission_v1"
@@ -1169,52 +1148,32 @@ action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "venue_truth_capture_failure_v1"
+fact = "provider_collateral_allowance_capture_failure_v1"
 consumer = "reservation_recovery_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "venue_truth_capture_failure_v1"
+fact = "provider_collateral_allowance_capture_failure_v1"
 consumer = "settlement_recovery_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "venue_truth_capture_failure_v1"
+fact = "provider_collateral_allowance_capture_failure_v1"
 consumer = "booking_recovery_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "venue_truth_capture_failure_v1"
+fact = "provider_collateral_allowance_capture_failure_v1"
 consumer = "shadow_pnl_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
-[[dispositions]]
-fact = "venue_truth_divergence_v1"
-consumer = "reservation_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
-[[dispositions]]
-fact = "venue_truth_divergence_v1"
-consumer = "settlement_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
-[[dispositions]]
-fact = "venue_truth_divergence_v1"
-consumer = "booking_recovery_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
-[[dispositions]]
-fact = "venue_truth_divergence_v1"
-consumer = "shadow_pnl_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
 fact = "blocked_strategy_input_observation_v1"
@@ -1349,13 +1308,7 @@ action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
 
 [[dispositions]]
-fact = "venue_truth_capture_failure_v1"
-consumer = "backtest_run_guard_v1"
-action = "irrelevant"
-owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"
-
-[[dispositions]]
-fact = "venue_truth_divergence_v1"
+fact = "provider_collateral_allowance_capture_failure_v1"
 consumer = "backtest_run_guard_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_23_backtest"

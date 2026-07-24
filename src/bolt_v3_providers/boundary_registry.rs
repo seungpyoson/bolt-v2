@@ -22,7 +22,7 @@ pub enum BoundaryFeeder {
     StrategySignalObservation,
     DeployTargetHostFacts,
     SecretResolution,
-    PolymarketVenueTruthRuntime,
+    PolymarketProviderCollateralAllowanceRuntime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +76,6 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
     BoundaryRegistryEntry {
         adapter_id: polymarket::KEY,
         class: BoundaryEvidenceClass::HttpResponseBody,
-        feeder: BoundaryFeeder::PolymarketVenueTruthRuntime,
+        feeder: BoundaryFeeder::PolymarketProviderCollateralAllowanceRuntime,
     },
 ];

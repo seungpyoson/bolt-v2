@@ -94,8 +94,10 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
         });
         let catalog_dir = tempfile::tempdir().expect("catalog tempdir should create");
         let mut loaded = chainlink_only_loaded_config(endpoint);
-        loaded.root.persistence.catalog_directory =
-            catalog_dir.path().to_string_lossy().into_owned();
+        loaded.root.persistence.catalog_directory = std::fs::canonicalize(catalog_dir.path())
+            .expect("catalog tempdir should canonicalize")
+            .to_string_lossy()
+            .into_owned();
         support::current_evidence::prepare_current_evidence_generation(&loaded);
         let (mut node, summary) =
             build_bolt_v3_all_configured_client_mapping_live_node_with_summary(

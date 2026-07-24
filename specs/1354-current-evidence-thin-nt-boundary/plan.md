@@ -1,257 +1,207 @@
 # Implementation Plan: Thin NautilusTrader Boundary for Current Decision Evidence
 
 **Issue**: [#1354](https://github.com/seungpyoson/bolt-v2/issues/1354)
-**Pull Request**: [#1505](https://github.com/seungpyoson/bolt-v2/pull/1505)
+**Bolt PR**: [#1505](https://github.com/seungpyoson/bolt-v2/pull/1505)
+**Required NT PR**: [nautilus_trader#4557](https://github.com/nautechsystems/nautilus_trader/pull/4557)
 **Specification**: [spec.md](spec.md)
-**Status**: Architecture review gate — production implementation must not begin
-until the external-review gate below passes
+**Status**: Implementation in progress; verification and review gates pending
 
-## Summary
+## Outcome
 
-Replace Bolt's event-mutated capital-admission lifecycle mirror with one
-projection over canonical NT state, committed Bolt authorization evidence,
-Bolt reservation policy, and provider-only readiness facts.
+Delete Bolt's live order/fill/position reconciliation mirror. Capital admission
+becomes one Bolt projection over:
 
-The implementation deletes duplicate lifecycle authority. It does not add a
-new state-machine framework.
+- post-reconciliation NT state;
+- committed Bolt action-authorization evidence;
+- configured Bolt reservation policy; and
+- provider-only collateral allowance.
 
-## Governance Check
+The implementation must reduce authority and code. It must not add a framework,
+fallback, or compatibility lane.
 
-- **NO HARDCODES**: No new runtime policy literals; existing TOML remains the
-  policy authority.
-- **NO DUAL PATHS**: One projection and one admission decision path for live and
-  BTE. The existing shadow lifecycle mutation path is deleted.
-- **NO DEBTS**: No TODO, compatibility mode, fallback, waiver, or deferred
-  correctness finding.
-- **NT boundary**: NT remains authoritative for orders, fills, positions,
-  accounts, adapters, and reconciliation.
-- **Issue scope**: Only the #1354 current-evidence slice is changed. #1385 work
-  remains excluded.
-- **Verification**: Behavioral and integration evidence only; no source-scanning
-  tests.
+## Dependency Shape
 
-## Current Implementation Gap
+This work has two reviewable changes:
 
-The current head already reconstructs startup reservations from NT cache plus
-committed evidence, but the live feed also maintains:
+1. **NT PR #4557**: make the shared Polymarket order and fill reconciliation
+   builders fail if a venue open order or relevant confirmed fill is missing
+   from NT's instrument map; fail mass status if a current position cannot be
+   represented.
+2. **Bolt PR #1505**: pin that exact official NT commit, delete Bolt's
+   compensating reconciliation, and consume only post-reconciliation NT state.
 
-- `live_order_attribution`;
-- `client_order_ids_by_venue_order_id`;
-- `accepted_venue_open_order_ids`;
-- `terminal_order_ids_seen`;
-- an event/source-selected `order_lifecycle`; and
-- event-derived position deltas.
+The NT change owns adapter completeness. The Bolt change owns admission and
+evidence. Neither side duplicates the other.
 
-That state is updated directly from callbacks and then used by submit
-admission. It duplicates part of NT lifecycle and creates ordering questions
-that the evidence contract cannot solve.
+## Dependency-Ordered Implementation
 
-## Target Design
+### Phase 1 — Close the NT adapter boundary
 
-### Canonical input
+- Return `Result` from the shared order/fill reconciliation builders so callers
+  cannot discard an omission side channel.
+- Propagate unmapped venue open-order and relevant confirmed-fill failures
+  through every builder caller, including mass status.
+- Test the builder and execution-client failure boundaries.
+- Return an error instead of silently skipping an unrepresentable current
+  position, and test that failure.
+- Push the focused fork branch and open `nautilus_trader#4557` against
+  `develop`.
+- Pin Bolt and BTE to the exact commit through the official NT repository URL.
+- Update the governed source-capability revision.
 
-Introduce one typed, immutable input assembled from an NT snapshot:
+Evidence:
 
-- configured account identity;
-- current NT open orders and their NT lifecycle fields;
-- current NT positions;
-- current NT account/portfolio balances;
-- the NT reconciliation-complete boundary;
-- committed Bolt admission attribution and reservation policy; and
-- provider-only readiness facts, including venue-order-set attestation and
-  spendability facts not represented by NT.
+- full NT Polymarket package tests and all-target clippy;
+- Bolt/BTE locked dependency resolution;
+- Bolt build guard accepting the official URL and exact revision.
 
-Names are implementation choices, but the type must represent a snapshot, not
-an event history.
+### Phase 2 — Make every projection post-reconciliation
 
-### Projection result
+- Preserve one projection-request flag shared by provider and NT callbacks.
+- NT order, position, account, and portfolio callbacks set the flag only.
+- Provider snapshots revoke readiness and set the same flag.
+- The NT runtime watchdog consumes the flag only in `NodeState::Running`.
+- The watchdog reads NT cache and performs the complete projection on the NT
+  thread.
 
-The pure projection returns:
+Evidence:
 
-- attributed current reservations and derived liabilities;
-- the capital pool inputs used by admission;
-- `Reconciled` or a typed `UnreconciledReason`;
-- provider readiness/health inputs; and
-- no callable submission authority unless all required joins succeed.
+- request remains pending while `Starting`;
+- requests coalesce;
+- one projection runs after transition to `Running`;
+- provider worker never reads NT cache or constructs reconciled authority.
 
-The projection does not write evidence, submit orders, mutate NT, or apply
-incremental callback logic.
+### Phase 3 — Delete duplicate NT authority
 
-### Live triggers
+Delete production code and tests for:
 
-Startup reconciliation completion, relevant NT order/fill/account/position
-changes, and accepted venue truth may trigger projection.
+- Bolt live-order attribution maps used as lifecycle state;
+- client/venue-order lifecycle maps;
+- terminal-order history used to decide existence;
+- event-derived fill/liability mutation;
+- event-derived position deltas;
+- source/timestamp lifecycle arbitration;
+- raw provider open-order and position attestation;
+- dormant pre-run provider query APIs for orders, positions, balances, and
+  allowances;
+- Bolt venue causal reconciliation and divergence;
+- incremental venue/NT universe merging.
 
-The trigger layer obtains current NT state and invokes the same projection. A
-callback payload may be recorded as Bolt evidence when the evidence contract
-requires it, but it is not stored as a private lifecycle history.
+Keep only:
 
-The pinned NT execution engine applies an order event to its cache before it
-publishes that order event to subscribers. The implementation may rely on that
-specific post-apply boundary only after an integration test pins it. If any
-required callback is published before the corresponding NT state is canonical,
-the implementation must use an existing NT post-apply surface or stop for
-architecture review; it must not compensate with a Bolt event journal.
+- current NT snapshot extraction;
+- pure Bolt reservation/evidence join;
+- evidence-specific deduplication that does not decide NT state; and
+- typed fail-closed admission/health results.
 
-### Provider attestation
+Evidence:
 
-The provider snapshot is compared to the corresponding NT snapshot as one
-readiness check. Mismatch returns an unreconciled result. Provider data does
-not patch the NT snapshot or survive as a second order authority.
+- behavior suites over immutable projection inputs;
+- structural review of the production call graph;
+- no source-scanning test.
 
-Venue truth currently runs on a separate OS thread, while the NT cache is
-thread-confined. That worker may store/send one immutable provider-readiness
-input and immediately revoke admission pending reprojection. It must never read
-the NT cache or reopen admission. An existing NT-thread dispatch surface must
-consume the input and perform the only projection that can reopen admission.
-If no suitable existing dispatch surface exists, stop for architecture review
-rather than adding a second event journal.
+### Phase 4 — Reduce provider input to allowance
 
-## Dependency-Ordered Work
+- Return `ProviderCollateralAllowanceSnapshot` directly from the registered Polymarket
+  source.
+- Keep only the provider allowance; discard the provider-reported balance from
+  the combined REST response because NT owns balances.
+- Delete the unused pre-run collateral-accounting query surface.
+- Remove the duplicate raw provider snapshot transport.
+- Delete the file-based allowance source and its config fields.
+- Require the registered live provider whenever capital admission is enforced.
+- Route every provider update through the same projection request.
 
-### Gate 0 — Freeze and externally review the architecture
+Evidence:
 
-1. Commit `spec.md`, this plan, `external-review-prompt.md`, and
-   `external-review-resolution.md` on a clean exact head.
-2. Send the identical review request to Claude, GPT, and Kimi.
-3. Adjudicate every substantive finding in the resolution log.
-4. Amend the specification and plan where a finding is accepted.
-5. Perform one focused external re-review of the amended artifacts.
-6. Implementation may begin only when no substantiated Critical, High, or
-   Medium architecture finding remains.
+- provider builder/runtime tests;
+- enforced-config rejection without a registered source;
+- no live alternative source or fallback.
 
-External review is evidence, not merge authority.
+### Phase 5 — Preserve Bolt evidence and recovery
 
-### Phase 1 — Write behavioral proof against the selected boundary
+- Keep committed admission attribution as Bolt's authorization record.
+- Derive current liability from NT open orders joined to that attribution.
+- Fail closed on unattributed NT orders.
+- Treat attribution without an NT order as inert.
+- Keep fill facts as Bolt audit/dedup evidence, not lifecycle mutation.
+- Preserve current settlement replay and evidence durability behavior.
+- Keep BTE on the same Bolt fact/codec/policy types.
 
-Add RED tests for:
+Evidence:
 
-- startup with matching venue, NT, and evidence universes;
-- venue-only, NT-only, and unattributed NT orders;
-- duplicate and contradictory identity relations;
-- duplicate, missing, delayed, and reordered callback permutations;
-- NT terminal and fill outcomes with unchanged versus changed canonical state;
-- capture failure/divergence;
-- provider-thread revocation followed by NT-thread reprojection;
-- mismatch followed by a fresh complete match;
-- uninterrupted versus restart projection equality; and
-- live/BTE projection equivalence.
+- attributed/unattributed/orphan relation tests;
+- restart equivalence tests;
+- current-evidence contract and semantic-negative corpus;
+- settlement, poison, cap, ownership, and BTE regressions.
 
-The tests exercise public behavior and typed results. They must not inspect
-source tokens, fields, or function names.
+### Phase 6 — Reconcile active documentation
 
-### Phase 2 — Introduce the canonical projection
+- Update this specification, plan, external review request, and resolution.
+- Mark the superseded money-loop documents as historical designs that must not
+  be implemented.
+- Update active runtime/runbook text that assigns lifecycle reconciliation to
+  Bolt.
+- State the two-PR dependency and exact official NT pin.
 
-1. Define the immutable NT-backed admission input and typed projection result.
-2. Reuse existing NT cache/order/position/account surfaces; do not add a Bolt
-   protocol adapter or journal.
-3. Move reservation/evidence joins into one pure projection.
-4. Represent all failure classes with closed typed reasons.
-5. Preserve existing capital policy and fail-closed semantics.
+Evidence:
 
-Expected primary files:
+- targeted text checks;
+- internal adversarial review of active claims.
 
-- `src/bolt_v3_capital_admission.rs`
-- `src/bolt_v3_capital_admission_state.rs`
-- `src/bolt_v3_submit_admission.rs`
-- `src/bolt_v3_live_node.rs`
+### Phase 7 — Verify, review, and publish
 
-### Phase 3 — Rewire startup and live triggers
-
-1. Keep the post-NT-reconciliation startup guard.
-2. Assemble one canonical NT snapshot at that boundary.
-3. Compare provider attestation to that snapshot without copying it into a
-   live Bolt order ledger.
-4. Pin the NT cache-update-before-publication boundary with an integration
-   test, then make relevant live callbacks trigger fresh projection from
-   canonical NT state.
-5. Route provider readiness through an existing typed NT-thread dispatch
-   surface: worker-side receipt revokes, NT-thread projection alone may reopen.
-6. Keep evidence append ordering and existing risk-reducing policies intact.
-7. Ensure an unreconciled result removes new-risk capability before any caller
-   can submit.
-
-Expected primary file:
-
-- `src/bolt_v3_capital_admission_runtime_feed.rs`
-
-### Phase 4 — Delete duplicate authority
-
-Delete the replaced production paths rather than retaining them:
-
-- Bolt live-order lifecycle map;
-- client/venue lifecycle map used as authority;
-- terminal-order lifecycle history;
-- source/timestamp lifecycle selection;
-- event-derived position authority; and
-- incremental venue/NT order-universe merge logic.
-
-Retain only evidence-specific deduplication that does not decide NT state.
-
-### Phase 5 — Recovery and BTE equivalence
-
-1. Make restart use the same projection over reconstructed authoritative inputs.
-2. Make BTE use the same input/result types and reducer.
-3. Preserve current-only evidence codecs, consumer projections, caps, sink
-   ownership, settlement replay, and poison behavior.
-4. Prove no process-local callback history is needed after restart.
-
-### Phase 6 — Documentation and verification
-
-1. Update active runtime contracts and runbook language to state the thin NT
-   boundary and fail-closed mismatch behavior.
-2. Remove or rewrite claims that Bolt owns live order-lifecycle reconciliation.
-3. Run targeted behavioral tests while implementing.
-4. Run repository formatting and diff checks.
-5. Push the exact head and rely on advisory CI for full root/BTE clippy, tests,
-   and release builds.
-6. Conduct one final internal adversarial review against the specification.
-7. Request native code-owner review only after all findings are resolved and
-   the exact head is clean and pushed.
+1. Run focused tests for the changed authority boundaries.
+2. Regenerate decision-evidence artifacts and prove deterministic output.
+3. Run formatting and diff checks.
+4. Run the advisory workflow's root and BTE clippy/test/build commands.
+5. Conduct a class-complete internal adversarial review.
+6. Resolve every substantive local finding.
+7. Commit and push the exact Bolt head.
+8. Obtain terminal-green exact-head advisory evidence.
+9. Send the frozen review request to Claude, GPT, and Kimi.
+10. Resolve external findings before requesting native code-owner review.
 
 ## Requirement-to-Evidence Matrix
 
-| Requirement | Required evidence |
+| Requirement | Evidence |
 |---|---|
-| FR-001/FR-002 NT ownership/no shadow OMS | Behavioral callback-permutation tests and structural type review |
-| FR-003 one projection | Unit tests over immutable snapshots plus live/BTE integration tests |
-| FR-004 events are triggers | Same canonical snapshot yields same result for every callback ordering |
-| FR-005 venue attestation only | Venue/NT mismatch tests proving no lifecycle mutation |
-| FR-006 exact join | Raw-only, NT-only, duplicate, and unattributed-order tests |
-| FR-007 no disagreement authority | Submission-capability absence and typed health assertions |
-| FR-008 fresh recovery projection | Mismatch-then-match integration test |
-| FR-009 restart equivalence | Differential uninterrupted/restart suite |
-| FR-010 same live/BTE path | Shared-type compile evidence and behavior parity |
-| FR-011 existing guarantees | Existing exact-head regression suites |
-| FR-012 delete replaced paths | Structural design review plus absence of a second callable path; no source-scanning test |
-| FR-013 typed failure | Exhaustive typed-reason tests |
-| FR-014 scope | Three-dot diff and issue-scope review |
-| FR-015 thread ownership | Worker-revocation/NT-thread-reopen concurrency test |
+| NT owns reconciliation | NT #4557 behavior test; Bolt call-graph review |
+| Complete NT reconciliation universe | unmapped open order/fill or unrepresentable position fails reconciliation |
+| Admission-safe NT config | table test for every narrowing option |
+| Post-reconciliation projection | `Starting`/`Running` request timing test |
+| Events are triggers only | unchanged snapshot + callback permutations |
+| No Bolt shadow lifecycle | structural call-graph review plus behavior tests |
+| Provider allowance only | typed provider-source tests |
+| No provider fallback | config rejection and single registry path |
+| Exact evidence join | attributed/unattributed/orphan tests |
+| Restart equivalence | uninterrupted/restart differential tests |
+| Same live/BTE contract | shared types plus both workspace suites |
+| No evidence regression | generated contract, codec, poison, cap, settlement tests |
+| No adjacent #1385 work | three-dot scope review |
 
 ## Stop Conditions
 
-Stop implementation and return to architecture review if:
+Stop and revise the design if:
 
-- the design requires Bolt to interpret general order lifecycle independently
-  of NT;
-- a second reducer or compatibility path appears necessary;
-- provider snapshots must be persisted as lifecycle authority;
-- correctness requires a Bolt acknowledgement journal;
-- the selected NT surface cannot provide a canonical state at the proposed
-  trigger boundary;
-- reopening admission would require a provider worker to read NT state or
-  mutate lifecycle;
-- a substantiated external Critical/High/Medium finding remains unresolved; or
+- Bolt must interpret general order lifecycle independently of NT;
+- correctness requires a Bolt venue-order query or acknowledgement journal;
+- a provider worker must read NT cache;
+- a second allowance or reconciliation path appears necessary;
+- a pre-`Running` path can consume projection work;
+- BTE requires a different Bolt policy/reducer;
+- a substantive internal or external finding remains unresolved; or
 - the change begins implementing #1385.
 
 ## Completion Gate
 
-The slice is ready for native review only when:
+The slice is ready for external review only when:
 
-- every requirement in `spec.md` has named evidence;
-- every transition row is exercised;
-- all accepted external findings are implemented;
-- final internal adversarial review has no unresolved substantive finding;
-- the worktree is clean and pushed;
-- exact-head advisory evidence is terminal green; and
-- no compatibility lane, fallback, TODO, or duplicate NT authority remains.
+- NT #4557 is reviewable and its focused test passes;
+- Bolt compiles against its exact official-repository commit;
+- every spec requirement has named evidence;
+- all focused and full root/BTE verification passes;
+- internal adversarial review has no unresolved substantive finding;
+- active docs describe the implemented boundary;
+- the Bolt worktree is committed, clean, and pushed; and
+- no fallback, compatibility path, TODO, or duplicate NT authority remains.

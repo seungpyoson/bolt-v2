@@ -1556,6 +1556,7 @@ impl BoltV3LiveNodeRuntime {
             }
             None => (None, None, None, None),
         };
+        let nt_projection_epoch = submit_admission.capital_admission_nt_projection_epoch();
         let cache = cache.borrow();
         let open_order_snapshots = reconciliation_account_ids
             .iter()
@@ -1639,9 +1640,7 @@ impl BoltV3LiveNodeRuntime {
             .as_ref()
             .is_none_or(std::result::Result::is_ok)
             && unique_open_client_order_ids;
-        if let Some(Ok(components)) = canonical_components.as_ref() {
-            submit_admission.update_capital_admission_nt_components(components.clone());
-        } else if let Some(Err(error)) = canonical_components.as_ref() {
+        if let Some(Err(error)) = canonical_components.as_ref() {
             log::warn!("capital admission canonical NT projection rejected: {error:?}");
         }
 
@@ -1693,7 +1692,14 @@ impl BoltV3LiveNodeRuntime {
             live_forced_reduction_client_order_ids.clear();
         }
 
-        let mut rebuild = submit_admission.rebuild_capital_admission_open_order_snapshot(
+        let commit_components = canonical_components
+            .as_ref()
+            .and_then(|components| components.as_ref().ok())
+            .cloned();
+        let mut rebuild = submit_admission.commit_capital_admission_nt_projection(
+            nt_projection_epoch,
+            commit_components,
+            accepted_allowance_observed_at_ns,
             BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
                 observed_at_ns: now_ns,
                 evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
@@ -1710,21 +1716,6 @@ impl BoltV3LiveNodeRuntime {
                 missing.account_id,
                 missing.collateral_currency,
             );
-        }
-        if let Some(Ok(mut components)) = canonical_components {
-            components.order_lifecycle.all_open_orders_attributed =
-                all_open_orders_attributed && rebuild.accepted;
-            if rebuild.accepted
-                && let Some(accepted_allowance_observed_at_ns) = accepted_allowance_observed_at_ns
-            {
-                submit_admission
-                    .update_capital_admission_nt_components_after_accepted_allowance_snapshot(
-                        components,
-                        accepted_allowance_observed_at_ns,
-                    );
-            } else {
-                submit_admission.update_capital_admission_nt_components(components);
-            }
         }
         rebuild
     }

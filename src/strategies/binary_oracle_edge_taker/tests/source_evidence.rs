@@ -3953,16 +3953,6 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     decisions.push(strategy.exit_submission_decision_from_evaluation(base.clone()));
     strategy.config.exit_order = saved_exit_order;
 
-    let saved_exposure = strategy.exposure.clone();
-    strategy
-        .exposure
-        .managed_position_mut()
-        .expect("fixture should retain a managed position")
-        .position
-        .quantity = Quantity::zero(2);
-    decisions.push(strategy.exit_submission_decision_from_evaluation(base));
-    strategy.exposure = saved_exposure;
-
     for decision in &decisions {
         let receipt = &decision.evaluation.realized_volatility_receipt;
         assert_eq!(receipt.gate_result, RvGateResult::Accepted);
@@ -3987,8 +3977,8 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
 
     assert_eq!(
         decisions.len(),
-        12,
-        "the fixture must retain all twelve named submission shapes"
+        11,
+        "the fixture must retain every constructible submission shape"
     );
     let intentionally_non_recordable = &decisions[0];
     assert_eq!(
@@ -4039,7 +4029,6 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
         ExitBlockedReason::ExitOrderConfigInvalid,
         ExitBlockedReason::ExitQuoteQuantityUnsupported,
         ExitBlockedReason::ExitPriceMissing,
-        ExitBlockedReason::ExitQuantityNotPositive,
     ];
     assert_eq!(persisted_blocked_reasons, expected_blocked_reasons);
     for (index, record) in records.into_iter().enumerate() {
@@ -4378,8 +4367,7 @@ fn rv_clock_domain_amendment_exit_evidence_failure_is_non_aborting() {
 
     if mode == "evidence-builder" {
         let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-        let strategy_id = unique_log_capture_strategy_id("evidence-builder");
-        strategy.config.strategy_id = strategy_id.clone();
+        let strategy_id = strategy.config.strategy_id.clone();
         rv_clock_domain_amendment_set_snapshot_times(&mut strategy, 1_200, Some(1_200));
         let trigger = ExitEvaluationTriggerContext::new(
             crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
@@ -4408,8 +4396,7 @@ fn rv_clock_domain_amendment_exit_evidence_failure_is_non_aborting() {
 
     let writer = failing_observation_evidence();
     let mut strategy = exit_evidence_strategy_with_open_position_using_writer(writer.clone());
-    let strategy_id = unique_log_capture_strategy_id("evidence-writer");
-    strategy.config.strategy_id = strategy_id.clone();
+    let strategy_id = strategy.config.strategy_id.clone();
     rv_clock_domain_amendment_set_snapshot_times(&mut strategy, 1_200, Some(1_200));
     let trigger = ExitEvaluationTriggerContext::new(
         crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,

@@ -2803,16 +2803,24 @@ fn historical_entry_fee_rate_exit_ev_uses_entry_fee_from_submission_time() {
     set_pending_entry(&mut strategy, pending);
 
     fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
+    let position_id = PositionId::from("P-HIST-FEE-001");
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
     strategy.on_order_filled(&order_filled_event(
         client_order_id,
         instrument_id,
-        PositionId::from("P-HIST-FEE-001"),
+        position_id,
     ));
 
     let order_config = strategy
         .normal_exit_order_execution_config()
         .expect("normal exit order config should parse");
-    let outcome_side = managed_position_ref(&strategy)
+    let outcome_side = managed_position_snapshot(&strategy)
         .and_then(|position| position.lifecycle.outcome_side())
         .expect("entry fill should preserve configured outcome side");
     let exit_ev_bps = strategy
@@ -2836,10 +2844,18 @@ fn historical_entry_fee_rate_logs_known_for_strategy_managed_positions() {
     set_pending_entry(&mut strategy, pending);
 
     fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
+    let position_id = PositionId::from("P-HIST-LOG-001");
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
     strategy.on_order_filled(&order_filled_event(
         client_order_id,
         instrument_id,
-        PositionId::from("P-HIST-LOG-001"),
+        position_id,
     ));
 
     let decision = strategy.exit_submission_decision_at(1_200);

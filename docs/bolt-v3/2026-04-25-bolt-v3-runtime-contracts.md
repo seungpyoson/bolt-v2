@@ -853,7 +853,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `38949305e6b37753323cf366d8f8f244a42c694b`
+  - current value: `df0f083ceca6077c7f8b0c9e728ac8304709ffaf`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1246,6 +1246,15 @@ not query or reconcile venue orders, positions, balances, or fills again. Every 
 have a unique client-order ID with committed admission attribution. A reconciliation or reconstruction
 failure keeps admission unreconciled rather than opening the gate from incomplete state.
 
+The strategy layer follows the same authority boundary. It retains only
+strategy-owned order-intent correlation and decision context: client-order and
+position identifiers, market lifecycle, fees, books, and the configured
+strategy origin. Current position side, quantity, average entry price, open
+versus closed status, and partial-fill progress are projected from the NT cache
+when evaluated. Order and position callbacks request or consume that projection;
+they do not update a Bolt-owned position or fill reducer. NT position-close
+events are terminal authority for releasing the strategy context.
+
 Join rule:
 
 - decision events join to NautilusTrader-native execution events through `client_order_id`
@@ -1399,7 +1408,7 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`38949305e6b37753323cf366d8f8f244a42c694b`. WebSocket frames flow through
+`df0f083ceca6077c7f8b0c9e728ac8304709ffaf`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows the handler
 capturing one local clock value per decoded message and supplying it to
@@ -1542,7 +1551,7 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins the official NautilusTrader repository at
-exact commit `38949305e6b37753323cf366d8f8f244a42c694b` for upstream PR #4557.
+exact commit `df0f083ceca6077c7f8b0c9e728ac8304709ffaf` for upstream PR #4557.
 That commit contains the Binance Spot SBE schema 3:5 instrument-loading fix,
 schema 3:5 request negotiation, adapter receive-clock ownership, and
 fail-closed Polymarket reconciliation for unmapped orders/fills and

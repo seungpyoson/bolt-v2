@@ -84,6 +84,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         external_clients: configured_external_clients(&exec.external_clients),
         debug: exec.debug,
         reconciliation: exec.reconciliation,
+        reconciliation_fail_closed: exec.reconciliation_fail_closed,
         reconciliation_lookback_mins,
         // `f64` is lossless for all practical delay values (< 2^53 seconds).
         reconciliation_startup_delay_secs: exec.reconciliation_startup_delay_secs as f64,

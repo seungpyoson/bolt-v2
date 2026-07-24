@@ -178,8 +178,6 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
         &mut strategy,
         open_position.clone(),
         exit_client_order_id,
-        false,
-        false,
         ManagedPositionOrigin::StrategyEntry,
     );
     let sequence = partial_fill_then_expire_sequence(exit_client_order_id, instrument_id);
@@ -193,6 +191,13 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
     );
     fill.last_qty = Quantity::new(4.0, 2);
     strategy.on_order_filled(&fill);
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(6.0, 2),
+        open_position.avg_px_open,
+    );
     strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
 
     // halt-loudly is deliberately NOT an acceptable terminal for partial-fill
@@ -303,9 +308,9 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
         OrderSide::Sell,
     ));
     assert_eq!(
-        pending_exit_ref(&strategy).map(|pending| pending.fill_received),
-        Some(true),
-        "{RESTART_OPEN_EXIT_PINNED_FAILURE}: replayed fill must mark the recovered exit order as filled"
+        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        Some(exit_client_order_id),
+        "{RESTART_OPEN_EXIT_PINNED_FAILURE}: a fill event must not replace NT position truth or lose exit-order correlation"
     );
 }
 
@@ -508,7 +513,7 @@ fn position_market_lifecycle_new_active_boundary_tick_does_not_settle_old_positi
             && matches!(
                 &strategy.exposure,
                 ExposureState::Managed(managed)
-                    if managed.position.position_id == position.position_id
+                    if managed.position_id == position.position_id
             ),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: next boundary tick must not book old position against new strike; exposure={:?} events={events:?}",
         strategy.exposure,
@@ -540,8 +545,7 @@ fn position_market_lifecycle_same_instrument_sync_preserves_captured_lifecycle()
         .active
         .interval_end_ms
         .expect("fixture should configure position interval end");
-    let captured_position = managed_position_ref(&strategy)
-        .cloned()
+    let captured_position = managed_position_snapshot(&strategy)
         .expect("position should be managed after materialization");
     let captured_lifecycle = captured_position.lifecycle.clone();
     let captured_book = captured_position.book.clone();
@@ -560,7 +564,7 @@ fn position_market_lifecycle_same_instrument_sync_preserves_captured_lifecycle()
     strategy.active.books.up.liquidity_available = Some(25.0);
     strategy.sync_exposure_context_from_active();
 
-    let managed = managed_position_ref(&strategy).expect("position should remain managed");
+    let managed = managed_position_snapshot(&strategy).expect("position should remain managed");
     assert_eq!(
         managed.lifecycle.market_id(),
         captured_lifecycle.market_id(),
@@ -641,7 +645,7 @@ fn position_market_lifecycle_same_instrument_sync_does_not_repair_missing_lifecy
         Quantity::new(10.0, 2),
         0.45,
     );
-    let captured_lifecycle = managed_position_ref(&strategy)
+    let captured_lifecycle = managed_position_snapshot(&strategy)
         .expect("position should be managed after materialization")
         .lifecycle
         .clone();
@@ -659,9 +663,8 @@ fn position_market_lifecycle_same_instrument_sync_does_not_repair_missing_lifecy
     );
     strategy
         .exposure
-        .managed_position_mut()
+        .managed_position_context_mut()
         .expect("position should remain managed")
-        .position
         .lifecycle = partial_lifecycle;
 
     strategy.active.price_to_beat = Some(3_200.0);
@@ -675,7 +678,7 @@ fn position_market_lifecycle_same_instrument_sync_does_not_repair_missing_lifecy
         .map(|seconds_to_expiry| seconds_to_expiry.saturating_add(60));
     strategy.sync_exposure_context_from_active();
 
-    let managed = managed_position_ref(&strategy).expect("position should remain managed");
+    let managed = managed_position_snapshot(&strategy).expect("position should remain managed");
     assert_eq!(
         managed.lifecycle.settlement_strike(),
         None,
@@ -750,7 +753,7 @@ fn position_market_lifecycle_expired_book_deltas_do_not_submit_exits_after_roll(
             && matches!(
                 &strategy.exposure,
                 ExposureState::Managed(managed)
-                    if managed.position.position_id == position.position_id
+                    if managed.position_id == position.position_id
             ),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: book deltas after position expiry must not submit exits; exposure={:?}",
         strategy.exposure,
@@ -1375,8 +1378,6 @@ fn terminal_after_settlement_stays_flat_and_does_not_double_book() {
         &mut strategy,
         position,
         exit_client_order_id,
-        false,
-        false,
         ManagedPositionOrigin::StrategyEntry,
     );
 
@@ -1414,19 +1415,25 @@ fn terminal_before_settlement_remanages_residual_then_books_residual_settlement(
         0.45,
     );
     let exit_client_order_id = ClientOrderId::from("EXIT-TERMINAL-BEFORE-SETTLEMENT");
-    set_exit_pending_with_filled_quantity(
+    set_exit_pending(
         &mut strategy,
-        position,
+        position.clone(),
         exit_client_order_id,
-        Quantity::new(4.0, 2),
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        position.position_id,
+        Quantity::new(6.0, 2),
+        position.avg_px_open,
     );
 
     strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
     assert!(
-        matches!(
-            &strategy.exposure,
-            ExposureState::Managed(managed) if managed.position.quantity == Quantity::new(6.0, 2)
-        ),
+        matches!(&strategy.exposure, ExposureState::Managed(_))
+            && managed_position_snapshot(&strategy)
+                .is_some_and(|managed| managed.quantity == Quantity::new(6.0, 2)),
         "terminal before settlement must re-manage the known residual before resolution; exposure={:?}",
         strategy.exposure
     );
@@ -2579,7 +2586,10 @@ fn partial_fill_residual_is_managed_or_fresh_reexit(
     expected_residual_quantity: Quantity,
 ) -> bool {
     match &strategy.exposure {
-        ExposureState::Managed(managed) => {
+        ExposureState::Managed(_) => {
+            let Some(managed) = strategy.managed_position() else {
+                return false;
+            };
             position_matches_expected_residual(
                 &managed.position,
                 original_position,
@@ -2587,7 +2597,7 @@ fn partial_fill_residual_is_managed_or_fresh_reexit(
             ) && open_sell_exit_order_count(cache, original_position) == 0
         }
         ExposureState::ExitPending(exit) => {
-            let Some(managed) = &exit.position else {
+            let Some(managed) = strategy.managed_position() else {
                 return false;
             };
             position_matches_expected_residual(
@@ -2596,10 +2606,6 @@ fn partial_fill_residual_is_managed_or_fresh_reexit(
                 expected_residual_quantity,
             ) && exit.pending_exit.client_order_id != expired_client_order_id
                 && exit.pending_exit.position_id == Some(original_position.position_id)
-                && !exit.pending_exit.fill_received
-                && !exit.pending_exit.close_received
-                && !exit.pending_exit.terminal_received
-                && !exit.pending_exit.residual_position_observed_after_fill
                 && fresh_exit_order_matches_residual(
                     cache,
                     &exit.pending_exit,
@@ -2686,32 +2692,6 @@ fn open_sell_exit_order_count(
         .into_iter()
         .filter(|order| !order.is_closed())
         .count()
-}
-
-fn set_exit_pending_with_filled_quantity(
-    strategy: &mut BinaryOracleEdgeTaker,
-    position: OpenPositionState,
-    client_order_id: ClientOrderId,
-    filled_quantity: Quantity,
-) {
-    strategy.exposure = ExposureState::ExitPending(ExitPendingState {
-        pending_exit: PendingExitState {
-            client_order_id,
-            submitted_at_ms: Some(1_000),
-            market_id: position.lifecycle.market_id_owned(),
-            position_id: Some(position.position_id),
-            fill_received: true,
-            filled_quantity: Some(filled_quantity),
-            close_received: false,
-            terminal_received: false,
-            residual_position_observed_after_fill: false,
-        },
-        position: Some(ManagedPositionState {
-            position,
-            origin: ManagedPositionOrigin::StrategyEntry,
-            pending_entry: None,
-        }),
-    });
 }
 
 fn held_instrument_id(strategy: &BinaryOracleEdgeTaker, held_leg: Leg) -> InstrumentId {

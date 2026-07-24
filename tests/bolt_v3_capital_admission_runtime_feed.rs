@@ -23,7 +23,7 @@ use bolt_v2::bolt_v3_capital_admission_state::{
 };
 use bolt_v2::bolt_v3_capital_reservation::{CapitalPoolSnapshot, ReservationRejectionReason};
 use bolt_v2::bolt_v3_current_evidence::{
-    DecisionEvidenceRecorder,
+    CapitalAdmissionRebuildSource, DecisionEvidenceRecorder,
     ProviderCollateralAllowanceCaptureEndpoint as EvidenceCaptureEndpoint,
     ProviderCollateralAllowanceCaptureErrorClass as EvidenceCaptureErrorClass,
 };
@@ -43,7 +43,8 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3KillSwitchForcedReductionPolicy, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
     BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
     BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderReservation,
-    BoltV3SubmitIntentKind, PredictionMarketOutcomeSide,
+    BoltV3SubmitCapitalAdmissionOpenOrderSnapshot, BoltV3SubmitIntentKind,
+    PredictionMarketOutcomeSide,
 };
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
@@ -182,6 +183,89 @@ fn nt_projection_request_revokes_new_risk_without_erasing_committed_reservation(
             reason: BoltV3CapitalAdmissionRejectReason::ReconciliationRequired
         })
     ));
+}
+
+#[test]
+fn stale_nt_projection_candidate_cannot_rearm_after_newer_invalidation() {
+    let admission = capital_admission_configured_admission();
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    let stale_epoch = admission.capital_admission_nt_projection_epoch_for_test();
+    let state_before_invalidation = admission
+        .capital_admission_state_snapshot()
+        .expect("test projection should publish state");
+
+    admission.invalidate_capital_admission_for_nt_projection_request();
+    let decision = admission.commit_capital_admission_nt_projection_for_test(
+        stale_epoch,
+        Some(fresh_components(2_000)),
+        Some(2_000),
+        BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
+            observed_at_ns: 2_000,
+            evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+            observed_open_order_count: 0,
+            all_open_orders_attributed: true,
+            reservations: Vec::new(),
+            live_non_reservation_client_order_ids: Default::default(),
+            live_forced_reduction_client_order_ids: Default::default(),
+        },
+        2_000,
+    );
+
+    assert!(!decision.accepted, "a stale projection must not commit");
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    assert_eq!(
+        admission.capital_admission_state_snapshot(),
+        Some(state_before_invalidation),
+        "a stale projection must perform zero state mutation"
+    );
+}
+
+#[test]
+fn only_one_nt_projection_candidate_can_commit_for_an_epoch() {
+    let admission = capital_admission_configured_admission();
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    admission.invalidate_capital_admission_for_nt_projection_request();
+    let shared_epoch = admission.capital_admission_nt_projection_epoch_for_test();
+    let snapshot = BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
+        observed_at_ns: 2_000,
+        evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+        observed_open_order_count: 0,
+        all_open_orders_attributed: true,
+        reservations: Vec::new(),
+        live_non_reservation_client_order_ids: Default::default(),
+        live_forced_reduction_client_order_ids: Default::default(),
+    };
+
+    let first = admission.commit_capital_admission_nt_projection_for_test(
+        shared_epoch,
+        Some(fresh_components(2_000)),
+        Some(2_000),
+        snapshot.clone(),
+        2_000,
+    );
+    assert!(first.accepted, "the first candidate should commit");
+    let state_after_first = admission
+        .capital_admission_state_snapshot()
+        .expect("the committed projection should publish state");
+
+    let second = admission.commit_capital_admission_nt_projection_for_test(
+        shared_epoch,
+        Some(fresh_components(3_000)),
+        Some(3_000),
+        snapshot,
+        3_000,
+    );
+    assert!(
+        !second.accepted,
+        "the consumed epoch must reject a competitor"
+    );
+    assert_eq!(
+        admission.capital_admission_state_snapshot(),
+        Some(state_after_first),
+        "a rejected competing candidate must perform zero state mutation"
+    );
 }
 
 #[test]
@@ -1545,6 +1629,74 @@ fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(86, 1))
+    );
+}
+
+#[test]
+fn delayed_duplicate_fill_after_empty_nt_reprojection_is_idempotent() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    let fill = OrderEventAny::Filled(order_filled_event_with(
+        "client-order-1",
+        "trade-1",
+        1_100,
+        AccountId::from("ACCOUNT-001"),
+        Quantity::from(4),
+        OrderSide::Buy,
+        InstrumentId::from("instrument-yes.VENUE-A"),
+    ));
+    let first = feed
+        .on_order_event(&fill)
+        .expect("the first attributed fill should be recorded");
+    assert!(first.accepted);
+
+    apply_empty_canonical_nt_projection(&mut feed, &admission, 1_200);
+    let duplicate = feed
+        .on_order_event(&fill)
+        .expect("the committed fill must remain idempotent after reprojection");
+
+    assert!(duplicate.accepted);
+    assert!(!duplicate.unknown_reservation);
+    assert_eq!(admission.capital_admission_reconciled(), Some(true));
+}
+
+#[test]
+fn fill_evidence_invalidates_an_in_flight_nt_projection_candidate() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    let stale_epoch = admission.capital_admission_nt_projection_epoch_for_test();
+    let fill = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("the attributed fill should be recorded");
+    assert!(fill.accepted);
+
+    let stale = admission.commit_capital_admission_nt_projection_for_test(
+        stale_epoch,
+        Some(fresh_components(1_200)),
+        Some(1_200),
+        BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
+            observed_at_ns: 1_200,
+            evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+            observed_open_order_count: 0,
+            all_open_orders_attributed: true,
+            reservations: Vec::new(),
+            live_non_reservation_client_order_ids: Default::default(),
+            live_forced_reduction_client_order_ids: Default::default(),
+        },
+        1_200,
+    );
+
+    assert!(!stale.accepted);
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1)),
+        "a projection captured before the fill must not erase its reservation"
     );
 }
 

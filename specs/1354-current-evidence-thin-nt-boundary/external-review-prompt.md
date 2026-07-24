@@ -14,7 +14,7 @@ Bolt PR: `https://github.com/seungpyoson/bolt-v2/pull/1505`
 Bolt base: `d7a79229e7593f5a81940f30405db3f0dc2166a1`
 Bolt exact head: `<INSERT_PUSHED_EXACT_HEAD>`
 NT PR: `https://github.com/nautechsystems/nautilus_trader/pull/4557`
-NT exact commit: `38949305e6b37753323cf366d8f8f244a42c694b`
+NT exact commit: `df0f083ceca6077c7f8b0c9e728ac8304709ffaf`
 
 At review start, verify and report:
 

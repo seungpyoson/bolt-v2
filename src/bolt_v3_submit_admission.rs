@@ -291,6 +291,7 @@ struct BoltV3SubmitAdmissionInner {
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     admitted_order_count: u32,
     admitted_order_count_by_execution_client: BTreeMap<String, u32>,
+    capital_admission_nt_projection_epoch: u64,
     forced_reduction_liveness_reconciled: bool,
     live_non_reservation_client_order_ids: BTreeSet<String>,
     live_kill_switch_forced_reduction_client_order_ids: BTreeSet<String>,
@@ -552,6 +553,7 @@ impl BoltV3SubmitAdmissionState {
                 live_submit_approval_limits,
                 admitted_order_count: 0,
                 admitted_order_count_by_execution_client: BTreeMap::new(),
+                capital_admission_nt_projection_epoch: 0,
                 forced_reduction_liveness_reconciled: false,
                 live_non_reservation_client_order_ids: BTreeSet::new(),
                 live_kill_switch_forced_reduction_client_order_ids: BTreeSet::new(),
@@ -627,6 +629,8 @@ impl BoltV3SubmitAdmissionState {
             .clone()
     }
 
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
     pub fn update_capital_admission_nt_components(
         &self,
         components: BoltV3SubmitCapitalAdmissionNtComponents,
@@ -640,6 +644,15 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
+    pub(crate) fn capital_admission_nt_projection_epoch(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .capital_admission_nt_projection_epoch
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
     pub fn update_capital_admission_nt_components_after_accepted_allowance_snapshot(
         &self,
         components: BoltV3SubmitCapitalAdmissionNtComponents,
@@ -669,6 +682,9 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
+        advance_capital_admission_nt_projection_epoch(
+            &mut inner.capital_admission_nt_projection_epoch,
+        );
         inner.forced_reduction_liveness_reconciled = false;
         if let Some(capital_admission) = inner.capital_admission.as_mut() {
             capital_admission.gate.invalidate_reconciliation();
@@ -714,7 +730,12 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
+        advance_capital_admission_nt_projection_epoch(
+            &mut inner.capital_admission_nt_projection_epoch,
+        );
+        inner.forced_reduction_liveness_reconciled = false;
         if let Some(capital_admission) = inner.capital_admission.as_mut() {
+            capital_admission.gate.invalidate_reconciliation();
             capital_admission.provider_collateral_allowance_capture_failure_source =
                 Some(evidence.source);
             capital_admission.provider_collateral_allowance_capture_failure_observed_at_ns =
@@ -987,10 +1008,41 @@ impl BoltV3SubmitAdmissionState {
         )
     }
 
-    pub(crate) fn rebuild_capital_admission_open_order_snapshot(
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    fn rebuild_capital_admission_open_order_snapshot(
         &self,
         snapshot: BoltV3SubmitCapitalAdmissionOpenOrderSnapshot,
         now_ns: u64,
+    ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
+        self.rebuild_capital_admission_open_order_snapshot_with_projection(
+            snapshot, now_ns, None, None, None,
+        )
+    }
+
+    pub(crate) fn commit_capital_admission_nt_projection(
+        &self,
+        expected_epoch: u64,
+        components: Option<BoltV3SubmitCapitalAdmissionNtComponents>,
+        accepted_allowance_observed_at_ns: Option<u64>,
+        snapshot: BoltV3SubmitCapitalAdmissionOpenOrderSnapshot,
+        now_ns: u64,
+    ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
+        self.rebuild_capital_admission_open_order_snapshot_with_projection(
+            snapshot,
+            now_ns,
+            Some(expected_epoch),
+            components,
+            accepted_allowance_observed_at_ns,
+        )
+    }
+
+    fn rebuild_capital_admission_open_order_snapshot_with_projection(
+        &self,
+        snapshot: BoltV3SubmitCapitalAdmissionOpenOrderSnapshot,
+        now_ns: u64,
+        expected_epoch: Option<u64>,
+        components: Option<BoltV3SubmitCapitalAdmissionNtComponents>,
+        accepted_allowance_observed_at_ns: Option<u64>,
     ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
         let live_forced_reduction_client_order_ids =
             snapshot.live_forced_reduction_client_order_ids.clone();
@@ -1013,6 +1065,31 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
+        if expected_epoch.is_some_and(|expected_epoch| {
+            expected_epoch != inner.capital_admission_nt_projection_epoch
+        }) {
+            return BoltV3SubmitCapitalAdmissionRebuildDecision {
+                accepted: false,
+                reason: Some(ReservationRejectionReason::MissingEvidence),
+                attempted_reservation_count,
+                rebuilt_reservation_count: 0,
+                live_reserved_liability: inner
+                    .capital_admission
+                    .as_ref()
+                    .map(|capital_admission| {
+                        capital_admission
+                            .gate
+                            .live_reserved_liability(&capital_admission.capital_pool.pool_id)
+                    })
+                    .unwrap_or(Decimal::ZERO),
+                missing_nt_account_cache_balance: None,
+            };
+        }
+        if expected_epoch.is_some() {
+            advance_capital_admission_nt_projection_epoch(
+                &mut inner.capital_admission_nt_projection_epoch,
+            );
+        }
         if snapshot.all_open_orders_attributed {
             inner.live_non_reservation_client_order_ids = live_non_reservation_client_order_ids;
             inner.live_kill_switch_forced_reduction_client_order_ids =
@@ -1032,6 +1109,21 @@ impl BoltV3SubmitAdmissionState {
                 missing_nt_account_cache_balance: None,
             };
         };
+        if let Some(mut components) = components {
+            if capital_admission
+                .provider_collateral_allowance_capture_failure_observed_at_ns
+                .is_some_and(|failure_observed_at_ns| {
+                    accepted_allowance_observed_at_ns
+                        .is_some_and(|accepted| accepted > failure_observed_at_ns)
+                })
+            {
+                capital_admission.provider_collateral_allowance_capture_failure_source = None;
+                capital_admission.provider_collateral_allowance_capture_failure_observed_at_ns =
+                    None;
+            }
+            components.order_lifecycle.all_open_orders_attributed = false;
+            refresh_capital_admission_state_from_components(capital_admission, components);
+        }
         if capital_admission.fill_evidence_integrity_failed {
             capital_admission.gate = CapitalAdmissionGate::unreconciled();
             capital_admission.client_order_reservations.clear();
@@ -1194,6 +1286,31 @@ impl BoltV3SubmitAdmissionState {
         self.rebuild_capital_admission_open_order_snapshot(snapshot, now_ns)
     }
 
+    #[cfg(feature = "test-current-evidence-inspection")]
+    #[doc(hidden)]
+    pub fn capital_admission_nt_projection_epoch_for_test(&self) -> u64 {
+        self.capital_admission_nt_projection_epoch()
+    }
+
+    #[cfg(feature = "test-current-evidence-inspection")]
+    #[doc(hidden)]
+    pub fn commit_capital_admission_nt_projection_for_test(
+        &self,
+        expected_epoch: u64,
+        components: Option<BoltV3SubmitCapitalAdmissionNtComponents>,
+        accepted_allowance_observed_at_ns: Option<u64>,
+        snapshot: BoltV3SubmitCapitalAdmissionOpenOrderSnapshot,
+        now_ns: u64,
+    ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
+        self.commit_capital_admission_nt_projection(
+            expected_epoch,
+            components,
+            accepted_allowance_observed_at_ns,
+            snapshot,
+            now_ns,
+        )
+    }
+
     fn finish_capital_admission_rebuild(
         &self,
         inner: &mut BoltV3SubmitAdmissionInner,
@@ -1273,6 +1390,7 @@ impl BoltV3SubmitAdmissionState {
         let BoltV3SubmitAdmissionInner {
             committed_admission_authority,
             capital_admission,
+            capital_admission_nt_projection_epoch,
             ..
         } = &mut *inner;
         let Some(capital_admission) = capital_admission.as_mut() else {
@@ -1290,10 +1408,34 @@ impl BoltV3SubmitAdmissionState {
                     unknown_reservation: false,
                 };
             }
+            if let Some(attribution) =
+                committed_admission_authority.reservation_attribution(&update.client_order_id)
+                && update.trade_id.trim().len() == update.trade_id.len()
+                && !update.trade_id.is_empty()
+                && update.fill_quantity > Decimal::ZERO
+                && update.instrument_id == attribution.instrument_id
+                && matches!(
+                    (update.side, attribution.side),
+                    (BoltV3CompiledOrderSide::Buy, EvidenceOrderSide::Buy)
+                        | (BoltV3CompiledOrderSide::Sell, EvidenceOrderSide::Sell)
+                )
+                && committed_admission_authority
+                    .reservation_fill_trade_ids(
+                        &update.client_order_id,
+                        &attribution.submit_reservation_id,
+                    )
+                    .is_some_and(|trade_ids| trade_ids.contains(&update.trade_id))
+            {
+                return BoltV3SubmitReservationFillEvidenceDecision {
+                    accepted: true,
+                    unknown_reservation: false,
+                };
+            }
             log::warn!(
                 "bolt-v3 submit admission received capital-admission fill update for unknown client_order_id={}",
                 update.client_order_id
             );
+            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
             fail_capital_admission_fill_evidence_integrity(
                 capital_admission,
                 update.observed_at_ns,
@@ -1301,6 +1443,7 @@ impl BoltV3SubmitAdmissionState {
             return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         };
         let Some(metadata) = index.fill_metadata.clone() else {
+            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
             fail_capital_admission_fill_evidence_integrity(
                 capital_admission,
                 update.observed_at_ns,
@@ -1312,6 +1455,7 @@ impl BoltV3SubmitAdmissionState {
             || update.instrument_id != metadata.instrument_id
             || update.side != metadata.side
         {
+            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
             fail_capital_admission_fill_evidence_integrity(
                 capital_admission,
                 update.observed_at_ns,
@@ -1330,6 +1474,7 @@ impl BoltV3SubmitAdmissionState {
                 unknown_reservation: false,
             };
         }
+        advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
         let fill_evidence = SubmitReservationFillFact {
             client_order_id: update.client_order_id.clone(),
             submit_reservation_id: index.submit_reservation_id.clone(),
@@ -1400,7 +1545,13 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        if let Some(capital_admission) = inner.capital_admission.as_mut() {
+        let BoltV3SubmitAdmissionInner {
+            capital_admission,
+            capital_admission_nt_projection_epoch,
+            ..
+        } = &mut *inner;
+        if let Some(capital_admission) = capital_admission.as_mut() {
+            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
             fail_capital_admission_fill_evidence_integrity(capital_admission, observed_at_ns);
         }
     }
@@ -3897,6 +4048,12 @@ fn fail_capital_admission_fill_evidence_integrity(
     capital_admission.gate = CapitalAdmissionGate::unreconciled();
     capital_admission.client_order_reservations.clear();
     refresh_capital_admission_reservation_snapshot(capital_admission, observed_at_ns);
+}
+
+fn advance_capital_admission_nt_projection_epoch(epoch: &mut u64) {
+    *epoch = epoch
+        .checked_add(1)
+        .expect("capital admission NT projection epoch exhausted");
 }
 
 fn apply_rebuild_order_lifecycle(

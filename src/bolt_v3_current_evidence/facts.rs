@@ -312,12 +312,26 @@ pub struct RequoteThrottleObservationFact {
     pub min_interval_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VenueTruthCaptureEndpoint {
+    VenueTruthSnapshot,
+    ClobBalanceAllowance,
+    ClobOpenOrders,
+    DataApiPositions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VenueTruthCaptureErrorClass {
+    Unknown,
+    TransportOrDecode,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VenueTruthCaptureFailureFact {
     pub source: String,
     pub observed_at_ns: u64,
-    pub endpoint: String,
-    pub error_class: String,
+    pub endpoint: VenueTruthCaptureEndpoint,
+    pub error_class: VenueTruthCaptureErrorClass,
     pub captures_missed: u64,
 }
 
@@ -328,15 +342,24 @@ pub enum VenueTruthDivergenceAlarmClass {
     SilentChannel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VenueTruthDivergenceDomain {
+    AccountChanged,
+    OrderingViolation,
+    UnexplainedOpenOrderDelta,
+    UnexplainedPositionDelta,
+    UnexplainedCollateralBalanceDelta,
+    UnexplainedCollateralAllowanceDelta,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VenueTruthDivergenceFact {
     pub source: String,
     pub observed_at_ns: u64,
     pub account_id: String,
-    pub field: String,
+    pub domain: VenueTruthDivergenceDomain,
     pub venue_value: String,
     pub prior_accepted_value: String,
-    pub missing_explanation: String,
     pub alarm_class: VenueTruthDivergenceAlarmClass,
 }
 
@@ -503,7 +526,6 @@ pub struct OrderRejectFact {
     pub prior_client_order_id: Option<String>,
     pub client_order_id: String,
     pub retry_count: u32,
-    pub backoff_cooldown_state: Option<String>,
     pub stable_episode_key: String,
     pub elapsed_ns: u64,
 }
@@ -1215,6 +1237,16 @@ pub enum RecoveredSettlementOutcome {
 }
 
 impl SettlementRecoveryFacts {
+    #[cfg(test)]
+    pub(crate) fn from_settlement_for_test(settlement: SettlementFact) -> Self {
+        Self {
+            outcomes: BTreeMap::from([(
+                settlement.settlement_key.clone(),
+                RecoveredSettlementOutcome::Successful(settlement),
+            )]),
+        }
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.outcomes.is_empty()

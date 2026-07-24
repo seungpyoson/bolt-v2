@@ -1819,7 +1819,6 @@ fn single_order_reject_records_order_reject_evidence_on_reject_outcome() {
     assert_eq!(reject.prior_client_order_id, None);
     assert_eq!(reject.client_order_id, request.client_order_id);
     assert_eq!(reject.retry_count, 1);
-    assert_eq!(reject.backoff_cooldown_state, None);
     assert_eq!(
         reject.stable_episode_key,
         "instrument-1/buy/rejected_count_cap_exhausted"

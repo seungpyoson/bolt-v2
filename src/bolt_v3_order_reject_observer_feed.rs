@@ -264,7 +264,6 @@ impl BoltV3OrderRejectObserverFeed {
             prior_client_order_id,
             client_order_id,
             retry_count,
-            backoff_cooldown_state: None,
             stable_episode_key,
             elapsed_ns,
         };

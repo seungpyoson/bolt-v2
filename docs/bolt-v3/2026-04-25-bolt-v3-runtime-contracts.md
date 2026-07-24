@@ -1239,8 +1239,10 @@ activation.
 
 Capital-admission reconstruction occurs only after NautilusTrader reports `Running`, which follows its
 startup reconciliation. The gate remains unreconciled and rejects submission until the reconstruction
-from the reconciled NT cache and current evidence succeeds. A reconciliation or reconstruction failure
-stops startup rather than opening the gate from a pre-reconciliation cache.
+from the reconciled NT cache and current evidence succeeds. The accepted raw venue snapshot's open-order
+ID set must exactly equal the reconciled NT cache's unique venue-order ID set, and every member must have
+a unique client-order ID with committed admission attribution. A reconciliation, set-attestation, or
+reconstruction failure stops startup rather than opening the gate from an incomplete cache.
 
 Join rule:
 
@@ -1280,7 +1282,8 @@ truncates the stream and never applies this exception to startup recovery.
 
 Shutdown first stops and joins every evidence-producing subscription and task while the core remains
 open. The core then enters closing, rejects new operations, waits for accepted append/publication
-operations, closes both streams, and releases the catalog lock. Weak component handles cannot prolong
+operations. The subsequent recorder drop closes both streams and releases the catalog lock. Weak
+component handles cannot prolong
 runtime ownership or write after closure.
 
 ## 10. Local Disk and Later Archival

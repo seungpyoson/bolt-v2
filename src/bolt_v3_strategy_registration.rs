@@ -223,7 +223,6 @@ pub struct BoltV3StrategyExecutionControls {
     pub settlement_health_transition_emitter: Option<BoltV3SettlementHealthTransitionEmitter>,
 }
 
-#[derive(Clone)]
 pub struct StrategyRegistrationRuntimeResources {
     decision_evidence: StrategyEvidenceHandles,
     iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
@@ -402,19 +401,14 @@ impl<'a> StrategyRegistrationContext<'a> {
         contract: StrategyRegistrationContract,
         resolved: &ResolvedBoltV3Secrets,
         preparation_config: Arc<StrategyPreparationConfig>,
-        runtime_resources: StrategyRegistrationRuntimeResources,
+        runtime_resources: &StrategyRegistrationRuntimeResources,
     ) -> Result<Self, BoltV3StrategyRegistrationError> {
         let StrategyRegistrationContract {
             strategy_kind,
             capabilities,
             evidence_capability,
         } = contract;
-        let StrategyRegistrationRuntimeResources {
-            decision_evidence,
-            iv_query_handles,
-            realized_volatility_runtime,
-            execution_controls,
-        } = runtime_resources;
+        let decision_evidence = &runtime_resources.decision_evidence;
         let decision_evidence = match evidence_capability {
             StrategyEvidenceCapability::EdgeTaker => StrategyDecisionEvidence::edge_taker(
                 decision_evidence.edge_taker(),
@@ -433,16 +427,17 @@ impl<'a> StrategyRegistrationContext<'a> {
             settlement_recovery,
             booking_recovery,
             settlement_health_transition_emitter,
-        } = execution_controls;
+        } = runtime_resources.execution_controls.clone();
         let settlement_runtime = StrategyRegistrationSettlementRuntime {
             sink: settlement_runtime_sink,
             settlement_recovery,
             booking_recovery,
             health_transition_emitter: settlement_health_transition_emitter,
         };
+        let iv_query_handles = runtime_resources.iv_query_handles.clone();
         let realized_volatility_runtime = capabilities
             .realized_volatility
-            .then_some(realized_volatility_runtime);
+            .then(|| runtime_resources.realized_volatility_runtime.clone());
         let execution_client_id = strategy.config.execution_client_id.as_str();
         let ResolvedStrategyClientRoutes {
             prepared: client_routes,
@@ -1056,7 +1051,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 binding.registration_contract(),
                 resolved,
                 preparation_config.clone(),
-                runtime_resources.clone(),
+                &runtime_resources,
             )?;
             Ok((binding, context))
         })

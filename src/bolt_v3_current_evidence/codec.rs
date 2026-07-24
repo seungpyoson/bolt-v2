@@ -987,6 +987,31 @@ mod tests {
         ]
     );
     unit_wire_coverage!(
+        VenueTruthCaptureEndpoint,
+        [
+            VenueTruthSnapshot => "venue_truth_snapshot",
+            ClobBalanceAllowance => "clob_balance_allowance",
+            ClobOpenOrders => "clob_open_orders",
+            DataApiPositions => "data_api_positions"
+        ]
+    );
+    unit_wire_coverage!(
+        VenueTruthCaptureErrorClass,
+        [Unknown => "unknown", TransportOrDecode => "transport_or_decode"]
+    );
+    unit_wire_coverage!(
+        VenueTruthDivergenceDomain,
+        [
+            AccountChanged => "account_changed",
+            OrderingViolation => "ordering_violation",
+            UnexplainedOpenOrderDelta => "unexplained_open_order_delta",
+            UnexplainedPositionDelta => "unexplained_position_delta",
+            UnexplainedCollateralBalanceDelta => "unexplained_collateral_balance_delta",
+            UnexplainedCollateralAllowanceDelta =>
+                "unexplained_collateral_allowance_delta"
+        ]
+    );
+    unit_wire_coverage!(
         StaleLossReason,
         [
             MissingSnapshot => "missing_snapshot",
@@ -2011,6 +2036,11 @@ mod tests {
                 cases.push(CurrentFact::RequoteThrottleObservation(present_market));
             }
             CurrentFact::VenueTruthDivergence(value) => {
+                for (domain, _) in VenueTruthDivergenceDomain::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.domain = domain;
+                    cases.push(CurrentFact::VenueTruthDivergence(case));
+                }
                 for (alarm_class, _) in VenueTruthDivergenceAlarmClass::wire_coverage_values() {
                     let mut case = value.clone();
                     case.alarm_class = alarm_class;
@@ -2337,7 +2367,19 @@ mod tests {
                 }
                 cases.push(CurrentFact::BasketAdmissionGranted(without_reservations));
             }
-            CurrentFact::SubmitReservationFill(_) | CurrentFact::VenueTruthCaptureFailure(_) => {}
+            CurrentFact::VenueTruthCaptureFailure(value) => {
+                for (endpoint, _) in VenueTruthCaptureEndpoint::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.endpoint = endpoint;
+                    cases.push(CurrentFact::VenueTruthCaptureFailure(case));
+                }
+                for (error_class, _) in VenueTruthCaptureErrorClass::wire_coverage_values() {
+                    let mut case = value.clone();
+                    case.error_class = error_class;
+                    cases.push(CurrentFact::VenueTruthCaptureFailure(case));
+                }
+            }
+            CurrentFact::SubmitReservationFill(_) => {}
         }
         assert!(
             !cases.is_empty(),
@@ -2600,7 +2642,6 @@ mod tests {
         nulls.venue_size_precision = None;
         nulls.venue_min_notional = None;
         nulls.prior_client_order_id = None;
-        nulls.backoff_cooldown_state = None;
 
         let mut present = nulls.clone();
         present.raw_reason_text = Some("venue rejected order".to_string());
@@ -2617,7 +2658,6 @@ mod tests {
         present.venue_size_precision = Some(2);
         present.venue_min_notional = Some("1".to_string());
         present.prior_client_order_id = Some("prior-client-order".to_string());
-        present.backoff_cooldown_state = Some("active".to_string());
 
         vec![nulls, present]
     }
@@ -2998,8 +3038,8 @@ mod tests {
         VenueTruthCaptureFailureFact {
             source: "venue_truth".to_string(),
             observed_at_ns: 8,
-            endpoint: "venue_snapshot".to_string(),
-            error_class: "timeout".to_string(),
+            endpoint: super::super::facts::VenueTruthCaptureEndpoint::VenueTruthSnapshot,
+            error_class: super::super::facts::VenueTruthCaptureErrorClass::Unknown,
             captures_missed: 1,
         }
     }
@@ -3009,10 +3049,9 @@ mod tests {
             source: "venue_truth".to_string(),
             observed_at_ns: 9,
             account_id: "POLYMARKET-001".to_string(),
-            field: "open_orders".to_string(),
+            domain: super::super::facts::VenueTruthDivergenceDomain::UnexplainedOpenOrderDelta,
             venue_value: "2".to_string(),
             prior_accepted_value: "1".to_string(),
-            missing_explanation: "unexplained_open_order_delta".to_string(),
             alarm_class: super::super::facts::VenueTruthDivergenceAlarmClass::TrueDivergence,
         }
     }
@@ -3093,7 +3132,6 @@ mod tests {
             prior_client_order_id: None,
             client_order_id: "client-1".to_string(),
             retry_count: 1,
-            backoff_cooldown_state: None,
             stable_episode_key: "YES-USD.POLYMARKET/venue/min_notional_rejected".to_string(),
             elapsed_ns: 0,
         }
@@ -3276,7 +3314,10 @@ mod tests {
         assert_domain!(RequoteActionCostClass);
         assert_domain!(RequoteThrottleBound);
         assert_domain!(RequoteThrottleBlockReason);
+        assert_domain!(VenueTruthCaptureEndpoint);
+        assert_domain!(VenueTruthCaptureErrorClass);
         assert_domain!(VenueTruthDivergenceAlarmClass);
+        assert_domain!(VenueTruthDivergenceDomain);
         assert_domain!(StaleLossReason);
         assert_domain!(LossHaltReason);
         assert_domain!(LossSnapshotSource);
@@ -3785,11 +3826,17 @@ mod tests {
         mutation_is_rejected(KnownIdentity::RequoteThrottleObservationV1, &requote);
 
         let mut venue_truth = positive_value(KnownIdentity::VenueTruthDivergenceV1);
-        venue_truth["divergence"]["source"] = "".into();
+        venue_truth["divergence"]["field"] = "account_id".into();
+        mutation_is_rejected(KnownIdentity::VenueTruthDivergenceV1, &venue_truth);
+        let mut venue_truth = positive_value(KnownIdentity::VenueTruthDivergenceV1);
+        venue_truth["divergence"]["missing_explanation"] = "unknown_explanation".into();
         mutation_is_rejected(KnownIdentity::VenueTruthDivergenceV1, &venue_truth);
 
         let mut capture = positive_value(KnownIdentity::VenueTruthCaptureFailureV1);
-        capture["capture_failure"]["captures_missed"] = 0.into();
+        capture["capture_failure"]["endpoint"] = "unknown_endpoint".into();
+        mutation_is_rejected(KnownIdentity::VenueTruthCaptureFailureV1, &capture);
+        let mut capture = positive_value(KnownIdentity::VenueTruthCaptureFailureV1);
+        capture["capture_failure"]["error_class"] = "unknown_error_class".into();
         mutation_is_rejected(KnownIdentity::VenueTruthCaptureFailureV1, &capture);
 
         let mut settlement = positive_value(KnownIdentity::SettlementV1);

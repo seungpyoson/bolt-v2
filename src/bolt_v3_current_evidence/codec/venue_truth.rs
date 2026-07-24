@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
     facts::{
-        VenueTruthCaptureFailureFact, VenueTruthDivergenceAlarmClass, VenueTruthDivergenceFact,
+        VenueTruthCaptureEndpoint, VenueTruthCaptureErrorClass, VenueTruthCaptureFailureFact,
+        VenueTruthDivergenceAlarmClass, VenueTruthDivergenceDomain, VenueTruthDivergenceFact,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -86,18 +87,13 @@ pub(super) fn decode_divergence(
         decoded.recorded_at_utc_ns,
         line_number,
     )?;
-    let fact = decoded.divergence.into_fact();
+    let fact = decoded.divergence.into_fact().map_err(anyhow::Error::new)?;
     validate_divergence(&fact).map_err(anyhow::Error::new)?;
     Ok(fact)
 }
 
 fn validate_capture_failure(fact: &VenueTruthCaptureFailureFact) -> Result<(), RecordFailure> {
-    if fact.source.trim().is_empty()
-        || fact.endpoint.trim().is_empty()
-        || fact.error_class.trim().is_empty()
-        || fact.observed_at_ns == 0
-        || fact.captures_missed == 0
-    {
+    if fact.source.trim().is_empty() || fact.observed_at_ns == 0 || fact.captures_missed == 0 {
         return Err(RecordFailure::Rejected(anyhow::anyhow!(
             "venue-truth capture failure contains an empty or invalid field"
         )));
@@ -108,10 +104,8 @@ fn validate_capture_failure(fact: &VenueTruthCaptureFailureFact) -> Result<(), R
 fn validate_divergence(fact: &VenueTruthDivergenceFact) -> Result<(), RecordFailure> {
     if fact.source.trim().is_empty()
         || fact.account_id.trim().is_empty()
-        || fact.field.trim().is_empty()
         || fact.venue_value.trim().is_empty()
         || fact.prior_accepted_value.trim().is_empty()
-        || fact.missing_explanation.trim().is_empty()
         || fact.observed_at_ns == 0
     {
         return Err(RecordFailure::Rejected(anyhow::anyhow!(
@@ -137,8 +131,8 @@ struct CaptureFailureLineV1 {
 struct CaptureFailureV1 {
     source: String,
     observed_at_ns: u64,
-    endpoint: String,
-    error_class: String,
+    endpoint: CaptureEndpointV1,
+    error_class: CaptureErrorClassV1,
     captures_missed: u64,
 }
 
@@ -147,8 +141,8 @@ impl CaptureFailureV1 {
         Self {
             source: fact.source,
             observed_at_ns: fact.observed_at_ns,
-            endpoint: fact.endpoint,
-            error_class: fact.error_class,
+            endpoint: CaptureEndpointV1::from_fact(fact.endpoint),
+            error_class: CaptureErrorClassV1::from_fact(fact.error_class),
             captures_missed: fact.captures_missed,
         }
     }
@@ -157,9 +151,61 @@ impl CaptureFailureV1 {
         VenueTruthCaptureFailureFact {
             source: self.source,
             observed_at_ns: self.observed_at_ns,
-            endpoint: self.endpoint,
-            error_class: self.error_class,
+            endpoint: self.endpoint.into_fact(),
+            error_class: self.error_class.into_fact(),
             captures_missed: self.captures_missed,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CaptureEndpointV1 {
+    VenueTruthSnapshot,
+    ClobBalanceAllowance,
+    ClobOpenOrders,
+    DataApiPositions,
+}
+
+impl CaptureEndpointV1 {
+    fn from_fact(value: VenueTruthCaptureEndpoint) -> Self {
+        match value {
+            VenueTruthCaptureEndpoint::VenueTruthSnapshot => Self::VenueTruthSnapshot,
+            VenueTruthCaptureEndpoint::ClobBalanceAllowance => Self::ClobBalanceAllowance,
+            VenueTruthCaptureEndpoint::ClobOpenOrders => Self::ClobOpenOrders,
+            VenueTruthCaptureEndpoint::DataApiPositions => Self::DataApiPositions,
+        }
+    }
+
+    fn into_fact(self) -> VenueTruthCaptureEndpoint {
+        match self {
+            Self::VenueTruthSnapshot => VenueTruthCaptureEndpoint::VenueTruthSnapshot,
+            Self::ClobBalanceAllowance => VenueTruthCaptureEndpoint::ClobBalanceAllowance,
+            Self::ClobOpenOrders => VenueTruthCaptureEndpoint::ClobOpenOrders,
+            Self::DataApiPositions => VenueTruthCaptureEndpoint::DataApiPositions,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CaptureErrorClassV1 {
+    Unknown,
+    TransportOrDecode,
+}
+
+impl CaptureErrorClassV1 {
+    fn from_fact(value: VenueTruthCaptureErrorClass) -> Self {
+        match value {
+            VenueTruthCaptureErrorClass::Unknown => Self::Unknown,
+            VenueTruthCaptureErrorClass::TransportOrDecode => Self::TransportOrDecode,
+        }
+    }
+
+    fn into_fact(self) -> VenueTruthCaptureErrorClass {
+        match self {
+            Self::Unknown => VenueTruthCaptureErrorClass::Unknown,
+            Self::TransportOrDecode => VenueTruthCaptureErrorClass::TransportOrDecode,
         }
     }
 }
@@ -181,38 +227,124 @@ struct DivergenceV1 {
     source: String,
     observed_at_ns: u64,
     account_id: String,
-    field: String,
+    field: DivergenceFieldV1,
     venue_value: String,
     prior_accepted_value: String,
-    missing_explanation: String,
+    missing_explanation: MissingExplanationV1,
     alarm_class: AlarmClassV1,
 }
 
 impl DivergenceV1 {
     fn from_fact(fact: VenueTruthDivergenceFact) -> Self {
+        let (field, missing_explanation) = divergence_domain_to_wire(fact.domain);
         Self {
             source: fact.source,
             observed_at_ns: fact.observed_at_ns,
             account_id: fact.account_id,
-            field: fact.field,
+            field,
             venue_value: fact.venue_value,
             prior_accepted_value: fact.prior_accepted_value,
-            missing_explanation: fact.missing_explanation,
+            missing_explanation,
             alarm_class: AlarmClassV1::from_fact(fact.alarm_class),
         }
     }
 
-    fn into_fact(self) -> VenueTruthDivergenceFact {
-        VenueTruthDivergenceFact {
+    fn into_fact(self) -> Result<VenueTruthDivergenceFact, RecordFailure> {
+        let domain = divergence_domain_from_wire(self.field, self.missing_explanation)?;
+        Ok(VenueTruthDivergenceFact {
             source: self.source,
             observed_at_ns: self.observed_at_ns,
             account_id: self.account_id,
-            field: self.field,
+            domain,
             venue_value: self.venue_value,
             prior_accepted_value: self.prior_accepted_value,
-            missing_explanation: self.missing_explanation,
             alarm_class: self.alarm_class.into_fact(),
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DivergenceFieldV1 {
+    AccountId,
+    CollateralAllowance,
+    CollateralBalance,
+    OpenOrders,
+    OrderEventObservedAtNs,
+    PositionsByProductId,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MissingExplanationV1 {
+    AccountChanged,
+    UnexplainedCollateralAllowanceDelta,
+    UnexplainedCollateralBalanceDelta,
+    UnexplainedOpenOrderDelta,
+    OrderingViolation,
+    UnexplainedPositionDelta,
+}
+
+fn divergence_domain_to_wire(
+    domain: VenueTruthDivergenceDomain,
+) -> (DivergenceFieldV1, MissingExplanationV1) {
+    match domain {
+        VenueTruthDivergenceDomain::AccountChanged => (
+            DivergenceFieldV1::AccountId,
+            MissingExplanationV1::AccountChanged,
+        ),
+        VenueTruthDivergenceDomain::OrderingViolation => (
+            DivergenceFieldV1::OrderEventObservedAtNs,
+            MissingExplanationV1::OrderingViolation,
+        ),
+        VenueTruthDivergenceDomain::UnexplainedOpenOrderDelta => (
+            DivergenceFieldV1::OpenOrders,
+            MissingExplanationV1::UnexplainedOpenOrderDelta,
+        ),
+        VenueTruthDivergenceDomain::UnexplainedPositionDelta => (
+            DivergenceFieldV1::PositionsByProductId,
+            MissingExplanationV1::UnexplainedPositionDelta,
+        ),
+        VenueTruthDivergenceDomain::UnexplainedCollateralBalanceDelta => (
+            DivergenceFieldV1::CollateralBalance,
+            MissingExplanationV1::UnexplainedCollateralBalanceDelta,
+        ),
+        VenueTruthDivergenceDomain::UnexplainedCollateralAllowanceDelta => (
+            DivergenceFieldV1::CollateralAllowance,
+            MissingExplanationV1::UnexplainedCollateralAllowanceDelta,
+        ),
+    }
+}
+
+fn divergence_domain_from_wire(
+    field: DivergenceFieldV1,
+    missing_explanation: MissingExplanationV1,
+) -> Result<VenueTruthDivergenceDomain, RecordFailure> {
+    match (field, missing_explanation) {
+        (DivergenceFieldV1::AccountId, MissingExplanationV1::AccountChanged) => {
+            Ok(VenueTruthDivergenceDomain::AccountChanged)
         }
+        (DivergenceFieldV1::OrderEventObservedAtNs, MissingExplanationV1::OrderingViolation) => {
+            Ok(VenueTruthDivergenceDomain::OrderingViolation)
+        }
+        (DivergenceFieldV1::OpenOrders, MissingExplanationV1::UnexplainedOpenOrderDelta) => {
+            Ok(VenueTruthDivergenceDomain::UnexplainedOpenOrderDelta)
+        }
+        (
+            DivergenceFieldV1::PositionsByProductId,
+            MissingExplanationV1::UnexplainedPositionDelta,
+        ) => Ok(VenueTruthDivergenceDomain::UnexplainedPositionDelta),
+        (
+            DivergenceFieldV1::CollateralBalance,
+            MissingExplanationV1::UnexplainedCollateralBalanceDelta,
+        ) => Ok(VenueTruthDivergenceDomain::UnexplainedCollateralBalanceDelta),
+        (
+            DivergenceFieldV1::CollateralAllowance,
+            MissingExplanationV1::UnexplainedCollateralAllowanceDelta,
+        ) => Ok(VenueTruthDivergenceDomain::UnexplainedCollateralAllowanceDelta),
+        _ => Err(RecordFailure::Rejected(anyhow::anyhow!(
+            "venue-truth divergence field and missing explanation disagree"
+        ))),
     }
 }
 

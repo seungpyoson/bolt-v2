@@ -509,7 +509,7 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::OrderRejectV1 => IdentityDescriptor {
             kind: "order_reject",
-            schema_version: 16,
+            schema_version: 17,
             gate_id: "bolt_v3.order_reject",
         },
         KnownIdentity::OrderLifecycleV1 => IdentityDescriptor {
@@ -534,12 +534,12 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::VenueTruthCaptureFailureV1 => IdentityDescriptor {
             kind: "venue_truth_capture_failure",
-            schema_version: 16,
+            schema_version: 17,
             gate_id: "bolt_v3.capital_admission_rebuild",
         },
         KnownIdentity::VenueTruthDivergenceV1 => IdentityDescriptor {
             kind: "venue_truth_divergence",
-            schema_version: 16,
+            schema_version: 17,
             gate_id: "bolt_v3.capital_admission_rebuild",
         },
     }
@@ -965,7 +965,7 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "loss_governor_halt" && schema_version == 16 {
         return Some(KnownIdentity::LossGovernorHaltV1);
     }
-    if kind == "order_reject" && schema_version == 16 {
+    if kind == "order_reject" && schema_version == 17 {
         return Some(KnownIdentity::OrderRejectV1);
     }
     if kind == "order_lifecycle" && schema_version == 16 {
@@ -980,10 +980,10 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "terminal_settlement" && schema_version == 16 {
         return Some(KnownIdentity::TerminalSettlementV1);
     }
-    if kind == "venue_truth_capture_failure" && schema_version == 16 {
+    if kind == "venue_truth_capture_failure" && schema_version == 17 {
         return Some(KnownIdentity::VenueTruthCaptureFailureV1);
     }
-    if kind == "venue_truth_divergence" && schema_version == 16 {
+    if kind == "venue_truth_divergence" && schema_version == 17 {
         return Some(KnownIdentity::VenueTruthDivergenceV1);
     }
     None

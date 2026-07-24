@@ -60,7 +60,6 @@ fn validate_fact(fact: &OrderRejectFact) -> Result<(), RecordFailure> {
         fact.normalized_taker_amount.as_deref(),
         fact.venue_min_notional.as_deref(),
         fact.prior_client_order_id.as_deref(),
-        fact.backoff_cooldown_state.as_deref(),
     ];
     let admission_shape = matches!(fact.reject_source, OrderRejectSource::SubmitAdmission)
         && matches!(fact.reject_reason, OrderRejectReason::AdmissionRejected)
@@ -120,7 +119,6 @@ struct OrderRejectWireV1 {
     prior_client_order_id: Option<String>,
     client_order_id: String,
     retry_count: u32,
-    backoff_cooldown_state: Option<String>,
     stable_episode_key: String,
     elapsed_ns: u64,
 }
@@ -148,7 +146,6 @@ impl OrderRejectWireV1 {
             prior_client_order_id: fact.prior_client_order_id,
             client_order_id: fact.client_order_id,
             retry_count: fact.retry_count,
-            backoff_cooldown_state: fact.backoff_cooldown_state,
             stable_episode_key: fact.stable_episode_key,
             elapsed_ns: fact.elapsed_ns,
         }
@@ -176,7 +173,6 @@ impl OrderRejectWireV1 {
             prior_client_order_id: self.prior_client_order_id,
             client_order_id: self.client_order_id,
             retry_count: self.retry_count,
-            backoff_cooldown_state: self.backoff_cooldown_state,
             stable_episode_key: self.stable_episode_key,
             elapsed_ns: self.elapsed_ns,
         }

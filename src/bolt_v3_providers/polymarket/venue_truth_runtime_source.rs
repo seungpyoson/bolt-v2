@@ -26,9 +26,10 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_prediction_market_instrument::prediction_market_product_id_from_instrument_id;
 use crate::bolt_v3_venue_truth::{
-    VenueTruthCaptureEndpointError, VenueTruthOpenOrder, VenueTruthOrderEvent,
-    VenueTruthOrderEventMapper, VenueTruthOrderEventTimestampDomain, VenueTruthSnapshot,
-    VenueTruthSnapshotFuture, VenueTruthSnapshotSource,
+    VenueTruthCaptureEndpoint, VenueTruthCaptureEndpointError, VenueTruthCaptureErrorClass,
+    VenueTruthOpenOrder, VenueTruthOrderEvent, VenueTruthOrderEventMapper,
+    VenueTruthOrderEventTimestampDomain, VenueTruthSnapshot, VenueTruthSnapshotFuture,
+    VenueTruthSnapshotSource,
 };
 
 use super::{PolymarketExecutionConfig, ResolvedBoltV3PolymarketSecrets};
@@ -58,11 +59,6 @@ pub enum PolymarketVenueTruthBuildError {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PolymarketVenueTruthOrderEventMapper;
-
-pub const POLYMARKET_VENUE_TRUTH_BALANCE_ALLOWANCE_ENDPOINT: &str = "clob_balance_allowance";
-pub const POLYMARKET_VENUE_TRUTH_OPEN_ORDERS_ENDPOINT: &str = "clob_open_orders";
-pub const POLYMARKET_VENUE_TRUTH_POSITIONS_ENDPOINT: &str = "data_api_positions";
-pub const POLYMARKET_VENUE_TRUTH_TRANSPORT_OR_DECODE_ERROR_CLASS: &str = "transport_or_decode";
 
 #[derive(Clone)]
 pub struct PolymarketVenueTruthRuntimeSource {
@@ -136,8 +132,8 @@ impl PolymarketVenueTruthRuntimeSource {
                     .await
                     .map_err(|error| {
                         anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
-                            POLYMARKET_VENUE_TRUTH_BALANCE_ALLOWANCE_ENDPOINT,
-                            POLYMARKET_VENUE_TRUTH_TRANSPORT_OR_DECODE_ERROR_CLASS,
+                            VenueTruthCaptureEndpoint::ClobBalanceAllowance,
+                            VenueTruthCaptureErrorClass::TransportOrDecode,
                             error.into(),
                         ))
                     })
@@ -153,8 +149,8 @@ impl PolymarketVenueTruthRuntimeSource {
                     .await
                     .map_err(|error| {
                         anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
-                            POLYMARKET_VENUE_TRUTH_OPEN_ORDERS_ENDPOINT,
-                            POLYMARKET_VENUE_TRUTH_TRANSPORT_OR_DECODE_ERROR_CLASS,
+                            VenueTruthCaptureEndpoint::ClobOpenOrders,
+                            VenueTruthCaptureErrorClass::TransportOrDecode,
                             error.into(),
                         ))
                     })
@@ -165,8 +161,8 @@ impl PolymarketVenueTruthRuntimeSource {
                     .await
                     .map_err(|error| {
                         anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
-                            POLYMARKET_VENUE_TRUTH_POSITIONS_ENDPOINT,
-                            POLYMARKET_VENUE_TRUTH_TRANSPORT_OR_DECODE_ERROR_CLASS,
+                            VenueTruthCaptureEndpoint::DataApiPositions,
+                            VenueTruthCaptureErrorClass::TransportOrDecode,
                             error.into(),
                         ))
                     })

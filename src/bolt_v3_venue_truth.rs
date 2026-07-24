@@ -19,23 +19,7 @@ use serde::{Deserialize, Serialize};
 pub type VenueTruthSnapshotFuture<'a> =
     Pin<Box<dyn Future<Output = anyhow::Result<VenueTruthSnapshot>> + Send + 'a>>;
 
-pub const VENUE_TRUTH_CAPTURE_AGGREGATE_ENDPOINT: &str = "venue_truth_snapshot";
-pub const VENUE_TRUTH_CAPTURE_ERROR_CLASS_UNKNOWN: &str = "unknown";
-pub const VENUE_TRUTH_DIVERGENCE_FIELD_ACCOUNT_ID: &str = "account_id";
-pub const VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_ALLOWANCE: &str = "collateral_allowance";
-pub const VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_BALANCE: &str = "collateral_balance";
-pub const VENUE_TRUTH_DIVERGENCE_FIELD_OPEN_ORDERS: &str = "open_orders";
-pub const VENUE_TRUTH_DIVERGENCE_FIELD_ORDERING: &str = "order_event_observed_at_ns";
-pub const VENUE_TRUTH_DIVERGENCE_FIELD_POSITIONS: &str = "positions_by_product_id";
 pub const VENUE_TRUTH_DIVERGENCE_PRIOR_ACCEPTED_VALUE_MISSING: &str = "no_prior_accepted_snapshot";
-pub const VENUE_TRUTH_DIVERGENCE_REASON_ACCOUNT_CHANGED: &str = "account_changed";
-pub const VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_ALLOWANCE: &str =
-    "unexplained_collateral_allowance_delta";
-pub const VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_BALANCE: &str =
-    "unexplained_collateral_balance_delta";
-pub const VENUE_TRUTH_DIVERGENCE_REASON_OPEN_ORDERS: &str = "unexplained_open_order_delta";
-pub const VENUE_TRUTH_DIVERGENCE_REASON_ORDERING: &str = "ordering_violation";
-pub const VENUE_TRUTH_DIVERGENCE_REASON_POSITIONS: &str = "unexplained_position_delta";
 
 pub trait VenueTruthSnapshotSource: std::fmt::Debug + Send + Sync {
     fn snapshot(&self, captured_at: UnixNanos) -> VenueTruthSnapshotFuture<'_>;
@@ -153,34 +137,137 @@ pub enum VenueTruthDivergenceKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VenueTruthCollateralDivergenceField {
-    Balance,
-    Allowance,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct VenueTruthDivergenceCause {
-    kind: VenueTruthDivergenceKind,
-    collateral_field: Option<VenueTruthCollateralDivergenceField>,
+enum VenueTruthDivergenceCause {
+    AccountChanged,
+    OrderingViolation,
+    UnexplainedOpenOrderDelta,
+    UnexplainedPositionDelta,
+    UnexplainedCollateralBalanceDelta,
+    UnexplainedCollateralAllowanceDelta,
 }
 
 impl VenueTruthDivergenceCause {
-    fn collateral(field: VenueTruthCollateralDivergenceField) -> Self {
-        Self {
-            kind: VenueTruthDivergenceKind::UnexplainedCollateralDelta,
-            collateral_field: Some(field),
+    const fn kind(self) -> VenueTruthDivergenceKind {
+        match self {
+            Self::AccountChanged => VenueTruthDivergenceKind::AccountChanged,
+            Self::OrderingViolation => VenueTruthDivergenceKind::OrderingViolation,
+            Self::UnexplainedOpenOrderDelta => VenueTruthDivergenceKind::UnexplainedOpenOrderDelta,
+            Self::UnexplainedPositionDelta => VenueTruthDivergenceKind::UnexplainedPositionDelta,
+            Self::UnexplainedCollateralBalanceDelta | Self::UnexplainedCollateralAllowanceDelta => {
+                VenueTruthDivergenceKind::UnexplainedCollateralDelta
+            }
         }
     }
 }
 
-impl From<VenueTruthDivergenceKind> for VenueTruthDivergenceCause {
-    fn from(kind: VenueTruthDivergenceKind) -> Self {
-        Self {
-            kind,
-            collateral_field: None,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VenueTruthCaptureEndpoint {
+    VenueTruthSnapshot,
+    ClobBalanceAllowance,
+    ClobOpenOrders,
+    DataApiPositions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VenueTruthCaptureErrorClass {
+    Unknown,
+    TransportOrDecode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VenueTruthDivergenceField {
+    AccountId,
+    CollateralAllowance,
+    CollateralBalance,
+    OpenOrders,
+    OrderEventObservedAtNs,
+    PositionsByProductId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VenueTruthMissingExplanation {
+    AccountChanged,
+    UnexplainedCollateralAllowanceDelta,
+    UnexplainedCollateralBalanceDelta,
+    UnexplainedOpenOrderDelta,
+    OrderingViolation,
+    UnexplainedPositionDelta,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VenueTruthDivergenceDomain {
+    AccountChanged,
+    OrderingViolation,
+    UnexplainedOpenOrderDelta,
+    UnexplainedPositionDelta,
+    UnexplainedCollateralBalanceDelta,
+    UnexplainedCollateralAllowanceDelta,
+}
+
+impl VenueTruthDivergenceDomain {
+    #[must_use]
+    pub const fn field(self) -> VenueTruthDivergenceField {
+        match self {
+            Self::AccountChanged => VenueTruthDivergenceField::AccountId,
+            Self::OrderingViolation => VenueTruthDivergenceField::OrderEventObservedAtNs,
+            Self::UnexplainedOpenOrderDelta => VenueTruthDivergenceField::OpenOrders,
+            Self::UnexplainedPositionDelta => VenueTruthDivergenceField::PositionsByProductId,
+            Self::UnexplainedCollateralBalanceDelta => VenueTruthDivergenceField::CollateralBalance,
+            Self::UnexplainedCollateralAllowanceDelta => {
+                VenueTruthDivergenceField::CollateralAllowance
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn missing_explanation(self) -> VenueTruthMissingExplanation {
+        match self {
+            Self::AccountChanged => VenueTruthMissingExplanation::AccountChanged,
+            Self::OrderingViolation => VenueTruthMissingExplanation::OrderingViolation,
+            Self::UnexplainedOpenOrderDelta => {
+                VenueTruthMissingExplanation::UnexplainedOpenOrderDelta
+            }
+            Self::UnexplainedPositionDelta => {
+                VenueTruthMissingExplanation::UnexplainedPositionDelta
+            }
+            Self::UnexplainedCollateralBalanceDelta => {
+                VenueTruthMissingExplanation::UnexplainedCollateralBalanceDelta
+            }
+            Self::UnexplainedCollateralAllowanceDelta => {
+                VenueTruthMissingExplanation::UnexplainedCollateralAllowanceDelta
+            }
         }
     }
 }
+
+macro_rules! impl_domain_display {
+    ($ty:ty, {$($variant:path => $label:literal),+ $(,)?}) => {
+        impl fmt::Display for $ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(match self {
+                    $($variant => $label,)+
+                })
+            }
+        }
+    };
+}
+
+impl_domain_display!(VenueTruthCaptureEndpoint, {
+    VenueTruthCaptureEndpoint::VenueTruthSnapshot => "venue_truth_snapshot",
+    VenueTruthCaptureEndpoint::ClobBalanceAllowance => "clob_balance_allowance",
+    VenueTruthCaptureEndpoint::ClobOpenOrders => "clob_open_orders",
+    VenueTruthCaptureEndpoint::DataApiPositions => "data_api_positions",
+});
+
+impl_domain_display!(VenueTruthCaptureErrorClass, {
+    VenueTruthCaptureErrorClass::Unknown => "unknown",
+    VenueTruthCaptureErrorClass::TransportOrDecode => "transport_or_decode",
+});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -194,8 +281,8 @@ pub enum VenueTruthDivergenceAlarmClass {
 pub struct VenueTruthCaptureFailureEvidence {
     pub source: String,
     pub observed_at_ns: u64,
-    pub endpoint: String,
-    pub error_class: String,
+    pub endpoint: VenueTruthCaptureEndpoint,
+    pub error_class: VenueTruthCaptureErrorClass,
     pub captures_missed: u64,
 }
 
@@ -204,22 +291,25 @@ pub struct VenueTruthDivergenceEvidence {
     pub source: String,
     pub observed_at_ns: u64,
     pub account_id: String,
-    pub field: String,
+    pub domain: VenueTruthDivergenceDomain,
     pub venue_value: String,
     pub prior_accepted_value: String,
-    pub missing_explanation: String,
     pub alarm_class: VenueTruthDivergenceAlarmClass,
 }
 
 #[derive(Debug)]
 pub struct VenueTruthCaptureEndpointError {
-    endpoint: &'static str,
-    error_class: &'static str,
+    endpoint: VenueTruthCaptureEndpoint,
+    error_class: VenueTruthCaptureErrorClass,
     source: anyhow::Error,
 }
 
 impl VenueTruthCaptureEndpointError {
-    pub fn new(endpoint: &'static str, error_class: &'static str, source: anyhow::Error) -> Self {
+    pub fn new(
+        endpoint: VenueTruthCaptureEndpoint,
+        error_class: VenueTruthCaptureErrorClass,
+        source: anyhow::Error,
+    ) -> Self {
         Self {
             endpoint,
             error_class,
@@ -228,12 +318,12 @@ impl VenueTruthCaptureEndpointError {
     }
 
     #[must_use]
-    pub const fn endpoint(&self) -> &'static str {
+    pub const fn endpoint(&self) -> VenueTruthCaptureEndpoint {
         self.endpoint
     }
 
     #[must_use]
-    pub const fn error_class(&self) -> &'static str {
+    pub const fn error_class(&self) -> VenueTruthCaptureErrorClass {
         self.error_class
     }
 }
@@ -255,13 +345,15 @@ impl Error for VenueTruthCaptureEndpointError {
 }
 
 #[must_use]
-pub fn venue_truth_capture_failure_parts(error: &anyhow::Error) -> (&'static str, &'static str) {
+pub fn venue_truth_capture_failure_parts(
+    error: &anyhow::Error,
+) -> (VenueTruthCaptureEndpoint, VenueTruthCaptureErrorClass) {
     error
         .downcast_ref::<VenueTruthCaptureEndpointError>()
         .map(|error| (error.endpoint(), error.error_class()))
         .unwrap_or((
-            VENUE_TRUTH_CAPTURE_AGGREGATE_ENDPOINT,
-            VENUE_TRUTH_CAPTURE_ERROR_CLASS_UNKNOWN,
+            VenueTruthCaptureEndpoint::VenueTruthSnapshot,
+            VenueTruthCaptureErrorClass::Unknown,
         ))
 }
 
@@ -272,10 +364,9 @@ pub struct VenueTruthDivergence {
     pub previous_captured_at: Option<UnixNanos>,
     pub current_captured_at: UnixNanos,
     pub account_id: String,
-    pub field: String,
+    pub domain: VenueTruthDivergenceDomain,
     pub venue_value: String,
     pub prior_accepted_value: String,
-    pub missing_explanation: String,
 }
 
 impl VenueTruthDivergence {
@@ -285,10 +376,9 @@ impl VenueTruthDivergence {
             source: source.into(),
             observed_at_ns: self.current_captured_at.as_u64(),
             account_id: self.account_id.clone(),
-            field: self.field.clone(),
+            domain: self.domain,
             venue_value: self.venue_value.clone(),
             prior_accepted_value: self.prior_accepted_value.clone(),
-            missing_explanation: self.missing_explanation.clone(),
             alarm_class: self.alarm_class,
         }
     }
@@ -468,7 +558,7 @@ impl VenueTruthReconciler {
                 Ok(result) => results.push(result),
                 Err(cause)
                     if fence_already_completed
-                        || cause.kind == VenueTruthDivergenceKind::OrderingViolation =>
+                        || cause.kind() == VenueTruthDivergenceKind::OrderingViolation =>
                 {
                     return Err(Box::new(self.classified_divergence(
                         cause,
@@ -531,14 +621,14 @@ impl VenueTruthReconciler {
             });
         };
         if previous.account_id != snapshot.account_id {
-            return Err(VenueTruthDivergenceKind::AccountChanged.into());
+            return Err(VenueTruthDivergenceCause::AccountChanged);
         }
 
         let mut projection = self.event_projection.clone();
         explain_open_order_delta(previous, &snapshot, &mut projection)
-            .map_err(VenueTruthDivergenceCause::from)?;
+            .map_err(|_| VenueTruthDivergenceCause::UnexplainedOpenOrderDelta)?;
         explain_position_delta(previous, &snapshot, &mut projection, capture.capture_number)
-            .map_err(VenueTruthDivergenceCause::from)?;
+            .map_err(|_| VenueTruthDivergenceCause::UnexplainedPositionDelta)?;
         explain_collateral_delta(
             previous,
             &snapshot,
@@ -547,7 +637,7 @@ impl VenueTruthReconciler {
             capture.capture_number,
         )?;
         if projection.ordering_violation {
-            return Err(VenueTruthDivergenceKind::OrderingViolation.into());
+            return Err(VenueTruthDivergenceCause::OrderingViolation);
         }
 
         projection.prune_after_capture_acceptance(&snapshot, capture.capture_number);
@@ -1229,9 +1319,7 @@ fn explain_collateral_delta(
         allow_deferred_collateral,
         capture_number,
     ) {
-        return Err(VenueTruthDivergenceCause::collateral(
-            VenueTruthCollateralDivergenceField::Balance,
-        ));
+        return Err(VenueTruthDivergenceCause::UnexplainedCollateralBalanceDelta);
     }
     // Allowance is an operator-changeable on-chain approval, not a venue-invariant fact.
     // The 2026-07-04 evidence search found no captured allowance-spanning-fill artifact,
@@ -1240,9 +1328,7 @@ fn explain_collateral_delta(
     let collateral_allowance_delta =
         current.collateral_allowance.as_decimal() - previous.collateral_allowance.as_decimal();
     if !projection.consume_collateral_allowance_delta(collateral_allowance_delta) {
-        return Err(VenueTruthDivergenceCause::collateral(
-            VenueTruthCollateralDivergenceField::Allowance,
-        ));
+        return Err(VenueTruthDivergenceCause::UnexplainedCollateralAllowanceDelta);
     }
     Ok(())
 }
@@ -1278,18 +1364,17 @@ fn divergence(
     previous: Option<&VenueTruthSnapshot>,
     current: &VenueTruthSnapshot,
 ) -> VenueTruthDivergence {
-    let (field, venue_value, prior_accepted_value, missing_explanation) =
+    let (domain, venue_value, prior_accepted_value) =
         divergence_evidence_fields(cause, previous, current);
     VenueTruthDivergence {
-        kind: cause.kind,
+        kind: cause.kind(),
         alarm_class,
         previous_captured_at: previous.map(|snapshot| snapshot.captured_at),
         current_captured_at: current.captured_at,
         account_id: current.account_id.to_string(),
-        field,
+        domain,
         venue_value,
         prior_accepted_value,
-        missing_explanation,
     }
 }
 
@@ -1297,59 +1382,48 @@ fn divergence_evidence_fields(
     cause: VenueTruthDivergenceCause,
     previous: Option<&VenueTruthSnapshot>,
     current: &VenueTruthSnapshot,
-) -> (String, String, String, String) {
-    match cause.kind {
-        VenueTruthDivergenceKind::AccountChanged => (
-            VENUE_TRUTH_DIVERGENCE_FIELD_ACCOUNT_ID.to_string(),
+) -> (VenueTruthDivergenceDomain, String, String) {
+    match cause {
+        VenueTruthDivergenceCause::AccountChanged => (
+            VenueTruthDivergenceDomain::AccountChanged,
             current.account_id.to_string(),
             prior_accepted_value(previous, |snapshot| snapshot.account_id.to_string()),
-            VENUE_TRUTH_DIVERGENCE_REASON_ACCOUNT_CHANGED.to_string(),
         ),
-        VenueTruthDivergenceKind::OrderingViolation => (
-            VENUE_TRUTH_DIVERGENCE_FIELD_ORDERING.to_string(),
+        VenueTruthDivergenceCause::OrderingViolation => (
+            VenueTruthDivergenceDomain::OrderingViolation,
             current.captured_at.as_u64().to_string(),
             prior_accepted_value(previous, |snapshot| {
                 snapshot.captured_at.as_u64().to_string()
             }),
-            VENUE_TRUTH_DIVERGENCE_REASON_ORDERING.to_string(),
         ),
-        VenueTruthDivergenceKind::UnexplainedOpenOrderDelta => (
-            VENUE_TRUTH_DIVERGENCE_FIELD_OPEN_ORDERS.to_string(),
+        VenueTruthDivergenceCause::UnexplainedOpenOrderDelta => (
+            VenueTruthDivergenceDomain::UnexplainedOpenOrderDelta,
             format_open_order_ids(&current.open_orders),
             prior_accepted_value(previous, |snapshot| {
                 format_open_order_ids(&snapshot.open_orders)
             }),
-            VENUE_TRUTH_DIVERGENCE_REASON_OPEN_ORDERS.to_string(),
         ),
-        VenueTruthDivergenceKind::UnexplainedPositionDelta => (
-            VENUE_TRUTH_DIVERGENCE_FIELD_POSITIONS.to_string(),
+        VenueTruthDivergenceCause::UnexplainedPositionDelta => (
+            VenueTruthDivergenceDomain::UnexplainedPositionDelta,
             format!("{:?}", current.positions_by_product_id),
             prior_accepted_value(previous, |snapshot| {
                 format!("{:?}", snapshot.positions_by_product_id)
             }),
-            VENUE_TRUTH_DIVERGENCE_REASON_POSITIONS.to_string(),
         ),
-        VenueTruthDivergenceKind::UnexplainedCollateralDelta => match cause
-            .collateral_field
-            .unwrap_or(VenueTruthCollateralDivergenceField::Balance)
-        {
-            VenueTruthCollateralDivergenceField::Allowance => (
-                VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_ALLOWANCE.to_string(),
-                current.collateral_allowance.as_decimal().to_string(),
-                prior_accepted_value(previous, |snapshot| {
-                    snapshot.collateral_allowance.as_decimal().to_string()
-                }),
-                VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_ALLOWANCE.to_string(),
-            ),
-            VenueTruthCollateralDivergenceField::Balance => (
-                VENUE_TRUTH_DIVERGENCE_FIELD_COLLATERAL_BALANCE.to_string(),
-                current.collateral_balance.as_decimal().to_string(),
-                prior_accepted_value(previous, |snapshot| {
-                    snapshot.collateral_balance.as_decimal().to_string()
-                }),
-                VENUE_TRUTH_DIVERGENCE_REASON_COLLATERAL_BALANCE.to_string(),
-            ),
-        },
+        VenueTruthDivergenceCause::UnexplainedCollateralAllowanceDelta => (
+            VenueTruthDivergenceDomain::UnexplainedCollateralAllowanceDelta,
+            current.collateral_allowance.as_decimal().to_string(),
+            prior_accepted_value(previous, |snapshot| {
+                snapshot.collateral_allowance.as_decimal().to_string()
+            }),
+        ),
+        VenueTruthDivergenceCause::UnexplainedCollateralBalanceDelta => (
+            VenueTruthDivergenceDomain::UnexplainedCollateralBalanceDelta,
+            current.collateral_balance.as_decimal().to_string(),
+            prior_accepted_value(previous, |snapshot| {
+                snapshot.collateral_balance.as_decimal().to_string()
+            }),
+        ),
     }
 }
 

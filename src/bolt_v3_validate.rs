@@ -96,7 +96,7 @@ use clients::{validate_aws_block, validate_clients_block};
 use gate_providers::validate_gate_providers;
 use kill_switch::validate_kill_switch_block;
 use nt_blocks::validate_nautilus_block;
-use persistence::validate_persistence_block;
+use persistence::{validate_capital_admission_reconciliation_universe, validate_persistence_block};
 use rate_limit::validate_order_rate_within_venue_egress;
 use reference_price::validate_reference_current_price;
 use risk::validate_risk_block;
@@ -186,6 +186,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_order_rate_within_venue_egress(root));
     errors.extend(validate_persistence_block(&root.persistence));
+    errors.extend(validate_capital_admission_reconciliation_universe(root));
     errors.extend(crate::bolt_v3_providers::validate_reference_live_probe_block(root));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(root));

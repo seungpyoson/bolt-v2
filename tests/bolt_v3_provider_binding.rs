@@ -517,7 +517,7 @@ fn try_assembly_context<'a>(
                 &loaded.root,
             ),
         ),
-        StrategyRegistrationRuntimeResources::new(
+        &StrategyRegistrationRuntimeResources::new(
             decision_evidence,
             Arc::new(BoltV3IvQueryHandleRegistry::empty()),
             realized_volatility_runtime,

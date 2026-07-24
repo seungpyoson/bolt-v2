@@ -81,7 +81,6 @@ pub struct StrategyBuildContext {
     settlement: Option<SettlementCapability>,
 }
 
-#[derive(Clone)]
 pub enum StrategyDecisionEvidence {
     EdgeTaker {
         evidence: EdgeTakerEvidence,
@@ -92,6 +91,28 @@ pub enum StrategyDecisionEvidence {
         order_execution: OrderExecutionEvidence,
     },
     None,
+}
+
+impl Clone for StrategyDecisionEvidence {
+    fn clone(&self) -> Self {
+        match self {
+            Self::EdgeTaker {
+                evidence,
+                order_execution,
+            } => Self::EdgeTaker {
+                evidence: evidence.reissue(),
+                order_execution: order_execution.reissue(),
+            },
+            Self::Maker {
+                evidence,
+                order_execution,
+            } => Self::Maker {
+                evidence: evidence.reissue(),
+                order_execution: order_execution.reissue(),
+            },
+            Self::None => Self::None,
+        }
+    }
 }
 
 impl StrategyDecisionEvidence {
@@ -225,14 +246,14 @@ impl StrategyBuildContext {
 
     pub(crate) fn edge_taker_evidence(&self) -> Option<EdgeTakerEvidence> {
         match &self.decision_evidence {
-            StrategyDecisionEvidence::EdgeTaker { evidence, .. } => Some(evidence.clone()),
+            StrategyDecisionEvidence::EdgeTaker { evidence, .. } => Some(evidence.reissue()),
             StrategyDecisionEvidence::Maker { .. } | StrategyDecisionEvidence::None => None,
         }
     }
 
     pub(crate) fn maker_evidence(&self) -> Option<MakerEvidence> {
         match &self.decision_evidence {
-            StrategyDecisionEvidence::Maker { evidence, .. } => Some(evidence.clone()),
+            StrategyDecisionEvidence::Maker { evidence, .. } => Some(evidence.reissue()),
             StrategyDecisionEvidence::EdgeTaker { .. } | StrategyDecisionEvidence::None => None,
         }
     }
@@ -244,7 +265,7 @@ impl StrategyBuildContext {
             }
             | StrategyDecisionEvidence::Maker {
                 order_execution, ..
-            } => Some(order_execution.clone()),
+            } => Some(order_execution.reissue()),
             StrategyDecisionEvidence::None => None,
         }
     }

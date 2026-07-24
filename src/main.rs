@@ -27,7 +27,6 @@ use bolt_v2::{
     },
     bolt_v3_operator_artifacts::{
         LaunchIdentity, WrittenOperatorArtifact, is_lowercase_git_sha, read_launch_identity,
-        write_launch_identity,
     },
     bolt_v3_operator_health::{
         BoltV3InputHealth, BoltV3OperatorHealthSurface, BoltV3RejectObserverHealth,
@@ -331,8 +330,10 @@ fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 fn start_loaded_node_with_resolved(
     loaded: LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
+    launch_identity: &LaunchIdentity,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let node = build_bolt_v3_live_node_with_resolved(&loaded, resolved)?;
+    record_launch_identity_under_runtime_ownership(&node, &loaded, launch_identity);
     run_built_node(node, loaded)
 }
 
@@ -588,9 +589,7 @@ fn run_ops_launch_stage(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut reference_current_price_health =
         |config: &Path| run_reference_current_price_health_subprocess(config);
-    let mut start_loaded_node = |loaded, resolved: &ResolvedBoltV3Secrets| {
-        start_loaded_node_with_resolved(loaded, resolved)
-    };
+    let mut start_loaded_node = start_loaded_node_with_resolved;
     let mut runners = OpsLaunchStageRunners {
         reference_current_price_health: &mut reference_current_price_health,
         start_loaded_node: &mut start_loaded_node,
@@ -600,8 +599,11 @@ fn run_ops_launch_stage(
 
 type OpsLaunchStageResult = Result<(), Box<dyn std::error::Error>>;
 type ReferenceCurrentPriceHealthRunner<'a> = &'a mut dyn FnMut(&Path) -> OpsLaunchStageResult;
-type StartLoadedNodeRunner<'a> =
-    &'a mut dyn FnMut(LoadedBoltV3Config, &ResolvedBoltV3Secrets) -> OpsLaunchStageResult;
+type StartLoadedNodeRunner<'a> = &'a mut dyn FnMut(
+    LoadedBoltV3Config,
+    &ResolvedBoltV3Secrets,
+    &LaunchIdentity,
+) -> OpsLaunchStageResult;
 
 struct OpsLaunchStageRunners<'a> {
     reference_current_price_health: ReferenceCurrentPriceHealthRunner<'a>,
@@ -648,12 +650,12 @@ fn run_ops_launch_stage_with_runners(
                 .resolved_secrets
                 .take()
                 .ok_or("ops launch start stage requires resolved secrets from secrets-resolve")?;
-            record_launch_identity_best_effort(
+            let launch_identity = build_current_launch_identity(
                 &context.profile,
                 &loaded,
                 context.observed_host_facts.take(),
             );
-            (runners.start_loaded_node)(loaded, &resolved)
+            (runners.start_loaded_node)(loaded, &resolved, &launch_identity)
         }
     }
 }
@@ -740,25 +742,32 @@ fn build_launch_identity(
     }
 }
 
-fn record_launch_identity_best_effort(
+fn build_current_launch_identity(
     profile: &str,
     loaded: &LoadedBoltV3Config,
     target_host_facts: Option<ObservedHostFacts>,
-) {
+) -> LaunchIdentity {
     let pid = std::process::id();
     let launched_at_unix_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    let identity = build_launch_identity(
+    build_launch_identity(
         profile,
         &loaded.config_bundle_checksum,
         pid,
         launched_at_unix_secs,
         target_host_facts,
-    );
+    )
+}
+
+fn record_launch_identity_under_runtime_ownership(
+    runtime: &BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+    identity: &LaunchIdentity,
+) {
     let catalog_directory = Path::new(&loaded.root.persistence.catalog_directory);
-    match write_launch_identity(catalog_directory, &identity) {
+    match runtime.write_launch_identity(catalog_directory, identity) {
         Ok(written) => println!(
             "{}",
             serde_json::json!({
@@ -2208,7 +2217,8 @@ mod tests {
         let mut start = {
             let events = events.clone();
             move |_loaded: LoadedBoltV3Config,
-                  _resolved: &ResolvedBoltV3Secrets|
+                  _resolved: &ResolvedBoltV3Secrets,
+                  _launch_identity: &LaunchIdentity|
                   -> Result<(), Box<dyn std::error::Error>> {
                 events
                     .borrow_mut()
@@ -2829,10 +2839,17 @@ mod tests {
 
     // --- `ops status` advisory truth-table ---------------------------------
 
-    // `DeployTargetError`, `HostFactsSource`, `ObservedHostFacts`, and
-    // `write_launch_identity` are already in scope via `use super::*`; only this
-    // one is not.
+    // `DeployTargetError`, `HostFactsSource`, and `ObservedHostFacts` are
+    // already in scope via `use super::*`; only this path helper is not.
     use bolt_v2::bolt_v3_operator_artifacts::launch_identity_path;
+
+    fn write_launch_identity_fixture(catalog_directory: &Path, identity: &LaunchIdentity) {
+        let mut bytes =
+            serde_json::to_vec_pretty(identity).expect("launch identity fixture must serialize");
+        bytes.push(b'\n');
+        fs::write(launch_identity_path(catalog_directory), bytes)
+            .expect("launch identity fixture must write");
+    }
 
     /// Fake host-facts source for the advisory tests: never touches the network.
     /// Returns either canned facts or a fixed observe error.
@@ -2969,10 +2986,11 @@ mod tests {
             pid: 4242,
             target_host_facts: None,
         };
-        write_launch_identity(temp.path(), &identity).expect("launch identity should write");
+        write_launch_identity_fixture(temp.path(), &identity);
+        let catalog = canonical_test_directory(temp.path());
 
         let status = launch_identity_status(
-            temp.path(),
+            &catalog,
             Some(installed.as_str()),
             "example",
             "checksum-abc",
@@ -3015,10 +3033,11 @@ mod tests {
             pid: 4242,
             target_host_facts: None,
         };
-        write_launch_identity(temp.path(), &identity).expect("launch identity should write");
+        write_launch_identity_fixture(temp.path(), &identity);
+        let catalog = canonical_test_directory(temp.path());
 
         let status = launch_identity_status(
-            temp.path(),
+            &catalog,
             Some(well_formed_git_sha('b').as_str()),
             "requested-profile",
             "current-checksum",
@@ -3042,8 +3061,9 @@ mod tests {
     #[test]
     fn launch_identity_status_reports_absent_when_artifact_missing() {
         let temp = tempfile::tempdir().expect("tempdir should create");
+        let catalog = canonical_test_directory(temp.path());
 
-        let status = launch_identity_status(temp.path(), None, "example", "checksum-abc");
+        let status = launch_identity_status(&catalog, None, "example", "checksum-abc");
 
         assert!(matches!(status, LaunchIdentityStatus::Absent));
     }

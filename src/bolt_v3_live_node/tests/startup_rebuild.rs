@@ -3,6 +3,48 @@
 use super::*;
 
 #[test]
+fn venue_and_nt_open_order_universes_must_match_exactly() {
+    let raw = BTreeSet::from(["venue-1".to_string(), "venue-2".to_string()]);
+    assert!(venue_nt_open_order_sets_match(
+        Some(&raw),
+        &[
+            ("venue-1".to_string(), "client-1".to_string()),
+            ("venue-2".to_string(), "client-2".to_string()),
+        ],
+    ));
+    assert!(!venue_nt_open_order_sets_match(
+        Some(&raw),
+        &[("venue-1".to_string(), "client-1".to_string())],
+    ));
+    assert!(!venue_nt_open_order_sets_match(
+        Some(&raw),
+        &[
+            ("venue-1".to_string(), "client-1".to_string()),
+            ("venue-3".to_string(), "client-3".to_string()),
+        ],
+    ));
+    assert!(!venue_nt_open_order_sets_match(
+        None,
+        &[("venue-1".to_string(), "client-1".to_string())],
+    ));
+    assert!(!venue_nt_open_order_sets_match(
+        Some(&BTreeSet::from(["venue-1".to_string()])),
+        &[
+            ("venue-1".to_string(), "client-1".to_string()),
+            ("venue-1".to_string(), "client-2".to_string()),
+        ],
+    ));
+    assert!(!venue_nt_open_order_sets_match(
+        Some(&raw),
+        &[
+            ("venue-1".to_string(), "client-1".to_string()),
+            ("venue-2".to_string(), "client-1".to_string()),
+        ],
+    ));
+    assert!(venue_nt_open_order_sets_match(Some(&BTreeSet::new()), &[]));
+}
+
+#[test]
 fn live_node_surfaces_poisoned_observation_stream_without_gating_startup() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
@@ -231,12 +273,15 @@ fn startup_rebuild_seed_panics_on_poisoned_capital_admission_feed_lock() {
 
     seed_capital_admission_runtime_feed_from_nt_cache(
         feed,
-        Some((Decimal::ONE, Decimal::ONE)),
-        true,
-        &[],
-        Decimal::ZERO,
-        Decimal::ZERO,
-        2_000,
+        CapitalAdmissionNtCacheSeed {
+            cached_account_balances: Some((Decimal::ONE, Decimal::ONE)),
+            account_cache_is_authoritative: true,
+            open_client_order_ids: &[],
+            reconciled_venue_and_client_order_ids: &[],
+            yes_position: Decimal::ZERO,
+            no_position: Decimal::ZERO,
+            observed_at_ns: 2_000,
+        },
     );
 }
 

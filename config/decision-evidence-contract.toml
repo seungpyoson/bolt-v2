@@ -499,7 +499,7 @@ gate_id = "bolt_v3.loss_governor_halt"
 id = "order_reject_v1"
 purpose = "order_reject"
 kind = "order_reject"
-schema_version = 16
+schema_version = 17
 gate_id = "bolt_v3.order_reject"
 
 [[identities]]
@@ -534,14 +534,14 @@ gate_id = "bolt_v3.settlement"
 id = "venue_truth_capture_failure_v1"
 purpose = "venue_truth_capture_failure"
 kind = "venue_truth_capture_failure"
-schema_version = 16
+schema_version = 17
 gate_id = "bolt_v3.capital_admission_rebuild"
 
 [[identities]]
 id = "venue_truth_divergence_v1"
 purpose = "venue_truth_divergence"
 kind = "venue_truth_divergence"
-schema_version = 16
+schema_version = 17
 gate_id = "bolt_v3.capital_admission_rebuild"
 
 [[facts]]

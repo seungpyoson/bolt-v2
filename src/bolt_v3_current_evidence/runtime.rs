@@ -286,13 +286,25 @@ impl DecisionEvidenceRuntime {
     pub(crate) fn register_health_transition_publisher(
         &self,
         publisher: HealthTransitionPublisher,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), String> {
         self.recorder
             .register_health_transition_publisher(publisher)
     }
 
     pub(crate) fn close(&self) {
         self.recorder.close();
+    }
+
+    pub(crate) fn write_launch_identity(
+        &self,
+        catalog_directory: &Path,
+        identity: &crate::bolt_v3_operator_artifacts::LaunchIdentity,
+    ) -> Result<
+        crate::bolt_v3_operator_artifacts::WrittenOperatorArtifact,
+        crate::bolt_v3_operator_artifacts::BoltV3OperatorArtifactError,
+    > {
+        self.recorder
+            .write_launch_identity(catalog_directory, identity)
     }
 
     #[must_use]

@@ -391,8 +391,8 @@ fn venue_truth_capture_failure_evidence(
         source: crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE
             .to_string(),
         observed_at_ns,
-        endpoint: endpoint.to_string(),
-        error_class: error_class.to_string(),
+        endpoint,
+        error_class,
         captures_missed,
     }
 }
@@ -1718,7 +1718,8 @@ mod tests {
             BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
         },
         bolt_v3_venue_truth::{
-            VenueTruthCaptureEndpointError, VenueTruthDivergence, VenueTruthDivergenceAlarmClass,
+            VenueTruthCaptureEndpoint, VenueTruthCaptureEndpointError, VenueTruthCaptureErrorClass,
+            VenueTruthDivergence, VenueTruthDivergenceAlarmClass, VenueTruthDivergenceDomain,
             VenueTruthDivergenceKind, VenueTruthSnapshot,
         },
     };
@@ -1740,8 +1741,8 @@ mod tests {
     #[test]
     fn venue_truth_capture_failure_evidence_uses_production_endpoint_error_parts() {
         let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
-            "clob_balance_allowance",
-            "transport_or_decode",
+            VenueTruthCaptureEndpoint::ClobBalanceAllowance,
+            VenueTruthCaptureErrorClass::TransportOrDecode,
             anyhow::anyhow!("transport failed"),
         ))
         .context("poll venue truth");
@@ -1753,8 +1754,14 @@ mod tests {
             crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE
         );
         assert_eq!(evidence.observed_at_ns, 1_100);
-        assert_eq!(evidence.endpoint, "clob_balance_allowance");
-        assert_eq!(evidence.error_class, "transport_or_decode");
+        assert_eq!(
+            evidence.endpoint,
+            VenueTruthCaptureEndpoint::ClobBalanceAllowance
+        );
+        assert_eq!(
+            evidence.error_class,
+            VenueTruthCaptureErrorClass::TransportOrDecode
+        );
         assert_eq!(evidence.captures_missed, 3);
     }
 
@@ -1783,8 +1790,8 @@ mod tests {
             },
         );
         let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
-            "clob_open_orders",
-            "transport_or_decode",
+            VenueTruthCaptureEndpoint::ClobOpenOrders,
+            VenueTruthCaptureErrorClass::TransportOrDecode,
             anyhow::anyhow!("transport failed"),
         ));
 
@@ -1841,8 +1848,8 @@ mod tests {
         assert_eq!(admission.capital_admission_reconciled(), Some(true));
 
         let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
-            "clob_open_orders",
-            "transport_or_decode",
+            VenueTruthCaptureEndpoint::ClobOpenOrders,
+            VenueTruthCaptureErrorClass::TransportOrDecode,
             anyhow::anyhow!("transport failed"),
         ));
 
@@ -1946,13 +1953,12 @@ mod tests {
             crate::bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE
         );
         assert_eq!(evidence.account_id, "ACCOUNT-001");
-        assert_eq!(evidence.field, "collateral_balance");
+        assert_eq!(
+            evidence.domain,
+            crate::bolt_v3_current_evidence::VenueTruthDivergenceDomain::UnexplainedCollateralBalanceDelta
+        );
         assert_eq!(evidence.venue_value, "75");
         assert_eq!(evidence.prior_accepted_value, "100");
-        assert_eq!(
-            evidence.missing_explanation,
-            "no filled event explains collateral delta"
-        );
         assert_eq!(
             evidence.alarm_class,
             crate::bolt_v3_current_evidence::VenueTruthDivergenceAlarmClass::TrueDivergence
@@ -2371,10 +2377,9 @@ mod tests {
             previous_captured_at: Some(UnixNanos::from(1_000)),
             current_captured_at: UnixNanos::from(1_200),
             account_id: "ACCOUNT-001".to_string(),
-            field: "collateral_balance".to_string(),
+            domain: VenueTruthDivergenceDomain::UnexplainedCollateralBalanceDelta,
             venue_value: "75".to_string(),
             prior_accepted_value: "100".to_string(),
-            missing_explanation: "no filled event explains collateral delta".to_string(),
         }
     }
 

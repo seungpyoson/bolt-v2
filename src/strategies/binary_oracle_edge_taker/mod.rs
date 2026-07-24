@@ -2651,12 +2651,9 @@ impl BinaryOracleEdgeTaker {
                 return false;
             }
         };
-        if recovery_scope_settlement_keys.is_empty() {
-            return true;
-        }
-
         let recovery_delta = match recover_settlement_facts(
             self.context.settlement_recovery(),
+            &self.config.strategy_id,
             &recovery_scope_settlement_keys,
         ) {
             Ok(delta) => delta,

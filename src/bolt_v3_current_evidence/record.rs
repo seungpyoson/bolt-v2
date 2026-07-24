@@ -3,7 +3,11 @@ use std::{
     fmt,
     fs::File,
     io::{self, Write},
-    sync::{Arc, Condvar, Mutex, Weak},
+    sync::{
+        Arc, Condvar, Mutex, Weak,
+        mpsc::{SyncSender, TrySendError, sync_channel},
+    },
+    thread::JoinHandle,
 };
 
 use anyhow::Error;
@@ -175,9 +179,13 @@ impl EvidenceSinkHealthTransition {
 pub(super) type HealthTransitionPublisher =
     Arc<dyn Fn(EvidenceSinkHealthTransition) + Send + Sync + 'static>;
 
+const HEALTH_TRANSITION_QUEUE_CAPACITY: usize = 2;
+
 #[derive(Default)]
 struct HealthPublicationState {
-    publisher: Option<HealthTransitionPublisher>,
+    registered: bool,
+    sender: Option<SyncSender<EvidenceSinkHealthTransition>>,
+    emitter: Option<JoinHandle<()>>,
     pending: Vec<EvidenceSinkHealthTransition>,
     delivered: BTreeSet<KnownSink>,
 }
@@ -186,7 +194,8 @@ impl fmt::Debug for HealthPublicationState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("HealthPublicationState")
-            .field("publisher_registered", &self.publisher.is_some())
+            .field("publisher_registered", &self.registered)
+            .field("emitter_running", &self.emitter.is_some())
             .field("pending", &self.pending)
             .field("delivered", &self.delivered)
             .finish()
@@ -354,7 +363,7 @@ impl DurableSink {
 pub struct DecisionEvidenceRecorder {
     machine: Mutex<DurableSink>,
     observation: Mutex<DurableSink>,
-    _catalog_ownership: Option<CatalogDirectory>,
+    catalog_ownership: Option<CatalogDirectory>,
     max_record_bytes: PositiveFiniteEvidenceReadCap,
     reject_episode_max_count: usize,
     lifecycle: Mutex<RecorderLifecycleState>,
@@ -421,7 +430,7 @@ impl DecisionEvidenceRecorder {
         Self {
             machine: Mutex::new(DurableSink::new(machine)),
             observation: Mutex::new(observation),
-            _catalog_ownership: catalog_ownership,
+            catalog_ownership,
             max_record_bytes,
             reject_episode_max_count,
             lifecycle: Mutex::new(RecorderLifecycleState {
@@ -464,6 +473,25 @@ impl DecisionEvidenceRecorder {
         self.reject_episode_max_count
     }
 
+    pub(crate) fn write_launch_identity(
+        &self,
+        catalog_directory: &std::path::Path,
+        identity: &crate::bolt_v3_operator_artifacts::LaunchIdentity,
+    ) -> Result<
+        crate::bolt_v3_operator_artifacts::WrittenOperatorArtifact,
+        crate::bolt_v3_operator_artifacts::BoltV3OperatorArtifactError,
+    > {
+        let catalog = self
+            .catalog_ownership
+            .as_ref()
+            .expect("live decision-evidence recorder must retain catalog ownership");
+        crate::bolt_v3_operator_artifacts::write_launch_identity(
+            catalog,
+            catalog_directory,
+            identity,
+        )
+    }
+
     fn begin_operation(&self) -> Result<ActiveRecorderOperation<'_>, RecordFailure> {
         let mut lifecycle = self
             .lifecycle
@@ -483,47 +511,77 @@ impl DecisionEvidenceRecorder {
     }
 
     pub(super) fn close(&self) {
-        let mut lifecycle = self
-            .lifecycle
-            .lock()
-            .expect("recorder lifecycle mutex must not be poisoned");
-        if lifecycle.phase == RecorderLifecyclePhase::Closed {
-            return;
+        {
+            let mut lifecycle = self
+                .lifecycle
+                .lock()
+                .expect("recorder lifecycle mutex must not be poisoned");
+            if lifecycle.phase == RecorderLifecyclePhase::Closed {
+                return;
+            }
+            lifecycle.phase = RecorderLifecyclePhase::Closing;
+            while lifecycle.active_operations != 0 {
+                lifecycle = self
+                    .lifecycle_drained
+                    .wait(lifecycle)
+                    .expect("recorder lifecycle mutex must not be poisoned while draining");
+            }
+            lifecycle.phase = RecorderLifecyclePhase::Closed;
         }
-        lifecycle.phase = RecorderLifecyclePhase::Closing;
-        while lifecycle.active_operations != 0 {
-            lifecycle = self
-                .lifecycle_drained
-                .wait(lifecycle)
-                .expect("recorder lifecycle mutex must not be poisoned while draining");
+
+        let emitter = {
+            let mut publication = self
+                .health_publication
+                .lock()
+                .expect("health publication mutex must not be poisoned");
+            drop(publication.sender.take());
+            publication.emitter.take()
+        };
+        if let Some(emitter) = emitter {
+            emitter
+                .join()
+                .expect("decision-evidence health emitter must not panic");
         }
-        lifecycle.phase = RecorderLifecyclePhase::Closed;
     }
 
     pub(crate) fn register_health_transition_publisher(
         &self,
         publisher: HealthTransitionPublisher,
-    ) -> Result<(), &'static str> {
-        let pending = {
-            let mut publication = self
-                .health_publication
-                .lock()
-                .expect("health publication mutex must not be poisoned");
-            if publication.publisher.is_some() {
-                return Err("decision-evidence health publisher is already registered");
-            }
-            publication.publisher = Some(Arc::clone(&publisher));
-            std::mem::take(&mut publication.pending)
-        };
+    ) -> Result<(), String> {
+        let mut publication = self
+            .health_publication
+            .lock()
+            .expect("health publication mutex must not be poisoned");
+        if publication.registered {
+            return Err("decision-evidence health publisher is already registered".to_string());
+        }
+        let (sender, receiver) = sync_channel(HEALTH_TRANSITION_QUEUE_CAPACITY);
+        let emitter = std::thread::Builder::new()
+            .name("decision-evidence-health-emitter".to_string())
+            .spawn(move || {
+                for transition in receiver {
+                    publisher(transition);
+                }
+            })
+            .map_err(|error| {
+                format!("decision-evidence health emitter thread could not start: {error}")
+            })?;
+        publication.registered = true;
+        publication.sender = Some(sender.clone());
+        publication.emitter = Some(emitter);
+        let pending = std::mem::take(&mut publication.pending);
+        drop(publication);
         for transition in pending {
-            publisher(transition);
+            sender
+                .try_send(transition)
+                .expect("health transition queue must hold every one-shot sink transition");
         }
         Ok(())
     }
 
     fn publish_first_poison(&self, sink: KnownSink, cause: PoisonCause) {
         let transition = EvidenceSinkHealthTransition { sink, cause };
-        let publisher = {
+        let sender = {
             let mut publication = self
                 .health_publication
                 .lock()
@@ -531,16 +589,24 @@ impl DecisionEvidenceRecorder {
             if !publication.delivered.insert(sink) {
                 return;
             }
-            match publication.publisher.as_ref() {
-                Some(publisher) => Some(Arc::clone(publisher)),
+            match publication.sender.as_ref() {
+                Some(sender) => Some(sender.clone()),
                 None => {
                     publication.pending.push(transition.clone());
                     None
                 }
             }
         };
-        if let Some(publisher) = publisher {
-            publisher(transition);
+        if let Some(sender) = sender {
+            match sender.try_send(transition) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    unreachable!("health transition queue capacity covers every sink edge")
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    unreachable!("health emitter remains connected until recorder close")
+                }
+            }
         }
     }
 
@@ -1398,22 +1464,25 @@ mod tests {
     fn first_poison_publishes_once_after_the_sink_lock_is_released() {
         let recorder = Arc::new(recorder());
         let status = DecisionEvidenceStatusView::new(&recorder);
-        let transitions = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&transitions);
+        let append_thread = std::thread::current().id();
+        let (transition_sender, transition_receiver) = std::sync::mpsc::channel();
+        let caller_component = Arc::new(Mutex::new(()));
+        let publisher_component = Arc::clone(&caller_component);
         recorder
             .register_health_transition_publisher(Arc::new(move |transition| {
-                assert!(matches!(
-                    status.observation_stream_status(),
-                    Some(ObservationStreamStatus::Poisoned { .. })
-                ));
-                captured
+                let _component = publisher_component
                     .lock()
-                    .expect("transition capture mutex must not be poisoned")
-                    .push(transition);
+                    .expect("caller component lock must not be poisoned");
+                transition_sender
+                    .send((transition, std::thread::current().id()))
+                    .expect("transition receiver must remain connected");
             }))
             .expect("publisher must register once");
         recorder.fail_observation_writes();
 
+        let caller_guard = caller_component
+            .lock()
+            .expect("caller component lock must not be poisoned");
         assert!(matches!(
             recorder.record_observation(
                 KnownProducer::EdgeTakerBlockedStrategyInput,
@@ -1421,6 +1490,7 @@ mod tests {
             ),
             ObservationRecordOutcome::FailureReported(_)
         ));
+        drop(caller_guard);
         assert!(matches!(
             recorder.record_observation(
                 KnownProducer::EdgeTakerEntrySkip,
@@ -1428,9 +1498,24 @@ mod tests {
             ),
             ObservationRecordOutcome::FailureReported(_)
         ));
-        let transitions = transitions
-            .lock()
-            .expect("transition capture mutex must not be poisoned");
+        assert!(matches!(
+            status.observation_stream_status(),
+            Some(ObservationStreamStatus::Poisoned { .. })
+        ));
+        let (transition, publisher_thread) = transition_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("first poison transition must be published");
+        assert_ne!(
+            publisher_thread, append_thread,
+            "health rendering must never execute on the append thread"
+        );
+        let transitions = std::iter::once(transition)
+            .chain(
+                transition_receiver
+                    .try_iter()
+                    .map(|(transition, _)| transition),
+            )
+            .collect::<Vec<_>>();
         assert_eq!(transitions.len(), 1);
         assert_eq!(transitions[0].sink, KnownSink::Observation);
     }
@@ -1447,21 +1532,22 @@ mod tests {
             PositiveFiniteEvidenceReadCap::new(1_048_576).expect("test record cap must be finite"),
             4096,
         );
-        let transitions = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&transitions);
+        let (transition_sender, transition_receiver) = std::sync::mpsc::channel();
 
         recorder
             .register_health_transition_publisher(Arc::new(move |transition| {
-                captured
-                    .lock()
-                    .expect("transition capture mutex must not be poisoned")
-                    .push(transition);
+                transition_sender
+                    .send(transition)
+                    .expect("transition receiver must remain connected");
             }))
             .expect("publisher must register once");
 
-        let transitions = transitions
-            .lock()
-            .expect("transition capture mutex must not be poisoned");
+        let first = transition_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("startup poison transition must be published");
+        let transitions = std::iter::once(first)
+            .chain(transition_receiver.try_iter())
+            .collect::<Vec<_>>();
         assert_eq!(transitions.len(), 1);
         assert_eq!(transitions[0].sink, KnownSink::Observation);
         assert!(matches!(
@@ -1473,14 +1559,12 @@ mod tests {
     #[test]
     fn first_machine_poison_publishes_machine_transition() {
         let recorder = recorder();
-        let transitions = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&transitions);
+        let (transition_sender, transition_receiver) = std::sync::mpsc::channel();
         recorder
             .register_health_transition_publisher(Arc::new(move |transition| {
-                captured
-                    .lock()
-                    .expect("transition capture mutex must not be poisoned")
-                    .push(transition);
+                transition_sender
+                    .send(transition)
+                    .expect("transition receiver must remain connected");
             }))
             .expect("publisher must register once");
         recorder.fail_machine_writes_for_test();
@@ -1494,9 +1578,12 @@ mod tests {
             Err(RecordFailure::CommitIndeterminate { .. })
         ));
 
-        let transitions = transitions
-            .lock()
-            .expect("transition capture mutex must not be poisoned");
+        let first = transition_receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("machine poison transition must be published");
+        let transitions = std::iter::once(first)
+            .chain(transition_receiver.try_iter())
+            .collect::<Vec<_>>();
         assert_eq!(transitions.len(), 1);
         assert_eq!(transitions[0].sink, KnownSink::Machine);
     }

@@ -83,7 +83,6 @@ fn rejected_event_for_configured_account_records_venue_precision_reject_evidence
     assert_eq!(record.venue_price_precision, None);
     assert_eq!(record.venue_size_precision, None);
     assert_eq!(record.venue_min_notional, None);
-    assert_eq!(record.backoff_cooldown_state, None);
 }
 
 #[test]

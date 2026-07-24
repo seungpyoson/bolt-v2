@@ -8211,6 +8211,61 @@ fn fixture_root_config() -> bolt_v2::bolt_v3_config::BoltV3RootConfig {
     toml::from_str(&root_toml).expect("root fixture should parse")
 }
 
+#[test]
+fn capital_admission_requires_an_unfiltered_complete_nt_reconciliation_universe() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    type Mutation = Box<dyn Fn(&mut BoltV3RootConfig)>;
+    let cases: Vec<(&str, Mutation)> = vec![
+        (
+            "reconciliation",
+            Box::new(|root| root.nautilus.exec_engine.reconciliation = false),
+        ),
+        (
+            "reconciliation_lookback_mins",
+            Box::new(|root| root.nautilus.exec_engine.reconciliation_lookback_mins = 1),
+        ),
+        (
+            "reconciliation_instrument_ids",
+            Box::new(|root| {
+                root.nautilus.exec_engine.reconciliation_instrument_ids =
+                    vec!["YES-USD.POLYMARKET".to_string()];
+            }),
+        ),
+        (
+            "filter_unclaimed_external_orders",
+            Box::new(|root| {
+                root.nautilus.exec_engine.filter_unclaimed_external_orders = true;
+            }),
+        ),
+        (
+            "filtered_client_order_ids",
+            Box::new(|root| {
+                root.nautilus.exec_engine.filtered_client_order_ids = vec!["client-1".to_string()];
+            }),
+        ),
+        (
+            "generate_missing_orders",
+            Box::new(|root| root.nautilus.exec_engine.generate_missing_orders = false),
+        ),
+    ];
+
+    for (field, mutate) in cases {
+        let mut root = fixture_root_config();
+        root.risk
+            .capital_pools
+            .as_mut()
+            .expect("fixture must declare a capital pool")[0]
+            .enforce_submit_admission = true;
+        mutate(&mut root);
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|message| message.contains(field)),
+            "capital admission must reject incomplete reconciliation field {field}: {messages:#?}"
+        );
+    }
+}
+
 fn reference_reconnect_timeout_load_error(
     client_key: &str,
     delta_ms: i64,

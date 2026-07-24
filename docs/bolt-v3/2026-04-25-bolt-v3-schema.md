@@ -425,6 +425,13 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - `purge_from_database = false`
 - `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `d81be0bcc7a473c45d2dc8a8885638336073a218`
 
+When any prediction-market capital pool sets `enforce_submit_admission = true`, startup recovery must
+observe the complete execution-order universe. Validation therefore requires `reconciliation = true`,
+`reconciliation_lookback_mins = 0`, empty `reconciliation_instrument_ids`, empty
+`filtered_client_order_ids`, `filter_unclaimed_external_orders = false`, and
+`generate_missing_orders = true`. Startup additionally attests exact equality between the accepted raw
+venue open-order IDs and the unique reconciled NT open-order IDs before admission can become reconciled.
+
 #### `reconciliation_lookback_mins`
 
 - type: non-negative integer

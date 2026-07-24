@@ -87,6 +87,8 @@ struct CapitalAdmissionRuntimeComponentBuilder {
     latest_portfolio: Option<PortfolioCapitalAdmissionSnapshot>,
     latest_venue_spendability: Option<VenueSpendabilitySnapshot>,
     live_order_attribution: BTreeMap<String, bool>,
+    client_order_ids_by_venue_order_id: BTreeMap<String, String>,
+    accepted_venue_open_order_ids: Option<BTreeSet<String>>,
     terminal_order_ids_seen: BTreeMap<String, u64>,
     order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot,
     product_state: ProductAdmissionSnapshot,
@@ -298,6 +300,19 @@ impl CapitalAdmissionRuntimeFeed {
         self.config.collateral_currency.clone()
     }
 
+    #[must_use]
+    pub fn accepted_venue_open_order_ids(&self) -> Option<BTreeSet<String>> {
+        self.component_builder.accepted_venue_open_order_ids.clone()
+    }
+
+    pub fn attest_reconciled_nt_open_orders(
+        &mut self,
+        venue_and_client_order_ids: &[(String, String)],
+    ) {
+        self.component_builder.client_order_ids_by_venue_order_id =
+            venue_and_client_order_ids.iter().cloned().collect();
+    }
+
     pub fn seed_open_order_cache<I>(
         &mut self,
         client_order_ids: I,
@@ -388,6 +403,7 @@ impl CapitalAdmissionRuntimeFeed {
                 .capital_admission_has_live_reservation(&client_order_id);
             self.component_builder.record_live_order_event(
                 client_order_id,
+                event.venue_order_id().map(|value| value.to_string()),
                 submit_owned,
                 event.ts_event().as_u64(),
                 self.config.dedupe_retention_ns,
@@ -645,6 +661,8 @@ impl CapitalAdmissionRuntimeComponentBuilder {
             latest_portfolio: None,
             latest_venue_spendability: None,
             live_order_attribution: BTreeMap::new(),
+            client_order_ids_by_venue_order_id: BTreeMap::new(),
+            accepted_venue_open_order_ids: None,
             terminal_order_ids_seen: BTreeMap::new(),
             order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
                 source: "nt_order_lifecycle_seed".to_string(),
@@ -822,12 +840,17 @@ impl CapitalAdmissionRuntimeComponentBuilder {
             free_collateral: collateral_balance,
             total_equity: collateral_balance,
         });
-        self.live_order_attribution.clear();
+        let accepted_venue_open_order_ids = snapshot
+            .open_orders
+            .keys()
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>();
+        self.accepted_venue_open_order_ids = Some(accepted_venue_open_order_ids.clone());
         self.order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
             source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
             observed_at_ns,
             open_order_count: snapshot.open_orders.len(),
-            all_open_orders_attributed: true,
+            all_open_orders_attributed: self.accepted_venue_order_universe_is_attributed(),
         };
         self.record_accepted_venue_truth_product_state(snapshot, collateral_allowance);
     }
@@ -835,6 +858,7 @@ impl CapitalAdmissionRuntimeComponentBuilder {
     fn record_live_order_event(
         &mut self,
         client_order_id: String,
+        venue_order_id: Option<String>,
         attributed: bool,
         observed_at_ns: u64,
         dedupe_retention_ns: u64,
@@ -842,9 +866,13 @@ impl CapitalAdmissionRuntimeComponentBuilder {
         self.prune_terminal_order_ids_seen(observed_at_ns, dedupe_retention_ns);
         if !self.terminal_order_ids_seen.contains_key(&client_order_id) {
             self.live_order_attribution
-                .entry(client_order_id)
+                .entry(client_order_id.clone())
                 .and_modify(|existing| *existing = *existing || attributed)
                 .or_insert(attributed);
+        }
+        if let Some(venue_order_id) = venue_order_id {
+            self.client_order_ids_by_venue_order_id
+                .insert(venue_order_id, client_order_id);
         }
         self.refresh_order_lifecycle_from_event(observed_at_ns);
     }
@@ -861,8 +889,17 @@ impl CapitalAdmissionRuntimeComponentBuilder {
             }
         }
         if changed {
-            self.order_lifecycle.open_order_count = self.live_order_attribution.len();
-            self.order_lifecycle.all_open_orders_attributed = self.all_live_orders_attributed();
+            if source_is_accepted_venue_truth(&self.order_lifecycle.source) {
+                self.order_lifecycle.open_order_count = self
+                    .accepted_venue_open_order_ids
+                    .as_ref()
+                    .map_or(0, BTreeSet::len);
+                self.order_lifecycle.all_open_orders_attributed =
+                    self.accepted_venue_order_universe_is_attributed();
+            } else {
+                self.order_lifecycle.open_order_count = self.live_order_attribution.len();
+                self.order_lifecycle.all_open_orders_attributed = self.all_live_orders_attributed();
+            }
         }
     }
 
@@ -876,6 +913,8 @@ impl CapitalAdmissionRuntimeComponentBuilder {
         self.terminal_order_ids_seen
             .insert(client_order_id.clone(), observed_at_ns);
         self.live_order_attribution.remove(&client_order_id);
+        self.client_order_ids_by_venue_order_id
+            .retain(|_, mapped_client_order_id| mapped_client_order_id != &client_order_id);
         self.refresh_order_lifecycle_from_event(observed_at_ns);
     }
 
@@ -900,6 +939,31 @@ impl CapitalAdmissionRuntimeComponentBuilder {
         self.live_order_attribution
             .values()
             .all(|attributed| *attributed)
+    }
+
+    fn accepted_venue_order_universe_is_attributed(&self) -> bool {
+        let Some(accepted_venue_order_ids) = self.accepted_venue_open_order_ids.as_ref() else {
+            return false;
+        };
+        let reconciled_venue_order_ids = self
+            .client_order_ids_by_venue_order_id
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let reconciled_client_order_ids = self
+            .client_order_ids_by_venue_order_id
+            .values()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        accepted_venue_order_ids == &reconciled_venue_order_ids
+            && reconciled_client_order_ids.len() == self.client_order_ids_by_venue_order_id.len()
+            && reconciled_client_order_ids.len() == self.live_order_attribution.len()
+            && self
+                .live_order_attribution
+                .iter()
+                .all(|(client_order_id, attributed)| {
+                    *attributed && reconciled_client_order_ids.contains(client_order_id)
+                })
     }
 
     fn record_fill_position_delta(

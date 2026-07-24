@@ -18,7 +18,10 @@ use bolt_v2::bolt_v3_capital_admission_state::{
     PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
 };
 use bolt_v2::bolt_v3_capital_reservation::{CapitalPoolSnapshot, ReservationRejectionReason};
-use bolt_v2::bolt_v3_current_evidence::DecisionEvidenceRecorder;
+use bolt_v2::bolt_v3_current_evidence::{
+    DecisionEvidenceRecorder, VenueTruthCaptureEndpoint as EvidenceCaptureEndpoint,
+    VenueTruthCaptureErrorClass as EvidenceCaptureErrorClass,
+};
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use bolt_v2::bolt_v3_providers::polymarket::{
     PolymarketVenueTruthInput, build_polymarket_venue_truth_snapshot,
@@ -34,7 +37,8 @@ use bolt_v2::bolt_v3_submit_admission::{
     PredictionMarketOutcomeSide,
 };
 use bolt_v2::bolt_v3_venue_truth::{
-    VenueTruthCaptureFailureEvidence, VenueTruthSettlementExplanation, VenueTruthSnapshot,
+    VenueTruthCaptureEndpoint, VenueTruthCaptureErrorClass, VenueTruthCaptureFailureEvidence,
+    VenueTruthSettlementExplanation, VenueTruthSnapshot,
 };
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
@@ -216,7 +220,7 @@ fn polymarket_venue_truth_snapshot_alone_promotes_money_readiness() {
 }
 
 #[test]
-fn polymarket_venue_truth_snapshot_promotes_open_orders_and_positions() {
+fn polymarket_venue_truth_snapshot_requires_matching_nt_order_attestation() {
     let admission = Arc::new(polymarket_capital_admission_configured_admission());
     let mut feed =
         CapitalAdmissionRuntimeFeed::new(polymarket_runtime_feed_config(), admission.clone());
@@ -235,7 +239,10 @@ fn polymarket_venue_truth_snapshot_promotes_open_orders_and_positions() {
         POLYMARKET_VENUE_TRUTH_REST_SOURCE
     );
     assert_eq!(components.order_lifecycle.open_order_count, 1);
-    assert!(components.order_lifecycle.all_open_orders_attributed);
+    assert!(
+        !components.order_lifecycle.all_open_orders_attributed,
+        "raw venue orders are not admission-safe until NT reports the same order universe"
+    );
 
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
     assert_eq!(product.source, POLYMARKET_VENUE_TRUTH_REST_SOURCE);
@@ -244,6 +251,36 @@ fn polymarket_venue_truth_snapshot_promotes_open_orders_and_positions() {
     assert_eq!(product.no_position, Decimal::new(2, 0));
     assert_eq!(product.conditional_token_allowance, Decimal::new(9, 0));
     assert_eq!(product.collateral_allowance, Decimal::new(40, 0));
+
+    let mut recovered_reservation = open_order_reservation(
+        "client-order-1",
+        "client-order-1#recovered",
+        Decimal::new(43, 1),
+    );
+    recovered_reservation.instrument_id = "condition-yes123.POLYMARKET".to_string();
+    recovered_reservation.observed_at_ns = 1_250;
+    let rebuild = admission
+        .rebuild_capital_admission_open_order_reservations(vec![recovered_reservation], 1_250);
+    assert!(
+        rebuild.accepted,
+        "matching attribution must rebuild: {rebuild:?}"
+    );
+    feed.attest_reconciled_nt_open_orders(&[(
+        "venue-order-1".to_string(),
+        "client-order-1".to_string(),
+    )]);
+    let attested = feed
+        .seed_cache_snapshot(
+            vec!["client-order-1".to_string()],
+            Decimal::new(99, 0),
+            Decimal::new(88, 0),
+            1_300,
+        )
+        .expect("matching NT and venue order universes should republish");
+    assert!(attested.order_lifecycle.all_open_orders_attributed);
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = attested.product_state;
+    assert_eq!(product.yes_position, Decimal::new(7, 0));
+    assert_eq!(product.no_position, Decimal::new(2, 0));
 }
 
 #[test]
@@ -285,7 +322,7 @@ fn venue_truth_settlement_recorded_through_feed_explains_next_capture() {
 }
 
 #[test]
-fn accepted_venue_truth_open_orders_override_stale_nt_live_order_attribution() {
+fn accepted_venue_truth_rejects_stale_nt_live_order_attribution() {
     let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     admission.update_capital_admission_nt_components(fresh_components(900));
@@ -319,7 +356,10 @@ fn accepted_venue_truth_open_orders_override_stale_nt_live_order_attribution() {
         components.order_lifecycle.open_order_count, 0,
         "accepted venue truth open-order count must not be overwritten by stale NT attribution memory"
     );
-    assert!(components.order_lifecycle.all_open_orders_attributed);
+    assert!(
+        !components.order_lifecycle.all_open_orders_attributed,
+        "raw-empty and NT-nonempty order universes must remain unreconciled"
+    );
 }
 
 #[test]
@@ -342,9 +382,13 @@ fn accepted_venue_truth_survives_later_nt_cache_seed_and_reservation_rebuild() {
         POLYMARKET_VENUE_TRUTH_REST_SOURCE
     );
 
+    feed.attest_reconciled_nt_open_orders(&[(
+        "venue-order-1".to_string(),
+        "client-order-1".to_string(),
+    )]);
     let seeded_components = feed
         .seed_cache_snapshot(
-            vec!["stale-nt-cache-order".to_string()],
+            vec!["client-order-1".to_string()],
             Decimal::new(99, 0),
             Decimal::new(88, 0),
             1_300,
@@ -513,8 +557,8 @@ fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes()
         VenueTruthCaptureFailureEvidence {
             source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
             observed_at_ns: 1_100,
-            endpoint: "clob_balance_allowance".to_string(),
-            error_class: "transport".to_string(),
+            endpoint: VenueTruthCaptureEndpoint::ClobBalanceAllowance,
+            error_class: VenueTruthCaptureErrorClass::TransportOrDecode,
             captures_missed: 1,
         },
     );
@@ -526,8 +570,14 @@ fn venue_truth_capture_failure_suspends_all_admission_and_success_auto_resumes()
     assert_eq!(admission.capital_admission_reconciled(), Some(false));
     let capture_failures = writer.venue_truth_capture_failures();
     assert_eq!(capture_failures.len(), 1);
-    assert_eq!(capture_failures[0].endpoint, "clob_balance_allowance");
-    assert_eq!(capture_failures[0].error_class, "transport");
+    assert_eq!(
+        capture_failures[0].endpoint,
+        EvidenceCaptureEndpoint::ClobBalanceAllowance
+    );
+    assert_eq!(
+        capture_failures[0].error_class,
+        EvidenceCaptureErrorClass::TransportOrDecode
+    );
     assert_eq!(capture_failures[0].captures_missed, 1);
     assert!(
         matches!(
@@ -579,8 +629,8 @@ fn accepted_capture_at_failure_watermark_does_not_clear_capture_failure_suspensi
         VenueTruthCaptureFailureEvidence {
             source: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
             observed_at_ns: 1_100,
-            endpoint: "clob_balance_allowance".to_string(),
-            error_class: "transport".to_string(),
+            endpoint: VenueTruthCaptureEndpoint::ClobBalanceAllowance,
+            error_class: VenueTruthCaptureErrorClass::TransportOrDecode,
             captures_missed: 1,
         },
     );

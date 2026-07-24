@@ -56,7 +56,8 @@ Startup must refuse:
 - symlinked, non-regular, noncanonical, aliased, ancestor-conflicting, or out-of-root stream paths;
 - duplicate or contradictory settlement terminal outcomes, invalid reservation/fill relationships, or
   an NT open order without attribution in an atomic admitted fact;
-- failure to rebuild capital admission from the NT cache after NT startup reconciliation.
+- any mismatch between the accepted raw venue open-order set and the unique reconciled NT open-order
+  set, or failure to rebuild capital admission from that attested cache.
 
 The observation stream is not recovery input and never supplies readiness authority. Startup validates any retained observation content through the same exact-current framing, identity, sink, gate, and payload decoder. Invalid observation content is preserved byte-for-byte, reported as a poisoned observation sink, and does not block machine recovery or activation. The runtime never repairs, truncates, replaces, or extends that poisoned stream.
 
@@ -83,7 +84,8 @@ or silently resume the poisoned sink.
 
 On controlled shutdown, action ingress and every evidence-producing subscription/task stop and join
 before the recorder closes. Closing rejects new operations, waits for accepted append and health
-publication operations, closes both streams, and releases the catalog lock. Do not treat a process
+publication operations. The subsequent recorder drop closes both streams and releases the catalog
+lock. Do not treat a process
 whose catalog lock is still held as stopped.
 
 ## Accepted Losses and Remaining Gates

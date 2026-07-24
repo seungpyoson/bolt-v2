@@ -5,9 +5,9 @@ use bolt_v2::{
     bolt_v3_current_evidence::{
         AdmissionDecisionOutcome, AdmissionDetails, CurrentEvidenceTestPurpose, CurrentFact,
         DecisionEvidenceRecorder, DecisionEvidenceRuntime, EntrySkipFact, LossGovernorHaltFact,
-        OrderIntentDetails, OrderRejectFact, RequoteThrottleObservationFact,
-        ReservationAttribution, VenueTruthCaptureFailureFact, VenueTruthDivergenceFact,
-        read_current_evidence_facts,
+        OrderIntentDetails, OrderRejectFact, PositiveFiniteEvidenceReadCap,
+        RequoteThrottleObservationFact, ReservationAttribution, VenueTruthCaptureFailureFact,
+        VenueTruthDivergenceFact, read_current_evidence_facts,
     },
     bolt_v3_submit_admission::BoltV3SubmitIntentKind,
 };
@@ -66,6 +66,7 @@ pub struct RecordingDecisionEvidenceWriter {
     runtime: DecisionEvidenceRuntime,
     machine_path: PathBuf,
     observation_path: PathBuf,
+    read_cap: PositiveFiniteEvidenceReadCap,
 }
 
 impl Default for RecordingDecisionEvidenceWriter {
@@ -86,6 +87,8 @@ impl RecordingDecisionEvidenceWriter {
         let evidence = &loaded.root.persistence.decision_evidence;
         let machine_path = catalog_directory.join(&evidence.machine_relative_path);
         let observation_path = catalog_directory.join(&evidence.observation_relative_path);
+        let read_cap = PositiveFiniteEvidenceReadCap::new(evidence.recovery_evidence_max_bytes)
+            .expect("fixture recovery evidence cap must be positive and finite");
         prepare_current_evidence_generation(&loaded);
         let runtime = DecisionEvidenceRuntime::open(&loaded)
             .expect("current decision-evidence runtime must open");
@@ -94,6 +97,7 @@ impl RecordingDecisionEvidenceWriter {
             runtime,
             machine_path,
             observation_path,
+            read_cap,
         }
     }
 
@@ -112,27 +116,10 @@ impl RecordingDecisionEvidenceWriter {
     }
 
     pub fn facts(&self) -> Vec<CurrentFact> {
-        let machine_cap = bolt_v2::bolt_v3_current_evidence::PositiveFiniteEvidenceReadCap::new(
-            self.machine_path
-                .metadata()
-                .expect("machine evidence metadata must read")
-                .len()
-                .max(1),
-        )
-        .expect("machine evidence cap must be positive and finite");
-        let observation_cap =
-            bolt_v2::bolt_v3_current_evidence::PositiveFiniteEvidenceReadCap::new(
-                self.observation_path
-                    .metadata()
-                    .expect("observation evidence metadata must read")
-                    .len()
-                    .max(1),
-            )
-            .expect("observation evidence cap must be positive and finite");
-        let mut facts = read_current_evidence_facts(&self.machine_path, machine_cap)
+        let mut facts = read_current_evidence_facts(&self.machine_path, self.read_cap)
             .expect("machine evidence must decode");
         facts.extend(
-            read_current_evidence_facts(&self.observation_path, observation_cap)
+            read_current_evidence_facts(&self.observation_path, self.read_cap)
                 .expect("observation evidence must decode"),
         );
         facts

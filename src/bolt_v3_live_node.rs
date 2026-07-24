@@ -43,7 +43,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     rc::Rc,
     str::FromStr,
@@ -905,6 +905,18 @@ impl BoltV3LiveNodeRuntime {
         self.node.kernel().trader().borrow().strategy_ids()
     }
 
+    pub fn write_launch_identity(
+        &self,
+        catalog_directory: &Path,
+        identity: &crate::bolt_v3_operator_artifacts::LaunchIdentity,
+    ) -> Result<
+        crate::bolt_v3_operator_artifacts::WrittenOperatorArtifact,
+        crate::bolt_v3_operator_artifacts::BoltV3OperatorArtifactError,
+    > {
+        self.decision_evidence_runtime
+            .write_launch_identity(catalog_directory, identity)
+    }
+
     pub fn environment(&self) -> Environment {
         self.node.environment()
     }
@@ -1560,7 +1572,7 @@ impl BoltV3LiveNodeRuntime {
         submit_admission: &BoltV3SubmitAdmissionState,
         now_ns: u64,
     ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
-        let (account_id, binary_instrument_ids, collateral_currency) =
+        let (account_id, binary_instrument_ids, collateral_currency, accepted_venue_open_order_ids) =
             match capital_admission_runtime_feed {
                 Some(feed) => {
                     let feed = feed
@@ -1570,9 +1582,10 @@ impl BoltV3LiveNodeRuntime {
                         Some(feed.configured_account_id()),
                         feed.configured_binary_instrument_ids(),
                         Some(feed.configured_collateral_currency()),
+                        feed.accepted_venue_open_order_ids(),
                     )
                 }
-                None => (None, None, None),
+                None => (None, None, None, None),
             };
         let cache = cache.borrow();
         let open_order_snapshots = match account_id.as_ref() {
@@ -1591,6 +1604,22 @@ impl BoltV3LiveNodeRuntime {
             .iter()
             .map(|order| order.client_order_id().to_string())
             .collect::<Vec<_>>();
+        let reconciled_venue_and_client_order_ids = open_order_snapshots
+            .iter()
+            .filter_map(|order| {
+                order.venue_order_id().map(|venue_order_id| {
+                    (
+                        venue_order_id.to_string(),
+                        order.client_order_id().to_string(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let venue_order_universe_attested = capital_admission_runtime_feed.is_none()
+            || venue_nt_open_order_sets_match(
+                accepted_venue_open_order_ids.as_ref(),
+                &reconciled_venue_and_client_order_ids,
+            );
         let cached_account_balances = match (account_id.as_ref(), collateral_currency.as_deref()) {
             (Some(account_id), Some(collateral_currency)) => {
                 cache.account_owned(account_id).and_then(|account| {
@@ -1645,12 +1674,15 @@ impl BoltV3LiveNodeRuntime {
         if let Some(feed) = capital_admission_runtime_feed {
             seed_capital_admission_runtime_feed_from_nt_cache(
                 feed,
-                cached_account_balances,
-                account_cache_is_authoritative,
-                &open_client_order_ids,
-                yes_position,
-                no_position,
-                now_ns,
+                CapitalAdmissionNtCacheSeed {
+                    cached_account_balances,
+                    account_cache_is_authoritative,
+                    open_client_order_ids: &open_client_order_ids,
+                    reconciled_venue_and_client_order_ids: &reconciled_venue_and_client_order_ids,
+                    yes_position,
+                    no_position,
+                    observed_at_ns: now_ns,
+                },
             );
         }
 
@@ -1660,8 +1692,8 @@ impl BoltV3LiveNodeRuntime {
             submit_reservation_recovery
         };
         let mut reservations = Vec::with_capacity(open_order_snapshots.len());
-        let mut all_open_orders_attributed =
-            open_order_snapshots.is_empty() || recovered_reservations.is_some();
+        let mut all_open_orders_attributed = venue_order_universe_attested
+            && (open_order_snapshots.is_empty() || recovered_reservations.is_some());
         for order in &open_order_snapshots {
             let Some(recovered_reservations) = recovered_reservations.as_ref() else {
                 all_open_orders_attributed = false;
@@ -1720,29 +1752,55 @@ impl BoltV3LiveNodeRuntime {
     }
 }
 
-fn seed_capital_admission_runtime_feed_from_nt_cache(
-    feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
+struct CapitalAdmissionNtCacheSeed<'a> {
     cached_account_balances: Option<(Decimal, Decimal)>,
     account_cache_is_authoritative: bool,
-    open_client_order_ids: &[String],
+    open_client_order_ids: &'a [String],
+    reconciled_venue_and_client_order_ids: &'a [(String, String)],
     yes_position: Decimal,
     no_position: Decimal,
-    now_ns: u64,
+    observed_at_ns: u64,
+}
+
+fn seed_capital_admission_runtime_feed_from_nt_cache(
+    feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
+    seed: CapitalAdmissionNtCacheSeed<'_>,
 ) {
     let mut feed = feed
         .lock()
         .expect("capital admission rebuild cache seed feed lock poisoned");
-    if let Some((free_collateral, total_equity)) = cached_account_balances {
-        feed.seed_account_portfolio_snapshot(free_collateral, total_equity, now_ns);
+    if let Some((free_collateral, total_equity)) = seed.cached_account_balances {
+        feed.seed_account_portfolio_snapshot(free_collateral, total_equity, seed.observed_at_ns);
     }
-    if account_cache_is_authoritative || !open_client_order_ids.is_empty() {
+    if seed.account_cache_is_authoritative || !seed.open_client_order_ids.is_empty() {
+        feed.attest_reconciled_nt_open_orders(seed.reconciled_venue_and_client_order_ids);
         feed.seed_cache_snapshot(
-            open_client_order_ids.to_vec(),
-            yes_position,
-            no_position,
-            now_ns,
+            seed.open_client_order_ids.to_vec(),
+            seed.yes_position,
+            seed.no_position,
+            seed.observed_at_ns,
         );
     }
+}
+
+fn venue_nt_open_order_sets_match(
+    accepted_venue_open_order_ids: Option<&BTreeSet<String>>,
+    reconciled_venue_and_client_order_ids: &[(String, String)],
+) -> bool {
+    let Some(accepted_venue_open_order_ids) = accepted_venue_open_order_ids else {
+        return false;
+    };
+    let reconciled_venue_open_order_ids = reconciled_venue_and_client_order_ids
+        .iter()
+        .map(|(venue_order_id, _)| venue_order_id.clone())
+        .collect::<BTreeSet<_>>();
+    let reconciled_client_order_ids = reconciled_venue_and_client_order_ids
+        .iter()
+        .map(|(_, client_order_id)| client_order_id)
+        .collect::<BTreeSet<_>>();
+    reconciled_venue_open_order_ids.len() == reconciled_venue_and_client_order_ids.len()
+        && reconciled_client_order_ids.len() == reconciled_venue_and_client_order_ids.len()
+        && accepted_venue_open_order_ids == &reconciled_venue_open_order_ids
 }
 
 fn nt_open_order_evidence_from_order(
@@ -3274,7 +3332,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         booking_recovery,
         settlement_health_transition_emitter: Some(settlement_health_transition_emitter),
     };
-    let strategy_evidence = evidence_runtime.strategy_evidence_handles();
     let iv_runtime = loaded
         .root
         .iv
@@ -3327,7 +3384,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             resolved,
             crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
-            strategy_evidence.clone(),
+            evidence_runtime.strategy_evidence_handles(),
             iv_runtime,
         )
     } else {
@@ -3337,7 +3394,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             resolved,
             crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
-            strategy_evidence,
+            evidence_runtime.strategy_evidence_handles(),
         )
     }
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;

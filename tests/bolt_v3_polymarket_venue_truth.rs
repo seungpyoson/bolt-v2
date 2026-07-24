@@ -6,10 +6,11 @@ use bolt_v2::bolt_v3_providers::polymarket::{
     build_polymarket_venue_truth_snapshot, extract_polymarket_token_id,
 };
 use bolt_v2::bolt_v3_venue_truth::{
-    VenueTruthCaptureEndpointError, VenueTruthDivergenceAlarmClass, VenueTruthDivergenceKind,
-    VenueTruthOpenOrder, VenueTruthOrderEventMapper, VenueTruthReconciler,
-    VenueTruthReconciliation, VenueTruthSettlementExplanation, VenueTruthSnapshot,
-    venue_truth_capture_failure_parts,
+    VenueTruthCaptureEndpoint, VenueTruthCaptureEndpointError, VenueTruthCaptureErrorClass,
+    VenueTruthDivergenceAlarmClass, VenueTruthDivergenceField, VenueTruthDivergenceKind,
+    VenueTruthMissingExplanation, VenueTruthOpenOrder, VenueTruthOrderEventMapper,
+    VenueTruthReconciler, VenueTruthReconciliation, VenueTruthSettlementExplanation,
+    VenueTruthSnapshot, venue_truth_capture_failure_parts,
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
@@ -182,15 +183,18 @@ fn builds_snapshot_from_balance_orders_and_positions() {
 #[test]
 fn capture_failure_parts_survive_anyhow_context() {
     let error = anyhow::anyhow!(VenueTruthCaptureEndpointError::new(
-        "clob_balance_allowance",
-        "transport_or_decode",
+        VenueTruthCaptureEndpoint::ClobBalanceAllowance,
+        VenueTruthCaptureErrorClass::TransportOrDecode,
         anyhow::anyhow!("synthetic endpoint failure"),
     ))
     .context("poll Polymarket venue-truth endpoints");
 
     assert_eq!(
         venue_truth_capture_failure_parts(&error),
-        ("clob_balance_allowance", "transport_or_decode")
+        (
+            VenueTruthCaptureEndpoint::ClobBalanceAllowance,
+            VenueTruthCaptureErrorClass::TransportOrDecode
+        )
     );
 }
 
@@ -461,7 +465,10 @@ fn allowance_increase_is_unexplained_and_halts_at_fence() {
         divergence.kind,
         VenueTruthDivergenceKind::UnexplainedCollateralDelta
     );
-    assert_eq!(divergence.field, "collateral_allowance");
+    assert_eq!(
+        divergence.domain.field(),
+        VenueTruthDivergenceField::CollateralAllowance
+    );
 }
 
 #[test]
@@ -1568,10 +1575,13 @@ fn unexplained_balance_with_explained_allowance_reports_balance_evidence() {
         divergence.kind,
         VenueTruthDivergenceKind::UnexplainedCollateralDelta
     );
-    assert_eq!(divergence.field, "collateral_balance");
     assert_eq!(
-        divergence.missing_explanation,
-        "unexplained_collateral_balance_delta"
+        divergence.domain.field(),
+        VenueTruthDivergenceField::CollateralBalance
+    );
+    assert_eq!(
+        divergence.domain.missing_explanation(),
+        VenueTruthMissingExplanation::UnexplainedCollateralBalanceDelta
     );
 }
 

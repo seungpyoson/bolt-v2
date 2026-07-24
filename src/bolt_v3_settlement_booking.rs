@@ -299,6 +299,7 @@ pub struct SettlementRecoveryDelta {
 
 pub fn recover_settlement_facts(
     recovery: Option<&SettlementRecoveryFacts>,
+    strategy_id: &str,
     recovery_scope_settlement_keys: &BTreeSet<String>,
 ) -> Result<SettlementRecoveryDelta> {
     let Some(recovery) = recovery else {
@@ -309,10 +310,24 @@ pub fn recover_settlement_facts(
             terminal_evidence: Vec::new(),
         });
     };
-    let scoped_outcomes = recovery
-        .outcomes()
-        .iter()
-        .filter(|(key, _)| recovery_scope_settlement_keys.contains(*key));
+    for (key, outcome) in recovery.outcomes() {
+        let outcome_strategy_id = match outcome {
+            RecoveredSettlementOutcome::Successful(fact) => &fact.strategy_id,
+            RecoveredSettlementOutcome::BookingTerminal(fact) => &fact.booking_error.strategy_id,
+        };
+        if outcome_strategy_id == strategy_id && !recovery_scope_settlement_keys.contains(key) {
+            anyhow::bail!(
+                "durable settlement outcome `{key}` for strategy `{strategy_id}` is absent from the authoritative NT recovery scope"
+            );
+        }
+    }
+    let scoped_outcomes = recovery.outcomes().iter().filter(|(key, outcome)| {
+        let outcome_strategy_id = match outcome {
+            RecoveredSettlementOutcome::Successful(fact) => &fact.strategy_id,
+            RecoveredSettlementOutcome::BookingTerminal(fact) => &fact.booking_error.strategy_id,
+        };
+        outcome_strategy_id == strategy_id && recovery_scope_settlement_keys.contains(*key)
+    });
     Ok(SettlementRecoveryDelta {
         settled_position_keys: scoped_outcomes
             .clone()
@@ -440,6 +455,31 @@ pub fn enter_blind_settlement_recovery(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_current_evidence::{EvidenceOrderSide, OutcomeSide};
+
+    fn settlement_fact(strategy_id: &str, settlement_key: &str) -> SettlementFact {
+        SettlementFact {
+            strategy_id: strategy_id.to_string(),
+            settlement_key: settlement_key.to_string(),
+            market_id: "market-1".to_string(),
+            position_id: "position-1".to_string(),
+            instrument_id: "YES-USD.POLYMARKET".to_string(),
+            product_id: "product-1".to_string(),
+            outcome_side: OutcomeSide::Up,
+            entry_order_side: EvidenceOrderSide::Buy,
+            quantity: "1".to_string(),
+            entry_price: "0.4".to_string(),
+            family_key: "family-1".to_string(),
+            strike_price: "100".to_string(),
+            resolution_instrument_id: "resolution-1".to_string(),
+            resolution_ts_event_ns: 1,
+            reference_close_price: "101".to_string(),
+            payout_per_share: "1".to_string(),
+            terminal_value: "1".to_string(),
+            realized_pnl: "0.6".to_string(),
+            settlement_currency: "USD".to_string(),
+        }
+    }
 
     #[test]
     fn booking_error_transition_is_terminal_and_idempotent() {
@@ -494,5 +534,36 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn durable_strategy_settlement_outside_nt_scope_fails_closed() {
+        let recovery = SettlementRecoveryFacts::from_settlement_for_test(settlement_fact(
+            "strategy-1",
+            "settlement-1",
+        ));
+
+        let error = recover_settlement_facts(Some(&recovery), "strategy-1", &BTreeSet::new())
+            .expect_err("a durable strategy outcome missing from NT scope must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("absent from the authoritative NT recovery scope")
+        );
+    }
+
+    #[test]
+    fn foreign_strategy_settlement_outside_nt_scope_is_ignored() {
+        let recovery = SettlementRecoveryFacts::from_settlement_for_test(settlement_fact(
+            "strategy-2",
+            "settlement-1",
+        ));
+
+        let delta = recover_settlement_facts(Some(&recovery), "strategy-1", &BTreeSet::new())
+            .expect("foreign strategy evidence is outside this strategy's authority");
+
+        assert!(delta.settled_evidence.is_empty());
+        assert!(delta.terminal_evidence.is_empty());
     }
 }

@@ -21,6 +21,7 @@ pub use handles::{
     OrderRejectObserverEvidence, StrategyEvidenceHandles, SubmitAdmissionEvidence,
 };
 pub(crate) use path::CanonicalRelativeEvidencePath;
+pub(crate) use path_authority::CatalogDirectory;
 #[cfg(feature = "test-current-evidence-inspection")]
 #[doc(hidden)]
 pub use reader::read_current_evidence_facts;

@@ -214,6 +214,9 @@ struct BacktestDecisionEvidenceWriter {
     _catalog: tempfile::TempDir,
 }
 
+const BACKTEST_MACHINE_EVIDENCE_FILE: &str = "machine.jsonl";
+const BACKTEST_OBSERVATION_EVIDENCE_FILE: &str = "observation.jsonl";
+
 impl BacktestDecisionEvidenceWriter {
     fn new(
         reject_episode_max_count: usize,
@@ -227,28 +230,14 @@ impl BacktestDecisionEvidenceWriter {
             tempfile::tempdir().context("create isolated backtest current-evidence catalog")?;
         let canonical_catalog = std::fs::canonicalize(catalog.path())
             .context("canonicalize isolated backtest current-evidence catalog")?;
-        let machine_temp = tempfile::NamedTempFile::new_in(&canonical_catalog)
-            .context("allocate isolated backtest machine-evidence path")?;
-        let observation_temp = tempfile::NamedTempFile::new_in(&canonical_catalog)
-            .context("allocate isolated backtest observation-evidence path")?;
-        let machine = machine_temp.path().to_path_buf();
-        let observation = observation_temp.path().to_path_buf();
-        let machine_relative = machine
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .context("backtest machine-evidence filename must be UTF-8")?
-            .to_string();
-        let observation_relative = observation
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .context("backtest observation-evidence filename must be UTF-8")?
-            .to_string();
-        drop(machine_temp);
-        drop(observation_temp);
+        let machine_relative = BACKTEST_MACHINE_EVIDENCE_FILE;
+        let observation_relative = BACKTEST_OBSERVATION_EVIDENCE_FILE;
+        let machine = canonical_catalog.join(machine_relative);
+        let observation = canonical_catalog.join(observation_relative);
         let runtime = OfflineDecisionEvidenceRuntime::open_isolated(
             &canonical_catalog,
-            &machine_relative,
-            &observation_relative,
+            machine_relative,
+            observation_relative,
             read_max_bytes,
             reject_episode_max_count,
         )?;

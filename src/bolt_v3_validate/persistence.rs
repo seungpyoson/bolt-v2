@@ -105,3 +105,50 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
     }
     errors
 }
+
+pub(super) fn validate_capital_admission_reconciliation_universe(
+    root: &BoltV3RootConfig,
+) -> Vec<String> {
+    if crate::bolt_v3_settlement_runtime::capital_admission_runtime_feed_pool(root).is_none() {
+        return Vec::new();
+    }
+    let execution = &root.nautilus.exec_engine;
+    let mut errors = Vec::new();
+    if !execution.reconciliation {
+        errors.push(
+            "nautilus.exec_engine.reconciliation must be true when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
+    if execution.reconciliation_lookback_mins != 0 {
+        errors.push(
+            "nautilus.exec_engine.reconciliation_lookback_mins must be 0 (unbounded) when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
+    if !execution.reconciliation_instrument_ids.is_empty() {
+        errors.push(
+            "nautilus.exec_engine.reconciliation_instrument_ids must be empty when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
+    if execution.filter_unclaimed_external_orders {
+        errors.push(
+            "nautilus.exec_engine.filter_unclaimed_external_orders must be false when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
+    if !execution.filtered_client_order_ids.is_empty() {
+        errors.push(
+            "nautilus.exec_engine.filtered_client_order_ids must be empty when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
+    if !execution.generate_missing_orders {
+        errors.push(
+            "nautilus.exec_engine.generate_missing_orders must be true when risk.capital_pools enables submit admission enforcement"
+                .to_string(),
+        );
+    }
+    errors
+}

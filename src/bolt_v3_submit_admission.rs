@@ -25,8 +25,11 @@ use crate::bolt_v3_current_evidence::{
     OrderIntentDetails, OrderRejectFact, OrderRejectReason, OrderRejectSource, RecordFailure,
     RejectedEntryAdmissionFact, ReservationAttribution, ReservationProductKind,
     RiskReducingExitAdmissionFact, StaleLossReason, SubmitAdmissionEvidence,
-    SubmitReservationFillFact, SubmitReservationFillSource, VenueTruthCaptureFailureFact,
-    VenueTruthDivergenceAlarmClass as EvidenceDivergenceAlarmClass, VenueTruthDivergenceFact,
+    SubmitReservationFillFact, SubmitReservationFillSource,
+    VenueTruthCaptureEndpoint as EvidenceCaptureEndpoint,
+    VenueTruthCaptureErrorClass as EvidenceCaptureErrorClass, VenueTruthCaptureFailureFact,
+    VenueTruthDivergenceAlarmClass as EvidenceDivergenceAlarmClass,
+    VenueTruthDivergenceDomain as EvidenceDivergenceDomain, VenueTruthDivergenceFact,
 };
 #[cfg(feature = "test-current-evidence-inspection")]
 use crate::bolt_v3_current_evidence::{
@@ -673,11 +676,33 @@ impl BoltV3SubmitAdmissionState {
         &self,
         evidence: VenueTruthCaptureFailureEvidence,
     ) {
+        let endpoint = match evidence.endpoint {
+            crate::bolt_v3_venue_truth::VenueTruthCaptureEndpoint::VenueTruthSnapshot => {
+                EvidenceCaptureEndpoint::VenueTruthSnapshot
+            }
+            crate::bolt_v3_venue_truth::VenueTruthCaptureEndpoint::ClobBalanceAllowance => {
+                EvidenceCaptureEndpoint::ClobBalanceAllowance
+            }
+            crate::bolt_v3_venue_truth::VenueTruthCaptureEndpoint::ClobOpenOrders => {
+                EvidenceCaptureEndpoint::ClobOpenOrders
+            }
+            crate::bolt_v3_venue_truth::VenueTruthCaptureEndpoint::DataApiPositions => {
+                EvidenceCaptureEndpoint::DataApiPositions
+            }
+        };
+        let error_class = match evidence.error_class {
+            crate::bolt_v3_venue_truth::VenueTruthCaptureErrorClass::Unknown => {
+                EvidenceCaptureErrorClass::Unknown
+            }
+            crate::bolt_v3_venue_truth::VenueTruthCaptureErrorClass::TransportOrDecode => {
+                EvidenceCaptureErrorClass::TransportOrDecode
+            }
+        };
         let fact = VenueTruthCaptureFailureFact {
             source: evidence.source.clone(),
             observed_at_ns: evidence.observed_at_ns,
-            endpoint: evidence.endpoint.clone(),
-            error_class: evidence.error_class.clone(),
+            endpoint,
+            error_class,
             captures_missed: evidence.captures_missed,
         };
         if let NonBlockingRecordOutcome::Failed(error) = self
@@ -718,14 +743,33 @@ impl BoltV3SubmitAdmissionState {
                 EvidenceDivergenceAlarmClass::SilentChannel
             }
         };
+        let domain = match evidence.domain {
+            crate::bolt_v3_venue_truth::VenueTruthDivergenceDomain::AccountChanged => {
+                EvidenceDivergenceDomain::AccountChanged
+            }
+            crate::bolt_v3_venue_truth::VenueTruthDivergenceDomain::OrderingViolation => {
+                EvidenceDivergenceDomain::OrderingViolation
+            }
+            crate::bolt_v3_venue_truth::VenueTruthDivergenceDomain::UnexplainedOpenOrderDelta => {
+                EvidenceDivergenceDomain::UnexplainedOpenOrderDelta
+            }
+            crate::bolt_v3_venue_truth::VenueTruthDivergenceDomain::UnexplainedPositionDelta => {
+                EvidenceDivergenceDomain::UnexplainedPositionDelta
+            }
+            crate::bolt_v3_venue_truth::VenueTruthDivergenceDomain::UnexplainedCollateralBalanceDelta => {
+                EvidenceDivergenceDomain::UnexplainedCollateralBalanceDelta
+            }
+            crate::bolt_v3_venue_truth::VenueTruthDivergenceDomain::UnexplainedCollateralAllowanceDelta => {
+                EvidenceDivergenceDomain::UnexplainedCollateralAllowanceDelta
+            }
+        };
         let fact = VenueTruthDivergenceFact {
             source: evidence.source.clone(),
             observed_at_ns: evidence.observed_at_ns,
             account_id: evidence.account_id.clone(),
-            field: evidence.field.clone(),
+            domain,
             venue_value: evidence.venue_value.clone(),
             prior_accepted_value: evidence.prior_accepted_value.clone(),
-            missing_explanation: evidence.missing_explanation.clone(),
             alarm_class,
         };
         if let NonBlockingRecordOutcome::Failed(error) =
@@ -1052,13 +1096,8 @@ impl BoltV3SubmitAdmissionState {
             };
         };
         if !snapshot.all_open_orders_attributed {
-            if snapshot.observed_open_order_count > 0
-                && let Some(state) = capital_admission.state.as_mut()
-            {
-                state.observed_at_ns = state.observed_at_ns.max(snapshot.observed_at_ns);
-                if !order_lifecycle_is_accepted_venue_truth(&state.order_lifecycle) {
-                    state.order_lifecycle = rebuilt_order_lifecycle;
-                }
+            if let Some(state) = capital_admission.state.as_mut() {
+                apply_rebuild_order_lifecycle(state, rebuilt_order_lifecycle);
             }
             capital_admission.gate = CapitalAdmissionGate::unreconciled();
             capital_admission.client_order_reservations.clear();
@@ -1183,13 +1222,8 @@ impl BoltV3SubmitAdmissionState {
         );
         if decision.accepted {
             capital_admission.client_order_reservations = rebuilt_index;
-            if snapshot.observed_open_order_count > 0
-                && let Some(state) = capital_admission.state.as_mut()
-            {
-                state.observed_at_ns = state.observed_at_ns.max(now_ns);
-                if !order_lifecycle_is_accepted_venue_truth(&state.order_lifecycle) {
-                    state.order_lifecycle = rebuilt_order_lifecycle;
-                }
+            if let Some(state) = capital_admission.state.as_mut() {
+                apply_rebuild_order_lifecycle(state, rebuilt_order_lifecycle);
             }
             refresh_capital_admission_reservation_snapshot(capital_admission, now_ns);
         }
@@ -2067,7 +2101,6 @@ impl BoltV3SubmitAdmissionState {
             prior_client_order_id,
             client_order_id: request.client_order_id.clone(),
             retry_count,
-            backoff_cooldown_state: None,
             stable_episode_key,
             elapsed_ns,
         };
@@ -4045,6 +4078,22 @@ fn order_lifecycle_is_accepted_venue_truth(
     order_lifecycle: &OrderLifecycleCapitalAdmissionSnapshot,
 ) -> bool {
     capital_admission_source_is_accepted_venue_truth(&order_lifecycle.source)
+}
+
+fn apply_rebuild_order_lifecycle(
+    state: &mut NtDerivedCapitalAdmissionState,
+    rebuilt: OrderLifecycleCapitalAdmissionSnapshot,
+) {
+    state.observed_at_ns = state.observed_at_ns.max(rebuilt.observed_at_ns);
+    if order_lifecycle_is_accepted_venue_truth(&state.order_lifecycle) {
+        state.order_lifecycle.observed_at_ns = state
+            .order_lifecycle
+            .observed_at_ns
+            .max(rebuilt.observed_at_ns);
+        state.order_lifecycle.all_open_orders_attributed = rebuilt.all_open_orders_attributed;
+    } else if rebuilt.open_order_count > 0 {
+        state.order_lifecycle = rebuilt;
+    }
 }
 
 fn refresh_capital_admission_reservation_snapshot(

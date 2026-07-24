@@ -8,11 +8,12 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::bolt_v3_deploy_target::ObservedHostFacts;
+use crate::{bolt_v3_current_evidence::CatalogDirectory, bolt_v3_deploy_target::ObservedHostFacts};
 
 pub(crate) const PRIVATE_ARTIFACT_FILE_MODE: u32 = 0o600;
 pub const ENTRY_DECISION_ZERO_TIMESTAMP_MS: u64 = 0;
-const LAUNCH_IDENTITY_FILE_NAME: &str = "launch-identity.json";
+pub(crate) const LAUNCH_IDENTITY_FILE_NAME: &str = "launch-identity.json";
+pub(crate) const PRESTART_WRITE_PROBE_PREFIX: &str = ".bolt-v2-prestart-write-probe-";
 const LAUNCH_IDENTITY_MAX_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,7 +128,8 @@ pub fn launch_identity_path(catalog_directory: &Path) -> PathBuf {
     catalog_directory.join(LAUNCH_IDENTITY_FILE_NAME)
 }
 
-pub fn write_launch_identity(
+pub(crate) fn write_launch_identity(
+    catalog: &CatalogDirectory,
     catalog_directory: &Path,
     identity: &LaunchIdentity,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
@@ -135,33 +137,49 @@ pub fn write_launch_identity(
     let mut bytes =
         serde_json::to_vec_pretty(identity).map_err(BoltV3OperatorArtifactError::Serialize)?;
     bytes.push(b'\n');
-    crate::bolt_v3_atomic_io::write_atomic_file_with_mode(
-        &path,
-        &bytes,
-        crate::bolt_v3_atomic_io::GROUP_READABLE_ARTIFACT_FILE_MODE,
-    )
-    .map_err(|error| BoltV3OperatorArtifactError::Write {
-        path: error.path,
-        source: error.source,
-    })?;
+    catalog
+        .write_atomic_root_file(
+            LAUNCH_IDENTITY_FILE_NAME,
+            &bytes,
+            crate::bolt_v3_atomic_io::GROUP_READABLE_ARTIFACT_FILE_MODE,
+        )
+        .map_err(|source| BoltV3OperatorArtifactError::Write {
+            path: path.clone(),
+            source,
+        })?;
     Ok(WrittenOperatorArtifact {
         path,
         sha256: sha256_hex(&bytes),
     })
 }
 
-pub fn read_launch_identity(
+fn read_launch_identity_under_catalog(
+    catalog: &CatalogDirectory,
     catalog_directory: &Path,
 ) -> Result<Option<LaunchIdentity>, BoltV3OperatorArtifactError> {
     let path = launch_identity_path(catalog_directory);
-    let bytes = match read_file_bounded(&path, LAUNCH_IDENTITY_MAX_BYTES) {
-        Ok(bytes) => bytes,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+    let bytes = match catalog
+        .read_root_file_bounded(LAUNCH_IDENTITY_FILE_NAME, LAUNCH_IDENTITY_MAX_BYTES)
+    {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return Ok(None),
         Err(source) => return Err(BoltV3OperatorArtifactError::Read { path, source }),
     };
     let identity = serde_json::from_slice(&bytes)
         .map_err(|source| BoltV3OperatorArtifactError::Parse { path, source })?;
     Ok(Some(identity))
+}
+
+pub fn read_launch_identity(
+    catalog_directory: &Path,
+) -> Result<Option<LaunchIdentity>, BoltV3OperatorArtifactError> {
+    let catalog = CatalogDirectory::open(catalog_directory).map_err(|error| {
+        BoltV3OperatorArtifactError::Read {
+            path: launch_identity_path(catalog_directory),
+            source: io::Error::other(error.to_string()),
+        }
+    })?;
+    read_launch_identity_under_catalog(&catalog, catalog_directory)
 }
 
 pub fn is_lowercase_sha256(value: &str) -> bool {
@@ -191,6 +209,26 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    fn write_launch_identity_for_test(
+        catalog_directory: &Path,
+        identity: &LaunchIdentity,
+    ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+        let canonical_catalog =
+            std::fs::canonicalize(catalog_directory).expect("test catalog must canonicalize");
+        let catalog =
+            CatalogDirectory::open_writer(&canonical_catalog).expect("test catalog must lock");
+        write_launch_identity(&catalog, catalog_directory, identity)
+    }
+
+    fn read_launch_identity_for_test(
+        catalog_directory: &Path,
+    ) -> Result<Option<LaunchIdentity>, BoltV3OperatorArtifactError> {
+        let canonical_catalog =
+            std::fs::canonicalize(catalog_directory).expect("test catalog must canonicalize");
+        let catalog = CatalogDirectory::open(&canonical_catalog).expect("test catalog must open");
+        read_launch_identity_under_catalog(&catalog, catalog_directory)
+    }
 
     #[test]
     fn lowercase_hash_shape_helpers_reject_wrong_width_and_uppercase() {
@@ -235,8 +273,8 @@ mod tests {
             pid: 4242,
             target_host_facts: None,
         };
-        write_launch_identity(temp.path(), &identity).expect("write should succeed");
-        let read_back = read_launch_identity(temp.path()).expect("read should succeed");
+        write_launch_identity_for_test(temp.path(), &identity).expect("write should succeed");
+        let read_back = read_launch_identity_for_test(temp.path()).expect("read should succeed");
         assert_eq!(read_back, Some(identity));
     }
 
@@ -259,15 +297,15 @@ mod tests {
                 instance_id: Some("test-instance".to_string()),
             }),
         };
-        write_launch_identity(temp.path(), &identity).expect("write should succeed");
-        let read_back = read_launch_identity(temp.path()).expect("read should succeed");
+        write_launch_identity_for_test(temp.path(), &identity).expect("write should succeed");
+        let read_back = read_launch_identity_for_test(temp.path()).expect("read should succeed");
         assert_eq!(read_back, Some(identity));
     }
 
     #[test]
     fn read_launch_identity_is_none_when_file_absent() {
         let temp = tempfile::tempdir().expect("tempdir should create");
-        let read_back = read_launch_identity(temp.path()).expect("read should succeed");
+        let read_back = read_launch_identity_for_test(temp.path()).expect("read should succeed");
         assert_eq!(read_back, None);
     }
 
@@ -281,7 +319,7 @@ mod tests {
         let oversize = vec![b'x'; LAUNCH_IDENTITY_MAX_BYTES as usize + 1];
         std::fs::write(launch_identity_path(temp.path()), &oversize)
             .expect("oversize fixture should write");
-        match read_launch_identity(temp.path()) {
+        match read_launch_identity_for_test(temp.path()) {
             Err(BoltV3OperatorArtifactError::Read { .. }) => {}
             other => panic!("expected Read error for oversize artifact, got {other:?}"),
         }
@@ -306,9 +344,9 @@ mod tests {
             pid: 4242,
             target_host_facts: None,
         };
-        write_launch_identity(temp.path(), &first).expect("first write should succeed");
-        write_launch_identity(temp.path(), &second).expect("second write should succeed");
-        let read_back = read_launch_identity(temp.path()).expect("read should succeed");
+        write_launch_identity_for_test(temp.path(), &first).expect("first write should succeed");
+        write_launch_identity_for_test(temp.path(), &second).expect("second write should succeed");
+        let read_back = read_launch_identity_for_test(temp.path()).expect("read should succeed");
         assert_eq!(read_back, Some(second));
     }
 
@@ -328,7 +366,7 @@ mod tests {
             pid: 4242,
             target_host_facts: None,
         };
-        write_launch_identity(temp.path(), &identity).expect("write should succeed");
+        write_launch_identity_for_test(temp.path(), &identity).expect("write should succeed");
         let mode = std::fs::metadata(launch_identity_path(temp.path()))
             .expect("artifact metadata should read")
             .permissions()
@@ -349,7 +387,7 @@ mod tests {
             br#"{"build_head_sha":null,"profile":"p","config_bundle_checksum":"c","launched_at_unix_secs":1,"pid":1,"target_host_facts":null,"unexpected":true}"#,
         )
         .expect("write fixture should succeed");
-        match read_launch_identity(temp.path()) {
+        match read_launch_identity_for_test(temp.path()) {
             Err(BoltV3OperatorArtifactError::Parse { .. }) => {}
             other => panic!("expected Parse error for unknown field, got {other:?}"),
         }
@@ -364,7 +402,7 @@ mod tests {
         )
         .expect("old-byte launch identity fixture should write");
 
-        let identity = read_launch_identity(temp.path())
+        let identity = read_launch_identity_for_test(temp.path())
             .expect("old-byte launch identity should parse")
             .expect("old-byte launch identity should exist");
         assert_eq!(identity.profile, "legacy-profile");

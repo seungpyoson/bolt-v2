@@ -1,5 +1,5 @@
 #[cfg(not(unix))]
-use std::{fs::File, path::Path};
+use std::{fs::File, io, path::Path};
 
 #[cfg(not(unix))]
 use anyhow::{Result, bail};
@@ -11,7 +11,7 @@ mod unix {
     use std::{
         ffi::{CString, OsStr},
         fs::File,
-        io::{self, Write},
+        io::{self, Read, Write},
         mem::MaybeUninit,
         os::{
             fd::{AsRawFd, FromRawFd},
@@ -19,13 +19,20 @@ mod unix {
             unix::fs::MetadataExt,
         },
         path::{Component, Path},
+        sync::atomic::{AtomicU64, Ordering},
     };
 
     use anyhow::{Context, Result, bail, ensure};
 
-    use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
+    #[cfg(test)]
+    use crate::bolt_v3_operator_artifacts::LAUNCH_IDENTITY_FILE_NAME;
+    use crate::bolt_v3_operator_artifacts::{
+        PRESTART_WRITE_PROBE_PREFIX, PRIVATE_ARTIFACT_FILE_MODE,
+    };
 
     use super::CanonicalRelativeEvidencePath;
+
+    static CATALOG_ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[derive(Debug)]
     pub(crate) struct CatalogDirectory {
@@ -114,7 +121,7 @@ mod unix {
 
         pub(crate) fn prestart_probe_and_available_bytes(&self) -> Result<u64> {
             let basename = CString::new(format!(
-                ".bolt-v2-prestart-write-probe-{}",
+                "{PRESTART_WRITE_PROBE_PREFIX}{}",
                 std::process::id()
             ))
             .expect("decimal process id cannot contain NUL");
@@ -151,6 +158,105 @@ mod unix {
             probe_result?;
             cleanup_result?;
             available_bytes(&self.directory)
+        }
+
+        pub(crate) fn write_atomic_root_file(
+            &self,
+            basename: &str,
+            bytes: &[u8],
+            mode: u32,
+        ) -> io::Result<()> {
+            let basename = component_name(OsStr::new(basename))?;
+            let temp_basename = CString::new(format!(
+                ".{}.tmp-{}-{}",
+                basename.to_string_lossy(),
+                std::process::id(),
+                CATALOG_ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ))
+            .expect("generated catalog temp name cannot contain NUL");
+            let flags =
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+            // SAFETY: the held directory descriptor and C strings remain valid for the call.
+            let raw = unsafe {
+                libc::openat(
+                    self.directory.as_raw_fd(),
+                    temp_basename.as_ptr(),
+                    flags,
+                    mode,
+                )
+            };
+            if raw < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: `openat` returned a new owned descriptor.
+            let mut temp = unsafe { File::from_raw_fd(raw) };
+            // SAFETY: `temp` owns a live regular-file descriptor.
+            if unsafe { libc::fchmod(temp.as_raw_fd(), mode as libc::mode_t) } != 0 {
+                let error = io::Error::last_os_error();
+                drop(temp);
+                let _ = remove_file_if_present(&self.directory, &temp_basename);
+                return Err(error);
+            }
+            if let Err(error) = temp.write_all(bytes).and_then(|()| temp.sync_all()) {
+                drop(temp);
+                let _ = remove_file_if_present(&self.directory, &temp_basename);
+                return Err(error);
+            }
+            drop(temp);
+            // SAFETY: both names are relative to the same held directory descriptor.
+            if unsafe {
+                libc::renameat(
+                    self.directory.as_raw_fd(),
+                    temp_basename.as_ptr(),
+                    self.directory.as_raw_fd(),
+                    basename.as_ptr(),
+                )
+            } != 0
+            {
+                let error = io::Error::last_os_error();
+                let _ = remove_file_if_present(&self.directory, &temp_basename);
+                return Err(error);
+            }
+            self.synchronize_directory(&self.directory)
+        }
+
+        pub(crate) fn read_root_file_bounded(
+            &self,
+            basename: &str,
+            max_bytes: u64,
+        ) -> io::Result<Option<Vec<u8>>> {
+            let basename = component_name(OsStr::new(basename))?;
+            let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+            // SAFETY: the held directory descriptor and C string remain valid for the call.
+            let raw = unsafe { libc::openat(self.directory.as_raw_fd(), basename.as_ptr(), flags) };
+            if raw < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::NotFound {
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+            // SAFETY: `openat` returned a new owned descriptor.
+            let file = unsafe { File::from_raw_fd(raw) };
+            let metadata = file.metadata()?;
+            if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "catalog artifact must be a regular single-link file",
+                ));
+            }
+            let limit = max_bytes.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "artifact read cap overflow")
+            })?;
+            let mut bytes = Vec::new();
+            file.take(limit).read_to_end(&mut bytes)?;
+            if bytes.len() as u64 > max_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "catalog artifact exceeds configured read cap",
+                ));
+            }
+            Ok(Some(bytes))
         }
 
         pub(crate) fn open_stream(&self, relative: &CanonicalRelativeEvidencePath) -> Result<File> {
@@ -501,6 +607,24 @@ mod unix {
                 0,
                 "lock conflict must not mutate the catalog"
             );
+            first
+                .write_atomic_root_file(
+                    LAUNCH_IDENTITY_FILE_NAME,
+                    b"owning-launch\n",
+                    PRIVATE_ARTIFACT_FILE_MODE,
+                )
+                .expect("catalog owner must write the launch identity");
+            let launch_identity_before = fs::read(canonical_root.join(LAUNCH_IDENTITY_FILE_NAME))
+                .expect("launch identity must read");
+            let error = CatalogDirectory::open_writer(&canonical_root)
+                .expect_err("a rejected launcher must not obtain artifact write authority");
+            assert!(error.to_string().contains("WriterAlreadyActive"));
+            assert_eq!(
+                fs::read(canonical_root.join(LAUNCH_IDENTITY_FILE_NAME))
+                    .expect("launch identity must remain readable"),
+                launch_identity_before,
+                "lock-conflicting launcher must not change launch identity bytes"
+            );
             drop(first);
             CatalogDirectory::open_writer(&canonical_root)
                 .expect("writer ownership must release with the held descriptor");
@@ -697,10 +821,10 @@ mod unix {
 }
 
 #[cfg(unix)]
-pub(super) use unix::CatalogDirectory;
+pub(crate) use unix::CatalogDirectory;
 
 #[cfg(not(unix))]
-pub(super) struct CatalogDirectory;
+pub(crate) struct CatalogDirectory;
 
 #[cfg(not(unix))]
 impl CatalogDirectory {
@@ -729,5 +853,28 @@ impl CatalogDirectory {
         _relative: &CanonicalRelativeEvidencePath,
     ) -> Result<()> {
         bail!("decision-evidence runtime is unsupported on non-Unix targets")
+    }
+
+    pub(crate) fn write_atomic_root_file(
+        &self,
+        _basename: &str,
+        _bytes: &[u8],
+        _mode: u32,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "decision-evidence runtime is unsupported on non-Unix targets",
+        ))
+    }
+
+    pub(crate) fn read_root_file_bounded(
+        &self,
+        _basename: &str,
+        _max_bytes: u64,
+    ) -> io::Result<Option<Vec<u8>>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "decision-evidence runtime is unsupported on non-Unix targets",
+        ))
     }
 }

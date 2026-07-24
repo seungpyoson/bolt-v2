@@ -19,7 +19,7 @@ fn closed() -> RecordFailure {
 
 macro_rules! handle {
     ($name:ident) => {
-        #[derive(Debug, Clone)]
+        #[derive(Debug)]
         pub struct $name {
             recorder: Weak<DecisionEvidenceRecorder>,
             #[cfg(any(test, feature = "test-current-evidence-inspection"))]
@@ -58,9 +58,27 @@ handle!(OrderExecutionEvidence);
 handle!(EdgeTakerEvidence);
 handle!(MakerEvidence);
 
+macro_rules! reissuable_handle {
+    ($name:ident) => {
+        impl $name {
+            pub(crate) fn reissue(&self) -> Self {
+                Self {
+                    recorder: self.recorder.clone(),
+                    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+                    _test_owner: self._test_owner.as_ref().map(Arc::clone),
+                }
+            }
+        }
+    };
+}
+
+reissuable_handle!(OrderExecutionEvidence);
+reissuable_handle!(EdgeTakerEvidence);
+reissuable_handle!(MakerEvidence);
+
 macro_rules! episode_bounded_handle {
     ($name:ident) => {
-        #[derive(Debug, Clone)]
+        #[derive(Debug)]
         pub struct $name {
             recorder: Weak<DecisionEvidenceRecorder>,
             reject_episode_max_count: usize,
@@ -102,7 +120,7 @@ macro_rules! episode_bounded_handle {
 episode_bounded_handle!(SubmitAdmissionEvidence);
 episode_bounded_handle!(OrderRejectObserverEvidence);
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StrategyEvidenceHandles {
     edge_taker: EdgeTakerEvidence,
     maker: MakerEvidence,
@@ -120,17 +138,17 @@ impl StrategyEvidenceHandles {
 
     #[must_use]
     pub(crate) fn edge_taker(&self) -> EdgeTakerEvidence {
-        self.edge_taker.clone()
+        self.edge_taker.reissue()
     }
 
     #[must_use]
     pub(crate) fn maker(&self) -> MakerEvidence {
-        self.maker.clone()
+        self.maker.reissue()
     }
 
     #[must_use]
     pub(crate) fn order_execution(&self) -> OrderExecutionEvidence {
-        self.order_execution.clone()
+        self.order_execution.reissue()
     }
 }
 

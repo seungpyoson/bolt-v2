@@ -70,6 +70,18 @@ fixture() {
         two:202)
             pull_json 202 OPEN false stack-201 stack-202 seungpyoson/bolt-v2 'Depends-On: #201'
             ;;
+        retargeted:201)
+            pull_json 201 OPEN false main stack-201 seungpyoson/bolt-v2 ""
+            ;;
+        retargeted:202)
+            pull_json 202 OPEN false main stack-202 seungpyoson/bolt-v2 'Depends-On: #201'
+            ;;
+        retargeted:203)
+            pull_json 203 OPEN false stack-202 stack-203 seungpyoson/bolt-v2 'Depends-On: #202'
+            ;;
+        default_malformed:204)
+            pull_json 204 OPEN false main stack-204 seungpyoson/bolt-v2 'Depends-On: #0201'
+            ;;
         three:301)
             pull_json 301 OPEN false main stack-301 seungpyoson/bolt-v2 ""
             ;;
@@ -279,6 +291,24 @@ run_case two 101 202
 expect_status 2
 expect_output "queue bottom pull request #201 first"
 expect_output "No queue requests were submitted."
+expect_comment_targets
+
+for retargeted_pr in 202 203; do
+    run_case retargeted "$retargeted_pr"
+    expect_status 2
+    expect_output "queue bottom pull request #201 first"
+    expect_comment_targets
+done
+
+run_case retargeted 201 202
+expect_status 2
+expect_output "overlap at #201"
+expect_output "No queue requests were submitted."
+expect_comment_targets
+
+run_case default_malformed 204
+expect_status 2
+expect_output "run mergify stack push"
 expect_comment_targets
 
 run_case three 303

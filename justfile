@@ -203,7 +203,8 @@ merge-queue *pr_numbers:
                     | ($label + " #") as $prefix
                     | ((.body // "") | split("\n") | map(strip_terminal_cr)
                        | map(select(startswith($label)))) as $markers
-                    | if ($markers | length) != 1 then "invalid"
+                    | if ($markers | length) == 0 then "none"
+                      elif ($markers | length) != 1 then "invalid"
                       elif ($markers[0] | startswith($prefix) | not) then "invalid"
                       else $markers[0][($prefix | length):] as $suffix
                       | ($suffix | explode) as $digits
@@ -267,7 +268,7 @@ merge-queue *pr_numbers:
             load_pull_metadata "$current_pr" || break
             validate_pull_metadata "$current_pr" "$dependent_pr" "$expected_head" || break
 
-            if [[ "$base_ref" == "$default_branch" ]]; then
+            if [[ "$base_ref" == "$default_branch" && "$dependency" == none ]]; then
                 chain_complete=1
                 break
             fi
@@ -277,7 +278,10 @@ merge-queue *pr_numbers:
             fi
 
             dependent_pr="$current_pr"
-            expected_head="$base_ref"
+            expected_head=""
+            if [[ "$base_ref" != "$default_branch" ]]; then
+                expected_head="$base_ref"
+            fi
             current_pr="${dependency#valid:}"
         done
 

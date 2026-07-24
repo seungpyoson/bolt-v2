@@ -148,9 +148,38 @@ jobs:
             echo "runner_label=$runner_label"
           } >> "$GITHUB_OUTPUT"
 
+  sccache_source:
+    name: Build credentialless sccache source
+    needs: preflight
+    timeout-minutes: 30
+    runs-on: ${{ needs.preflight.outputs.runner_label }}
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.source.outputs.artifact_name }}
+      executable_sha256: ${{ steps.source.outputs.executable_sha256 }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - name: Setup source-build environment
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+
+      - name: Build credentialless exact-source sccache
+        id: source
+        uses: ./.github/actions/sccache-build
+        with:
+          active: "true"
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+
   produce:
     name: Build and exercise staged root artifact
-    needs: preflight
+    needs: [preflight, sccache_source]
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     permissions:
       contents: read
@@ -194,6 +223,8 @@ jobs:
           active: "true"
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
           write-role-arn: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          artifact-name: ${{ needs.sccache_source.outputs.artifact_name }}
+          executable-sha256: ${{ needs.sccache_source.outputs.executable_sha256 }}
 
       - name: Require verified sccache before Cargo
         env:

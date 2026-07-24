@@ -1,5 +1,5 @@
 name: Governed sccache setup
-description: Configure the governed CI sccache path and fail open to local compiles.
+description: Configure the governed CI sccache path and fail closed for active compile jobs.
 
 inputs:
   active:
@@ -41,7 +41,6 @@ runs:
   steps:
     - name: Resolve sccache eligibility
       id: eligibility
-      continue-on-error: true
       shell: bash
       env:
         SCCACHE_ACTIVE: ${{ inputs.active }}
@@ -55,7 +54,6 @@ runs:
     - name: Configure AWS credentials for sccache
       id: aws
       if: steps.eligibility.outputs.eligible == 'true'
-      continue-on-error: true
       uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
       with:
         role-to-assume: ${{ steps.eligibility.outputs.role_arn }}
@@ -64,7 +62,6 @@ runs:
     - name: Install sccache
       id: install
       if: steps.eligibility.outputs.eligible == 'true' && steps.aws.outcome == 'success'
-      continue-on-error: true
       uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
       with:
         version: ${{ steps.eligibility.outputs.version }}
@@ -72,35 +69,53 @@ runs:
 
     - name: Resolve sccache enablement
       id: enable
-      continue-on-error: true
       if: always()
       shell: bash
       env:
+        SCCACHE_ACTIVE: ${{ inputs.active }}
         EXPECTED_VERSION: ${{ steps.eligibility.outputs.version }}
         EXPECTED_SHA256: ${{ steps.eligibility.outputs.executable_sha256 }}
       run: |
-        enabled=false
-        if [[ "${{ steps.eligibility.outputs.eligible }}" == "true" \
-              && "${{ steps.aws.outcome }}" == "success" \
-              && "${{ steps.install.outcome }}" == "success" \
-              && -n "${SCCACHE_PATH:-}" ]]; then
-          if python3.12 scripts/sccache_eligibility.py verify-executable \
-              "$SCCACHE_PATH" "$EXPECTED_VERSION" "$EXPECTED_SHA256" \
-              && "$SCCACHE_PATH" --start-server; then
-            "$SCCACHE_PATH" --zero-stats || true
-            enabled=true
-          else
-            echo "sccache verification or server startup failed; building without cache"
-          fi
+        echo "enabled=false" >> "$GITHUB_OUTPUT"
+        if [[ "$SCCACHE_ACTIVE" == "false" ]]; then
+          echo "sccache inactive for this non-compile job"
+          exit 0
         fi
-        echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
-        if [[ "$enabled" == "true" ]]; then
-          # Route rustc through sccache for every later step in the job. The
-          # cargo command lines in workflow YAML stay raw and locally
-          # reproducible; without sccache the same commands simply compile cold.
-          echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
+        if [[ "$SCCACHE_ACTIVE" != "true" ]]; then
+          echo "::error::sccache active input must be exactly true or false"
+          exit 1
         fi
-        echo "sccache enabled=$enabled"
+
+        if [[ "${{ steps.eligibility.outputs.eligible }}" != "true" ]]; then
+          echo "::error::governed sccache eligibility failed for an active compile job"
+          exit 1
+        fi
+        if [[ "${{ steps.aws.outcome }}" != "success" ]]; then
+          echo "::error::governed sccache AWS credential setup failed"
+          exit 1
+        fi
+        if [[ "${{ steps.install.outcome }}" != "success" || -z "${SCCACHE_PATH:-}" ]]; then
+          echo "::error::governed sccache installation did not provide an executable"
+          exit 1
+        fi
+        if ! python3.12 scripts/sccache_eligibility.py verify-executable \
+            "$SCCACHE_PATH" "$EXPECTED_VERSION" "$EXPECTED_SHA256"; then
+          echo "::error::governed sccache executable verification failed"
+          exit 1
+        fi
+        if ! "$SCCACHE_PATH" --start-server; then
+          echo "::error::governed sccache server startup failed"
+          exit 1
+        fi
+        if ! "$SCCACHE_PATH" --zero-stats; then
+          echo "::error::governed sccache stat reset failed"
+          exit 1
+        fi
+
+        echo "enabled=true" >> "$GITHUB_OUTPUT"
+        # Route rustc through sccache while preserving the raw Cargo commands.
+        echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
+        echo "sccache enabled=true"
 
     - name: Summarize sccache state
       if: always()
@@ -114,6 +129,6 @@ runs:
         SCCACHE_CACHE_MODE: ${{ steps.eligibility.outputs.cache_mode || 'none' }}
       run: |
         echo "sccache cache: active=${SCCACHE_ACTIVE} mode=${SCCACHE_CACHE_MODE} eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
-        if [[ "$SCCACHE_ENABLED" != "true" ]]; then
-          echo "::notice::sccache cache disabled; compiling without remote cache"
+        if [[ "$SCCACHE_ACTIVE" == "true" && "$SCCACHE_ENABLED" != "true" ]]; then
+          echo "::error::governed sccache setup incomplete; active compile job must stop before Cargo"
         fi

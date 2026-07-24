@@ -176,10 +176,10 @@ def _load_location(config_path: pathlib.Path) -> Mapping[str, object]:
     try:
         config = tomllib.loads(config_path.read_text(encoding="utf-8"))
     except OSError as exc:
-        print(f"::warning::unable to read {config_path}: {exc}; compiling without sccache")
+        print(f"::error::unable to read {config_path}: {exc}")
         return {}
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
-        print(f"::warning::{config_path} is invalid TOML: {exc}; compiling without sccache")
+        print(f"::error::{config_path} is invalid TOML: {exc}")
         return {}
     location = config.get("location") if isinstance(config, dict) else None
     return location if isinstance(location, dict) else {}
@@ -187,8 +187,12 @@ def _load_location(config_path: pathlib.Path) -> Mapping[str, object]:
 
 def main() -> int:
     config_path = pathlib.Path(os.environ["CONFIG_PATH"])
+    active_value = os.environ.get("SCCACHE_ACTIVE")
+    if active_value not in {"true", "false"}:
+        print("::error::SCCACHE_ACTIVE must be exactly true or false")
+        return 1
     eligibility = resolve_sccache_eligibility(
-        active=os.environ.get("SCCACHE_ACTIVE") == "true",
+        active=active_value == "true",
         event_name=os.environ.get("GITHUB_EVENT_NAME", ""),
         github_ref=os.environ.get("GITHUB_REF", ""),
         read_role_arn=os.environ.get("READ_ROLE_ARN", ""),
@@ -205,6 +209,10 @@ def main() -> int:
     _write_line(output_path, f"version={eligibility.version}")
     _write_line(output_path, f"executable_sha256={eligibility.executable_sha256}")
 
+    if eligibility.active and not eligibility.eligible:
+        print("::error::governed sccache eligibility failed for an active compile job")
+        return 1
+
     if eligibility.eligible:
         env_path = os.environ["GITHUB_ENV"]
         _write_line(env_path, f"SCCACHE_BUCKET={eligibility.bucket}")
@@ -213,7 +221,6 @@ def main() -> int:
         _write_line(env_path, "SCCACHE_S3_SERVER_SIDE_ENCRYPTION=true")
         _write_line(env_path, f"SCCACHE_S3_RW_MODE={eligibility.cache_mode.upper()}")
         _write_line(env_path, f"SCCACHE_IDLE_TIMEOUT={eligibility.idle_timeout_seconds}")
-        _write_line(env_path, "SCCACHE_IGNORE_SERVER_IO_ERROR=1")
 
     print(
         "sccache cache "

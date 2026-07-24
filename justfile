@@ -260,6 +260,7 @@ merge-queue *pr_numbers:
         current_pr="$requested_pr"
         dependent_pr=""
         expected_head=""
+        chain_complete=0
 
         while :; do
             claim_chain_member "$current_pr" "$requested_pr" || break
@@ -267,6 +268,7 @@ merge-queue *pr_numbers:
             validate_pull_metadata "$current_pr" "$dependent_pr" "$expected_head" || break
 
             if [[ "$base_ref" == "$default_branch" ]]; then
+                chain_complete=1
                 break
             fi
             if [[ "$dependency" != valid:* ]]; then
@@ -278,6 +280,12 @@ merge-queue *pr_numbers:
             expected_head="$base_ref"
             current_pr="${dependency#valid:}"
         done
+
+        if (( chain_complete != 0 && ${#chain_prs[@]} > 1 )); then
+            bottom_index=$(( ${#chain_prs[@]} - 1 ))
+            bottom_pr="${chain_prs[$bottom_index]}"
+            reject_chain "pull request #$requested_pr has open dependencies; queue bottom pull request #$bottom_pr first, then sync and reapprove each successor"
+        fi
 
         if (( ${#chain_prs[@]} > 0 )); then
             for current_pr in "${chain_prs[@]}"; do

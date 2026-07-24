@@ -61,6 +61,9 @@ fixture() {
         standalone:101)
             pull_json 101 OPEN false main feature-101 seungpyoson/bolt-v2 ""
             ;;
+        two:101)
+            pull_json 101 OPEN false main feature-101 seungpyoson/bolt-v2 ""
+            ;;
         two:201)
             pull_json 201 OPEN false main stack-201 seungpyoson/bolt-v2 ""
             ;;
@@ -268,17 +271,25 @@ run_case nonmain 1401
 expect_status 0
 expect_comment_targets 1401
 
-run_case two 202
+run_case two 201
 expect_status 0
-expect_comment_targets 202
+expect_comment_targets 201
+
+run_case two 101 202
+expect_status 2
+expect_output "queue bottom pull request #201 first"
+expect_output "No queue requests were submitted."
+expect_comment_targets
 
 run_case three 303
-expect_status 0
-expect_comment_targets 303
+expect_status 2
+expect_output "queue bottom pull request #301 first"
+expect_comment_targets
 
 run_case crlf 541
-expect_status 0
-expect_comment_targets 541
+expect_status 2
+expect_output "queue bottom pull request #540 first"
+expect_comment_targets
 
 for scenario_and_pr in \
     missing:401 \
@@ -321,8 +332,9 @@ expect_output "cycle"
 expect_comment_targets
 
 run_case excessive 920
-expect_status 0
-expect_comment_targets 920
+expect_status 2
+expect_output "queue bottom pull request #901 first"
+expect_comment_targets
 
 run_case excessive 921
 expect_status 2

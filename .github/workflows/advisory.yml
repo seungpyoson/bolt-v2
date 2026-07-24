@@ -24,8 +24,10 @@ env:
   CARGO_TERM_COLOR: always
 
 concurrency:
-  group: advisory-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # First-attempt PRs retain ref-scoped cancellation. First-attempt main
+  # pushes coalesce; other first attempts retain ref-scoped serialization.
+  group: advisory-${{ github.run_attempt != 1 && github.run_id || github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main-push' || github.ref }}
+  cancel-in-progress: ${{ github.run_attempt == 1 && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
 
 jobs:
   fmt:

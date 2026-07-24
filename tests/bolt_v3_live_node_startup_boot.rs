@@ -67,7 +67,7 @@ fn chainlink_startup_bound(loaded: &LoadedBoltV3Config) -> Duration {
 }
 
 #[test]
-fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_completes() {
+fn live_node_boot_preserves_nt_data_connect_timeout_when_chainlink_handshake_never_completes() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -128,7 +128,7 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
             .expect("fixture Chainlink reconnect_timeout_ms should be positive");
         assert!(
             Duration::from_millis(reconnect_timeout_ms) > startup_bound,
-            "smoke must keep Chainlink reconnect timeout above startup bound so the watchdog fires first"
+            "smoke must keep the provider reconnect timeout outside the NT startup window"
         );
         let shutdown_grace_bound = Duration::from_secs(3);
         let expected_failure_bound =
@@ -149,21 +149,14 @@ fn live_node_boot_fails_loudly_when_chainlink_reference_handshake_never_complete
         );
 
         match error {
-            BoltV3LiveNodeError::LiveNodeStartupTimeout {
-                timeout_secs,
-                node_state,
-                registered_client_labels,
-            } => {
-                assert_eq!(timeout_secs, startup_bound.as_secs());
-                assert_eq!(node_state, "Starting");
-                assert!(
-                    registered_client_labels
-                        .iter()
-                        .any(|client| client == "data:chainlink_reference"),
-                    "timeout must name the registered Chainlink startup client: {registered_client_labels:?}"
+            BoltV3LiveNodeError::Run(error) => {
+                assert_eq!(
+                    error.to_string(),
+                    "data-connect timeout",
+                    "Bolt must preserve NT's owned startup failure instead of replacing it with a parallel timeout classification"
                 );
             }
-            other => panic!("expected LiveNodeStartupTimeout for hanging Chainlink boot, got {other}"),
+            other => panic!("expected NT data-connect timeout for hanging Chainlink boot, got {other}"),
         }
     }));
 }

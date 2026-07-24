@@ -34,7 +34,6 @@ def assert_case(
     expected_eligible: bool,
     expected_role: str,
     expected_mode: str,
-    expected_digest: str | None = None,
     expected_idle_timeout: int | None = 0,
 ) -> None:
     result = resolve_sccache_eligibility(
@@ -50,8 +49,6 @@ def assert_case(
     expected = (expected_eligible, expected_role, expected_mode)
     if actual != expected:
         raise AssertionError(f"{label}: expected {expected!r}, got {actual!r}")
-    if expected_digest is not None and result.executable_sha256 != expected_digest:
-        raise AssertionError(f"{label}: expected digest {expected_digest!r}, got {result.executable_sha256!r}")
     if result.idle_timeout_seconds != expected_idle_timeout:
         raise AssertionError(
             f"{label}: expected idle timeout {expected_idle_timeout!r}, got {result.idle_timeout_seconds!r}"
@@ -59,11 +56,6 @@ def assert_case(
 
 
 def main() -> int:
-    executable_digests = LOCATION.get("executable_sha256")
-    if not isinstance(executable_digests, dict) or set(executable_digests) != {"ARM64", "X64"}:
-        raise AssertionError("sccache executable provenance must cover the supported ARM64 and X64 runners")
-    arm64_digest = executable_digests["ARM64"]
-    x64_digest = executable_digests["X64"]
     read_role = "arn:aws:iam::123456789012:role/read"
     write_role = "arn:aws:iam::123456789012:role/write"
     assert_case(
@@ -73,7 +65,6 @@ def main() -> int:
         expected_eligible=True,
         expected_role=write_role,
         expected_mode="read_write",
-        expected_digest=arm64_digest,
     )
     assert_case(
         "main push without writer compiles cold",
@@ -116,7 +107,6 @@ def main() -> int:
         expected_role=read_role,
         expected_mode="read_only",
         runner_arch="X64",
-        expected_digest=x64_digest,
     )
     assert_case(
         "merge group reads only",
@@ -198,44 +188,55 @@ def main() -> int:
         expected_mode="read_only",
     )
     assert_case(
-        "missing executable digest fails closed",
+        "missing source repository fails closed",
         event_name="pull_request",
         github_ref="refs/pull/1302/merge",
-        location={key: value for key, value in LOCATION.items() if key != "executable_sha256"},
+        location={key: value for key, value in LOCATION.items() if key != "source_repository"},
         expected_eligible=False,
         expected_role=read_role,
         expected_mode="read_only",
     )
     assert_case(
-        "missing current architecture digest fails closed",
+        "missing source revision fails closed",
         event_name="pull_request",
         github_ref="refs/pull/1302/merge",
-        runner_arch="X64",
-        location={**LOCATION, "executable_sha256": {"ARM64": arm64_digest}},
+        location={key: value for key, value in LOCATION.items() if key != "source_revision"},
         expected_eligible=False,
         expected_role=read_role,
         expected_mode="read_only",
     )
     assert_case(
-        "missing peer architecture digest fails closed",
+        "abbreviated source revision fails closed",
         event_name="pull_request",
         github_ref="refs/pull/1302/merge",
-        location={**LOCATION, "executable_sha256": {"ARM64": arm64_digest}},
+        location={**LOCATION, "source_revision": "a35fe905"},
         expected_eligible=False,
         expected_role=read_role,
         expected_mode="read_only",
     )
     assert_case(
-        "extra unknown architecture digest fails closed",
+        "non-GitHub source repository fails closed",
         event_name="pull_request",
         github_ref="refs/pull/1302/merge",
-        location={
-            **LOCATION,
-            "executable_sha256": {
-                **executable_digests,
-                "RISCV64": "0" * 64,
-            },
-        },
+        location={**LOCATION, "source_repository": "https://example.com/sccache"},
+        expected_eligible=False,
+        expected_role=read_role,
+        expected_mode="read_only",
+    )
+    assert_case(
+        "invalid cargo features fail closed",
+        event_name="pull_request",
+        github_ref="refs/pull/1302/merge",
+        location={**LOCATION, "cargo_features": "s3 --all-features"},
+        expected_eligible=False,
+        expected_role=read_role,
+        expected_mode="read_only",
+    )
+    assert_case(
+        "missing cargo features fail closed",
+        event_name="pull_request",
+        github_ref="refs/pull/1302/merge",
+        location={key: value for key, value in LOCATION.items() if key != "cargo_features"},
         expected_eligible=False,
         expected_role=read_role,
         expected_mode="read_only",
@@ -248,7 +249,6 @@ def main() -> int:
         expected_eligible=False,
         expected_role=read_role,
         expected_mode="read_only",
-        expected_digest="",
     )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -307,6 +307,15 @@ def main() -> int:
                 raise AssertionError(
                     f"{label}: expected status {expected_status}, got {status}"
                 )
+            outputs = dict(
+                line.split("=", 1)
+                for line in output_path.read_text(encoding="utf-8").splitlines()
+            )
+            for key in ("source_repository", "source_revision", "cargo_features"):
+                if outputs.get(key) != LOCATION[key]:
+                    raise AssertionError(
+                        f"{label}: expected {key}={LOCATION[key]!r}, got {outputs.get(key)!r}"
+                    )
             environment = set(env_path.read_text(encoding="utf-8").splitlines())
             if environment != expected_environment:
                 raise AssertionError(

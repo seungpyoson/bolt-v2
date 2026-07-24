@@ -30,11 +30,14 @@ outputs:
     description: Cache access mode selected by this action.
     value: ${{ steps.eligibility.outputs.cache_mode }}
   version:
-    description: Governed sccache release version.
+    description: Governed sccache source version.
     value: ${{ steps.eligibility.outputs.version }}
+  source-revision:
+    description: Exact governed sccache source revision.
+    value: ${{ steps.eligibility.outputs.source_revision }}
   executable-sha256:
-    description: Governed digest of the installed sccache executable.
-    value: ${{ steps.eligibility.outputs.executable_sha256 }}
+    description: Digest of the exact-source executable built for this job.
+    value: ${{ steps.install.outputs.executable_sha256 }}
 
 runs:
   using: composite
@@ -51,21 +54,42 @@ runs:
       run: |
         python3.12 scripts/sccache_eligibility.py
 
+    - name: Build exact-source sccache
+      id: install
+      if: steps.eligibility.outputs.eligible == 'true'
+      shell: bash
+      env:
+        CARGO_FEATURES: ${{ steps.eligibility.outputs.cargo_features }}
+        SOURCE_REPOSITORY: ${{ steps.eligibility.outputs.source_repository }}
+        SOURCE_REVISION: ${{ steps.eligibility.outputs.source_revision }}
+      run: |
+        set -euo pipefail
+        install_root="$RUNNER_TEMP/governed-sccache"
+        CARGO_TARGET_DIR="$RUNNER_TEMP/sccache-source-build-$SOURCE_REVISION" \
+          cargo install \
+            --git "$SOURCE_REPOSITORY" \
+            --rev "$SOURCE_REVISION" \
+            --locked \
+            --force \
+            --root "$install_root" \
+            --no-default-features \
+            --features "$CARGO_FEATURES" \
+            sccache
+        executable="$install_root/bin/sccache"
+        [[ -f "$executable" && ! -L "$executable" && -x "$executable" ]]
+        executable_sha256="$(sha256sum "$executable" | awk '{print $1}')"
+        [[ "$executable_sha256" =~ ^[0-9a-f]{64}$ ]]
+        echo "executable_sha256=$executable_sha256" >> "$GITHUB_OUTPUT"
+        echo "SCCACHE_PATH=$executable" >> "$GITHUB_ENV"
+        echo "$install_root/bin" >> "$GITHUB_PATH"
+
     - name: Configure AWS credentials for sccache
       id: aws
-      if: steps.eligibility.outputs.eligible == 'true'
+      if: steps.eligibility.outputs.eligible == 'true' && steps.install.outcome == 'success'
       uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
       with:
         role-to-assume: ${{ steps.eligibility.outputs.role_arn }}
         aws-region: ${{ steps.eligibility.outputs.region }}
-
-    - name: Install sccache
-      id: install
-      if: steps.eligibility.outputs.eligible == 'true' && steps.aws.outcome == 'success'
-      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
-      with:
-        version: ${{ steps.eligibility.outputs.version }}
-        disable_annotations: "true"
 
     - name: Resolve sccache enablement
       id: enable
@@ -74,7 +98,7 @@ runs:
       env:
         SCCACHE_ACTIVE: ${{ inputs.active }}
         EXPECTED_VERSION: ${{ steps.eligibility.outputs.version }}
-        EXPECTED_SHA256: ${{ steps.eligibility.outputs.executable_sha256 }}
+        EXPECTED_SHA256: ${{ steps.install.outputs.executable_sha256 }}
       run: |
         echo "enabled=false" >> "$GITHUB_OUTPUT"
         if [[ "$SCCACHE_ACTIVE" == "false" ]]; then
@@ -127,8 +151,9 @@ runs:
         SCCACHE_AWS_OUTCOME: ${{ steps.aws.outcome || 'skipped' }}
         SCCACHE_INSTALL_OUTCOME: ${{ steps.install.outcome || 'skipped' }}
         SCCACHE_CACHE_MODE: ${{ steps.eligibility.outputs.cache_mode || 'none' }}
+        SCCACHE_SOURCE_REVISION: ${{ steps.eligibility.outputs.source_revision || 'none' }}
       run: |
-        echo "sccache cache: active=${SCCACHE_ACTIVE} mode=${SCCACHE_CACHE_MODE} eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME}" >> "$GITHUB_STEP_SUMMARY"
+        echo "sccache cache: active=${SCCACHE_ACTIVE} mode=${SCCACHE_CACHE_MODE} eligible=${SCCACHE_ELIGIBLE} enabled=${SCCACHE_ENABLED} aws=${SCCACHE_AWS_OUTCOME} install=${SCCACHE_INSTALL_OUTCOME} source=${SCCACHE_SOURCE_REVISION}" >> "$GITHUB_STEP_SUMMARY"
         if [[ "$SCCACHE_ACTIVE" == "true" && "$SCCACHE_ENABLED" != "true" ]]; then
           echo "::error::governed sccache setup incomplete; active compile job must stop before Cargo"
         fi

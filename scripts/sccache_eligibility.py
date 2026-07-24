@@ -25,7 +25,9 @@ class SccacheEligibility:
     key_prefix: str
     version: str
     idle_timeout_seconds: int | None
-    executable_sha256: str
+    source_repository: str
+    source_revision: str
+    cargo_features: str
     active: bool
     vars_present: bool
     location_valid: bool
@@ -38,21 +40,6 @@ def _location_value(location: Mapping[str, object], key: str) -> str:
     if "\n" in value or "\r" in value:
         return ""
     return value
-
-
-def _architecture_digest(location: Mapping[str, object], runner_arch: str) -> tuple[str, bool]:
-    raw_digests = location.get("executable_sha256")
-    if not isinstance(raw_digests, Mapping) or set(raw_digests) != {"ARM64", "X64"}:
-        return "", False
-    digests_valid = all(
-        isinstance(arch, str)
-        and re.fullmatch(r"[A-Z0-9_]+", arch)
-        and isinstance(digest, str)
-        and re.fullmatch(r"[0-9a-f]{64}", digest)
-        for arch, digest in raw_digests.items()
-    )
-    selected = raw_digests.get(runner_arch)
-    return (selected if isinstance(selected, str) else ""), digests_valid
 
 
 def resolve_sccache_eligibility(
@@ -85,6 +72,9 @@ def resolve_sccache_eligibility(
     region = _location_value(location, "region")
     key_prefix = _location_value(location, "key_prefix")
     version = _location_value(location, "version")
+    source_repository = _location_value(location, "source_repository")
+    source_revision = _location_value(location, "source_revision")
+    cargo_features = _location_value(location, "cargo_features")
     raw_idle_timeout = location.get("idle_timeout_seconds")
     idle_timeout_seconds = (
         raw_idle_timeout
@@ -93,17 +83,31 @@ def resolve_sccache_eligibility(
         and raw_idle_timeout >= 0
         else None
     )
-    executable_sha256, architecture_digests_valid = _architecture_digest(location, runner_arch)
-    vars_present = all((role_arn, bucket, region, key_prefix, version, executable_sha256))
+    vars_present = all(
+        (
+            role_arn,
+            bucket,
+            region,
+            key_prefix,
+            version,
+            source_repository,
+            source_revision,
+            cargo_features,
+        )
+    )
     location_valid = bool(
         bucket
         and region
         and key_prefix.endswith("/")
         and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version)
+        and re.fullmatch(
+            r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?",
+            source_repository,
+        )
+        and re.fullmatch(r"[0-9a-f]{40}", source_revision)
+        and re.fullmatch(r"[a-z0-9][a-z0-9_-]*(?:,[a-z0-9][a-z0-9_-]*)*", cargo_features)
         and idle_timeout_seconds is not None
-        and architecture_digests_valid
-        and re.fullmatch(r"[A-Z0-9_]+", runner_arch)
-        and executable_sha256
+        and runner_arch in {"ARM64", "X64"}
     )
     eligible = active and vars_present and location_valid
     return SccacheEligibility(
@@ -115,7 +119,9 @@ def resolve_sccache_eligibility(
         key_prefix=key_prefix,
         version=version,
         idle_timeout_seconds=idle_timeout_seconds,
-        executable_sha256=executable_sha256,
+        source_repository=source_repository,
+        source_revision=source_revision,
+        cargo_features=cargo_features,
         active=active,
         vars_present=vars_present,
         location_valid=location_valid,
@@ -207,7 +213,9 @@ def main() -> int:
     _write_line(output_path, f"region={eligibility.region}")
     _write_line(output_path, f"cache_mode={eligibility.cache_mode}")
     _write_line(output_path, f"version={eligibility.version}")
-    _write_line(output_path, f"executable_sha256={eligibility.executable_sha256}")
+    _write_line(output_path, f"source_repository={eligibility.source_repository}")
+    _write_line(output_path, f"source_revision={eligibility.source_revision}")
+    _write_line(output_path, f"cargo_features={eligibility.cargo_features}")
 
     if eligibility.active and not eligibility.eligible:
         print("::error::governed sccache eligibility failed for an active compile job")

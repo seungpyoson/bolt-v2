@@ -26,9 +26,6 @@ outputs:
   executable_sha256:
     description: SHA-256 of the exact-source executable.
     value: ${{ steps.build.outputs.executable_sha256 }}
-  source_revision:
-    description: Exact governed sccache source revision.
-    value: ${{ steps.eligibility.outputs.source_revision }}
 
 runs:
   using: composite

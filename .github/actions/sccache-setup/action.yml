@@ -40,9 +40,6 @@ outputs:
   version:
     description: Governed sccache source version.
     value: ${{ steps.eligibility.outputs.version }}
-  source-revision:
-    description: Exact governed sccache source revision.
-    value: ${{ steps.eligibility.outputs.source_revision }}
   executable-sha256:
     description: Verified digest of the exact-source executable.
     value: ${{ steps.install.outputs.executable_sha256 }}

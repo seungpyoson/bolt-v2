@@ -11,7 +11,7 @@ finding, and state whether the implementation is ready for native review.
 
 Bolt repository: `https://github.com/seungpyoson/bolt-v2`
 Bolt PR: `https://github.com/seungpyoson/bolt-v2/pull/1505`
-Bolt base: `d7a79229e7593f5a81940f30405db3f0dc2166a1`
+Bolt base: `40423b291683effe645bde44edce91be8ef93000`
 Bolt exact head: `<INSERT_PUSHED_EXACT_HEAD>`
 NT PR: `https://github.com/nautechsystems/nautilus_trader/pull/4557`
 NT exact commit: `9c755a109185216444bdd4618ba52d9c583f5d13`

@@ -14,7 +14,7 @@ Complete only after local findings are resolved and the Bolt head is pushed:
 
 - Bolt exact head: pending
 - Bolt base/merge base:
-  `d7a79229e7593f5a81940f30405db3f0dc2166a1`
+  `40423b291683effe645bde44edce91be8ef93000`
 - NT exact commit:
   `9c755a109185216444bdd4618ba52d9c583f5d13`
 - clean-worktree confirmation: pending

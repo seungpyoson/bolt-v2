@@ -1148,7 +1148,7 @@ impl BoltV3SubmitAdmissionState {
                         .gate
                         .live_reserved_liability(&capital_admission.capital_pool.pool_id)
                 })
-                .unwrap_or(Decimal::ZERO),
+                .expect("capital admission must be present when rebuilding reserved liability"),
             missing_nt_account_cache_balance: None,
         }
     }
@@ -1692,7 +1692,7 @@ impl BoltV3SubmitAdmissionState {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                     reason: evaluation
                         .capital_admission_rejection
-                        .unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected),
+                        .expect("capital_admission_rejection must be present for RejectedCapitalAdmission"),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
@@ -2040,7 +2040,7 @@ impl BoltV3SubmitAdmissionState {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                     reason: evaluation
                         .capital_admission_rejection
-                        .unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected),
+                        .expect("capital_admission_rejection must be present for RejectedCapitalAdmission"),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {

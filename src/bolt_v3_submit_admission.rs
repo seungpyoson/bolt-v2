@@ -1690,9 +1690,9 @@ impl BoltV3SubmitAdmissionState {
             }
             BoltV3AdmissionOutcome::RejectedCapitalAdmission => {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
-                    reason: evaluation
-                        .capital_admission_rejection
-                        .expect("capital_admission_rejection must be present for RejectedCapitalAdmission"),
+                    reason: evaluation.capital_admission_rejection.expect(
+                        "capital_admission_rejection must be present for RejectedCapitalAdmission",
+                    ),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
@@ -2038,9 +2038,9 @@ impl BoltV3SubmitAdmissionState {
             }
             BoltV3AdmissionOutcome::RejectedCapitalAdmission => {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
-                    reason: evaluation
-                        .capital_admission_rejection
-                        .expect("capital_admission_rejection must be present for RejectedCapitalAdmission"),
+                    reason: evaluation.capital_admission_rejection.expect(
+                        "capital_admission_rejection must be present for RejectedCapitalAdmission",
+                    ),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {

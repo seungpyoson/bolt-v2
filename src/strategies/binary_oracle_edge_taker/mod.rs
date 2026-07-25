@@ -7299,9 +7299,7 @@ impl BinaryOracleEdgeTaker {
                             let resized_executable_edge =
                                 BinaryOutcomeEdgeResult::blocked(selected_side, reason);
                             evaluation.sized_worst_case_ev_bps =
-                                executable_edge_worst_case_ev_bps(Some(
-                                    resized_executable_edge,
-                                ));
+                                executable_edge_worst_case_ev_bps(Some(resized_executable_edge));
                             evaluation.sized_executable_edge = Some(resized_executable_edge);
                             push_executable_edge_pricing_block(
                                 &mut evaluation.pricing_blocked_by,
@@ -7316,8 +7314,8 @@ impl BinaryOracleEdgeTaker {
                     };
                     let resized_fee_uncertainty_bps =
                         fee_uncertainty_bps.max(resized_probe.fee_bps);
-                    let Some((resized_uncertainty_band, resized_adjusted_probability_up)) =
-                        self.adjusted_probability_up_for_fee_uncertainty(
+                    let Some((resized_uncertainty_band, resized_adjusted_probability_up)) = self
+                        .adjusted_probability_up_for_fee_uncertainty(
                             now_ms,
                             receive_context,
                             selected_side,
@@ -7352,18 +7350,16 @@ impl BinaryOracleEdgeTaker {
                     // would be traded at a size it cannot support.
                     let final_expected_ev_per_notional =
                         resized_executable_edge.edge_bps / BPS_DENOMINATOR;
-                    let final_supported_notional =
-                        choose_robust_size(&self.robust_sizing_inputs(
-                            final_expected_ev_per_notional,
-                            book_impact_cap_notional,
-                        ));
+                    let final_supported_notional = choose_robust_size(&self.robust_sizing_inputs(
+                        final_expected_ev_per_notional,
+                        book_impact_cap_notional,
+                    ));
                     let resized_notional_supported = resized_notional
                         <= final_supported_notional
                             + notional_float_tolerance(final_supported_notional);
                     if resized_executable_edge.trade_allowed && resized_notional_supported {
                         evaluation.sized_notional = Some(resized_notional);
-                        evaluation.expected_ev_per_notional =
-                            Some(final_expected_ev_per_notional);
+                        evaluation.expected_ev_per_notional = Some(final_expected_ev_per_notional);
                     } else if resized_executable_edge.trade_allowed {
                         evaluation.pricing_blocked_by.push(
                             EntryPricingBlockReason::SizedNotionalUnsupported(selected_side),

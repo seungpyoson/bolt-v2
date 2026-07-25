@@ -5,7 +5,7 @@ Status: approved doctrine
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
 Last full NT doctrine audit rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last full NT doctrine audit date: 2026-04-28
-Last NT pin compatibility verified rev: `01818c1dbd577a73f5ac0d0272ca9c9befb4f03c`
+Last NT pin compatibility verified rev: `63a1f14fc362b1686c407336576a131f5adabec7`
 Last NT pin compatibility verified date: 2026-07-25
 Owner: Bolt-v3 maintainers
 
@@ -124,7 +124,7 @@ The following source anchors were verified for this doctrine or a later
 compatibility slice:
 
 - `Cargo.toml` pins the official NT repository at exact commit
-  `01818c1dbd577a73f5ac0d0272ca9c9befb4f03c` for upstream PR #4557. The
+  `63a1f14fc362b1686c407336576a131f5adabec7` for upstream PR #4557. The
   2026-07-25 compatibility scope covers the governed Binance boundary and
   Polymarket reconciliation completeness required by the thin-NT decision-
   evidence slice. It does not re-audit all NT-owned behaviors cited by this

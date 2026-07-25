@@ -853,7 +853,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `01818c1dbd577a73f5ac0d0272ca9c9befb4f03c`
+  - current value: `63a1f14fc362b1686c407336576a131f5adabec7`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1421,7 +1421,7 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`01818c1dbd577a73f5ac0d0272ca9c9befb4f03c`. WebSocket frames flow through
+`63a1f14fc362b1686c407336576a131f5adabec7`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows the handler
 capturing one local clock value per decoded message and supplying it to
@@ -1564,7 +1564,7 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins the official NautilusTrader repository at
-exact commit `01818c1dbd577a73f5ac0d0272ca9c9befb4f03c` for upstream PR #4557.
+exact commit `63a1f14fc362b1686c407336576a131f5adabec7` for upstream PR #4557.
 That commit contains the Binance Spot SBE schema 3:5 instrument-loading fix,
 schema 3:5 request negotiation, adapter receive-clock ownership, and
 fail-closed Polymarket reconciliation for unmapped orders/fills and

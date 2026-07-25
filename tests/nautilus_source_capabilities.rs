@@ -2,7 +2,7 @@ use bolt_v2::{
     bolt_v3_config::BoltV3RootConfig, nautilus_source_capabilities::NAUTILUS_SOURCE_CAPABILITIES,
 };
 
-const OFFICIAL_NAUTILUS_REVISION: &str = "01818c1dbd577a73f5ac0d0272ca9c9befb4f03c";
+const OFFICIAL_NAUTILUS_REVISION: &str = "63a1f14fc362b1686c407336576a131f5adabec7";
 
 #[test]
 fn generated_registry_exposes_the_exact_official_source_facts() {

@@ -2,7 +2,7 @@
 # build.rs binds this revision to the exact Binance and Polymarket dependencies
 # and generates the Rust registry. This is governed build evidence, not
 # operator config.
-revision = "01818c1dbd577a73f5ac0d0272ca9c9befb4f03c"
+revision = "63a1f14fc362b1686c407336576a131f5adabec7"
 
 [binance_spot]
 sbe_schema_3_5 = true

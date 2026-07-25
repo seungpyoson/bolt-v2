@@ -16,7 +16,7 @@ Complete only after local findings are resolved and the Bolt head is pushed:
 - Bolt base/merge base:
   `40423b291683effe645bde44edce91be8ef93000`
 - NT exact commit:
-  `01818c1dbd577a73f5ac0d0272ca9c9befb4f03c`
+  `63a1f14fc362b1686c407336576a131f5adabec7`
 - clean-worktree confirmation: pending
 - exact-head advisory result: pending
 - specification hashes: pending

@@ -822,7 +822,6 @@ fn capital_admission_submit_state(
                     max_slippage_liability: dec!(0.2),
                 }),
             },
-            dedupe_retention_ns: 1_000,
         },
     )
 }

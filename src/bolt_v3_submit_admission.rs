@@ -41,7 +41,6 @@ use crate::bolt_v3_loss_governor::{
     evaluate_loss_admission_with_observations, loss_snapshot_stale_reason,
 };
 use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
-use crate::bolt_v3_observed_dedupe::prune_observed_dedupe_entries;
 use crate::bolt_v3_provider_collateral_allowance::ProviderCollateralAllowanceCaptureFailureEvidence;
 use anyhow::Context;
 use nautilus_model::{
@@ -312,7 +311,6 @@ struct BoltV3SubmitCapitalAdmissionState {
     collateral_currency: String,
     capital_pool: CapitalPoolSnapshot,
     policy: CapitalAdmissionPolicy,
-    dedupe_retention_ns: u64,
     state: Option<NtDerivedCapitalAdmissionState>,
     latest_reservation_mutation_observed_at_ns: Option<u64>,
     provider_collateral_allowance_capture_failure_source: Option<String>,
@@ -334,7 +332,6 @@ struct BoltV3SubmitReservationIndex {
 struct BoltV3SubmitReservationFillMetadata {
     instrument_id: String,
     side: BoltV3CompiledOrderSide,
-    seen_trade_ids: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,7 +342,6 @@ pub struct BoltV3SubmitCapitalAdmissionConfig {
     pub collateral_currency: String,
     pub capital_pool: CapitalPoolSnapshot,
     pub policy: CapitalAdmissionPolicy,
-    pub dedupe_retention_ns: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -372,7 +368,6 @@ pub struct BoltV3SubmitCapitalAdmissionOpenOrderReservation {
     pub filled_quantity: Decimal,
     pub liability_factor: Decimal,
     pub additive_liability: Decimal,
-    pub seen_trade_ids: BTreeSet<String>,
     pub observed_at_ns: u64,
     pub evidence_label: String,
 }
@@ -573,7 +568,6 @@ impl BoltV3SubmitAdmissionState {
                         collateral_currency: config.collateral_currency,
                         capital_pool: config.capital_pool,
                         policy: config.policy,
-                        dedupe_retention_ns: config.dedupe_retention_ns,
                         state: None,
                         latest_reservation_mutation_observed_at_ns: None,
                         provider_collateral_allowance_capture_failure_source: None,
@@ -903,7 +897,6 @@ impl BoltV3SubmitAdmissionState {
         &self,
         evidence: BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
         attribution: &ReservationAttribution,
-        fill_trade_ids: &BTreeSet<String>,
     ) -> Option<BoltV3SubmitCapitalAdmissionOpenOrderReservation> {
         if evidence.client_order_id.trim().is_empty()
             || evidence.instrument_id.trim().is_empty()
@@ -981,7 +974,6 @@ impl BoltV3SubmitAdmissionState {
             filled_quantity,
             liability_factor,
             additive_liability,
-            seen_trade_ids: fill_trade_ids.clone(),
             observed_at_ns: evidence.observed_at_ns,
             evidence_label: "bolt_known_reservation_attribution".to_string(),
         })
@@ -1223,7 +1215,6 @@ impl BoltV3SubmitAdmissionState {
             let collateral_group_id = reservation.collateral_group_id;
             let instrument_id = reservation.instrument_id;
             let side = reservation.side;
-            let seen_trade_ids = reservation.seen_trade_ids;
             let observed_at_ns = reservation.observed_at_ns;
             rebuilt_index.insert(
                 reservation.client_order_id,
@@ -1233,10 +1224,6 @@ impl BoltV3SubmitAdmissionState {
                     fill_metadata: Some(BoltV3SubmitReservationFillMetadata {
                         instrument_id,
                         side,
-                        seen_trade_ids: seen_trade_ids
-                            .into_iter()
-                            .map(|trade_id| (trade_id, observed_at_ns))
-                            .collect(),
                     }),
                 },
             );
@@ -1396,43 +1383,85 @@ impl BoltV3SubmitAdmissionState {
         let Some(capital_admission) = capital_admission.as_mut() else {
             return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         };
-        let dedupe_retention_ns = capital_admission.dedupe_retention_ns;
-        let Some(index) = capital_admission
+        let live_index = capital_admission
             .client_order_reservations
             .get(&update.client_order_id)
-            .cloned()
-        else {
-            if known_non_reservation_order {
-                return BoltV3SubmitReservationFillEvidenceDecision {
-                    accepted: true,
-                    unknown_reservation: false,
-                };
-            }
-            if let Some(attribution) =
-                committed_admission_authority.reservation_attribution(&update.client_order_id)
-                && update.trade_id.trim().len() == update.trade_id.len()
-                && !update.trade_id.is_empty()
-                && update.fill_quantity > Decimal::ZERO
-                && update.instrument_id == attribution.instrument_id
-                && matches!(
-                    (update.side, attribution.side),
-                    (BoltV3CompiledOrderSide::Buy, EvidenceOrderSide::Buy)
-                        | (BoltV3CompiledOrderSide::Sell, EvidenceOrderSide::Sell)
-                )
-                && committed_admission_authority
-                    .reservation_fill_trade_ids(
-                        &update.client_order_id,
-                        &attribution.submit_reservation_id,
+            .cloned();
+        if live_index.is_none() && known_non_reservation_order {
+            return BoltV3SubmitReservationFillEvidenceDecision {
+                accepted: true,
+                unknown_reservation: false,
+            };
+        }
+        let expected = live_index
+            .as_ref()
+            .and_then(|index| {
+                index.fill_metadata.as_ref().map(|metadata| {
+                    (
+                        index.submit_reservation_id.clone(),
+                        metadata.instrument_id.clone(),
+                        metadata.side,
                     )
-                    .is_some_and(|trade_ids| trade_ids.contains(&update.trade_id))
-            {
+                })
+            })
+            .or_else(|| {
+                committed_admission_authority
+                    .reservation_attribution(&update.client_order_id)
+                    .and_then(|attribution| {
+                        let side = match attribution.side {
+                            EvidenceOrderSide::Buy => BoltV3CompiledOrderSide::Buy,
+                            EvidenceOrderSide::Sell => BoltV3CompiledOrderSide::Sell,
+                            EvidenceOrderSide::Unspecified => return None,
+                        };
+                        Some((
+                            attribution.submit_reservation_id.clone(),
+                            attribution.instrument_id.clone(),
+                            side,
+                        ))
+                    })
+            });
+        let Some((submit_reservation_id, instrument_id, side)) = expected else {
+            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
+            fail_capital_admission_fill_evidence_integrity(
+                capital_admission,
+                update.observed_at_ns,
+            );
+            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
+        };
+        if update.trade_id.trim().len() != update.trade_id.len()
+            || update.trade_id.is_empty()
+            || update.fill_quantity <= Decimal::ZERO
+            || update.instrument_id != instrument_id
+            || update.side != side
+        {
+            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
+            fail_capital_admission_fill_evidence_integrity(
+                capital_admission,
+                update.observed_at_ns,
+            );
+            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
+        }
+        if let Some(existing) = committed_admission_authority.reservation_fill(
+            &update.client_order_id,
+            &submit_reservation_id,
+            &update.trade_id,
+        ) {
+            if reservation_fill_update_matches(existing, &update) {
                 return BoltV3SubmitReservationFillEvidenceDecision {
                     accepted: true,
                     unknown_reservation: false,
                 };
             }
+            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
+            fail_capital_admission_fill_evidence_integrity(
+                capital_admission,
+                update.observed_at_ns,
+            );
+            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
+        }
+        let Some(index) = live_index else {
             log::warn!(
-                "bolt-v3 submit admission received capital-admission fill update for unknown client_order_id={}",
+                "bolt-v3 submit admission received new fill for non-live client_order_id={}",
                 update.client_order_id
             );
             advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
@@ -1442,37 +1471,13 @@ impl BoltV3SubmitAdmissionState {
             );
             return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         };
-        let Some(metadata) = index.fill_metadata.clone() else {
+        if index.fill_metadata.is_none() {
             advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
             fail_capital_admission_fill_evidence_integrity(
                 capital_admission,
                 update.observed_at_ns,
             );
             return BoltV3SubmitReservationFillEvidenceDecision::unknown();
-        };
-        if update.trade_id.trim().is_empty()
-            || update.fill_quantity <= Decimal::ZERO
-            || update.instrument_id != metadata.instrument_id
-            || update.side != metadata.side
-        {
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(
-                capital_admission,
-                update.observed_at_ns,
-            );
-            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
-        }
-        let mut metadata = metadata;
-        prune_observed_dedupe_entries(
-            &mut metadata.seen_trade_ids,
-            update.observed_at_ns,
-            dedupe_retention_ns,
-        );
-        if metadata.seen_trade_ids.contains_key(&update.trade_id) {
-            return BoltV3SubmitReservationFillEvidenceDecision {
-                accepted: true,
-                unknown_reservation: false,
-            };
         }
         advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
         let fill_evidence = SubmitReservationFillFact {
@@ -1518,21 +1523,6 @@ impl BoltV3SubmitAdmissionState {
                 accepted: false,
                 unknown_reservation: false,
             };
-        }
-        if let Some(current) = capital_admission
-            .client_order_reservations
-            .get_mut(&update.client_order_id)
-            .filter(|current| current.submit_reservation_id == index.submit_reservation_id)
-            && let Some(current_metadata) = current.fill_metadata.as_mut()
-        {
-            prune_observed_dedupe_entries(
-                &mut current_metadata.seen_trade_ids,
-                update.observed_at_ns,
-                dedupe_retention_ns,
-            );
-            current_metadata
-                .seen_trade_ids
-                .insert(update.trade_id, update.observed_at_ns);
         }
         BoltV3SubmitReservationFillEvidenceDecision {
             accepted: true,
@@ -3100,6 +3090,20 @@ fn evidence_order_side(side: BoltV3CompiledOrderSide) -> EvidenceOrderSide {
     }
 }
 
+fn reservation_fill_update_matches(
+    fact: &SubmitReservationFillFact,
+    update: &BoltV3SubmitCapitalAdmissionFillUpdate,
+) -> bool {
+    fact.client_order_id == update.client_order_id
+        && fact.trade_id == update.trade_id
+        && fact.instrument_id == update.instrument_id
+        && fact.side == evidence_order_side(update.side)
+        && fact
+            .fill_quantity
+            .parse::<Decimal>()
+            .is_ok_and(|quantity| quantity == update.fill_quantity)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3CompiledOrderKind {
     Limit,
@@ -3959,7 +3963,6 @@ fn evaluate_capital_admission_submit(
             fill_metadata: Some(BoltV3SubmitReservationFillMetadata {
                 instrument_id: request.instrument_id.clone(),
                 side: evidence.side,
-                seen_trade_ids: BTreeMap::new(),
             }),
         },
     );

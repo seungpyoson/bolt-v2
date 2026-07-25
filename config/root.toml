@@ -166,7 +166,6 @@ product_kind = "prediction_market_binary"
 enforce_submit_admission = false
 max_pool_liability = "25.00"
 max_snapshot_age_ns = 5000000000
-dedupe_retention_ns = 60000000000
 
 [risk.capital_pools.capital_admission_policy.fee_slippage]
 max_fee_liability = "0.10"

@@ -59,11 +59,6 @@ pub(super) fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> 
                 "{label}.max_snapshot_age_ns must be a positive integer"
             ));
         }
-        if pool.dedupe_retention_ns == 0 {
-            errors.push(format!(
-                "{label}.dedupe_retention_ns must be a positive integer"
-            ));
-        }
         validate_live_provider_collateral_allowance_source(pool, &label, &mut errors);
         if let Some(min_remaining_pool_balance) = pool
             .capital_admission_policy

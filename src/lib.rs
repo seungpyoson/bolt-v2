@@ -53,7 +53,6 @@ pub mod bolt_v3_maker_runtime_order;
 pub mod bolt_v3_maker_runtime_quote;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_numeric;
-mod bolt_v3_observed_dedupe;
 pub mod bolt_v3_operator_artifacts;
 pub mod bolt_v3_operator_health;
 pub mod bolt_v3_order_execution;

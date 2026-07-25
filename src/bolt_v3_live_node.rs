@@ -1670,16 +1670,8 @@ impl BoltV3LiveNodeRuntime {
                 all_open_orders_attributed = false;
                 break;
             };
-            let fill_trade_ids = committed_admission_authority
-                .reservation_fill_trade_ids(&client_order_id, &metadata.submit_reservation_id)
-                .cloned()
-                .unwrap_or_default();
             let Some(reservation) = submit_admission
-                .capital_admission_open_order_reservation_from_attribution(
-                    evidence,
-                    metadata,
-                    &fill_trade_ids,
-                )
+                .capital_admission_open_order_reservation_from_attribution(evidence, metadata)
             else {
                 all_open_orders_attributed = false;
                 break;

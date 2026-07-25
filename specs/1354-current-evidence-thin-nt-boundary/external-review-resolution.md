@@ -16,7 +16,7 @@ Complete only after local findings are resolved and the Bolt head is pushed:
 - Bolt base/merge base:
   `d7a79229e7593f5a81940f30405db3f0dc2166a1`
 - NT exact commit:
-  `df0f083ceca6077c7f8b0c9e728ac8304709ffaf`
+  `9c755a109185216444bdd4618ba52d9c583f5d13`
 - clean-worktree confirmation: pending
 - exact-head advisory result: pending
 - specification hashes: pending
@@ -30,8 +30,13 @@ Selected boundary:
 
 - NT owns all general lifecycle and reconciliation.
 - NT #4557 makes incomplete Polymarket open-order, relevant confirmed-fill,
-  and current-position reconciliation errors.
+  and current-position reconciliation errors, declares complete adapter
+  reconciliation capabilities, and fences risk-increasing execution after
+  strict reconciliation authority is lost.
 - Bolt consumes only post-reconciliation NT state.
+- Bolt requires strict, unbounded, unfiltered NT reconciliation for every live
+  configuration and treats position-close callbacks as projection triggers,
+  not lifecycle authority.
 - provider input supplies collateral allowance only.
 - Bolt events are audit facts or projection triggers, never lifecycle
   authority.

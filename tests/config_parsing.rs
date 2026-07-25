@@ -7281,27 +7281,6 @@ fn enforced_submit_admission_accepts_positive_recovery_evidence_max_bytes() {
 }
 
 #[test]
-fn enforced_submit_admission_rejects_zero_dedupe_retention() {
-    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
-
-    let source = replace_in_fixture_root(
-        "dedupe_retention_ns = 60000000000",
-        "dedupe_retention_ns = 0",
-    );
-    let root: BoltV3RootConfig =
-        toml::from_str(&source).expect("zero dedupe retention fixture should parse");
-    let messages = validate_root_only(&root);
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("risk.capital_pools[polymarket-prediction-live].dedupe_retention_ns")
-                && message.contains("positive integer")
-        }),
-        "capital pool dedupe retention must reject zero: {messages:#?}"
-    );
-}
-
-#[test]
 fn capital_pool_rejects_non_positive_thresholds() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -7373,7 +7352,6 @@ product_kind = "prediction_market_binary"
 enforce_submit_admission = true
 max_pool_liability = "10.00"
 max_snapshot_age_ns = 5000000000
-dedupe_retention_ns = 60000000000
 
 [risk.capital_pools.prediction_market_binary]
 yes_instrument_id = "condition-secondary-yes.POLYMARKET"
@@ -7420,7 +7398,6 @@ product_kind = "prediction_market_binary"
 enforce_submit_admission = false
 max_pool_liability = "10.00"
 max_snapshot_age_ns = 5000000000
-dedupe_retention_ns = 60000000000
 
 [risk.capital_pools.prediction_market_binary]
 yes_instrument_id = "condition-secondary-yes.POLYMARKET"
@@ -7750,7 +7727,7 @@ fn fixture_root_config() -> bolt_v2::bolt_v3_config::BoltV3RootConfig {
 }
 
 #[test]
-fn capital_admission_requires_an_unfiltered_complete_nt_reconciliation_universe() {
+fn every_live_config_requires_an_unfiltered_complete_nt_reconciliation_universe() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     type Mutation = Box<dyn Fn(&mut BoltV3RootConfig)>;
@@ -7812,16 +7789,12 @@ fn capital_admission_requires_an_unfiltered_complete_nt_reconciliation_universe(
 
     for (field, mutate) in cases {
         let mut root = fixture_root_config();
-        root.risk
-            .capital_pools
-            .as_mut()
-            .expect("fixture must declare a capital pool")[0]
-            .enforce_submit_admission = true;
+        root.risk.capital_pools = None;
         mutate(&mut root);
         let messages = validate_root_only(&root);
         assert!(
             messages.iter().any(|message| message.contains(field)),
-            "capital admission must reject incomplete reconciliation field {field}: {messages:#?}"
+            "Bolt live config must reject incomplete NT reconciliation field {field}: {messages:#?}"
         );
     }
 }

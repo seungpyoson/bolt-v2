@@ -853,7 +853,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `df0f083ceca6077c7f8b0c9e728ac8304709ffaf`
+  - current value: `9c755a109185216444bdd4618ba52d9c583f5d13`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1242,9 +1242,19 @@ startup reconciliation. The gate remains unreconciled and rejects submission unt
 from the reconciled NT cache, current evidence, and provider-only collateral allowance succeeds.
 NautilusTrader's Polymarket mass-status construction fails if any venue open order cannot be mapped into
 its instrument universe or any current venue position cannot be represented as an NT quantity; Bolt does
-not query or reconcile venue orders, positions, balances, or fills again. Every open NT order must
-have a unique client-order ID with committed admission attribution. A reconciliation or reconstruction
-failure keeps admission unreconciled rather than opening the gate from incomplete state.
+not query or reconcile venue orders, positions, balances, or fills again. Every Bolt live configuration
+requires unbounded, unfiltered NT startup and continuous reconciliation, strict reconciliation failure,
+and an execution client that declares every required reconciliation report surface complete. A strict NT
+reconciliation failure irreversibly fences risk-increasing submit, submit-list, modify, and batch commands
+before client routing; cancellation and query commands remain available. Every open NT order must have a
+unique client-order ID with committed admission attribution. A reconciliation or reconstruction failure
+keeps admission unreconciled rather than opening the gate from incomplete state.
+
+Committed reservation-fill evidence is the sole duplicate identity authority. The identity is the
+client-order ID, reservation ID, trade ID, instrument, side, and decimal quantity. Re-delivery of the
+same identity is idempotent even after the live NT projection no longer contains the order; reuse of the
+same trade ID with conflicting identity data fails capital admission closed. No retention-window cache or
+second in-memory seen-trade set exists.
 
 The strategy layer follows the same authority boundary. It retains only
 strategy-owned order-intent correlation and decision context: client-order and
@@ -1253,7 +1263,10 @@ strategy origin. Current position side, quantity, average entry price, open
 versus closed status, and partial-fill progress are projected from the NT cache
 when evaluated. Order and position callbacks request or consume that projection;
 they do not update a Bolt-owned position or fill reducer. NT position-close
-events are terminal authority for releasing the strategy context.
+events trigger a fresh scoped NT-cache projection. Bolt releases strategy
+context only when that projection contains zero open positions; one open
+position is rematerialized from NT truth and multiple open positions enter
+fail-closed recovery.
 
 Join rule:
 
@@ -1408,7 +1421,7 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`df0f083ceca6077c7f8b0c9e728ac8304709ffaf`. WebSocket frames flow through
+`9c755a109185216444bdd4618ba52d9c583f5d13`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows the handler
 capturing one local clock value per decoded message and supplying it to
@@ -1419,7 +1432,7 @@ private BBO handler arm. This NT-owned path feeds both
 `RealizedVolatilityObservation` and `StrategySignalObservation`.
 
 `ci/nautilus-source-capabilities.toml` records the Binance market-data facts
-and Polymarket reconciliation fail-closed facts for this exact revision.
+and Polymarket reconciliation completeness/fail-closed facts for this exact revision.
 `build.rs` requires its revision to equal the official `nautilus-binance` and
 `nautilus-polymarket` Cargo pins, verifies each behavior-test artifact hash, and
 emits the immutable
@@ -1551,7 +1564,7 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins the official NautilusTrader repository at
-exact commit `df0f083ceca6077c7f8b0c9e728ac8304709ffaf` for upstream PR #4557.
+exact commit `9c755a109185216444bdd4618ba52d9c583f5d13` for upstream PR #4557.
 That commit contains the Binance Spot SBE schema 3:5 instrument-loading fix,
 schema 3:5 request negotiation, adapter receive-clock ownership, and
 fail-closed Polymarket reconciliation for unmapped orders/fills and

@@ -4122,6 +4122,34 @@ impl BinaryOracleEdgeTaker {
         }))
     }
 
+    fn nt_canonical_open_position_projection(&self) -> Result<Option<PositionMaterializationSpec>> {
+        let execution_venue = self.context.execution_venue();
+        let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
+        let positions = {
+            let cache = self.cache();
+            cache
+                .positions_open(Some(&execution_venue), None, Some(&strategy_id), None, None)
+                .into_iter()
+                .map(|position| PositionMaterializationSpec {
+                    instrument_id: position.instrument_id,
+                    position_id: position.id,
+                    entry_order_side: position.entry,
+                    side: position.side,
+                    quantity: position.quantity,
+                    avg_px_open: position.avg_px_open,
+                })
+                .collect::<Vec<_>>()
+        };
+        match positions.as_slice() {
+            [] => Ok(None),
+            [position] => Ok(Some(*position)),
+            _ => anyhow::bail!(
+                "NT cache contains {} open positions for strategy `{strategy_id}`",
+                positions.len()
+            ),
+        }
+    }
+
     /// Venue-adoption guard shared by every live event path that materializes a
     /// `Managed` position from an external event's `instrument_id` (position
     /// events via `materialize_position_from_event`, entry fills via
@@ -7507,6 +7535,24 @@ nautilus_trading::nautilus_strategy!(BinaryOracleEdgeTaker, {
     }
 
     fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
+        if self.quarantine_foreign_venue_event(event.instrument_id) {
+            return;
+        }
+        match self.nt_canonical_open_position_projection() {
+            Ok(Some(position)) => {
+                self.materialize_position_from_truth(
+                    position,
+                    event.ts_event.as_u64(),
+                    ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
+                );
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.enter_blind_settlement_recovery(error);
+                return;
+            }
+        }
         // Reclaim the exit-evidence flood-guard entry for this terminal position:
         // a closed position never re-emits exit evidence, so its dedup key is dead
         // state. Removal here is behavior-neutral and bounds the map over a long run.

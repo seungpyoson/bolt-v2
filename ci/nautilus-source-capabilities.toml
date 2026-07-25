@@ -2,13 +2,14 @@
 # build.rs binds this revision to the exact Binance and Polymarket dependencies
 # and generates the Rust registry. This is governed build evidence, not
 # operator config.
-revision = "df0f083ceca6077c7f8b0c9e728ac8304709ffaf"
+revision = "9c755a109185216444bdd4618ba52d9c583f5d13"
 
 [binance_spot]
 sbe_schema_3_5 = true
 adapter_receive_timestamps = true
 
 [polymarket_reconciliation]
+declares_complete_capabilities = true
 rejects_unmapped_open_orders = true
 rejects_unmapped_confirmed_fills = true
 rejects_unrepresentable_positions = true
@@ -26,19 +27,25 @@ path = "tests/binance_sbe_quote_timestamps.rs"
 sha256 = "1cce271229a01b4d391c5dc6c6c5e324957bcc2e4c57b7359bf3a0d4ff4e39b3"
 
 [[evidence]]
+capability = "polymarket_reconciliation.declares_complete_capabilities"
+cargo_test_target = "polymarket_reconciliation_fail_closed"
+path = "tests/polymarket_reconciliation_fail_closed.rs"
+sha256 = "ed85b2f5527869c7c85cdfbad3eefee003f50e583b17ff2a9e5c10026592de7e"
+
+[[evidence]]
 capability = "polymarket_reconciliation.rejects_unmapped_open_orders"
 cargo_test_target = "polymarket_reconciliation_fail_closed"
 path = "tests/polymarket_reconciliation_fail_closed.rs"
-sha256 = "306f613adfd0f8b61ace481cbe8287ec4f285b6165bf2553771a03e62ba56a45"
+sha256 = "ed85b2f5527869c7c85cdfbad3eefee003f50e583b17ff2a9e5c10026592de7e"
 
 [[evidence]]
 capability = "polymarket_reconciliation.rejects_unmapped_confirmed_fills"
 cargo_test_target = "polymarket_reconciliation_fail_closed"
 path = "tests/polymarket_reconciliation_fail_closed.rs"
-sha256 = "306f613adfd0f8b61ace481cbe8287ec4f285b6165bf2553771a03e62ba56a45"
+sha256 = "ed85b2f5527869c7c85cdfbad3eefee003f50e583b17ff2a9e5c10026592de7e"
 
 [[evidence]]
 capability = "polymarket_reconciliation.rejects_unrepresentable_positions"
 cargo_test_target = "polymarket_reconciliation_fail_closed"
 path = "tests/polymarket_reconciliation_fail_closed.rs"
-sha256 = "306f613adfd0f8b61ace481cbe8287ec4f285b6165bf2553771a03e62ba56a45"
+sha256 = "ed85b2f5527869c7c85cdfbad3eefee003f50e583b17ff2a9e5c10026592de7e"

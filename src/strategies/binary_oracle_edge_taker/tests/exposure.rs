@@ -59,11 +59,66 @@ fn position_events_update_live_position_state() {
         ClientOrderId::from("EXIT-001"),
         ManagedPositionOrigin::RecoveryBootstrap,
     );
+    close_nt_position(&mut strategy, position_id);
     strategy.on_position_closed(position_closed_event(instrument_id, position_id));
 
     assert!(strategy.managed_position().is_none());
     assert!(pending_exit_ref(&strategy).is_none());
     assert!(!strategy.exposure.is_recovering());
+}
+
+#[test]
+fn stale_same_id_position_close_keeps_nt_open_position_managed() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-REOPENED-SAME-ID");
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(7.0, 2),
+        0.475,
+    );
+
+    strategy.on_position_closed(position_closed_event(instrument_id, position_id));
+
+    let retained = managed_position_snapshot(&strategy)
+        .expect("a stale close callback cannot override the NT open-position cache");
+    assert_eq!(retained.position_id, position_id);
+    assert_eq!(retained.quantity, Quantity::new(7.0, 2));
+}
+
+#[test]
+fn stale_instrument_close_rematerializes_entry_reconcile_from_nt() {
+    let mut strategy = ready_to_trade_strategy();
+    let pending = pending_entry_state(
+        &mut strategy,
+        ClientOrderId::from("ENTRY-RECONCILE-STALE-CLOSE"),
+    );
+    let instrument_id = pending.instrument_id;
+    let open_position_id = PositionId::from("P-RECONCILE-OPEN");
+    set_entry_reconcile_pending(
+        &mut strategy,
+        pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+    );
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        open_position_id,
+        Quantity::new(6.0, 2),
+        0.465,
+    );
+
+    strategy.on_position_closed(position_closed_event(
+        instrument_id,
+        PositionId::from("P-RECONCILE-STALE-CLOSED"),
+    ));
+
+    let retained = managed_position_snapshot(&strategy)
+        .expect("instrument-scoped NT truth must dominate a stale close callback");
+    assert_eq!(retained.position_id, open_position_id);
+    assert_eq!(retained.quantity, Quantity::new(6.0, 2));
 }
 
 #[test]
@@ -98,6 +153,7 @@ fn exit_fill_keeps_pending_exit_until_position_closed() {
     );
     assert!(strategy.managed_position().is_some());
 
+    close_nt_position(&mut strategy, position_id);
     strategy.on_position_closed(position_closed_event(instrument_id, position_id));
 
     assert!(strategy.managed_position().is_none());
@@ -1568,6 +1624,7 @@ fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
         )
         .expect("test cache should accept resting entry order");
 
+    close_nt_position(&mut strategy, position_id);
     strategy.on_position_closed(position_closed_event(instrument_id, position_id));
 
     let exec_messages = exec_messages.get_messages();
@@ -1740,6 +1797,7 @@ fn position_closed_in_shadow_mode_suppresses_resting_entry_cancel() {
         )
         .expect("test cache should accept resting entry order");
 
+    close_nt_position(&mut strategy, position_id);
     strategy.on_position_closed(position_closed_event(instrument_id, position_id));
 
     let exec_messages = exec_messages.get_messages();
@@ -1897,6 +1955,7 @@ fn position_closed_releases_unsupported_observed_for_same_position() {
         UnsupportedObservedReason::BootstrappedUnsupportedContract,
     );
 
+    close_nt_position(&mut strategy, position_id);
     strategy.on_position_closed(position_closed_event(instrument_id, position_id));
 
     assert!(matches!(strategy.exposure, ExposureState::Flat));

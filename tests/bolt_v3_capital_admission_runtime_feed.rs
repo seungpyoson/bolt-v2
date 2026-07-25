@@ -1455,14 +1455,11 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
     components.order_lifecycle.open_order_count = 1;
     components.order_lifecycle.all_open_orders_attributed = true;
     admission.update_capital_admission_nt_components(components);
-    let mut reservation = open_order_reservation(
+    let reservation = open_order_reservation(
         "client-order-1",
         "client-order-1#rebuilt",
         Decimal::new(43, 1),
     );
-    reservation
-        .seen_trade_ids
-        .insert("trade-already-committed".to_string());
     let rebuild = admission
         .rebuild_capital_admission_open_order_reservations_for_test(vec![reservation], 1_000);
     assert!(rebuild.accepted);
@@ -1510,21 +1507,6 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
         )))
         .expect("seen reconciliation trade id should stay idempotent");
     assert!(duplicate.accepted);
-    let already_committed = feed
-        .on_order_event(&OrderEventAny::Filled(
-            order_filled_event_with_reconciliation(
-                "client-order-1",
-                "trade-already-committed",
-                1_250,
-                AccountId::from("ACCOUNT-001"),
-                Quantity::from(4),
-                OrderSide::Buy,
-                InstrumentId::from("instrument-yes.VENUE-A"),
-                true,
-            ),
-        ))
-        .expect("a fill recovered from committed evidence must remain idempotent");
-    assert!(already_committed.accepted);
     assert_eq!(
         writer
             .facts()
@@ -1535,7 +1517,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
             ))
             .count(),
         1,
-        "only the unseen reconciliation fill may append"
+        "the duplicate reconciliation fill must not append"
     );
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
@@ -1657,6 +1639,40 @@ fn delayed_duplicate_fill_after_empty_nt_reprojection_is_idempotent() {
     assert!(duplicate.accepted);
     assert!(!duplicate.unknown_reservation);
     assert_eq!(admission.capital_admission_reconciled(), Some(true));
+}
+
+#[test]
+fn delayed_duplicate_fill_with_conflicting_quantity_after_empty_nt_reprojection_fails_closed() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    let first = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("the first attributed fill should be recorded");
+    assert!(first.accepted);
+
+    apply_empty_canonical_nt_projection(&mut feed, &admission, 1_200);
+    let conflicting = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_300,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(5),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("a conflicting durable fill identity must produce a fail-closed decision");
+
+    assert!(!conflicting.accepted);
+    assert!(conflicting.unknown_reservation);
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
 }
 
 #[test]
@@ -2350,7 +2366,6 @@ fn capital_admission_configured_admission_with_writer_and_venue(
                     max_slippage_liability: Decimal::new(20, 2),
                 }),
             },
-            dedupe_retention_ns: 500,
         },
     )
 }
@@ -2418,7 +2433,6 @@ fn open_order_reservation(
         filled_quantity: Decimal::ZERO,
         liability_factor: Decimal::new(4, 1),
         additive_liability: Decimal::new(3, 1),
-        seen_trade_ids: Default::default(),
         observed_at_ns: 1_000,
         evidence_label: "nt_open_order_cache".to_string(),
     }

@@ -1307,6 +1307,39 @@ pub(super) fn seed_nt_open_position_with_details(
         .expect("test cache should accept authoritative open position");
 }
 
+pub(super) fn close_nt_position(strategy: &mut BinaryOracleEdgeTaker, position_id: PositionId) {
+    let cache = register_test_strategy(strategy);
+    let mut position = cache
+        .borrow()
+        .position_owned(&position_id)
+        .expect("test cache should contain the position being closed");
+    let close_side = match position.side {
+        PositionSide::Long => OrderSide::Sell,
+        PositionSide::Short => OrderSide::Buy,
+        PositionSide::Flat | PositionSide::NoPositionSide => {
+            panic!("test position must be open before close")
+        }
+    };
+    let mut fill = order_filled_event_with_details(
+        ClientOrderId::from("CLOSE-TEST"),
+        position.instrument_id,
+        Some(position_id),
+        close_side,
+    );
+    fill.strategy_id = StrategyId::from(strategy.config.strategy_id.as_str());
+    fill.trade_id = nautilus_model::identifiers::TradeId::from("TRADE-CLOSE-TEST");
+    fill.last_qty = position.quantity;
+    position.apply(&fill);
+    assert!(
+        !position.is_open(),
+        "test close fill must flatten the position"
+    );
+    cache
+        .borrow_mut()
+        .update_position(&position)
+        .expect("test cache should accept the closed position");
+}
+
 pub(super) fn materialize_configured_position(
     strategy: &mut BinaryOracleEdgeTaker,
     instrument_id: InstrumentId,

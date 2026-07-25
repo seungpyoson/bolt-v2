@@ -499,7 +499,6 @@ pub(super) fn capital_admission_config_from_loaded(
             max_snapshot_age_ns: pool.max_snapshot_age_ns,
         },
         policy: capital_admission_policy_from_pool(pool)?,
-        dedupe_retention_ns: pool.dedupe_retention_ns,
     }))
 }
 
@@ -1441,7 +1440,6 @@ mod tests {
                     min_remaining_pool_balance: None,
                     fee_slippage_policy: None,
                 },
-                dedupe_retention_ns: 500,
             },
         );
         let error = anyhow::anyhow!(ProviderCollateralAllowanceCaptureEndpointError::new(
@@ -1749,7 +1747,6 @@ mod tests {
                     min_remaining_pool_balance: None,
                     fee_slippage_policy: None,
                 },
-                dedupe_retention_ns: 500,
             },
         ));
         let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
@@ -1825,7 +1822,6 @@ mod tests {
                 min_remaining_pool_balance: None,
                 fee_slippage_policy: None,
             },
-            dedupe_retention_ns: 500,
         }
     }
 
@@ -2102,7 +2098,6 @@ mod tests {
                     max_slippage_liability: Decimal::new(20, 2),
                 }),
             },
-            dedupe_retention_ns: u64::MAX,
         }
     }
 

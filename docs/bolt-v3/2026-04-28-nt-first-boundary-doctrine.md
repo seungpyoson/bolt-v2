@@ -5,7 +5,7 @@ Status: approved doctrine
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
 Last full NT doctrine audit rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last full NT doctrine audit date: 2026-04-28
-Last NT pin compatibility verified rev: `df0f083ceca6077c7f8b0c9e728ac8304709ffaf`
+Last NT pin compatibility verified rev: `9c755a109185216444bdd4618ba52d9c583f5d13`
 Last NT pin compatibility verified date: 2026-07-25
 Owner: Bolt-v3 maintainers
 
@@ -124,20 +124,27 @@ The following source anchors were verified for this doctrine or a later
 compatibility slice:
 
 - `Cargo.toml` pins the official NT repository at exact commit
-  `df0f083ceca6077c7f8b0c9e728ac8304709ffaf` for upstream PR #4557. The
+  `9c755a109185216444bdd4618ba52d9c583f5d13` for upstream PR #4557. The
   2026-07-25 compatibility scope covers the governed Binance boundary and
   Polymarket reconciliation completeness required by the thin-NT decision-
   evidence slice. It does not re-audit all NT-owned behaviors cited by this
   doctrine.
 - `ci/nautilus-source-capabilities.toml` binds the selected official revision
   to its Binance Spot schema 3:5, adapter receive-timestamp, and Polymarket
-  reconciliation fail-closed facts. `build.rs` verifies the bound behavior-test
+  complete reconciliation-capability declaration and fail-closed facts.
+  `build.rs` verifies the bound behavior-test
   hashes, generates the immutable Rust registry, and rejects revision drift or
   a false fact; operator TOML cannot override any capability.
+- Bolt requires strict, unbounded, unfiltered NT reconciliation in every live
+  configuration. NT owns the reconciliation failure fence: after authority is
+  lost, risk-increasing submit/list/modify/batch commands are rejected before
+  client routing while cancellation and query commands remain available.
 - Bolt strategy state retains intent correlation and strategy-local decision
   context only. It projects current position side, quantity, average entry
   price, and open/closed state from NT's cache and does not maintain a second
-  order, fill, or position reducer.
+  order, fill, or position reducer. A position-close callback releases Bolt
+  strategy context only after a scoped NT projection proves no open position
+  remains.
 - The NT pin-change audit and compatibility probe are recorded under
   `docs/bolt-v3/research/nt-pin-change/`; the CLOB V2 live-readiness gate
   remains open until live signing, order, fill, collateral, and fee behavior are

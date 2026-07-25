@@ -2763,7 +2763,6 @@ mod tests {
                     max_slippage_liability: Decimal::new(20, 2),
                 }),
             },
-            dedupe_retention_ns: u64::MAX,
         }
     }
 

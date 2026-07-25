@@ -54,6 +54,7 @@ struct NautilusSourceCapabilities {
     revision: String,
     binance_spot_sbe_schema_3_5: bool,
     binance_adapter_receive_timestamps: bool,
+    polymarket_reconciliation_declares_complete_capabilities: bool,
     polymarket_reconciliation_rejects_unmapped_open_orders: bool,
     polymarket_reconciliation_rejects_unmapped_confirmed_fills: bool,
     polymarket_reconciliation_rejects_unrepresentable_positions: bool,
@@ -98,6 +99,11 @@ fn emit_nautilus_source_capabilities(manifest_dir: &Path) {
     assert!(
         capabilities.binance_adapter_receive_timestamps,
         "{}: the direct Binance runtime path requires adapter receive timestamps; a false fact requires an explicit affected-new-risk admission blocker",
+        capability_path.display()
+    );
+    assert!(
+        capabilities.polymarket_reconciliation_declares_complete_capabilities,
+        "{}: Polymarket must declare every reconciliation report surface complete",
         capability_path.display()
     );
     assert!(
@@ -168,6 +174,7 @@ fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSource
     assert_exact_keys(
         polymarket_reconciliation,
         &[
+            "declares_complete_capabilities",
             "rejects_unmapped_open_orders",
             "rejects_unmapped_confirmed_fills",
             "rejects_unrepresentable_positions",
@@ -251,6 +258,12 @@ fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSource
             "adapter_receive_timestamps",
             path,
             "binance_spot",
+        ),
+        polymarket_reconciliation_declares_complete_capabilities: required_toml_bool(
+            polymarket_reconciliation,
+            "declares_complete_capabilities",
+            path,
+            "polymarket_reconciliation",
         ),
         polymarket_reconciliation_rejects_unmapped_open_orders: required_toml_bool(
             polymarket_reconciliation,
@@ -395,6 +408,7 @@ pub const NAUTILUS_SOURCE_CAPABILITIES: NautilusSourceCapabilityRegistry =\n\
         revision: {:?},\n\
         binance_spot_sbe_schema_3_5: {},\n\
         binance_adapter_receive_timestamps: {},\n\
+        polymarket_reconciliation_declares_complete_capabilities: {},\n\
         polymarket_reconciliation_rejects_unmapped_open_orders: {},\n\
         polymarket_reconciliation_rejects_unmapped_confirmed_fills: {},\n\
         polymarket_reconciliation_rejects_unrepresentable_positions: {},\n\
@@ -402,6 +416,7 @@ pub const NAUTILUS_SOURCE_CAPABILITIES: NautilusSourceCapabilityRegistry =\n\
         capabilities.revision,
         capabilities.binance_spot_sbe_schema_3_5,
         capabilities.binance_adapter_receive_timestamps,
+        capabilities.polymarket_reconciliation_declares_complete_capabilities,
         capabilities.polymarket_reconciliation_rejects_unmapped_open_orders,
         capabilities.polymarket_reconciliation_rejects_unmapped_confirmed_fills,
         capabilities.polymarket_reconciliation_rejects_unrepresentable_positions,

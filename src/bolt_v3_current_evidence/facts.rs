@@ -5,6 +5,7 @@ pub use crate::bolt_v3_loss_governor::LossSnapshotSource;
 pub use crate::bolt_v3_fair_value_pricing::RvGateResult;
 
 use anyhow::{Context, Result, ensure};
+use rust_decimal::Decimal;
 
 use super::generated_contract::KnownFact;
 
@@ -1115,7 +1116,7 @@ pub struct TerminalSettlementFact {
 #[derive(Debug, Clone, Default)]
 pub struct ReservationRecoveryFacts {
     reservation_attribution: BTreeMap<String, ReservationAttribution>,
-    reservation_fill_trade_ids: BTreeMap<(String, String), BTreeSet<String>>,
+    reservation_fills: BTreeMap<(String, String), BTreeMap<String, SubmitReservationFillFact>>,
     admitted_unreserved_entry_client_order_ids: BTreeSet<String>,
     admitted_risk_reducing_client_order_ids: BTreeSet<String>,
     admitted_forced_reduction_client_order_ids: BTreeSet<String>,
@@ -1125,7 +1126,7 @@ impl ReservationRecoveryFacts {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.reservation_attribution.is_empty()
-            && self.reservation_fill_trade_ids.is_empty()
+            && self.reservation_fills.is_empty()
             && self.admitted_unreserved_entry_client_order_ids.is_empty()
             && self.admitted_risk_reducing_client_order_ids.is_empty()
             && self.admitted_forced_reduction_client_order_ids.is_empty()
@@ -1140,15 +1141,18 @@ impl ReservationRecoveryFacts {
     }
 
     #[must_use]
-    pub fn reservation_fill_trade_ids(
+    pub fn reservation_fill(
         &self,
         client_order_id: &str,
         submit_reservation_id: &str,
-    ) -> Option<&BTreeSet<String>> {
-        self.reservation_fill_trade_ids.get(&(
-            client_order_id.to_string(),
-            submit_reservation_id.to_string(),
-        ))
+        trade_id: &str,
+    ) -> Option<&SubmitReservationFillFact> {
+        self.reservation_fills
+            .get(&(
+                client_order_id.to_string(),
+                submit_reservation_id.to_string(),
+            ))
+            .and_then(|fills| fills.get(trade_id))
     }
 
     #[must_use]
@@ -1224,17 +1228,29 @@ impl ReservationRecoveryFacts {
                 }
             }
             ReservationRecoveryEvent::Fill(fill) => {
-                self.reservation_fill_trade_ids
-                    .entry((fill.client_order_id, fill.submit_reservation_id))
-                    .or_default()
-                    .insert(fill.trade_id);
+                let key = (
+                    fill.client_order_id.clone(),
+                    fill.submit_reservation_id.clone(),
+                );
+                let fills = self.reservation_fills.entry(key).or_default();
+                if let Some(existing) = fills.get(&fill.trade_id) {
+                    ensure!(
+                        reservation_fill_stable_identity_eq(existing, &fill),
+                        "conflicting submit-reservation fill for client_order_id `{}`, reservation `{}`, trade_id `{}`",
+                        fill.client_order_id,
+                        fill.submit_reservation_id,
+                        fill.trade_id
+                    );
+                } else {
+                    fills.insert(fill.trade_id.clone(), fill);
+                }
             }
         }
         Ok(())
     }
 
     pub(super) fn validate(&self) -> Result<()> {
-        for (client_order_id, submit_reservation_id) in self.reservation_fill_trade_ids.keys() {
+        for ((client_order_id, submit_reservation_id), fills) in &self.reservation_fills {
             let attribution = self
                 .reservation_attribution
                 .get(client_order_id)
@@ -1248,6 +1264,25 @@ impl ReservationRecoveryFacts {
                 "submit-reservation fill `{client_order_id}` reservation `{submit_reservation_id}` does not match submit-reservation attribution `{}`",
                 attribution.submit_reservation_id
             );
+            for (trade_id, fill) in fills {
+                ensure!(
+                    fill.client_order_id == *client_order_id
+                        && fill.submit_reservation_id == *submit_reservation_id
+                        && fill.trade_id == *trade_id,
+                    "submit-reservation fill identity does not match its recovery key"
+                );
+                ensure!(
+                    fill.instrument_id == attribution.instrument_id
+                        && fill.side == attribution.side,
+                    "submit-reservation fill `{client_order_id}` trade `{trade_id}` does not match its attribution instrument/side"
+                );
+                ensure!(
+                    fill.fill_quantity
+                        .parse::<Decimal>()
+                        .is_ok_and(|quantity| quantity > Decimal::ZERO),
+                    "submit-reservation fill `{client_order_id}` trade `{trade_id}` quantity must be positive"
+                );
+            }
         }
         Ok(())
     }
@@ -1312,6 +1347,23 @@ impl ReservationRecoveryFacts {
         }
         Ok(())
     }
+}
+
+fn reservation_fill_stable_identity_eq(
+    left: &SubmitReservationFillFact,
+    right: &SubmitReservationFillFact,
+) -> bool {
+    left.client_order_id == right.client_order_id
+        && left.submit_reservation_id == right.submit_reservation_id
+        && left.trade_id == right.trade_id
+        && left.instrument_id == right.instrument_id
+        && left.side == right.side
+        && left
+            .fill_quantity
+            .parse::<Decimal>()
+            .ok()
+            .zip(right.fill_quantity.parse::<Decimal>().ok())
+            .is_some_and(|(left, right)| left == right)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

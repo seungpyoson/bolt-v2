@@ -1,4 +1,5 @@
 use anyhow::Result;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
@@ -78,7 +79,17 @@ fn validate_fill(fact: &SubmitReservationFillFact) -> Result<(), RecordFailure> 
             fact.fill_quantity.as_str(),
         ],
         fact.observed_at_ns,
-    )
+    )?;
+    if !fact
+        .fill_quantity
+        .parse::<Decimal>()
+        .is_ok_and(|quantity| quantity > Decimal::ZERO)
+    {
+        return Err(RecordFailure::Rejected(anyhow::anyhow!(
+            "submit reservation fill quantity must be positive"
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn decode_fill(line: &str, line_number: usize) -> Result<SubmitReservationFillFact> {

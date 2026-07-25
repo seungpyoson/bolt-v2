@@ -73,8 +73,37 @@ permissions:
   contents: read
 
 jobs:
+  sccache_source:
+    name: Build credentialless sccache source
+    runs-on: ${{ inputs.runner_tier == 'heavy' && vars.CI_RUNNER_MANAGED_HEAVY || vars.CI_RUNNER_MANAGED_LIGHT }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.source.outputs.artifact_name }}
+      executable_sha256: ${{ steps.source.outputs.executable_sha256 }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup source-build environment
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          build-jobs-key: rust_probe.probe-${{ inputs.runner_tier }}
+
+      - name: Build credentialless exact-source sccache
+        id: source
+        uses: ./.github/actions/sccache-build
+        with:
+          role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+
   probe:
     name: probe-${{ inputs.runner_tier }}
+    needs: sccache_source
     runs-on: ${{ inputs.runner_tier == 'heavy' && vars.CI_RUNNER_MANAGED_HEAVY || vars.CI_RUNNER_MANAGED_LIGHT }}
     timeout-minutes: 60
     permissions:
@@ -85,6 +114,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Setup environment
         id: setup
@@ -106,6 +136,8 @@ jobs:
         uses: ./.github/actions/sccache-setup
         with:
           role-arn: ${{ vars.AWS_CI_CACHE_PR_READONLY_ROLE_ARN }}
+          artifact-name: ${{ needs.sccache_source.outputs.artifact_name }}
+          executable-sha256: ${{ needs.sccache_source.outputs.executable_sha256 }}
 
       - name: Run Rust Probe
         shell: bash

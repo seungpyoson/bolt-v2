@@ -5742,7 +5742,6 @@ snapshot_positions_interval_secs = 0
 external_clients = []
 debug = false
 reconciliation = true
-reconciliation_fail_closed = true
 reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
@@ -6174,7 +6173,6 @@ snapshot_positions_interval_secs = 0
 external_clients = []
 debug = false
 reconciliation = true
-reconciliation_fail_closed = true
 reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
@@ -7735,10 +7733,6 @@ fn every_live_config_requires_an_unfiltered_complete_nt_reconciliation_universe(
         (
             "reconciliation",
             Box::new(|root| root.nautilus.exec_engine.reconciliation = false),
-        ),
-        (
-            "reconciliation_fail_closed",
-            Box::new(|root| root.nautilus.exec_engine.reconciliation_fail_closed = false),
         ),
         (
             "reconciliation_lookback_mins",

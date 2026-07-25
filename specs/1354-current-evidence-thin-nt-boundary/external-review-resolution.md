@@ -2,7 +2,7 @@
 
 **Status**: Internal review and exact-head verification pending
 **Review scope**: [spec.md](spec.md), [plan.md](plan.md), Bolt PR #1505, and
-[NT PR #4557](https://github.com/nautechsystems/nautilus_trader/pull/4557)
+[NT PR #4566](https://github.com/nautechsystems/nautilus_trader/pull/4566)
 **Protocol**: [external-review-prompt.md](external-review-prompt.md)
 
 This is the single adjudication record for the next external review. It grants
@@ -16,7 +16,7 @@ Complete only after local findings are resolved and the Bolt head is pushed:
 - Bolt base/merge base:
   `40423b291683effe645bde44edce91be8ef93000`
 - NT exact commit:
-  `63a1f14fc362b1686c407336576a131f5adabec7`
+  `01d5af1427d73532f6dd9f2be77acb72f825bec9`
 - clean-worktree confirmation: pending
 - exact-head advisory result: pending
 - specification hashes: pending
@@ -29,12 +29,11 @@ positions against NT is superseded.
 Selected boundary:
 
 - NT owns all general lifecycle and reconciliation.
-- NT #4557 makes incomplete Polymarket open-order, relevant confirmed-fill,
-  and current-position reconciliation errors, declares complete adapter
-  reconciliation capabilities, and fences risk-increasing execution after
-  strict reconciliation authority is lost.
+- NT #4566 makes incomplete Polymarket open-order, relevant confirmed-fill,
+  and current-position snapshots return errors instead of successful partial
+  reports. Existing NT startup reconciliation propagates those errors.
 - Bolt consumes only post-reconciliation NT state.
-- Bolt requires strict, unbounded, unfiltered NT reconciliation for every live
+- Bolt requires unbounded, unfiltered NT startup reconciliation for every live
   configuration and treats position-close callbacks as projection triggers,
   not lifecycle authority.
 - provider input supplies collateral allowance only.

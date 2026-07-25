@@ -2,14 +2,13 @@
 # build.rs binds this revision to the exact Binance and Polymarket dependencies
 # and generates the Rust registry. This is governed build evidence, not
 # operator config.
-revision = "63a1f14fc362b1686c407336576a131f5adabec7"
+revision = "01d5af1427d73532f6dd9f2be77acb72f825bec9"
 
 [binance_spot]
 sbe_schema_3_5 = true
 adapter_receive_timestamps = true
 
 [polymarket_reconciliation]
-declares_complete_capabilities = true
 rejects_unmapped_open_orders = true
 rejects_unmapped_confirmed_fills = true
 rejects_unrepresentable_positions = true
@@ -27,25 +26,19 @@ path = "tests/binance_sbe_quote_timestamps.rs"
 sha256 = "1cce271229a01b4d391c5dc6c6c5e324957bcc2e4c57b7359bf3a0d4ff4e39b3"
 
 [[evidence]]
-capability = "polymarket_reconciliation.declares_complete_capabilities"
-cargo_test_target = "polymarket_reconciliation_fail_closed"
-path = "tests/polymarket_reconciliation_fail_closed.rs"
-sha256 = "ed85b2f5527869c7c85cdfbad3eefee003f50e583b17ff2a9e5c10026592de7e"
-
-[[evidence]]
 capability = "polymarket_reconciliation.rejects_unmapped_open_orders"
 cargo_test_target = "polymarket_reconciliation_fail_closed"
 path = "tests/polymarket_reconciliation_fail_closed.rs"
-sha256 = "ed85b2f5527869c7c85cdfbad3eefee003f50e583b17ff2a9e5c10026592de7e"
+sha256 = "c3b84ed8652c86a0c4c34c247c88d69872792ee15c36b51d3a632d5111af48ee"
 
 [[evidence]]
 capability = "polymarket_reconciliation.rejects_unmapped_confirmed_fills"
 cargo_test_target = "polymarket_reconciliation_fail_closed"
 path = "tests/polymarket_reconciliation_fail_closed.rs"
-sha256 = "ed85b2f5527869c7c85cdfbad3eefee003f50e583b17ff2a9e5c10026592de7e"
+sha256 = "c3b84ed8652c86a0c4c34c247c88d69872792ee15c36b51d3a632d5111af48ee"
 
 [[evidence]]
 capability = "polymarket_reconciliation.rejects_unrepresentable_positions"
 cargo_test_target = "polymarket_reconciliation_fail_closed"
 path = "tests/polymarket_reconciliation_fail_closed.rs"
-sha256 = "ed85b2f5527869c7c85cdfbad3eefee003f50e583b17ff2a9e5c10026592de7e"
+sha256 = "c3b84ed8652c86a0c4c34c247c88d69872792ee15c36b51d3a632d5111af48ee"

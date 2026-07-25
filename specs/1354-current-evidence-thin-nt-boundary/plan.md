@@ -2,7 +2,7 @@
 
 **Issue**: [#1354](https://github.com/seungpyoson/bolt-v2/issues/1354)
 **Bolt PR**: [#1505](https://github.com/seungpyoson/bolt-v2/pull/1505)
-**Required NT PR**: [nautilus_trader#4557](https://github.com/nautechsystems/nautilus_trader/pull/4557)
+**Required NT PR**: [nautilus_trader#4566](https://github.com/nautechsystems/nautilus_trader/pull/4566)
 **Specification**: [spec.md](spec.md)
 **Status**: Implementation in progress; verification and review gates pending
 
@@ -23,7 +23,7 @@ fallback, or compatibility lane.
 
 This work has two reviewable changes:
 
-1. **NT PR #4557**: make the shared Polymarket order and fill reconciliation
+1. **NT PR #4566**: make the shared Polymarket order and fill reconciliation
    builders fail if a venue open order or relevant confirmed fill is missing
    from NT's instrument map; fail mass status if a current position cannot be
    represented.
@@ -44,7 +44,7 @@ evidence. Neither side duplicates the other.
 - Test the builder and execution-client failure boundaries.
 - Return an error instead of silently skipping an unrepresentable current
   position, and test that failure.
-- Push the focused fork branch and open `nautilus_trader#4557` against
+- Push the focused fork branch and open `nautilus_trader#4566` against
   `develop`.
 - Pin Bolt and BTE to the exact commit through the official NT repository URL.
 - Update the governed source-capability revision.
@@ -166,7 +166,7 @@ Evidence:
 
 | Requirement | Evidence |
 |---|---|
-| NT owns reconciliation | NT #4557 behavior test; Bolt call-graph review |
+| NT owns reconciliation | NT #4566 behavior test; Bolt call-graph review |
 | Complete NT reconciliation universe | unmapped open order/fill or unrepresentable position fails reconciliation |
 | Admission-safe NT config | table test for every narrowing option |
 | Post-reconciliation projection | `Starting`/`Running` request timing test |
@@ -197,7 +197,7 @@ Stop and revise the design if:
 
 The slice is ready for external review only when:
 
-- NT #4557 is reviewable and its focused test passes;
+- NT #4566 is reviewable and its focused test passes;
 - Bolt compiles against its exact official-repository commit;
 - every spec requirement has named evidence;
 - all focused and full root/BTE verification passes;

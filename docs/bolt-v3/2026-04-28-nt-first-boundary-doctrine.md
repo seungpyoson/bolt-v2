@@ -5,7 +5,7 @@ Status: approved doctrine
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
 Last full NT doctrine audit rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last full NT doctrine audit date: 2026-04-28
-Last NT pin compatibility verified rev: `63a1f14fc362b1686c407336576a131f5adabec7`
+Last NT pin compatibility verified rev: `01d5af1427d73532f6dd9f2be77acb72f825bec9`
 Last NT pin compatibility verified date: 2026-07-25
 Owner: Bolt-v3 maintainers
 
@@ -124,21 +124,22 @@ The following source anchors were verified for this doctrine or a later
 compatibility slice:
 
 - `Cargo.toml` pins the official NT repository at exact commit
-  `63a1f14fc362b1686c407336576a131f5adabec7` for upstream PR #4557. The
+  `01d5af1427d73532f6dd9f2be77acb72f825bec9` for upstream PR #4566. The
   2026-07-25 compatibility scope covers the governed Binance boundary and
   Polymarket reconciliation completeness required by the thin-NT decision-
   evidence slice. It does not re-audit all NT-owned behaviors cited by this
   doctrine.
 - `ci/nautilus-source-capabilities.toml` binds the selected official revision
   to its Binance Spot schema 3:5, adapter receive-timestamp, and Polymarket
-  complete reconciliation-capability declaration and fail-closed facts.
+  fail-closed reconciliation behavior.
   `build.rs` verifies the bound behavior-test
   hashes, generates the immutable Rust registry, and rejects revision drift or
   a false fact; operator TOML cannot override any capability.
-- Bolt requires strict, unbounded, unfiltered NT reconciliation in every live
-  configuration. NT owns the reconciliation failure fence: after authority is
-  lost, risk-increasing submit/list/modify/batch commands are rejected before
-  client routing while cancellation and query commands remain available.
+- Bolt requires unbounded, unfiltered NT startup reconciliation in every live
+  configuration. The Polymarket adapter rejects incomplete report construction,
+  and NT propagates that error before startup reaches `Running`. This
+  compatibility slice does not add or claim a separate post-startup
+  authority-revocation mode.
 - Bolt strategy state retains intent correlation and strategy-local decision
   context only. It projects current position side, quantity, average entry
   price, and open/closed state from NT's cache and does not maintain a second

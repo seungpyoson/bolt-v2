@@ -1,9 +1,6 @@
 use std::{cell::RefCell, net::SocketAddr, rc::Rc};
 
-use nautilus_common::{
-    cache::Cache,
-    clients::{ExecutionClient, ExecutionReconciliationCapabilities},
-};
+use nautilus_common::cache::Cache;
 use nautilus_live::ExecutionClientCore;
 use nautilus_model::{
     enums::{AccountType, OmsType},
@@ -98,20 +95,6 @@ fn execution_client(address: SocketAddr) -> PolymarketExecutionClient {
     };
     PolymarketExecutionClient::new(core, config)
         .expect("test Polymarket execution client should construct")
-}
-
-#[test]
-fn polymarket_declares_complete_reconciliation_capabilities() {
-    let client = execution_client(
-        "127.0.0.1:1"
-            .parse()
-            .expect("fixed test socket address should parse"),
-    );
-
-    assert_eq!(
-        client.reconciliation_capabilities(),
-        ExecutionReconciliationCapabilities::complete()
-    );
 }
 
 #[tokio::test]

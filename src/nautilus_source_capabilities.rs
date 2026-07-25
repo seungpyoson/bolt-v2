@@ -10,7 +10,6 @@ pub struct NautilusSourceCapabilityRegistry {
     pub revision: &'static str,
     pub binance_spot_sbe_schema_3_5: bool,
     pub binance_adapter_receive_timestamps: bool,
-    pub polymarket_reconciliation_declares_complete_capabilities: bool,
     pub polymarket_reconciliation_rejects_unmapped_open_orders: bool,
     pub polymarket_reconciliation_rejects_unmapped_confirmed_fills: bool,
     pub polymarket_reconciliation_rejects_unrepresentable_positions: bool,

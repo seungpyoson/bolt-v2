@@ -747,7 +747,6 @@ fn live_node_config_maps_explicit_nt_runtime_defaults_from_v3_root() {
     assert_eq!(cfg.exec_engine.external_clients, None);
     assert!(!cfg.exec_engine.debug);
     assert!(cfg.exec_engine.reconciliation);
-    assert!(cfg.exec_engine.reconciliation_fail_closed);
     assert_eq!(cfg.exec_engine.reconciliation_startup_delay_secs, 10.0);
     assert_eq!(cfg.exec_engine.reconciliation_lookback_mins, None);
     assert_eq!(cfg.exec_engine.reconciliation_instrument_ids, None);

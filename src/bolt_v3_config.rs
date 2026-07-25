@@ -184,7 +184,6 @@ pub struct NautilusExecEngineBlock {
     pub external_clients: Vec<ClientId>,
     pub debug: bool,
     pub reconciliation: bool,
-    pub reconciliation_fail_closed: bool,
     pub reconciliation_startup_delay_secs: u64,
     pub reconciliation_lookback_mins: u32,
     pub reconciliation_instrument_ids: Vec<String>,

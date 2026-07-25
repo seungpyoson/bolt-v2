@@ -13,8 +13,8 @@ Bolt repository: `https://github.com/seungpyoson/bolt-v2`
 Bolt PR: `https://github.com/seungpyoson/bolt-v2/pull/1505`
 Bolt base: `40423b291683effe645bde44edce91be8ef93000`
 Bolt exact head: `<INSERT_PUSHED_EXACT_HEAD>`
-NT PR: `https://github.com/nautechsystems/nautilus_trader/pull/4557`
-NT exact commit: `63a1f14fc362b1686c407336576a131f5adabec7`
+NT PR: `https://github.com/nautechsystems/nautilus_trader/pull/4566`
+NT exact commit: `01d5af1427d73532f6dd9f2be77acb72f825bec9`
 
 At review start, verify and report:
 
@@ -35,7 +35,7 @@ Read Bolt `AGENTS.md` first. Then read:
 - `specs/1354-current-evidence-thin-nt-boundary/plan.md`
 - `specs/1354-current-evidence-thin-nt-boundary/external-review-resolution.md`
 - the exact Bolt three-dot diff and current production call graph;
-- NT PR #4557's exact diff and every Polymarket order, fill, position, and
+- NT PR #4566's exact diff and every Polymarket order, fill, position, and
   mass-status reconciliation caller.
 
 Inspect at least:
@@ -100,7 +100,7 @@ Adjudicate every class below:
 
 1. **NT authority** — Can any Bolt production state still decide general order,
    fill, position, account, or reconciliation state independently of NT?
-2. **NT reconciliation completeness** — Does NT #4557 close silent partial
+2. **NT reconciliation completeness** — Does NT #4566 close silent partial
    open-order, relevant confirmed-fill, and current-position reconciliation,
    including every builder caller and error-propagation path?
 3. **Configuration closure** — Can any configured NT filter/lookback setting

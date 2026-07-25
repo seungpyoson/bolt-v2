@@ -99,7 +99,6 @@ snapshot_positions_interval_secs = 0
 external_clients = []
 debug = false
 reconciliation = true
-reconciliation_fail_closed = true
 reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []

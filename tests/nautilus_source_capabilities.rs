@@ -2,7 +2,7 @@ use bolt_v2::{
     bolt_v3_config::BoltV3RootConfig, nautilus_source_capabilities::NAUTILUS_SOURCE_CAPABILITIES,
 };
 
-const OFFICIAL_NAUTILUS_REVISION: &str = "63a1f14fc362b1686c407336576a131f5adabec7";
+const OFFICIAL_NAUTILUS_REVISION: &str = "01d5af1427d73532f6dd9f2be77acb72f825bec9";
 
 #[test]
 fn generated_registry_exposes_the_exact_official_source_facts() {
@@ -12,7 +12,6 @@ fn generated_registry_exposes_the_exact_official_source_facts() {
     );
     assert!(NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_schema_3_5);
     assert!(NAUTILUS_SOURCE_CAPABILITIES.binance_adapter_receive_timestamps);
-    assert!(NAUTILUS_SOURCE_CAPABILITIES.polymarket_reconciliation_declares_complete_capabilities);
     assert!(NAUTILUS_SOURCE_CAPABILITIES.polymarket_reconciliation_rejects_unmapped_open_orders);
     assert!(
         NAUTILUS_SOURCE_CAPABILITIES.polymarket_reconciliation_rejects_unmapped_confirmed_fills

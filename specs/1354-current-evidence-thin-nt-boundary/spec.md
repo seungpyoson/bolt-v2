@@ -2,7 +2,7 @@
 
 **Issue**: [#1354](https://github.com/seungpyoson/bolt-v2/issues/1354)
 **Bolt PR**: [#1505](https://github.com/seungpyoson/bolt-v2/pull/1505)
-**Required NT PR**: [nautilus_trader#4557](https://github.com/nautechsystems/nautilus_trader/pull/4557)
+**Required NT PR**: [nautilus_trader#4566](https://github.com/nautechsystems/nautilus_trader/pull/4566)
 **Branch**: `codex/1354-current-evidence-rebuild`
 **Status**: Implemented; internal adversarial review and exact-head verification pending
 
@@ -55,7 +55,7 @@ instruments absent from NT's loaded map. It could also omit an unrepresentable
 current position. That cannot be repaired safely in Bolt without rebuilding NT
 reconciliation.
 
-The required upstream fix is `nautilus_trader#4557`. The shared NT order and
+The required upstream fix is `nautilus_trader#4566`. The shared NT order and
 fill report builders now return an error when any venue open order or relevant
 confirmed fill cannot be mapped, so every reconciliation caller must propagate
 the incomplete-universe failure. Mass-status generation also fails when any
@@ -268,7 +268,7 @@ Tests verify behavior, not source text.
 
 This is the thin-NT-boundary closure required for PR #1505's current-only
 decision-evidence slice. The NT correctness change is isolated in
-`nautilus_trader#4557`; Bolt consumes it through an exact official-repository
+`nautilus_trader#4566`; Bolt consumes it through an exact official-repository
 pin.
 
 Issue #1385 retains rotation, total retained capacity, retirement, durable

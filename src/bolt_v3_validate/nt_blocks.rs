@@ -99,12 +99,6 @@ fn validate_exec_engine_block(
             "nautilus.exec_engine.snapshot_positions must be false; NT rejects true on the Rust live runtime".to_string(),
         );
     }
-    if !block.reconciliation_fail_closed {
-        errors.push(
-            "nautilus.exec_engine.reconciliation_fail_closed must be true; Bolt requires NT to stop before continuing with incomplete continuous reconciliation"
-                .to_string(),
-        );
-    }
     if block.purge_from_database {
         errors.push(
             "nautilus.exec_engine.purge_from_database must be false; NT rejects true on the Rust live runtime".to_string(),

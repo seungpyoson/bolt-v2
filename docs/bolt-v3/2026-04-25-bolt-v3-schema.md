@@ -124,7 +124,6 @@ snapshot_positions_interval_secs = 0
 external_clients = []
 debug = false
 reconciliation = true
-reconciliation_fail_closed = true
 reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
@@ -396,7 +395,7 @@ All pinned `LiveDataEngineConfig` fields are explicit in TOML and mapped into th
 
 Runtime-support guard fields are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
 
-- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `63a1f14fc362b1686c407336576a131f5adabec7`
+- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `01d5af1427d73532f6dd9f2be77acb72f825bec9`
 
 | Field | Type / Rule | Maps to |
 |---|---|---|
@@ -412,7 +411,7 @@ Runtime-support guard fields are still required in TOML at the only accepted val
 | `emit_quotes_from_book_depths` | boolean | `LiveDataEngineConfig.emit_quotes_from_book_depths` |
 | `external_clients` | array of valid NT client IDs; empty maps to `None` | `LiveDataEngineConfig.external_clients` |
 | `debug` | boolean | `LiveDataEngineConfig.debug` |
-| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `63a1f14fc362b1686c407336576a131f5adabec7` | `LiveDataEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `01d5af1427d73532f6dd9f2be77acb72f825bec9` | `LiveDataEngineConfig.qsize` |
 
 ### `[nautilus.exec_engine]`
 
@@ -423,24 +422,24 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - `snapshot_orders = false`
 - `snapshot_positions = false`
 - `purge_from_database = false`
-- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `63a1f14fc362b1686c407336576a131f5adabec7`
+- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `01d5af1427d73532f6dd9f2be77acb72f825bec9`
 
-Every Bolt live configuration must give NT complete startup and continuous reconciliation authority;
+Every Bolt live configuration must give NT a complete startup reconciliation universe;
 this requirement is unconditional because NT owns order and position lifecycle even when Bolt capital
 admission is disabled. Validation therefore requires `reconciliation = true`,
-`reconciliation_fail_closed = true`, `reconciliation_lookback_mins = 0`, empty
+`reconciliation_lookback_mins = 0`, empty
 `reconciliation_instrument_ids`, empty `filtered_client_order_ids`,
 `filter_unclaimed_external_orders = false`, `filter_position_reports = false`,
 `generate_missing_orders = true`, positive open-order and position check intervals, and unbounded
-continuous lookback.
+ongoing-check lookback.
 The pinned NT Polymarket adapter fails
 reconciliation when venue orders, confirmed fills, or positions cannot be
-represented in NT and declares all required reconciliation report capabilities
-complete. Strict reconciliation failure fences risk-increasing execution
-commands before client routing. After NT reaches `Running`, Bolt projects the canonical NT
+represented in NT. NT's startup path propagates that error instead of returning
+a partial startup snapshot. After NT reaches `Running`, Bolt projects the canonical NT
 cache and requires every admission-relevant open order to join exactly one
 committed Bolt authorization before admission can become reconciled. Bolt does
-not perform a second raw-venue reconciliation.
+not perform a second raw-venue reconciliation or configure a separate NT
+continuous-reconciliation authority mode.
 
 #### `reconciliation_lookback_mins`
 
@@ -455,7 +454,7 @@ not perform a second raw-venue reconciliation.
 - required: yes
 - maps to Nautilus `LiveExecEngineConfig.reconciliation_startup_delay_secs`
 - this is explicit to prevent inheriting upstream reconciliation startup timing changes silently
-- `0` is valid and disables the post-startup reconciliation grace period before continuous reconciliation checks begin
+- `0` starts startup reconciliation without an additional delay
 
 #### `max_single_order_queries_per_cycle`
 
@@ -482,7 +481,6 @@ not perform a second raw-venue reconciliation.
 | `external_clients` | array of valid NT client IDs; empty maps to `None` | `LiveExecEngineConfig.external_clients` |
 | `debug` | boolean | `LiveExecEngineConfig.debug` |
 | `reconciliation` | boolean | `LiveExecEngineConfig.reconciliation` |
-| `reconciliation_fail_closed` | must be `true`; NT stops the live node instead of continuing after incomplete startup or continuous reconciliation | `LiveExecEngineConfig.reconciliation_fail_closed` |
 | `reconciliation_instrument_ids` | array of valid NT instrument IDs; empty maps to `None` | `LiveExecEngineConfig.reconciliation_instrument_ids` |
 | `filter_unclaimed_external_orders` | boolean | `LiveExecEngineConfig.filter_unclaimed_external_orders` |
 | `filter_position_reports` | boolean | `LiveExecEngineConfig.filter_position_reports` |
@@ -508,7 +506,7 @@ not perform a second raw-venue reconciliation.
 | `purge_account_events_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.purge_account_events_lookback_mins` |
 | `purge_from_database` | must be `false` | `LiveExecEngineConfig.purge_from_database` |
 | `own_books_audit_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.own_books_audit_interval_secs` |
-| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `63a1f14fc362b1686c407336576a131f5adabec7` | `LiveExecEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `01d5af1427d73532f6dd9f2be77acb72f825bec9` | `LiveExecEngineConfig.qsize` |
 | `allow_overfills` | boolean | `LiveExecEngineConfig.allow_overfills` |
 | `manage_own_order_books` | boolean | `LiveExecEngineConfig.manage_own_order_books` |
 
@@ -595,7 +593,7 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - type: positive integer
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.qsize`
-- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `63a1f14fc362b1686c407336576a131f5adabec7`
+- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `01d5af1427d73532f6dd9f2be77acb72f825bec9`
 
 ### `[logging]`
 
@@ -1743,7 +1741,6 @@ snapshot_positions_interval_secs = 0
 external_clients = []
 debug = false
 reconciliation = true
-reconciliation_fail_closed = true
 reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []

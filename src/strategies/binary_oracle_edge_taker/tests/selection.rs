@@ -181,6 +181,7 @@ fn authoritative_position_close_cools_the_closed_market_before_delayed_exit_fill
         ManagedPositionOrigin::StrategyEntry,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+    close_nt_position(&mut strategy, position_id);
     strategy.on_position_closed(position_closed_event(tracked_instrument, position_id));
 
     assert!(

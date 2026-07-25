@@ -138,6 +138,13 @@ matched_terms = ["greeks", "option"]
 classification = "supported"
 
 [[surfaces]]
+surface_id = "nt.crates.common.src.clients.execution.execution_reconciliation_capabilities"
+evidence_path = "crates/common/src/clients/execution.rs"
+symbol = "execution_reconciliation_capabilities"
+matched_terms = ["surface"]
+classification = "not_iv_options"
+
+[[surfaces]]
 surface_id = "nt.crates.common.src.greeks.cache_futures_spread"
 evidence_path = "crates/common/src/greeks.rs"
 symbol = "cache_futures_spread"

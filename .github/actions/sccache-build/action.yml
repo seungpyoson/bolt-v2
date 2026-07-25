@@ -1,0 +1,102 @@
+name: Governed sccache source build
+description: Build and upload the exact governed sccache source in a credentialless job.
+
+inputs:
+  active:
+    description: Whether this workflow has a compile job that requires sccache.
+    required: false
+    default: "true"
+  role-arn:
+    description: Read-only AWS role ARN used only to validate consumer eligibility.
+    required: false
+    default: ""
+  write-role-arn:
+    description: Read/write AWS role ARN used only to validate consumer eligibility.
+    required: false
+    default: ""
+  config-path:
+    description: Repository TOML file that owns the expected sccache source.
+    required: false
+    default: ci/sccache-location.toml
+
+outputs:
+  artifact_name:
+    description: Same-run artifact containing the exact-source executable.
+    value: ${{ steps.build.outputs.artifact_name }}
+  executable_sha256:
+    description: SHA-256 of the exact-source executable.
+    value: ${{ steps.build.outputs.executable_sha256 }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve sccache source eligibility
+      id: eligibility
+      shell: bash
+      env:
+        SCCACHE_ACTIVE: ${{ inputs.active }}
+        READ_ROLE_ARN: ${{ inputs.role-arn }}
+        WRITE_ROLE_ARN: ${{ inputs.write-role-arn }}
+        RUNNER_ARCH: ${{ runner.arch }}
+        CONFIG_PATH: ${{ inputs.config-path }}
+      run: |
+        python3.12 scripts/sccache_eligibility.py
+
+    - name: Build and verify exact-source sccache
+      id: build
+      if: steps.eligibility.outputs.eligible == 'true'
+      shell: bash
+      env:
+        CARGO_FEATURES: ${{ steps.eligibility.outputs.cargo_features }}
+        EXPECTED_VERSION: ${{ steps.eligibility.outputs.version }}
+        RUNNER_ARCH: ${{ runner.arch }}
+        SOURCE_REPOSITORY: ${{ steps.eligibility.outputs.source_repository }}
+        SOURCE_REVISION: ${{ steps.eligibility.outputs.source_revision }}
+      run: |
+        set -euo pipefail
+        for credential_name in \
+          ACTIONS_ID_TOKEN_REQUEST_URL \
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+          AWS_ACCESS_KEY_ID \
+          AWS_SECRET_ACCESS_KEY \
+          AWS_SESSION_TOKEN; do
+          if [[ -n "${!credential_name:-}" ]]; then
+            echo "::error::credentialless sccache source build received $credential_name"
+            exit 1
+          fi
+        done
+
+        install_root="$RUNNER_TEMP/governed-sccache-source"
+        CARGO_TARGET_DIR="$RUNNER_TEMP/sccache-source-build-$SOURCE_REVISION" \
+          cargo install \
+            --git "$SOURCE_REPOSITORY" \
+            --rev "$SOURCE_REVISION" \
+            --locked \
+            --force \
+            --root "$install_root" \
+            --no-default-features \
+            --features "$CARGO_FEATURES" \
+            sccache
+        executable="$install_root/bin/sccache"
+        [[ -f "$executable" && ! -L "$executable" && -x "$executable" ]]
+        executable_sha256="$(sha256sum "$executable" | awk '{print $1}')"
+        [[ "$executable_sha256" =~ ^[0-9a-f]{64}$ ]]
+        python3.12 scripts/sccache_eligibility.py verify-executable \
+          "$executable" "$EXPECTED_VERSION" "$executable_sha256"
+
+        artifact_name="governed-sccache-${RUNNER_ARCH}-${SOURCE_REVISION}-${GITHUB_RUN_ATTEMPT}"
+        {
+          echo "artifact_name=$artifact_name"
+          echo "artifact_path=$executable"
+          echo "executable_sha256=$executable_sha256"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Upload same-run sccache
+      if: steps.build.outcome == 'success'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ steps.build.outputs.artifact_name }}
+        path: ${{ steps.build.outputs.artifact_path }}
+        if-no-files-found: error
+        retention-days: 1
+        compression-level: 0

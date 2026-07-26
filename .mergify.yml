@@ -1,5 +1,7 @@
-# Single serial queue for main: approval queues; the four advisory checks must
-# pass on the combined result before squash merge. Batching (carried from the
+# Single serial queue for main: approval queues; the five advisory checks must
+# pass on the combined result before squash merge. `nautilus-pin` is gated with
+# the rest because an unmerged-fork pin compiles and tests clean: the other four
+# are green in exactly the case where it is the only signal. Batching (carried from the
 # proven prior config): several queued PRs validate together with one combined
 # check run and merge as a batch — one CI bill instead of one per PR.
 merge_queue:
@@ -21,6 +23,7 @@ queue_rules:
       - check-success = clippy
       - check-success = test
       - check-success = build
+      - check-success = nautilus-pin
     merge_method: squash
     update_method: rebase
     batch_size: 1
@@ -39,6 +42,7 @@ queue_rules:
       - check-success = clippy
       - check-success = test
       - check-success = build
+      - check-success = nautilus-pin
     merge_method: squash
     update_method: rebase
     batch_size:

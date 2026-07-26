@@ -414,6 +414,34 @@ fn unreadable_bytes_remain_corrupt_evidence() {
 }
 
 #[test]
+fn retired_trigger_plus_structural_damage_remains_corrupt_evidence() {
+    // A retired trigger kind is only the diagnosis when it is the *sole* reason
+    // the record will not load. Here the trigger also omits the required
+    // `source` field, so the store is genuinely corrupt and must be reported as
+    // such rather than blamed on the retired subsystem.
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    fs::write(
+        &path,
+        br#"{"schema_version":2,"state":{"Halted":{"halt_id":"retired-halt","trigger":{
+             "kind":"BasketExecutionStuck",
+             "source_timestamp_unix_nanos":1000,"reason":"basket execution stuck"}}}}"#,
+    )
+    .expect("damaged retired-trigger fixture should write");
+    let store = KillSwitchStore::new(path, 65_536);
+
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("damaged store should load a fail-closed record"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: KillSwitchRecoveryReason::CorruptEvidence,
+            state: None,
+        }
+    );
+}
+
+#[test]
 fn unknown_state_variant_remains_corrupt_evidence() {
     // Second control: an unrecognized *state* carries no trigger, so it must
     // still report corrupt evidence rather than the trigger-specific reason.

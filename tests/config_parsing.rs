@@ -7215,14 +7215,34 @@ fn enforced_submit_admission_rejects_venue_without_attested_reconciliation_compl
         toml::from_str(&source).expect("enforced submit-admission fixture should parse");
     let messages = validate_root_only(&root);
 
-    assert!(
-        messages.iter().any(|message| {
+    let unmet: Vec<&String> = messages
+        .iter()
+        .filter(|message| {
             message
                 .contains("risk.capital_pools[polymarket-prediction-live].enforce_submit_admission")
-                && message.contains("startup reconciliation completeness")
-        }),
-        "arming submit admission must be rejected while the pinned adapter can return a silently \
-         partial reconciliation report: {messages:#?}"
+                && message.contains("attests reconciliation completeness")
+        })
+        .collect();
+
+    // Every unmet condition must be reported, not just the first. Two independent
+    // upstream defects gate this flip, and closing one does not make the other
+    // safe, so an engineer who fixes one has to see the other still listed.
+    assert_eq!(
+        unmet.len(),
+        2,
+        "arming submit admission must report every unmet condition: {messages:#?}"
+    );
+    assert!(
+        unmet
+            .iter()
+            .any(|message| message.contains("silently partial")),
+        "the mass-status partiality condition must be reported: {messages:#?}"
+    );
+    assert!(
+        unmet
+            .iter()
+            .any(|message| message.contains("zero local-filled floor")),
+        "the filled-quantity cap condition must be reported: {messages:#?}"
     );
 }
 

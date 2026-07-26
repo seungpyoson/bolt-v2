@@ -111,13 +111,13 @@ pub(super) fn validate_nt_reconciliation_authority(root: &BoltV3RootConfig) -> V
     let mut errors = Vec::new();
     if !execution.reconciliation {
         errors.push(
-            "nautilus.exec_engine.reconciliation must be true; Bolt requires complete NT startup reconciliation"
+            "nautilus.exec_engine.reconciliation must be true; Bolt requires unbounded, unfiltered NT startup reconciliation"
                 .to_string()
         );
     }
     if execution.reconciliation_lookback_mins != 0 {
         errors.push(
-            "nautilus.exec_engine.reconciliation_lookback_mins must be 0 (unbounded); Bolt requires the complete NT reconciliation universe"
+            "nautilus.exec_engine.reconciliation_lookback_mins must be 0 (unbounded); Bolt must not narrow the NT reconciliation universe"
                 .to_string(),
         );
     }
@@ -135,7 +135,7 @@ pub(super) fn validate_nt_reconciliation_authority(root: &BoltV3RootConfig) -> V
     }
     if execution.filter_position_reports {
         errors.push(
-            "nautilus.exec_engine.filter_position_reports must be false; Bolt requires complete NT position reconciliation"
+            "nautilus.exec_engine.filter_position_reports must be false; Bolt must not filter NT position reports"
                 .to_string(),
         );
     }

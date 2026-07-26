@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assert every pinned NautilusTrader revision is merged upstream.
+"""Assert every pinned NautilusTrader dependency is merged upstream.
 
 `build.rs` already asserts that the governed capability manifest revision equals
 the `nautilus-binance` pin and that the dependency URL is the official
@@ -10,24 +10,32 @@ That is not hypothetical -- it is the drift this lane exists to catch.
 
 `build.rs` cannot make the check itself, because proving mergedness needs the
 network and builds must stay hermetic. So it lives here, and it covers every
-`nautilus-*` declaration in every manifest rather than the single dependency
+NautilusTrader declaration in every manifest rather than the single dependency
 `build.rs` binds.
 
-Run locally from the repository root, or pass the root as the one argument.
+Manifests are parsed structurally with `tomllib`, never by pattern matching. An
+earlier regex-based version of this script was bypassed two ways: writing the
+inline table as `{ rev = "...", git = "..." }` (valid TOML, any key order) made
+the declaration invisible, and a `branch`/`tag` pin has no `rev` at all, so both
+the URL and merged assertions were skipped. A declaration this script cannot
+interpret is a failure, never a silent skip.
+
+Run from the repository root, or pass the root as the one argument.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import sys
+import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 OFFICIAL_REPOSITORY = "https://github.com/nautechsystems/nautilus_trader.git"
 OFFICIAL_API_REPO = "nautechsystems/nautilus_trader"
+DEPENDENCY_PREFIX = "nautilus-"
 
 MANIFESTS = (
     Path("Cargo.toml"),
@@ -35,15 +43,9 @@ MANIFESTS = (
 )
 CAPABILITY_MANIFEST = Path("ci/nautilus-source-capabilities.toml")
 
-DEPENDENCY = re.compile(
-    r'^(?P<name>nautilus-[a-z0-9-]+)\s*=\s*\{[^}]*?'
-    r'git\s*=\s*"(?P<url>[^"]+)"[^}]*?'
-    r'rev\s*=\s*"(?P<rev>[0-9a-f]{40})"',
-    re.MULTILINE,
-)
-CAPABILITY_REVISION = re.compile(
-    r'^revision\s*=\s*"(?P<rev>[0-9a-f]{40})"', re.MULTILINE
-)
+# Every table a cargo manifest can declare dependencies in. `target.*` and
+# `workspace` are walked explicitly below.
+DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
 
 
 def fail(message: str) -> None:
@@ -74,33 +76,97 @@ def api(path: str) -> dict:
     raise AssertionError("unreachable")
 
 
+def is_nautilus(name: str, spec: object) -> bool:
+    """A declaration is NautilusTrader's if its name or its rename target is."""
+    if name.startswith(DEPENDENCY_PREFIX):
+        return True
+    if isinstance(spec, dict):
+        renamed = spec.get("package")
+        if isinstance(renamed, str) and renamed.startswith(DEPENDENCY_PREFIX):
+            return True
+    return False
+
+
+def dependency_tables(document: dict, owner: str):
+    """Yield (owner, table) for every dependency table a manifest can hold."""
+    for key in DEPENDENCY_TABLES:
+        table = document.get(key)
+        if isinstance(table, dict):
+            yield f"{owner}{key}", table
+
+    workspace = document.get("workspace")
+    if isinstance(workspace, dict):
+        yield from dependency_tables(workspace, f"{owner}workspace.")
+
+    targets = document.get("target")
+    if isinstance(targets, dict):
+        for triple, table in targets.items():
+            if isinstance(table, dict):
+                yield from dependency_tables(table, f"{owner}target.{triple}.")
+
+
 def collect_pins() -> dict[str, list[str]]:
-    """Map revision -> the declarations pinning it, failing on a foreign URL."""
+    """Map revision -> declarations pinning it, failing on anything unpinnable."""
     pins: dict[str, list[str]] = {}
     for manifest in MANIFESTS:
         if not manifest.is_file():
             fail(f"{manifest}: expected manifest is missing")
-        text = manifest.read_text(encoding="utf-8")
-        found = list(DEPENDENCY.finditer(text))
-        if not found:
-            fail(f"{manifest}: no nautilus-* git dependency found; the pin check would be vacuous")
-        for match in found:
-            owner = f"{manifest}:{match.group('name')}"
-            if match.group("url") != OFFICIAL_REPOSITORY:
-                fail(
-                    f"{owner} must use the official repository {OFFICIAL_REPOSITORY}, "
-                    f"got {match.group('url')}"
-                )
-            pins.setdefault(match.group("rev"), []).append(owner)
+        document = tomllib.loads(manifest.read_text(encoding="utf-8"))
+
+        seen = 0
+        for table_owner, table in dependency_tables(document, ""):
+            for name, spec in table.items():
+                if not is_nautilus(name, spec):
+                    continue
+                seen += 1
+                owner = f"{manifest}:{table_owner}.{name}"
+
+                if not isinstance(spec, dict):
+                    fail(
+                        f"{owner} must be an inline table pinning the official "
+                        f"repository by revision, got {spec!r}"
+                    )
+                git = spec.get("git")
+                if git is None:
+                    fail(
+                        f"{owner} has no `git` key. Every NautilusTrader dependency must "
+                        "come from the official repository at an exact revision."
+                    )
+                if git != OFFICIAL_REPOSITORY:
+                    fail(
+                        f"{owner} must use the official repository "
+                        f"{OFFICIAL_REPOSITORY}, got {git}"
+                    )
+                for mutable in ("branch", "tag"):
+                    if mutable in spec:
+                        fail(
+                            f"{owner} pins `{mutable} = {spec[mutable]!r}`, which is mutable "
+                            "and cannot be proven merged. Pin an exact `rev` instead."
+                        )
+                revision = spec.get("rev")
+                if not isinstance(revision, str) or len(revision) != 40:
+                    fail(
+                        f"{owner} must pin a full 40-character `rev`, got {revision!r}"
+                    )
+                pins.setdefault(revision, []).append(owner)
+
+        if seen == 0:
+            fail(
+                f"{manifest}: no NautilusTrader dependency found; the pin check would "
+                "be vacuous. If the dependency was removed, remove this manifest from "
+                "MANIFESTS as well."
+            )
 
     if not CAPABILITY_MANIFEST.is_file():
         fail(f"{CAPABILITY_MANIFEST}: expected capability manifest is missing")
-    capability = CAPABILITY_REVISION.search(
-        CAPABILITY_MANIFEST.read_text(encoding="utf-8")
-    )
-    if capability is None:
-        fail(f"{CAPABILITY_MANIFEST}: no `revision` declaration found")
-    pins.setdefault(capability.group("rev"), []).append(f"{CAPABILITY_MANIFEST}:revision")
+    capability = tomllib.loads(CAPABILITY_MANIFEST.read_text(encoding="utf-8"))
+    revision = capability.get("revision")
+    if not isinstance(revision, str) or len(revision) != 40:
+        fail(
+            f"{CAPABILITY_MANIFEST}: `revision` must be a full 40-character commit, "
+            f"got {revision!r}"
+        )
+    pins.setdefault(revision, []).append(f"{CAPABILITY_MANIFEST}:revision")
     return pins
 
 
@@ -118,9 +184,8 @@ def assert_merged(revision: str, default_branch: str) -> None:
             f"{behind_by} commit(s) reachable from this revision, so the pin points at "
             "fork or otherwise unmerged work. GitHub serves fork-only commits from the "
             "official repository URL, which is why the URL and revision assertions in "
-            "build.rs pass for a pin like this. Pin a merged commit instead: use "
-            "`git merge-base <pin> upstream/" + default_branch + "` to find the "
-            "upstream commit the work branched from."
+            f"build.rs pass for a pin like this. Use `git merge-base <pin> "
+            f"upstream/{default_branch}` to find the upstream commit it branched from."
         )
     print(f"  {revision}: merged (status={status}, behind_by=0)")
 
@@ -136,15 +201,16 @@ def main() -> None:
 
     pins = collect_pins()
     total = sum(len(owners) for owners in pins.values())
-    print(f"Checking {total} pinned NautilusTrader declaration(s) across {len(pins)} revision(s).")
+    print(f"Checking {total} pinned NautilusTrader item(s) across {len(pins)} revision(s).")
 
     if len(pins) != 1:
         detail = "\n".join(
-            f"  {revision}: {', '.join(sorted(owners))}" for revision, owners in sorted(pins.items())
+            f"  {revision}: {', '.join(sorted(owners))}"
+            for revision, owners in sorted(pins.items())
         )
         fail(
-            "every NautilusTrader declaration must pin one revision; found "
-            f"{len(pins)}:\n{detail}"
+            "every NautilusTrader declaration and the capability manifest must pin one "
+            f"revision; found {len(pins)}:\n{detail}"
         )
 
     default_branch = api(f"repos/{OFFICIAL_API_REPO}").get("default_branch")
@@ -154,7 +220,7 @@ def main() -> None:
     for revision in pins:
         assert_merged(revision, default_branch)
 
-    print(f"All {total} declaration(s) pin one revision, merged into {default_branch}.")
+    print(f"All {total} item(s) pin one revision, merged into {default_branch}.")
 
 
 if __name__ == "__main__":

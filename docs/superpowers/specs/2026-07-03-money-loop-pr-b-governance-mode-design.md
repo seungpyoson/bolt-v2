@@ -26,7 +26,7 @@ Use a typed TOML declaration in the risk config:
 mode = "supervised_deposit_capped"
 ```
 
-`supervised_deposit_capped` means the operator is deliberately running without admission, provider approval limits, or an enabled loss-governor policy because the run is supervised and deposit-capped outside the node. It does not make the node safer by itself and must not be treated as a substitute for PR-A venue truth, PR-C exit clamping, or PR-D settlement booking.
+`supervised_deposit_capped` means the operator is deliberately running without admission, provider approval limits, or an enabled loss-governor policy because the run is supervised and deposit-capped outside the node. It does not make the node safer by itself and must not be treated as a substitute for PR-C exit clamping or PR-D settlement booking. It is also not a substitute for capital admission: PR-A's Bolt-owned venue-truth reader was deleted, NautilusTrader is now the sole order and position authority, and the conditions gating `enforce_submit_admission` are recorded in `specs/506-nt-position-sizer-submit/spec.md`.
 
 ## Runtime Behavior
 

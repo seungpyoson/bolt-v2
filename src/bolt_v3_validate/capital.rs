@@ -139,10 +139,15 @@ fn validate_reconciliation_completeness_attested(
     if let ProviderReconciliationCompleteness::NotAttested { unmet } =
         binding.reconciliation_completeness
     {
-        errors.push(format!(
-            "{label}.enforce_submit_admission must be false until the configured venue attests \
-             startup reconciliation completeness: {unmet}"
-        ));
+        // Every unmet condition is reported, not just the first: each is an
+        // independent reason the enforced projection can be wrong, and closing
+        // one upstream defect does not make the others safe.
+        for condition in unmet {
+            errors.push(format!(
+                "{label}.enforce_submit_admission must be false until the configured venue \
+                 attests reconciliation completeness: {condition}"
+            ));
+        }
     }
 }
 

@@ -504,7 +504,7 @@ mod tests {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         reconciliation_completeness:
             crate::bolt_v3_providers::ProviderReconciliationCompleteness::NotAttested {
-                unmet: "test fixture provider attests nothing",
+                unmet: &["test fixture provider attests nothing"],
             },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
@@ -530,7 +530,7 @@ mod tests {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         reconciliation_completeness:
             crate::bolt_v3_providers::ProviderReconciliationCompleteness::NotAttested {
-                unmet: "test fixture provider attests nothing",
+                unmet: &["test fixture provider attests nothing"],
             },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
@@ -556,7 +556,7 @@ mod tests {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         reconciliation_completeness:
             crate::bolt_v3_providers::ProviderReconciliationCompleteness::NotAttested {
-                unmet: "test fixture provider attests nothing",
+                unmet: &["test fixture provider attests nothing"],
             },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,

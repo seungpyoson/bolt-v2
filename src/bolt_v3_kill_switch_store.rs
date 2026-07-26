@@ -71,25 +71,65 @@ impl std::fmt::Display for KillSwitchRecoveryReason {
 /// `KillSwitchHaltTriggerKind`'s own deserializer, so retiring or adding a
 /// variant cannot leave a duplicated vocabulary behind to drift.
 fn names_unrepresentable_halt_trigger(bytes: &[u8]) -> bool {
-    fn walk(value: &serde_json::Value) -> bool {
-        match value {
-            serde_json::Value::Object(fields) => {
-                let unrepresentable = fields
-                    .get("trigger")
-                    .and_then(|trigger| trigger.get("kind"))
-                    .is_some_and(|kind| {
-                        kind.is_string()
-                            && serde_json::from_value::<KillSwitchHaltTriggerKind>(kind.clone())
-                                .is_err()
-                    });
-                unrepresentable || fields.values().any(walk)
-            }
-            serde_json::Value::Array(items) => items.iter().any(walk),
-            _ => false,
-        }
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+
+    // Only a store at the current schema version can be diagnosed this way; an
+    // older or newer one is a version question, not a vocabulary question.
+    if value.get("schema_version") != Some(&serde_json::json!(KILL_SWITCH_STORE_SCHEMA_VERSION)) {
+        return false;
     }
 
-    serde_json::from_slice::<serde_json::Value>(bytes).is_ok_and(|value| walk(&value))
+    let Ok(representable) = serde_json::to_value(KillSwitchHaltTriggerKind::LossGovernorBreach)
+    else {
+        return false;
+    };
+    if !substitute_unrepresentable_kinds(&mut value, &representable) {
+        return false;
+    }
+
+    // Substituting the unknown kinds and nothing else must make the whole record
+    // deserialize. Otherwise the store has some other defect and calling it an
+    // unrepresentable trigger would send the operator after the wrong thing.
+    serde_json::from_value::<PersistedKillSwitchState>(value).is_ok()
+}
+
+/// Replaces every `trigger.kind` this build cannot represent with a kind it can,
+/// reporting whether any substitution happened.
+fn substitute_unrepresentable_kinds(
+    value: &mut serde_json::Value,
+    representable: &serde_json::Value,
+) -> bool {
+    match value {
+        serde_json::Value::Object(fields) => {
+            let mut substituted = false;
+            if let Some(kind) = fields
+                .get_mut("trigger")
+                .and_then(|trigger| trigger.get_mut("kind"))
+                && kind.is_string()
+                && serde_json::from_value::<KillSwitchHaltTriggerKind>(kind.clone()).is_err()
+            {
+                *kind = representable.clone();
+                substituted = true;
+            }
+            // Deliberately not `any`: this walk mutates, so short-circuiting
+            // would leave later unknown kinds in place and the re-parse below
+            // would then blame the record instead of the vocabulary.
+            for nested in fields.values_mut() {
+                substituted |= substitute_unrepresentable_kinds(nested, representable);
+            }
+            substituted
+        }
+        serde_json::Value::Array(items) => {
+            let mut substituted = false;
+            for nested in items {
+                substituted |= substitute_unrepresentable_kinds(nested, representable);
+            }
+            substituted
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

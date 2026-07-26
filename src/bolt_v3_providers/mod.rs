@@ -463,22 +463,28 @@ pub struct ProviderBinding {
     pub reconciliation_completeness: ProviderReconciliationCompleteness,
 }
 
-/// Whether a provider's pinned adapter proves that its startup reconciliation
-/// report is complete.
+/// Whether a provider's pinned adapter proves that the order state enforced
+/// capital admission consumes is complete and not understated.
 ///
 /// This is a property of the pinned NT adapter, not of Bolt policy, so it is
-/// owned per provider binding rather than decided by the validator. It is the
-/// single home for the fact: when an adapter starts failing closed on venue
-/// state it cannot represent, flipping that provider to `AttestedByAdapter` is
-/// the one edit that lets capital admission be enforced for it.
+/// owned per provider binding rather than decided by the validator.
+///
+/// `NotAttested` carries **every** unmet condition rather than a single reason,
+/// because more than one independent upstream defect can make the same
+/// projection wrong. Flipping a provider to `AttestedByAdapter` closes all of
+/// them at once, so a reader who fixes one upstream defect must see the others
+/// listed at the edit site instead of discovering them in a spec file. Add a
+/// condition here whenever a new upstream defect gates enforcement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderReconciliationCompleteness {
-    /// The adapter fails startup reconciliation instead of returning a report
-    /// that silently omits venue orders or positions it cannot represent.
+    /// Every condition below is closed at the pinned revision: the adapter
+    /// fails startup reconciliation rather than returning a report that omits
+    /// venue state it cannot represent, and it never reports a filled quantity
+    /// below what is already known.
     AttestedByAdapter,
-    /// A report can be silently partial. `unmet` names the missing condition
-    /// and is surfaced verbatim in the startup rejection.
-    NotAttested { unmet: &'static str },
+    /// At least one condition is unmet. Each entry is surfaced verbatim in the
+    /// startup rejection; the flip is valid only once the list is empty.
+    NotAttested { unmet: &'static [&'static str] },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -624,8 +630,13 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "the pinned Polymarket adapter logs and skips venue orders and positions \
-it cannot represent, so a mass-status report can be silently partial",
+            unmet: &[
+                "the pinned Polymarket adapter logs and skips venue orders and positions it \
+cannot represent, so a mass-status report can be silently partial",
+                "the pinned Polymarket adapter caps order filled quantity against confirmed \
+fills with a zero local-filled floor, so a matched-but-unconfirmed trade understates filled \
+quantity and overstates remaining quantity",
+            ],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: polymarket::validate_client,
@@ -651,7 +662,7 @@ it cannot represent, so a mass-status report can be silently partial",
     ProviderBinding {
         key: binance::KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "no submit-admission reconciliation path is verified for this provider",
+            unmet: &["no submit-admission reconciliation path is verified for this provider"],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: binance::validate_client,
@@ -675,7 +686,7 @@ it cannot represent, so a mass-status report can be silently partial",
     ProviderBinding {
         key: hyperliquid::KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "no submit-admission reconciliation path is verified for this provider",
+            unmet: &["no submit-admission reconciliation path is verified for this provider"],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: hyperliquid::validate_client,
@@ -701,7 +712,7 @@ it cannot represent, so a mass-status report can be silently partial",
     ProviderBinding {
         key: market_data::BITMEX_KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "no submit-admission reconciliation path is verified for this provider",
+            unmet: &["no submit-admission reconciliation path is verified for this provider"],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bitmex_client,
@@ -725,7 +736,7 @@ it cannot represent, so a mass-status report can be silently partial",
     ProviderBinding {
         key: market_data::BYBIT_KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "no submit-admission reconciliation path is verified for this provider",
+            unmet: &["no submit-admission reconciliation path is verified for this provider"],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bybit_client,
@@ -749,7 +760,7 @@ it cannot represent, so a mass-status report can be silently partial",
     ProviderBinding {
         key: market_data::COINBASE_KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "no submit-admission reconciliation path is verified for this provider",
+            unmet: &["no submit-admission reconciliation path is verified for this provider"],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_coinbase_client,
@@ -773,7 +784,7 @@ it cannot represent, so a mass-status report can be silently partial",
     ProviderBinding {
         key: market_data::DERIBIT_KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "no submit-admission reconciliation path is verified for this provider",
+            unmet: &["no submit-admission reconciliation path is verified for this provider"],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_deribit_client,
@@ -797,7 +808,7 @@ it cannot represent, so a mass-status report can be silently partial",
     ProviderBinding {
         key: market_data::OKX_KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "no submit-admission reconciliation path is verified for this provider",
+            unmet: &["no submit-admission reconciliation path is verified for this provider"],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_okx_client,
@@ -821,7 +832,7 @@ it cannot represent, so a mass-status report can be silently partial",
     ProviderBinding {
         key: market_data::KRAKEN_KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "no submit-admission reconciliation path is verified for this provider",
+            unmet: &["no submit-admission reconciliation path is verified for this provider"],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_kraken_client,
@@ -845,7 +856,7 @@ it cannot represent, so a mass-status report can be silently partial",
     ProviderBinding {
         key: chainlink::KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "no submit-admission reconciliation path is verified for this provider",
+            unmet: &["no submit-admission reconciliation path is verified for this provider"],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: chainlink::validate_client,
@@ -869,7 +880,7 @@ it cannot represent, so a mass-status report can be silently partial",
     ProviderBinding {
         key: chainlink_reference::KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "no submit-admission reconciliation path is verified for this provider",
+            unmet: &["no submit-admission reconciliation path is verified for this provider"],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::Required(
             chainlink_reference::reconnect_timeout_ms_for_nt_connect_budget,
@@ -895,7 +906,7 @@ it cannot represent, so a mass-status report can be silently partial",
     ProviderBinding {
         key: polyresearch::KEY,
         reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: "no submit-admission reconciliation path is verified for this provider",
+            unmet: &["no submit-admission reconciliation path is verified for this provider"],
         },
         nt_reconnect_budget: NtReconnectBudgetCapability::Required(
             polyresearch::reconnect_timeout_ms_for_nt_connect_budget,

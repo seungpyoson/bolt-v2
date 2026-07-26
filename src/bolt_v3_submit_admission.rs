@@ -583,18 +583,19 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        if let Some(capital_admission) = inner.capital_admission.as_mut() {
-            if capital_admission
-                .venue_truth_capture_failure_observed_at_ns
-                .is_some_and(|failure_observed_at_ns| {
-                    accepted_capture_observed_at_ns > failure_observed_at_ns
-                })
-            {
-                capital_admission.venue_truth_capture_failure_source = None;
-                capital_admission.venue_truth_capture_failure_observed_at_ns = None;
-            }
-            refresh_capital_admission_state_from_components(capital_admission, components);
+        let Some(capital_admission) = inner.capital_admission.as_mut() else {
+            return;
+        };
+        if capital_admission
+            .venue_truth_capture_failure_observed_at_ns
+            .is_some_and(|failure_observed_at_ns| {
+                accepted_capture_observed_at_ns > failure_observed_at_ns
+            })
+        {
+            capital_admission.venue_truth_capture_failure_source = None;
+            capital_admission.venue_truth_capture_failure_observed_at_ns = None;
         }
+        refresh_capital_admission_state_from_components(capital_admission, components);
     }
 
     pub fn suspend_capital_admission_for_venue_truth_capture_failure(
@@ -1692,7 +1693,7 @@ impl BoltV3SubmitAdmissionState {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                     reason: evaluation
                         .capital_admission_rejection
-                        .unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected),
+                        .expect("Capital admission rejection reason missing on RejectedCapitalAdmission outcome"),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
@@ -2040,7 +2041,7 @@ impl BoltV3SubmitAdmissionState {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                     reason: evaluation
                         .capital_admission_rejection
-                        .unwrap_or(BoltV3CapitalAdmissionRejectReason::Rejected),
+                        .expect("Capital admission rejection reason missing on RejectedCapitalAdmission outcome"),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {

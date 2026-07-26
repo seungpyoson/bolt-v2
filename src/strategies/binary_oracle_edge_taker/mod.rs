@@ -7203,196 +7203,201 @@ impl BinaryOracleEdgeTaker {
             let book_impact_cap_notional = self.visible_book_notional_cap(selected_side);
             evaluation.expected_ev_per_notional = expected_ev_per_notional;
             evaluation.book_impact_cap_notional = book_impact_cap_notional;
-            if let (Some(expected_ev_per_notional), Some(book_impact_cap_notional)) =
+            let (Some(expected_ev_per_notional), Some(book_impact_cap_notional)) =
                 (expected_ev_per_notional, book_impact_cap_notional)
-            {
-                evaluation.sized_notional = Some(choose_robust_size(
-                    &self.robust_sizing_inputs(expected_ev_per_notional, book_impact_cap_notional),
-                ));
-            }
-            if let Some(sized_notional) = evaluation
+            else {
+                return evaluation;
+            };
+
+            evaluation.sized_notional = Some(choose_robust_size(
+                &self.robust_sizing_inputs(expected_ev_per_notional, book_impact_cap_notional),
+            ));
+
+            let Some(sized_notional) = evaluation
                 .sized_notional
                 .filter(|value| is_positive_finite(*value))
-            {
-                let selected_sized_probe = match self.executable_entry_probe_for_side(
-                    selected_side,
-                    order_side,
-                    sized_notional,
-                ) {
-                    Ok(probe) => {
-                        let sized_fee_uncertainty_bps = fee_uncertainty_bps.max(probe.fee_bps);
-                        let Some((selected_uncertainty_band, adjusted_probability_up)) = self
-                            .adjusted_probability_up_for_fee_uncertainty(
-                                now_ms,
-                                receive_context,
-                                selected_side,
-                                fair_probability_up,
-                                sized_fee_uncertainty_bps,
-                            )
-                        else {
-                            evaluation
-                                .pricing_blocked_by
-                                .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
-                            evaluation.selected_side = None;
-                            evaluation.sized_notional = None;
-                            evaluation.expected_ev_per_notional = None;
-                            return evaluation;
-                        };
-                        evaluation.uncertainty_band_probability = Some(selected_uncertainty_band);
-                        (probe, adjusted_probability_up)
-                    }
-                    Err(reason) => {
-                        let sized_executable_edge =
-                            BinaryOutcomeEdgeResult::blocked(selected_side, reason);
-                        evaluation.sized_worst_case_ev_bps =
-                            executable_edge_worst_case_ev_bps(Some(sized_executable_edge));
-                        evaluation.sized_executable_edge = Some(sized_executable_edge);
-                        push_executable_edge_pricing_block(
-                            &mut evaluation.pricing_blocked_by,
+            else {
+                return evaluation;
+            };
+
+            let selected_sized_probe = match self.executable_entry_probe_for_side(
+                selected_side,
+                order_side,
+                sized_notional,
+            ) {
+                Ok(probe) => {
+                    let sized_fee_uncertainty_bps = fee_uncertainty_bps.max(probe.fee_bps);
+                    let Some((selected_uncertainty_band, adjusted_probability_up)) = self
+                        .adjusted_probability_up_for_fee_uncertainty(
+                            now_ms,
+                            receive_context,
                             selected_side,
-                            Some(reason),
-                        );
-                        evaluation.selected_side = None;
-                        evaluation.sized_notional = None;
-                        evaluation.expected_ev_per_notional = None;
-                        return evaluation;
-                    }
-                };
-                let (selected_sized_probe, selected_adjusted_probability_up) = selected_sized_probe;
-                let sized_executable_edge = self.executable_edge_for_side(
-                    selected_side,
-                    fair_probability_up,
-                    selected_adjusted_probability_up,
-                    pricing_inputs.theta_scaled_min_edge_bps,
-                    selected_sized_probe,
-                );
-                evaluation.sized_worst_case_ev_bps =
-                    executable_edge_worst_case_ev_bps(Some(sized_executable_edge));
-                evaluation.sized_executable_edge = Some(sized_executable_edge);
-                if sized_executable_edge.trade_allowed {
-                    let Some(book_impact_cap_notional) = evaluation.book_impact_cap_notional else {
+                            fair_probability_up,
+                            sized_fee_uncertainty_bps,
+                        )
+                    else {
+                        evaluation
+                            .pricing_blocked_by
+                            .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
                         evaluation.selected_side = None;
                         evaluation.sized_notional = None;
                         evaluation.expected_ev_per_notional = None;
                         return evaluation;
                     };
-                    let sized_expected_ev_per_notional =
-                        sized_executable_edge.edge_bps / BPS_DENOMINATOR;
-                    evaluation.expected_ev_per_notional = Some(sized_expected_ev_per_notional);
-                    let resized_notional = choose_robust_size(&self.robust_sizing_inputs(
-                        sized_expected_ev_per_notional,
-                        book_impact_cap_notional,
-                    ));
-                    if is_positive_finite(resized_notional)
-                        && (resized_notional - sized_notional).abs()
-                            > notional_float_tolerance(sized_notional)
-                    {
-                        let resized_probe = match self.executable_entry_probe_for_side(
-                            selected_side,
-                            order_side,
-                            resized_notional,
-                        ) {
-                            Ok(probe) => probe,
-                            Err(reason) => {
-                                let resized_executable_edge =
-                                    BinaryOutcomeEdgeResult::blocked(selected_side, reason);
-                                evaluation.sized_worst_case_ev_bps =
-                                    executable_edge_worst_case_ev_bps(Some(
-                                        resized_executable_edge,
-                                    ));
-                                evaluation.sized_executable_edge = Some(resized_executable_edge);
-                                push_executable_edge_pricing_block(
-                                    &mut evaluation.pricing_blocked_by,
-                                    selected_side,
-                                    Some(reason),
-                                );
-                                evaluation.selected_side = None;
-                                evaluation.sized_notional = None;
-                                evaluation.expected_ev_per_notional = None;
-                                return evaluation;
-                            }
-                        };
-                        let resized_fee_uncertainty_bps =
-                            fee_uncertainty_bps.max(resized_probe.fee_bps);
-                        let Some((resized_uncertainty_band, resized_adjusted_probability_up)) =
-                            self.adjusted_probability_up_for_fee_uncertainty(
-                                now_ms,
-                                receive_context,
-                                selected_side,
-                                fair_probability_up,
-                                resized_fee_uncertainty_bps,
-                            )
-                        else {
-                            evaluation
-                                .pricing_blocked_by
-                                .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
-                            evaluation.selected_side = None;
-                            evaluation.sized_notional = None;
-                            evaluation.expected_ev_per_notional = None;
-                            return evaluation;
-                        };
-                        evaluation.uncertainty_band_probability = Some(resized_uncertainty_band);
-                        let resized_executable_edge = self.executable_edge_for_side(
-                            selected_side,
-                            fair_probability_up,
-                            resized_adjusted_probability_up,
-                            pricing_inputs.theta_scaled_min_edge_bps,
-                            resized_probe,
-                        );
-                        evaluation.sized_worst_case_ev_bps =
-                            executable_edge_worst_case_ev_bps(Some(resized_executable_edge));
-                        evaluation.sized_executable_edge = Some(resized_executable_edge);
-                        // The accepted (size, edge) pair must be self-consistent:
-                        // the final re-priced edge must itself support the resized
-                        // notional. A cliff-shaped book otherwise oscillates — a
-                        // small first pass fills cheap, the EV jump saturates the
-                        // resize to the full target, and the thin full-target edge
-                        // would be traded at a size it cannot support.
-                        let final_expected_ev_per_notional =
-                            resized_executable_edge.edge_bps / BPS_DENOMINATOR;
-                        let final_supported_notional =
-                            choose_robust_size(&self.robust_sizing_inputs(
-                                final_expected_ev_per_notional,
-                                book_impact_cap_notional,
-                            ));
-                        let resized_notional_supported = resized_notional
-                            <= final_supported_notional
-                                + notional_float_tolerance(final_supported_notional);
-                        if resized_executable_edge.trade_allowed && resized_notional_supported {
-                            evaluation.sized_notional = Some(resized_notional);
-                            evaluation.expected_ev_per_notional =
-                                Some(final_expected_ev_per_notional);
-                        } else if resized_executable_edge.trade_allowed {
-                            evaluation.pricing_blocked_by.push(
-                                EntryPricingBlockReason::SizedNotionalUnsupported(selected_side),
-                            );
-                            // Keep the re-priced edge evidence, but clear the
-                            // executable intent fields so submission stays
-                            // blocked for this unsupported notional.
-                            evaluation.selected_side = None;
-                            evaluation.sized_notional = None;
-                            evaluation.expected_ev_per_notional = None;
-                        } else {
-                            push_executable_edge_pricing_block(
-                                &mut evaluation.pricing_blocked_by,
-                                selected_side,
-                                resized_executable_edge.block_reason,
-                            );
-                            evaluation.selected_side = None;
-                            evaluation.sized_notional = None;
-                            evaluation.expected_ev_per_notional = None;
-                        }
-                    }
-                } else {
+                    evaluation.uncertainty_band_probability = Some(selected_uncertainty_band);
+                    (probe, adjusted_probability_up)
+                }
+                Err(reason) => {
+                    let sized_executable_edge =
+                        BinaryOutcomeEdgeResult::blocked(selected_side, reason);
+                    evaluation.sized_worst_case_ev_bps =
+                        executable_edge_worst_case_ev_bps(Some(sized_executable_edge));
+                    evaluation.sized_executable_edge = Some(sized_executable_edge);
                     push_executable_edge_pricing_block(
                         &mut evaluation.pricing_blocked_by,
                         selected_side,
-                        sized_executable_edge.block_reason,
+                        Some(reason),
                     );
                     evaluation.selected_side = None;
                     evaluation.sized_notional = None;
                     evaluation.expected_ev_per_notional = None;
+                    return evaluation;
                 }
+            };
+            let (selected_sized_probe, selected_adjusted_probability_up) = selected_sized_probe;
+            let sized_executable_edge = self.executable_edge_for_side(
+                selected_side,
+                fair_probability_up,
+                selected_adjusted_probability_up,
+                pricing_inputs.theta_scaled_min_edge_bps,
+                selected_sized_probe,
+            );
+            evaluation.sized_worst_case_ev_bps =
+                executable_edge_worst_case_ev_bps(Some(sized_executable_edge));
+            evaluation.sized_executable_edge = Some(sized_executable_edge);
+            if sized_executable_edge.trade_allowed {
+                let Some(book_impact_cap_notional) = evaluation.book_impact_cap_notional else {
+                    evaluation.selected_side = None;
+                    evaluation.sized_notional = None;
+                    evaluation.expected_ev_per_notional = None;
+                    return evaluation;
+                };
+                let sized_expected_ev_per_notional =
+                    sized_executable_edge.edge_bps / BPS_DENOMINATOR;
+                evaluation.expected_ev_per_notional = Some(sized_expected_ev_per_notional);
+                let resized_notional = choose_robust_size(&self.robust_sizing_inputs(
+                    sized_expected_ev_per_notional,
+                    book_impact_cap_notional,
+                ));
+                if is_positive_finite(resized_notional)
+                    && (resized_notional - sized_notional).abs()
+                        > notional_float_tolerance(sized_notional)
+                {
+                    let resized_probe = match self.executable_entry_probe_for_side(
+                        selected_side,
+                        order_side,
+                        resized_notional,
+                    ) {
+                        Ok(probe) => probe,
+                        Err(reason) => {
+                            let resized_executable_edge =
+                                BinaryOutcomeEdgeResult::blocked(selected_side, reason);
+                            evaluation.sized_worst_case_ev_bps =
+                                executable_edge_worst_case_ev_bps(Some(
+                                    resized_executable_edge,
+                                ));
+                            evaluation.sized_executable_edge = Some(resized_executable_edge);
+                            push_executable_edge_pricing_block(
+                                &mut evaluation.pricing_blocked_by,
+                                selected_side,
+                                Some(reason),
+                            );
+                            evaluation.selected_side = None;
+                            evaluation.sized_notional = None;
+                            evaluation.expected_ev_per_notional = None;
+                            return evaluation;
+                        }
+                    };
+                    let resized_fee_uncertainty_bps =
+                        fee_uncertainty_bps.max(resized_probe.fee_bps);
+                    let Some((resized_uncertainty_band, resized_adjusted_probability_up)) =
+                        self.adjusted_probability_up_for_fee_uncertainty(
+                            now_ms,
+                            receive_context,
+                            selected_side,
+                            fair_probability_up,
+                            resized_fee_uncertainty_bps,
+                        )
+                    else {
+                        evaluation
+                            .pricing_blocked_by
+                            .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
+                        evaluation.selected_side = None;
+                        evaluation.sized_notional = None;
+                        evaluation.expected_ev_per_notional = None;
+                        return evaluation;
+                    };
+                    evaluation.uncertainty_band_probability = Some(resized_uncertainty_band);
+                    let resized_executable_edge = self.executable_edge_for_side(
+                        selected_side,
+                        fair_probability_up,
+                        resized_adjusted_probability_up,
+                        pricing_inputs.theta_scaled_min_edge_bps,
+                        resized_probe,
+                    );
+                    evaluation.sized_worst_case_ev_bps =
+                        executable_edge_worst_case_ev_bps(Some(resized_executable_edge));
+                    evaluation.sized_executable_edge = Some(resized_executable_edge);
+                    // The accepted (size, edge) pair must be self-consistent:
+                    // the final re-priced edge must itself support the resized
+                    // notional. A cliff-shaped book otherwise oscillates — a
+                    // small first pass fills cheap, the EV jump saturates the
+                    // resize to the full target, and the thin full-target edge
+                    // would be traded at a size it cannot support.
+                    let final_expected_ev_per_notional =
+                        resized_executable_edge.edge_bps / BPS_DENOMINATOR;
+                    let final_supported_notional =
+                        choose_robust_size(&self.robust_sizing_inputs(
+                            final_expected_ev_per_notional,
+                            book_impact_cap_notional,
+                        ));
+                    let resized_notional_supported = resized_notional
+                        <= final_supported_notional
+                            + notional_float_tolerance(final_supported_notional);
+                    if resized_executable_edge.trade_allowed && resized_notional_supported {
+                        evaluation.sized_notional = Some(resized_notional);
+                        evaluation.expected_ev_per_notional =
+                            Some(final_expected_ev_per_notional);
+                    } else if resized_executable_edge.trade_allowed {
+                        evaluation.pricing_blocked_by.push(
+                            EntryPricingBlockReason::SizedNotionalUnsupported(selected_side),
+                        );
+                        // Keep the re-priced edge evidence, but clear the
+                        // executable intent fields so submission stays
+                        // blocked for this unsupported notional.
+                        evaluation.selected_side = None;
+                        evaluation.sized_notional = None;
+                        evaluation.expected_ev_per_notional = None;
+                    } else {
+                        push_executable_edge_pricing_block(
+                            &mut evaluation.pricing_blocked_by,
+                            selected_side,
+                            resized_executable_edge.block_reason,
+                        );
+                        evaluation.selected_side = None;
+                        evaluation.sized_notional = None;
+                        evaluation.expected_ev_per_notional = None;
+                    }
+                }
+            } else {
+                push_executable_edge_pricing_block(
+                    &mut evaluation.pricing_blocked_by,
+                    selected_side,
+                    sized_executable_edge.block_reason,
+                );
+                evaluation.selected_side = None;
+                evaluation.sized_notional = None;
+                evaluation.expected_ev_per_notional = None;
             }
         }
         evaluation

@@ -49,6 +49,13 @@ This slice is not production-grade by itself. It adds the live NT component feed
   startup validation rejects `enforce_submit_admission = true` while it is `NotAttested`. Closing this
   item means the upstream adapter fails reconciliation instead of skipping, then flipping that provider
   to `AttestedByAdapter`;
+- the pinned adapter reports filled quantity without capping it below what is already known. At the
+  current pin `cap_order_reports_to_confirmed_fills` in the adapter's `generate_mass_status` passes a
+  zero local-filled floor, while the sibling report path passes `cached_filled.max(tracked_filled)`.
+  Only `Confirmed` trades become fill reports, so a matched-but-unconfirmed trade caps an order's
+  filled quantity downward with nothing to stop it, overstating remaining quantity in the same
+  projection enforced admission consumes. This needs no reconciliation lookback to occur, so it is
+  independent of the completeness item above and is covered by the same `NotAttested` gate;
 - residual liability for rebuilt pre-existing orders is attributable to known Bolt reservation metadata;
 - non-empty pre-existing NT/exchange open orders can be rebuilt only when their liability is attributable to known Bolt reservations;
 - adapter-produced live collateral spendability and venue/instrument allowance evidence exists beyond the optional configured source binding and NT account free-balance fallback;

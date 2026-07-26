@@ -11,6 +11,7 @@ const EFFECT_POLICIES: &[&str] = &[
     "must_precede_new_risk",
     "observation_bounded_failure",
     "preserve_result",
+    "reconciliation_fail_closed",
     "risk_reducing_continues",
 ];
 

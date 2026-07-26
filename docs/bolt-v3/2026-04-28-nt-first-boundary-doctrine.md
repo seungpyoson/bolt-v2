@@ -5,8 +5,8 @@ Status: approved doctrine
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
 Last full NT doctrine audit rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last full NT doctrine audit date: 2026-04-28
-Last NT pin compatibility verified rev: `01d5af1427d73532f6dd9f2be77acb72f825bec9`
-Last NT pin compatibility verified date: 2026-07-25
+Last NT pin compatibility verified rev: `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
+Last NT pin compatibility verified date: 2026-07-26
 Owner: Bolt-v3 maintainers
 
 This artifact records the current Bolt-v3 boundary doctrine for
@@ -123,23 +123,22 @@ Decision to repo-rule mapping:
 The following source anchors were verified for this doctrine or a later
 compatibility slice:
 
-- `Cargo.toml` pins the official NT repository at exact commit
-  `01d5af1427d73532f6dd9f2be77acb72f825bec9` for upstream PR #4566. The
-  2026-07-25 compatibility scope covers the governed Binance boundary and
-  Polymarket reconciliation completeness required by the thin-NT decision-
-  evidence slice. It does not re-audit all NT-owned behaviors cited by this
-  doctrine.
+- `Cargo.toml` pins the official NT repository at the exact official
+  merged commit `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`. It contains upstream PR #4474. The
+  2026-07-26 compatibility scope covers the governed Binance boundary required
+  by the thin-NT decision-evidence slice. It does not re-audit all NT-owned
+  behaviors cited by this doctrine.
 - `ci/nautilus-source-capabilities.toml` binds the selected official revision
-  to its Binance Spot schema 3:5, adapter receive-timestamp, and Polymarket
-  fail-closed reconciliation behavior.
+  to its Binance Spot schema 3:5 and adapter receive-timestamp behavior.
   `build.rs` verifies the bound behavior-test
   hashes, generates the immutable Rust registry, and rejects revision drift or
   a false fact; operator TOML cannot override any capability.
 - Bolt requires unbounded, unfiltered NT startup reconciliation in every live
-  configuration. The Polymarket adapter rejects incomplete report construction,
-  and NT propagates that error before startup reaches `Running`. This
-  compatibility slice does not add or claim a separate post-startup
-  authority-revocation mode.
+  configuration. At the pinned revision the Polymarket adapter logs and skips
+  venue orders and positions it cannot map or represent rather than rejecting
+  the report, so startup reconciliation completeness is not guaranteed by NT at
+  this pin. This compatibility slice does not add or claim a separate
+  post-startup authority-revocation mode.
 - Bolt strategy state retains intent correlation and strategy-local decision
   context only. It projects current position side, quantity, average entry
   price, and open/closed state from NT's cache and does not maintain a second

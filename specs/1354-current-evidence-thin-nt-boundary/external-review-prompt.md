@@ -1,7 +1,12 @@
 # External Review Request: PR #1505 Thin NT Boundary
 
+SUPERSEDED: this prompt was written while Bolt pinned unmerged NT work and
+still asks reviewers to review an NT dependency that is no longer part of the
+change. Bolt now pins the exact official merged commit
+`e4167fd1ed5ce9db06b43a81417ab4096b8b84b6` and requires no NT PR.
+
 Conduct one fresh, read-only, class-complete architecture and implementation
-review of Bolt PR #1505 and its required NautilusTrader dependency.
+review of Bolt PR #1505.
 
 This is a closure review, not another open-ended point-finding round. Review
 the selected authority boundary across both changes, sweep siblings for every
@@ -13,8 +18,7 @@ Bolt repository: `https://github.com/seungpyoson/bolt-v2`
 Bolt PR: `https://github.com/seungpyoson/bolt-v2/pull/1505`
 Bolt base: `40423b291683effe645bde44edce91be8ef93000`
 Bolt exact head: `<INSERT_PUSHED_EXACT_HEAD>`
-NT PR: `https://github.com/nautechsystems/nautilus_trader/pull/4566`
-NT exact commit: `01d5af1427d73532f6dd9f2be77acb72f825bec9`
+NT exact commit: `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
 
 At review start, verify and report:
 

@@ -54,9 +54,6 @@ struct NautilusSourceCapabilities {
     revision: String,
     binance_spot_sbe_schema_3_5: bool,
     binance_adapter_receive_timestamps: bool,
-    polymarket_reconciliation_rejects_unmapped_open_orders: bool,
-    polymarket_reconciliation_rejects_unmapped_confirmed_fills: bool,
-    polymarket_reconciliation_rejects_unrepresentable_positions: bool,
     evidence: Vec<NautilusSourceCapabilityEvidence>,
 }
 
@@ -100,21 +97,6 @@ fn emit_nautilus_source_capabilities(manifest_dir: &Path) {
         "{}: the direct Binance runtime path requires adapter receive timestamps; a false fact requires an explicit affected-new-risk admission blocker",
         capability_path.display()
     );
-    assert!(
-        capabilities.polymarket_reconciliation_rejects_unmapped_open_orders,
-        "{}: Polymarket reconciliation must reject unmapped venue open orders",
-        capability_path.display()
-    );
-    assert!(
-        capabilities.polymarket_reconciliation_rejects_unmapped_confirmed_fills,
-        "{}: Polymarket reconciliation must reject unmapped confirmed fills",
-        capability_path.display()
-    );
-    assert!(
-        capabilities.polymarket_reconciliation_rejects_unrepresentable_positions,
-        "{}: Polymarket reconciliation must reject unrepresentable venue positions",
-        capability_path.display()
-    );
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
     let out_path = out_dir.join("nautilus_source_capabilities.rs");
@@ -130,12 +112,7 @@ fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSource
         .unwrap_or_else(|error| panic!("parsing {} should succeed: {error}", path.display()));
     assert_exact_keys(
         &document,
-        &[
-            "revision",
-            "binance_spot",
-            "polymarket_reconciliation",
-            "evidence",
-        ],
+        &["revision", "binance_spot", "evidence"],
         path,
         "root",
     );
@@ -155,25 +132,6 @@ fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSource
         &["sbe_schema_3_5", "adapter_receive_timestamps"],
         path,
         "binance_spot",
-    );
-    let polymarket_reconciliation = document
-        .get("polymarket_reconciliation")
-        .and_then(toml::Value::as_table)
-        .unwrap_or_else(|| {
-            panic!(
-                "{}: polymarket_reconciliation must be a TOML table",
-                path.display()
-            )
-        });
-    assert_exact_keys(
-        polymarket_reconciliation,
-        &[
-            "rejects_unmapped_open_orders",
-            "rejects_unmapped_confirmed_fills",
-            "rejects_unrepresentable_positions",
-        ],
-        path,
-        "polymarket_reconciliation",
     );
     let evidence = document
         .get("evidence")
@@ -215,11 +173,6 @@ fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSource
     let expected_evidence_capabilities = binance_spot
         .keys()
         .map(|key| format!("binance_spot.{key}"))
-        .chain(
-            polymarket_reconciliation
-                .keys()
-                .map(|key| format!("polymarket_reconciliation.{key}")),
-        )
         .collect::<BTreeSet<_>>();
     let actual_evidence_capabilities = evidence
         .iter()
@@ -252,24 +205,6 @@ fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSource
             path,
             "binance_spot",
         ),
-        polymarket_reconciliation_rejects_unmapped_open_orders: required_toml_bool(
-            polymarket_reconciliation,
-            "rejects_unmapped_open_orders",
-            path,
-            "polymarket_reconciliation",
-        ),
-        polymarket_reconciliation_rejects_unmapped_confirmed_fills: required_toml_bool(
-            polymarket_reconciliation,
-            "rejects_unmapped_confirmed_fills",
-            path,
-            "polymarket_reconciliation",
-        ),
-        polymarket_reconciliation_rejects_unrepresentable_positions: required_toml_bool(
-            polymarket_reconciliation,
-            "rejects_unrepresentable_positions",
-            path,
-            "polymarket_reconciliation",
-        ),
         evidence,
     }
 }
@@ -291,28 +226,31 @@ fn validate_nautilus_manifest_binding(
                 cargo_path.display()
             )
         });
-    for dependency_name in ["nautilus-binance", "nautilus-polymarket"] {
-        let owner = format!("dependencies.{dependency_name}");
-        let dependency = dependencies
-            .get(dependency_name)
-            .and_then(toml::Value::as_table)
-            .unwrap_or_else(|| panic!("{}: {owner} must be a TOML table", cargo_path.display()));
-        let git = required_toml_string(dependency, "git", cargo_path, &owner);
-        let revision = required_toml_string(dependency, "rev", cargo_path, &owner);
-        assert_eq!(
-            git,
-            OFFICIAL_NAUTILUS_REPOSITORY,
-            "{}: {owner} must use the official repository",
-            cargo_path.display()
-        );
-        assert_eq!(
-            revision,
-            capabilities.revision,
-            "{}: revision must equal {owner}.rev in {}",
-            NAUTILUS_SOURCE_CAPABILITIES_MANIFEST,
-            cargo_path.display()
-        );
-    }
+    let binance = dependencies
+        .get("nautilus-binance")
+        .and_then(toml::Value::as_table)
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: dependencies.nautilus-binance must be a TOML table",
+                cargo_path.display()
+            )
+        });
+    let git = required_toml_string(binance, "git", cargo_path, "dependencies.nautilus-binance");
+    let revision =
+        required_toml_string(binance, "rev", cargo_path, "dependencies.nautilus-binance");
+    assert_eq!(
+        git,
+        OFFICIAL_NAUTILUS_REPOSITORY,
+        "{}: dependencies.nautilus-binance must use the official repository",
+        cargo_path.display()
+    );
+    assert_eq!(
+        revision,
+        capabilities.revision,
+        "{}: revision must equal dependencies.nautilus-binance.rev in {}",
+        NAUTILUS_SOURCE_CAPABILITIES_MANIFEST,
+        cargo_path.display()
+    );
     let test_targets = cargo
         .get("test")
         .and_then(toml::Value::as_array)
@@ -395,16 +333,10 @@ pub const NAUTILUS_SOURCE_CAPABILITIES: NautilusSourceCapabilityRegistry =\n\
         revision: {:?},\n\
         binance_spot_sbe_schema_3_5: {},\n\
         binance_adapter_receive_timestamps: {},\n\
-        polymarket_reconciliation_rejects_unmapped_open_orders: {},\n\
-        polymarket_reconciliation_rejects_unmapped_confirmed_fills: {},\n\
-        polymarket_reconciliation_rejects_unrepresentable_positions: {},\n\
     }};\n",
         capabilities.revision,
         capabilities.binance_spot_sbe_schema_3_5,
         capabilities.binance_adapter_receive_timestamps,
-        capabilities.polymarket_reconciliation_rejects_unmapped_open_orders,
-        capabilities.polymarket_reconciliation_rejects_unmapped_confirmed_fills,
-        capabilities.polymarket_reconciliation_rejects_unrepresentable_positions,
     )
 }
 

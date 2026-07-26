@@ -853,7 +853,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `01d5af1427d73532f6dd9f2be77acb72f825bec9`
+  - current value: `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1240,15 +1240,17 @@ activation.
 Capital-admission reconstruction occurs only after NautilusTrader reports `Running`, which follows its
 startup reconciliation. The gate remains unreconciled and rejects submission until the reconstruction
 from the reconciled NT cache, current evidence, and provider-only collateral allowance succeeds.
-NautilusTrader's Polymarket mass-status construction fails if any venue open order cannot be mapped into
-its instrument universe or any current venue position cannot be represented as an NT quantity; Bolt does
-not query or reconcile venue orders, positions, balances, or fills again. Every Bolt live configuration
-requires unbounded, unfiltered NT startup reconciliation. The Polymarket adapter returns an error instead
-of a partial report when relevant venue state cannot be represented, and NT's startup path propagates that
-error before the node reaches `Running`. Every open NT order must have a unique client-order ID with
-committed admission attribution. A startup reconciliation or Bolt reconstruction failure keeps admission
-unreconciled rather than opening the gate from incomplete state. Bolt does not claim or configure a
-separate continuous-reconciliation authority mode.
+At the pinned revision NautilusTrader's Polymarket mass-status construction is not fail-closed: a venue
+open order whose instrument cannot be mapped into the instrument universe, and a venue position that
+cannot be represented as an NT quantity, are logged and skipped, so the returned report can be silently
+partial (`crates/adapters/polymarket/src/execution/reconciliation.rs` at the pinned revision). Bolt does
+not query or reconcile venue orders, positions, balances, or fills again, so at this pin Bolt cannot
+distinguish a complete mass-status report from a partial one. Startup reconciliation completeness is
+therefore an open boundary question at this pin, not a guarantee this document asserts. Every Bolt live
+configuration requires unbounded, unfiltered NT startup reconciliation. Every open NT order must have a
+unique client-order ID with committed admission attribution. A startup reconciliation or Bolt
+reconstruction failure keeps admission unreconciled rather than opening the gate from incomplete state.
+Bolt does not claim or configure a separate continuous-reconciliation authority mode.
 
 Committed reservation-fill evidence is the sole duplicate identity authority. The identity is the
 client-order ID, reservation ID, trade ID, instrument, side, and decimal quantity. Re-delivery of the
@@ -1421,7 +1423,7 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`01d5af1427d73532f6dd9f2be77acb72f825bec9`. WebSocket frames flow through
+`e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows the handler
 capturing one local clock value per decoded message and supplying it to
@@ -1564,11 +1566,9 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins the official NautilusTrader repository at
-exact commit `01d5af1427d73532f6dd9f2be77acb72f825bec9` for upstream PR #4566.
-That commit contains the Binance Spot SBE schema 3:5 instrument-loading fix,
-schema 3:5 request negotiation, adapter receive-clock ownership, and
-fail-closed Polymarket reconciliation for unmapped orders/fills and
-unrepresentable positions.
+exact official commit `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`, merged upstream.
+That official commit contains the Binance Spot SBE schema 3:5 instrument-loading
+fix, schema 3:5 request negotiation, and adapter receive-clock ownership.
 The pin carries Polymarket CLOB V2 adapter support, version-tolerant Binance
 Spot REST SBE decode within schema id 3, and the Hyperliquid HIP-4 metadata
 path. The compatibility

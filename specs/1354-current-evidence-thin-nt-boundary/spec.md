@@ -2,7 +2,9 @@
 
 **Issue**: [#1354](https://github.com/seungpyoson/bolt-v2/issues/1354)
 **Bolt PR**: [#1505](https://github.com/seungpyoson/bolt-v2/pull/1505)
-**Required NT PR**: [nautilus_trader#4566](https://github.com/nautechsystems/nautilus_trader/pull/4566)
+**Required NT PR**: none. Bolt pins the exact official merged commit
+`e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`, so this slice depends on no unmerged
+upstream work. See "Complete reconciliation is not an NT guarantee at this pin".
 **Branch**: `codex/1354-current-evidence-rebuild`
 **Status**: Implemented; internal adversarial review and exact-head verification pending
 
@@ -40,27 +42,30 @@ compatibility path, alternate venue reconciliation, or second order ledger.
 | Order existence/status | NT cache | Read a post-reconciliation snapshot | Keep a parallel live-order set |
 | Fill/remaining quantity | NT order and fill state | Derive current reservation liability | Rebuild progress from callback history |
 | Positions/accounts/portfolio | NT | Read a canonical snapshot | Maintain a competing position or balance reducer |
-| Venue reconciliation | NT | Require successful, complete reconciliation | Query venue orders and reconcile them again |
+| Venue reconciliation | NT | Require successful reconciliation; completeness is unverifiable at this pin (section 1) | Query venue orders and reconcile them again |
 | Polymarket collateral allowance | Provider REST fact | Supply the approval allowance missing from NT | Supply balances or carry order, fill, or position lifecycle |
 | Action authorization | Bolt decision evidence | Prove Bolt admitted an NT order | Infer authorization from NT state alone |
 | Reservation/admission policy | Bolt | Join attributed NT orders to configured policy | Redefine NT lifecycle |
 
 ## Selected Architecture
 
-### 1. Complete reconciliation is an NT guarantee
+### 1. Complete reconciliation is not an NT guarantee at this pin
 
-The Polymarket adapter previously returned successful partial reconciliation
-reports when venue open orders or relevant confirmed fills referenced
-instruments absent from NT's loaded map. It could also omit an unrepresentable
-current position. That cannot be repaired safely in Bolt without rebuilding NT
-reconciliation.
+The Polymarket adapter returns successful partial reconciliation reports when
+venue open orders or relevant confirmed fills reference instruments absent from
+NT's loaded map. It can also omit an unrepresentable current position. At the
+pinned revision those cases are logged and skipped rather than raised
+(`crates/adapters/polymarket/src/execution/reconciliation.rs`), so a mass-status
+report can be silently partial. That cannot be repaired safely in Bolt without
+rebuilding NT reconciliation, which this slice explicitly does not do.
 
-The required upstream fix is `nautilus_trader#4566`. The shared NT order and
-fill report builders now return an error when any venue open order or relevant
-confirmed fill cannot be mapped, so every reconciliation caller must propagate
-the incomplete-universe failure. Mass-status generation also fails when any
-current position cannot be represented. Bolt pins the exact
-official-repository commit containing that behavior.
+This is an accepted open gap, not a solved problem. Bolt pins the exact official
+merged commit `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6` and therefore cannot
+distinguish a complete report from a partial one. The upstream change that would
+close it is not merged and is deliberately outside this slice; until it lands,
+the reconciliation completeness the authority contract above depends on is a
+requirement Bolt states but cannot verify. Whether shipping on that basis is
+acceptable is a review decision, not an implementation detail.
 
 When capital admission is enforced, Bolt also requires an admission-safe NT
 configuration:
@@ -267,9 +272,9 @@ Tests verify behavior, not source text.
 ## Scope Relations
 
 This is the thin-NT-boundary closure required for PR #1505's current-only
-decision-evidence slice. The NT correctness change is isolated in
-`nautilus_trader#4566`; Bolt consumes it through an exact official-repository
-pin.
+decision-evidence slice. Bolt consumes NT through an exact official-repository
+pin at a merged commit. The NT adapter-completeness correction is out of scope
+for this slice and is not a dependency of it.
 
 Issue #1385 retains rotation, total retained capacity, retirement, durable
 ordinals, and restart append-retry exact-once. Live-cutover quiescence,

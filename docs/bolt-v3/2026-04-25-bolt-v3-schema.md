@@ -395,7 +395,7 @@ All pinned `LiveDataEngineConfig` fields are explicit in TOML and mapped into th
 
 Runtime-support guard fields are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
 
-- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `01d5af1427d73532f6dd9f2be77acb72f825bec9`
+- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
 
 | Field | Type / Rule | Maps to |
 |---|---|---|
@@ -411,7 +411,7 @@ Runtime-support guard fields are still required in TOML at the only accepted val
 | `emit_quotes_from_book_depths` | boolean | `LiveDataEngineConfig.emit_quotes_from_book_depths` |
 | `external_clients` | array of valid NT client IDs; empty maps to `None` | `LiveDataEngineConfig.external_clients` |
 | `debug` | boolean | `LiveDataEngineConfig.debug` |
-| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `01d5af1427d73532f6dd9f2be77acb72f825bec9` | `LiveDataEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6` | `LiveDataEngineConfig.qsize` |
 
 ### `[nautilus.exec_engine]`
 
@@ -422,7 +422,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - `snapshot_orders = false`
 - `snapshot_positions = false`
 - `purge_from_database = false`
-- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `01d5af1427d73532f6dd9f2be77acb72f825bec9`
+- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
 
 Every Bolt live configuration must give NT a complete startup reconciliation universe;
 this requirement is unconditional because NT owns order and position lifecycle even when Bolt capital
@@ -506,7 +506,7 @@ continuous-reconciliation authority mode.
 | `purge_account_events_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.purge_account_events_lookback_mins` |
 | `purge_from_database` | must be `false` | `LiveExecEngineConfig.purge_from_database` |
 | `own_books_audit_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.own_books_audit_interval_secs` |
-| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `01d5af1427d73532f6dd9f2be77acb72f825bec9` | `LiveExecEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6` | `LiveExecEngineConfig.qsize` |
 | `allow_overfills` | boolean | `LiveExecEngineConfig.allow_overfills` |
 | `manage_own_order_books` | boolean | `LiveExecEngineConfig.manage_own_order_books` |
 
@@ -593,7 +593,7 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - type: positive integer
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.qsize`
-- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `01d5af1427d73532f6dd9f2be77acb72f825bec9`
+- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
 
 ### `[logging]`
 

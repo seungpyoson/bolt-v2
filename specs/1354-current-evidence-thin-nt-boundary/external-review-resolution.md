@@ -1,6 +1,9 @@
 # External Review Resolution: PR #1505 Thin NT Boundary
 
-**Status**: Internal review and exact-head verification pending
+**Status**: SUPERSEDED. This record adjudicates a round conducted while Bolt
+pinned unmerged NT work. Bolt now pins the exact official merged commit
+`e4167fd1ed5ce9db06b43a81417ab4096b8b84b6` and requires no NT PR, so the NT
+findings below no longer describe the change under review.
 **Review scope**: [spec.md](spec.md), [plan.md](plan.md), Bolt PR #1505, and
 [NT PR #4566](https://github.com/nautechsystems/nautilus_trader/pull/4566)
 **Protocol**: [external-review-prompt.md](external-review-prompt.md)
@@ -16,7 +19,7 @@ Complete only after local findings are resolved and the Bolt head is pushed:
 - Bolt base/merge base:
   `40423b291683effe645bde44edce91be8ef93000`
 - NT exact commit:
-  `01d5af1427d73532f6dd9f2be77acb72f825bec9`
+  `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
 - clean-worktree confirmation: pending
 - exact-head advisory result: pending
 - specification hashes: pending

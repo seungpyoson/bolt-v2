@@ -2,7 +2,8 @@
 
 **Issue**: [#1354](https://github.com/seungpyoson/bolt-v2/issues/1354)
 **Bolt PR**: [#1505](https://github.com/seungpyoson/bolt-v2/pull/1505)
-**Required NT PR**: [nautilus_trader#4566](https://github.com/nautechsystems/nautilus_trader/pull/4566)
+**Required NT PR**: none. Bolt pins the exact official merged commit
+`e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`.
 **Specification**: [spec.md](spec.md)
 **Status**: Implementation in progress; verification and review gates pending
 
@@ -21,33 +22,26 @@ fallback, or compatibility lane.
 
 ## Dependency Shape
 
-This work has two reviewable changes:
+This work is one reviewable change:
 
-1. **NT PR #4566**: make the shared Polymarket order and fill reconciliation
-   builders fail if a venue open order or relevant confirmed fill is missing
-   from NT's instrument map; fail mass status if a current position cannot be
-   represented.
-2. **Bolt PR #1505**: pin that exact official NT commit, delete Bolt's
+1. **Bolt PR #1505**: pin an exact official NT commit, delete Bolt's
    compensating reconciliation, and consume only post-reconciliation NT state.
 
-The NT change owns adapter completeness. The Bolt change owns admission and
-evidence. Neither side duplicates the other.
+Adapter completeness remains NT-owned and is not addressed here. The upstream
+change that would make unmapped open orders, relevant confirmed fills, and
+unrepresentable positions fail reconciliation is not merged, so at this pin
+adapter completeness is an accepted open gap rather than a delivered guarantee.
+Bolt does not add a compensating reconciliation layer to cover it.
 
 ## Dependency-Ordered Implementation
 
-### Phase 1 — Close the NT adapter boundary
+### Phase 1 — Pin the official NT boundary
 
-- Return `Result` from the shared order/fill reconciliation builders so callers
-  cannot discard an omission side channel.
-- Propagate unmapped venue open-order and relevant confirmed-fill failures
-  through every builder caller, including mass status.
-- Test the builder and execution-client failure boundaries.
-- Return an error instead of silently skipping an unrepresentable current
-  position, and test that failure.
-- Push the focused fork branch and open `nautilus_trader#4566` against
-  `develop`.
-- Pin Bolt and BTE to the exact commit through the official NT repository URL.
+- Pin Bolt and BTE to an exact official, merged NT commit through the official
+  NT repository URL.
 - Update the governed source-capability revision.
+- Declare no source capability the pinned revision does not actually provide;
+  adapter reconciliation completeness is not declared at this pin.
 
 Evidence:
 
@@ -166,8 +160,8 @@ Evidence:
 
 | Requirement | Evidence |
 |---|---|
-| NT owns reconciliation | NT #4566 behavior test; Bolt call-graph review |
-| Complete NT reconciliation universe | unmapped open order/fill or unrepresentable position fails reconciliation |
+| NT owns reconciliation | Bolt call-graph review |
+| Complete NT reconciliation universe | NOT delivered at this pin; open gap recorded in spec.md section 1 |
 | Admission-safe NT config | table test for every narrowing option |
 | Post-reconciliation projection | `Starting`/`Running` request timing test |
 | Events are triggers only | unchanged snapshot + callback permutations |
@@ -197,7 +191,6 @@ Stop and revise the design if:
 
 The slice is ready for external review only when:
 
-- NT #4566 is reviewable and its focused test passes;
 - Bolt compiles against its exact official-repository commit;
 - every spec requirement has named evidence;
 - all focused and full root/BTE verification passes;

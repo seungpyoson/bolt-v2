@@ -502,10 +502,7 @@ mod tests {
 
     static FAKE_UPDOWN_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
-        reconciliation_completeness:
-            crate::bolt_v3_providers::ProviderReconciliationCompleteness::NotAttested {
-                unmet: &["test fixture provider attests nothing"],
-            },
+        reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[updown::KEY],
@@ -528,10 +525,7 @@ mod tests {
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
-        reconciliation_completeness:
-            crate::bolt_v3_providers::ProviderReconciliationCompleteness::NotAttested {
-                unmet: &["test fixture provider attests nothing"],
-            },
+        reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[],
@@ -554,10 +548,7 @@ mod tests {
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
-        reconciliation_completeness:
-            crate::bolt_v3_providers::ProviderReconciliationCompleteness::NotAttested {
-                unmet: &["test fixture provider attests nothing"],
-            },
+        reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[],

@@ -1448,10 +1448,13 @@ rejects a false recorded fact instead of silently using the direct path.
 `build.rs` cannot prove that a pinned revision is merged upstream: a fork-only
 revision is fetchable through the official repository URL because GitHub serves
 it from the shared fork network, so the URL and revision assertions pass for
-unmerged fork work. Mergedness is enforced by the `nautilus-pin` CI lane, which
-asserts every pinned `nautilus-*` revision in both the root and
-backtesting-vertical-slice manifests is an ancestor of the official upstream
-default branch.
+unmerged fork work. Mergedness is enforced by the `nautilus-pin` CI lane. It discovers every
+manifest and lockfile in the tree rather than listing them, treats lockfiles as
+what cargo actually resolved so `[patch]` and `[replace]` overrides cannot hide,
+fails on any NautilusTrader reference it cannot interpret, and requires every
+such reference to name one revision that is an ancestor of the official upstream
+default branch. Its bypass controls run in the same lane, so a shape that once
+defeated the check cannot silently return.
 
 Polymarket reconciliation completeness is deliberately not recorded as a source
 capability. No merged upstream revision provides it, so declaring it would

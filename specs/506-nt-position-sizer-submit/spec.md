@@ -45,17 +45,17 @@ This slice is not production-grade by itself. It adds the live NT component feed
   still returns a successful mass status, so the reconciled NT open-order set can silently omit live
   liability. Bolt reads only that set and cannot detect the omission, and this slice removed the
   independent venue-truth cross-check that previously read venue open orders directly. This is
-  machine-enforced: `ProviderBinding::reconciliation_completeness` carries the fact per provider and
-  startup validation rejects `enforce_submit_admission = true` while it is `NotAttested`. Closing this
-  item means the upstream adapter fails reconciliation instead of skipping, then flipping that provider
-  to `AttestedByAdapter`;
+  machine-enforced: `ProviderBinding::reconciliation_unmet` lists the open conditions per provider and
+  startup validation rejects `enforce_submit_admission = true` while that list is non-empty. Emptying
+  it asserts that **every** listed condition is closed, not just this one, and asserts it about the
+  NautilusTrader revision pinned at that moment, so a later pin bump requires re-establishing it;
 - the pinned adapter reports filled quantity without capping it below what is already known. At the
   current pin `cap_order_reports_to_confirmed_fills` in the adapter's `generate_mass_status` passes a
   zero local-filled floor, while the sibling report path passes `cached_filled.max(tracked_filled)`.
   Only `Confirmed` trades become fill reports, so a matched-but-unconfirmed trade caps an order's
   filled quantity downward with nothing to stop it, overstating remaining quantity in the same
   projection enforced admission consumes. This needs no reconciliation lookback to occur, so it is
-  independent of the completeness item above and is covered by the same `NotAttested` gate;
+  independent of the completeness item above and is listed as its own condition on the same gate;
 - residual liability for rebuilt pre-existing orders is attributable to known Bolt reservation metadata;
 - non-empty pre-existing NT/exchange open orders can be rebuilt only when their liability is attributable to known Bolt reservations;
 - adapter-produced live collateral spendability and venue/instrument allowance evidence exists beyond the optional configured source binding and NT account free-balance fallback;

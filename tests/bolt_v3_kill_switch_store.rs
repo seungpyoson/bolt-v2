@@ -414,6 +414,37 @@ fn unreadable_bytes_remain_corrupt_evidence() {
 }
 
 #[test]
+fn retired_trigger_plus_invalid_loss_snapshot_remains_corrupt_evidence() {
+    // The record deserializes once the retired kind is substituted, but the loss
+    // snapshot is validated separately on the normal load path and is corrupt
+    // here. Stopping at "it deserializes" would blame the retired subsystem for
+    // an unrelated defect, so the classifier must mirror that validation too.
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    fs::write(
+        &path,
+        br#"{"schema_version":2,"state":{"Halted":{"halt_id":"retired-halt","trigger":{
+             "kind":"BasketExecutionStuck","source":"basket-execution",
+             "source_timestamp_unix_nanos":1000,"reason":"basket execution stuck"}}},
+             "loss_protection":{"daily_bucket":null,"daily_realized_pnl":"not-a-decimal",
+             "cumulative_position_pnl":{},"closed_position_pnl":{},
+             "adjusted_position_pnl":{}}}"#,
+    )
+    .expect("invalid-loss-snapshot fixture should write");
+    let store = KillSwitchStore::new(path, 65_536);
+
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("store with an invalid loss snapshot should load a fail-closed record"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: KillSwitchRecoveryReason::CorruptEvidence,
+            state: None,
+        }
+    );
+}
+
+#[test]
 fn retired_trigger_plus_structural_damage_remains_corrupt_evidence() {
     // A retired trigger kind is only the diagnosis when it is the *sole* reason
     // the record will not load. Here the trigger also omits the required

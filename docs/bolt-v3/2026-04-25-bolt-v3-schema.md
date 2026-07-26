@@ -424,7 +424,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - `purge_from_database = false`
 - `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
 
-Every Bolt live configuration must give NT a complete startup reconciliation universe;
+Every Bolt live configuration must give NT an unbounded, unfiltered startup reconciliation scope;
 this requirement is unconditional because NT owns order and position lifecycle even when Bolt capital
 admission is disabled. Validation therefore requires `reconciliation = true`,
 `reconciliation_lookback_mins = 0`, empty
@@ -432,10 +432,12 @@ admission is disabled. Validation therefore requires `reconciliation = true`,
 `filter_unclaimed_external_orders = false`, `filter_position_reports = false`,
 `generate_missing_orders = true`, positive open-order and position check intervals, and unbounded
 ongoing-check lookback.
-The pinned NT Polymarket adapter fails
+The pinned NT Polymarket adapter does not fail
 reconciliation when venue orders, confirmed fills, or positions cannot be
-represented in NT. NT's startup path propagates that error instead of returning
-a partial startup snapshot. After NT reaches `Running`, Bolt projects the canonical NT
+represented in NT: it logs and skips them and still returns a successful
+mass status, so a startup snapshot can be silently partial. Bolt cannot detect
+the omission, which is why `enforce_submit_admission` is refused while the
+provider lists open reconciliation conditions. After NT reaches `Running`, Bolt projects the canonical NT
 cache and requires every admission-relevant open order to join exactly one
 committed Bolt authorization before admission can become reconciled. Bolt does
 not perform a second raw-venue reconciliation or configure a separate NT

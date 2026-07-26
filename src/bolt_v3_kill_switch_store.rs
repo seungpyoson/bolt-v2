@@ -90,9 +90,19 @@ fn names_unrepresentable_halt_trigger(bytes: &[u8]) -> bool {
     }
 
     // Substituting the unknown kinds and nothing else must make the whole record
-    // deserialize. Otherwise the store has some other defect and calling it an
+    // load. Otherwise the store has some other defect and calling it an
     // unrepresentable trigger would send the operator after the wrong thing.
-    serde_json::from_value::<PersistedKillSwitchState>(value).is_ok()
+    let Ok(persisted) = serde_json::from_value::<PersistedKillSwitchState>(value) else {
+        return false;
+    };
+
+    // Deserializing is not the whole load: the loss snapshot is validated
+    // separately below, so a record that is semantically corrupt there must stay
+    // corrupt evidence. Mirror that check rather than stopping at serde.
+    match persisted.loss_protection {
+        Some(snapshot) => KillSwitchLossProtectionSnapshot::try_from(snapshot).is_ok(),
+        None => true,
+    }
 }
 
 /// Replaces every `trigger.kind` this build cannot represent with a kind it can,

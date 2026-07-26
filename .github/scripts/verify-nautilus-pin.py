@@ -1,32 +1,36 @@
 #!/usr/bin/env python3
-"""Assert every pinned NautilusTrader dependency is merged upstream.
+"""Assert every NautilusTrader revision this repository can build is merged upstream.
 
-`build.rs` already asserts that the governed capability manifest revision equals
-the `nautilus-binance` pin and that the dependency URL is the official
-repository. Neither assertion can prove the revision is *merged*: GitHub serves
-fork-only commits from the upstream repository URL through the shared fork
-network, so a pin to unmerged fork work satisfies both checks and builds green.
-That is not hypothetical -- it is the drift this lane exists to catch.
+`build.rs` asserts that the governed capability manifest revision equals the
+`nautilus-binance` pin and that the dependency URL is the official repository.
+Neither proves the revision is *merged*: GitHub serves fork-only commits from
+the upstream repository URL through the shared fork network, so a pin to
+unmerged fork work satisfies both checks and builds green. That is the drift
+this lane exists to catch, and `build.rs` cannot catch it because proving
+mergedness needs the network and builds must stay hermetic.
 
-`build.rs` cannot make the check itself, because proving mergedness needs the
-network and builds must stay hermetic. So it lives here, and it covers every
-NautilusTrader declaration in every manifest rather than the single dependency
-`build.rs` binds.
+Design note, learned the hard way across three review rounds. Every previous
+version of this check enumerated what to inspect and was bypassed by a shape it
+did not enumerate: one hard-coded dependency, then a regex that missed reordered
+inline-table keys and `branch` pins, then a structural walk that missed `[patch]`
+and any manifest outside a hard-coded pair. So this version enumerates nothing:
 
-Manifests are parsed structurally with `tomllib`, never by pattern matching. An
-earlier regex-based version of this script was bypassed two ways: writing the
-inline table as `{ rev = "...", git = "..." }` (valid TOML, any key order) made
-the declaration invisible, and a `branch`/`tag` pin has no `rev` at all, so both
-the URL and merged assertions were skipped. A declaration this script cannot
-interpret is a failure, never a silent skip.
+  * manifests and lockfiles are **discovered**, never listed;
+  * lockfiles are read as *resolution truth*, which is what cargo actually
+    builds and therefore reflects `[patch]` and `[replace]` overrides;
+  * manifests are read for *declared intent*, including the override tables;
+  * anything referencing NautilusTrader that cannot be interpreted is a
+    failure, never a silent skip.
 
-Run from the repository root, or pass the root as the one argument.
+Run from the repository root, pass the root as an argument, or pass
+`--self-test` to run the bypass-control suite.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tomllib
 import urllib.error
@@ -35,17 +39,14 @@ from pathlib import Path
 
 OFFICIAL_REPOSITORY = "https://github.com/nautechsystems/nautilus_trader.git"
 OFFICIAL_API_REPO = "nautechsystems/nautilus_trader"
-DEPENDENCY_PREFIX = "nautilus-"
-
-MANIFESTS = (
-    Path("Cargo.toml"),
-    Path("crates/backtesting-vertical-slice/Cargo.toml"),
-)
+# A real unmerged fork revision, used by the online self-test control.
+FORK_REVISION = "01d5af1427d73532f6dd9f2be77acb72f825bec9"
+NAUTILUS = "nautilus"
 CAPABILITY_MANIFEST = Path("ci/nautilus-source-capabilities.toml")
+SKIP_DIRS = {"target", ".git", "node_modules", ".worktrees"}
 
-# Every table a cargo manifest can declare dependencies in. `target.*` and
-# `workspace` are walked explicitly below.
-DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
+# `git+<url>?rev=<rev>#<resolved>` as Cargo.lock records a git source.
+LOCK_SOURCE = re.compile(r"^git\+(?P<url>[^?#]+)(?:\?(?P<query>[^#]*))?(?:#(?P<resolved>.*))?$")
 
 
 def fail(message: str) -> None:
@@ -76,86 +77,136 @@ def api(path: str) -> dict:
     raise AssertionError("unreachable")
 
 
-def is_nautilus(name: str, spec: object) -> bool:
-    """A declaration is NautilusTrader's if its name or its rename target is."""
-    if name.startswith(DEPENDENCY_PREFIX):
+def discover(filename: str) -> list[Path]:
+    """Every tracked `filename` in the tree. Discovery, so a new crate is covered."""
+    found: list[Path] = []
+    for path in Path(".").rglob(filename):
+        if any(part in SKIP_DIRS for part in path.parts):
+            continue
+        found.append(path)
+    return sorted(found)
+
+
+def mentions_nautilus(name: str, spec: object) -> bool:
+    if NAUTILUS in name:
         return True
     if isinstance(spec, dict):
-        renamed = spec.get("package")
-        if isinstance(renamed, str) and renamed.startswith(DEPENDENCY_PREFIX):
-            return True
+        for key in ("package", "git"):
+            value = spec.get(key)
+            if isinstance(value, str) and NAUTILUS in value:
+                return True
     return False
 
 
 def dependency_tables(document: dict, owner: str):
-    """Yield (owner, table) for every dependency table a manifest can hold."""
-    for key in DEPENDENCY_TABLES:
+    """Yield (owner, table) for every table that can name a dependency source.
+
+    Includes the override tables `[patch.*]` and `[replace]`: those change what
+    cargo builds without touching the dependency block, which is precisely why a
+    walk that skips them can pass while a fork is compiled.
+    """
+    for key in ("dependencies", "dev-dependencies", "build-dependencies", "replace"):
         table = document.get(key)
         if isinstance(table, dict):
             yield f"{owner}{key}", table
 
-    workspace = document.get("workspace")
-    if isinstance(workspace, dict):
-        yield from dependency_tables(workspace, f"{owner}workspace.")
+    for container in ("workspace",):
+        nested = document.get(container)
+        if isinstance(nested, dict):
+            yield from dependency_tables(nested, f"{owner}{container}.")
 
-    targets = document.get("target")
-    if isinstance(targets, dict):
-        for triple, table in targets.items():
-            if isinstance(table, dict):
-                yield from dependency_tables(table, f"{owner}target.{triple}.")
+    for container in ("target", "patch"):
+        nested = document.get(container)
+        if isinstance(nested, dict):
+            for selector, table in nested.items():
+                if not isinstance(table, dict):
+                    continue
+                if container == "patch":
+                    yield f"{owner}patch.{selector}", table
+                else:
+                    yield from dependency_tables(table, f"{owner}target.{selector}.")
+
+
+def check_declaration(owner: str, spec: object, pins: dict[str, list[str]]) -> None:
+    if not isinstance(spec, dict):
+        fail(
+            f"{owner} references NautilusTrader but is not an inline table pinning the "
+            f"official repository by revision, got {spec!r}"
+        )
+    git = spec.get("git")
+    if git is None:
+        fail(
+            f"{owner} references NautilusTrader with no `git` key. Every NautilusTrader "
+            "source must come from the official repository at an exact revision."
+        )
+    if git != OFFICIAL_REPOSITORY:
+        fail(f"{owner} must use the official repository {OFFICIAL_REPOSITORY}, got {git}")
+    for mutable in ("branch", "tag"):
+        if mutable in spec:
+            fail(
+                f"{owner} pins `{mutable} = {spec[mutable]!r}`, which is mutable and cannot "
+                "be proven merged. Pin an exact `rev` instead."
+            )
+    revision = spec.get("rev")
+    if not isinstance(revision, str) or len(revision) != 40:
+        fail(f"{owner} must pin a full 40-character `rev`, got {revision!r}")
+    pins.setdefault(revision, []).append(owner)
+
+
+def collect_from_manifests(pins: dict[str, list[str]]) -> int:
+    seen = 0
+    for manifest in discover("Cargo.toml"):
+        document = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        for table_owner, table in dependency_tables(document, ""):
+            for name, spec in table.items():
+                if not mentions_nautilus(name, spec):
+                    continue
+                seen += 1
+                check_declaration(f"{manifest}:{table_owner}.{name}", spec, pins)
+    return seen
+
+
+def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
+    """Lockfiles record what cargo resolved, so overrides show up here."""
+    seen = 0
+    for lockfile in discover("Cargo.lock"):
+        document = tomllib.loads(lockfile.read_text(encoding="utf-8"))
+        for package in document.get("package", []):
+            name = package.get("name", "")
+            source = package.get("source")
+            if not isinstance(source, str) or NAUTILUS not in f"{name}{source}":
+                continue
+            seen += 1
+            owner = f"{lockfile}:{name}"
+            match = LOCK_SOURCE.match(source)
+            if match is None:
+                fail(f"{owner} resolves to a non-git NautilusTrader source: {source}")
+            if match.group("url") != OFFICIAL_REPOSITORY:
+                fail(
+                    f"{owner} resolves to {match.group('url')}, not the official repository "
+                    f"{OFFICIAL_REPOSITORY}"
+                )
+            query = dict(
+                pair.split("=", 1)
+                for pair in (match.group("query") or "").split("&")
+                if "=" in pair
+            )
+            revision = query.get("rev") or match.group("resolved")
+            if not revision or len(revision) != 40:
+                fail(f"{owner} does not resolve to a full 40-character revision: {source}")
+            pins.setdefault(revision, []).append(owner)
+    return seen
 
 
 def collect_pins() -> dict[str, list[str]]:
-    """Map revision -> declarations pinning it, failing on anything unpinnable."""
     pins: dict[str, list[str]] = {}
-    for manifest in MANIFESTS:
-        if not manifest.is_file():
-            fail(f"{manifest}: expected manifest is missing")
-        document = tomllib.loads(manifest.read_text(encoding="utf-8"))
-
-        seen = 0
-        for table_owner, table in dependency_tables(document, ""):
-            for name, spec in table.items():
-                if not is_nautilus(name, spec):
-                    continue
-                seen += 1
-                owner = f"{manifest}:{table_owner}.{name}"
-
-                if not isinstance(spec, dict):
-                    fail(
-                        f"{owner} must be an inline table pinning the official "
-                        f"repository by revision, got {spec!r}"
-                    )
-                git = spec.get("git")
-                if git is None:
-                    fail(
-                        f"{owner} has no `git` key. Every NautilusTrader dependency must "
-                        "come from the official repository at an exact revision."
-                    )
-                if git != OFFICIAL_REPOSITORY:
-                    fail(
-                        f"{owner} must use the official repository "
-                        f"{OFFICIAL_REPOSITORY}, got {git}"
-                    )
-                for mutable in ("branch", "tag"):
-                    if mutable in spec:
-                        fail(
-                            f"{owner} pins `{mutable} = {spec[mutable]!r}`, which is mutable "
-                            "and cannot be proven merged. Pin an exact `rev` instead."
-                        )
-                revision = spec.get("rev")
-                if not isinstance(revision, str) or len(revision) != 40:
-                    fail(
-                        f"{owner} must pin a full 40-character `rev`, got {revision!r}"
-                    )
-                pins.setdefault(revision, []).append(owner)
-
-        if seen == 0:
-            fail(
-                f"{manifest}: no NautilusTrader dependency found; the pin check would "
-                "be vacuous. If the dependency was removed, remove this manifest from "
-                "MANIFESTS as well."
-            )
+    declared = collect_from_manifests(pins)
+    resolved = collect_from_lockfiles(pins)
+    if declared == 0 or resolved == 0:
+        fail(
+            "no NautilusTrader source found "
+            f"(declared={declared}, resolved={resolved}); the pin check would be vacuous"
+        )
 
     if not CAPABILITY_MANIFEST.is_file():
         fail(f"{CAPABILITY_MANIFEST}: expected capability manifest is missing")
@@ -171,7 +222,6 @@ def collect_pins() -> dict[str, list[str]]:
 
 
 def assert_merged(revision: str, default_branch: str) -> None:
-    """A revision is merged only if the default branch is behind it by nothing."""
     comparison = api(f"repos/{OFFICIAL_API_REPO}/compare/{revision}...{default_branch}")
     behind_by = comparison.get("behind_by")
     status = comparison.get("status")
@@ -181,27 +231,19 @@ def assert_merged(revision: str, default_branch: str) -> None:
         fail(
             f"{revision} is NOT merged into {OFFICIAL_API_REPO}@{default_branch}: "
             f"status={status}, behind_by={behind_by}. The default branch lacks "
-            f"{behind_by} commit(s) reachable from this revision, so the pin points at "
-            "fork or otherwise unmerged work. GitHub serves fork-only commits from the "
-            "official repository URL, which is why the URL and revision assertions in "
-            f"build.rs pass for a pin like this. Use `git merge-base <pin> "
-            f"upstream/{default_branch}` to find the upstream commit it branched from."
+            f"{behind_by} commit(s) reachable from this revision, so it points at fork or "
+            "otherwise unmerged work. GitHub serves fork-only commits from the official "
+            "repository URL, which is why the assertions in build.rs pass for a pin like "
+            f"this. Use `git merge-base <pin> upstream/{default_branch}` to find the "
+            "upstream commit it branched from."
         )
     print(f"  {revision}: merged (status={status}, behind_by=0)")
 
 
-def main() -> None:
-    if len(sys.argv) > 2:
-        fail(f"usage: {Path(sys.argv[0]).name} [repository-root]")
-    if len(sys.argv) == 2:
-        root = Path(sys.argv[1])
-        if not root.is_dir():
-            fail(f"{root}: not a directory")
-        os.chdir(root)
-
+def verify(offline_only: bool = False) -> None:
     pins = collect_pins()
     total = sum(len(owners) for owners in pins.values())
-    print(f"Checking {total} pinned NautilusTrader item(s) across {len(pins)} revision(s).")
+    print(f"Checking {total} NautilusTrader reference(s) across {len(pins)} revision(s).")
 
     if len(pins) != 1:
         detail = "\n".join(
@@ -209,18 +251,160 @@ def main() -> None:
             for revision, owners in sorted(pins.items())
         )
         fail(
-            "every NautilusTrader declaration and the capability manifest must pin one "
-            f"revision; found {len(pins)}:\n{detail}"
+            "every NautilusTrader reference -- declared, resolved, and governed -- must name "
+            f"one revision; found {len(pins)}:\n{detail}"
         )
+    if offline_only:
+        return
 
     default_branch = api(f"repos/{OFFICIAL_API_REPO}").get("default_branch")
     if not default_branch:
         fail(f"could not resolve the default branch of {OFFICIAL_API_REPO}")
-
     for revision in pins:
         assert_merged(revision, default_branch)
+    print(f"All {total} reference(s) name one revision, merged into {default_branch}.")
 
-    print(f"All {total} item(s) pin one revision, merged into {default_branch}.")
+
+def self_test() -> None:
+    """Run every known bypass as a control, so they cannot silently return.
+
+    Each control is a shape that bypassed some earlier version of this check.
+    Collection controls run offline: every bypass worked by making a reference
+    invisible, so reaching the single-revision verdict is what they defeated and
+    that needs no network. One control runs online, because the merged check is
+    a distinct failure mode and a suite that never exercised it would report
+    health it had not tested.
+    """
+    import subprocess
+    import tempfile
+
+    official, fork_url = OFFICIAL_REPOSITORY, "https://github.com/someforker/nautilus_trader.git"
+    good, bad = "e" * 40, "0" * 40
+    lock = (
+        '[[package]]\nname = "nautilus-core"\nversion = "0.1.0"\n'
+        f'source = "git+{official}?rev={good}#{good}"\n'
+    )
+
+    controls = {
+        "clean": ("", "", True),
+        "regex_key_order": (f'nautilus-x = {{ rev = "{bad}", git = "{official}" }}\n', "", False),
+        "branch_pin": (f'nautilus-x = {{ git = "{fork_url}", branch = "wip" }}\n', "", False),
+        "tag_pin": (f'nautilus-x = {{ git = "{official}", tag = "v1" }}\n', "", False),
+        "fork_url": (f'nautilus-x = {{ git = "{fork_url}", rev = "{good}" }}\n', "", False),
+        # Named for what it proves: a second revision is detected. Mergedness
+        # itself is the online control below.
+        "divergent_rev": (f'nautilus-x = {{ git = "{official}", rev = "{bad}" }}\n', "", False),
+        "renamed": (f'x = {{ package = "nautilus-core", git = "{official}", rev = "{bad}" }}\n', "", False),
+        "patch_override": (
+            "", f'[patch."{official}"]\nnautilus-core = {{ git = "{fork_url}", rev = "{bad}" }}\n', False,
+        ),
+        "replace_override": (
+            "", f'[replace]\nnautilus-core = {{ git = "{official}", rev = "{bad}" }}\n', False,
+        ),
+        "lock_override": (
+            "", "",
+            False,
+            '[[package]]\nname = "nautilus-core"\nversion = "0.1.0"\n'
+            f'source = "git+{fork_url}?rev={bad}#{bad}"\n',
+        ),
+    }
+
+    failures = []
+    online_controls = {
+        # Every reference names one unmerged revision, so collection is happy and
+        # only the merged check can reject it. Runs online deliberately.
+        "unmerged_everywhere": FORK_REVISION,
+    }
+
+    for name, control in controls.items():
+        extra_dep, extra_table, expect_pass = control[0], control[1], control[2]
+        extra_lock = control[3] if len(control) > 3 else ""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "ci").mkdir()
+            (root / "Cargo.toml").write_text(
+                f'[dependencies]\nnautilus-core = {{ git = "{official}", rev = "{good}" }}\n'
+                f"{extra_dep}\n{extra_table}"
+            )
+            (root / "Cargo.lock").write_text(f"{lock}{extra_lock}")
+            (root / "ci").joinpath("nautilus-source-capabilities.toml").write_text(
+                f'revision = "{good}"\n'
+            )
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve()), "--offline", str(root)],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "NAUTILUS_PIN_SELF_TEST": "1"},
+            )
+            passed = result.returncode == 0
+            if passed != expect_pass:
+                failures.append(
+                    f"  {name}: expected {'accept' if expect_pass else 'reject'}, "
+                    f"got exit {result.returncode}"
+                )
+            else:
+                print(f"  {name}: {'accepted' if passed else 'rejected'} as expected")
+
+    for name, revision in online_controls.items():
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "ci").mkdir()
+            (root / "Cargo.toml").write_text(
+                f'[dependencies]\nnautilus-core = {{ git = "{official}", rev = "{revision}" }}\n'
+            )
+            (root / "Cargo.lock").write_text(
+                '[[package]]\nname = "nautilus-core"\nversion = "0.1.0"\n'
+                f'source = "git+{official}?rev={revision}#{revision}"\n'
+            )
+            (root / "ci").joinpath("nautilus-source-capabilities.toml").write_text(
+                f'revision = "{revision}"\n'
+            )
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve()), str(root)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                failures.append(
+                    f"  {name}: a single unmerged revision was accepted; the merged check "
+                    "did not run or did not reject"
+                )
+            elif "is NOT merged" not in result.stderr:
+                failures.append(
+                    f"  {name}: rejected, but not by the merged check: {result.stderr[:200]}"
+                )
+            else:
+                print(f"  {name}: rejected by the merged check as expected")
+
+    if failures:
+        fail("pin-check self-test failed:\n" + "\n".join(failures))
+    print(f"Self-test passed: {len(controls) + len(online_controls)} controls.")
+
+
+def main() -> None:
+    args = [a for a in sys.argv[1:]]
+    if "--self-test" in args:
+        self_test()
+        return
+    offline = "--offline" in args
+    # `--offline` stops before the merged check, which is the whole point of the
+    # lane. It exists only so the self-test can assert collection behaviour
+    # without the network, so refuse it anywhere else rather than leave a flag
+    # that silently turns this gate into a no-op.
+    if offline and os.environ.get("NAUTILUS_PIN_SELF_TEST") != "1":
+        fail(
+            "--offline skips the merged check and is only valid inside --self-test; "
+            "run without it so the gate actually verifies mergedness"
+        )
+    positional = [a for a in args if not a.startswith("--")]
+    if len(positional) > 1:
+        fail(f"usage: {Path(sys.argv[0]).name} [--self-test|--offline] [repository-root]")
+    if positional:
+        root = Path(positional[0])
+        if not root.is_dir():
+            fail(f"{root}: not a directory")
+        os.chdir(root)
+    verify(offline_only=offline)
 
 
 if __name__ == "__main__":

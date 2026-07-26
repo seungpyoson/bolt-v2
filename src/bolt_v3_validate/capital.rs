@@ -1,5 +1,4 @@
 use super::*;
-use crate::bolt_v3_providers::ProviderReconciliationCompleteness;
 
 pub(super) fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
     let mut errors = Vec::new();
@@ -136,18 +135,15 @@ fn validate_reconciliation_completeness_attested(
     else {
         return;
     };
-    if let ProviderReconciliationCompleteness::NotAttested { unmet } =
-        binding.reconciliation_completeness
-    {
-        // Every unmet condition is reported, not just the first: each is an
-        // independent reason the enforced projection can be wrong, and closing
-        // one upstream defect does not make the others safe.
-        for condition in unmet {
-            errors.push(format!(
-                "{label}.enforce_submit_admission must be false until the configured venue \
-                 attests reconciliation completeness: {condition}"
-            ));
-        }
+    // Every unmet condition is reported, not just the first: each is an
+    // independent reason the enforced projection can be wrong, and closing one
+    // upstream defect does not make the others safe. An empty list reports
+    // nothing and enforcement proceeds.
+    for condition in binding.reconciliation_unmet {
+        errors.push(format!(
+            "{label}.enforce_submit_admission must be false until the configured venue \
+             attests reconciliation completeness: {condition}"
+        ));
     }
 }
 

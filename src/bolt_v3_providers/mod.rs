@@ -460,31 +460,15 @@ pub struct ProviderBinding {
     pub build_fee_provider: Option<FeeProviderBuilder>,
     pub build_provider_collateral_allowance_runtime_source:
         Option<ProviderCollateralAllowanceRuntimeSourceBuilder>,
-    pub reconciliation_completeness: ProviderReconciliationCompleteness,
-}
-
-/// Whether a provider's pinned adapter proves that the order state enforced
-/// capital admission consumes is complete and not understated.
-///
-/// This is a property of the pinned NT adapter, not of Bolt policy, so it is
-/// owned per provider binding rather than decided by the validator.
-///
-/// `NotAttested` carries **every** unmet condition rather than a single reason,
-/// because more than one independent upstream defect can make the same
-/// projection wrong. Flipping a provider to `AttestedByAdapter` closes all of
-/// them at once, so a reader who fixes one upstream defect must see the others
-/// listed at the edit site instead of discovering them in a spec file. Add a
-/// condition here whenever a new upstream defect gates enforcement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProviderReconciliationCompleteness {
-    /// Every condition below is closed at the pinned revision: the adapter
-    /// fails startup reconciliation rather than returning a report that omits
-    /// venue state it cannot represent, and it never reports a filled quantity
-    /// below what is already known.
-    AttestedByAdapter,
-    /// At least one condition is unmet. Each entry is surfaced verbatim in the
-    /// startup rejection; the flip is valid only once the list is empty.
-    NotAttested { unmet: &'static [&'static str] },
+    /// Conditions that must be closed before enforced capital admission can
+    /// trust this provider's reconciled order state. Empty means every known
+    /// condition is closed; a non-empty list blocks
+    /// `enforce_submit_admission = true` and each entry is reported verbatim.
+    ///
+    /// These are properties of the pinned NautilusTrader adapter, not of Bolt
+    /// policy, so emptying this list asserts a verdict about one NT revision and
+    /// must be re-established when the pin moves.
+    pub reconciliation_unmet: &'static [&'static str],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -629,15 +613,13 @@ fn validate_reference_live_probe_client(
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &[
-                "the pinned Polymarket adapter logs and skips venue orders and positions it \
+        reconciliation_unmet: &[
+            "the pinned Polymarket adapter logs and skips venue orders and positions it \
 cannot represent, so a mass-status report can be silently partial",
-                "the pinned Polymarket adapter caps order filled quantity against confirmed \
+            "the pinned Polymarket adapter caps order filled quantity against confirmed \
 fills with a zero local-filled floor, so a matched-but-unconfirmed trade understates filled \
 quantity and overstates remaining quantity",
-            ],
-        },
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: polymarket::validate_client,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
@@ -661,9 +643,9 @@ quantity and overstates remaining quantity",
     },
     ProviderBinding {
         key: binance::KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &["no submit-admission reconciliation path is verified for this provider"],
-        },
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: binance::validate_client,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
@@ -685,9 +667,9 @@ quantity and overstates remaining quantity",
     },
     ProviderBinding {
         key: hyperliquid::KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &["no submit-admission reconciliation path is verified for this provider"],
-        },
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: hyperliquid::validate_client,
         supported_market_families: hyperliquid::SUPPORTED_MARKET_FAMILIES,
@@ -711,9 +693,9 @@ quantity and overstates remaining quantity",
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &["no submit-admission reconciliation path is verified for this provider"],
-        },
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bitmex_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -735,9 +717,9 @@ quantity and overstates remaining quantity",
     },
     ProviderBinding {
         key: market_data::BYBIT_KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &["no submit-admission reconciliation path is verified for this provider"],
-        },
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bybit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -759,9 +741,9 @@ quantity and overstates remaining quantity",
     },
     ProviderBinding {
         key: market_data::COINBASE_KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &["no submit-admission reconciliation path is verified for this provider"],
-        },
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_coinbase_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -783,9 +765,9 @@ quantity and overstates remaining quantity",
     },
     ProviderBinding {
         key: market_data::DERIBIT_KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &["no submit-admission reconciliation path is verified for this provider"],
-        },
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_deribit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -807,9 +789,9 @@ quantity and overstates remaining quantity",
     },
     ProviderBinding {
         key: market_data::OKX_KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &["no submit-admission reconciliation path is verified for this provider"],
-        },
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_okx_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -831,9 +813,9 @@ quantity and overstates remaining quantity",
     },
     ProviderBinding {
         key: market_data::KRAKEN_KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &["no submit-admission reconciliation path is verified for this provider"],
-        },
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_kraken_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -855,9 +837,9 @@ quantity and overstates remaining quantity",
     },
     ProviderBinding {
         key: chainlink::KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &["no submit-admission reconciliation path is verified for this provider"],
-        },
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: chainlink::validate_client,
         supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
@@ -879,9 +861,9 @@ quantity and overstates remaining quantity",
     },
     ProviderBinding {
         key: chainlink_reference::KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &["no submit-admission reconciliation path is verified for this provider"],
-        },
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::Required(
             chainlink_reference::reconnect_timeout_ms_for_nt_connect_budget,
         ),
@@ -905,9 +887,9 @@ quantity and overstates remaining quantity",
     },
     ProviderBinding {
         key: polyresearch::KEY,
-        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
-            unmet: &["no submit-admission reconciliation path is verified for this provider"],
-        },
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::Required(
             polyresearch::reconnect_timeout_ms_for_nt_connect_budget,
         ),

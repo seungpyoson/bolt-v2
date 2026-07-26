@@ -135,9 +135,11 @@ compatibility slice:
   fact or a mismatch between the manifest revision and the `nautilus-binance`
   pin; operator TOML cannot override any capability. `build.rs` cannot prove
   mergedness, because a fork-only revision is fetchable through the official
-  repository URL; the `nautilus-pin` CI lane asserts every pinned `nautilus-*`
-  revision in both manifests is an ancestor of the official upstream default
-  branch.
+  repository URL; the `nautilus-pin` CI lane asserts it instead. That lane
+  discovers every manifest and lockfile in the tree rather than listing them,
+  reads lockfiles as what cargo actually resolved so source overrides cannot
+  hide, and requires every NautilusTrader reference to name one revision that is
+  an ancestor of the official upstream default branch.
 - Bolt requires unbounded, unfiltered NT startup reconciliation in every live
   configuration. At the pinned revision the Polymarket adapter logs and skips
   venue orders and positions it cannot map or represent rather than rejecting

@@ -80,7 +80,19 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Every pinned NautilusTrader revision is merged upstream
+      # Controls first: each is a shape that bypassed an earlier version of this
+      # check. If a future edit reopens one, this fails before the real check can
+      # report a false all-clear.
+      - name: Pin check rejects every known bypass
+        env:
+          # One control asserts the merged check itself rejects an unmerged
+          # revision, so this step calls the API and needs the same token.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -x
+          python3 .github/scripts/verify-nautilus-pin.py --self-test
+
+      - name: Every NautilusTrader revision is merged upstream
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |

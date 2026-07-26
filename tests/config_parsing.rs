@@ -7259,10 +7259,14 @@ fn unenforced_capital_pool_does_not_trip_the_reconciliation_completeness_gate() 
     let root: BoltV3RootConfig = toml::from_str(&source).expect("tracked fixture should parse");
     let messages = validate_root_only(&root);
 
+    // Must match the phrase the validator actually emits. An earlier version of
+    // this control searched for wording the validator no longer produced, so it
+    // passed even when the gate fired on an unenforced pool -- a control that
+    // controls nothing is worse than no control.
     assert!(
         !messages
             .iter()
-            .any(|message| message.contains("startup reconciliation completeness")),
+            .any(|message| message.contains("attests reconciliation completeness")),
         "the completeness gate must not fire while admission is unenforced: {messages:#?}"
     );
 }

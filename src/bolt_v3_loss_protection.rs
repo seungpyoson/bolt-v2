@@ -846,6 +846,7 @@ fn recovery_reason_label(reason: KillSwitchRecoveryReason) -> &'static str {
         KillSwitchRecoveryReason::OversizedEvidence => "oversized_evidence",
         KillSwitchRecoveryReason::UnsupportedSchemaVersion => "unsupported_schema_version",
         KillSwitchRecoveryReason::UnresolvedHalt => "unresolved_halt",
+        KillSwitchRecoveryReason::UnrepresentableHaltTrigger => "unrepresentable_halt_trigger",
     }
 }
 

@@ -131,8 +131,13 @@ compatibility slice:
 - `ci/nautilus-source-capabilities.toml` binds the selected official revision
   to its Binance Spot schema 3:5 and adapter receive-timestamp behavior.
   `build.rs` verifies the bound behavior-test
-  hashes, generates the immutable Rust registry, and rejects revision drift or
-  a false fact; operator TOML cannot override any capability.
+  hashes, generates the immutable Rust registry, and rejects a false recorded
+  fact or a mismatch between the manifest revision and the `nautilus-binance`
+  pin; operator TOML cannot override any capability. `build.rs` cannot prove
+  mergedness, because a fork-only revision is fetchable through the official
+  repository URL; the `nautilus-pin` CI lane asserts every pinned `nautilus-*`
+  revision in both manifests is an ancestor of the official upstream default
+  branch.
 - Bolt requires unbounded, unfiltered NT startup reconciliation in every live
   configuration. At the pinned revision the Polymarket adapter logs and skips
   venue orders and positions it cannot map or represent rather than rejecting

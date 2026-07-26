@@ -460,6 +460,25 @@ pub struct ProviderBinding {
     pub build_fee_provider: Option<FeeProviderBuilder>,
     pub build_provider_collateral_allowance_runtime_source:
         Option<ProviderCollateralAllowanceRuntimeSourceBuilder>,
+    pub reconciliation_completeness: ProviderReconciliationCompleteness,
+}
+
+/// Whether a provider's pinned adapter proves that its startup reconciliation
+/// report is complete.
+///
+/// This is a property of the pinned NT adapter, not of Bolt policy, so it is
+/// owned per provider binding rather than decided by the validator. It is the
+/// single home for the fact: when an adapter starts failing closed on venue
+/// state it cannot represent, flipping that provider to `AttestedByAdapter` is
+/// the one edit that lets capital admission be enforced for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderReconciliationCompleteness {
+    /// The adapter fails startup reconciliation instead of returning a report
+    /// that silently omits venue orders or positions it cannot represent.
+    AttestedByAdapter,
+    /// A report can be silently partial. `unmet` names the missing condition
+    /// and is surfaced verbatim in the startup rejection.
+    NotAttested { unmet: &'static str },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -604,6 +623,10 @@ fn validate_reference_live_probe_client(
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "the pinned Polymarket adapter logs and skips venue orders and positions \
+it cannot represent, so a mass-status report can be silently partial",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: polymarket::validate_client,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
@@ -627,6 +650,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: binance::KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "no submit-admission reconciliation path is verified for this provider",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: binance::validate_client,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
@@ -648,6 +674,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: hyperliquid::KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "no submit-admission reconciliation path is verified for this provider",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: hyperliquid::validate_client,
         supported_market_families: hyperliquid::SUPPORTED_MARKET_FAMILIES,
@@ -671,6 +700,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "no submit-admission reconciliation path is verified for this provider",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bitmex_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -692,6 +724,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::BYBIT_KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "no submit-admission reconciliation path is verified for this provider",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bybit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -713,6 +748,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::COINBASE_KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "no submit-admission reconciliation path is verified for this provider",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_coinbase_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -734,6 +772,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::DERIBIT_KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "no submit-admission reconciliation path is verified for this provider",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_deribit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -755,6 +796,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::OKX_KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "no submit-admission reconciliation path is verified for this provider",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_okx_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -776,6 +820,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: market_data::KRAKEN_KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "no submit-admission reconciliation path is verified for this provider",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_kraken_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -797,6 +844,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: chainlink::KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "no submit-admission reconciliation path is verified for this provider",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: chainlink::validate_client,
         supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
@@ -818,6 +868,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: chainlink_reference::KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "no submit-admission reconciliation path is verified for this provider",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::Required(
             chainlink_reference::reconnect_timeout_ms_for_nt_connect_budget,
         ),
@@ -841,6 +894,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: polyresearch::KEY,
+        reconciliation_completeness: ProviderReconciliationCompleteness::NotAttested {
+            unmet: "no submit-admission reconciliation path is verified for this provider",
+        },
         nt_reconnect_budget: NtReconnectBudgetCapability::Required(
             polyresearch::reconnect_timeout_ms_for_nt_connect_budget,
         ),

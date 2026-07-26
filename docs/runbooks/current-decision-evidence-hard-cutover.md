@@ -56,8 +56,7 @@ Startup must refuse:
 - symlinked, non-regular, noncanonical, aliased, ancestor-conflicting, or out-of-root stream paths;
 - duplicate or contradictory settlement terminal outcomes, invalid reservation/fill relationships, or
   an NT open order without attribution in an atomic admitted fact;
-- any mismatch between the accepted raw venue open-order set and the unique reconciled NT open-order
-  set, or failure to rebuild capital admission from that attested cache.
+- failure to rebuild capital admission from the attested reconciled NT cache.
 
 The observation stream is not recovery input and never supplies readiness authority. Startup validates any retained observation content through the same exact-current framing, identity, sink, gate, and payload decoder. Invalid observation content is preserved byte-for-byte, reported as a poisoned observation sink, and does not block machine recovery or activation. The runtime never repairs, truncates, replaces, or extends that poisoned stream.
 

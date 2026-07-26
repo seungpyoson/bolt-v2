@@ -1433,19 +1433,30 @@ capturing one local clock value per decoded message and supplying it to
 private BBO handler arm. This NT-owned path feeds both
 `RealizedVolatilityObservation` and `StrategySignalObservation`.
 
-`ci/nautilus-source-capabilities.toml` records the Binance market-data facts
-and Polymarket reconciliation completeness/fail-closed facts for this exact revision.
-`build.rs` requires its revision to equal the official `nautilus-binance` and
-`nautilus-polymarket` Cargo pins, verifies each behavior-test artifact hash, and
+`ci/nautilus-source-capabilities.toml` records the Binance market-data facts for
+this exact revision. `build.rs` requires its revision to equal the official
+`nautilus-binance` Cargo pin, verifies each behavior-test artifact hash, and
 emits the immutable
-`NautilusSourceCapabilityRegistry` value `NAUTILUS_SOURCE_CAPABILITIES`; neither
-capability family is exposed through operator TOML. All facts are true at this
-pin, so the production runtime has direct NT-owned Binance and Polymarket
-paths. It does not contain a runtime capability branch, timestamp substitution,
+`NautilusSourceCapabilityRegistry` value `NAUTILUS_SOURCE_CAPABILITIES`; the
+capability family is not exposed through operator TOML. Every recorded fact is
+true at this pin, so the production runtime has a direct NT-owned Binance path.
+It does not contain a runtime capability branch, timestamp substitution,
 reconciliation fallback, or alternate venue reader. A later pin with any fact
-false must first add an issue-bound affected-new-risk blocker; the current
-build and source fence reject a false fact instead of silently
-using the direct path.
+false must first add an issue-bound affected-new-risk blocker; the build fence
+rejects a false recorded fact instead of silently using the direct path.
+
+`build.rs` cannot prove that a pinned revision is merged upstream: a fork-only
+revision is fetchable through the official repository URL because GitHub serves
+it from the shared fork network, so the URL and revision assertions pass for
+unmerged fork work. Mergedness is enforced by the `nautilus-pin` CI lane, which
+asserts every pinned `nautilus-*` revision in both the root and
+backtesting-vertical-slice manifests is an ancestor of the official upstream
+default branch.
+
+Polymarket reconciliation completeness is deliberately not recorded as a source
+capability. No merged upstream revision provides it, so declaring it would
+assert a fact the pinned source does not support; the startup-reconciliation
+paragraph above states the resulting gap.
 
 Bolt's `binance_sbe_quote_timestamps` harness exercises only the public parser
 contract: unequal venue-event and adapter-initialization stamps across every

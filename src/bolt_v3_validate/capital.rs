@@ -1,4 +1,5 @@
 use super::*;
+use crate::bolt_v3_providers::ProviderReconciliationCompleteness;
 
 pub(super) fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
     let mut errors = Vec::new();
@@ -112,6 +113,35 @@ fn validate_live_provider_collateral_allowance_source(
     if pool.enforce_submit_admission && !has_live_provider_source {
         errors.push(format!(
             "{label}.venue_id must select a registered live provider collateral allowance source"
+        ));
+    }
+    validate_reconciliation_completeness_attested(pool, label, errors);
+}
+
+/// Enforced capital admission derives new-risk capability from the reconciled NT
+/// open-order set. If the provider's adapter can return a report that silently
+/// omits venue orders, that projection understates committed liability and Bolt
+/// can admit risk beyond its configured pool ceiling. Bolt cannot detect the
+/// omission, so the only safe position is to refuse to enforce admission until
+/// the provider attests completeness.
+fn validate_reconciliation_completeness_attested(
+    pool: &CapitalPoolBlock,
+    label: &str,
+    errors: &mut Vec<String>,
+) {
+    if !pool.enforce_submit_admission {
+        return;
+    }
+    let Some(binding) = crate::bolt_v3_providers::binding_for_provider_key(pool.venue_id.as_str())
+    else {
+        return;
+    };
+    if let ProviderReconciliationCompleteness::NotAttested { unmet } =
+        binding.reconciliation_completeness
+    {
+        errors.push(format!(
+            "{label}.enforce_submit_admission must be false until the configured venue attests \
+             startup reconciliation completeness: {unmet}"
         ));
     }
 }

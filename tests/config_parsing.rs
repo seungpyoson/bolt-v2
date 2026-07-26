@@ -7204,6 +7204,50 @@ fn enforced_submit_admission_rejects_provider_without_live_allowance_source() {
 }
 
 #[test]
+fn enforced_submit_admission_rejects_venue_without_attested_reconciliation_completeness() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("enforced submit-admission fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message
+                .contains("risk.capital_pools[polymarket-prediction-live].enforce_submit_admission")
+                && message.contains("startup reconciliation completeness")
+        }),
+        "arming submit admission must be rejected while the pinned adapter can return a silently \
+         partial reconciliation report: {messages:#?}"
+    );
+}
+
+#[test]
+fn unenforced_capital_pool_does_not_trip_the_reconciliation_completeness_gate() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // Control for the gate above: the tracked configuration leaves admission
+    // unenforced, so the gate must stay silent rather than blocking startup.
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = false",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&source).expect("tracked fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("startup reconciliation completeness")),
+        "the completeness gate must not fire while admission is unenforced: {messages:#?}"
+    );
+}
+
+#[test]
 fn decision_evidence_rejects_missing_recovery_evidence_max_bytes() {
     use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 

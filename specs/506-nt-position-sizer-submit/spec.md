@@ -40,6 +40,15 @@ Only `prediction_market_binary` is implemented in this slice. The compiled order
 
 This slice is not production-grade by itself. It adds the live NT component feed and startup/reconnect cache rebuild boundary, but `enforce_submit_admission = true` is not safe for full production deployment until the remaining liability and operations gaps are closed:
 
+- the configured venue's pinned adapter attests startup reconciliation completeness. At the current
+  pin the Polymarket adapter logs and skips venue open orders and positions it cannot represent and
+  still returns a successful mass status, so the reconciled NT open-order set can silently omit live
+  liability. Bolt reads only that set and cannot detect the omission, and this slice removed the
+  independent venue-truth cross-check that previously read venue open orders directly. This is
+  machine-enforced: `ProviderBinding::reconciliation_completeness` carries the fact per provider and
+  startup validation rejects `enforce_submit_admission = true` while it is `NotAttested`. Closing this
+  item means the upstream adapter fails reconciliation instead of skipping, then flipping that provider
+  to `AttestedByAdapter`;
 - residual liability for rebuilt pre-existing orders is attributable to known Bolt reservation metadata;
 - non-empty pre-existing NT/exchange open orders can be rebuilt only when their liability is attributable to known Bolt reservations;
 - adapter-produced live collateral spendability and venue/instrument allowance evidence exists beyond the optional configured source binding and NT account free-balance fallback;

@@ -366,6 +366,78 @@ fn kill_switch_state_v2_old_bytes_remain_readable() {
 }
 
 #[test]
+fn retired_halt_trigger_is_reported_as_unrepresentable_not_corrupt() {
+    // `BasketExecutionStuck` was a halt trigger before the basket subsystem was
+    // removed. A store written then is still readable JSON at the current schema
+    // version, so reporting it as corrupt evidence would send an operator after
+    // disk damage instead of a halt raised by a retired subsystem.
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    fs::write(
+        &path,
+        br#"{"schema_version":2,"state":{"Halted":{"halt_id":"retired-halt","trigger":{
+             "kind":"BasketExecutionStuck","source":"basket-execution",
+             "source_timestamp_unix_nanos":1000,"reason":"basket execution stuck"}}}}"#,
+    )
+    .expect("retired-trigger fixture should write");
+    let store = KillSwitchStore::new(path, 65_536);
+
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("retired-trigger state should load"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: KillSwitchRecoveryReason::UnrepresentableHaltTrigger,
+            state: None,
+        }
+    );
+}
+
+#[test]
+fn unreadable_bytes_remain_corrupt_evidence() {
+    // Control for the case above: the retired-trigger path must not swallow
+    // genuinely unreadable stores.
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    fs::write(&path, b"{not json at all").expect("corrupt fixture should write");
+    let store = KillSwitchStore::new(path, 65_536);
+
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("corrupt state should load a fail-closed record"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: KillSwitchRecoveryReason::CorruptEvidence,
+            state: None,
+        }
+    );
+}
+
+#[test]
+fn unknown_state_variant_remains_corrupt_evidence() {
+    // Second control: an unrecognized *state* carries no trigger, so it must
+    // still report corrupt evidence rather than the trigger-specific reason.
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    fs::write(
+        &path,
+        br#"{"schema_version":2,"state":{"Mystery":{"halt_id":"unknown-halt"}}}"#,
+    )
+    .expect("unknown-state fixture should write");
+    let store = KillSwitchStore::new(path, 65_536);
+
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("unknown-state store should load a fail-closed record"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: KillSwitchRecoveryReason::CorruptEvidence,
+            state: None,
+        }
+    );
+}
+
+#[test]
 fn loss_governor_trigger_reason_is_optional_for_legacy_states_and_round_trips_when_present() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let legacy_store = KillSwitchStore::new(temp.path().join("legacy-kill-switch.json"), 65_536);

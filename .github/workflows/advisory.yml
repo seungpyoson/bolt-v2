@@ -60,6 +60,33 @@ jobs:
           set -x
           cargo fmt --check --manifest-path crates/backtesting-vertical-slice/Cargo.toml
 
+  # `build.rs` asserts the dependency URL is official and that the capability
+  # manifest revision equals the `nautilus-binance` pin, but neither proves the
+  # revision is merged: GitHub serves fork-only commits from the official
+  # repository URL, so a pin to unmerged fork work satisfies both and builds
+  # green. Proving mergedness needs the network, which a hermetic build script
+  # must not use, so it is checked here across every manifest declaration.
+  nautilus_pin:
+    name: nautilus-pin
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    timeout-minutes: 10
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      contents: read
+    steps:
+      # On pull_request, check out the exact pushed head, not GitHub's synthetic
+      # merge commit: this evidence is adjudicated against the reported head SHA.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Every pinned NautilusTrader revision is merged upstream
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -x
+          python3 .github/scripts/verify-nautilus-pin.py
+
   sccache_source:
     name: sccache-source
     if: github.event_name == 'pull_request' || github.event_name == 'push'

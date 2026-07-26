@@ -16,7 +16,7 @@ use crate::{
         AtomicIoError, append_private_file, write_private_atomic_file, write_private_new_file,
     },
     bolt_v3_config::{KillSwitchConfigBlock, resolve_root_relative_path},
-    bolt_v3_kill_switch::KillSwitchState,
+    bolt_v3_kill_switch::{KillSwitchHaltTriggerKind, KillSwitchState},
 };
 
 pub const KILL_SWITCH_STORE_SCHEMA_VERSION: u32 = 2;
@@ -39,6 +39,13 @@ pub enum KillSwitchRecoveryReason {
     OversizedEvidence,
     UnsupportedSchemaVersion,
     UnresolvedHalt,
+    /// The store is readable and carries the current schema version, but names a
+    /// halt trigger this build no longer represents. `KillSwitchHaltTriggerKind`
+    /// dropped `BasketExecutionStuck` and `VenueTruthDivergence`, and serde
+    /// reports the resulting unknown variant identically to unreadable bytes.
+    /// Reporting it as corrupt evidence would send an operator looking for disk
+    /// damage instead of a halt raised by a retired subsystem.
+    UnrepresentableHaltTrigger,
 }
 
 impl std::fmt::Display for KillSwitchRecoveryReason {
@@ -50,8 +57,39 @@ impl std::fmt::Display for KillSwitchRecoveryReason {
             Self::OversizedEvidence => write!(f, "oversized evidence"),
             Self::UnsupportedSchemaVersion => write!(f, "unsupported schema version"),
             Self::UnresolvedHalt => write!(f, "unresolved halt"),
+            Self::UnrepresentableHaltTrigger => {
+                write!(f, "halt trigger not representable by this build")
+            }
         }
     }
+}
+
+/// Reports whether a store that failed to deserialize names a halt-trigger kind
+/// this build cannot represent.
+///
+/// The known kinds are not listed here: the candidate string is handed back to
+/// `KillSwitchHaltTriggerKind`'s own deserializer, so retiring or adding a
+/// variant cannot leave a duplicated vocabulary behind to drift.
+fn names_unrepresentable_halt_trigger(bytes: &[u8]) -> bool {
+    fn walk(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(fields) => {
+                let unrepresentable = fields
+                    .get("trigger")
+                    .and_then(|trigger| trigger.get("kind"))
+                    .is_some_and(|kind| {
+                        kind.is_string()
+                            && serde_json::from_value::<KillSwitchHaltTriggerKind>(kind.clone())
+                                .is_err()
+                    });
+                unrepresentable || fields.values().any(walk)
+            }
+            serde_json::Value::Array(items) => items.iter().any(walk),
+            _ => false,
+        }
+    }
+
+    serde_json::from_slice::<serde_json::Value>(bytes).is_ok_and(|value| walk(&value))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,9 +386,17 @@ impl KillSwitchStore {
         let persisted = match serde_json::from_slice::<PersistedKillSwitchState>(&bytes) {
             Ok(persisted) => persisted,
             Err(_) => {
+                // Serde cannot distinguish unreadable bytes from a readable
+                // store naming a halt trigger this build dropped, so separate
+                // them here rather than sending the operator after disk damage.
+                let reason = if names_unrepresentable_halt_trigger(&bytes) {
+                    KillSwitchRecoveryReason::UnrepresentableHaltTrigger
+                } else {
+                    KillSwitchRecoveryReason::CorruptEvidence
+                };
                 return Ok(KillSwitchRecoveryRecord {
                     recovery_state: KillSwitchRecoveryState::FailClosed {
-                        reason: KillSwitchRecoveryReason::CorruptEvidence,
+                        reason,
                         state: None,
                     },
                     loss_protection: None,

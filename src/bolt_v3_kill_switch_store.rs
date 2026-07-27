@@ -451,6 +451,11 @@ impl KillSwitchStore {
         // current schema. A store at another version is expected to carry a shape
         // this build cannot deserialize, so attempting the payload parse first
         // reports that shape as corrupt when the version is the real answer.
+        //
+        // This is the only version check there can be. `schema_version` is a
+        // plain `u32` with no serde default, so the payload parse below succeeds
+        // only for bytes where this one already read the same value; a second
+        // check after that parse would be unreachable.
         if let Some(declared) = declared_schema_version(&bytes)
             && declared != KILL_SWITCH_STORE_SCHEMA_VERSION
         {
@@ -483,16 +488,6 @@ impl KillSwitchStore {
                 });
             }
         };
-
-        if persisted.schema_version != KILL_SWITCH_STORE_SCHEMA_VERSION {
-            return Ok(KillSwitchRecoveryRecord {
-                recovery_state: KillSwitchRecoveryState::FailClosed {
-                    reason: KillSwitchRecoveryReason::UnsupportedSchemaVersion,
-                    state: Some(persisted.state),
-                },
-                loss_protection: None,
-            });
-        }
 
         let loss_protection = match persisted.loss_protection {
             Some(snapshot) => match KillSwitchLossProtectionSnapshot::try_from(snapshot) {

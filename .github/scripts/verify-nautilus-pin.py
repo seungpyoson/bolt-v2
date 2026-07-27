@@ -9,15 +9,20 @@ unmerged fork work satisfies both checks and builds green. That is the drift
 this lane exists to catch, and `build.rs` cannot catch it because proving
 mergedness needs the network and builds must stay hermetic.
 
-Design note, learned the hard way across three review rounds. Every previous
+Design note, learned the hard way across four review rounds. Every previous
 version of this check enumerated what to inspect and was bypassed by a shape it
 did not enumerate: one hard-coded dependency, then a regex that missed reordered
 inline-table keys and `branch` pins, then a structural walk that missed `[patch]`
-and any manifest outside a hard-coded pair. So this version enumerates nothing:
+and any manifest outside a hard-coded pair, then a cargo-config key list that
+missed `[alias]`. A fifth bypass needed no new shape at all -- reading `?rev=`
+where cargo reads the commit after `#` validated a revision nothing compiles. So
+this version enumerates nothing:
 
   * manifests and lockfiles are **discovered**, never listed;
-  * lockfiles are read as *resolution truth* -- what cargo settled on;
+  * lockfiles are read as *resolution truth* -- the commit after `#`, which is
+    what cargo checks out, never the `?rev=` that merely requested it;
   * manifests are read for *declared intent*, including the override tables;
+  * a tracked cargo config is refused outright, not screened key by key;
   * anything referencing NautilusTrader that cannot be interpreted is a
     failure, never a silent skip.
 
@@ -240,50 +245,67 @@ def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
                 for pair in (match.group("query") or "").split("&")
                 if "=" in pair
             )
-            revision = query.get("rev") or match.group("resolved")
-            if not revision or len(revision) != 40:
-                fail(f"{owner} does not resolve to a full 40-character revision: {source}")
-            pins.setdefault(revision, []).append(owner)
+            # A git entry records both the request (`?rev=`) and the commit cargo
+            # checked out (`#<resolved>`). Cargo builds the fragment: measured,
+            # not assumed -- a lockfile reading `?rev=<merged>#<fork>` compiles
+            # the fork under `--locked` and is never rewritten, so reading the
+            # query would validate a revision nothing compiles. Neither half is
+            # preferred here; both are registered, so a lockfile whose halves
+            # disagree fails as exactly what it is -- two revisions -- through the
+            # same verdict that catches every other multi-revision shape.
+            revisions = {
+                f"{owner} ({role})": revision
+                for role, revision in (
+                    ("requested", query.get("rev")),
+                    ("resolved by cargo", match.group("resolved")),
+                )
+                if revision
+            }
+            if not revisions:
+                fail(f"{owner} records no revision at all: {source}")
+            for label, revision in revisions.items():
+                if len(revision) != 40:
+                    fail(f"{label} does not name a full 40-character revision: {source}")
+                pins.setdefault(revision, []).append(label)
     return seen
 
 
-def reject_source_overrides() -> int:
-    """Refuse cargo config overrides, which redirect a source invisibly.
+def reject_tracked_cargo_config() -> None:
+    """Refuse a tracked cargo config, whatever it contains.
 
-    Verified by experiment, not assumed: a `paths` override swaps the built code
-    while `Cargo.lock` still records the original git revision, so neither the
-    manifests nor the lockfiles this script reads would show it. `[source]`
-    replacement is the same shape. Both are refused outright rather than
-    inspected -- deciding whether a given override happens to shadow
-    NautilusTrader means resolving it, and a check that has to resolve overrides
-    to stay correct is one more thing to get wrong.
+    Cargo config can redirect a build in more ways than a reader can enumerate.
+    An earlier version screened a key list -- `patch`, `paths`, `source`,
+    `include` -- and review found a fifth outside it: `[alias]` redefines the
+    subcommands CI runs, and an alias body may carry `--config`, so a lane step
+    written as `cargo zigbuild --locked` expands to
+    `cargo build --config paths=[...] --locked`. Measured, not assumed: that
+    alias builds a local fork, satisfies `--locked`, and leaves `Cargo.lock`
+    untouched, exactly as a `paths` override does.
 
-    Limit worth naming: this sees repository files only. `$CARGO_HOME/config.toml`
-    and `--config` on the command line are outside the repository and cannot be
-    checked here.
+    Adding a fifth key would repeat the mistake this file's design note already
+    records. This repository tracks no cargo config at all, so the rule is the
+    file's absence rather than its contents, and there is no key list left to
+    fall behind.
+
+    Limit worth naming: this sees tracked files. `$CARGO_HOME/config.toml`, a
+    config a workflow step writes at runtime, and `--config` on the command line
+    are outside the repository and cannot be checked here.
     """
-    checked = 0
     for name in ("config.toml", "config"):
         for path in discover(name):
             if path.parent.name != ".cargo":
                 continue
-            checked += 1
-            document = load_toml(path)
-            # `patch` and `source` substitute a source, `paths` shadows one, and
-            # `include` pulls in another config that can do any of the three.
-            for key in ("patch", "paths", "source", "include"):
-                if key in document:
-                    fail(
-                        f"{path} declares `{key}`, which redirects a dependency source without "
-                        "changing any manifest or lockfile. A NautilusTrader pin cannot be "
-                        f"proven merged while `{key}` is in effect; remove it, or verify the "
-                        "override explicitly and justify it here."
-                    )
-    return checked
+            fail(
+                f"{path} is a tracked cargo config. Cargo config can redirect a dependency "
+                "source and can redefine the subcommands CI runs, both without changing any "
+                "manifest or lockfile, so a NautilusTrader pin cannot be proven merged while "
+                "one is tracked. This repository needs none; remove it, or verify what it "
+                "does explicitly and justify it here."
+            )
 
 
 def collect_pins() -> dict[str, list[str]]:
-    reject_source_overrides()
+    reject_tracked_cargo_config()
     pins: dict[str, list[str]] = {}
     declared = collect_from_manifests(pins)
     resolved = collect_from_lockfiles(pins)
@@ -396,9 +418,12 @@ def self_test() -> None:
             "dep": f'nautilus-x = {{ rev = "{bad}", git = "{official}" }}\n',
             "reason": one_revision,
         },
+        # Official URL deliberately: the repository check runs first, so a fork
+        # URL here would be rejected before mutability was ever consulted and the
+        # control would pass with `branch` handling deleted.
         "branch_pin": {
-            "dep": f'nautilus-x = {{ git = "{fork_url}", branch = "wip" }}\n',
-            "reason": official_repo,
+            "dep": f'nautilus-x = {{ git = "{official}", branch = "wip" }}\n',
+            "reason": "which is mutable",
         },
         "tag_pin": {
             "dep": f'nautilus-x = {{ git = "{official}", tag = "v1" }}\n',
@@ -430,17 +455,26 @@ def self_test() -> None:
             "table": f'[patch."{official}"]\nnautilus-core = {{ path = "../fork" }}\n',
             "reason": "with no `git` key",
         },
-        "cargo_paths_override": {
-            "cargo_config": 'paths = ["/tmp/fork"]\n',
-            "reason": "declares `paths`",
+        # The cargo-config rule is the file's absence, so these two vary its
+        # contents instead of its keys: one is the `[alias]` shape that defeated
+        # the previous key list by smuggling `--config` into the subcommand CI
+        # runs, the other declares nothing about sources at all. A rule that
+        # rejects the benign one cannot be reading contents, which is what
+        # replaced the four key-specific controls these two supersede.
+        "cargo_config_alias": {
+            "cargo_config": '[alias]\nzigbuild = ["build", "--config", "paths=[\'../fork\']"]\n',
+            "reason": "tracked cargo config",
         },
-        "cargo_patch_override": {
-            "cargo_config": f'[patch."{official}"]\nnautilus-core = {{ path = "../fork" }}\n',
-            "reason": "declares `patch`",
+        "cargo_config_unrelated_key": {
+            "cargo_config": "[build]\njobs = 2\n",
+            "reason": "tracked cargo config",
         },
-        "cargo_include_override": {
-            "cargo_config": 'include = "other.toml"\n',
-            "reason": "declares `include`",
+        # `?rev=` names a merged revision while the fragment cargo actually
+        # checks out names another. Reading the query accepted this.
+        "lock_fragment_mismatch": {
+            "lock": '[[package]]\nname = "nautilus-model"\nversion = "0.1.0"\n'
+            f'source = "git+{official}?rev={good}#{bad}"\n',
+            "reason": one_revision,
         },
         "lock_sourceless_nautilus": {
             "lock": '[[package]]\nname = "nautilus-polymarket"\nversion = "0.1.0"\n',
@@ -450,11 +484,6 @@ def self_test() -> None:
             "stray": f'[dependencies]\nnautilus-model = {{ git = "{official}", rev = "{bad}" }}\n',
             "stray_dir": "node_modules/x",
             "reason": one_revision,
-        },
-        "cargo_source_override": {
-            "cargo_config": '[source."https://github.com/nautechsystems/nautilus_trader.git"]\n'
-            'replace-with = "vendored"\n',
-            "reason": "declares `source`",
         },
         "malformed_manifest": {
             "stray": "not valid [toml at all\n",

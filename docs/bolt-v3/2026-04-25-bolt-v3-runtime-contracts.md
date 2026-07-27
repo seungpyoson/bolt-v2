@@ -1450,11 +1450,13 @@ revision is fetchable through the official repository URL because GitHub serves
 it from the shared fork network, so the URL and revision assertions pass for
 unmerged fork work. Mergedness is enforced by the `nautilus-pin` CI lane. It discovers every
 tracked manifest and lockfile by asking git rather than walking the filesystem,
-and treats lockfiles as what cargo actually resolved. Neither reading is
+and treats each lockfile entry as what cargo actually resolved -- the commit
+after `#`, which is what cargo checks out, rather than the `?rev=` that requested
+it. Neither reading is
 sufficient alone: a `[patch]` naming a git source appears in the lockfile, while
 one naming a path resolves with no lockfile source at all, so the lane fails on a
-NautilusTrader package that resolves without a source and refuses repository
-cargo configuration that substitutes a source. It fails on any NautilusTrader
+NautilusTrader package that resolves without a source and refuses any tracked
+cargo config whatever it contains. It fails on any NautilusTrader
 reference it cannot interpret, and requires every such reference to name one
 revision that is an ancestor of the official upstream default branch. Its bypass controls run in the same lane, so a shape that once
 defeated the check cannot silently return.

@@ -136,13 +136,15 @@ compatibility slice:
   pin; operator TOML cannot override any capability. `build.rs` cannot prove
   mergedness, because a fork-only revision is fetchable through the official
   repository URL; the `nautilus-pin` CI lane asserts it instead. That lane
-  discovers every manifest and lockfile in the tree rather than listing them,
-  reads lockfiles as what cargo actually resolved, and requires every
-  NautilusTrader reference to name one revision that is an ancestor of the
-  official upstream default branch. The two readings are both required: a
-  path-substituted dependency resolves with no lockfile source at all, which the
-  lane fails on rather than skips, and repository cargo configuration that
-  substitutes a source is refused outright.
+  discovers every tracked manifest and lockfile rather than listing them, reads
+  each lockfile entry as what cargo actually resolved -- the commit after `#`,
+  which is what cargo checks out, not the `?rev=` that requested it -- and
+  requires every NautilusTrader reference to name one revision that is an
+  ancestor of the official upstream default branch. The two readings are both
+  required: a path-substituted dependency resolves with no lockfile source at
+  all, which the lane fails on rather than skips, and a tracked cargo config is
+  refused outright whatever it contains, because its contents can redirect a
+  source or redefine the subcommands CI runs.
 - Bolt requires unbounded, unfiltered NT startup reconciliation in every live
   configuration. At the pinned revision the Polymarket adapter logs and skips
   venue orders and positions it cannot map or represent rather than rejecting

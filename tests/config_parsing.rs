@@ -7224,9 +7224,9 @@ fn enforced_submit_admission_rejects_venue_without_attested_reconciliation_compl
         })
         .collect();
 
-    // Every unmet condition must be reported, not just the first. Two independent
-    // upstream defects gate this flip, and closing one does not make the other
-    // safe, so an engineer who fixes one has to see the other still listed.
+    // Every unmet condition must be reported, not just the first. Three
+    // independent upstream defects gate this flip, and closing one does not make
+    // the others safe, so an engineer who fixes one has to see the rest listed.
     assert_eq!(
         unmet.len(),
         3,

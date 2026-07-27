@@ -70,13 +70,23 @@ This slice is not production-grade by itself. It adds the live NT component feed
   regardless of its `filled_qty` -- `generate_external_order_status_events` returns acceptance alone,
   `reconcile_order_report` routes to the fill path only for `PartiallyFilled`/`Filled`, and the
   live manager's real-fill branch matches neither -- so with or without the zero floor the pending
-  quantity does not reach the projection at all. Once the order does reach a terminal status the
-  quantity is recovered, but as a fill identified by `create_inferred_reconciliation_trade_id`,
-  derived from the order's own fields rather than the venue trade id the adapter never supplied. NT
-  deduplicates fills by trade id (`crates/execution/src/reconciliation/orders.rs`), so the venue's
-  own later `Confirmed` report of that same trade matches nothing and is applied on top, and the
-  quantity can be counted twice. Understatement while working, double count after terminal: one
-  discard, two directions, neither closed by the floor;
+  quantity does not reach the projection at all. What happens once the order reaches a terminal
+  status depends on which terminal status it is, and stating it as one rule was wrong twice in
+  review. `reconcile_terminal_order_report` computes `requires_snapshot_projection` from three
+  disjuncts -- an accompanying fill report, a `Voided` status, or a report quantity *below* what the
+  order already knows -- and a settlement-pending trade satisfies none of them, because the trade was
+  discarded before it could become a fill report and the venue's quantity is the larger one. So the
+  fast path runs, and `reconcile_order_report` maps `Canceled` to a cancellation event and `Expired`
+  to an expiration event and nothing else: the quantity is never recovered and stays understated,
+  with no inferred fill for a later confirmation to collide with. Only a `PartiallyFilled` or
+  `Filled` report reaches `reconcile_fill_quantity_mismatch`, which is where every
+  `create_inferred_fill` call sits; there the quantity does arrive, identified by
+  `create_inferred_reconciliation_trade_id` from the order's own fields rather than the venue trade
+  id the adapter never supplied. NT deduplicates fills by trade id
+  (`crates/execution/src/reconciliation/orders.rs`), so the venue's own later `Confirmed` report of
+  that same trade matches nothing, is applied on top, and the quantity is counted twice. One discard,
+  three outcomes by status -- nothing while working, a permanent understatement on cancel or expire,
+  a double count on a filled report -- and the floor closes none of them;
 - the pinned adapter reports every confirmed fill the account earned as maker. At the current pin
   `build_fill_reports_from_trades` selects the account's own entries out of a confirmed maker trade
   with a bare `continue`; when the trade holds no entry the account owns, the loop body never runs,
@@ -139,14 +149,35 @@ The understatement is the threshold times the number of dust holdings, and only
 the first factor is bounded. Nothing caps the second: the Data API paginates every
 position the account holds, and Bolt configures no maximum holding count, so a
 large enough count of sub-threshold holdings exceeds any finite ceiling -- at the
-`0.01` threshold and a $25 pool, on the order of 2,500 of them. That is the
-argument against calling this immaterial by inspection, and it is why the
-acceptance rests on the count instead: this system opens positions only through
-submit admission against a single configured pool, so the holdings it can
-accumulate are bounded by the orders it placed, and a strategy that could place
-thousands of sub-cent orders would exhaust the pool on fees long before the
-omission mattered. The acceptance is therefore conditional on that shape, not on
-the threshold being small. Two things invalidate it and both are observable: a
-pool ceiling small enough for a handful of sub-cent holdings to matter, or an
-account that accumulates positions this system did not open -- airdrops, transfers
-in, or a second trader on the same account. Neither is checked anywhere in code.
+`0.01` threshold and a $25 pool, on the order of 2,500 of them.
+
+An earlier version of this section argued that fees bound the count, on the
+grounds that a strategy placing thousands of sub-cent orders would exhaust the
+pool. That is withdrawn: the pinned adapter passes `Decimal::ZERO` as the fee
+rate for every maker fill (`execution/parse.rs`, citing the venue's published
+schedule), so maker activity bounds nothing at all.
+
+What is anchored is a per-order floor. Every marketable BUY this system places
+must clear `MARKET_QUOTE_BUY_MIN_NOTIONAL` -- one dollar, recorded in
+`src/bolt_v3_providers/polymarket.rs` from a captured venue reject because the
+pinned adapter leaves `min_quantity` and `min_notional` unset deliberately
+(`http/parse.rs`) and lets the venue reject instead. `make_market_quote_buy_quantity`
+returns `BelowMinimum` before an order exists, so a pool of $P can hold at most
+$P worth of concurrent positions this system opened: twenty-five at the
+configured ceiling, twenty-five cents of hidden value.
+
+That bounds concurrent positions and not accumulated remnants, which is the
+factor that matters. A position opened at a dollar and exited down to less than
+`0.01` shares returns its capital and leaves its remnant behind, so the count of
+remnants tracks the number of partial exits performed rather than the capital
+committed -- it grows with runtime, and no ceiling in this system limits it.
+
+So this is an accepted risk and not a proof, recorded as one deliberately. It
+cannot be closed on the Bolt side: the filtered holdings never reach Bolt, which
+is the same missing channel as the first condition above, so no invariant here
+could observe the count it would need to bound. Closing it needs the adapter to
+report what it filtered. Two things make it matter sooner and both are
+observable: a pool ceiling small enough for a handful of remnants to matter, or
+an account that accumulates positions this system did not open -- airdrops,
+transfers in, or a second trader on the same account. Neither is checked anywhere
+in code.

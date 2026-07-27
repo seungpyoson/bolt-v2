@@ -145,11 +145,14 @@ compatibility slice:
   path-substituted dependency resolves with no lockfile source at all, which the
   lane fails on rather than skips, and any tracked path with a `.cargo`
   component is refused whatever it contains, because a cargo config can redirect
-  a source or redefine the subcommands CI runs. A reference is recognized by what
-  its URL resolves to rather than how it is spelled -- case and percent-encoding
-  both change the text without changing the repository, and cargo copies either
-  spelling into `Cargo.lock` unchanged -- while the equality that follows stays
-  exact, so a variant spelling is found and then rejected for not being canonical.
+  a source or redefine the subcommands CI runs. The lane does not try to
+  recognize which references are NautilusTrader's, because nine bypasses proved
+  that question has no closed answer -- a name can be cased, percent-encoded,
+  hidden behind a `[patch]` selector, or made opaque entirely. It instead
+  requires every source in the resolved build to be one this repository allows:
+  crates.io, the official repository at an exact revision, or a crate whose
+  manifest is tracked here. An unrecognized shape is therefore a rejection
+  naming what it could not place, never a silent skip.
 - Bolt requires unbounded, unfiltered NT startup reconciliation in every live
   configuration. At the pinned revision the Polymarket adapter drops venue
   orders and positions it cannot map or represent rather than rejecting the

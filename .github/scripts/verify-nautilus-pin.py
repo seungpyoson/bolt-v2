@@ -9,41 +9,45 @@ unmerged fork work satisfies both checks and builds green. That is the drift
 this lane exists to catch, and `build.rs` cannot catch it because proving
 mergedness needs the network and builds must stay hermetic.
 
-Design note, learned the hard way across four review rounds. Every previous
-version of this check enumerated what to inspect and was bypassed by a shape it
-did not enumerate: one hard-coded dependency, then a regex that missed reordered
-inline-table keys and `branch` pins, then a structural walk that missed `[patch]`
-and any manifest outside a hard-coded pair, then a cargo-config key list that
-missed `[alias]`. A fifth bypass needed no new shape at all -- reading `?rev=`
-where cargo reads the commit after `#` validated a revision nothing compiles. So
-this version enumerates nothing:
+Design note, learned the hard way across five review rounds and nine bypasses.
+Every earlier version began by asking "does this refer to NautilusTrader?" and
+was defeated by something that answered no: a hard-coded dependency; a regex
+that missed reordered inline-table keys and `branch` pins; a structural walk
+that missed `[patch]` and any manifest outside a hard-coded pair; a cargo-config
+key list that missed `[alias]`; a read of `?rev=` where cargo reads the commit
+after `#`; a URL cased `Nautilus_Trader`; one percent-encoding a letter as
+`%6eautilus_trader`; a `[patch."<source>"]` whose *selector* was never read, so
+an opaquely-named package could be swapped for a local path; and an opaque URL
+that redirected to the official repository. Nine shapes, one mistake: the ways
+to spell or indirect a name are unbounded, so recognition by appearance can
+never be finished.
 
-  * manifests and lockfiles are **discovered**, never listed;
-  * lockfile git entries register *both* halves -- the commit after `#`, which
-    is what cargo checks out, and the `?rev=` that requested it -- so a
-    disagreement between them fails as two revisions;
-  * manifests are read for *declared intent*, including the override tables;
-  * a tracked cargo config is refused outright, not screened key by key;
-  * a URL is recognized by what it *resolves to*, not by how it is spelled;
-  * anything referencing NautilusTrader that cannot be interpreted is a
-    failure, never a silent skip.
+So the question is inverted, and this version never asks what a source refers
+to. It requires every source in the resolved build to be one this repository
+allows, and rejects everything else:
 
-Spelling is its own bypass family, and it took two rounds to see as one. Both
-members were found by comparing text: a URL cased `Nautilus_Trader`, then one
-percent-encoding a single letter as `%6eautilus_trader`. Both resolve to the
-official repository -- measured, not assumed, for the second: cargo fetches the
-encoded URL, and writes it into `Cargo.lock` still encoded, so a comparison
-against raw text is blind in both readings at once. `repository_identity`
-answers "what does this resolve to" in one place, and every recognition site
-asks it rather than comparing text of its own.
+  * a registry source must be crates.io;
+  * a git source must be the official repository at an exact lowercase
+    revision, with no mutable `branch` or `tag`;
+  * a source-less entry must name a crate whose manifest is tracked here,
+    because that is the shape a path substitution produces;
+  * an override table (`[patch.*]`, `[replace]`) may hold nothing but a
+    canonical git pin, whatever selector it hangs under;
+  * a tracked cargo config is refused outright, whatever it contains.
 
-The two readings are both required, and neither is sufficient. Measured, not
-assumed: a `[patch]` pointing at a **git** source appears in the lockfile with
-that source, so the lockfile catches it; a `[patch]` pointing at a **path**
-produces a lockfile entry with no `source` field at all, so the lockfile cannot
-see it and only the manifest reading catches it. Do not drop the manifest
-reading on the theory that the lockfile covers overrides -- for path patches it
-does not.
+The asymmetry that makes this closed: an incomplete *allowlist* causes a false
+failure, which someone notices and fixes; an incomplete *denylist* causes a
+false pass, which is what all nine bypasses were. A tenth spelling is therefore
+not a bypass but a rejection naming the source it could not place.
+
+Both readings survive the inversion, and neither is sufficient alone. Measured,
+not assumed: a `[patch]` onto a **git** source appears in the lockfile with that
+source; a `[patch]` onto a **path** produces a lockfile entry with no `source`
+field at all. The lockfile reading now catches the second as well, because a
+source-less entry is judged against the tracked-crate set rather than skipped --
+but the manifest reading also holds it, and holds the mutability rules that a
+lockfile cannot express, since a lockfile records only what a `branch` resolved
+to on the day it was written.
 
 Run from the repository root, pass the root as an argument, or pass
 `--self-test` to run the bypass-control suite.
@@ -58,7 +62,6 @@ import subprocess
 import sys
 import tomllib
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -66,8 +69,19 @@ OFFICIAL_REPOSITORY = "https://github.com/nautechsystems/nautilus_trader.git"
 OFFICIAL_API_REPO = "nautechsystems/nautilus_trader"
 # A real unmerged fork revision, used by the online self-test control.
 FORK_REVISION = "01d5af1427d73532f6dd9f2be77acb72f825bec9"
-NAUTILUS = "nautilus"
 CAPABILITY_MANIFEST = Path("ci/nautilus-source-capabilities.toml")
+
+# The registry sources this repository allows. Both spellings of crates.io are
+# listed because cargo has shipped both and either may appear depending on the
+# version that wrote the lockfile. Listing them is safe in a way that listing
+# forbidden shapes is not: a crates.io spelling missing from here fails the
+# lane, it does not slip through it.
+ALLOWED_REGISTRIES = frozenset(
+    {
+        "registry+https://github.com/rust-lang/crates.io-index",
+        "sparse+https://index.crates.io/",
+    }
+)
 
 # `git+<url>?rev=<rev>#<resolved>` as Cargo.lock records a git source.
 LOCK_SOURCE = re.compile(r"^git\+(?P<url>[^?#]+)(?:\?(?P<query>[^#]*))?(?:#(?P<resolved>.*))?$")
@@ -169,87 +183,94 @@ def discover(filename: str) -> list[Path]:
     return [path for path in tracked_paths() if path.name.lower() == wanted]
 
 
-def repository_identity(value: str) -> str:
-    """What a URL resolves to, with the spellings that do not change it removed.
+def local_crate_names() -> set[str]:
+    """Every crate whose manifest is tracked in this repository.
 
-    Recognition has to answer "does this fetch NautilusTrader", and text
-    comparison answers "is this written the way I expected" instead. Two
-    bypasses came from that gap, each a different spelling of the official
-    repository: `Nautilus_Trader` (GitHub resolves owner and repository names
-    without regard to case) and `%6eautilus_trader` (percent-encoding, which
-    git decodes at the transport and cargo copies into `Cargo.lock` verbatim,
-    so raw text is blind in both readings at once). Decoding then lowercasing
-    collapses both, and any further spelling that survives transport decoding.
+    A lockfile entry with no `source` is either one of this repository's own
+    crates or a dependency substituted by path, and the lockfile itself cannot
+    tell them apart. Deriving the legitimate set from the tracked manifests
+    settles it without asking cargo to resolve anything -- which matters,
+    because resolution would need the git dependency fetched and this lane runs
+    before any build.
 
-    Repeated decoding is deliberate. `%256e` decodes once to `%6e` and again to
-    `n`, and whether an intermediary decodes twice is not ours to assume, so
-    identity is the fixed point rather than one pass. The loop terminates
-    because each pass that changes the string strictly shortens it.
+    Limit worth naming, because it is the one thing this cannot see: a
+    substitution that points at a crate manifest *added to this repository*
+    would be named here and accepted. That is not a spelling trick -- it is
+    vendoring NautilusTrader into the tree, which arrives as a diff of hundreds
+    of files. This check governs what the build pulls from outside; code added
+    inside is what review is for.
     """
-    seen = value
-    for _ in range(8):
-        decoded = urllib.parse.unquote(seen)
-        if decoded == seen:
-            break
-        seen = decoded
-    return seen.lower()
+    names: set[str] = set()
+    for manifest in discover("Cargo.toml"):
+        package = load_toml(manifest).get("package")
+        if isinstance(package, dict) and isinstance(package.get("name"), str):
+            names.add(package["name"])
+    return names
 
 
-def mentions_nautilus(name: str, spec: object) -> bool:
-    """Whether a dependency names NautilusTrader, decided by resolved identity.
+def dependency_tables(document: dict, owner: str, override: bool = False):
+    """Yield (owner, table, override) for every table that names a dependency.
 
-    Detection is deliberately looser than the equality that follows it: a
-    case-varied or percent-encoded URL is *found* here and then *rejected* by
-    `check_declaration` for not being the official repository, which is the
-    actionable outcome. Equality stays exact so that one spelling is canonical
-    in the tree; only recognition is spelling-blind.
+    `override` marks `[patch.*]` and `[replace]`, the tables that change what
+    cargo builds without touching the dependency block. They are held to a
+    stricter rule than ordinary dependencies: an ordinary entry is free to come
+    from crates.io and is only checked when it carries a `git` key, whereas an
+    override exists solely to redirect a source and so must be a canonical git
+    pin or nothing.
+
+    The selector a `[patch."<source>"]` table hangs under is deliberately not
+    read. Reading it was the ninth bypass -- an override of an opaquely-named
+    package went unexamined because the selector did not look like anything in
+    particular. What the entry *resolves to* is the only thing that matters, and
+    that is judged the same way under every selector.
     """
-    if NAUTILUS in repository_identity(name):
-        return True
-    if isinstance(spec, dict):
-        for key in ("package", "git"):
-            value = spec.get(key)
-            if isinstance(value, str) and NAUTILUS in repository_identity(value):
-                return True
-    return False
-
-
-def dependency_tables(document: dict, owner: str):
-    """Yield (owner, table) for every table that can name a dependency source.
-
-    Includes the override tables `[patch.*]` and `[replace]`: those change what
-    cargo builds without touching the dependency block, which is precisely why a
-    walk that skips them can pass while a fork is compiled.
-    """
-    for key in ("dependencies", "dev-dependencies", "build-dependencies", "replace"):
+    for key in ("dependencies", "dev-dependencies", "build-dependencies"):
         table = document.get(key)
         if isinstance(table, dict):
-            yield f"{owner}{key}", table
+            yield f"{owner}{key}", table, override
 
-    for container in ("workspace",):
-        nested = document.get(container)
-        if isinstance(nested, dict):
-            yield from dependency_tables(nested, f"{owner}{container}.")
+    replace = document.get("replace")
+    if isinstance(replace, dict):
+        yield f"{owner}replace", replace, True
 
-    for container in ("target", "patch"):
-        nested = document.get(container)
-        if isinstance(nested, dict):
-            for selector, table in nested.items():
-                if not isinstance(table, dict):
-                    continue
-                if container == "patch":
-                    yield f"{owner}patch.{selector}", table
-                else:
-                    yield from dependency_tables(table, f"{owner}target.{selector}.")
+    nested = document.get("workspace")
+    if isinstance(nested, dict):
+        yield from dependency_tables(nested, f"{owner}workspace.", override)
+
+    patch = document.get("patch")
+    if isinstance(patch, dict):
+        for selector, table in patch.items():
+            if isinstance(table, dict):
+                yield f"{owner}patch.{selector}", table, True
+
+    target = document.get("target")
+    if isinstance(target, dict):
+        for selector, table in target.items():
+            if isinstance(table, dict):
+                yield from dependency_tables(table, f"{owner}target.{selector}.", override)
 
 
-def check_declaration(owner: str, spec: object, pins: dict[str, list[str]]) -> None:
-    if not isinstance(spec, dict):
-        fail(
-            f"{owner} references NautilusTrader but is not an inline table pinning the "
-            f"official repository by revision, got {spec!r}"
-        )
-    if spec.get("workspace") is True:
+# The keys cargo honours on a dependency that inherits with `workspace = true`.
+# Stated as what is allowed rather than what is forbidden: a denylist here was
+# both dead text and incomplete -- cargo ignores `git`, `registry`, `package`
+# and `version` alike on an inheriting entry, so forbidding four of them while
+# missing the others screened nothing and implied a divergent pin was possible
+# through this table when it is not.
+INHERITED_KEYS = frozenset({"workspace", "optional", "features", "default-features", "public"})
+
+
+def check_declaration(
+    owner: str, spec: object, pins: dict[str, list[str]], override: bool
+) -> bool:
+    """Judge one dependency entry. Returns whether it registered a git pin.
+
+    Ordinary entries are examined only when they carry a `git` key, because a
+    crates.io dependency is not this lane's business. Override entries are
+    examined unconditionally: an override's whole purpose is to redirect a
+    source, so one that is not a canonical git pin is either a path
+    substitution or something this check cannot interpret, and both fail.
+    """
+    if isinstance(spec, dict) and spec.get("workspace") is True:
         # An inheriting member names the dependency but does not pin it: the
         # revision lives in the workspace root's `[workspace.dependencies]`,
         # which `dependency_tables` walks and checks like any other table. So
@@ -257,19 +278,30 @@ def check_declaration(owner: str, spec: object, pins: dict[str, list[str]]) -> N
         # once. Demanding a `git` key here told the engineer to duplicate the
         # pin into the member -- the opposite of the one-declaration shape that
         # makes a pin bump a single edit.
-        for key in ("git", "rev", "branch", "tag", "path", "version"):
-            if key in spec:
+        for key in spec:
+            if key not in INHERITED_KEYS:
                 fail(
                     f"{owner} inherits with `workspace = true` and also sets `{key}`. "
-                    "An inherited dependency takes its source from the workspace root; "
-                    "a second source here is either dead text or a divergent pin."
+                    "An inheriting dependency takes its source from the workspace root "
+                    f"and cargo honours only {sorted(INHERITED_KEYS)} here, so any other "
+                    "key is dead text that reads like a pin."
                 )
-        return
+        return False
+
+    if not override and not (isinstance(spec, dict) and "git" in spec):
+        return False
+
+    if not isinstance(spec, dict):
+        fail(
+            f"{owner} overrides a dependency but is not an inline table pinning the "
+            f"official repository by revision, got {spec!r}"
+        )
     git = spec.get("git")
     if git is None:
         fail(
-            f"{owner} references NautilusTrader with no `git` key. Every NautilusTrader "
-            "source must come from the official repository at an exact revision."
+            f"{owner} redirects a dependency with no `git` key. An override may only point "
+            "at the official repository at an exact revision; a path substitution builds "
+            "code no revision can name."
         )
     if git != OFFICIAL_REPOSITORY:
         fail(f"{owner} must use the official repository {OFFICIAL_REPOSITORY}, got {git}")
@@ -283,27 +315,30 @@ def check_declaration(owner: str, spec: object, pins: dict[str, list[str]]) -> N
     if not isinstance(revision, str):
         fail(f"{owner} must pin a full 40-character `rev`, got {revision!r}")
     register(pins, owner, revision, "")
+    return True
 
 
 def collect_from_manifests(pins: dict[str, list[str]]) -> int:
     seen = 0
     for manifest in discover("Cargo.toml"):
         document = load_toml(manifest)
-        for table_owner, table in dependency_tables(document, ""):
+        for table_owner, table, override in dependency_tables(document, ""):
             for name, spec in table.items():
-                if not mentions_nautilus(name, spec):
-                    continue
-                seen += 1
-                check_declaration(f"{manifest}:{table_owner}.{name}", spec, pins)
+                if check_declaration(f"{manifest}:{table_owner}.{name}", spec, pins, override):
+                    seen += 1
     return seen
 
 
-def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
-    """Lockfiles record what cargo resolved.
+def collect_from_lockfiles(pins: dict[str, list[str]], local_crates: set[str]) -> int:
+    """Lockfiles record what cargo resolved, and every entry must be placeable.
 
-    A git-sourced override shows up here with its real source. A path-sourced
-    one does not appear at all -- such entries carry no `source` field -- which
-    is why the manifest reading is not redundant with this one.
+    This is the reading the inversion changed most. It used to find the entries
+    that looked like NautilusTrader and check those; now it places *every*
+    entry into one of three allowed kinds -- a crates.io registry package, the
+    official repository at a revision, or one of this repository's own crates --
+    and fails on anything it cannot place. The package name is never consulted
+    to decide whether an entry is interesting, which is what let an opaquely
+    named substitution through.
     """
     seen = 0
     for lockfile in discover("Cargo.lock"):
@@ -311,26 +346,31 @@ def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
         for package in document.get("package", []):
             name = package.get("name", "")
             source = package.get("source")
-            # Resolved identity for the same reason as `mentions_nautilus`, and
-            # this reading is where percent-encoding bites hardest: cargo copies
-            # the manifest's spelling into `source` unchanged, so an encoded URL
-            # reaches here still encoded and raw text does not see it.
-            if NAUTILUS not in repository_identity(f"{name}{source or ''}"):
-                continue
-            if not isinstance(source, str):
-                # A path-substituted dependency resolves with no source at all.
-                # Skipping it is how a source override stays invisible here, so
-                # this fails regardless of which mechanism produced it.
-                fail(
-                    f"{lockfile}:{name} resolves without a source, which happens when a "
-                    "dependency is substituted by path. A NautilusTrader package must "
-                    "resolve to the official repository at an exact revision."
-                )
-            seen += 1
             owner = f"{lockfile}:{name}"
+            if source is None:
+                # A workspace crate and a path-substituted dependency are
+                # indistinguishable here -- both simply have no source -- so the
+                # tracked manifests decide which one this is.
+                if name in local_crates:
+                    continue
+                fail(
+                    f"{owner} resolves without a source and is not a crate tracked in this "
+                    "repository, which is what a dependency substituted by path looks like. "
+                    "Every dependency must resolve to crates.io or to the official "
+                    "repository at an exact revision."
+                )
+            if not isinstance(source, str):
+                fail(f"{owner} records a source that is not a string: {source!r}")
+            if source in ALLOWED_REGISTRIES:
+                continue
             match = LOCK_SOURCE.match(source)
             if match is None:
-                fail(f"{owner} resolves to a non-git NautilusTrader source: {source}")
+                fail(
+                    f"{owner} resolves from a source this repository does not allow: "
+                    f"{source}. Allowed sources are crates.io and the official repository "
+                    f"{OFFICIAL_REPOSITORY} at an exact revision."
+                )
+            seen += 1
             if match.group("url") != OFFICIAL_REPOSITORY:
                 fail(
                     f"{owner} resolves to {match.group('url')}, not the official repository "
@@ -411,7 +451,7 @@ def collect_pins() -> dict[str, list[str]]:
     reject_tracked_cargo_config()
     pins: dict[str, list[str]] = {}
     declared = collect_from_manifests(pins)
-    resolved = collect_from_lockfiles(pins)
+    resolved = collect_from_lockfiles(pins, local_crate_names())
     if declared == 0 or resolved == 0:
         fail(
             "no NautilusTrader source found "
@@ -663,6 +703,57 @@ def self_test() -> None:
             f'source = "git+{fork_url}?rev={bad}#{bad}"\n',
             "reason": "not the official repository",
         },
+        # The two bypasses that ended recognition-by-appearance. Both carry a
+        # package name with no `nautilus` in it, which is exactly why the old
+        # readings skipped them: the entry was never judged at all. Under the
+        # allowlist the name is not consulted, so an opaque name is no longer a
+        # way to avoid being looked at.
+        "patch_opaque_package_by_path": {
+            "table": f'[patch."{official}"]\nopaque-payload = {{ path = "../fork" }}\n',
+            "lock": '[[package]]\nname = "opaque-payload"\nversion = "0.1.0"\n',
+            "reason": "with no `git` key",
+        },
+        # The same substitution seen only through the lockfile, so the lockfile
+        # reading is proven to catch it without help from the manifest.
+        "lock_sourceless_opaque_package": {
+            "lock": '[[package]]\nname = "opaque-payload"\nversion = "0.1.0"\n',
+            "reason": "not a crate tracked in this repository",
+        },
+        # A URL that redirects to the official repository. Nothing here tries to
+        # detect the redirect -- an unlisted URL is refused whatever it serves,
+        # which is why resolving it is no longer necessary.
+        "redirecting_url_in_manifest": {
+            "dep": f'opaque-payload = {{ git = "https://example.invalid/mirror.git", '
+            f'rev = "{bad}" }}\n',
+            "reason": official_repo,
+        },
+        "redirecting_url_in_lockfile": {
+            "lock": '[[package]]\nname = "opaque-payload"\nversion = "0.1.0"\n'
+            f'source = "git+https://example.invalid/mirror.git?rev={bad}#{bad}"\n',
+            "reason": "not the official repository",
+        },
+        # An alternative registry can serve a package under any name at all.
+        "unrecognized_registry": {
+            "lock": '[[package]]\nname = "opaque-payload"\nversion = "0.1.0"\n'
+            'source = "registry+https://example.invalid/index"\n',
+            "reason": "does not allow",
+        },
+        # Three acceptances, guarding the failure mode the inversion introduces:
+        # a rule that refuses everything it does not recognize can refuse the
+        # ordinary build. Both crates.io spellings and a tracked workspace crate
+        # must pass, or the allowlist is too narrow to ship.
+        "crates_io_dependency": {
+            "lock": '[[package]]\nname = "serde"\nversion = "1.0.0"\n'
+            'source = "registry+https://github.com/rust-lang/crates.io-index"\n',
+        },
+        "sparse_crates_io_dependency": {
+            "lock": '[[package]]\nname = "serde"\nversion = "1.0.0"\n'
+            'source = "sparse+https://index.crates.io/"\n',
+        },
+        "tracked_local_crate_is_sourceless": {
+            "package": '[package]\nname = "local-thing"\nversion = "0.1.0"\n',
+            "lock": '[[package]]\nname = "local-thing"\nversion = "0.1.0"\n',
+        },
     }
 
     failures = []
@@ -677,7 +768,8 @@ def self_test() -> None:
         # an absent file, which is what several controls exist to produce, so
         # omission needs no branch of its own.
         fixture = {
-            "Cargo.toml": f'[dependencies]\nnautilus-core = {{ git = "{official}", rev = "{good}" }}\n'
+            "Cargo.toml": f"{control.get('package', '')}"
+            + f'[dependencies]\nnautilus-core = {{ git = "{official}", rev = "{good}" }}\n'
             + f"{control.get('dep', '')}\n{control.get('table', '')}",
             "Cargo.lock": f"{lock}{control.get('lock', '')}",
             "ci/nautilus-source-capabilities.toml": f'revision = "{good}"\n',

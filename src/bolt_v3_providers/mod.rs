@@ -622,11 +622,14 @@ fills with a zero local-filled floor, so a matched-but-unconfirmed trade underst
 quantity and overstates remaining quantity",
             "the pinned Polymarket adapter discards non-confirmed trades with no fill report, no \
 counter and no log entry, so a settlement-pending fill's quantity, price and fee never reach the \
-projection as a trade; the pinned engine does not recover that quantity from the order report \
-either, because it applies no fill to an order the venue still reports as working, and once the \
-order reaches a terminal status the quantity instead arrives as a fill identified by order fields \
-rather than the venue trade id the adapter never supplied, which the venue's own later \
-confirmation cannot be deduplicated against",
+projection as a trade; what the pinned engine does with the order report instead depends on the \
+status the venue reports, and no branch recovers the trade faithfully. While the venue still \
+reports the order working, no fill is applied at any filled quantity. When the venue reports it \
+canceled or expired and sends no accompanying fill report, only the cancellation or expiration is \
+emitted, so the quantity is never recovered and stays understated. Only a partially-filled or \
+filled report yields the quantity, and then as a fill identified by order fields rather than the \
+venue trade id the adapter never supplied, which the venue's own later confirmation cannot be \
+deduplicated against",
             "the pinned Polymarket adapter builds no fill report for a confirmed maker trade \
 holding none of the account's own maker orders, incrementing no counter and logging nothing, so a \
 confirmed fill can be missing from a mass status that reports success; ownership is decided by \

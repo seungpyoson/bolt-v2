@@ -24,8 +24,18 @@ this version enumerates nothing:
     disagreement between them fails as two revisions;
   * manifests are read for *declared intent*, including the override tables;
   * a tracked cargo config is refused outright, not screened key by key;
+  * a URL is recognized by what it *resolves to*, not by how it is spelled;
   * anything referencing NautilusTrader that cannot be interpreted is a
     failure, never a silent skip.
+
+Spelling is its own bypass family, and it took two rounds to see as one. Both
+members were found by comparing text: a URL cased `Nautilus_Trader`, then one
+percent-encoding a single letter as `%6eautilus_trader`. Both resolve to the
+official repository -- measured, not assumed, for the second: cargo fetches the
+encoded URL, and writes it into `Cargo.lock` still encoded, so a comparison
+against raw text is blind in both readings at once. `repository_identity`
+answers "what does this resolve to" in one place, and every recognition site
+asks it rather than comparing text of its own.
 
 The two readings are both required, and neither is sufficient. Measured, not
 assumed: a `[patch]` pointing at a **git** source appears in the lockfile with
@@ -48,6 +58,7 @@ import subprocess
 import sys
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -158,27 +169,47 @@ def discover(filename: str) -> list[Path]:
     return [path for path in tracked_paths() if path.name.lower() == wanted]
 
 
-def mentions_nautilus(name: str, spec: object) -> bool:
-    """Whether a dependency names NautilusTrader, decided without regard to case.
+def repository_identity(value: str) -> str:
+    """What a URL resolves to, with the spellings that do not change it removed.
 
-    Case matters here for the same reason it matters in discovery, and was
-    missed here after being fixed there. GitHub resolves owner and repository
-    names case-insensitively -- `github.com/NautechSystems/Nautilus_Trader.git`
-    serves the same repository as the official URL -- so a dependency written
-    that way contains no lowercase `nautilus` and was skipped entirely, taking
-    its revision with it. The reference stayed invisible while the real ones
-    kept the check non-vacuous.
+    Recognition has to answer "does this fetch NautilusTrader", and text
+    comparison answers "is this written the way I expected" instead. Two
+    bypasses came from that gap, each a different spelling of the official
+    repository: `Nautilus_Trader` (GitHub resolves owner and repository names
+    without regard to case) and `%6eautilus_trader` (percent-encoding, which
+    git decodes at the transport and cargo copies into `Cargo.lock` verbatim,
+    so raw text is blind in both readings at once). Decoding then lowercasing
+    collapses both, and any further spelling that survives transport decoding.
+
+    Repeated decoding is deliberate. `%256e` decodes once to `%6e` and again to
+    `n`, and whether an intermediary decodes twice is not ours to assume, so
+    identity is the fixed point rather than one pass. The loop terminates
+    because each pass that changes the string strictly shortens it.
+    """
+    seen = value
+    for _ in range(8):
+        decoded = urllib.parse.unquote(seen)
+        if decoded == seen:
+            break
+        seen = decoded
+    return seen.lower()
+
+
+def mentions_nautilus(name: str, spec: object) -> bool:
+    """Whether a dependency names NautilusTrader, decided by resolved identity.
 
     Detection is deliberately looser than the equality that follows it: a
-    case-varied URL is *found* here and then *rejected* by `check_declaration`
-    for not being the official repository, which is the actionable outcome.
+    case-varied or percent-encoded URL is *found* here and then *rejected* by
+    `check_declaration` for not being the official repository, which is the
+    actionable outcome. Equality stays exact so that one spelling is canonical
+    in the tree; only recognition is spelling-blind.
     """
-    if NAUTILUS in name.lower():
+    if NAUTILUS in repository_identity(name):
         return True
     if isinstance(spec, dict):
         for key in ("package", "git"):
             value = spec.get(key)
-            if isinstance(value, str) and NAUTILUS in value.lower():
+            if isinstance(value, str) and NAUTILUS in repository_identity(value):
                 return True
     return False
 
@@ -218,6 +249,22 @@ def check_declaration(owner: str, spec: object, pins: dict[str, list[str]]) -> N
             f"{owner} references NautilusTrader but is not an inline table pinning the "
             f"official repository by revision, got {spec!r}"
         )
+    if spec.get("workspace") is True:
+        # An inheriting member names the dependency but does not pin it: the
+        # revision lives in the workspace root's `[workspace.dependencies]`,
+        # which `dependency_tables` walks and checks like any other table. So
+        # this is not an unpinned reference, it is the same reference read
+        # once. Demanding a `git` key here told the engineer to duplicate the
+        # pin into the member -- the opposite of the one-declaration shape that
+        # makes a pin bump a single edit.
+        for key in ("git", "rev", "branch", "tag", "path", "version"):
+            if key in spec:
+                fail(
+                    f"{owner} inherits with `workspace = true` and also sets `{key}`. "
+                    "An inherited dependency takes its source from the workspace root; "
+                    "a second source here is either dead text or a divergent pin."
+                )
+        return
     git = spec.get("git")
     if git is None:
         fail(
@@ -264,10 +311,11 @@ def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
         for package in document.get("package", []):
             name = package.get("name", "")
             source = package.get("source")
-            # Lowercased for the same reason as `mentions_nautilus`: GitHub
-            # resolves repository names case-insensitively, so a case-varied
-            # official URL is the same repository and must not be skipped here.
-            if NAUTILUS not in f"{name}{source or ''}".lower():
+            # Resolved identity for the same reason as `mentions_nautilus`, and
+            # this reading is where percent-encoding bites hardest: cargo copies
+            # the manifest's spelling into `source` unchanged, so an encoded URL
+            # reaches here still encoded and raw text does not see it.
+            if NAUTILUS not in repository_identity(f"{name}{source or ''}"):
                 continue
             if not isinstance(source, str):
                 # A path-substituted dependency resolves with no source at all.
@@ -551,6 +599,37 @@ def self_test() -> None:
             "lock": '[[package]]\nname = "fork-payload"\nversion = "0.1.0"\n'
             f'source = "git+https://github.com/NautechSystems/Nautilus_Trader.git?rev={bad}#{bad}"\n',
             "reason": "not the official repository",
+        },
+        # The same repository again, spelled with `n` percent-encoded. Measured
+        # against a local git remote, not assumed: cargo fetches this and writes
+        # it into `Cargo.lock` still encoded, so the pair below is one bypass
+        # that both readings missed at once rather than two related ones.
+        "encoded_repository_url": {
+            "dep": 'fork-payload = { git = "https://github.com/nautechsystems/%6eautilus_trader.git", '
+            f'rev = "{bad}" }}\n',
+            "reason": official_repo,
+        },
+        "encoded_repository_url_in_lockfile": {
+            "lock": '[[package]]\nname = "fork-payload"\nversion = "0.1.0"\n'
+            f'source = "git+https://github.com/nautechsystems/%6eautilus_trader.git?rev={bad}#{bad}"\n',
+            "reason": "not the official repository",
+        },
+        # Accepted, and the only control here that pins a shape the repository
+        # does not use yet: inheritance is how the duplicated manifest pins
+        # collapse to one declaration, and demanding a `git` key from the
+        # inheriting member rejected exactly that.
+        "workspace_inherited_dependency": {
+            "dep": "nautilus-inherited = { workspace = true }\n",
+            "table": f'[workspace.dependencies]\nnautilus-inherited = {{ git = "{official}", '
+            f'rev = "{good}" }}\n',
+        },
+        # And the guard that keeps the acceptance above from being a hole: an
+        # inheriting member that also carries a source is not inheriting.
+        "workspace_inheritance_with_source": {
+            "dep": f'nautilus-inherited = {{ workspace = true, git = "{fork_url}", rev = "{bad}" }}\n',
+            "table": f'[workspace.dependencies]\nnautilus-inherited = {{ git = "{official}", '
+            f'rev = "{good}" }}\n',
+            "reason": "and also sets",
         },
         # Cargo accepts an uppercase `rev` and then writes `?rev=<UPPER>#<lower>`
         # -- one commit spelled two ways, which the single-revision rule reported

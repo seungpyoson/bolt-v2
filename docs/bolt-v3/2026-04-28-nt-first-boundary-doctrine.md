@@ -145,14 +145,23 @@ compatibility slice:
   path-substituted dependency resolves with no lockfile source at all, which the
   lane fails on rather than skips, and any tracked path with a `.cargo`
   component is refused whatever it contains, because a cargo config can redirect
-  a source or redefine the subcommands CI runs.
+  a source or redefine the subcommands CI runs. A reference is recognized by what
+  its URL resolves to rather than how it is spelled -- case and percent-encoding
+  both change the text without changing the repository, and cargo copies either
+  spelling into `Cargo.lock` unchanged -- while the equality that follows stays
+  exact, so a variant spelling is found and then rejected for not being canonical.
 - Bolt requires unbounded, unfiltered NT startup reconciliation in every live
   configuration. At the pinned revision the Polymarket adapter drops venue
   orders and positions it cannot map or represent rather than rejecting the
   report, and reports those drops unevenly -- an unmappable order is counted but
   not logged, an unrepresentable position is logged but not counted, and no
   count reaches the mass status itself -- so startup reconciliation completeness
-  is not guaranteed by NT at this pin. This compatibility slice does not add or claim a separate
+  is not guaranteed by NT at this pin. That is one condition of several, and not
+  all of them are in the adapter: the pinned execution engine also discards
+  position reports whose instrument never loaded, so completeness cannot be
+  established by fixing the adapter alone. `ProviderBinding::reconciliation_unmet`
+  is where the current list lives, and the gate refuses enforced admission while
+  it is non-empty. This compatibility slice does not add or claim a separate
   post-startup authority-revocation mode.
 - Bolt strategy state retains intent correlation and strategy-local decision
   context only. It projects current position side, quantity, average entry

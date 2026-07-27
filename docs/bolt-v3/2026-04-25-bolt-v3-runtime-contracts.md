@@ -1246,7 +1246,12 @@ cannot be represented as an NT quantity, are both dropped, so the returned repor
 partial (`crates/adapters/polymarket/src/execution/reconciliation.rs` at the pinned revision). Neither
 drop is recoverable from the report: the order increments a counter and is not logged, the position is
 logged and not counted, and no count reaches the mass status, so an operator cannot identify which
-order was omitted. Bolt does
+order was omitted. Mass-status partiality is one of several conditions on this boundary and closing it
+does not open the gate: the pinned adapter also silently loses confirmed fills, and the pinned
+execution engine drops position reports the adapter built correctly, so a fix confined to the adapter
+leaves the completeness question open. `ProviderBinding::reconciliation_unmet` carries the current
+list; `specs/506-nt-position-sizer-submit/spec.md` states each condition and what closing it does and
+does not achieve. Bolt does
 not query or reconcile venue orders, positions, balances, or fills again, so at this pin Bolt cannot
 distinguish a complete mass-status report from a partial one. Startup reconciliation completeness is
 therefore an open boundary question at this pin, not a guarantee this document asserts. Every Bolt live

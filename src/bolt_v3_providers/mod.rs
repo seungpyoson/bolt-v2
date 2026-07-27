@@ -621,9 +621,17 @@ reaches that report, so a mass-status report can be silently partial",
 fills with a zero local-filled floor, so a matched-but-unconfirmed trade understates filled \
 quantity and overstates remaining quantity",
             "the pinned Polymarket adapter discards non-confirmed trades with no fill report, no \
-counter and no log entry, so a settlement-pending fill reaches the projection only as an inferred \
-one identified by order fields rather than the venue trade id it never supplied, which the venue's \
-later confirmation cannot be deduplicated against",
+counter and no log entry, so a settlement-pending fill's quantity, price and fee never reach the \
+projection as a trade; the pinned engine does not recover that quantity from the order report \
+either, because it applies no fill to an order the venue still reports as working, and once the \
+order reaches a terminal status the quantity instead arrives as a fill identified by order fields \
+rather than the venue trade id the adapter never supplied, which the venue's own later \
+confirmation cannot be deduplicated against",
+            "the pinned Polymarket adapter builds no fill report for a confirmed maker trade \
+holding none of the account's own maker orders, incrementing no counter and logging nothing, so a \
+confirmed fill can be missing from a mass status that reports success; ownership is decided by \
+exact string comparison against the configured account address, so a funder configured in \
+checksummed form disowns every maker order the account placed",
             "the pinned NautilusTrader execution manager drops a venue position report whose \
 instrument is absent from its cache: the netting path returns `None` and the caller discards it \
 with no else branch, no counter and no log, so a mass status the adapter built completely can \

@@ -63,21 +63,34 @@ This slice is not production-grade by itself. It adds the live NT component feed
 - the pinned adapter accounts for fills on orders that have matched but are not yet confirmed. At the
   current pin `build_fill_reports_from_trades` discards any trade whose status is not `Confirmed` with
   a bare `continue`, before the `filtered` counter and with no log entry, so no `FillReport` is
-  produced. Of the six `continue` statements in that function two increment `filtered`, for an
-  unmappable instrument, and four are silent. This condition's own discard is one of the four; the
-  other three are harmless in this configuration, selecting a counterparty's maker entry or firing
-  only under a scoped instrument filter that the mandated empty reconciliation filter never sets.
-  Closing the condition above does **not** close this one; it changes how it fails. The order carries
-  `size_matched` as `filled_qty`, so once the zero floor stops erasing it,
-  `generate_external_order_status_events` synthesizes an inferred fill and the quantity is recovered.
-  But that fill is identified by `create_inferred_reconciliation_trade_id`, derived from the order's
-  own fields, rather than by the venue's trade id -- which the adapter never supplied, having
-  discarded the trade. NT deduplicates fills by trade id
-  (`crates/execution/src/reconciliation/orders.rs`), so when the venue later reports that same trade
-  as `Confirmed`, it does not match the inferred fill and is applied on top of it, and the recovered
-  quantity can be counted twice. The trade's execution price and fee are lost either way, since an
-  inferred fill reconstructs neither. This condition is listed on its own because it survives the
-  condition above being closed, in the opposite direction;
+  produced and the trade's execution price and fee are lost outright. Closing the condition above does
+  **not** close this one; it changes how it fails, and it fails in two ways that need separating
+  because they close differently. A Polymarket order still working reports `LIVE`, which maps to
+  `OrderStatus::Accepted` (`common/enums.rs`); NT applies no fill to a report in that status
+  regardless of its `filled_qty` -- `generate_external_order_status_events` returns acceptance alone,
+  `reconcile_order_report` routes to the fill path only for `PartiallyFilled`/`Filled`, and the
+  live manager's real-fill branch matches neither -- so with or without the zero floor the pending
+  quantity does not reach the projection at all. Once the order does reach a terminal status the
+  quantity is recovered, but as a fill identified by `create_inferred_reconciliation_trade_id`,
+  derived from the order's own fields rather than the venue trade id the adapter never supplied. NT
+  deduplicates fills by trade id (`crates/execution/src/reconciliation/orders.rs`), so the venue's
+  own later `Confirmed` report of that same trade matches nothing and is applied on top, and the
+  quantity can be counted twice. Understatement while working, double count after terminal: one
+  discard, two directions, neither closed by the floor;
+- the pinned adapter reports every confirmed fill the account earned as maker. At the current pin
+  `build_fill_reports_from_trades` selects the account's own entries out of a confirmed maker trade
+  with a bare `continue`; when the trade holds no entry the account owns, the loop body never runs,
+  no report is produced, `filtered` is not incremented, nothing is logged, and the function returns
+  success. Of the six `continue` statements in that function two increment `filtered`, for an
+  unmappable instrument; of the four that are silent, two are this condition and the one above, and
+  the remaining two fire only under a scoped instrument filter that the mandated empty reconciliation
+  filter never sets. Ownership is `maker_address == user_address || owner == api_key` compared as
+  exact strings, and `user_address` is the configured funder taken verbatim where one is set, so a
+  funder written in the checksummed form the block explorers display fails the address test against
+  a lowercase payload for every one of the account's own orders -- leaving the API-key test alone to
+  carry it, and that one fails for anything placed under a different key of the same account. The
+  adapter compares an address without regard to case elsewhere (`execution/mod.rs`), so this is an
+  inconsistency at the pin rather than a venue constraint;
 - the pinned NautilusTrader engine keeps every position report the adapter produced. It does not, and
   this one is not an adapter defect: `reconcile_position_report_netting` in
   `crates/live/src/execution/manager.rs` resolves the instrument with `self.get_instrument(&id)?`, so
@@ -120,8 +133,20 @@ the conditions above.
 This is deliberate upstream behaviour rather than a defect, so no upstream change
 will ever close it and it is not a `reconciliation_unmet` condition -- a condition
 is something that can be closed, and listing this one would make the list
-permanently non-empty. It is recorded here instead, as accepted: the understatement
-it can produce is bounded by the threshold times the number of dust holdings, which
-is immaterial against any pool ceiling this system configures. If that ceiling ever
-becomes small enough for sub-cent holdings to matter, this acceptance has to be
-revisited rather than assumed to still hold.
+permanently non-empty. It is recorded here instead, as accepted.
+
+The understatement is the threshold times the number of dust holdings, and only
+the first factor is bounded. Nothing caps the second: the Data API paginates every
+position the account holds, and Bolt configures no maximum holding count, so a
+large enough count of sub-threshold holdings exceeds any finite ceiling -- at the
+`0.01` threshold and a $25 pool, on the order of 2,500 of them. That is the
+argument against calling this immaterial by inspection, and it is why the
+acceptance rests on the count instead: this system opens positions only through
+submit admission against a single configured pool, so the holdings it can
+accumulate are bounded by the orders it placed, and a strategy that could place
+thousands of sub-cent orders would exhaust the pool on fees long before the
+omission mattered. The acceptance is therefore conditional on that shape, not on
+the threshold being small. Two things invalidate it and both are observable: a
+pool ceiling small enough for a handful of sub-cent holdings to matter, or an
+account that accumulates positions this system did not open -- airdrops, transfers
+in, or a second trader on the same account. Neither is checked anywhere in code.

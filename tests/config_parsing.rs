@@ -7226,9 +7226,9 @@ fn enforced_submit_admission_rejects_venue_without_attested_reconciliation_compl
 
     // Every unmet condition must be reported, not just the first. Three upstream
     // defects gate this flip; closing one does not clear the rest, so an engineer
-    // who fixes one has to see the others still listed. They are not mutually
-    // independent -- `specs/506` records that closing the zero floor is expected
-    // to close the third condition's liability exposure -- which is a reason to
+    // who fixes one has to see the others still listed. Closing one can change
+    // how another fails rather than fixing it -- `specs/506` works the zero floor
+    // and the discarded trade through as an example -- which is a reason to
     // report all three, not a reason to collapse them.
     assert_eq!(
         unmet.len(),

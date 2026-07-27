@@ -620,9 +620,10 @@ reaches that report, so a mass-status report can be silently partial",
             "the pinned Polymarket adapter caps order filled quantity against confirmed \
 fills with a zero local-filled floor, so a matched-but-unconfirmed trade understates filled \
 quantity and overstates remaining quantity",
-            "the pinned Polymarket adapter discards non-confirmed trades with no fill report, \
-no counter and no log entry, so settlement-pending fills carry no trade identity, price or fee \
-into the projection admission consumes",
+            "the pinned Polymarket adapter discards non-confirmed trades with no fill report, no \
+counter and no log entry, so a settlement-pending fill reaches the projection only as an inferred \
+one identified by order fields rather than the venue trade id it never supplied, which the venue's \
+later confirmation cannot be deduplicated against",
         ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: polymarket::validate_client,

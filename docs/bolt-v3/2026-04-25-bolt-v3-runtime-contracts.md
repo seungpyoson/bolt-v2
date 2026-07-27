@@ -1242,8 +1242,11 @@ startup reconciliation. The gate remains unreconciled and rejects submission unt
 from the reconciled NT cache, current evidence, and provider-only collateral allowance succeeds.
 At the pinned revision NautilusTrader's Polymarket mass-status construction is not fail-closed: a venue
 open order whose instrument cannot be mapped into the instrument universe, and a venue position that
-cannot be represented as an NT quantity, are logged and skipped, so the returned report can be silently
-partial (`crates/adapters/polymarket/src/execution/reconciliation.rs` at the pinned revision). Bolt does
+cannot be represented as an NT quantity, are both dropped, so the returned report can be silently
+partial (`crates/adapters/polymarket/src/execution/reconciliation.rs` at the pinned revision). Neither
+drop is recoverable from the report: the order increments a counter and is not logged, the position is
+logged and not counted, and no count reaches the mass status, so an operator cannot identify which
+order was omitted. Bolt does
 not query or reconcile venue orders, positions, balances, or fills again, so at this pin Bolt cannot
 distinguish a complete mass-status report from a partial one. Startup reconciliation completeness is
 therefore an open boundary question at this pin, not a guarantee this document asserts. Every Bolt live

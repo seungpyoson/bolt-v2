@@ -159,12 +159,26 @@ def discover(filename: str) -> list[Path]:
 
 
 def mentions_nautilus(name: str, spec: object) -> bool:
-    if NAUTILUS in name:
+    """Whether a dependency names NautilusTrader, decided without regard to case.
+
+    Case matters here for the same reason it matters in discovery, and was
+    missed here after being fixed there. GitHub resolves owner and repository
+    names case-insensitively -- `github.com/NautechSystems/Nautilus_Trader.git`
+    serves the same repository as the official URL -- so a dependency written
+    that way contains no lowercase `nautilus` and was skipped entirely, taking
+    its revision with it. The reference stayed invisible while the real ones
+    kept the check non-vacuous.
+
+    Detection is deliberately looser than the equality that follows it: a
+    case-varied URL is *found* here and then *rejected* by `check_declaration`
+    for not being the official repository, which is the actionable outcome.
+    """
+    if NAUTILUS in name.lower():
         return True
     if isinstance(spec, dict):
         for key in ("package", "git"):
             value = spec.get(key)
-            if isinstance(value, str) and NAUTILUS in value:
+            if isinstance(value, str) and NAUTILUS in value.lower():
                 return True
     return False
 
@@ -250,7 +264,10 @@ def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
         for package in document.get("package", []):
             name = package.get("name", "")
             source = package.get("source")
-            if NAUTILUS not in f"{name}{source or ''}":
+            # Lowercased for the same reason as `mentions_nautilus`: GitHub
+            # resolves repository names case-insensitively, so a case-varied
+            # official URL is the same repository and must not be skipped here.
+            if NAUTILUS not in f"{name}{source or ''}".lower():
                 continue
             if not isinstance(source, str):
                 # A path-substituted dependency resolves with no source at all.
@@ -520,6 +537,20 @@ def self_test() -> None:
             "cargo_config": 'paths = ["../fork"]\n',
             "cargo_config_symlink": (".cargo", "cargo-config"),
             "reason": "tracked cargo config",
+        },
+        # GitHub resolves owner and repository names case-insensitively, so this
+        # is the official repository under a spelling that contains no lowercase
+        # `nautilus` -- which is how it escaped detection entirely, revision and
+        # all, while the genuine references kept the check non-vacuous.
+        "cased_repository_url": {
+            "dep": 'fork-payload = { git = "https://github.com/NautechSystems/Nautilus_Trader.git", '
+            f'rev = "{bad}" }}\n',
+            "reason": official_repo,
+        },
+        "cased_repository_url_in_lockfile": {
+            "lock": '[[package]]\nname = "fork-payload"\nversion = "0.1.0"\n'
+            f'source = "git+https://github.com/NautechSystems/Nautilus_Trader.git?rev={bad}#{bad}"\n',
+            "reason": "not the official repository",
         },
         # Cargo accepts an uppercase `rev` and then writes `?rev=<UPPER>#<lower>`
         # -- one commit spelled two ways, which the single-revision rule reported

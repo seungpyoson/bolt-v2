@@ -64,16 +64,20 @@ This slice is not production-grade by itself. It adds the live NT component feed
   current pin `build_fill_reports_from_trades` discards any trade whose status is not `Confirmed` with
   a bare `continue`, before the `filtered` counter and with no log entry, so no `FillReport` is
   produced. Of the six `continue` statements in that function two increment `filtered`, for an
-  unmappable instrument, and the rest are silent; the silent ones are harmless in this configuration,
-  selecting a counterparty's maker entry or firing only under a scoped instrument filter that the
-  mandated empty reconciliation filter never sets. This condition is **not independent of the one
-  above, and closing that one is expected to close the liability exposure here**: the order still
-  carries `size_matched` as `filled_qty`, and once the zero floor stops erasing it,
-  `generate_external_order_status_events` synthesizes an inferred fill for a non-zero `filled_qty`,
-  so the quantity becomes visible to Bolt without the adapter producing the report. What does not
-  return is the trade's own identity, execution price and fee, which no inferred fill can
-  reconstruct. It is listed separately because that fidelity loss is a distinct defect, not because
-  it independently hides liability;
+  unmappable instrument, and four are silent. This condition's own discard is one of the four; the
+  other three are harmless in this configuration, selecting a counterparty's maker entry or firing
+  only under a scoped instrument filter that the mandated empty reconciliation filter never sets.
+  Closing the condition above does **not** close this one; it changes how it fails. The order carries
+  `size_matched` as `filled_qty`, so once the zero floor stops erasing it,
+  `generate_external_order_status_events` synthesizes an inferred fill and the quantity is recovered.
+  But that fill is identified by `create_inferred_reconciliation_trade_id`, derived from the order's
+  own fields, rather than by the venue's trade id -- which the adapter never supplied, having
+  discarded the trade. NT deduplicates fills by trade id
+  (`crates/execution/src/reconciliation/orders.rs`), so when the venue later reports that same trade
+  as `Confirmed`, it does not match the inferred fill and is applied on top of it, and the recovered
+  quantity can be counted twice. The trade's execution price and fee are lost either way, since an
+  inferred fill reconstructs neither. This condition is listed on its own because it survives the
+  condition above being closed, in the opposite direction;
 - filled positions consume pool liability. Capacity is computed as `max_pool_liability` minus
   `committed_liability` minus live reserved liability (`bolt_v3_capital_reservation.rs`), but every
   production construction of `CapitalPoolSnapshot` sets `committed_liability` to zero and no path ever

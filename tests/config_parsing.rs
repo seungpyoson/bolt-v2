@@ -7224,9 +7224,12 @@ fn enforced_submit_admission_rejects_venue_without_attested_reconciliation_compl
         })
         .collect();
 
-    // Every unmet condition must be reported, not just the first. Three
-    // independent upstream defects gate this flip, and closing one does not make
-    // the others safe, so an engineer who fixes one has to see the rest listed.
+    // Every unmet condition must be reported, not just the first. Three upstream
+    // defects gate this flip; closing one does not clear the rest, so an engineer
+    // who fixes one has to see the others still listed. They are not mutually
+    // independent -- `specs/506` records that closing the zero floor is expected
+    // to close the third condition's liability exposure -- which is a reason to
+    // report all three, not a reason to collapse them.
     assert_eq!(
         unmet.len(),
         3,

@@ -614,14 +614,15 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
         reconciliation_unmet: &[
-            "the pinned Polymarket adapter logs and skips venue orders and positions it \
-cannot represent, so a mass-status report can be silently partial",
+            "the pinned Polymarket adapter drops venue orders and positions it cannot \
+represent and still returns a successful mass status, and no count of what it dropped \
+reaches that report, so a mass-status report can be silently partial",
             "the pinned Polymarket adapter caps order filled quantity against confirmed \
 fills with a zero local-filled floor, so a matched-but-unconfirmed trade understates filled \
 quantity and overstates remaining quantity",
-            "the pinned Polymarket adapter discards non-confirmed trades with no fill report, no \
-counter and no log entry, unlike the other two skips in the same function, so a mass status that \
-dropped settlement-pending fills is indistinguishable from one that had none",
+            "the pinned Polymarket adapter discards non-confirmed trades with no fill report, \
+no counter and no log entry, so settlement-pending fills carry no trade identity, price or fee \
+into the projection admission consumes",
         ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: polymarket::validate_client,

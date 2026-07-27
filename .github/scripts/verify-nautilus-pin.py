@@ -19,8 +19,9 @@ where cargo reads the commit after `#` validated a revision nothing compiles. So
 this version enumerates nothing:
 
   * manifests and lockfiles are **discovered**, never listed;
-  * lockfiles are read as *resolution truth* -- the commit after `#`, which is
-    what cargo checks out, never the `?rev=` that merely requested it;
+  * lockfile git entries register *both* halves -- the commit after `#`, which
+    is what cargo checks out, and the `?rev=` that requested it -- so a
+    disagreement between them fails as two revisions;
   * manifests are read for *declared intent*, including the override tables;
   * a tracked cargo config is refused outright, not screened key by key;
   * anything referencing NautilusTrader that cannot be interpreted is a
@@ -59,6 +60,28 @@ CAPABILITY_MANIFEST = Path("ci/nautilus-source-capabilities.toml")
 
 # `git+<url>?rev=<rev>#<resolved>` as Cargo.lock records a git source.
 LOCK_SOURCE = re.compile(r"^git\+(?P<url>[^?#]+)(?:\?(?P<query>[^#]*))?(?:#(?P<resolved>.*))?$")
+# Canonical git object name: full length, lowercase.
+CANONICAL_REVISION = re.compile(r"^[0-9a-f]{40}$")
+
+
+def register(pins: dict[str, list[str]], label: str, revision: str, context: str) -> None:
+    """Record one revision reference, under one validity rule for the field.
+
+    Canonical lowercase is required rather than normalized away, for two
+    reasons. `build.rs::is_git_head_sha` already requires it of the manifest
+    pin, and two guards on one field with different rules is exactly how a value
+    passes one and fails the other. And cargo accepts an uppercase `rev`, then
+    writes `?rev=<UPPERCASE>#<lowercase>` -- one commit spelled two ways, which
+    the single-revision rule would otherwise report as two revisions. Requiring
+    the canonical spelling makes that disagreement unrepresentable instead of
+    something every comparison has to remember to normalize.
+    """
+    if not CANONICAL_REVISION.match(revision):
+        fail(
+            f"{label} must name a full 40-character lowercase revision, got {revision!r}"
+            f"{context}"
+        )
+    pins.setdefault(revision, []).append(label)
 
 
 def fail(message: str) -> None:
@@ -106,25 +129,33 @@ def load_toml(path: Path) -> dict:
     raise AssertionError("unreachable")
 
 
-def discover(filename: str) -> list[Path]:
-    """Every *tracked* `filename`, asked of git rather than walked.
+def tracked_paths() -> list[Path]:
+    """Every tracked path, asked of git and filtered here, never by pathspec.
 
     An earlier version walked the filesystem and skipped directories by name.
     That silently excluded a tracked manifest under one of those names, and it
     inherited `rglob`'s symlink behaviour, which differs by interpreter version.
     Git knows exactly which files are in the repository; nothing else needs to.
+
+    The whole tracked set is returned rather than a pathspec match because git's
+    globbing is case-sensitive while the filesystems this is developed on are
+    not. `git ls-files -- '*config.toml'` does not match a tracked
+    `.cargo/Config.toml`, and cargo opens it anyway. Deciding what a path is
+    belongs here, in one place, where case can be handled explicitly.
     """
-    result = subprocess.run(
-        ["git", "ls-files", "-z", "--", f"*{filename}", filename],
-        capture_output=True,
-        text=True,
-    )
+    result = subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=True)
     if result.returncode != 0:
         fail(
             "cannot list tracked files with git, so the set of manifests to check is "
             f"unknown: {result.stderr.strip()}"
         )
     return sorted({Path(p) for p in result.stdout.split("\0") if p})
+
+
+def discover(filename: str) -> list[Path]:
+    """Tracked files with this name, matched without regard to case."""
+    wanted = filename.lower()
+    return [path for path in tracked_paths() if path.name.lower() == wanted]
 
 
 def mentions_nautilus(name: str, spec: object) -> bool:
@@ -188,9 +219,9 @@ def check_declaration(owner: str, spec: object, pins: dict[str, list[str]]) -> N
                 "be proven merged. Pin an exact `rev` instead."
             )
     revision = spec.get("rev")
-    if not isinstance(revision, str) or len(revision) != 40:
+    if not isinstance(revision, str):
         fail(f"{owner} must pin a full 40-character `rev`, got {revision!r}")
-    pins.setdefault(revision, []).append(owner)
+    register(pins, owner, revision, "")
 
 
 def collect_from_manifests(pins: dict[str, list[str]]) -> int:
@@ -264,9 +295,7 @@ def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
             if not revisions:
                 fail(f"{owner} records no revision at all: {source}")
             for label, revision in revisions.items():
-                if len(revision) != 40:
-                    fail(f"{label} does not name a full 40-character revision: {source}")
-                pins.setdefault(revision, []).append(label)
+                register(pins, label, revision, f": {source}")
     return seen
 
 
@@ -287,21 +316,30 @@ def reject_tracked_cargo_config() -> None:
     file's absence rather than its contents, and there is no key list left to
     fall behind.
 
+    What is refused is any tracked path with a `.cargo` component, compared
+    without regard to case, rather than a file whose name and parent look right.
+    Two demonstrated escapes motivate that. A tracked `.cargo/Config.toml` is
+    invisible to a case-sensitive pathspec yet cargo opens it on a
+    case-insensitive filesystem. A tracked `.cargo` *symlink* to an
+    ordinarily-named directory leaves the real file's parent called something
+    else, so a parent-name test skips it while cargo still reads it through the
+    link -- and the symlink itself is a tracked path named `.cargo`, so the
+    component test catches it where a name test cannot.
+
     Limit worth naming: this sees tracked files. `$CARGO_HOME/config.toml`, a
     config a workflow step writes at runtime, and `--config` on the command line
     are outside the repository and cannot be checked here.
     """
-    for name in ("config.toml", "config"):
-        for path in discover(name):
-            if path.parent.name != ".cargo":
-                continue
-            fail(
-                f"{path} is a tracked cargo config. Cargo config can redirect a dependency "
-                "source and can redefine the subcommands CI runs, both without changing any "
-                "manifest or lockfile, so a NautilusTrader pin cannot be proven merged while "
-                "one is tracked. This repository needs none; remove it, or verify what it "
-                "does explicitly and justify it here."
-            )
+    for path in tracked_paths():
+        if ".cargo" not in [part.lower() for part in path.parts]:
+            continue
+        fail(
+            f"{path} is a tracked cargo config, or makes one reachable. Cargo config can "
+            "redirect a dependency source and can redefine the subcommands CI runs, both "
+            "without changing any manifest or lockfile, so a NautilusTrader pin cannot be "
+            "proven merged while one is tracked. This repository needs none; remove it, or "
+            "verify what it does explicitly and justify it here."
+        )
 
 
 def collect_pins() -> dict[str, list[str]]:
@@ -319,12 +357,12 @@ def collect_pins() -> dict[str, list[str]]:
         fail(f"{CAPABILITY_MANIFEST}: expected capability manifest is missing")
     capability = load_toml(CAPABILITY_MANIFEST)
     revision = capability.get("revision")
-    if not isinstance(revision, str) or len(revision) != 40:
+    if not isinstance(revision, str):
         fail(
             f"{CAPABILITY_MANIFEST}: `revision` must be a full 40-character commit, "
             f"got {revision!r}"
         )
-    pins.setdefault(revision, []).append(f"{CAPABILITY_MANIFEST}:revision")
+    register(pins, f"{CAPABILITY_MANIFEST}:revision", revision, "")
     return pins
 
 
@@ -469,6 +507,27 @@ def self_test() -> None:
             "cargo_config": "[build]\njobs = 2\n",
             "reason": "tracked cargo config",
         },
+        # Git's pathspec globbing is case-sensitive; the filesystems this is
+        # developed on are not, so cargo opens what a pathspec never matched.
+        "cargo_config_case_variant": {
+            "cargo_config_name": ".cargo/Config.toml",
+            "cargo_config": 'paths = ["../fork"]\n',
+            "reason": "tracked cargo config",
+        },
+        # The real file's parent is not called `.cargo`; the symlink is.
+        "cargo_config_via_symlink": {
+            "cargo_config_name": "cargo-config/config.toml",
+            "cargo_config": 'paths = ["../fork"]\n',
+            "cargo_config_symlink": (".cargo", "cargo-config"),
+            "reason": "tracked cargo config",
+        },
+        # Cargo accepts an uppercase `rev` and then writes `?rev=<UPPER>#<lower>`
+        # -- one commit spelled two ways, which the single-revision rule reported
+        # as two revisions until one canonical spelling was required.
+        "uppercase_revision": {
+            "dep": f'nautilus-x = {{ git = "{official}", rev = "{good.upper()}" }}\n',
+            "reason": "lowercase revision",
+        },
         # `?rev=` names a merged revision while the fragment cargo actually
         # checks out names another. Reading the query accepted this.
         "lock_fragment_mismatch": {
@@ -513,7 +572,9 @@ def self_test() -> None:
             "Cargo.lock": f"{lock}{control.get('lock', '')}",
             "ci/nautilus-source-capabilities.toml": f'revision = "{good}"\n',
             f"{control.get('stray_dir', 'sub')}/Cargo.toml": control.get("stray", ""),
-            ".cargo/config.toml": control.get("cargo_config", ""),
+            control.get("cargo_config_name", ".cargo/config.toml"): control.get(
+                "cargo_config", ""
+            ),
         }
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -523,6 +584,9 @@ def self_test() -> None:
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content)
+            link = control.get("cargo_config_symlink")
+            if link:
+                (root / link[0]).symlink_to(link[1])
             track_fixture(root)
             result = subprocess.run(
                 [sys.executable, str(Path(__file__).resolve()), "--offline", str(root)],

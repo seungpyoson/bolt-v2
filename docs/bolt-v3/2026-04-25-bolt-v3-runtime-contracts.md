@@ -1450,9 +1450,11 @@ revision is fetchable through the official repository URL because GitHub serves
 it from the shared fork network, so the URL and revision assertions pass for
 unmerged fork work. Mergedness is enforced by the `nautilus-pin` CI lane. It discovers every
 tracked manifest and lockfile by asking git rather than walking the filesystem,
-and treats each lockfile entry as what cargo actually resolved -- the commit
-after `#`, which is what cargo checks out, rather than the `?rev=` that requested
-it. Neither reading is
+and registers both halves of each lockfile git entry -- the commit after `#`,
+which is what cargo checks out, and the `?rev=` that requested it -- so an entry
+whose halves disagree fails as two revisions. Revisions must be written in the
+canonical lowercase form, the same rule `build.rs` applies, so that one commit
+cannot be spelled two ways. Neither reading is
 sufficient alone: a `[patch]` naming a git source appears in the lockfile, while
 one naming a path resolves with no lockfile source at all, so the lane fails on a
 NautilusTrader package that resolves without a source and refuses any tracked

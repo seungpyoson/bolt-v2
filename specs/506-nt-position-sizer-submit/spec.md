@@ -41,9 +41,13 @@ Only `prediction_market_binary` is implemented in this slice. The compiled order
 This slice is not production-grade by itself. It adds the live NT component feed and startup/reconnect cache rebuild boundary, but `enforce_submit_admission = true` is not safe for full production deployment until the remaining liability and operations gaps are closed:
 
 - the configured venue's pinned adapter attests startup reconciliation completeness. At the current
-  pin the Polymarket adapter logs and skips venue open orders and positions it cannot represent and
-  still returns a successful mass status, so the reconciled NT open-order set can silently omit live
-  liability. Bolt reads only that set and cannot detect the omission, and this slice removed the
+  pin the Polymarket adapter drops venue open orders and positions it cannot represent and still
+  returns a successful mass status, so the reconciled NT open-order set can silently omit live
+  liability. The drops are not uniformly reported: an unmappable open order increments a counter but
+  logs nothing (`build_order_reports_from_orders`), an unrepresentable position logs a warning but
+  increments no counter, its builder having none, and no counter reaches `ExecutionMassStatus` at
+  all -- the totals surface only in a `log::debug!` line. Bolt reads only that set and cannot detect
+  the omission, and this slice removed the
   independent venue-truth cross-check that previously read venue open orders directly. This is
   machine-enforced: `ProviderBinding::reconciliation_unmet` lists the open conditions per provider and
   startup validation rejects `enforce_submit_admission = true` while that list is non-empty. Emptying
@@ -58,14 +62,18 @@ This slice is not production-grade by itself. It adds the live NT component feed
   independent of the completeness item above and is listed as its own condition on the same gate;
 - the pinned adapter accounts for fills on orders that have matched but are not yet confirmed. At the
   current pin `build_fill_reports_from_trades` discards any trade whose status is not `Confirmed` with
-  a bare `continue` that runs before the `filtered` counter -- no fill report, no counter, no log --
-  while the two other skips in the same function both count and are reported in its summary log. The
-  order itself does remain visible: `GetOrdersParams` carries no status filter, so a matched order is
-  still returned by `/data/orders` and maps to `OrderStatus::Filled`. What is not visible is that its
-  fills were dropped, and the condition above then caps that order's filled quantity to zero. A mass
-  status that discarded settlement-pending fills is therefore indistinguishable from one that had
-  none, so the resulting understatement cannot be detected from the report. Closing the zero floor
-  does not make this observable, which is why it is listed as its own condition;
+  a bare `continue`, before the `filtered` counter and with no log entry, so no `FillReport` is
+  produced. Of the six `continue` statements in that function two increment `filtered`, for an
+  unmappable instrument, and the rest are silent; the silent ones are harmless in this configuration,
+  selecting a counterparty's maker entry or firing only under a scoped instrument filter that the
+  mandated empty reconciliation filter never sets. This condition is **not independent of the one
+  above, and closing that one is expected to close the liability exposure here**: the order still
+  carries `size_matched` as `filled_qty`, and once the zero floor stops erasing it,
+  `generate_external_order_status_events` synthesizes an inferred fill for a non-zero `filled_qty`,
+  so the quantity becomes visible to Bolt without the adapter producing the report. What does not
+  return is the trade's own identity, execution price and fee, which no inferred fill can
+  reconstruct. It is listed separately because that fidelity loss is a distinct defect, not because
+  it independently hides liability;
 - filled positions consume pool liability. Capacity is computed as `max_pool_liability` minus
   `committed_liability` minus live reserved liability (`bolt_v3_capital_reservation.rs`), but every
   production construction of `CapitalPoolSnapshot` sets `committed_liability` to zero and no path ever

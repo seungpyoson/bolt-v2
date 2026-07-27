@@ -198,7 +198,41 @@ def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
     return seen
 
 
+def reject_source_overrides() -> int:
+    """Refuse cargo config overrides, which redirect a source invisibly.
+
+    Verified by experiment, not assumed: a `paths` override swaps the built code
+    while `Cargo.lock` still records the original git revision, so neither the
+    manifests nor the lockfiles this script reads would show it. `[source]`
+    replacement is the same shape. Both are refused outright rather than
+    inspected -- deciding whether a given override happens to shadow
+    NautilusTrader means resolving it, and a check that has to resolve overrides
+    to stay correct is one more thing to get wrong.
+
+    Limit worth naming: this sees repository files only. `$CARGO_HOME/config.toml`
+    and `--config` on the command line are outside the repository and cannot be
+    checked here.
+    """
+    checked = 0
+    for name in ("config.toml", "config"):
+        for path in discover(name):
+            if path.parent.name != ".cargo":
+                continue
+            checked += 1
+            document = tomllib.loads(path.read_text(encoding="utf-8"))
+            for key in ("paths", "source"):
+                if key in document:
+                    fail(
+                        f"{path} declares `{key}`, which redirects a dependency source without "
+                        "changing any manifest or lockfile. A NautilusTrader pin cannot be "
+                        f"proven merged while `{key}` is in effect; remove it, or verify the "
+                        "override explicitly and justify it here."
+                    )
+    return checked
+
+
 def collect_pins() -> dict[str, list[str]]:
+    reject_source_overrides()
     pins: dict[str, list[str]] = {}
     declared = collect_from_manifests(pins)
     resolved = collect_from_lockfiles(pins)
@@ -301,6 +335,12 @@ def self_test() -> None:
         "replace_override": (
             "", f'[replace]\nnautilus-core = {{ git = "{official}", rev = "{bad}" }}\n', False,
         ),
+        "cargo_paths_override": ("", "", False, "", 'paths = ["/tmp/fork"]\n'),
+        "cargo_source_override": (
+            "", "", False, "",
+            '[source."https://github.com/nautechsystems/nautilus_trader.git"]\n'
+            'replace-with = "vendored"\n',
+        ),
         "lock_override": (
             "", "",
             False,
@@ -319,6 +359,7 @@ def self_test() -> None:
     for name, control in controls.items():
         extra_dep, extra_table, expect_pass = control[0], control[1], control[2]
         extra_lock = control[3] if len(control) > 3 else ""
+        cargo_config = control[4] if len(control) > 4 else ""
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             (root / "ci").mkdir()
@@ -330,6 +371,9 @@ def self_test() -> None:
             (root / "ci").joinpath("nautilus-source-capabilities.toml").write_text(
                 f'revision = "{good}"\n'
             )
+            if cargo_config:
+                (root / ".cargo").mkdir()
+                (root / ".cargo" / "config.toml").write_text(cargo_config)
             result = subprocess.run(
                 [sys.executable, str(Path(__file__).resolve()), "--offline", str(root)],
                 capture_output=True,

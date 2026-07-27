@@ -624,6 +624,10 @@ quantity and overstates remaining quantity",
 counter and no log entry, so a settlement-pending fill reaches the projection only as an inferred \
 one identified by order fields rather than the venue trade id it never supplied, which the venue's \
 later confirmation cannot be deduplicated against",
+            "the pinned NautilusTrader execution manager drops a venue position report whose \
+instrument is absent from its cache: the netting path returns `None` and the caller discards it \
+with no else branch, no counter and no log, so a mass status the adapter built completely can \
+still lose positions inside the engine",
         ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: polymarket::validate_client,

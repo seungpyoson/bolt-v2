@@ -7224,15 +7224,17 @@ fn enforced_submit_admission_rejects_venue_without_attested_reconciliation_compl
         })
         .collect();
 
-    // Every unmet condition must be reported, not just the first. Three upstream
+    // Every unmet condition must be reported, not just the first. Four upstream
     // defects gate this flip; closing one does not clear the rest, so an engineer
     // who fixes one has to see the others still listed. Closing one can change
     // how another fails rather than fixing it -- `specs/506` works the zero floor
     // and the discarded trade through as an example -- which is a reason to
-    // report all three, not a reason to collapse them.
+    // report all four, not a reason to collapse them. Three are adapter defects
+    // and the fourth is in the execution engine, so fixing the adapter alone
+    // cannot empty this list.
     assert_eq!(
         unmet.len(),
-        3,
+        4,
         "arming submit admission must report every unmet condition: {messages:#?}"
     );
     assert!(
@@ -7252,6 +7254,12 @@ fn enforced_submit_admission_rejects_venue_without_attested_reconciliation_compl
             .iter()
             .any(|message| message.contains("discards non-confirmed trades")),
         "the matched-but-unconfirmed condition must be reported: {messages:#?}"
+    );
+    assert!(
+        unmet
+            .iter()
+            .any(|message| message.contains("lose positions inside the engine")),
+        "the engine-side position drop must be reported: {messages:#?}"
     );
 }
 

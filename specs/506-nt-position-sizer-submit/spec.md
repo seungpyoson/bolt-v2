@@ -78,6 +78,16 @@ This slice is not production-grade by itself. It adds the live NT component feed
   quantity can be counted twice. The trade's execution price and fee are lost either way, since an
   inferred fill reconstructs neither. This condition is listed on its own because it survives the
   condition above being closed, in the opposite direction;
+- the pinned NautilusTrader engine keeps every position report the adapter produced. It does not, and
+  this one is not an adapter defect: `reconcile_position_report_netting` in
+  `crates/live/src/execution/manager.rs` resolves the instrument with `self.get_instrument(&id)?`, so
+  a report whose instrument never loaded into the cache returns `None`, and the caller consumes it
+  with a bare `if let Some(...)` -- no else branch, no counter, no log at any level. The adapter's own
+  position builder never checks instrument availability, so it faithfully produces the report and the
+  engine discards it. This matters for the gate's premise rather than for one venue: it survives every
+  adapter condition above being closed, so a list emptied on adapter fixes alone would attest
+  completeness that the engine still does not provide. A restart holding a position in a market whose
+  instrument is absent -- an expired or unlisted one -- understates liability with no signal;
 - filled positions consume pool liability. Capacity is computed as `max_pool_liability` minus
   `committed_liability` minus live reserved liability (`bolt_v3_capital_reservation.rs`), but every
   production construction of `CapitalPoolSnapshot` sets `committed_liability` to zero and no path ever

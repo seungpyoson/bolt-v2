@@ -619,6 +619,10 @@ cannot represent, so a mass-status report can be silently partial",
             "the pinned Polymarket adapter caps order filled quantity against confirmed \
 fills with a zero local-filled floor, so a matched-but-unconfirmed trade understates filled \
 quantity and overstates remaining quantity",
+            "the pinned Polymarket adapter discards non-confirmed trades without counting or \
+logging them, while a matched order has already left the open-order response and its position \
+appears only after settlement, so a matched-but-unconfirmed order is absent from orders, fills \
+and positions alike",
         ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: polymarket::validate_client,

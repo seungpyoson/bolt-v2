@@ -414,6 +414,33 @@ fn unreadable_bytes_remain_corrupt_evidence() {
 }
 
 #[test]
+fn future_schema_with_an_unparseable_payload_reports_unsupported_schema_version() {
+    // A store at another schema version is expected to carry a shape this build
+    // cannot deserialize. The version governs how the payload should be read, so
+    // it must be decided first -- otherwise the unreadable shape is reported as
+    // corruption when the version is the actual answer.
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    fs::write(
+        &path,
+        br#"{"schema_version":99,"state":{"SomeFutureState":{"halt_id":"future-halt",
+             "field_this_build_never_had":true}}}"#,
+    )
+    .expect("future-schema fixture should write");
+    let store = KillSwitchStore::new(path, 65_536);
+
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("future-schema store should load a fail-closed record"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: KillSwitchRecoveryReason::UnsupportedSchemaVersion,
+            state: None,
+        }
+    );
+}
+
+#[test]
 fn retired_trigger_plus_invalid_loss_snapshot_remains_corrupt_evidence() {
     // The record deserializes once the retired kind is substituted, but the loss
     // snapshot is validated separately on the normal load path and is corrupt

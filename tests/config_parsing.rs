@@ -7229,7 +7229,7 @@ fn enforced_submit_admission_rejects_venue_without_attested_reconciliation_compl
     // safe, so an engineer who fixes one has to see the other still listed.
     assert_eq!(
         unmet.len(),
-        2,
+        3,
         "arming submit admission must report every unmet condition: {messages:#?}"
     );
     assert!(
@@ -7243,6 +7243,12 @@ fn enforced_submit_admission_rejects_venue_without_attested_reconciliation_compl
             .iter()
             .any(|message| message.contains("zero local-filled floor")),
         "the filled-quantity cap condition must be reported: {messages:#?}"
+    );
+    assert!(
+        unmet
+            .iter()
+            .any(|message| message.contains("discards non-confirmed trades")),
+        "the matched-but-unconfirmed condition must be reported: {messages:#?}"
     );
 }
 

@@ -1,9 +1,12 @@
 name: Advisory Check
 
-# Advisory Rust evidence only. Zero merge authority: no required status
-# contexts exist, and GitHub code-owner review is the only merge gate.
+# Rust evidence for pull requests. These lanes carry no authority in GitHub's own
+# ruleset -- it declares no required status contexts, so a direct merge evaluates
+# none of them -- but `.mergify.yml` requires every lane below to succeed before
+# either queue merges. Deleting a lane, or making one `continue-on-error`,
+# removes a merge gate.
 #
-# Four parallel jobs (fmt / clippy / test / build) each surface one ✓/✗ line
+# Parallel jobs each surface one ✓/✗ line
 # per PR. Every Rust lane runs its cargo command directly; the test lane also
 # runs focused repository behavior checks before Cargo. A red check shows the
 # raw command and output, reproducible locally from the repo root.

@@ -1449,11 +1449,14 @@ rejects a false recorded fact instead of silently using the direct path.
 revision is fetchable through the official repository URL because GitHub serves
 it from the shared fork network, so the URL and revision assertions pass for
 unmerged fork work. Mergedness is enforced by the `nautilus-pin` CI lane. It discovers every
-manifest and lockfile in the tree rather than listing them, treats lockfiles as
-what cargo actually resolved so `[patch]` and `[replace]` overrides cannot hide,
-fails on any NautilusTrader reference it cannot interpret, and requires every
-such reference to name one revision that is an ancestor of the official upstream
-default branch. Its bypass controls run in the same lane, so a shape that once
+tracked manifest and lockfile by asking git rather than walking the filesystem,
+and treats lockfiles as what cargo actually resolved. Neither reading is
+sufficient alone: a `[patch]` naming a git source appears in the lockfile, while
+one naming a path resolves with no lockfile source at all, so the lane fails on a
+NautilusTrader package that resolves without a source and refuses repository
+cargo configuration that substitutes a source. It fails on any NautilusTrader
+reference it cannot interpret, and requires every such reference to name one
+revision that is an ancestor of the official upstream default branch. Its bypass controls run in the same lane, so a shape that once
 defeated the check cannot silently return.
 
 Polymarket reconciliation completeness is deliberately not recorded as a source

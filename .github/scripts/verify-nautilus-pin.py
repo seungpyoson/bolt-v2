@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 import urllib.error
@@ -50,7 +51,6 @@ OFFICIAL_API_REPO = "nautechsystems/nautilus_trader"
 FORK_REVISION = "01d5af1427d73532f6dd9f2be77acb72f825bec9"
 NAUTILUS = "nautilus"
 CAPABILITY_MANIFEST = Path("ci/nautilus-source-capabilities.toml")
-SKIP_DIRS = {"target", ".git", "node_modules", ".worktrees"}
 
 # `git+<url>?rev=<rev>#<resolved>` as Cargo.lock records a git source.
 LOCK_SOURCE = re.compile(r"^git\+(?P<url>[^?#]+)(?:\?(?P<query>[^#]*))?(?:#(?P<resolved>.*))?$")
@@ -102,13 +102,24 @@ def load_toml(path: Path) -> dict:
 
 
 def discover(filename: str) -> list[Path]:
-    """Every tracked `filename` in the tree. Discovery, so a new crate is covered."""
-    found: list[Path] = []
-    for path in Path(".").rglob(filename):
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
-        found.append(path)
-    return sorted(found)
+    """Every *tracked* `filename`, asked of git rather than walked.
+
+    An earlier version walked the filesystem and skipped directories by name.
+    That silently excluded a tracked manifest under one of those names, and it
+    inherited `rglob`'s symlink behaviour, which differs by interpreter version.
+    Git knows exactly which files are in the repository; nothing else needs to.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--", f"*{filename}", filename],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        fail(
+            "cannot list tracked files with git, so the set of manifests to check is "
+            f"unknown: {result.stderr.strip()}"
+        )
+    return sorted({Path(p) for p in result.stdout.split("\0") if p})
 
 
 def mentions_nautilus(name: str, spec: object) -> bool:
@@ -203,8 +214,17 @@ def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
         for package in document.get("package", []):
             name = package.get("name", "")
             source = package.get("source")
-            if not isinstance(source, str) or NAUTILUS not in f"{name}{source}":
+            if NAUTILUS not in f"{name}{source or ''}":
                 continue
+            if not isinstance(source, str):
+                # A path-substituted dependency resolves with no source at all.
+                # Skipping it is how a source override stays invisible here, so
+                # this fails regardless of which mechanism produced it.
+                fail(
+                    f"{lockfile}:{name} resolves without a source, which happens when a "
+                    "dependency is substituted by path. A NautilusTrader package must "
+                    "resolve to the official repository at an exact revision."
+                )
             seen += 1
             owner = f"{lockfile}:{name}"
             match = LOCK_SOURCE.match(source)
@@ -249,7 +269,9 @@ def reject_source_overrides() -> int:
                 continue
             checked += 1
             document = load_toml(path)
-            for key in ("paths", "source"):
+            # `patch` and `source` substitute a source, `paths` shadows one, and
+            # `include` pulls in another config that can do any of the three.
+            for key in ("patch", "paths", "source", "include"):
                 if key in document:
                     fail(
                         f"{path} declares `{key}`, which redirects a dependency source without "
@@ -328,6 +350,14 @@ def verify(offline_only: bool = False) -> None:
     print(f"All {total} reference(s) name one revision, merged into {default_branch}.")
 
 
+def track_fixture(root: Path) -> None:
+    """Make a fixture a git repository, because discovery asks git what exists."""
+    for command in (["git", "init", "-q"], ["git", "add", "-A"]):
+        outcome = subprocess.run(command, cwd=root, capture_output=True, text=True)
+        if outcome.returncode != 0:
+            fail(f"self-test fixture setup failed: {outcome.stderr.strip()}")
+
+
 def self_test() -> None:
     """Run every known bypass as a control, so they cannot silently return.
 
@@ -368,6 +398,20 @@ def self_test() -> None:
             "", f'[patch."{official}"]\nnautilus-core = {{ path = "../fork" }}\n', False,
         ),
         "cargo_paths_override": ("", "", False, "", 'paths = ["/tmp/fork"]\n'),
+        "cargo_patch_override": (
+            "", "", False, "",
+            f'[patch."{official}"]\nnautilus-core = {{ path = "../fork" }}\n',
+        ),
+        "cargo_include_override": ("", "", False, "", 'include = "other.toml"\n'),
+        "lock_sourceless_nautilus": (
+            "", "", False,
+            '[[package]]\nname = "nautilus-polymarket"\nversion = "0.1.0"\n',
+        ),
+        "manifest_under_excluded_dir_name": (
+            "", "", False, "", "",
+            f'[dependencies]\nnautilus-model = {{ git = "{official}", rev = "{bad}" }}\n',
+            "node_modules/x",
+        ),
         "cargo_source_override": (
             "", "", False, "",
             '[source."https://github.com/nautechsystems/nautilus_trader.git"]\n'
@@ -394,6 +438,7 @@ def self_test() -> None:
         extra_lock = control[3] if len(control) > 3 else ""
         cargo_config = control[4] if len(control) > 4 else ""
         stray_manifest = control[5] if len(control) > 5 else ""
+        stray_dir = control[6] if len(control) > 6 else "sub"
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             (root / "ci").mkdir()
@@ -406,11 +451,12 @@ def self_test() -> None:
                 f'revision = "{good}"\n'
             )
             if stray_manifest:
-                (root / "sub").mkdir()
-                (root / "sub" / "Cargo.toml").write_text(stray_manifest)
+                (root / stray_dir).mkdir(parents=True)
+                (root / stray_dir / "Cargo.toml").write_text(stray_manifest)
             if cargo_config:
                 (root / ".cargo").mkdir()
                 (root / ".cargo" / "config.toml").write_text(cargo_config)
+            track_fixture(root)
             result = subprocess.run(
                 [sys.executable, str(Path(__file__).resolve()), "--offline", str(root)],
                 capture_output=True,
@@ -440,6 +486,7 @@ def self_test() -> None:
             (root / "ci").joinpath("nautilus-source-capabilities.toml").write_text(
                 f'revision = "{revision}"\n'
             )
+            track_fixture(root)
             result = subprocess.run(
                 [sys.executable, str(Path(__file__).resolve()), str(root)],
                 capture_output=True,

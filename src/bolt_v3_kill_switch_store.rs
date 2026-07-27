@@ -70,6 +70,20 @@ impl std::fmt::Display for KillSwitchRecoveryReason {
 /// The known kinds are not listed here: the candidate string is handed back to
 /// `KillSwitchHaltTriggerKind`'s own deserializer, so retiring or adding a
 /// variant cannot leave a duplicated vocabulary behind to drift.
+/// Reads only the schema version from a store, without interpreting its payload.
+///
+/// The version governs how the rest should be read, so it has to be recoverable
+/// from a store whose payload this build cannot parse. Returns `None` when the
+/// bytes are not readable JSON or carry no version, leaving those to be
+/// diagnosed as corrupt.
+fn declared_schema_version(bytes: &[u8]) -> Option<u32> {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()?
+        .get("schema_version")?
+        .as_u64()
+        .and_then(|version| u32::try_from(version).ok())
+}
+
 fn names_unrepresentable_halt_trigger(bytes: &[u8]) -> bool {
     let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
         return false;
@@ -427,6 +441,22 @@ impl KillSwitchStore {
             return Ok(KillSwitchRecoveryRecord {
                 recovery_state: KillSwitchRecoveryState::FailClosed {
                     reason: KillSwitchRecoveryReason::OversizedEvidence,
+                    state: None,
+                },
+                loss_protection: None,
+            });
+        }
+
+        // Read the version out of the envelope before parsing the payload as the
+        // current schema. A store at another version is expected to carry a shape
+        // this build cannot deserialize, so attempting the payload parse first
+        // reports that shape as corrupt when the version is the real answer.
+        if let Some(declared) = declared_schema_version(&bytes)
+            && declared != KILL_SWITCH_STORE_SCHEMA_VERSION
+        {
+            return Ok(KillSwitchRecoveryRecord {
+                recovery_state: KillSwitchRecoveryState::FailClosed {
+                    reason: KillSwitchRecoveryReason::UnsupportedSchemaVersion,
                     state: None,
                 },
                 loss_protection: None,

@@ -56,6 +56,23 @@ This slice is not production-grade by itself. It adds the live NT component feed
   filled quantity downward with nothing to stop it, overstating remaining quantity in the same
   projection enforced admission consumes. This needs no reconciliation lookback to occur, so it is
   independent of the completeness item above and is listed as its own condition on the same gate;
+- the pinned adapter accounts for orders that have matched but are not yet confirmed. At the current
+  pin `build_fill_reports_from_trades` discards any trade whose status is not `Confirmed` with a bare
+  `continue` -- no counter, no log -- while the venue drops the order from the open-order response as
+  soon as it matches and the Data API reflects the position only after settlement. Such an order is
+  absent from all three mass-status axes at once, so a restart inside the match-to-confirm window
+  understates committed liability with nothing available to detect it. This is distinct from the two
+  conditions above: those concern state that is present but wrong, this one is state that is missing
+  entirely;
+- filled positions consume pool liability. Capacity is computed as `max_pool_liability` minus
+  `committed_liability` minus live reserved liability (`bolt_v3_capital_reservation.rs`), but every
+  production construction of `CapitalPoolSnapshot` sets `committed_liability` to zero and no path ever
+  writes another value, so that term is inert; live reserved liability covers open orders only, and BUY
+  liability charges the incoming order alone. Exposure that has converted from an order into a position
+  is therefore charged by nothing: after a restart holding a cap-sized filled position and no open
+  orders, the full pool ceiling reads as available. This is Bolt-side capital accounting rather than an
+  adapter reconciliation gap, so it is not one of the `reconciliation_unmet` conditions, but it gates
+  enforcement the same way;
 - residual liability for rebuilt pre-existing orders is attributable to known Bolt reservation metadata;
 - non-empty pre-existing NT/exchange open orders can be rebuilt only when their liability is attributable to known Bolt reservations;
 - adapter-produced live collateral spendability and venue/instrument allowance evidence exists beyond the optional configured source binding and NT account free-balance fallback;

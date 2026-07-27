@@ -16,11 +16,18 @@ inline-table keys and `branch` pins, then a structural walk that missed `[patch]
 and any manifest outside a hard-coded pair. So this version enumerates nothing:
 
   * manifests and lockfiles are **discovered**, never listed;
-  * lockfiles are read as *resolution truth*, which is what cargo actually
-    builds and therefore reflects `[patch]` and `[replace]` overrides;
+  * lockfiles are read as *resolution truth* -- what cargo settled on;
   * manifests are read for *declared intent*, including the override tables;
   * anything referencing NautilusTrader that cannot be interpreted is a
     failure, never a silent skip.
+
+The two readings are both required, and neither is sufficient. Measured, not
+assumed: a `[patch]` pointing at a **git** source appears in the lockfile with
+that source, so the lockfile catches it; a `[patch]` pointing at a **path**
+produces a lockfile entry with no `source` field at all, so the lockfile cannot
+see it and only the manifest reading catches it. Do not drop the manifest
+reading on the theory that the lockfile covers overrides -- for path patches it
+does not.
 
 Run from the repository root, pass the root as an argument, or pass
 `--self-test` to run the bypass-control suite.
@@ -184,7 +191,12 @@ def collect_from_manifests(pins: dict[str, list[str]]) -> int:
 
 
 def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
-    """Lockfiles record what cargo resolved, so overrides show up here."""
+    """Lockfiles record what cargo resolved.
+
+    A git-sourced override shows up here with its real source. A path-sourced
+    one does not appear at all -- such entries carry no `source` field -- which
+    is why the manifest reading is not redundant with this one.
+    """
     seen = 0
     for lockfile in discover("Cargo.lock"):
         document = load_toml(lockfile)
@@ -351,6 +363,9 @@ def self_test() -> None:
         ),
         "replace_override": (
             "", f'[replace]\nnautilus-core = {{ git = "{official}", rev = "{bad}" }}\n', False,
+        ),
+        "patch_path_override": (
+            "", f'[patch."{official}"]\nnautilus-core = {{ path = "../fork" }}\n', False,
         ),
         "cargo_paths_override": ("", "", False, "", 'paths = ["/tmp/fork"]\n'),
         "cargo_source_override": (

@@ -94,3 +94,20 @@ This slice is not production-grade by itself. It adds the live NT component feed
 - operator clear-to-Active recovery and flat-position proof are implemented for configured loss halts.
 
 Until those items exist, this code is a submit-admission and live-state-feed slice, not a complete production-grade positional sizer.
+
+### Accepted upstream behaviour, not awaiting a fix
+
+The pinned Polymarket adapter filters positions smaller than
+`DUST_POSITION_THRESHOLD` (`0.01` shares, `common/consts.rs`) out of the reports it
+returns, logging each at debug level. A holding below that size is therefore absent
+from Bolt's projection of venue state, and remains absent no matter what happens to
+the conditions above.
+
+This is deliberate upstream behaviour rather than a defect, so no upstream change
+will ever close it and it is not a `reconciliation_unmet` condition -- a condition
+is something that can be closed, and listing this one would make the list
+permanently non-empty. It is recorded here instead, as accepted: the understatement
+it can produce is bounded by the threshold times the number of dust holdings, which
+is immaterial against any pool ceiling this system configures. If that ceiling ever
+becomes small enough for sub-cent holdings to matter, this acceptance has to be
+revisited rather than assumed to still hold.

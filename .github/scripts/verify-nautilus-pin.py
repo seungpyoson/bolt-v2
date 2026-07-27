@@ -77,6 +77,23 @@ def api(path: str) -> dict:
     raise AssertionError("unreachable")
 
 
+def load_toml(path: Path) -> dict:
+    """Parse a discovered file, naming it if it cannot be read.
+
+    Discovery means this parses files nobody wrote for it, so an unrelated
+    malformed manifest must produce an actionable failure rather than a
+    traceback that says nothing about which file or why this lane cares.
+    """
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as error:
+        fail(
+            f"{path}: cannot be parsed, so NautilusTrader references in it cannot be "
+            f"checked: {error}"
+        )
+    raise AssertionError("unreachable")
+
+
 def discover(filename: str) -> list[Path]:
     """Every tracked `filename` in the tree. Discovery, so a new crate is covered."""
     found: list[Path] = []
@@ -156,7 +173,7 @@ def check_declaration(owner: str, spec: object, pins: dict[str, list[str]]) -> N
 def collect_from_manifests(pins: dict[str, list[str]]) -> int:
     seen = 0
     for manifest in discover("Cargo.toml"):
-        document = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        document = load_toml(manifest)
         for table_owner, table in dependency_tables(document, ""):
             for name, spec in table.items():
                 if not mentions_nautilus(name, spec):
@@ -170,7 +187,7 @@ def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
     """Lockfiles record what cargo resolved, so overrides show up here."""
     seen = 0
     for lockfile in discover("Cargo.lock"):
-        document = tomllib.loads(lockfile.read_text(encoding="utf-8"))
+        document = load_toml(lockfile)
         for package in document.get("package", []):
             name = package.get("name", "")
             source = package.get("source")
@@ -219,7 +236,7 @@ def reject_source_overrides() -> int:
             if path.parent.name != ".cargo":
                 continue
             checked += 1
-            document = tomllib.loads(path.read_text(encoding="utf-8"))
+            document = load_toml(path)
             for key in ("paths", "source"):
                 if key in document:
                     fail(
@@ -244,7 +261,7 @@ def collect_pins() -> dict[str, list[str]]:
 
     if not CAPABILITY_MANIFEST.is_file():
         fail(f"{CAPABILITY_MANIFEST}: expected capability manifest is missing")
-    capability = tomllib.loads(CAPABILITY_MANIFEST.read_text(encoding="utf-8"))
+    capability = load_toml(CAPABILITY_MANIFEST)
     revision = capability.get("revision")
     if not isinstance(revision, str) or len(revision) != 40:
         fail(
@@ -341,6 +358,7 @@ def self_test() -> None:
             '[source."https://github.com/nautechsystems/nautilus_trader.git"]\n'
             'replace-with = "vendored"\n',
         ),
+        "malformed_manifest": ("", "", False, "", "", "not valid [toml at all\n"),
         "lock_override": (
             "", "",
             False,
@@ -360,6 +378,7 @@ def self_test() -> None:
         extra_dep, extra_table, expect_pass = control[0], control[1], control[2]
         extra_lock = control[3] if len(control) > 3 else ""
         cargo_config = control[4] if len(control) > 4 else ""
+        stray_manifest = control[5] if len(control) > 5 else ""
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             (root / "ci").mkdir()
@@ -371,6 +390,9 @@ def self_test() -> None:
             (root / "ci").joinpath("nautilus-source-capabilities.toml").write_text(
                 f'revision = "{good}"\n'
             )
+            if stray_manifest:
+                (root / "sub").mkdir()
+                (root / "sub" / "Cargo.toml").write_text(stray_manifest)
             if cargo_config:
                 (root / ".cargo").mkdir()
                 (root / ".cargo" / "config.toml").write_text(cargo_config)

@@ -378,52 +378,93 @@ def self_test() -> None:
         f'source = "git+{official}?rev={good}#{good}"\n'
     )
 
+    # Named keys rather than positions: the controls vary along enough axes that
+    # a reader cannot tell what `control[4]` means, and adding an axis silently
+    # renumbers every control that omitted it.
+    #
+    # Each rejecting control also names the message that must reject it. An exit
+    # code alone cannot tell a working control from one whose fixture is broken
+    # in some unrelated way -- which happened here: a control meant to exercise
+    # the merged check returned before reaching it, and passed while proving
+    # nothing. A control with no message is one that must be accepted, so a
+    # rejecting control that does not say why cannot be written.
+    one_revision = "one revision; found"
+    official_repo = "must use the official repository"
     controls = {
-        "clean": ("", "", True),
-        "regex_key_order": (f'nautilus-x = {{ rev = "{bad}", git = "{official}" }}\n', "", False),
-        "branch_pin": (f'nautilus-x = {{ git = "{fork_url}", branch = "wip" }}\n', "", False),
-        "tag_pin": (f'nautilus-x = {{ git = "{official}", tag = "v1" }}\n', "", False),
-        "fork_url": (f'nautilus-x = {{ git = "{fork_url}", rev = "{good}" }}\n', "", False),
+        "clean": {},
+        "regex_key_order": {
+            "dep": f'nautilus-x = {{ rev = "{bad}", git = "{official}" }}\n',
+            "reason": one_revision,
+        },
+        "branch_pin": {
+            "dep": f'nautilus-x = {{ git = "{fork_url}", branch = "wip" }}\n',
+            "reason": official_repo,
+        },
+        "tag_pin": {
+            "dep": f'nautilus-x = {{ git = "{official}", tag = "v1" }}\n',
+            "reason": "which is mutable",
+        },
+        "fork_url": {
+            "dep": f'nautilus-x = {{ git = "{fork_url}", rev = "{good}" }}\n',
+            "reason": official_repo,
+        },
         # Named for what it proves: a second revision is detected. Mergedness
         # itself is the online control below.
-        "divergent_rev": (f'nautilus-x = {{ git = "{official}", rev = "{bad}" }}\n', "", False),
-        "renamed": (f'x = {{ package = "nautilus-core", git = "{official}", rev = "{bad}" }}\n', "", False),
-        "patch_override": (
-            "", f'[patch."{official}"]\nnautilus-core = {{ git = "{fork_url}", rev = "{bad}" }}\n', False,
-        ),
-        "replace_override": (
-            "", f'[replace]\nnautilus-core = {{ git = "{official}", rev = "{bad}" }}\n', False,
-        ),
-        "patch_path_override": (
-            "", f'[patch."{official}"]\nnautilus-core = {{ path = "../fork" }}\n', False,
-        ),
-        "cargo_paths_override": ("", "", False, "", 'paths = ["/tmp/fork"]\n'),
-        "cargo_patch_override": (
-            "", "", False, "",
-            f'[patch."{official}"]\nnautilus-core = {{ path = "../fork" }}\n',
-        ),
-        "cargo_include_override": ("", "", False, "", 'include = "other.toml"\n'),
-        "lock_sourceless_nautilus": (
-            "", "", False,
-            '[[package]]\nname = "nautilus-polymarket"\nversion = "0.1.0"\n',
-        ),
-        "manifest_under_excluded_dir_name": (
-            "", "", False, "", "",
-            f'[dependencies]\nnautilus-model = {{ git = "{official}", rev = "{bad}" }}\n',
-            "node_modules/x",
-        ),
-        "cargo_source_override": (
-            "", "", False, "",
-            '[source."https://github.com/nautechsystems/nautilus_trader.git"]\n'
+        "divergent_rev": {
+            "dep": f'nautilus-x = {{ git = "{official}", rev = "{bad}" }}\n',
+            "reason": one_revision,
+        },
+        "renamed": {
+            "dep": f'x = {{ package = "nautilus-core", git = "{official}", rev = "{bad}" }}\n',
+            "reason": one_revision,
+        },
+        "patch_override": {
+            "table": f'[patch."{official}"]\nnautilus-core = {{ git = "{fork_url}", rev = "{bad}" }}\n',
+            "reason": official_repo,
+        },
+        "replace_override": {
+            "table": f'[replace]\nnautilus-core = {{ git = "{official}", rev = "{bad}" }}\n',
+            "reason": one_revision,
+        },
+        "patch_path_override": {
+            "table": f'[patch."{official}"]\nnautilus-core = {{ path = "../fork" }}\n',
+            "reason": "with no `git` key",
+        },
+        "cargo_paths_override": {
+            "cargo_config": 'paths = ["/tmp/fork"]\n',
+            "reason": "declares `paths`",
+        },
+        "cargo_patch_override": {
+            "cargo_config": f'[patch."{official}"]\nnautilus-core = {{ path = "../fork" }}\n',
+            "reason": "declares `patch`",
+        },
+        "cargo_include_override": {
+            "cargo_config": 'include = "other.toml"\n',
+            "reason": "declares `include`",
+        },
+        "lock_sourceless_nautilus": {
+            "lock": '[[package]]\nname = "nautilus-polymarket"\nversion = "0.1.0"\n',
+            "reason": "resolves without a source",
+        },
+        "manifest_under_excluded_dir_name": {
+            "stray": f'[dependencies]\nnautilus-model = {{ git = "{official}", rev = "{bad}" }}\n',
+            "stray_dir": "node_modules/x",
+            "reason": one_revision,
+        },
+        "cargo_source_override": {
+            "cargo_config": '[source."https://github.com/nautechsystems/nautilus_trader.git"]\n'
             'replace-with = "vendored"\n',
-        ),
-        "malformed_manifest": ("", "", False, "", "", "not valid [toml at all\n"),
-        "lock_override": (
-            "", "",
-            False,
-            '[[package]]\nname = "nautilus-core"\nversion = "0.1.0"\n'
+            "reason": "declares `source`",
+        },
+        "malformed_manifest": {
+            "stray": "not valid [toml at all\n",
+            "reason": "cannot be parsed",
+        },
+        "lock_override": {
+            "lock": '[[package]]\nname = "nautilus-core"\nversion = "0.1.0"\n'
             f'source = "git+{fork_url}?rev={bad}#{bad}"\n',
-        ),
+            "reason": "not the official repository",
+        },
     }
 
     failures = []
@@ -434,28 +475,25 @@ def self_test() -> None:
     }
 
     for name, control in controls.items():
-        extra_dep, extra_table, expect_pass = control[0], control[1], control[2]
-        extra_lock = control[3] if len(control) > 3 else ""
-        cargo_config = control[4] if len(control) > 4 else ""
-        stray_manifest = control[5] if len(control) > 5 else ""
-        stray_dir = control[6] if len(control) > 6 else "sub"
+        # One mapping of path to content, written by one loop: an empty entry is
+        # an absent file, which is what several controls exist to produce, so
+        # omission needs no branch of its own.
+        fixture = {
+            "Cargo.toml": f'[dependencies]\nnautilus-core = {{ git = "{official}", rev = "{good}" }}\n'
+            + f"{control.get('dep', '')}\n{control.get('table', '')}",
+            "Cargo.lock": f"{lock}{control.get('lock', '')}",
+            "ci/nautilus-source-capabilities.toml": f'revision = "{good}"\n',
+            f"{control.get('stray_dir', 'sub')}/Cargo.toml": control.get("stray", ""),
+            ".cargo/config.toml": control.get("cargo_config", ""),
+        }
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            (root / "ci").mkdir()
-            (root / "Cargo.toml").write_text(
-                f'[dependencies]\nnautilus-core = {{ git = "{official}", rev = "{good}" }}\n'
-                f"{extra_dep}\n{extra_table}"
-            )
-            (root / "Cargo.lock").write_text(f"{lock}{extra_lock}")
-            (root / "ci").joinpath("nautilus-source-capabilities.toml").write_text(
-                f'revision = "{good}"\n'
-            )
-            if stray_manifest:
-                (root / stray_dir).mkdir(parents=True)
-                (root / stray_dir / "Cargo.toml").write_text(stray_manifest)
-            if cargo_config:
-                (root / ".cargo").mkdir()
-                (root / ".cargo" / "config.toml").write_text(cargo_config)
+            for relative, content in fixture.items():
+                if not content:
+                    continue
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
             track_fixture(root)
             result = subprocess.run(
                 [sys.executable, str(Path(__file__).resolve()), "--offline", str(root)],
@@ -463,14 +501,23 @@ def self_test() -> None:
                 text=True,
                 env={**os.environ, "NAUTILUS_PIN_SELF_TEST": "1"},
             )
-            passed = result.returncode == 0
-            if passed != expect_pass:
+            # A control states the message that must reject it, or states nothing
+            # and must be accepted. There is no way to write a rejecting control
+            # that does not say why, so nothing needs to check for one.
+            reason = control.get("reason")
+            outcome = "accepted" if result.returncode == 0 else "rejected"
+            expected = "rejected" if reason else "accepted"
+            if outcome != expected:
                 failures.append(
-                    f"  {name}: expected {'accept' if expect_pass else 'reject'}, "
-                    f"got exit {result.returncode}"
+                    f"  {name}: expected {expected}, got {outcome} "
+                    f"(exit {result.returncode}): {(result.stderr or result.stdout)[:300]}"
+                )
+            elif reason and reason not in result.stderr:
+                failures.append(
+                    f"  {name}: rejected, but not by {reason!r}: {result.stderr[:300]}"
                 )
             else:
-                print(f"  {name}: {'accepted' if passed else 'rejected'} as expected")
+                print(f"  {name}: {outcome} as expected")
 
     for name, revision in online_controls.items():
         with tempfile.TemporaryDirectory() as raw:

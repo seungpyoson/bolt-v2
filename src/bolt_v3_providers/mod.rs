@@ -631,7 +631,11 @@ quantity, so the quantity stays understated. The zero is what prevents it, not t
 status: the same path given a non-zero filled quantity infers a fill identified by the order's \
 own fields rather than by the venue trade id the adapter never supplied, which the venue's later \
 confirmation of that same trade does not match and is applied on top of. Closing the cap \
-condition on its own therefore converts a permanent understatement into a double count",
+condition on its own therefore converts a permanent understatement into a double count -- and \
+only on its own: the engine replaces an inferred fill with the venue's real ones, and tops up \
+just the shortfall, whenever the same report arrives carrying fill reports, which this adapter \
+does not build for the trade that raised the quantity. A fix supplying both together does not \
+double count",
             "the pinned Polymarket adapter builds no fill report for a confirmed maker trade \
 holding none of the account's own maker orders, incrementing no counter and logging nothing, so a \
 confirmed fill can be missing from a mass status that reports success; ownership is decided by \

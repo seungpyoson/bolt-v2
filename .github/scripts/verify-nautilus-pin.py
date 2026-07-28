@@ -66,6 +66,11 @@ import urllib.request
 from pathlib import Path
 
 OFFICIAL_REPOSITORY = "https://github.com/nautechsystems/nautilus_trader.git"
+ONE_GIT_SOURCE = (
+    "This repository resolves dependencies from crates.io and from a single git source, "
+    "the official repository at an exact revision, so any other git URL is refused -- "
+    "whether it is a misspelling of that one or an unrelated git dependency."
+)
 OFFICIAL_API_REPO = "nautechsystems/nautilus_trader"
 # A real unmerged fork revision, used by the online self-test control.
 FORK_REVISION = "01d5af1427d73532f6dd9f2be77acb72f825bec9"
@@ -183,8 +188,8 @@ def discover(filename: str) -> list[Path]:
     return [path for path in tracked_paths() if path.name.lower() == wanted]
 
 
-def workspace_crate_names(lockfile: Path) -> set[str]:
-    """The crates this lockfile may record without a source.
+def workspace_crate_identities(lockfile: Path) -> set[tuple[str, str]]:
+    """The crates this lockfile may record without a source, as (name, version).
 
     A lockfile entry with no `source` is either a crate of this lockfile's own
     workspace or a dependency substituted by path, and the lockfile itself
@@ -196,35 +201,68 @@ def workspace_crate_names(lockfile: Path) -> set[str]:
     name` tracked anywhere in the repository was the denylist's silent-false-
     pass shape surviving inside the allowlist: any manifest added anywhere --
     a test fixture, an example -- minted a name, and a source-less entry passed
-    by *claiming* that name rather than by being that crate. A path dependency
-    pointing outside the repository then rode in on the match, and cargo built
-    the outside code under `--locked`.
+    by *claiming* that name rather than by being that crate.
 
     So the set is walked from this lockfile's own workspace root through only
     the paths the manifests themselves name -- `[workspace] members` and `path`
-    dependencies -- and a manifest contributes its name only if it is tracked
-    here. A path dependency that leaves the repository resolves to nothing and
-    contributes nothing, which is precisely what makes the name it claims
-    unavailable. Identity is where the crate is, not what it is called.
+    dependencies -- and a manifest contributes only if it is tracked here.
+
+    Narrowing which manifests mint, though, is not the same as not matching by
+    name, and review found the difference the hard way: with a *reachable*
+    tracked crate wearing the same name, an outside path dependency was admitted
+    again, because the lockfile side still asked only whether some reachable
+    crate was called that. Two things close it, and the walk needs both.
+
+    A traversed manifest that exists on disk outside the tracked set is refused
+    where it is declared, by resolved path, so an outside crate never reaches
+    the lockfile question at all. Naming it there is also the only place a
+    useful message can be written -- the lockfile knows a name, not a path.
+
+    And what the lockfile is matched against is the pair, not the name. A
+    source-less entry carries a name and a version and nothing else, so the pair
+    is the whole of the identity available on that side; a colliding name now
+    has to collide in version too, which cargo will not resolve, because two
+    source-less packages cannot share both. The name alone is never sufficient.
 
     Limit worth naming, unchanged by this: a substitution pointing at a crate
     manifest *added to this repository* and wired in by path is reachable, so it
-    is named and accepted. That is not a spelling trick -- it is vendoring the
-    dependency into the tree, which arrives as a diff of hundreds of files. This
-    check governs what the build pulls from outside; code added inside is what
-    review is for.
+    is admitted. That is not a spelling trick -- it is vendoring the dependency
+    into the tree, which arrives as a diff of hundreds of files. This check
+    governs what the build pulls from outside; code added inside is what review
+    is for.
     """
     tracked = set(tracked_paths())
-    names: set[str] = set()
+    identities: set[tuple[str, str]] = set()
     seen: set[Path] = set()
-    pending = [lockfile.parent / "Cargo.toml"]
+    # The third element carries `[workspace.package] version` down to members,
+    # which is where cargo resolves `version.workspace = true` from. Carried
+    # rather than looked up because the walk already visits a workspace root
+    # before the members it names, so the value is in hand exactly when needed.
+    pending = [(lockfile.parent / "Cargo.toml", None, None)]
 
     while pending:
         # Collapse `a/../b` lexically rather than against the filesystem: a
         # manifest outside the repository normalises to a path git never listed,
         # so membership in the tracked set is the containment test as well.
-        manifest = Path(os.path.normpath(pending.pop()))
-        if manifest in seen or manifest not in tracked:
+        raw, declared_by, shared_version = pending.pop()
+        manifest = Path(os.path.normpath(raw))
+        if manifest in seen:
+            continue
+        if manifest not in tracked:
+            # Absent is not the danger and is not this lane's to report: a
+            # `members` glob matching a directory that holds no manifest is
+            # ordinary, and a path dependency naming nothing fails the build
+            # itself with a better message than anything here. Present but
+            # untracked is the danger -- that is code cargo compiles under
+            # `--locked` and review never sees.
+            if declared_by is not None and manifest.is_file():
+                fail(
+                    f"{declared_by} reaches {manifest}, which exists but is not tracked in "
+                    "this repository, so cargo would build code no diff here contains. A "
+                    "dependency substituted by path must resolve inside the repository; "
+                    "every other dependency must resolve to crates.io or to the official "
+                    "repository at an exact revision."
+                )
             continue
         seen.add(manifest)
 
@@ -232,22 +270,51 @@ def workspace_crate_names(lockfile: Path) -> set[str]:
         directory = manifest.parent
         package = document.get("package")
         if isinstance(package, dict) and isinstance(package.get("name"), str):
-            names.add(package["name"])
+            version = package.get("version")
+            if isinstance(version, dict) and version.get("workspace") is True:
+                version = shared_version
+            if not isinstance(version, str):
+                fail(
+                    f"{manifest}: `[package] version` is {package.get('version')!r}, which "
+                    "this check cannot resolve to the version cargo writes into the "
+                    "lockfile, and the version is half of what a source-less entry is "
+                    "matched on. Declare it literally, or inherit it from the "
+                    "`[workspace.package] version` of the workspace that names this crate."
+                )
+            identities.add((package["name"], version))
 
         workspace = document.get("workspace")
+        inherited = None
         if isinstance(workspace, dict):
+            declared = workspace.get("package")
+            if isinstance(declared, dict) and isinstance(declared.get("version"), str):
+                inherited = declared["version"]
             for member in workspace.get("members", []):
                 if isinstance(member, str):
                     # `members` entries are globs, and a literal is a glob that
                     # matches itself, so one path covers both spellings.
-                    pending.extend(match / "Cargo.toml" for match in directory.glob(member))
+                    pending.extend(
+                        (match / "Cargo.toml", manifest, inherited)
+                        for match in directory.glob(member)
+                    )
 
-        for _owner, table, _override in dependency_tables(document, ""):
+        for _owner, table, override in dependency_tables(document, ""):
+            # `[patch]` and `[replace]` are refused outright when they carry a
+            # path, by the manifest reading that runs before this one. Walking
+            # them here would let an override mint the identity it was rejected
+            # for claiming.
+            if override:
+                continue
             for spec in table.values():
                 if isinstance(spec, dict) and isinstance(spec.get("path"), str):
-                    pending.append(directory / spec["path"] / "Cargo.toml")
+                    # No inherited version across a path dependency: cargo
+                    # resolves the dependency's inheritance from *its* workspace
+                    # root, not from whoever names it, so passing this
+                    # manifest's value down would mint a version cargo never
+                    # writes. Unresolvable is refused above, loudly.
+                    pending.append((directory / spec["path"] / "Cargo.toml", manifest, None))
 
-    return names
+    return identities
 
 
 def dependency_tables(document: dict, owner: str, override: bool = False):
@@ -353,7 +420,10 @@ def check_declaration(
             "code no revision can name."
         )
     if git != OFFICIAL_REPOSITORY:
-        fail(f"{owner} must use the official repository {OFFICIAL_REPOSITORY}, got {git}")
+        fail(
+            f"{owner} names the git repository {git}, not the official repository "
+            f"{OFFICIAL_REPOSITORY}. {ONE_GIT_SOURCE}"
+        )
     for mutable in ("branch", "tag"):
         if mutable in spec:
             fail(
@@ -395,7 +465,7 @@ def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
         # Derived per lockfile, from that workspace's own reachable manifests: a
         # crate belonging to some other workspace in this repository is not a
         # crate *this* build may resolve without a source.
-        workspace_crates = workspace_crate_names(lockfile)
+        workspace_crates = workspace_crate_identities(lockfile)
         for package in document.get("package", []):
             name = package.get("name", "")
             source = package.get("source")
@@ -404,13 +474,16 @@ def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
                 # A workspace crate and a path-substituted dependency are
                 # indistinguishable here -- both simply have no source -- so the
                 # manifests this workspace reaches by path decide which it is.
-                if name in workspace_crates:
+                # Matched as (name, version): the name alone is what a crate
+                # outside the repository can wear, and did.
+                if (name, package.get("version", "")) in workspace_crates:
                     continue
                 fail(
-                    f"{owner} resolves without a source and is not a crate this workspace "
-                    "reaches by path within this repository, which is what a dependency "
-                    "substituted by path looks like. Every dependency must resolve to "
-                    "crates.io or to the official repository at an exact revision."
+                    f"{owner} {package.get('version', '')} resolves without a source and is "
+                    "not a crate this workspace reaches by path within this repository, "
+                    "which is what a dependency substituted by path looks like. Every "
+                    "dependency must resolve to crates.io or to the official repository at "
+                    "an exact revision."
                 )
             if not isinstance(source, str):
                 fail(f"{owner} records a source that is not a string: {source!r}")
@@ -426,8 +499,8 @@ def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
             seen += 1
             if match.group("url") != OFFICIAL_REPOSITORY:
                 fail(
-                    f"{owner} resolves to {match.group('url')}, not the official repository "
-                    f"{OFFICIAL_REPOSITORY}"
+                    f"{owner} resolves from the git repository {match.group('url')}, not the "
+                    f"official repository {OFFICIAL_REPOSITORY}. {ONE_GIT_SOURCE}"
                 )
             query = dict(
                 pair.split("=", 1)
@@ -607,7 +680,7 @@ def self_test() -> None:
     # nothing. A control with no message is one that must be accepted, so a
     # rejecting control that does not say why cannot be written.
     one_revision = "one revision; found"
-    official_repo = "must use the official repository"
+    official_repo = "not the official repository"
     controls = {
         "clean": {},
         "regex_key_order": {
@@ -861,6 +934,39 @@ def self_test() -> None:
             "table": f'[workspace.dependencies]\nnautilus-inherited = {{ git = "{official}", '
             f'rev = "{good}" }}\n',
         },
+        # The hole the previous fix left, found by review after it shipped and
+        # reproduced before it was believed. Narrowing *which* manifests mint a
+        # name is not the same as not matching by name: give the outside crate
+        # the name of a genuinely reachable tracked one -- here the root package
+        # itself -- and the match came back. Only the version distinguishes them,
+        # which is why the pair is now the identity.
+        "reachable_name_collision_with_outside_path_dep": {
+            "package": '[package]\nname = "local-thing"\nversion = "0.1.0"\n',
+            "dep": 'payload = { path = "../fork" }\n',
+            "lock": '[[package]]\nname = "local-thing"\nversion = "0.1.0"\n\n'
+            '[[package]]\nname = "local-thing"\nversion = "0.2.0"\n',
+            "reason": "resolves without a source",
+        },
+        # The same danger materialised rather than named: the outside manifest
+        # exists on disk and is simply not tracked, so cargo compiles it and no
+        # diff here contains it. Refused where the path is declared, which is
+        # the only place a message can say which path.
+        "path_dependency_to_untracked_manifest_on_disk": {
+            "dep": 'payload = { path = "outside" }\n',
+            "untracked_dir": "outside",
+            "untracked": '[package]\nname = "payload"\nversion = "0.1.0"\n',
+            "reason": "exists but is not tracked",
+        },
+        # Accepted: a member inheriting its version from the workspace. Matching
+        # on the pair makes the version load-bearing, so a shape cargo resolves
+        # and this check could not would fail an ordinary build.
+        "workspace_inherited_package_version": {
+            "table": '[workspace]\nmembers = ["member"]\n\n[workspace.package]\n'
+            'version = "2.3.4"\n',
+            "stray_dir": "member",
+            "stray": '[package]\nname = "member-crate"\nversion.workspace = true\n',
+            "lock": '[[package]]\nname = "member-crate"\nversion = "2.3.4"\n',
+        },
     }
 
     failures = []
@@ -884,6 +990,15 @@ def self_test() -> None:
             control.get("cargo_config_name", ".cargo/config.toml"): control.get(
                 "cargo_config", ""
             ),
+            # Present on disk, kept out of the tracked set by the ignore rule
+            # below -- which is the only way to write "cargo can compile this
+            # and review never saw it" into a fixture that ends in `git add -A`.
+            f"{control.get('untracked_dir', 'ignored')}/Cargo.toml": control.get(
+                "untracked", ""
+            ),
+            ".gitignore": f"{control.get('untracked_dir', '')}/\n"
+            if control.get("untracked")
+            else "",
         }
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

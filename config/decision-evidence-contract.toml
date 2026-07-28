@@ -267,102 +267,264 @@ current_identity = "provider_collateral_allowance_capture_failure_v1"
 current_fact = "provider_collateral_allowance_capture_failure_v1"
 
 
+# Every append path into the evidence streams, classified exactly once.
+#
+# The five census fields below are #1354 acceptance criteria, carried over from
+# `config/evidence-novelty.toml` on the retired `codex/1354-owner-ruling` branch
+# when the schema-v15 writer/readers that file described were replaced. The
+# census recorded 19 producers against the old layer; this contract splits them
+# finer -- by strategy, and by outcome where the census carried a single
+# decision row -- so `census_ancestor` names which row each inherited from, and
+# is empty for a producer that postdates the census and was derived directly.
+#
+# `named_readers`, the sixth criterion, is deliberately absent. Every one of the
+# census's 74 named reader functions was deleted with that layer, and the
+# `[[dispositions]]` table below states the same fact per consumer and carries an
+# owner ruling with it, which the census's flat name list did not.
+#
+# `call_sites` names the enclosing function rather than a line, because a
+# line-pinned census goes stale on any edit above it, and a gate that fails for
+# unrelated reasons is a gate someone switches off.
+
 [[producers]]
 id = "edge_taker_blocked_strategy_input"
 purpose = "blocked_strategy_input_observation"
+classification = "state-observation"
+handler_reachability = ["quote", "book", "timer", "index-price"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_blocked_entry_strategy_input_snapshot_once"]
+repeat_semantics = "finite per-episode monotone suppression over six RV gate results and watermark presence"
+dedupe_key_evidence = "EvidenceEpisodeId plus the exact twelve-state TOML domain; payload churn and writer failure cannot claim a state"
+census_ancestor = "strategy_input_snapshot_blocked_rv"
 
 [[producers]]
 id = "edge_taker_submit_strategy_input"
 purpose = "submit_linked_strategy_input_snapshot"
+classification = "event-keyed"
+handler_reachability = ["quote", "book", "timer", "index-price"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::submit_admitted_entry_decision"]
+repeat_semantics = "every submit-linked snapshot remains append-complete"
+dedupe_key_evidence = "non-empty client_order_id event identity; no suppression"
+census_ancestor = "strategy_input_snapshot_submit"
 
 [[producers]]
 id = "order_execution_entry_intent"
 purpose = "entry_order_intent"
+classification = "event-keyed"
+handler_reachability = ["quote", "timer"]
+call_sites = ["src/bolt_v3_order_execution.rs::record_entry_order_intent", "src/bolt_v3_order_execution.rs::record_order_intent"]
+repeat_semantics = "every distinct order intent remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "order_intent"
 
 [[producers]]
 id = "order_execution_exit_intent"
 purpose = "risk_reducing_exit_order_intent"
+classification = "event-keyed"
+handler_reachability = ["quote", "timer"]
+call_sites = ["src/bolt_v3_order_execution.rs::record_order_intent", "src/bolt_v3_order_execution.rs::record_risk_reducing_exit_order_intent"]
+repeat_semantics = "every distinct order intent remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "order_intent"
 
 [[producers]]
 id = "submit_admission_admitted_entry"
 purpose = "admitted_entry_admission"
+classification = "event-keyed"
+handler_reachability = ["quote", "timer"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision"]
+repeat_semantics = "every submit admission result remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "admission_decision"
 
 [[producers]]
 id = "submit_admission_rejected_entry"
 purpose = "rejected_entry_admission"
+classification = "event-keyed"
+handler_reachability = ["quote", "timer"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision"]
+repeat_semantics = "every submit admission result remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "admission_decision"
 
 [[producers]]
 id = "submit_admission_exit"
 purpose = "risk_reducing_exit_admission"
+classification = "event-keyed"
+handler_reachability = ["quote", "timer"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision"]
+repeat_semantics = "every submit admission result remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "admission_decision"
 
 [[producers]]
 id = "submit_admission_forced_reduction"
 purpose = "forced_reduction_admission"
+classification = "event-keyed"
+handler_reachability = ["quote", "timer"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision"]
+repeat_semantics = "every submit admission result remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "admission_decision"
 
 [[producers]]
 id = "basket_admission_granted"
 purpose = "basket_admission_granted"
+classification = "no-named-reader"
+handler_reachability = ["timer"]
+call_sites = ["src/bolt_v3_basket_admission.rs::admit", "src/bolt_v3_submit_admission.rs::reserve_basket_submit_slots"]
+repeat_semantics = "owner approved retaining every basket admission result as append-complete event evidence"
+dedupe_key_evidence = "basket_id event identity; no suppression"
+census_ancestor = "basket_admission_decision"
 
 [[producers]]
 id = "basket_admission_rejected"
 purpose = "basket_admission_rejected"
+classification = "no-named-reader"
+handler_reachability = ["timer"]
+call_sites = ["src/bolt_v3_basket_admission.rs::record_basket_rejection", "src/bolt_v3_submit_admission.rs::record_basket_submit_rejection_for_test"]
+repeat_semantics = "owner approved retaining every basket admission result as append-complete event evidence"
+dedupe_key_evidence = "basket_id event identity; no suppression"
+census_ancestor = "basket_admission_decision"
 
 [[producers]]
 id = "capital_admission_rebuild"
 purpose = "capital_admission_rebuild"
+classification = "no-named-reader"
+handler_reachability = ["startup"]
+call_sites = ["src/bolt_v3_submit_admission.rs::finish_capital_admission_rebuild"]
+repeat_semantics = "every rebuild observation remains append-complete"
+dedupe_key_evidence = "none; recovery-bearing updates are unsuppressed"
+census_ancestor = "capital_admission_rebuild_audit"
 
 [[producers]]
 id = "submit_reservation_fill"
 purpose = "submit_reservation_fill"
+classification = "event-keyed"
+handler_reachability = ["timer"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_capital_admission_fill_evidence"]
+repeat_semantics = "every fill remains append-complete"
+dedupe_key_evidence = "trade_id event identity; no suppression"
+census_ancestor = "submit_reservation_fill"
 
 [[producers]]
 id = "edge_taker_entry_skip"
 purpose = "entry_skip_observation"
+classification = "already-deduped"
+handler_reachability = ["quote", "book", "timer", "index-price"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_entry_skip_once"]
+repeat_semantics = "finite per-episode monotone suppression over the closed twenty-state reason domain"
+dedupe_key_evidence = "EvidenceEpisodeId plus TOML canonical state; payload churn and writer failure cannot claim a state"
+census_ancestor = "entry_skip"
 
 [[producers]]
 id = "edge_taker_exit_submit_decision"
 purpose = "exit_submission_decision"
+classification = "already-deduped"
+handler_reachability = ["quote", "book", "timer", "index-price"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_decision_once"]
+repeat_semantics = "current last-key guard suppresses only adjacent repeats and re-emits A-B-A; migrate to the closed exit-outcome domain"
+dedupe_key_evidence = "current key includes market and position identity plus semantic outcome; the required monotone state excludes volatile timing fields"
+census_ancestor = "exit_decision"
 
 [[producers]]
 id = "edge_taker_exit_hold_decision"
 purpose = "exit_hold_decision"
+classification = "already-deduped"
+handler_reachability = ["quote", "book", "timer", "index-price"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_decision_once"]
+repeat_semantics = "current last-key guard suppresses only adjacent repeats and re-emits A-B-A; migrate to the closed exit-outcome domain"
+dedupe_key_evidence = "current key includes market and position identity plus semantic outcome; the required monotone state excludes volatile timing fields"
+census_ancestor = "exit_decision"
 
 [[producers]]
 id = "edge_taker_exit_evaluation"
 purpose = "exit_evaluation"
+classification = "already-deduped"
+handler_reachability = ["quote", "book", "timer", "index-price"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_evaluation_evidence"]
+repeat_semantics = "current last-outcome guard suppresses only adjacent repeats per position and re-emits A-B-A; migrate to the closed exit outcome and RV-gate domain"
+dedupe_key_evidence = "current key is semantic but non-monotone; the required state excludes prices, timestamps, ages, and counters"
+census_ancestor = "exit_evaluation"
 
 [[producers]]
 id = "submit_admission_loss_halt"
 purpose = "loss_governor_halt"
+classification = "already-deduped"
+handler_reachability = ["quote", "timer"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_stale_loss_governor_halt"]
+repeat_semantics = "current per-key power-of-two sampling continues indefinitely; migrate to one emission per closed stale-loss reason state"
+dedupe_key_evidence = "current episode key also includes source and mutable counters; the required state is stale-loss reason only"
+census_ancestor = "loss_governor_halt"
 
 [[producers]]
 id = "submit_admission_order_reject"
 purpose = "order_reject"
+classification = "already-deduped"
+handler_reachability = ["timer"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision", "src/bolt_v3_submit_admission.rs::record_submit_admission_order_reject"]
+repeat_semantics = "current per-episode power-of-two sampling and bounded map continue emitting and can forget episodes; migrate to the closed reject-source and reject-reason domain"
+dedupe_key_evidence = "current episode keys and counters are not the required monotone state; the required state excludes identifiers, retry, elapsed, and raw reason"
+census_ancestor = "order_reject"
 
 [[producers]]
 id = "order_reject_observer_feed"
 purpose = "order_reject"
+classification = "already-deduped"
+handler_reachability = ["timer"]
+call_sites = ["src/bolt_v3_order_reject_observer_feed.rs::on_order_event"]
+repeat_semantics = "current per-episode power-of-two sampling and bounded map continue emitting and can forget episodes; migrate to the closed reject-source and reject-reason domain"
+dedupe_key_evidence = "current episode keys and counters are not the required monotone state; the required state excludes identifiers, retry, elapsed, and raw reason"
+census_ancestor = "order_reject"
 
 [[producers]]
 id = "edge_taker_order_lifecycle"
 purpose = "order_lifecycle"
+classification = "no-named-reader"
+handler_reachability = ["timer"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::persist_order_lifecycle_record"]
+repeat_semantics = "every evolving lifecycle update remains append-complete"
+dedupe_key_evidence = "none; recovery-bearing updates are unsuppressed"
+census_ancestor = "order_lifecycle"
 
 [[producers]]
 id = "maker_requote_throttle"
 purpose = "requote_throttle_observation"
+classification = "already-deduped"
+handler_reachability = ["quote", "book", "timer"]
+call_sites = ["src/strategies/binary_oracle_maker/mod.rs::update_requote_throttle_edge"]
+repeat_semantics = "finite per-market/leg monotone suppression over the closed action-cost and throttle-bound domain"
+dedupe_key_evidence = "typed market/leg episode identity plus the exact seventeen-state TOML domain; family, timestamps, and budget counters remain payload only"
+census_ancestor = "requote_throttle"
 
 [[producers]]
 id = "edge_taker_settlement"
 purpose = "settlement"
+classification = "event-keyed"
+handler_reachability = ["timer"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::try_book_resolution_settlement"]
+repeat_semantics = "every settlement update remains append-complete"
+dedupe_key_evidence = "settlement_key recovery identity; no suppression"
+census_ancestor = "settlement"
 
 [[producers]]
 id = "edge_taker_terminal_settlement"
 purpose = "terminal_settlement"
+classification = "event-keyed"
+handler_reachability = ["timer"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::apply_terminal_settlement_transition"]
+repeat_semantics = "every canonical terminal settlement update remains append-complete"
+dedupe_key_evidence = "settlement_key recovery identity; no suppression"
+census_ancestor = "terminal_settlement"
 
 [[producers]]
 id = "submit_admission_provider_collateral_allowance_capture_failure"
 purpose = "provider_collateral_allowance_capture_failure"
-
+classification = "no-named-reader"
+handler_reachability = ["startup"]
+call_sites = ["src/bolt_v3_submit_admission.rs::suspend_capital_admission_for_provider_collateral_allowance_capture_failure"]
+repeat_semantics = "one record per failed allowance capture at startup"
+dedupe_key_evidence = "no suppression; each capture failure is its own event"
+census_ancestor = ""
 
 [[identities]]
 id = "blocked_strategy_input_observation_v1"

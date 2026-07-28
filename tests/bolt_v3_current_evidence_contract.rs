@@ -14,6 +14,21 @@ fn replace_once(input: &str, from: &str, to: &str) -> String {
     input.replacen(from, to, 1)
 }
 
+/// The whole `[[producers]]` block for one id.
+///
+/// Spelling the block out as a literal made the anchor break whenever a field
+/// was added to every producer, which is a mutation test failing for a reason
+/// that has nothing to do with what it tests.
+fn producer_block(input: &str, id: &str) -> String {
+    let anchor = format!("[[producers]]\nid = \"{id}\"\n");
+    let start = input.find(&anchor).expect("producer must exist");
+    let rest = &input[start + anchor.len()..];
+    let end = rest
+        .find("\n[[")
+        .map_or(input.len(), |at| start + anchor.len() + at + 1);
+    input[start..end].to_string()
+}
+
 #[test]
 fn current_contract_is_closed_and_deterministic() {
     let contract = parse_contract_registry(REGISTRY).expect("current contract must parse");
@@ -33,7 +48,7 @@ fn current_contract_is_closed_and_deterministic() {
 fn every_purpose_requires_at_least_one_structural_producer() {
     let mutated = replace_once(
         REGISTRY,
-        "[[producers]]\nid = \"edge_taker_blocked_strategy_input\"\npurpose = \"blocked_strategy_input_observation\"\n",
+        &producer_block(REGISTRY, "edge_taker_blocked_strategy_input"),
         "",
     );
     let error = parse_contract_registry(&mutated)
@@ -184,5 +199,110 @@ fn at_least_one_startup_recovery_consumer_is_required() {
             .expect_err("a contract without a startup recovery consumer must fail")
             .to_string()
             .contains("missing startup recovery consumer")
+    );
+}
+
+/// Every append path the census names must exist in this tree.
+///
+/// This is what separates a census from a comment. The retired
+/// `config/evidence-novelty.toml` recorded 32 call sites against the schema-v15
+/// layer; when that layer was replaced, four of them stopped resolving and
+/// nothing said so, because nothing checked. A classification that points at a
+/// function which no longer exists has not classified anything.
+///
+/// The site names an enclosing function rather than a line, so ordinary edits
+/// above it do not fail this.
+#[test]
+fn every_declared_append_path_resolves_in_this_tree() {
+    let contract = parse_contract_registry(REGISTRY).expect("current contract must parse");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut unresolved = Vec::new();
+    let mut checked = 0usize;
+
+    for (producer, site) in contract.declared_call_sites() {
+        checked += 1;
+        let (path, function) = site.split_once("::").expect("validated at parse time");
+        let Ok(source) = std::fs::read_to_string(root.join(path)) else {
+            unresolved.push(format!("{producer}: {path} does not exist"));
+            continue;
+        };
+        if !source.contains(&format!("fn {function}")) {
+            unresolved.push(format!("{producer}: {path} has no `fn {function}`"));
+        }
+    }
+
+    assert!(
+        unresolved.is_empty(),
+        "declared append paths no longer resolve:\n  {}",
+        unresolved.join("\n  ")
+    );
+    assert_eq!(
+        checked, 29,
+        "the census covers 29 append paths; changing that count is a census change"
+    );
+}
+
+/// A classification outside the closed set is refused.
+#[test]
+fn an_unknown_producer_classification_is_rejected() {
+    let mutated = replace_once(
+        REGISTRY,
+        "classification = \"state-observation\"",
+        "classification = \"probably-fine\"",
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("a classification outside the closed set must fail");
+    assert!(
+        error.to_string().contains("unknown classification"),
+        "unexpected error: {error}"
+    );
+}
+
+/// A producer that names no append path has classified nothing.
+#[test]
+fn a_producer_without_a_call_site_is_rejected() {
+    let block = producer_block(REGISTRY, "edge_taker_entry_skip");
+    let stripped = block
+        .lines()
+        .map(|line| {
+            if line.starts_with("call_sites = ") {
+                "call_sites = []".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let error = parse_contract_registry(&replace_once(REGISTRY, &block, &stripped))
+        .expect_err("a producer naming no call site must fail");
+    assert!(
+        error.to_string().contains("names no call site"),
+        "unexpected error: {error}"
+    );
+}
+
+/// A handler outside the runtime's entry points is refused.
+#[test]
+fn an_unknown_handler_reachability_is_rejected() {
+    let block = producer_block(REGISTRY, "edge_taker_entry_skip");
+    let mutated = replace_once(
+        REGISTRY,
+        &block,
+        &block
+            .lines()
+            .map(|line| {
+                if line.starts_with("handler_reachability = ") {
+                    "handler_reachability = [\"cron\"]".to_string()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    let error = parse_contract_registry(&mutated).expect_err("an unknown handler must fail");
+    assert!(
+        error.to_string().contains("unknown handler `cron`"),
+        "unexpected error: {error}"
     );
 }

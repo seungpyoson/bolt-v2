@@ -14,6 +14,53 @@ const EFFECT_POLICIES: &[&str] = &[
     "reconciliation_fail_closed",
     "risk_reducing_continues",
 ];
+/// How an append path repeats, which is what decides whether it can flood.
+/// Carried from the retired census, whose whole point was that every path is
+/// classified exactly once and by a name from a closed set rather than by prose.
+const CLASSIFICATIONS: &[&str] = &[
+    "already-deduped",
+    "event-keyed",
+    "no-named-reader",
+    "state-observation",
+];
+/// The runtime entry points an append path is reachable from. `startup` is the
+/// one that cannot flood; the rest are per-tick and are why #1354 exists.
+const HANDLER_REACHABILITY: &[&str] = &["book", "index-price", "quote", "startup", "timer"];
+/// Suppression is not implemented on this layer, so `prohibited` is the only
+/// legal value today. It is a set rather than an equality because every sibling
+/// check here is a set, and because the value that replaces it arrives as a
+/// vocabulary entry rather than as an edit to a comparison.
+const NOVELTY_CAPABILITIES: &[&str] = &["prohibited"];
+/// The 19 producer rows of the retired `config/evidence-novelty.toml`.
+///
+/// Spelled out because that file was deleted with the layer it described, so
+/// there is nothing left to resolve a name against. Without the list, provenance
+/// is an unvalidated string and a producer could claim a census row that never
+/// existed -- which is how the census would quietly stop meaning anything.
+/// Three names here have no producer in this contract on purpose:
+/// `submit_reservation_metadata`, `venue_truth_capture_failure` and
+/// `venue_truth_divergence` are append paths this layer removed.
+const CENSUS_PRODUCERS: &[&str] = &[
+    "admission_decision",
+    "basket_admission_decision",
+    "capital_admission_rebuild_audit",
+    "entry_skip",
+    "exit_decision",
+    "exit_evaluation",
+    "loss_governor_halt",
+    "order_intent",
+    "order_lifecycle",
+    "order_reject",
+    "requote_throttle",
+    "settlement",
+    "strategy_input_snapshot_blocked_rv",
+    "strategy_input_snapshot_submit",
+    "submit_reservation_fill",
+    "submit_reservation_metadata",
+    "terminal_settlement",
+    "venue_truth_capture_failure",
+    "venue_truth_divergence",
+];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,6 +115,15 @@ struct PurposeRow {
 struct ProducerRow {
     id: String,
     purpose: String,
+    classification: String,
+    handler_reachability: Vec<String>,
+    call_sites: Vec<String>,
+    repeat_semantics: String,
+    dedupe_key_evidence: String,
+    /// The retired census row this inherited from, empty when the producer
+    /// postdates the census. Recorded so a reader can tell an inherited
+    /// classification from one derived against this layer directly.
+    census_ancestor: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -105,6 +161,20 @@ pub struct ContractRegistry {
 impl ContractRegistry {
     pub fn consumer_count(&self) -> usize {
         self.wire.consumers.len()
+    }
+
+    /// Every declared append path, as (producer id, call site).
+    ///
+    /// Exposed because whether a call site still exists is a question about the
+    /// source tree, and this generator is deliberately a pure function of the
+    /// registry string -- so the check belongs to a test that can read files.
+    pub fn declared_call_sites(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.wire.producers.iter().flat_map(|producer| {
+            producer
+                .call_sites
+                .iter()
+                .map(|site| (producer.id.as_str(), site.as_str()))
+        })
     }
 
     pub fn producer_count(&self) -> usize {
@@ -234,6 +304,61 @@ fn validate_registry(wire: &RegistryWire) -> Result<()> {
             producer.id,
             producer.purpose
         );
+        ensure!(
+            CLASSIFICATIONS.contains(&producer.classification.as_str()),
+            "producer `{}` has unknown classification `{}`",
+            producer.id,
+            producer.classification
+        );
+        // Reachability is what makes a classification consequential -- an
+        // append path reachable only from startup cannot flood a per-tick
+        // stream whatever it is classified as -- so an empty list is a census
+        // row that decided nothing.
+        ensure!(
+            !producer.handler_reachability.is_empty(),
+            "producer `{}` names no handler reachability",
+            producer.id
+        );
+        for handler in &producer.handler_reachability {
+            ensure!(
+                HANDLER_REACHABILITY.contains(&handler.as_str()),
+                "producer `{}` names unknown handler `{handler}`",
+                producer.id
+            );
+        }
+        ensure!(
+            !producer.call_sites.is_empty(),
+            "producer `{}` names no call site, so nothing ties its classification to code",
+            producer.id
+        );
+        for site in &producer.call_sites {
+            ensure!(
+                site.split_once("::")
+                    .is_some_and(|(path, function)| path.ends_with(".rs") && !function.is_empty()),
+                "producer `{}` call site `{site}` is not `<path>.rs::<function>`",
+                producer.id
+            );
+        }
+        ensure!(
+            !producer.repeat_semantics.is_empty(),
+            "producer `{}` states no repeat semantics",
+            producer.id
+        );
+        ensure!(
+            !producer.dedupe_key_evidence.is_empty(),
+            "producer `{}` states no dedupe-key evidence",
+            producer.id
+        );
+        // Empty is the legal way to say "this producer postdates the census and
+        // its row was derived directly". Anything else must name a row that
+        // actually existed, or provenance is just a string.
+        ensure!(
+            producer.census_ancestor.is_empty()
+                || CENSUS_PRODUCERS.contains(&producer.census_ancestor.as_str()),
+            "producer `{}` claims census ancestor `{}`, which is not a row of the retired census",
+            producer.id,
+            producer.census_ancestor
+        );
         *producers_per_purpose
             .entry(producer.purpose.as_str())
             .or_default() += 1;
@@ -259,7 +384,7 @@ fn validate_registry(wire: &RegistryWire) -> Result<()> {
             purpose.effect_policy
         );
         ensure!(
-            purpose.novelty_capability == "prohibited",
+            NOVELTY_CAPABILITIES.contains(&purpose.novelty_capability.as_str()),
             "purpose `{}` has unsupported novelty capability `{}`",
             purpose.id,
             purpose.novelty_capability

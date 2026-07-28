@@ -4000,7 +4000,7 @@ impl BinaryOracleEdgeTaker {
         reason: &'static str,
     ) -> Result<()> {
         let reason_category = entry_skip_reason_category_from_str(reason)
-            .unwrap_or(BoltV3EntrySkipReasonCategory::Unclassified);
+            .expect("invalid entry skip reason string passed to record_entry_skip_once");
         let unclassified_context = (reason_category == BoltV3EntrySkipReasonCategory::Unclassified)
             .then(|| reason.to_string());
         // WARN keyed on the same evidence dedupe as record_entry_skip_once.

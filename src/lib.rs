@@ -14,6 +14,7 @@ pub mod bolt_v3_client_registration;
 pub mod bolt_v3_config;
 pub mod bolt_v3_current_evidence;
 pub mod bolt_v3_deploy_target;
+pub mod bolt_v3_evidence_episode;
 mod bolt_v3_evidence_sampling;
 mod bolt_v3_evidence_values;
 pub mod bolt_v3_executable_cost;

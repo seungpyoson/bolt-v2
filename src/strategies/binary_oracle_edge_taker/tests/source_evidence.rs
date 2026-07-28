@@ -2935,7 +2935,7 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
         "an exit-decision evidence write failure must not propagate and block the exit: {result:?}"
     );
     assert!(
-        strategy.last_recorded_exit_decision.is_some(),
+        strategy.exit_decision_episode.is_open(),
         "the dedupe key must still be set so the lost write is not retried in a tight loop"
     );
 }
@@ -3240,8 +3240,11 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
         "an entry-skip evidence write failure must not abort the strategy callback: {result:?}"
     );
     assert!(
-        strategy.last_recorded_entry_skip.is_some(),
-        "the dedupe key must still be set so the lost write is not retried in a tight loop"
+        !strategy
+            .record_entry_skip_once(1_000, &decision, EntrySkipReason::NoSideSelected)
+            .expect("a second identical skip must not abort the callback either"),
+        "the episode must stay marked through a failed write, so the lost record is not \
+         retried in a tight loop"
     );
 }
 
@@ -3999,7 +4002,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     );
 
     for (index, decision) in decisions.iter().enumerate() {
-        strategy.last_recorded_exit_decision = None;
+        strategy.exit_decision_episode.clear();
         strategy
             .record_exit_decision_once(
                 RV_RECEIPT_LIFECYCLE_NOW_MS + index as u64,
@@ -4081,7 +4084,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_repl
         false,
     );
 
-    strategy.last_recorded_exit_decision = None;
+    strategy.exit_decision_episode.clear();
     strategy.last_exit_evidence_outcome.clear();
     replace_rv_with_distinguishable_snapshot(&mut strategy);
     strategy

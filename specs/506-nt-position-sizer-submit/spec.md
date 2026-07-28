@@ -64,29 +64,35 @@ This slice is not production-grade by itself. It adds the live NT component feed
   current pin `build_fill_reports_from_trades` discards any trade whose status is not `Confirmed` with
   a bare `continue`, before the `filtered` counter and with no log entry, so no `FillReport` is
   produced and the trade's execution price and fee are lost outright. Closing the condition above does
-  **not** close this one; it changes how it fails, and it fails in two ways that need separating
-  because they close differently. A Polymarket order still working reports `LIVE`, which maps to
-  `OrderStatus::Accepted` (`common/enums.rs`); NT applies no fill to a report in that status
-  regardless of its `filled_qty` -- `generate_external_order_status_events` returns acceptance alone,
-  `reconcile_order_report` routes to the fill path only for `PartiallyFilled`/`Filled`, and the
-  live manager's real-fill branch matches neither -- so with or without the zero floor the pending
-  quantity does not reach the projection at all. What happens once the order reaches a terminal
-  status depends on which terminal status it is, and stating it as one rule was wrong twice in
-  review. `reconcile_terminal_order_report` computes `requires_snapshot_projection` from three
-  disjuncts -- an accompanying fill report, a `Voided` status, or a report quantity *below* what the
-  order already knows -- and a settlement-pending trade satisfies none of them, because the trade was
-  discarded before it could become a fill report and the venue's quantity is the larger one. So the
-  fast path runs, and `reconcile_order_report` maps `Canceled` to a cancellation event and `Expired`
-  to an expiration event and nothing else: the quantity is never recovered and stays understated,
-  with no inferred fill for a later confirmation to collide with. Only a `PartiallyFilled` or
-  `Filled` report reaches `reconcile_fill_quantity_mismatch`, which is where every
-  `create_inferred_fill` call sits; there the quantity does arrive, identified by
-  `create_inferred_reconciliation_trade_id` from the order's own fields rather than the venue trade
-  id the adapter never supplied. NT deduplicates fills by trade id
-  (`crates/execution/src/reconciliation/orders.rs`), so the venue's own later `Confirmed` report of
-  that same trade matches nothing, is applied on top, and the quantity is counted twice. One discard,
-  three outcomes by status -- nothing while working, a permanent understatement on cancel or expire,
-  a double count on a filled report -- and the floor closes none of them;
+  **not** close this one; it changes how it fails, and the direction it changes in is the opposite of
+  what three review rounds recorded here.
+
+  What the engine does with the order report instead is asserted against the pinned engine in
+  `tests/nt_external_order_recovery.rs` rather than described here. Four successive revisions of this
+  paragraph traced that control flow in prose and each was wrong in a new way -- naming a function
+  that does not exist at the pin, and placing the `create_inferred_fill` calls in a function that
+  contains none of them -- because a description of a dependency's internals has nothing to fail
+  against. The assertion added last round did not help: it checked that Bolt's own condition string
+  contained the words "canceled or expired", so it stayed green while the claim those words made was
+  false. Only the dependency can contradict a claim about the dependency, so the claims now live as
+  calls into it, and a pin bump that changes the behaviour fails a test instead of quietly
+  invalidating this section.
+
+  What those tests establish. Bolt runs the execution engine with no cache database
+  (`bolt_v3_live_node::live_node_config` sets `cache: None`) and requires
+  `filter_unclaimed_external_orders = false`, so at startup reconciliation the engine's order cache is
+  empty and every venue order report is unknown to it. Unknown reports are projected as external
+  orders. A report the venue still calls working yields no fill at any `filled_qty`. A terminal report
+  yields no fill either -- but only because the condition above has already capped its `filled_qty` to
+  zero, and nothing is inferred from a zero quantity. The zero is what prevents it, not the terminal
+  status: the same path given a non-zero filled quantity infers a fill, identified by
+  `create_inferred_reconciliation_trade_id` from the order's own fields rather than by the venue trade
+  id the adapter never supplied. NT deduplicates fills by trade-id equality, so the venue's own later
+  `Confirmed` report of that same trade does not match it and is applied on top -- the same executed
+  quantity counted twice, up to the order's quantity, past which Bolt's `allow_overfills = false`
+  makes the engine drop the venue's *real* fill instead. So closing the zero floor on its own would
+  convert a permanent understatement into a double count, which is the reverse of the intuition that
+  closing one condition can only help, and the reason both are listed and neither is closed alone;
 - the pinned adapter reports every confirmed fill the account earned as maker. At the current pin
   `build_fill_reports_from_trades` selects the account's own entries out of a confirmed maker trade
   with a bare `continue`; when the trade holds no entry the account owns, the loop body never runs,
@@ -132,52 +138,58 @@ This slice is not production-grade by itself. It adds the live NT component feed
 
 Until those items exist, this code is a submit-admission and live-state-feed slice, not a complete production-grade positional sizer.
 
-### Accepted upstream behaviour, not awaiting a fix
+### Dust filtering: deliberate upstream, gated as the same missing channel
 
 The pinned Polymarket adapter filters positions smaller than
 `DUST_POSITION_THRESHOLD` (`0.01` shares, `common/consts.rs`) out of the reports it
 returns, logging each at debug level. A holding below that size is therefore absent
-from Bolt's projection of venue state, and remains absent no matter what happens to
-the conditions above.
+from Bolt's projection of venue state.
 
-This is deliberate upstream behaviour rather than a defect, so no upstream change
-will ever close it and it is not a `reconciliation_unmet` condition -- a condition
-is something that can be closed, and listing this one would make the list
-permanently non-empty. It is recorded here instead, as accepted.
+An earlier version of this section excluded it from the `reconciliation_unmet`
+conditions on the grounds that a condition is something that can be closed and this
+one never could. That reasoning does not survive its own last paragraph, which said
+closing it needs the adapter to report what it filtered -- the identical remedy the
+first condition names. The filtering is deliberate upstream behaviour and the
+*silence about it* is not: a count of what was filtered would let Bolt know its
+projection is partial without upstream changing the threshold at all. So the first
+condition now covers both omissions, and this section records the magnitude rather
+than arguing an exemption.
 
-The understatement is the threshold times the number of dust holdings, and only
-the first factor is bounded. Nothing caps the second: the Data API paginates every
-position the account holds, and Bolt configures no maximum holding count, so a
-large enough count of sub-threshold holdings exceeds any finite ceiling -- at the
-`0.01` threshold and a $25 pool, on the order of 2,500 of them.
+The understatement is the threshold times the number of dust holdings, and only the
+first factor is bounded. Nothing caps the second: the Data API paginates every
+position the account holds, and Bolt configures no maximum holding count.
 
-An earlier version of this section argued that fees bound the count, on the
-grounds that a strategy placing thousands of sub-cent orders would exhaust the
-pool. That is withdrawn: the pinned adapter passes `Decimal::ZERO` as the fee
+Two arguments that this section previously used to bound the count are both
+withdrawn, and neither is replaced.
+
+The first was that fees bound it, since a strategy placing thousands of sub-cent
+orders would exhaust the pool. The pinned adapter passes `Decimal::ZERO` as the fee
 rate for every maker fill (`execution/parse.rs`, citing the venue's published
-schedule), so maker activity bounds nothing at all.
+schedule), so maker activity bounds nothing.
 
-What is anchored is a per-order floor. Every marketable BUY this system places
-must clear `MARKET_QUOTE_BUY_MIN_NOTIONAL` -- one dollar, recorded in
-`src/bolt_v3_providers/polymarket.rs` from a captured venue reject because the
-pinned adapter leaves `min_quantity` and `min_notional` unset deliberately
-(`http/parse.rs`) and lets the venue reject instead. `make_market_quote_buy_quantity`
-returns `BelowMinimum` before an order exists, so a pool of $P can hold at most
-$P worth of concurrent positions this system opened: twenty-five at the
-configured ceiling, twenty-five cents of hidden value.
+The second was that the per-order floor bounds it. Every marketable BUY this system
+places must clear `MARKET_QUOTE_BUY_MIN_NOTIONAL` -- one dollar, recorded in
+`src/bolt_v3_providers/polymarket.rs` from a captured venue reject because the pinned
+adapter leaves `min_quantity` and `min_notional` unset deliberately (`http/parse.rs`)
+and lets the venue reject instead -- and `make_market_quote_buy_quantity` returns
+`BelowMinimum` before an order exists. That floor is real, but the bound drawn from
+it was not: it read a $P pool as holding at most $P of positions at once, and the
+capital-accounting condition above establishes that filled positions are charged by
+nothing. Committed liability is inert and reserved liability covers open orders only,
+so capacity returns in full as each order fills and the pool ceiling never limits how
+much position the system accumulates. The floor bounds what a single order can be,
+not how many orders there can be.
 
-That bounds concurrent positions and not accumulated remnants, which is the
-factor that matters. A position opened at a dollar and exited down to less than
-`0.01` shares returns its capital and leaves its remnant behind, so the count of
-remnants tracks the number of partial exits performed rather than the capital
-committed -- it grows with runtime, and no ceiling in this system limits it.
+Accumulated remnants were never bounded by either argument in any case. A position
+opened at a dollar and exited down to less than `0.01` shares returns its capital and
+leaves its remnant behind, so the count of remnants tracks partial exits performed
+rather than capital committed -- it grows with runtime, and no ceiling in this system
+limits it.
 
-So this is an accepted risk and not a proof, recorded as one deliberately. It
-cannot be closed on the Bolt side: the filtered holdings never reach Bolt, which
-is the same missing channel as the first condition above, so no invariant here
-could observe the count it would need to bound. Closing it needs the adapter to
-report what it filtered. Two things make it matter sooner and both are
-observable: a pool ceiling small enough for a handful of remnants to matter, or
-an account that accumulates positions this system did not open -- airdrops,
-transfers in, or a second trader on the same account. Neither is checked anywhere
-in code.
+So the magnitude is unbounded and recorded as such: an accepted risk with no proof
+attached, deliberately not dressed as one. It cannot be closed on the Bolt side,
+because the filtered holdings never reach Bolt and no invariant here could observe
+the count it would need to bound. Two things make it matter sooner and both are
+observable: a pool ceiling small enough for a handful of remnants to matter, or an
+account that accumulates positions this system did not open -- airdrops, transfers in,
+or a second trader on the same account. Neither is checked anywhere in code.

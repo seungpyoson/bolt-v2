@@ -614,27 +614,31 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
         reconciliation_unmet: &[
-            "the pinned Polymarket adapter drops venue orders and positions it cannot \
-represent and still returns a successful mass status, and no count of what it dropped \
-reaches that report, so a mass-status report can be silently partial",
+            "the pinned Polymarket adapter omits venue orders and positions from the mass status \
+it returns -- those it cannot represent, and holdings it filters as dust -- and still reports \
+success, with no count of either omission reaching that report, so a mass-status report can be \
+silently partial",
             "the pinned Polymarket adapter caps order filled quantity against confirmed \
 fills with a zero local-filled floor, so a matched-but-unconfirmed trade understates filled \
 quantity and overstates remaining quantity",
             "the pinned Polymarket adapter discards non-confirmed trades with no fill report, no \
 counter and no log entry, so a settlement-pending fill's quantity, price and fee never reach the \
-projection as a trade; what the pinned engine does with the order report instead depends on the \
-status the venue reports, and no branch recovers the trade faithfully. While the venue still \
-reports the order working, no fill is applied at any filled quantity. When the venue reports it \
-canceled or expired and sends no accompanying fill report, only the cancellation or expiration is \
-emitted, so the quantity is never recovered and stays understated. Only a partially-filled or \
-filled report yields the quantity, and then as a fill identified by order fields rather than the \
-venue trade id the adapter never supplied, which the venue's own later confirmation cannot be \
-deduplicated against",
+projection as a trade. Bolt runs the engine with no cache database, so at startup every venue \
+order is unknown to it and its report is projected as an external order rather than reconciled \
+against a cached one. That projection recovers nothing today only because the cap above has \
+already driven the report's filled quantity to zero, and no fill is inferred from a zero \
+quantity, so the quantity stays understated. The zero is what prevents it, not the terminal \
+status: the same path given a non-zero filled quantity infers a fill identified by the order's \
+own fields rather than by the venue trade id the adapter never supplied, which the venue's later \
+confirmation of that same trade does not match and is applied on top of. Closing the cap \
+condition on its own therefore converts a permanent understatement into a double count",
             "the pinned Polymarket adapter builds no fill report for a confirmed maker trade \
 holding none of the account's own maker orders, incrementing no counter and logging nothing, so a \
 confirmed fill can be missing from a mass status that reports success; ownership is decided by \
-exact string comparison against the configured account address, so a funder configured in \
-checksummed form disowns every maker order the account placed",
+exact string comparison against either the configured account address or the configured API key, \
+so a funder configured in the checksummed form block explorers display fails the address test for \
+every one of the account's own orders, leaving the API-key comparison as the only thing \
+establishing ownership",
             "the pinned NautilusTrader execution manager drops a venue position report whose \
 instrument is absent from its cache: the netting path returns `None` and the caller discards it \
 with no else branch, no counter and no log, so a mass status the adapter built completely can \

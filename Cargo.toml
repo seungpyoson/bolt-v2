@@ -69,6 +69,10 @@ path = "tests/bolt_v3_current_evidence_contract.rs"
 name = "bolt_v3_current_evidence_runtime"
 path = "tests/bolt_v3_current_evidence_runtime.rs"
 
+[[test]]
+name = "nt_external_order_recovery"
+path = "tests/nt_external_order_recovery.rs"
+
 [features]
 offline-current-evidence = []
 test-current-evidence-inspection = []

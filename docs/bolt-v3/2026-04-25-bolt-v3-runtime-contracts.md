@@ -1464,12 +1464,18 @@ whose halves disagree fails as two revisions. Revisions must be written in the
 canonical lowercase form, the same rule `build.rs` applies, so that one commit
 cannot be spelled two ways. Neither reading is
 sufficient alone: a `[patch]` naming a git source appears in the lockfile, while
-one naming a path resolves with no lockfile source at all, so the lane fails on a
-NautilusTrader package that resolves without a source and refuses any tracked
-cargo config whatever it contains. It fails on any NautilusTrader
-reference it cannot interpret, and requires every such reference to name one
-revision that is an ancestor of the official upstream default branch. Its bypass controls run in the same lane, so a shape that once
-defeated the check cannot silently return.
+one naming a path resolves with no lockfile source at all, and it refuses any
+tracked cargo config whatever it contains. The lane does not identify
+NautilusTrader references and then judge them -- that reading lost repeatedly,
+because the ways to spell or indirect a name are unbounded and each miss was a
+silent pass. It places *every* resolved source into one of the kinds this
+repository allows -- crates.io, the official repository at an exact revision, or a
+crate the owning workspace reaches by path within this repository -- and rejects
+whatever it cannot place, without consulting the package name at all. Every git
+reference must then name one revision that is an ancestor of the official upstream
+default branch. Its bypass controls run in the same lane, and acceptance controls
+run beside them, because a lane that rejects what it does not recognise can also
+reject the ordinary build.
 
 Polymarket reconciliation completeness is deliberately not recorded as a source
 capability. No merged upstream revision provides it, so declaring it would

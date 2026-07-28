@@ -7255,21 +7255,13 @@ fn enforced_submit_admission_rejects_venue_without_attested_reconciliation_compl
             .any(|message| message.contains("discards non-confirmed trades")),
         "the matched-but-unconfirmed condition must be reported: {messages:#?}"
     );
-    // The engine's behaviour here differs by the status the venue reports, and
-    // stating it as one terminal rule was wrong twice in review: a canceled or
-    // expired report with no accompanying fill takes a fast path that emits only
-    // the cancellation, so the quantity is never recovered and there is no
-    // inferred fill to collide with a later confirmation. Only the branch that
-    // does produce one -- a partially-filled or filled report -- can double
-    // count. Pinning the distinguishing phrase means a collapse back to a single
-    // terminal rule fails here rather than surviving to another review round.
-    assert!(
-        unmet
-            .iter()
-            .any(|message| message.contains("canceled or expired")
-                && message.contains("stays understated")),
-        "condition 3 must distinguish the terminal statuses, not state one rule: {messages:#?}"
-    );
+    // What that condition says the pinned engine does is asserted against the
+    // pinned engine in `tests/nt_external_order_recovery.rs`, not here. An
+    // earlier revision of this test checked that the condition string contained
+    // the words "canceled or expired"; the claim those words made was wrong, and
+    // the assertion stayed green through two review rounds because a substring
+    // check cannot contradict a description of a dependency's behaviour. Only
+    // the dependency can.
     assert!(
         unmet
             .iter()

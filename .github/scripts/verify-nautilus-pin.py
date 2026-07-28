@@ -183,28 +183,70 @@ def discover(filename: str) -> list[Path]:
     return [path for path in tracked_paths() if path.name.lower() == wanted]
 
 
-def local_crate_names() -> set[str]:
-    """Every crate whose manifest is tracked in this repository.
+def workspace_crate_names(lockfile: Path) -> set[str]:
+    """The crates this lockfile may record without a source.
 
-    A lockfile entry with no `source` is either one of this repository's own
-    crates or a dependency substituted by path, and the lockfile itself cannot
-    tell them apart. Deriving the legitimate set from the tracked manifests
-    settles it without asking cargo to resolve anything -- which matters,
-    because resolution would need the git dependency fetched and this lane runs
-    before any build.
+    A lockfile entry with no `source` is either a crate of this lockfile's own
+    workspace or a dependency substituted by path, and the lockfile itself
+    cannot tell them apart. The manifests settle it without asking cargo to
+    resolve anything -- which matters, because resolution would need the git
+    dependency fetched and this lane runs before any build.
 
-    Limit worth naming, because it is the one thing this cannot see: a
-    substitution that points at a crate manifest *added to this repository*
-    would be named here and accepted. That is not a spelling trick -- it is
-    vendoring NautilusTrader into the tree, which arrives as a diff of hundreds
-    of files. This check governs what the build pulls from outside; code added
-    inside is what review is for.
+    Which manifests, though, is the whole question. Collecting every `[package]
+    name` tracked anywhere in the repository was the denylist's silent-false-
+    pass shape surviving inside the allowlist: any manifest added anywhere --
+    a test fixture, an example -- minted a name, and a source-less entry passed
+    by *claiming* that name rather than by being that crate. A path dependency
+    pointing outside the repository then rode in on the match, and cargo built
+    the outside code under `--locked`.
+
+    So the set is walked from this lockfile's own workspace root through only
+    the paths the manifests themselves name -- `[workspace] members` and `path`
+    dependencies -- and a manifest contributes its name only if it is tracked
+    here. A path dependency that leaves the repository resolves to nothing and
+    contributes nothing, which is precisely what makes the name it claims
+    unavailable. Identity is where the crate is, not what it is called.
+
+    Limit worth naming, unchanged by this: a substitution pointing at a crate
+    manifest *added to this repository* and wired in by path is reachable, so it
+    is named and accepted. That is not a spelling trick -- it is vendoring the
+    dependency into the tree, which arrives as a diff of hundreds of files. This
+    check governs what the build pulls from outside; code added inside is what
+    review is for.
     """
+    tracked = set(tracked_paths())
     names: set[str] = set()
-    for manifest in discover("Cargo.toml"):
-        package = load_toml(manifest).get("package")
+    seen: set[Path] = set()
+    pending = [lockfile.parent / "Cargo.toml"]
+
+    while pending:
+        # Collapse `a/../b` lexically rather than against the filesystem: a
+        # manifest outside the repository normalises to a path git never listed,
+        # so membership in the tracked set is the containment test as well.
+        manifest = Path(os.path.normpath(pending.pop()))
+        if manifest in seen or manifest not in tracked:
+            continue
+        seen.add(manifest)
+
+        document = load_toml(manifest)
+        directory = manifest.parent
+        package = document.get("package")
         if isinstance(package, dict) and isinstance(package.get("name"), str):
             names.add(package["name"])
+
+        workspace = document.get("workspace")
+        if isinstance(workspace, dict):
+            for member in workspace.get("members", []):
+                if isinstance(member, str):
+                    # `members` entries are globs, and a literal is a glob that
+                    # matches itself, so one path covers both spellings.
+                    pending.extend(match / "Cargo.toml" for match in directory.glob(member))
+
+        for _owner, table, _override in dependency_tables(document, ""):
+            for spec in table.values():
+                if isinstance(spec, dict) and isinstance(spec.get("path"), str):
+                    pending.append(directory / spec["path"] / "Cargo.toml")
+
     return names
 
 
@@ -256,7 +298,14 @@ def dependency_tables(document: dict, owner: str, override: bool = False):
 # and `version` alike on an inheriting entry, so forbidding four of them while
 # missing the others screened nothing and implied a divergent pin was possible
 # through this table when it is not.
-INHERITED_KEYS = frozenset({"workspace", "optional", "features", "default-features", "public"})
+# Both spellings of default-features appear: cargo accepts the underscore form
+# and ignores it here exactly as it ignores the hyphenated one, so rejecting one
+# and allowing the other would fail a build over a spelling cargo does not care
+# about. Over-rejection is the failure mode an allowlist introduces, and it is
+# the one to watch.
+INHERITED_KEYS = frozenset(
+    {"workspace", "optional", "features", "default-features", "default_features", "public"}
+)
 
 
 def check_declaration(
@@ -282,9 +331,9 @@ def check_declaration(
             if key not in INHERITED_KEYS:
                 fail(
                     f"{owner} inherits with `workspace = true` and also sets `{key}`. "
-                    "An inheriting dependency takes its source from the workspace root "
-                    f"and cargo honours only {sorted(INHERITED_KEYS)} here, so any other "
-                    "key is dead text that reads like a pin."
+                    "An inheriting dependency takes its source from the workspace root, "
+                    f"so beyond {sorted(INHERITED_KEYS)} any key here is dead text that "
+                    "reads like a pin."
                 )
         return False
 
@@ -329,7 +378,7 @@ def collect_from_manifests(pins: dict[str, list[str]]) -> int:
     return seen
 
 
-def collect_from_lockfiles(pins: dict[str, list[str]], local_crates: set[str]) -> int:
+def collect_from_lockfiles(pins: dict[str, list[str]]) -> int:
     """Lockfiles record what cargo resolved, and every entry must be placeable.
 
     This is the reading the inversion changed most. It used to find the entries
@@ -343,6 +392,10 @@ def collect_from_lockfiles(pins: dict[str, list[str]], local_crates: set[str]) -
     seen = 0
     for lockfile in discover("Cargo.lock"):
         document = load_toml(lockfile)
+        # Derived per lockfile, from that workspace's own reachable manifests: a
+        # crate belonging to some other workspace in this repository is not a
+        # crate *this* build may resolve without a source.
+        workspace_crates = workspace_crate_names(lockfile)
         for package in document.get("package", []):
             name = package.get("name", "")
             source = package.get("source")
@@ -350,14 +403,14 @@ def collect_from_lockfiles(pins: dict[str, list[str]], local_crates: set[str]) -
             if source is None:
                 # A workspace crate and a path-substituted dependency are
                 # indistinguishable here -- both simply have no source -- so the
-                # tracked manifests decide which one this is.
-                if name in local_crates:
+                # manifests this workspace reaches by path decide which it is.
+                if name in workspace_crates:
                     continue
                 fail(
-                    f"{owner} resolves without a source and is not a crate tracked in this "
-                    "repository, which is what a dependency substituted by path looks like. "
-                    "Every dependency must resolve to crates.io or to the official "
-                    "repository at an exact revision."
+                    f"{owner} resolves without a source and is not a crate this workspace "
+                    "reaches by path within this repository, which is what a dependency "
+                    "substituted by path looks like. Every dependency must resolve to "
+                    "crates.io or to the official repository at an exact revision."
                 )
             if not isinstance(source, str):
                 fail(f"{owner} records a source that is not a string: {source!r}")
@@ -451,7 +504,7 @@ def collect_pins() -> dict[str, list[str]]:
     reject_tracked_cargo_config()
     pins: dict[str, list[str]] = {}
     declared = collect_from_manifests(pins)
-    resolved = collect_from_lockfiles(pins, local_crate_names())
+    resolved = collect_from_lockfiles(pins)
     if declared == 0 or resolved == 0:
         fail(
             "no NautilusTrader source found "
@@ -717,7 +770,30 @@ def self_test() -> None:
         # reading is proven to catch it without help from the manifest.
         "lock_sourceless_opaque_package": {
             "lock": '[[package]]\nname = "opaque-payload"\nversion = "0.1.0"\n',
-            "reason": "not a crate tracked in this repository",
+            "reason": "reaches by path within this repository",
+        },
+        # The allowlist's own false-pass shape, found by review after the
+        # inversion shipped: the source-less set was every `[package] name`
+        # tracked anywhere, so any manifest added anywhere in the tree -- a
+        # fixture, an example -- minted a name that a substituted dependency
+        # could then claim. The manifest here is tracked and names the crate; it
+        # is simply not one this workspace reaches, and reachability is now what
+        # decides.
+        "lock_sourceless_name_from_unreachable_manifest": {
+            "stray": '[package]\nname = "opaque-payload"\nversion = "0.1.0"\n',
+            "lock": '[[package]]\nname = "opaque-payload"\nversion = "0.1.0"\n',
+            "reason": "reaches by path within this repository",
+        },
+        # The same hole exercised the way it would actually be used, and the way
+        # it was reproduced in review: a path dependency leaving the repository
+        # entirely, wearing the name of a crate a tracked manifest declares.
+        # Cargo builds the outside code under `--locked`; matching by name let it
+        # through, so identity is the resolved path instead.
+        "path_dependency_outside_the_repository": {
+            "stray": '[package]\nname = "local-thing"\nversion = "0.1.0"\n',
+            "dep": 'local-thing = { path = "../fork" }\n',
+            "lock": '[[package]]\nname = "local-thing"\nversion = "0.1.0"\n',
+            "reason": "reaches by path within this repository",
         },
         # A URL that redirects to the official repository. Nothing here tries to
         # detect the redirect -- an unlisted URL is refused whatever it serves,
@@ -738,10 +814,12 @@ def self_test() -> None:
             'source = "registry+https://example.invalid/index"\n',
             "reason": "does not allow",
         },
-        # Three acceptances, guarding the failure mode the inversion introduces:
-        # a rule that refuses everything it does not recognize can refuse the
-        # ordinary build. Both crates.io spellings and a tracked workspace crate
-        # must pass, or the allowlist is too narrow to ship.
+        # Acceptances, guarding the failure mode the inversion introduces: a rule
+        # that refuses everything it does not recognize can refuse the ordinary
+        # build. Tightening reachability above narrows the source-less set, which
+        # is exactly the direction that breaks a working repository, so the two
+        # legitimate shapes it must still admit are pinned here alongside the
+        # registry spellings.
         "crates_io_dependency": {
             "lock": '[[package]]\nname = "serde"\nversion = "1.0.0"\n'
             'source = "registry+https://github.com/rust-lang/crates.io-index"\n',
@@ -753,6 +831,35 @@ def self_test() -> None:
         "tracked_local_crate_is_sourceless": {
             "package": '[package]\nname = "local-thing"\nversion = "0.1.0"\n',
             "lock": '[[package]]\nname = "local-thing"\nversion = "0.1.0"\n',
+        },
+        # A member reached through a `[workspace] members` glob. Nothing in the
+        # repository's own manifests declares this crate as a dependency, so
+        # walking dependencies alone would have rejected a perfectly ordinary
+        # workspace.
+        "workspace_member_is_sourceless": {
+            "table": '[workspace]\nmembers = ["member"]\n',
+            "stray_dir": "member",
+            "stray": '[package]\nname = "member-crate"\nversion = "0.1.0"\n',
+            "lock": '[[package]]\nname = "member-crate"\nversion = "0.1.0"\n',
+        },
+        # A path dependency that stays inside the repository -- the shape the
+        # second workspace here actually uses to depend on the first, which
+        # resolves source-less and is not a member of the workspace that names
+        # it. Rejecting this would break the build outright.
+        "path_dependency_inside_the_repository": {
+            "dep": 'inner-crate = { path = "inner" }\n',
+            "stray_dir": "inner",
+            "stray": '[package]\nname = "inner-crate"\nversion = "0.1.0"\n',
+            "lock": '[[package]]\nname = "inner-crate"\nversion = "0.1.0"\n',
+        },
+        # The underscore spelling of default-features on an inheriting entry.
+        # Cargo accepts and ignores it exactly as it does the hyphenated form, so
+        # a lane that rejected one and allowed the other would fail a build over
+        # a spelling cargo does not care about.
+        "workspace_inheritance_with_underscore_default_features": {
+            "dep": "nautilus-inherited = { workspace = true, default_features = false }\n",
+            "table": f'[workspace.dependencies]\nnautilus-inherited = {{ git = "{official}", '
+            f'rev = "{good}" }}\n',
         },
     }
 

@@ -150,9 +150,13 @@ compatibility slice:
   that question has no closed answer -- a name can be cased, percent-encoded,
   hidden behind a `[patch]` selector, or made opaque entirely. It instead
   requires every source in the resolved build to be one this repository allows:
-  crates.io, the official repository at an exact revision, or a crate whose
-  manifest is tracked here. An unrecognized shape is therefore a rejection
-  naming what it could not place, never a silent skip.
+  crates.io, the official repository at an exact revision, or a crate the owning
+  workspace reaches by path within this repository. An unrecognized shape is
+  therefore a rejection naming what it could not place, never a silent skip.
+  Reachability rather than name is what admits the third kind, and that is a
+  correction: an allowlist keyed on names carried the denylist's failure mode
+  inside it, since any manifest tracked anywhere minted a name that a dependency
+  substituted from outside the repository could then claim.
 - Bolt requires unbounded, unfiltered NT startup reconciliation in every live
   configuration. At the pinned revision the Polymarket adapter drops venue
   orders and positions it cannot map or represent rather than rejecting the

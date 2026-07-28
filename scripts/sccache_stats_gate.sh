@@ -66,15 +66,33 @@ if (( classified_requests != compile_requests )); then
 fi
 runtime_errors="$(
   jq -er '
-    ([.stats.cache_errors.counts[]] | add // 0)
-    + .stats.cache_timeouts
+    .stats.cache_timeouts
     + .stats.cache_read_errors
     + .stats.dist_errors
   ' "$stats_path"
 )"
 if (( runtime_errors != 0 )); then
-  echo "::error::sccache statistics report cache, server, read, or timeout errors"
+  echo "::error::sccache statistics report server, read, or timeout errors"
   exit 1
+fi
+# `cache_errors` is deliberately not fatal, which is not the same as deciding it
+# does not matter. sccache increments that one counter from three unrelated
+# places: a `ProcessError` out of `generate_hash_key`, where the compiler itself
+# failed; a compile future returning an error, which sets the client return code
+# to 1; and `MissType::CacheReadError`, which is also counted as a cache miss and
+# a compilation, so the unit is simply built.
+#
+# The first two already fail the build through cargo, so failing here as well
+# adds nothing. The third cannot fail a build at all -- and it is the one that
+# fires, at roughly one occurrence per thousand Rust lookups, which was turning
+# about a fifth of otherwise green runs red on a cache read that sccache had
+# already handled by compiling.
+#
+# It is still reported, because a rate that stops looking like noise is worth
+# seeing.
+cache_errors="$(jq -er '([.stats.cache_errors.counts[]] | add // 0)' "$stats_path")"
+if (( cache_errors != 0 )); then
+  echo "::notice::sccache reported ${cache_errors} cache error(s); each was compiled instead"
 fi
 
 cache_write_errors="$(jq -er '.stats.cache_write_errors' "$stats_path")"

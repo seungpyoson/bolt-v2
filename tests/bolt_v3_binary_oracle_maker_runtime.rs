@@ -273,6 +273,69 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
     assert_eq!(throttle.rest_cap_per_minute, 100);
 }
 
+/// A blocked leg whose *observation* alternates while its blocked state does not
+/// must still emit one record.
+///
+/// `bound_by` is computed from `now_ms` against the budget window, so walking the
+/// clock backwards and forwards flips it between `SubmitCommandWindow` and
+/// `OutOfOrderTs` without anything about the block changing. While `bound_by` was
+/// part of the dedupe identity and only the newest identity per leg was kept,
+/// each flip missed the previous entry and re-emitted -- so N alternations wrote
+/// N records, and a leg that oscillated wrote on every tick. That is the flooding
+/// class this evidence path exists to avoid.
+#[test]
+fn maker_runtime_quote_records_one_throttle_while_the_bound_oscillates() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config(),
+        maker_context(writer.clone(), admission.clone()),
+    );
+    register_maker_for_order_factory(&mut maker);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
+        .expect("one-submit budget fixture builds");
+    let submit_template = maker_limit_post_only_template();
+
+    let route_input = |now_ms: u64| {
+        let mut quote_set = quote_set_inputs();
+        quote_set.now_ms = now_ms;
+        BinaryOracleMakerRuntimeQuoteRouteInput {
+            quote: MakerRuntimeQuoteInput {
+                quote_plan: quote_plan_inputs(static_binary_event::KEY),
+                quote_set,
+                order_plan: order_plan_inputs(),
+            },
+            submit_template: &submit_template,
+            price_precision: 2,
+            quantity_precision: 2,
+            submit_order_prefix: "maker_submit",
+            max_fee_bps: Decimal::ZERO,
+            submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        }
+    };
+
+    // Forward, backward, forward, backward: four evaluations of one unchanged
+    // blocked leg, alternating only in what the clock says.
+    for now_ms in [1_000, 500, 1_000, 500] {
+        maker
+            .route_maker_runtime_quote(&mut market, &mut budget, route_input(now_ms))
+            .expect("an oscillating bound must not fail the quote route");
+    }
+
+    let throttles = writer.requote_throttles();
+    assert_eq!(
+        throttles.len(),
+        1,
+        "an oscillating bound is one blocked episode, not one record per \
+         alternation: {throttles:#?}"
+    );
+    assert_eq!(
+        throttles[0].block_reason,
+        BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted
+    );
+}
+
 #[test]
 fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_before_quote() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();

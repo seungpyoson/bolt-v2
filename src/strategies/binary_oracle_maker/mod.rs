@@ -106,7 +106,15 @@ pub struct BinaryOracleMaker {
     context: StrategyBuildContext,
     mu: MakerMuState,
     runtime: MakerRuntime,
-    last_requote_throttle_blocks: Vec<RequoteThrottleDedupeKey>,
+    /// Episodes already recorded for currently-blocked legs.
+    ///
+    /// Accumulates rather than replacing: holding only the newest identity per
+    /// leg makes suppression last-write-wins, so any identity with more than one
+    /// reachable value re-emits on every alternation instead of being
+    /// suppressed. Entries for a leg are dropped when it stops being blocked,
+    /// which bounds this to the reachable identities of the legs blocked right
+    /// now.
+    recorded_requote_throttle_episodes: Vec<RequoteThrottleEpisodeId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,13 +133,23 @@ pub struct BinaryOracleMakerRuntimeQuoteRouteOutcome {
     pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
 }
 
+/// The identity of a throttled-requote episode, which is what decides whether a
+/// record is new -- not the observation attached to it.
+///
+/// `action_cost_class` and `bound_by` are deliberately absent. Both vary while
+/// the blocked state does not: `action_cost_class` follows whatever the strategy
+/// was attempting this tick, and `bound_by` is computed from `now_ms` against the
+/// budget window, so together they give one blocked leg eighteen reachable
+/// spellings. They remain on the emitted evidence, where they are diagnostics;
+/// they are not identity.
+///
+/// `block_reason` stays. It is the blocker category, which is semantic state, and
+/// it is what a second reason would have to differ in to deserve its own record.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RequoteThrottleDedupeKey {
+struct RequoteThrottleEpisodeId {
     family_key: String,
     leg: Leg,
-    action_cost_class: RequoteActionCostClass,
     block_reason: RequoteThrottleBlockReason,
-    bound_by: RequoteThrottleBound,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -264,7 +282,7 @@ impl BinaryOracleMaker {
             context,
             mu,
             runtime: MakerRuntime::empty(),
-            last_requote_throttle_blocks: Vec::new(),
+            recorded_requote_throttle_episodes: Vec::new(),
         }
     }
 
@@ -321,19 +339,20 @@ impl BinaryOracleMaker {
     ) -> Result<()> {
         let Some((action_cost_class, block_reason)) = requote_throttle_block(market, leg, decision)
         else {
-            self.last_requote_throttle_blocks
-                .retain(|key| !(key.family_key == family_key && key.leg == leg));
+            // The leg is no longer blocked: the episode is over, so forget it.
+            // This is what keeps the accumulated set bounded, and it is what
+            // lets a leg that becomes blocked again record that as new.
+            self.recorded_requote_throttle_episodes
+                .retain(|episode| !(episode.family_key == family_key && episode.leg == leg));
             return Ok(());
         };
         let bound_by = requote_throttle_bound(action_cost_class, budget, now_ms);
-        let key = RequoteThrottleDedupeKey {
+        let episode = RequoteThrottleEpisodeId {
             family_key: family_key.to_string(),
             leg,
-            action_cost_class,
             block_reason,
-            bound_by,
         };
-        if self.last_requote_throttle_blocks.contains(&key) {
+        if self.recorded_requote_throttle_episodes.contains(&episode) {
             return Ok(());
         }
         let evidence = requote_throttle_observation(
@@ -361,9 +380,7 @@ impl BinaryOracleMaker {
                 self.config.strategy_id
             );
         }
-        self.last_requote_throttle_blocks
-            .retain(|existing| !(existing.family_key == family_key && existing.leg == leg));
-        self.last_requote_throttle_blocks.push(key);
+        self.recorded_requote_throttle_episodes.push(episode);
         Ok(())
     }
 

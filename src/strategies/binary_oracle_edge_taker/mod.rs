@@ -24,6 +24,7 @@ use rust_decimal::{
 };
 use toml::Value;
 
+use crate::bolt_v3_evidence_episode::{CurrentEpisode, WHOLE_EPISODE};
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
 
 use crate::{
@@ -166,11 +167,10 @@ use crate::bolt_v3_feed_health::{
 mod entry_decision;
 
 use self::entry_decision::{
-    BlockedStrategyInputDedupeKey, BlockedStrategyInputDedupeState, EntryBlockReason,
-    EntryEvaluation, EntryEvaluationLogFields, EntryEvaluationReceiveContext, EntryGateDecision,
-    EntryPricingBlockReason, EntryPricingInputs, EntryRealizedVolatilityReceipt,
-    EntrySkipDedupeKey, EntrySkipDedupeState, EntrySubmissionDecision, ForcedFlatEvidenceInputs,
-    RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
+    BlockedStrategyInputDedupeKey, EntryBlockReason, EntryEvaluation, EntryEvaluationLogFields,
+    EntryEvaluationReceiveContext, EntryGateDecision, EntryPricingBlockReason, EntryPricingInputs,
+    EntryRealizedVolatilityReceipt, EntrySkipDedupeKey, EntrySubmissionDecision,
+    ForcedFlatEvidenceInputs, RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
     entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence, entry_skip_fact,
     entry_skip_reason_label, push_executable_edge_pricing_block, rv_gate_novelty_bit,
 };
@@ -667,9 +667,12 @@ pub struct BinaryOracleEdgeTaker {
     exposure: ExposureState,
     last_flat_terminal_entry_override: Option<FlatTerminalEntryOverride>,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
-    last_recorded_blocked_strategy_input: Option<BlockedStrategyInputDedupeState>,
-    last_recorded_entry_skip: Option<EntrySkipDedupeState>,
-    last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
+    /// Suppression for the three producers that record once per semantic
+    /// episode. The identity is each producer's own; only the mask arithmetic
+    /// and the mark-before-write contract are shared.
+    blocked_strategy_input_episode: CurrentEpisode<BlockedStrategyInputDedupeKey>,
+    entry_skip_episode: CurrentEpisode<EntrySkipDedupeKey>,
+    exit_decision_episode: CurrentEpisode<ExitDecisionDedupeKey>,
     pricing: PricingState,
     latest_signal_quote: Option<FastSpotObservation>,
     latest_selected_reference_quote: Option<SelectedReferenceQuoteEvidence>,
@@ -790,9 +793,9 @@ impl BinaryOracleEdgeTaker {
             exposure: ExposureState::Flat,
             last_flat_terminal_entry_override: None,
             last_reported_exposure_occupancy: Cell::new(None),
-            last_recorded_blocked_strategy_input: None,
-            last_recorded_entry_skip: None,
-            last_recorded_exit_decision: None,
+            blocked_strategy_input_episode: CurrentEpisode::default(),
+            entry_skip_episode: CurrentEpisode::default(),
+            exit_decision_episode: CurrentEpisode::default(),
             pricing,
             latest_signal_quote: None,
             latest_selected_reference_quote: None,
@@ -3591,21 +3594,11 @@ impl BinaryOracleEdgeTaker {
                 .receive_watermark_ms
                 .is_some(),
         );
-        let next_state = match self.last_recorded_entry_skip.as_ref() {
-            Some(state) if state.current_key == key => {
-                if state.rv_seen_mask & rv_bit != 0 {
-                    return Ok(false);
-                }
-                EntrySkipDedupeState {
-                    current_key: key,
-                    rv_seen_mask: state.rv_seen_mask | rv_bit,
-                }
-            }
-            _ => EntrySkipDedupeState {
-                current_key: key,
-                rv_seen_mask: rv_bit,
-            },
-        };
+        // Marks before the write below, which is the shared contract: see
+        // `CurrentEpisode::admit`.
+        if !self.entry_skip_episode.admit(key, rv_bit) {
+            return Ok(false);
+        }
         let evidence = entry_skip_fact(
             self.config.strategy_id.clone(),
             now_ms,
@@ -3613,9 +3606,6 @@ impl BinaryOracleEdgeTaker {
             &fields,
             forced_flat_inputs,
         );
-        // Preserve the existing mark-before-swallowed-writer-error contract: a
-        // telemetry failure must not spin on the same semantic skip state.
-        self.last_recorded_entry_skip = Some(next_state);
         if let ObservationRecordOutcome::FailureReported(error) = self
             .context
             .edge_taker_evidence()
@@ -3702,7 +3692,10 @@ impl BinaryOracleEdgeTaker {
             exit_decision: disposition,
             blocked_reason,
         };
-        if self.last_recorded_exit_decision.as_ref() == Some(&key) {
+        // This producer carries no finite novelty axis, so its episode is the
+        // identity alone and `WHOLE_EPISODE` is the whole mask. Marked before
+        // the write, as the other two now are.
+        if !self.exit_decision_episode.admit(key, WHOLE_EPISODE) {
             return Ok(());
         }
         let failure = if action_chosen {
@@ -3769,7 +3762,6 @@ impl BinaryOracleEdgeTaker {
                 self.config.strategy_id
             );
         }
-        self.last_recorded_exit_decision = Some(key);
         Ok(())
     }
 
@@ -5798,21 +5790,14 @@ impl BinaryOracleEdgeTaker {
                 .receive_watermark_ms
                 .is_some(),
         );
-        let next_state = match self.last_recorded_blocked_strategy_input.as_ref() {
-            Some(state) if state.current_key == key => {
-                if state.rv_seen_mask & rv_bit != 0 {
-                    return Ok(());
-                }
-                BlockedStrategyInputDedupeState {
-                    current_key: key,
-                    rv_seen_mask: state.rv_seen_mask | rv_bit,
-                }
-            }
-            _ => BlockedStrategyInputDedupeState {
-                current_key: key,
-                rv_seen_mask: rv_bit,
-            },
-        };
+        // Moved above the write, which reads like a behaviour change and is not
+        // one: the write swallows its own failure and logs, so the mark below it
+        // ran unconditionally too. `blocked_snapshot_same_key_failure_marks_bit_
+        // seen_without_retry` pinned that before this was shared. What changes is
+        // that the ordering can no longer drift between the two producers.
+        if !self.blocked_strategy_input_episode.admit(key, rv_bit) {
+            return Ok(());
+        }
         if let ObservationRecordOutcome::FailureReported(error) = self
             .context
             .edge_taker_evidence()
@@ -5821,7 +5806,6 @@ impl BinaryOracleEdgeTaker {
         {
             log::error!("blocked strategy-input observation failed: {error}");
         }
-        self.last_recorded_blocked_strategy_input = Some(next_state);
         Ok(())
     }
 
@@ -6551,7 +6535,7 @@ impl BinaryOracleEdgeTaker {
         if realized_volatility_not_ready {
             self.record_blocked_entry_strategy_input_snapshot_once(now_ms, &decision)?;
         } else {
-            self.last_recorded_blocked_strategy_input = None;
+            self.blocked_strategy_input_episode.clear();
         }
 
         if let Some(reason) = decision.blocked_reason {
@@ -6607,7 +6591,7 @@ impl BinaryOracleEdgeTaker {
         }
 
         self.entry_reject_state.remove(&instrument_id);
-        self.last_recorded_entry_skip = None;
+        self.entry_skip_episode.clear();
         let price = Price::new(price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
         let order = self.build_configured_entry_order(

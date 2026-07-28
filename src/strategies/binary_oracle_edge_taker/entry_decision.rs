@@ -325,12 +325,6 @@ pub(super) struct EntrySkipDedupeKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct EntrySkipDedupeState {
-    pub(super) current_key: EntrySkipDedupeKey,
-    pub(super) rv_seen_mask: u16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct BlockedStrategyInputSourceStateKey {
     source_id: String,
     enabled: bool,
@@ -362,12 +356,6 @@ pub(super) struct BlockedStrategyInputDedupeKey {
     realized_volatility_blockers: Vec<EvidenceRealizedVolBlockReason>,
     realized_volatility_source_states: Vec<BlockedStrategyInputSourceStateKey>,
     realized_volatility_unknown_source_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BlockedStrategyInputDedupeState {
-    pub(super) current_key: BlockedStrategyInputDedupeKey,
-    pub(super) rv_seen_mask: u16,
 }
 
 pub(super) const fn rv_gate_novelty_bit(

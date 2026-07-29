@@ -64,36 +64,46 @@ if (( classified_requests != compile_requests )); then
   echo "::error::sccache request accounting reports an incomplete server/protocol request"
   exit 1
 fi
-runtime_errors="$(
-  jq -er '
-    .stats.cache_timeouts
-    + .stats.cache_read_errors
-    + .stats.dist_errors
-  ' "$stats_path"
-)"
-if (( runtime_errors != 0 )); then
-  echo "::error::sccache statistics report server, read, or timeout errors"
-  exit 1
-fi
-# `cache_errors` is deliberately not fatal, which is not the same as deciding it
-# does not matter. sccache increments that one counter from three unrelated
-# places: a `ProcessError` out of `generate_hash_key`, where the compiler itself
-# failed; a compile future returning an error, which sets the client return code
-# to 1; and `MissType::CacheReadError`, which is also counted as a cache miss and
-# a compilation, so the unit is simply built.
+# None of sccache's error counters fails this gate, and that is a conclusion from
+# its source rather than a tolerance. Every one of them records a condition
+# sccache itself resolved by compiling the unit locally, so a non-zero count
+# describes a slower build, never a wrong one. Read at the pinned revision:
 #
-# The first two already fail the build through cargo, so failing here as well
-# adds nothing. The third cannot fail a build at all -- and it is the one that
-# fires, at roughly one occurrence per thousand Rust lookups, which was turning
-# about a fifth of otherwise green runs red on a cache read that sccache had
-# already handled by compiling.
+#   * `cache_timeouts` is `MissType::TimedOut`, which sits in the same
+#     `CompileResult::CacheMiss` arm as an ordinary miss: it increments
+#     `cache_misses` and `compilations` and queues a cache write. The lookup was
+#     abandoned and the unit was built.
+#   * `cache_errors` is raised from three places -- a `ProcessError` out of
+#     `generate_hash_key`, a compile future returning an error, and
+#     `MissType::CacheReadError`. The first two already fail the build through
+#     cargo, so failing again here adds nothing; the third is the same miss arm
+#     as above.
+#   * `dist_errors` is `DistType::Error`, which is recorded on the path that
+#     logs "Could not perform distributed compile, falling back to local" and
+#     then executes the local compile.
+#   * `cache_read_errors` has no increment site at all at this revision. It is
+#     declared, aggregated, defaulted and displayed, and never set, so a gate
+#     failing on it could not fire.
 #
-# It is still reported, because a rate that stops looking like noise is worth
+# Failing on these was manufacturing red runs from cache infrastructure that had
+# already been worked around -- measured at roughly a fifth of otherwise green
+# runs. What still fails this gate is the accounting below: whether sccache was
+# engaged at all, and whether it behaved as the configured mode requires. Those
+# describe the build; these describe the cache's day.
+#
+# Reported, not silenced, because a rate that stops looking like noise is worth
 # seeing.
-cache_errors="$(jq -er '([.stats.cache_errors.counts[]] | add // 0)' "$stats_path")"
-if (( cache_errors != 0 )); then
-  echo "::notice::sccache reported ${cache_errors} cache error(s); each was compiled instead"
-fi
+report_tolerated() {
+  local label="$1" count="$2"
+  if (( count != 0 )); then
+    echo "::notice::sccache reported ${count} ${label}; each unit was compiled instead"
+  fi
+}
+report_tolerated "cache timeout(s)" "$(jq -er '.stats.cache_timeouts' "$stats_path")"
+report_tolerated "cache read error(s)" "$(jq -er '.stats.cache_read_errors' "$stats_path")"
+report_tolerated "distributed-compile error(s)" "$(jq -er '.stats.dist_errors' "$stats_path")"
+report_tolerated \
+  "cache error(s)" "$(jq -er '([.stats.cache_errors.counts[]] | add // 0)' "$stats_path")"
 
 cache_write_errors="$(jq -er '.stats.cache_write_errors' "$stats_path")"
 cache_writes="$(jq -er '.stats.cache_writes' "$stats_path")"

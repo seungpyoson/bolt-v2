@@ -102,32 +102,29 @@ def main() -> int:
     read_write_error["stats"]["cache_write_errors"] = 1
     expect_status("read-write error", read_write_error, 1, cache_mode="read_write")
 
-    runtime_error = copy.deepcopy(read_write)
-    runtime_error["stats"]["cache_timeouts"] = 1
-    expect_status("runtime error", runtime_error, 1, cache_mode="read_write")
-
-    # Each remaining runtime counter separately, because summing them made one
-    # test stand for three and none of the three was actually pinned.
-    read_error = copy.deepcopy(read_write)
-    read_error["stats"]["cache_read_errors"] = 1
-    expect_status("cache read error", read_error, 1, cache_mode="read_write")
-
-    dist_error = copy.deepcopy(read_write)
-    dist_error["stats"]["dist_errors"] = 1
-    expect_status("dist error", dist_error, 1, cache_mode="read_write")
-
-    # `cache_errors` is accepted, and neither direction of that was covered
-    # before. sccache raises it for a compiler `ProcessError` and for a failed
-    # compile future -- both of which already fail the build through cargo -- and
-    # for `MissType::CacheReadError`, which it also counts as a miss and simply
-    # compiles. Failing here caught nothing the build did not already catch, and
-    # reddened roughly a fifth of otherwise green runs.
-    cache_error = copy.deepcopy(read_write)
-    cache_error["stats"]["cache_errors"] = {"counts": {"Rust": 1}, "adv_counts": {"rustc": 1}}
-    expect_status("cache error is not fatal", cache_error, 0, cache_mode="read_write")
-    assert "1 cache error(s)" in run_gate(cache_error, cache_mode="read_write").stdout, (
-        "a tolerated cache error must still be reported"
-    )
+    # Every sccache error counter, one control each, asserted in both
+    # directions: the run survives, and the count is still reported. Each of
+    # these records a lookup sccache abandoned and then compiled, so failing on
+    # them turned cache infrastructure into red builds. Summing them into one
+    # check previously made a single test stand for three, and none of the three
+    # was pinned in either direction.
+    tolerated = {
+        "cache timeout": ("cache_timeouts", 1, "1 cache timeout(s)"),
+        "cache read error": ("cache_read_errors", 1, "1 cache read error(s)"),
+        "distributed-compile error": ("dist_errors", 1, "1 distributed-compile error(s)"),
+        "cache error": (
+            "cache_errors",
+            {"counts": {"Rust": 1}, "adv_counts": {"rustc": 1}},
+            "1 cache error(s)",
+        ),
+    }
+    for label, (field, value, announcement) in tolerated.items():
+        stats = copy.deepcopy(read_write)
+        stats["stats"][field] = value
+        expect_status(f"{label} is not fatal", stats, 0, cache_mode="read_write")
+        assert announcement in run_gate(stats, cache_mode="read_write").stdout, (
+            f"a tolerated {label} must still be reported"
+        )
 
     incomplete_request = copy.deepcopy(read_write)
     incomplete_request["stats"]["requests_executed"] = 0

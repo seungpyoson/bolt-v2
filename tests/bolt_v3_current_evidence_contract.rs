@@ -212,6 +212,16 @@ fn at_least_one_startup_recovery_consumer_is_required() {
 ///
 /// The site names an enclosing function rather than a line, so ordinary edits
 /// above it do not fail this.
+///
+/// Worth being straight about what this is: a consistency check on a data file,
+/// not a behavioural test. The claim under test -- "the census names a function
+/// this tree defines" -- is a claim *about source*, so reading source is the
+/// only way to settle it, and no amount of exercising the producers would.
+/// Review found the first version of it settling that claim too loosely: a
+/// substring search for `fn <name>` also matches the name in a doc comment, in
+/// a call, or in a signature behind `#[cfg(...)]` that nothing compiles. So the
+/// match is anchored to a definition at the start of a line, with comment lines
+/// removed first, which is as close to "is defined here" as text can get.
 #[test]
 fn every_declared_append_path_resolves_in_this_tree() {
     let contract = parse_contract_registry(REGISTRY).expect("current contract must parse");
@@ -226,8 +236,23 @@ fn every_declared_append_path_resolves_in_this_tree() {
             unresolved.push(format!("{producer}: {path} does not exist"));
             continue;
         };
-        if !source.contains(&format!("fn {function}")) {
-            unresolved.push(format!("{producer}: {path} has no `fn {function}`"));
+        // `fn <name>` is the anchor, so every visibility and modifier spelling --
+        // `pub`, `pub(crate)`, `const`, `async`, `unsafe` -- is handled without
+        // a list of them to keep current. What follows the name decides the
+        // rest: `(` or `<` is a definition, anything else is a longer name, and
+        // a call site has no `fn ` in front of it at all.
+        let signature = format!("fn {function}");
+        let defined = source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with("//"))
+            .any(|line| {
+                line.split(signature.as_str())
+                    .skip(1)
+                    .any(|rest| rest.starts_with('(') || rest.starts_with('<'))
+            });
+        if !defined {
+            unresolved.push(format!("{producer}: {path} defines no `fn {function}`"));
         }
     }
 

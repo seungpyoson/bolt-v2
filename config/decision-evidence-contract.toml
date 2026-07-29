@@ -492,8 +492,8 @@ purpose = "requote_throttle_observation"
 classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer"]
 call_sites = ["src/strategies/binary_oracle_maker/mod.rs::update_requote_throttle_edge"]
-repeat_semantics = "finite per-market/leg monotone suppression over the closed action-cost and throttle-bound domain"
-dedupe_key_evidence = "typed market/leg episode identity plus the exact seventeen-state TOML domain; family, timestamps, and budget counters remain payload only"
+repeat_semantics = "finite monotone suppression over the closed action-cost and throttle-bound domain, per episode identity"
+dedupe_key_evidence = "typed episode identity plus the exact seventeen-state TOML domain; timestamps and budget counters remain payload only. The identity is the family key at this revision, which several concrete markets share, so two markets throttling under one family are one episode here; #1517 replaces it with the market key and is not an ancestor of this stack"
 census_ancestor = "requote_throttle"
 
 [[producers]]

@@ -727,8 +727,12 @@ def self_test() -> None:
             "table": f'[patch."{official}"]\nnautilus-core = {{ git = "{fork_url}", rev = "{bad}" }}\n',
             "reason": official_repo,
         },
+        # `[replace]` is keyed by `name:version`, not by name. Spelled the way
+        # cargo requires because the fixture is now read by cargo: an invalid
+        # manifest would be refused for being unparsable, which is not the rule
+        # this control exists to prove.
         "replace_override": {
-            "table": f'[replace]\nnautilus-core = {{ git = "{official}", rev = "{bad}" }}\n',
+            "table": f'[replace]\n"nautilus-core:0.1.0" = {{ git = "{official}", rev = "{bad}" }}\n',
             "reason": one_revision,
         },
         "patch_path_override": {
@@ -1134,8 +1138,11 @@ def self_test() -> None:
             root = Path(raw)
             (root / "ci").mkdir()
             (root / "Cargo.toml").write_text(
-                f'[dependencies]\nnautilus-core = {{ git = "{official}", rev = "{revision}" }}\n'
+                DEFAULT_FIXTURE_PACKAGE
+                + f'[dependencies]\nnautilus-core = {{ git = "{official}", rev = "{revision}" }}\n'
             )
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text("// fixture root\n")
             (root / "Cargo.lock").write_text(
                 '[[package]]\nname = "nautilus-core"\nversion = "0.1.0"\n'
                 f'source = "git+{official}?rev={revision}#{revision}"\n'

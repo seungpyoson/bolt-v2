@@ -169,6 +169,21 @@ struct RequoteThrottleEpisodeId {
     block_reason: BoltV3RequoteThrottleBlockReason,
 }
 
+/// Drop the episodes of markets that are no longer active, keep the rest.
+///
+/// A free function taking the active-set test rather than a method reaching for
+/// it, so both directions can be asserted without resolving instruments: that a
+/// departed market's episode goes, and -- the half that matters -- that a live
+/// market's episode next to it stays. A method would have made "removes
+/// everything" indistinguishable from "removes the right thing" in any test that
+/// could be written for it.
+fn retain_episodes_of_active_markets(
+    episodes: &mut Vec<RequoteThrottleEpisodeId>,
+    is_active: impl Fn(&str) -> bool,
+) {
+    episodes.retain(|episode| is_active(&episode.market_key));
+}
+
 /// Which market a throttle record is about: the unique key, and the family it was
 /// selected from.
 ///
@@ -906,6 +921,21 @@ impl BinaryOracleMaker {
                 miss,
             );
         }
+
+        // An episode outlives the market it describes otherwise. A leg that is
+        // blocked when its market leaves the active set never reaches the clear
+        // on unblock, so its record stays; if that market later resolves again,
+        // its first block is suppressed as one already recorded -- the same
+        // confusion of a stable key with a live market that the episode identity
+        // above exists to prevent, arriving through the lifecycle instead.
+        //
+        // The active set is the authority, so this asks it rather than reading
+        // the unsubscribe list: a market can leave for reasons that produce no
+        // unsubscribe, and one authority cannot disagree with itself.
+        let runtime = &self.runtime;
+        retain_episodes_of_active_markets(&mut self.recorded_requote_throttle_episodes, |key| {
+            runtime.market(key).is_some()
+        });
     }
 
     /// Register the autonomous quote/refresh timer (period = `quote_interval_ms`).
@@ -1486,6 +1516,33 @@ mod tests {
                 .map(UsableMu::get),
             Ok(1.0),
             "on_trade must route each tick into the per-instrument μ buffer"
+        );
+    }
+
+    /// A blocked leg whose market leaves the active set never reaches the clear
+    /// on unblock, so without this its episode outlives the market: if that key
+    /// resolves again later, its first block is suppressed as one already
+    /// recorded. Silence exactly where a fresh block belongs -- the same
+    /// confusion of a stable key with a live market that the episode identity
+    /// fixes, arriving through the lifecycle instead.
+    ///
+    /// Both directions in one call, because "removes the departed one" and
+    /// "removes everything" are the same assertion otherwise.
+    #[test]
+    fn a_departed_markets_throttle_episode_is_dropped_and_a_live_ones_is_kept() {
+        let episode = |market_key: &str| RequoteThrottleEpisodeId {
+            market_key: market_key.to_string(),
+            leg: Leg::Yes,
+            block_reason: BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted,
+        };
+        let mut episodes = vec![episode("departed"), episode("live"), episode("also-departed")];
+
+        retain_episodes_of_active_markets(&mut episodes, |key| key == "live");
+
+        assert_eq!(
+            episodes,
+            vec![episode("live")],
+            "only the episodes of markets still in the active set survive a refresh"
         );
     }
 

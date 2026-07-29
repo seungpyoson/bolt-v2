@@ -1550,21 +1550,30 @@ impl BoltV3SubmitAdmissionState {
                     .unwrap_or(0);
                 let next_execution_client = current_execution_client_count.checked_add(1)?;
 
-                let next_forced_reduction = if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
-                    inner.live_kill_switch_forced_reduction_order_count.checked_add(1)?
-                } else {
-                    inner.live_kill_switch_forced_reduction_order_count
-                };
+                let next_forced_reduction =
+                    if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
+                        inner
+                            .live_kill_switch_forced_reduction_order_count
+                            .checked_add(1)?
+                    } else {
+                        inner.live_kill_switch_forced_reduction_order_count
+                    };
                 Some((next_admitted, next_execution_client, next_forced_reduction))
             };
 
-            if let Some((next_admitted_order_count, next_execution_client_count, next_forced_reduction_count)) = apply_counters() {
+            if let Some((
+                next_admitted_order_count,
+                next_execution_client_count,
+                next_forced_reduction_count,
+            )) = apply_counters()
+            {
                 let forced_reduction_client_order_id = (request.intent_kind
                     == BoltV3SubmitIntentKind::KillSwitchForcedReduction)
                     .then(|| request.client_order_id.clone());
                 let counter_rollback = BoltV3SubmitAdmissionCounterRollback {
                     execution_client_id: request.execution_client_id.clone(),
-                    order_count: next_admitted_order_count.saturating_sub(admitted_order_count_before),
+                    order_count: next_admitted_order_count
+                        .saturating_sub(admitted_order_count_before),
                     forced_reduction_count: next_forced_reduction_count
                         .saturating_sub(forced_reduction_order_count_before),
                     forced_reduction_client_order_id: forced_reduction_client_order_id.clone(),
@@ -1669,9 +1678,9 @@ impl BoltV3SubmitAdmissionState {
             }
             BoltV3AdmissionOutcome::RejectedCapitalAdmission => {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
-                    reason: evaluation
-                        .capital_admission_rejection
-                        .expect("Missing capital admission reject reason for RejectedCapitalAdmission"),
+                    reason: evaluation.capital_admission_rejection.expect(
+                        "Missing capital admission reject reason for RejectedCapitalAdmission",
+                    ),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
@@ -2017,9 +2026,9 @@ impl BoltV3SubmitAdmissionState {
             }
             BoltV3AdmissionOutcome::RejectedCapitalAdmission => {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
-                    reason: evaluation
-                        .capital_admission_rejection
-                        .expect("Missing capital admission reject reason for RejectedCapitalAdmission"),
+                    reason: evaluation.capital_admission_rejection.expect(
+                        "Missing capital admission reject reason for RejectedCapitalAdmission",
+                    ),
                 })
             }
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {

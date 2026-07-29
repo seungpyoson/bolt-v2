@@ -3894,6 +3894,13 @@ impl BinaryOracleEdgeTaker {
 
     fn exit_forced_flat_evidence_inputs(&self) -> ForcedFlatEvidenceInputs {
         let open_position = self.managed_position().map(|managed| &managed.position);
+
+        let metadata_matches_selection = if let Some(position) = open_position {
+            position.book.metadata_matches_selection()
+        } else {
+            self.active.books.metadata_matches_selection()
+        };
+
         ForcedFlatEvidenceInputs {
             stale_reference_after_ms: Some(self.effective_stale_reference_after_ms()),
             last_reference_ts_ms: self.active.last_reference_ts_ms,
@@ -3906,9 +3913,7 @@ impl BinaryOracleEdgeTaker {
                     .or_else(|| self.active.books.minimum_liquidity()),
             ),
             frozen: self.active.phase == SelectionPhase::Freeze,
-            metadata_matches_selection: open_position
-                .map(|position| position.book.metadata_matches_selection())
-                .unwrap_or_else(|| self.active.books.metadata_matches_selection()),
+            metadata_matches_selection,
             fast_venue_incoherent: self.active.fast_venue_incoherent,
         }
     }

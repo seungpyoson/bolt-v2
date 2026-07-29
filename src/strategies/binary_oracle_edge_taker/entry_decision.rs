@@ -5,6 +5,7 @@ use nautilus_model::{
     identifiers::{ClientOrderId, InstrumentId},
 };
 
+use crate::bolt_v3_evidence_episode::NoveltyBit;
 use crate::{
     bolt_v3_binary_outcome_edge::{BinaryOutcomeEdgeBlockReason, BinaryOutcomeEdgeResult},
     bolt_v3_current_evidence::{
@@ -361,7 +362,7 @@ pub(super) struct BlockedStrategyInputDedupeKey {
 pub(super) const fn rv_gate_novelty_bit(
     gate_result: EvidenceRvGateResult,
     watermark_present: bool,
-) -> u16 {
+) -> NoveltyBit {
     let gate_index: u32 = match gate_result {
         EvidenceRvGateResult::Accepted => 0,
         EvidenceRvGateResult::MissingSnapshot => 1,
@@ -371,8 +372,7 @@ pub(super) const fn rv_gate_novelty_bit(
         EvidenceRvGateResult::RejectedNotReady => 5,
     };
     let watermark_index = if watermark_present { 1 } else { 0 };
-    let bit_index = gate_index * 2 + watermark_index;
-    1_u16 << bit_index
+    NoveltyBit::at(gate_index * 2 + watermark_index)
 }
 
 impl BlockedStrategyInputDedupeKey {

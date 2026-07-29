@@ -1535,7 +1535,11 @@ mod tests {
             leg: Leg::Yes,
             block_reason: BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted,
         };
-        let mut episodes = vec![episode("departed"), episode("live"), episode("also-departed")];
+        let mut episodes = vec![
+            episode("departed"),
+            episode("live"),
+            episode("also-departed"),
+        ];
 
         retain_episodes_of_active_markets(&mut episodes, |key| key == "live");
 

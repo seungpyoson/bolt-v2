@@ -24,7 +24,8 @@
 
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_execution::reconciliation::{
-    generate_external_order_status_events, reconcile_fill_report,
+    generate_external_order_status_events, generate_reconciliation_order_snapshot_events,
+    reconcile_fill_report,
 };
 use nautilus_model::{
     enums::{
@@ -316,6 +317,36 @@ fn the_venues_own_later_confirmation_is_not_deduplicated_against_an_inferred_fil
         Quantity::from("80"),
         "forty executed units, reported once by the inferred fill and once by the venue's \
          own confirmation, project to eighty: the same executed quantity counted twice"
+    );
+
+    // Which route the confirmation takes decides whether the double count
+    // survives, and review was right that this had not been separated.
+    //
+    // The projection above is the standalone route: a fill report reconciled on
+    // its own, with nothing afterwards to compare the order against. Eighty
+    // stands.
+    //
+    // A same-pass batch reconciliation is not that. It applies the fill to a
+    // working copy and then projects the order snapshot against the report,
+    // which still says forty -- a material decrease from the eighty just
+    // projected -- so the excess is voided back off. The engine self-corrects
+    // there, and only there.
+    let corrected = generate_reconciliation_order_snapshot_events(
+        &projected,
+        &status_report,
+        Some(&instrument()),
+        UnixNanos::default(),
+    );
+    let mut batched = projected.clone();
+    for event in corrected {
+        let _ = batched.apply(event);
+    }
+    assert_eq!(
+        batched.filled_qty(),
+        Quantity::from("40"),
+        "a same-pass batch reconciliation projects the order snapshot after the fill, sees the \
+         doubled quantity as a decrease against the report, and voids the excess -- so the double \
+         count is specific to a confirmation reconciled on its own"
     );
 
     let past_quantity = reconcile_fill_report(

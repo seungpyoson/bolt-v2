@@ -68,7 +68,10 @@ impl NoveltyBit {
     /// hold the producer's domain -- a design error to fix, not a state to
     /// tolerate at runtime.
     pub const fn at(index: u32) -> Self {
-        assert!(index < u16::BITS, "a novelty axis must fit the episode mask");
+        assert!(
+            index < u16::BITS,
+            "a novelty axis must fit the episode mask"
+        );
         Self(1 << index)
     }
 

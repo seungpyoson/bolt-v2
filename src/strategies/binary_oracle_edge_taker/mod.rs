@@ -3695,7 +3695,10 @@ impl BinaryOracleEdgeTaker {
         // This producer carries no finite novelty axis, so its episode is the
         // identity alone and `WHOLE_EPISODE` is the whole mask. Marked before
         // the write, as the other two now are.
-        if !self.exit_decision_episode.admit(key, NoveltyBit::WHOLE_EPISODE) {
+        if !self
+            .exit_decision_episode
+            .admit(key, NoveltyBit::WHOLE_EPISODE)
+        {
             return Ok(());
         }
         let failure = if action_chosen {

@@ -290,18 +290,32 @@ fn the_venues_own_later_confirmation_is_not_deduplicated_against_an_inferred_fil
         )
     };
 
+    // Applied, not merely produced. Review found this asserting only that an
+    // event came back while its own message claimed the quantity was counted
+    // twice -- a stronger claim than the assertion settled, and the exact shape
+    // of test that guards a description instead of a dependency. The projected
+    // quantity is the thing condition 3 is about, so the projection is what is
+    // asserted.
     let within_quantity = reconcile_fill_report(
         &order,
         &confirmation("40"),
         &instrument(),
         UnixNanos::default(),
         false,
+    )
+    .expect(
+        "the venue's confirmation carries the real trade id, which the inferred fill's \
+         derived id does not match, so it is not deduplicated away",
     );
-    assert!(
-        within_quantity.is_some(),
-        "the venue's confirmation carries the real trade id, which the inferred \
-         fill's derived id does not match, so it is applied on top and the same \
-         executed quantity is counted twice"
+    let mut projected = order.clone();
+    projected
+        .apply(within_quantity)
+        .expect("the venue's confirmation applies on top of the inferred fill");
+    assert_eq!(
+        projected.filled_qty(),
+        Quantity::from("80"),
+        "forty executed units, reported once by the inferred fill and once by the venue's \
+         own confirmation, project to eighty: the same executed quantity counted twice"
     );
 
     let past_quantity = reconcile_fill_report(

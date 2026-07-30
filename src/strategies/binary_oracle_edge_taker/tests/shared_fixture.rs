@@ -752,12 +752,12 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
 
 /// The bound market identity every episode-keyed fixture shares.
 pub(super) fn fixture_evidence_identity() -> SelectedMarketEvidenceIdentity {
-    SelectedMarketEvidenceIdentity {
-        gamma_market_id: "fixture-market".to_string(),
-        condition_id: "fixture-condition".to_string(),
-        question_id: "fixture-question".to_string(),
-        negative_risk: false,
-        outcomes: [
+    SelectedMarketEvidenceIdentity::try_new(
+        "fixture-market".to_string(),
+        "fixture-condition".to_string(),
+        "fixture-question".to_string(),
+        false,
+        [
             SelectedMarketEvidenceOutcome {
                 index: 0,
                 normalized_outcome: "up".to_string(),
@@ -769,7 +769,8 @@ pub(super) fn fixture_evidence_identity() -> SelectedMarketEvidenceIdentity {
                 clob_token_id: "fixture-down".to_string(),
             },
         ],
-    }
+    )
+    .expect("fixture evidence identity must be valid")
 }
 
 pub(super) fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {
@@ -1638,12 +1639,12 @@ pub(super) fn candidate_market(market_id: &str, interval_start_ms: u64) -> Candi
         down: CandidateOutcome {
             instrument_id: down_instrument_id,
         },
-        evidence_identity: SelectedMarketEvidenceIdentity {
-            gamma_market_id: market_id.to_string(),
-            condition_id: condition_id.clone(),
-            question_id: format!("question-{market_id}"),
-            negative_risk: false,
-            outcomes: [
+        evidence_identity: SelectedMarketEvidenceIdentity::try_new(
+            market_id.to_string(),
+            condition_id.clone(),
+            format!("question-{market_id}"),
+            false,
+            [
                 SelectedMarketEvidenceOutcome {
                     index: 0,
                     normalized_outcome: "up".to_string(),
@@ -1655,7 +1656,8 @@ pub(super) fn candidate_market(market_id: &str, interval_start_ms: u64) -> Candi
                     clob_token_id: down_token_id,
                 },
             ],
-        },
+        )
+        .expect("candidate fixture evidence identity must be valid"),
         source_identity: SelectedMarketSourceIdentity {
             condition_id,
             market_slug: format!("slug-{market_id}"),

@@ -2930,6 +2930,50 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
     );
 }
 
+#[test]
+fn terminal_close_reclaims_exit_decision_for_reused_position_identity() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    let reused_exposure = strategy.exposure.clone();
+    let (instrument_id, position_id) = match &reused_exposure {
+        ExposureState::Managed(position) => (position.instrument_id, position.position_id),
+        other => panic!("exit fixture must begin managed, got {other:?}"),
+    };
+    let trigger = ExitEvaluationTriggerContext::unknown(1_200);
+    let decision = minimal_exit_submission_decision();
+
+    strategy
+        .record_exit_decision_once(1_200, trigger, &decision)
+        .expect("the first position decision should record");
+    strategy
+        .record_exit_decision_once(1_201, trigger, &decision)
+        .expect("an adjacent duplicate should be a successful no-op");
+    assert_eq!(
+        recorded_exit_decisions(&evidence).len(),
+        1,
+        "the live position should suppress its adjacent duplicate"
+    );
+
+    close_nt_position(&mut strategy, position_id);
+    strategy.on_position_closed(position_closed_event(instrument_id, position_id));
+    assert!(
+        strategy.last_recorded_exit_decision.is_none(),
+        "terminal close must retire the dead position's adjacent-repeat key"
+    );
+
+    // NT netting reuses `{instrument}-{strategy}` as PositionId. Recreate the
+    // same logical position identity and prove its first decision is not
+    // suppressed by the predecessor's last one.
+    strategy.exposure = reused_exposure;
+    strategy
+        .record_exit_decision_once(1_202, trigger, &decision)
+        .expect("the reused position identity should record its first decision");
+    assert_eq!(
+        recorded_exit_decisions(&evidence).len(),
+        2,
+        "a new position under the reused NT identity must emit its first exit decision"
+    );
+}
+
 /// Build a ready-to-trade strategy with one open managed position and a recording
 /// evidence writer, for #885 exit-evaluation evidence tests. Returns the strategy
 /// and the writer (the caller drives exits and reads back `events()`).
@@ -4823,8 +4867,21 @@ fn rv_clock_domain_amendment_input_churn_does_not_reclaim_a_seen_state() {
         .evidence_identity
         .clone()
         .expect("the dedupe fixture must bind a market identity");
-    let mut other_identity = first_identity.clone();
-    other_identity.condition_id.push_str("-second-market");
+    let other_identity =
+        SelectedMarketEvidenceIdentity::try_new(
+            first_identity.market().gamma_market_id().to_string(),
+            format!("{}-second-market", first_identity.market().condition_id()),
+            first_identity.market().question_id().to_string(),
+            first_identity.negative_risk(),
+            first_identity.market().outcomes().clone().map(|outcome| {
+                SelectedMarketEvidenceOutcome {
+                    index: outcome.index,
+                    normalized_outcome: outcome.normalized_outcome,
+                    clob_token_id: outcome.clob_token_id,
+                }
+            }),
+        )
+        .expect("the second market identity must remain valid");
     blocked_strategy.active.evidence_identity = Some(other_identity);
     for (gate, watermark) in rv_states {
         rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
@@ -5380,18 +5437,7 @@ fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent()
         strategy_id: strategy.config.strategy_id.clone(),
         target_id: strategy.config.configured_target_id.to_string(),
         venue_id: strategy.context.execution_venue().to_string(),
-        gamma_market_id: identity.gamma_market_id.clone(),
-        condition_id: identity.condition_id.clone(),
-        question_id: identity.question_id.clone(),
-        negative_risk: identity.negative_risk,
-        outcomes: identity
-            .outcomes
-            .clone()
-            .map(|outcome| EvidenceOutcomeIdentity {
-                index: outcome.index,
-                normalized_outcome: outcome.normalized_outcome,
-                clob_token_id: outcome.clob_token_id,
-            }),
+        market: identity.market().clone(),
     })
     .expect("the fixture's market identity must be constructible");
     assert_eq!(

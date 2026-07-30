@@ -25,8 +25,7 @@ use rust_decimal::{
 use toml::Value;
 
 use crate::bolt_v3_evidence_novelty::{
-    EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceNoveltyGuard, EvidenceOutcomeIdentity,
-    EvidenceStateOwner,
+    EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceNoveltyGuard, EvidenceStateOwner,
 };
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
 
@@ -1802,18 +1801,7 @@ impl BinaryOracleEdgeTaker {
             strategy_id: self.config.strategy_id.clone(),
             target_id: self.config.configured_target_id.to_string(),
             venue_id: self.context.execution_venue().to_string(),
-            gamma_market_id: identity.gamma_market_id.clone(),
-            condition_id: identity.condition_id.clone(),
-            question_id: identity.question_id.clone(),
-            negative_risk: identity.negative_risk,
-            outcomes: identity
-                .outcomes
-                .clone()
-                .map(|outcome| EvidenceOutcomeIdentity {
-                    index: outcome.index,
-                    normalized_outcome: outcome.normalized_outcome,
-                    clob_token_id: outcome.clob_token_id,
-                }),
+            market: identity.market().clone(),
         })
     }
 

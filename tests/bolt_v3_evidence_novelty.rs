@@ -2,8 +2,12 @@ use std::cell::Cell;
 
 use anyhow::Result;
 use bolt_v2::bolt_v3_evidence_novelty::{
-    EvidenceCanonicalState, EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceNoveltyGuard,
-    EvidenceOutcomeIdentity, EvidenceStateOwner, registered_evidence_state_by_id,
+    EvidenceCanonicalState, EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceMarketIdentity,
+    EvidenceNoveltyGuard, EvidenceOutcomeIdentity, EvidenceStateOwner,
+    registered_evidence_state_by_id,
+};
+use bolt_v2::bolt_v3_market_families::{
+    SelectedMarketEvidenceIdentity, SelectedMarketEvidenceOutcome,
 };
 
 fn outcome(index: u8, label: &str, token_id: &str) -> EvidenceOutcomeIdentity {
@@ -19,15 +23,21 @@ fn episode_parts(market_id: &str) -> EvidenceEpisodeParts {
         strategy_id: "binary-oracle-btc".to_string(),
         target_id: "btc-updown-5m".to_string(),
         venue_id: "POLYMARKET".to_string(),
-        gamma_market_id: market_id.to_string(),
-        condition_id: format!("condition-{market_id}"),
-        question_id: format!("question-{market_id}"),
-        negative_risk: false,
-        outcomes: [
+        market: market_identity(market_id),
+    }
+}
+
+fn market_identity(market_id: &str) -> EvidenceMarketIdentity {
+    EvidenceMarketIdentity::try_new(
+        market_id.to_string(),
+        format!("condition-{market_id}"),
+        format!("question-{market_id}"),
+        [
             outcome(0, "up", &format!("up-{market_id}")),
             outcome(1, "down", &format!("down-{market_id}")),
         ],
-    }
+    )
+    .expect("complete stable market identity should construct")
 }
 
 fn episode(market_id: &str) -> EvidenceEpisodeId {
@@ -87,24 +97,77 @@ fn every_stable_market_component_changes_episode_identity() {
     let mut parts = episode_parts("market-a");
     parts.venue_id.push_str("-changed");
     mutations.push(("venue", parts));
-    let mut parts = episode_parts("market-a");
-    parts.gamma_market_id.push_str("-changed");
-    mutations.push(("Gamma market", parts));
-    let mut parts = episode_parts("market-a");
-    parts.condition_id.push_str("-changed");
-    mutations.push(("condition", parts));
-    let mut parts = episode_parts("market-a");
-    parts.question_id.push_str("-changed");
-    mutations.push(("question", parts));
-    let mut parts = episode_parts("market-a");
-    parts.negative_risk = true;
-    mutations.push(("negative-risk mode", parts));
-    let mut parts = episode_parts("market-a");
-    parts.outcomes[0].normalized_outcome.push_str("-changed");
-    mutations.push(("normalized outcome", parts));
-    let mut parts = episode_parts("market-a");
-    parts.outcomes[0].clob_token_id.push_str("-changed");
-    mutations.push(("CLOB token", parts));
+    for (field, market) in [
+        (
+            "Gamma market",
+            EvidenceMarketIdentity::try_new(
+                "market-a-changed".to_string(),
+                "condition-market-a".to_string(),
+                "question-market-a".to_string(),
+                [
+                    outcome(0, "up", "up-market-a"),
+                    outcome(1, "down", "down-market-a"),
+                ],
+            )
+            .expect("changed market id remains valid"),
+        ),
+        (
+            "condition",
+            EvidenceMarketIdentity::try_new(
+                "market-a".to_string(),
+                "condition-market-a-changed".to_string(),
+                "question-market-a".to_string(),
+                [
+                    outcome(0, "up", "up-market-a"),
+                    outcome(1, "down", "down-market-a"),
+                ],
+            )
+            .expect("changed condition remains valid"),
+        ),
+        (
+            "question",
+            EvidenceMarketIdentity::try_new(
+                "market-a".to_string(),
+                "condition-market-a".to_string(),
+                "question-market-a-changed".to_string(),
+                [
+                    outcome(0, "up", "up-market-a"),
+                    outcome(1, "down", "down-market-a"),
+                ],
+            )
+            .expect("changed question remains valid"),
+        ),
+        (
+            "normalized outcome",
+            EvidenceMarketIdentity::try_new(
+                "market-a".to_string(),
+                "condition-market-a".to_string(),
+                "question-market-a".to_string(),
+                [
+                    outcome(0, "up-changed", "up-market-a"),
+                    outcome(1, "down", "down-market-a"),
+                ],
+            )
+            .expect("changed outcome remains valid"),
+        ),
+        (
+            "CLOB token",
+            EvidenceMarketIdentity::try_new(
+                "market-a".to_string(),
+                "condition-market-a".to_string(),
+                "question-market-a".to_string(),
+                [
+                    outcome(0, "up", "up-market-a-changed"),
+                    outcome(1, "down", "down-market-a"),
+                ],
+            )
+            .expect("changed token remains valid"),
+        ),
+    ] {
+        let mut parts = episode_parts("market-a");
+        parts.market = market;
+        mutations.push((field, parts));
+    }
 
     for (field, parts) in mutations {
         let changed = EvidenceEpisodeId::try_from(parts).expect("changed identity remains valid");
@@ -113,43 +176,74 @@ fn every_stable_market_component_changes_episode_identity() {
 }
 
 #[test]
+fn negative_risk_selection_metadata_does_not_split_episode_identity() {
+    let selected = |negative_risk| {
+        SelectedMarketEvidenceIdentity::try_new(
+            "market-a".to_string(),
+            "condition-market-a".to_string(),
+            "question-market-a".to_string(),
+            negative_risk,
+            [
+                SelectedMarketEvidenceOutcome {
+                    index: 0,
+                    normalized_outcome: "up".to_string(),
+                    clob_token_id: "up-market-a".to_string(),
+                },
+                SelectedMarketEvidenceOutcome {
+                    index: 1,
+                    normalized_outcome: "down".to_string(),
+                    clob_token_id: "down-market-a".to_string(),
+                },
+            ],
+        )
+        .expect("selection identity should be valid")
+    };
+    let episode_for = |identity: &SelectedMarketEvidenceIdentity| {
+        EvidenceEpisodeId::try_from(EvidenceEpisodeParts {
+            strategy_id: "binary-oracle-btc".to_string(),
+            target_id: "btc-updown-5m".to_string(),
+            venue_id: "POLYMARKET".to_string(),
+            market: identity.market().clone(),
+        })
+        .expect("selected market should construct an episode")
+    };
+
+    assert_eq!(episode_for(&selected(false)), episode_for(&selected(true)));
+}
+
+#[test]
 fn invalid_ordered_outcome_identity_is_rejected() {
-    let mut out_of_range_index = episode_parts("market-a");
-    out_of_range_index.outcomes[0].index = 2;
-    assert!(EvidenceEpisodeId::try_from(out_of_range_index).is_err());
-
-    let mut reversed_indices = episode_parts("market-a");
-    reversed_indices.outcomes[0].index = 1;
-    reversed_indices.outcomes[1].index = 0;
-    assert!(EvidenceEpisodeId::try_from(reversed_indices).is_err());
-
-    let mut duplicate_index = episode_parts("market-a");
-    duplicate_index.outcomes[1].index = duplicate_index.outcomes[0].index;
-    assert!(EvidenceEpisodeId::try_from(duplicate_index).is_err());
-
-    let mut duplicate_label = episode_parts("market-a");
-    duplicate_label.outcomes[1].normalized_outcome =
-        duplicate_label.outcomes[0].normalized_outcome.clone();
-    assert!(EvidenceEpisodeId::try_from(duplicate_label).is_err());
-
-    let mut duplicate_token = episode_parts("market-a");
-    duplicate_token.outcomes[1].clob_token_id = duplicate_token.outcomes[0].clob_token_id.clone();
-    assert!(EvidenceEpisodeId::try_from(duplicate_token).is_err());
+    let candidate = |outcomes| {
+        EvidenceMarketIdentity::try_new(
+            "market-a".to_string(),
+            "condition-market-a".to_string(),
+            "question-market-a".to_string(),
+            outcomes,
+        )
+    };
+    assert!(candidate([outcome(2, "up", "up"), outcome(1, "down", "down")]).is_err());
+    assert!(candidate([outcome(1, "up", "up"), outcome(0, "down", "down")]).is_err());
+    assert!(candidate([outcome(0, "up", "up"), outcome(0, "down", "down")]).is_err());
+    assert!(candidate([outcome(0, "same", "up"), outcome(1, "same", "down")]).is_err());
+    assert!(candidate([outcome(0, "up", "same"), outcome(1, "down", "same")]).is_err());
 }
 
 #[test]
 fn blank_or_whitespace_padded_stable_identity_fields_are_rejected() {
-    let mut blank_market = episode_parts("market-a");
-    blank_market.gamma_market_id = "   ".to_string();
-    assert!(EvidenceEpisodeId::try_from(blank_market).is_err());
-
-    let mut padded_condition = episode_parts("market-a");
-    padded_condition.condition_id = " condition-market-a".to_string();
-    assert!(EvidenceEpisodeId::try_from(padded_condition).is_err());
-
-    let mut padded_token = episode_parts("market-a");
-    padded_token.outcomes[0].clob_token_id = "up-market-a ".to_string();
-    assert!(EvidenceEpisodeId::try_from(padded_token).is_err());
+    let candidate = |market: &str, condition: &str, first_token: &str| {
+        EvidenceMarketIdentity::try_new(
+            market.to_string(),
+            condition.to_string(),
+            "question-market-a".to_string(),
+            [
+                outcome(0, "up", first_token),
+                outcome(1, "down", "down-market-a"),
+            ],
+        )
+    };
+    assert!(candidate("   ", "condition-market-a", "up-market-a").is_err());
+    assert!(candidate("market-a", " condition-market-a", "up-market-a").is_err());
+    assert!(candidate("market-a", "condition-market-a", "up-market-a ").is_err());
 }
 
 #[test]

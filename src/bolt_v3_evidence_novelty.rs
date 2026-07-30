@@ -28,16 +28,96 @@ pub struct EvidenceOutcomeIdentity {
     pub clob_token_id: String,
 }
 
+/// Validated stable identity supplied by market selection.
+///
+/// Venue flags such as negative-risk mode are selection metadata, not episode
+/// identity. Risk ordinals remain reserved for the atomic #1385 slice.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EvidenceMarketIdentity {
+    gamma_market_id: String,
+    condition_id: String,
+    question_id: String,
+    outcomes: [EvidenceOutcomeIdentity; 2],
+}
+
+impl EvidenceMarketIdentity {
+    pub fn try_new(
+        gamma_market_id: String,
+        condition_id: String,
+        question_id: String,
+        outcomes: [EvidenceOutcomeIdentity; 2],
+    ) -> Result<Self> {
+        let required = [
+            ("gamma_market_id", gamma_market_id.as_str()),
+            ("condition_id", condition_id.as_str()),
+            ("question_id", question_id.as_str()),
+            (
+                "outcomes[0].normalized_outcome",
+                outcomes[0].normalized_outcome.as_str(),
+            ),
+            (
+                "outcomes[0].clob_token_id",
+                outcomes[0].clob_token_id.as_str(),
+            ),
+            (
+                "outcomes[1].normalized_outcome",
+                outcomes[1].normalized_outcome.as_str(),
+            ),
+            (
+                "outcomes[1].clob_token_id",
+                outcomes[1].clob_token_id.as_str(),
+            ),
+        ];
+        if let Some((field, _)) = required
+            .iter()
+            .find(|(_, value)| !stable_identity_field_is_canonical(value))
+        {
+            bail!("evidence episode requires non-empty, unpadded stable field `{field}`");
+        }
+        if outcomes[0].index != 0 || outcomes[1].index != 1 {
+            bail!("evidence episode requires canonical ordered outcome indices 0 and 1");
+        }
+        if outcomes[0].normalized_outcome == outcomes[1].normalized_outcome {
+            bail!("evidence episode requires distinct normalized outcomes");
+        }
+        if outcomes[0].clob_token_id == outcomes[1].clob_token_id {
+            bail!("evidence episode requires distinct CLOB token identities");
+        }
+        Ok(Self {
+            gamma_market_id,
+            condition_id,
+            question_id,
+            outcomes,
+        })
+    }
+
+    #[must_use]
+    pub fn gamma_market_id(&self) -> &str {
+        self.gamma_market_id.as_str()
+    }
+
+    #[must_use]
+    pub fn condition_id(&self) -> &str {
+        self.condition_id.as_str()
+    }
+
+    #[must_use]
+    pub fn question_id(&self) -> &str {
+        self.question_id.as_str()
+    }
+
+    #[must_use]
+    pub fn outcomes(&self) -> &[EvidenceOutcomeIdentity; 2] {
+        &self.outcomes
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvidenceEpisodeParts {
     pub strategy_id: String,
     pub target_id: String,
     pub venue_id: String,
-    pub gamma_market_id: String,
-    pub condition_id: String,
-    pub question_id: String,
-    pub negative_risk: bool,
-    pub outcomes: [EvidenceOutcomeIdentity; 2],
+    pub market: EvidenceMarketIdentity,
 }
 
 /// Typed identity for one stable market episode.
@@ -46,11 +126,7 @@ pub struct EvidenceEpisodeId {
     strategy_id: String,
     target_id: String,
     venue_id: String,
-    gamma_market_id: String,
-    condition_id: String,
-    question_id: String,
-    negative_risk: bool,
-    outcomes: [EvidenceOutcomeIdentity; 2],
+    market: EvidenceMarketIdentity,
 }
 
 impl TryFrom<EvidenceEpisodeParts> for EvidenceEpisodeId {
@@ -61,25 +137,6 @@ impl TryFrom<EvidenceEpisodeParts> for EvidenceEpisodeId {
             ("strategy_id", parts.strategy_id.as_str()),
             ("target_id", parts.target_id.as_str()),
             ("venue_id", parts.venue_id.as_str()),
-            ("gamma_market_id", parts.gamma_market_id.as_str()),
-            ("condition_id", parts.condition_id.as_str()),
-            ("question_id", parts.question_id.as_str()),
-            (
-                "outcomes[0].normalized_outcome",
-                parts.outcomes[0].normalized_outcome.as_str(),
-            ),
-            (
-                "outcomes[0].clob_token_id",
-                parts.outcomes[0].clob_token_id.as_str(),
-            ),
-            (
-                "outcomes[1].normalized_outcome",
-                parts.outcomes[1].normalized_outcome.as_str(),
-            ),
-            (
-                "outcomes[1].clob_token_id",
-                parts.outcomes[1].clob_token_id.as_str(),
-            ),
         ];
         if let Some((field, _)) = required
             .iter()
@@ -87,25 +144,19 @@ impl TryFrom<EvidenceEpisodeParts> for EvidenceEpisodeId {
         {
             bail!("evidence episode requires non-empty, unpadded stable field `{field}`");
         }
-        if parts.outcomes[0].index != 0 || parts.outcomes[1].index != 1 {
-            bail!("evidence episode requires canonical ordered outcome indices 0 and 1");
-        }
-        if parts.outcomes[0].normalized_outcome == parts.outcomes[1].normalized_outcome {
-            bail!("evidence episode requires distinct normalized outcomes");
-        }
-        if parts.outcomes[0].clob_token_id == parts.outcomes[1].clob_token_id {
-            bail!("evidence episode requires distinct CLOB token identities");
-        }
         Ok(Self {
             strategy_id: parts.strategy_id,
             target_id: parts.target_id,
             venue_id: parts.venue_id,
-            gamma_market_id: parts.gamma_market_id,
-            condition_id: parts.condition_id,
-            question_id: parts.question_id,
-            negative_risk: parts.negative_risk,
-            outcomes: parts.outcomes,
+            market: parts.market,
         })
+    }
+}
+
+impl EvidenceEpisodeId {
+    #[must_use]
+    pub fn gamma_market_id(&self) -> &str {
+        self.market.gamma_market_id()
     }
 }
 

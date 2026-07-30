@@ -24,7 +24,10 @@ use rust_decimal::{
 };
 use toml::Value;
 
-use crate::bolt_v3_evidence_episode::{CurrentEpisode, NoveltyBit};
+use crate::bolt_v3_evidence_novelty::{
+    EvidenceEpisodeId, EvidenceEpisodeParts, EvidenceNoveltyGuard, EvidenceOutcomeIdentity,
+    EvidenceStateOwner,
+};
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
 
 use crate::{
@@ -123,7 +126,10 @@ use nautilus_model::enums::{
 
 #[cfg(test)]
 use crate::{
-    bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity},
+    bolt_v3_market_families::{
+        MarketSelectionOutcome, SelectedMarketEvidenceIdentity, SelectedMarketEvidenceOutcome,
+        SelectedMarketSourceIdentity,
+    },
     bolt_v3_providers::FeeProvider,
     bolt_v3_submit_admission::BoltV3RiskReducingExitProof,
     bolt_v3_taker_pricing::VenueTimingState,
@@ -167,12 +173,13 @@ use crate::bolt_v3_feed_health::{
 mod entry_decision;
 
 use self::entry_decision::{
-    BlockedStrategyInputDedupeKey, EntryBlockReason, EntryEvaluation, EntryEvaluationLogFields,
-    EntryEvaluationReceiveContext, EntryGateDecision, EntryPricingBlockReason, EntryPricingInputs,
-    EntryRealizedVolatilityReceipt, EntrySkipDedupeKey, EntrySubmissionDecision,
-    ForcedFlatEvidenceInputs, RealizedVolatilityEvidenceFields, entry_block_reason_to_evidence,
-    entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence, entry_skip_fact,
-    entry_skip_reason_label, push_executable_edge_pricing_block, rv_gate_novelty_bit,
+    EntryBlockReason, EntryEvaluation, EntryEvaluationLogFields, EntryEvaluationReceiveContext,
+    EntryGateDecision, EntryPricingBlockReason, EntryPricingInputs, EntryRealizedVolatilityReceipt,
+    EntrySubmissionDecision, ForcedFlatEvidenceInputs, RealizedVolatilityEvidenceFields,
+    blocked_strategy_input_canonical_state, entry_block_reason_to_evidence,
+    entry_pricing_block_reason_from_taker, entry_pricing_block_reason_to_evidence,
+    entry_skip_canonical_state, entry_skip_fact, entry_skip_reason_label,
+    push_executable_edge_pricing_block,
 };
 
 mod exit_decision;
@@ -670,9 +677,15 @@ pub struct BinaryOracleEdgeTaker {
     /// Suppression for the three producers that record once per semantic
     /// episode. The identity is each producer's own; only the mask arithmetic
     /// and the mark-before-write contract are shared.
-    blocked_strategy_input_episode: CurrentEpisode<BlockedStrategyInputDedupeKey>,
-    entry_skip_episode: CurrentEpisode<EntrySkipDedupeKey>,
-    exit_decision_episode: CurrentEpisode<ExitDecisionDedupeKey>,
+    blocked_strategy_input_novelty: EvidenceNoveltyGuard,
+    entry_skip_novelty: EvidenceNoveltyGuard,
+    // Not registry-backed, and deliberately so. The frozen novelty registry
+    // defines finite domains for the two producers above and none for this one,
+    // so this stays the adjacent-repeat guard it has always been: it suppresses
+    // an immediately repeated decision and re-emits on A-B-A. The census records
+    // that as the outstanding migration to a closed exit-outcome domain rather
+    // than claiming a suppression this does not implement.
+    last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
     pricing: PricingState,
     latest_signal_quote: Option<FastSpotObservation>,
     latest_selected_reference_quote: Option<SelectedReferenceQuoteEvidence>,
@@ -793,9 +806,13 @@ impl BinaryOracleEdgeTaker {
             exposure: ExposureState::Flat,
             last_flat_terminal_entry_override: None,
             last_reported_exposure_occupancy: Cell::new(None),
-            blocked_strategy_input_episode: CurrentEpisode::default(),
-            entry_skip_episode: CurrentEpisode::default(),
-            exit_decision_episode: CurrentEpisode::default(),
+            blocked_strategy_input_novelty: EvidenceNoveltyGuard::for_owner(
+                EvidenceStateOwner::BlockedStrategyInputSnapshot,
+            )
+            .expect("blocked strategy-input novelty owner is registered"),
+            entry_skip_novelty: EvidenceNoveltyGuard::for_owner(EvidenceStateOwner::EntrySkip)
+                .expect("entry-skip novelty owner is registered"),
+            last_recorded_exit_decision: None,
             pricing,
             latest_signal_quote: None,
             latest_selected_reference_quote: None,
@@ -1767,6 +1784,37 @@ impl BinaryOracleEdgeTaker {
             reference_price_source_health_from_config(&self.config);
         self.reference_price_selector = reference_price_selector_from_config(&self.config);
         self.reset_reference_current_price_selection_state();
+    }
+
+    /// The episode every registered evidence producer keys on.
+    ///
+    /// Built only from identity the market itself fixes -- strategy, configured
+    /// target, execution venue, and the market's own gamma/condition/question
+    /// ids plus its ordered outcome pair. Nothing here changes while the market
+    /// does not, which is what makes an episode survive the input churn that
+    /// used to reopen it.
+    fn evidence_episode_id(&self) -> Result<EvidenceEpisodeId> {
+        let identity =
+            self.active.evidence_identity.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("evidence episode requires a bound market identity")
+            })?;
+        EvidenceEpisodeId::try_from(EvidenceEpisodeParts {
+            strategy_id: self.config.strategy_id.clone(),
+            target_id: self.config.configured_target_id.to_string(),
+            venue_id: self.context.execution_venue().to_string(),
+            gamma_market_id: identity.gamma_market_id.clone(),
+            condition_id: identity.condition_id.clone(),
+            question_id: identity.question_id.clone(),
+            negative_risk: identity.negative_risk,
+            outcomes: identity
+                .outcomes
+                .clone()
+                .map(|outcome| EvidenceOutcomeIdentity {
+                    index: outcome.index,
+                    normalized_outcome: outcome.normalized_outcome,
+                    clob_token_id: outcome.clob_token_id,
+                }),
+        })
     }
 
     fn current_market_id(&self) -> Option<&str> {
@@ -3568,35 +3616,29 @@ impl BinaryOracleEdgeTaker {
     ) -> Result<bool> {
         let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
         let forced_flat_inputs = self.entry_forced_flat_evidence_inputs();
-        let key = EntrySkipDedupeKey {
-            reason_category,
-            gate_blocked_by: fields
-                .gate_blocked_by
-                .iter()
-                .map(entry_block_reason_to_evidence)
-                .collect(),
-            pricing_blocked_by: fields
-                .pricing_blocked_by
-                .iter()
-                .map(entry_pricing_block_reason_to_evidence)
-                .collect(),
-            market_id: fields.market_id.clone(),
-            interval_open: option_evidence_number(fields.interval_open),
-            fast_venue_available: fields.fast_venue_available,
-            reference_current_price_available: fields.reference_current_price_available,
-            fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
+        // The episode is the market; the novelty axis is the skip reason. The
+        // blocker sets, availability flags and interval that used to form the
+        // key are diagnostics that change while the market does not, so keying
+        // on them reopened the episode on churn and re-emitted every tick.
+        //
+        // No bound market means no episode to attribute this to, and that is a
+        // reachable state rather than a fault: `StrategyCoreNotRegistered` is
+        // raised before the strategy is registered at all, when no market has
+        // been selected. Not recorded, and deliberately not an error -- an
+        // `Err` here would propagate into the strategy callback, which evidence
+        // is never allowed to abort. The skip is still logged by the caller.
+        let Ok(episode) = self.evidence_episode_id() else {
+            log::debug!(
+                "entry skip {reason_category:?} has no bound market episode, so it is not \
+                 recorded as episode evidence"
+            );
+            return Ok(false);
         };
-        let rv_bit = rv_gate_novelty_bit(
-            decision.evaluation.realized_volatility_receipt.gate_result,
-            decision
-                .evaluation
-                .realized_volatility_receipt
-                .receive_watermark_ms
-                .is_some(),
-        );
-        // Marks before the write below, which is the shared contract: see
-        // `CurrentEpisode::admit`.
-        if !self.entry_skip_episode.admit(key, rv_bit) {
+        let state = entry_skip_canonical_state(reason_category);
+        // Claims before the write below: a claimed state stays claimed even if
+        // the write fails, so a broken sink cannot become the flood this guard
+        // exists to prevent.
+        if !self.entry_skip_novelty.claim_once(&episode, state)? {
             return Ok(false);
         }
         let evidence = entry_skip_fact(
@@ -3692,15 +3734,16 @@ impl BinaryOracleEdgeTaker {
             exit_decision: disposition,
             blocked_reason,
         };
-        // This producer carries no finite novelty axis, so its episode is the
-        // identity alone and `WHOLE_EPISODE` is the whole mask. Marked before
-        // the write, as the other two now are.
-        if !self
-            .exit_decision_episode
-            .admit(key, NoveltyBit::WHOLE_EPISODE)
-        {
+        // An adjacent-repeat guard, not episode novelty: the frozen registry
+        // defines no exit-outcome domain, so this suppresses only an
+        // immediately repeated decision and re-emits on A-B-A. Recorded as the
+        // outstanding migration in the census rather than dressed up as
+        // suppression it does not provide. Marked before the write, so a failed
+        // write cannot turn a repeated decision into a per-tick retry.
+        if self.last_recorded_exit_decision.as_ref() == Some(&key) {
             return Ok(());
         }
+        self.last_recorded_exit_decision = Some(key);
         let failure = if action_chosen {
             let submission = SubmissionLinkage {
                 instrument_id: decision
@@ -5783,9 +5826,20 @@ impl BinaryOracleEdgeTaker {
         now_ms: u64,
         decision: &EntrySubmissionDecision,
     ) -> Result<()> {
-        let snapshot = self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, decision)?;
-        let key = BlockedStrategyInputDedupeKey::from_snapshot(&snapshot);
-        let rv_bit = rv_gate_novelty_bit(
+        // The episode is the market; the novelty axis is the RV gate result
+        // paired with watermark presence -- the registry's twelve-state domain.
+        // The snapshot's own fields carried surface ids, blocker lists and
+        // per-source states, all of which churn while the market does not.
+        // Unattributable without a bound market -- see the matching note in
+        // `record_entry_skip_once` for why this is `Ok` and not an error.
+        let Ok(episode) = self.evidence_episode_id() else {
+            log::debug!(
+                "blocked strategy-input snapshot has no bound market episode, so it is not \
+                 recorded as episode evidence"
+            );
+            return Ok(());
+        };
+        let state = blocked_strategy_input_canonical_state(
             decision.evaluation.realized_volatility_receipt.gate_result,
             decision
                 .evaluation
@@ -5793,12 +5847,20 @@ impl BinaryOracleEdgeTaker {
                 .receive_watermark_ms
                 .is_some(),
         );
-        // Moved above the write, which reads like a behaviour change and is not
-        // one: the write swallows its own failure and logs, so the mark below it
-        // ran unconditionally too. `blocked_snapshot_same_key_failure_marks_bit_
-        // seen_without_retry` pinned that before this was shared. What changes is
-        // that the ordering can no longer drift between the two producers.
-        if !self.blocked_strategy_input_episode.admit(key, rv_bit) {
+        // Checked before the snapshot is built, so a suppressed observation
+        // costs no payload construction; claimed before the write, so a failed
+        // write cannot become a per-tick retry.
+        if self
+            .blocked_strategy_input_novelty
+            .has_claimed(&episode, state)?
+        {
+            return Ok(());
+        }
+        let snapshot = self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, decision)?;
+        if !self
+            .blocked_strategy_input_novelty
+            .claim_once(&episode, state)?
+        {
             return Ok(());
         }
         if let ObservationRecordOutcome::FailureReported(error) = self
@@ -6535,10 +6597,14 @@ impl BinaryOracleEdgeTaker {
                 .evidence
                 .surface_id
                 .is_empty();
+        // Leaving the blocked condition no longer resets suppression. Under the
+        // closed registry a claimed state stays claimed for the life of the
+        // market episode, so a gate that flaps in and out of readiness records
+        // each distinct state once rather than once per flap -- which is what
+        // makes the per-episode record count finite. A genuinely new market is a
+        // new episode and starts with nothing claimed.
         if realized_volatility_not_ready {
             self.record_blocked_entry_strategy_input_snapshot_once(now_ms, &decision)?;
-        } else {
-            self.blocked_strategy_input_episode.clear();
         }
 
         if let Some(reason) = decision.blocked_reason {
@@ -6593,8 +6659,10 @@ impl BinaryOracleEdgeTaker {
             unreachable!("occupied exposure must fail the one-position invariant");
         }
 
+        // A successful submit no longer resets skip suppression, for the same
+        // reason as the blocked-snapshot producer above: within one market
+        // episode each skip reason is worth recording once.
         self.entry_reject_state.remove(&instrument_id);
-        self.entry_skip_episode.clear();
         let price = Price::new(price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
         let order = self.build_configured_entry_order(

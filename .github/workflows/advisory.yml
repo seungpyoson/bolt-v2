@@ -231,6 +231,16 @@ jobs:
           set -x
           bash scripts/test_merge_queue.sh
 
+      # The statistics gate's own behavioral controls. They existed and ran
+      # nowhere: no workflow, recipe, or hook referenced the file, and it defines
+      # no `test_*` functions, so even a pytest sweep collected zero from it. The
+      # controls that decide whether a counter fails a build had therefore never
+      # run in CI, including the four added when that decision last changed.
+      - name: sccache statistics gate behavior
+        run: |
+          set -x
+          python3 scripts/test_sccache_stats_gate.py
+
       - name: test
         env:
           CARGO_PROFILE_TEST_DEBUG: "0"

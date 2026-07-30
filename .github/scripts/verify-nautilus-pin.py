@@ -279,9 +279,20 @@ def workspace_crate_identities(lockfile: Path) -> set[tuple[str, str]]:
     # source-less here. The queue holds manifests cargo named, never paths this
     # file constructed.
     seen: set[Path] = set()
-    pending = [(lockfile.parent / "Cargo.toml").resolve()]
+    root_manifest = (lockfile.parent / "Cargo.toml").resolve()
+    # `(manifest, admit_whole_workspace)`. The lockfile's own root admits every
+    # member of its workspace, because a member resolves source-less there whether
+    # or not anything depends on it. A manifest reached by path dependency admits
+    # only the package cargo resolved: its *siblings* are members of some other
+    # workspace, and nothing in this lockfile's dependency closure can reach them,
+    # so minting them here hands a source-less entry a name it should not have.
+    # Reproduced before it was fixed -- a stale `ghost` entry was accepted purely
+    # because the root path-depended into that workspace -- and cargo does not
+    # object to the leftover entry either: `cargo check --locked` exits 0 with an
+    # unreachable source-less package still in the lockfile.
+    pending = [(root_manifest, True)]
     while pending:
-        manifest = pending.pop()
+        manifest, admit_whole_workspace = pending.pop()
         if manifest in seen:
             continue
         seen.add(manifest)
@@ -309,8 +320,27 @@ def workspace_crate_identities(lockfile: Path) -> set[tuple[str, str]]:
         except json.JSONDecodeError as error:
             fail(f"{manifest}: cargo metadata is not readable JSON: {error}")
 
+        # Cargo decides which workspace a manifest belongs to, and it is not always
+        # the directory the manifest sits in: `[package] workspace = ".."` hands
+        # that decision to another manifest, and with it the lockfile cargo
+        # actually uses. Verifying this lockfile while cargo would build against a
+        # different one checks a file nothing compiles, so the root manifest's
+        # workspace must be the directory this lockfile roots.
+        if admit_whole_workspace:
+            workspace_root = Path(metadata.get("workspace_root", "")).resolve()
+            if workspace_root != lockfile.parent.resolve():
+                fail(
+                    f"{lockfile}: cargo roots this manifest's workspace at {workspace_root}, "
+                    f"not at {lockfile.parent.resolve()}, so it would build against that "
+                    f"workspace's lockfile and this one would never be compiled. {INSIDE_ONLY}"
+                )
+
         for package in metadata.get("packages", []):
             name, version = package.get("name", ""), package.get("version", "")
+            if not admit_whole_workspace and Path(
+                package.get("manifest_path", "")
+            ).resolve() != manifest:
+                continue
             owner = f"{name} {version}"
             found = require_tracked(package.get("manifest_path", ""), "the manifest", owner)
             seen.add(found)
@@ -325,7 +355,9 @@ def workspace_crate_identities(lockfile: Path) -> set[tuple[str, str]]:
                 # `path` strings. A dependency leaving the repository is refused
                 # when its manifest is read, by the same rule as any other.
                 if dependency.get("path"):
-                    pending.append(Path(dependency["path"]).resolve() / "Cargo.toml")
+                    pending.append(
+                        (Path(dependency["path"]).resolve() / "Cargo.toml", False)
+                    )
 
     return identities
 
@@ -1057,6 +1089,45 @@ def self_test() -> None:
         # A tracked manifest whose code is not in the repository at all. The
         # walk read manifests and never targets, so this was the substitution
         # the lane exists to refuse, arriving as a one-line diff.
+        # A source-less entry whose name matches a reachable crate but whose
+        # version does not. This is what makes the pair the identity rather than
+        # the name: reverting to name-only matching accepts this control, so it is
+        # the one that fails when that regresses. The previously advertised
+        # collision control used a different name *and* version, so name-only
+        # matching passed all forty-seven -- measured, not assumed.
+        "same_name_different_version_is_not_this_workspaces_crate": {
+            "package": '[package]\nname = "local-thing"\nversion = "0.1.0"\n\n',
+            "lock": '[[package]]\nname = "local-thing"\nversion = "0.2.0"\n',
+            "reason": "not a package of this workspace",
+        },
+        # A sibling member of a workspace reached by path dependency. The root
+        # depends on `member-a`; `ghost` is merely next to it, and nothing in this
+        # lockfile's closure can reach it. Admitting it handed a source-less entry
+        # a name it should not have, and cargo does not catch the leftover either.
+        "sibling_of_a_path_dependency_is_not_a_workspace_crate": {
+            "dep": 'member-a = { path = "wsb/member-a" }\n',
+            "files": {
+                "repo/wsb/Cargo.toml": '[workspace]\nmembers = ["member-a", "ghost"]\nresolver = "2"\n',
+                "repo/wsb/member-a/Cargo.toml": '[package]\nname = "member-a"\nversion = "0.1.0"\nedition = "2021"\n',
+                "repo/wsb/member-a/src/lib.rs": "// a\n",
+                "repo/wsb/ghost/Cargo.toml": '[package]\nname = "ghost"\nversion = "9.9.9"\nedition = "2021"\n',
+                "repo/wsb/ghost/src/lib.rs": "// ghost\n",
+            },
+            "lock": '[[package]]\nname = "member-a"\nversion = "0.1.0"\n\n'
+            '[[package]]\nname = "ghost"\nversion = "9.9.9"\n',
+            "reason": "not a package of this workspace",
+        },
+        # A manifest that hands its workspace to another directory. Cargo then uses
+        # *that* workspace's lockfile, so verifying this one checks a file nothing
+        # compiles -- the decoy is clean and the live lockfile is never read.
+        "workspace_root_is_not_this_lockfiles_directory": {
+            "package": '[package]\nname = "fixture-root"\nversion = "0.0.0"\n'
+            'edition = "2021"\nworkspace = "nested"\n\n',
+            "files": {
+                "repo/nested/Cargo.toml": '[workspace]\nmembers = [".."]\nresolver = "2"\n',
+            },
+            "reason": "roots this manifest's workspace at",
+        },
         "lib_target_outside_the_repository": {
             "package": '[package]\nname = "thing"\nversion = "0.1.0"\n\n'
             '[lib]\npath = "../outside_payload.rs"\n\n',

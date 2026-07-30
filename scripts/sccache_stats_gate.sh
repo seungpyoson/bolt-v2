@@ -64,8 +64,11 @@ if (( classified_requests != compile_requests )); then
   echo "::error::sccache request accounting reports an incomplete server/protocol request"
   exit 1
 fi
-# None of sccache's error counters fails this gate, and that is a conclusion from
-# its source rather than a tolerance. Every one of them records a condition
+# None of the four counters below fails this gate, and that is a conclusion from
+# sccache's source rather than a tolerance. `cache_write_errors` is not among them
+# and still fails, further down: a rejected write is not a redone compile, and in
+# read-only mode the count is an accounting invariant rather than an error at all.
+# Every one of the four records a condition
 # sccache itself resolved by compiling the unit locally, so a non-zero count
 # describes a slower build, never a wrong one. Read at the pinned revision:
 #

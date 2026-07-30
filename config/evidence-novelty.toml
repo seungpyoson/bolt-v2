@@ -4,6 +4,14 @@ schema_version = 1
 name = "market"
 capacity = 256
 
+[[producer]]
+kind = "strategy_input_snapshot"
+rust_owner = "BlockedStrategyInputSnapshot"
+
+[[producer]]
+kind = "entry_skip"
+rust_owner = "EntrySkip"
+
 [[allocation]]
 name = "discovery_identity"
 id_start = 0

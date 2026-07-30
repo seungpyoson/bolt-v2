@@ -603,12 +603,12 @@ fn select_static_market_from_instruments(
     }
     let start_timestamp_milliseconds = yes.activation_milliseconds.max(no.activation_milliseconds);
 
-    let evidence_identity = SelectedMarketEvidenceIdentity {
-        gamma_market_id: yes.market_id.clone(),
-        condition_id: yes.condition_id.clone(),
-        question_id: yes.question_id.clone(),
-        negative_risk: yes_evidence.negative_risk,
-        outcomes: [
+    let evidence_identity = SelectedMarketEvidenceIdentity::try_new(
+        yes.market_id.clone(),
+        yes.condition_id.clone(),
+        yes.question_id.clone(),
+        yes_evidence.negative_risk,
+        [
             SelectedMarketEvidenceOutcome {
                 index: 0,
                 normalized_outcome: yes_evidence.normalized_outcome,
@@ -620,7 +620,7 @@ fn select_static_market_from_instruments(
                 clob_token_id: no_evidence.clob_token_id,
             },
         ],
-    };
+    )?;
     Some(SelectedStaticBinaryEventMarket {
         market_id: yes.market_id,
         source_identity: SelectedMarketSourceIdentity {
@@ -828,6 +828,37 @@ mod tests {
         assert_eq!(selected.start_timestamp_milliseconds, 1_000);
         assert_eq!(selected.expiration_timestamp_milliseconds, 30_000);
         assert_eq!(selected.seconds_to_end, 20);
+    }
+
+    #[test]
+    fn rejects_static_event_with_unconstructible_evidence_identity() {
+        let instruments = vec![
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                "",
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                "",
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ];
+
+        assert!(
+            select_binary_option_market(static_selection_target(), &instruments, 10_000).is_none(),
+            "selection must fail closed before trading when the episode identity is invalid"
+        );
     }
 
     #[test]
@@ -1259,12 +1290,12 @@ mod tests {
             instrument_id: InstrumentId::from("SAMPLE-EVENT-YES.POLYMARKET"),
             up_instrument_id: InstrumentId::from("SAMPLE-EVENT-YES.POLYMARKET"),
             down_instrument_id: InstrumentId::from("SAMPLE-EVENT-NO.POLYMARKET"),
-            evidence_identity: SelectedMarketEvidenceIdentity {
-                gamma_market_id: TEST_MARKET_ID.to_string(),
-                condition_id: TEST_CONDITION_ID.to_string(),
-                question_id: TEST_QUESTION_ID.to_string(),
-                negative_risk: false,
-                outcomes: [
+            evidence_identity: SelectedMarketEvidenceIdentity::try_new(
+                TEST_MARKET_ID.to_string(),
+                TEST_CONDITION_ID.to_string(),
+                TEST_QUESTION_ID.to_string(),
+                false,
+                [
                     SelectedMarketEvidenceOutcome {
                         index: 0,
                         normalized_outcome: "yes".to_string(),
@@ -1276,7 +1307,8 @@ mod tests {
                         clob_token_id: "SAMPLE-EVENT-NO".to_string(),
                     },
                 ],
-            },
+            )
+            .expect("fixture evidence identity must be valid"),
             selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 1_000,
             expiration_timestamp_milliseconds: 30_000,

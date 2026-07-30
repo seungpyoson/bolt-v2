@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_binary_settlement::BinarySettlementPayout,
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
+    bolt_v3_evidence_novelty::{EvidenceMarketIdentity, EvidenceOutcomeIdentity},
     bolt_v3_instrument_filters::InstrumentFilterError,
     bolt_v3_numeric::Probability,
     bolt_v3_quote_lifecycle::Leg,
@@ -185,11 +186,44 @@ pub struct SelectedMarketEvidenceOutcome {
 /// market whose condition and question are unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedMarketEvidenceIdentity {
-    pub gamma_market_id: String,
-    pub condition_id: String,
-    pub question_id: String,
-    pub negative_risk: bool,
-    pub outcomes: [SelectedMarketEvidenceOutcome; 2],
+    market: EvidenceMarketIdentity,
+    negative_risk: bool,
+}
+
+impl SelectedMarketEvidenceIdentity {
+    pub fn try_new(
+        gamma_market_id: String,
+        condition_id: String,
+        question_id: String,
+        negative_risk: bool,
+        outcomes: [SelectedMarketEvidenceOutcome; 2],
+    ) -> Option<Self> {
+        let market = EvidenceMarketIdentity::try_new(
+            gamma_market_id,
+            condition_id,
+            question_id,
+            outcomes.map(|outcome| EvidenceOutcomeIdentity {
+                index: outcome.index,
+                normalized_outcome: outcome.normalized_outcome,
+                clob_token_id: outcome.clob_token_id,
+            }),
+        )
+        .ok()?;
+        Some(Self {
+            market,
+            negative_risk,
+        })
+    }
+
+    #[must_use]
+    pub fn market(&self) -> &EvidenceMarketIdentity {
+        &self.market
+    }
+
+    #[must_use]
+    pub fn negative_risk(&self) -> bool {
+        self.negative_risk
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1190,12 +1224,12 @@ mod tests {
             instrument_id: InstrumentId::from("fixture-market.FIXTURE"),
             up_instrument_id: InstrumentId::from("fixture-up.FIXTURE"),
             down_instrument_id: InstrumentId::from("fixture-down.FIXTURE"),
-            evidence_identity: SelectedMarketEvidenceIdentity {
-                gamma_market_id: "fixture-market".to_string(),
-                condition_id: "fixture-condition".to_string(),
-                question_id: "fixture-question".to_string(),
-                negative_risk: false,
-                outcomes: [
+            evidence_identity: SelectedMarketEvidenceIdentity::try_new(
+                "fixture-market".to_string(),
+                "fixture-condition".to_string(),
+                "fixture-question".to_string(),
+                false,
+                [
                     SelectedMarketEvidenceOutcome {
                         index: 0,
                         normalized_outcome: "up".to_string(),
@@ -1207,7 +1241,8 @@ mod tests {
                         clob_token_id: "fixture-down".to_string(),
                     },
                 ],
-            },
+            )
+            .expect("fixture evidence identity must be valid"),
             selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 1_000,
             expiration_timestamp_milliseconds: 61_000,

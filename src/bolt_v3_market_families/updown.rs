@@ -1459,12 +1459,12 @@ fn candidate_market_for_slug(
         return None;
     }
 
-    let evidence_identity = SelectedMarketEvidenceIdentity {
-        gamma_market_id: up.market_id.clone(),
-        condition_id: up.condition_id.clone(),
-        question_id: up.question_id.clone(),
-        negative_risk: up_evidence.negative_risk,
-        outcomes: [
+    let evidence_identity = SelectedMarketEvidenceIdentity::try_new(
+        up.market_id.clone(),
+        up.condition_id.clone(),
+        up.question_id.clone(),
+        up_evidence.negative_risk,
+        [
             SelectedMarketEvidenceOutcome {
                 index: 0,
                 normalized_outcome: up_evidence.normalized_outcome,
@@ -1476,7 +1476,7 @@ fn candidate_market_for_slug(
                 clob_token_id: down_evidence.clob_token_id,
             },
         ],
-    };
+    )?;
     Some(SelectedUpdownMarket {
         market_id: up.market_id,
         source_identity: SelectedMarketSourceIdentity {
@@ -1588,12 +1588,12 @@ mod tests {
             instrument_id: InstrumentId::from(TEST_UP_INSTRUMENT_ID),
             up_instrument_id: InstrumentId::from(TEST_UP_INSTRUMENT_ID),
             down_instrument_id: InstrumentId::from(TEST_DOWN_INSTRUMENT_ID),
-            evidence_identity: SelectedMarketEvidenceIdentity {
-                gamma_market_id: "market-1".to_string(),
-                condition_id: TEST_CONDITION_ID.to_string(),
-                question_id: "question-1".to_string(),
-                negative_risk: false,
-                outcomes: [
+            evidence_identity: SelectedMarketEvidenceIdentity::try_new(
+                "market-1".to_string(),
+                TEST_CONDITION_ID.to_string(),
+                "question-1".to_string(),
+                false,
+                [
                     SelectedMarketEvidenceOutcome {
                         index: 0,
                         normalized_outcome: "up".to_string(),
@@ -1605,7 +1605,8 @@ mod tests {
                         clob_token_id: "configured-condition-DOWN".to_string(),
                     },
                 ],
-            },
+            )
+            .expect("fixture evidence identity must be valid"),
             selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 600_000,
             expiration_timestamp_milliseconds: 900_000,
@@ -1893,6 +1894,47 @@ mod tests {
         .expect("configured current updown market should select");
 
         assert_eq!(selected.start_timestamp_milliseconds, 600_000);
+    }
+
+    #[test]
+    fn selected_updown_market_rejects_unconstructible_evidence_identity() {
+        let market_slug = updown_market_slug(TEST_UNDERLYING_ASSET, TEST_CADENCE_SLUG_TOKEN, 600);
+        let instruments = vec![
+            test_binary_option(
+                "configured-condition-up.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "",
+                "Up",
+                100_000,
+                900_000,
+            ),
+            test_binary_option(
+                "configured-condition-down.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "",
+                "Down",
+                100_000,
+                900_000,
+            ),
+        ];
+
+        assert!(
+            select_market_from_instruments(
+                UpdownSelectionTarget {
+                    underlying_asset: TEST_UNDERLYING_ASSET,
+                    cadence_secs: 300,
+                    cadence_slug_token: TEST_CADENCE_SLUG_TOKEN,
+                },
+                &instruments,
+                600_001,
+            )
+            .is_none(),
+            "selection must fail closed before trading when the episode identity is invalid"
+        );
     }
 
     #[test]

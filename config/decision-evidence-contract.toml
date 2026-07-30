@@ -269,6 +269,14 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 
 # Every append path into the evidence streams, classified exactly once.
 #
+# "Exactly once" is per producer, not per function. One function can serve two
+# producers whose facts differ, and then it appears under both with each fact's
+# own classification: `record_admission_decision` is event-keyed for an admitted
+# entry and already-deduped for a rejected one, because those are two facts, not
+# two labels for one. Review read the shared name as a double classification,
+# which is worth ruling on here rather than leaving to be re-derived -- the thing
+# that must be classified once is the fact reaching the stream.
+#
 # The five census fields below are #1354 acceptance criteria, carried over from
 # `config/evidence-novelty.toml` on the retired `codex/1354-owner-ruling` branch
 # when the schema-v15 writer/readers that file described were replaced. The

@@ -272,10 +272,22 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 # The five census fields below are #1354 acceptance criteria, carried over from
 # `config/evidence-novelty.toml` on the retired `codex/1354-owner-ruling` branch
 # when the schema-v15 writer/readers that file described were replaced. The
-# census recorded 19 producers against the old layer; this contract splits them
+# census recorded 20 producers against the old layer; this contract splits them
 # finer -- by strategy, and by outcome where the census carried a single
 # decision row -- so `census_ancestor` names which row each inherited from, and
 # is empty for a producer that postdates the census and was derived directly.
+#
+# All 20 are accounted for: 16 are named as ancestors below, 3 are append paths
+# the replacement deleted outright (`submit_reservation_metadata`,
+# `venue_truth_capture_failure`, `venue_truth_divergence` -- no function, record
+# kind, or equivalent evidence survives), and 1 was folded rather than removed.
+# `settlement_booking_error_legacy_append` is that one: the booking-error fact is
+# now a field of `TerminalSettlementFact` rather than its own append, so it
+# reaches the stream through `apply_terminal_settlement_transition` and is
+# censused by `edge_taker_terminal_settlement`. It has no `census_ancestor` entry
+# of its own because it is no longer a distinct append path -- but a reader
+# reconciling this contract against the census must be able to find where it
+# went, which is what this paragraph exists for.
 #
 # `named_readers`, the sixth criterion, is deliberately absent. Every one of the
 # census's 74 named reader functions was deleted with that layer, and the
@@ -366,6 +378,13 @@ repeat_semantics = "every submit admission result remains append-complete"
 dedupe_key_evidence = "client_order_id event identity; no suppression"
 census_ancestor = "admission_decision"
 
+# `reserve_basket_submit_slots` below is `#[cfg(feature =
+# "test-current-evidence-inspection")]`, so it is an append path only when that
+# feature is on. It is listed because it is a real call site under the feature
+# this contract's own test compiles with, and the production path
+# (`bolt_v3_basket_admission.rs::admit`) is listed beside it -- but a reader
+# auditing production reachability must not count it. The call-site check is
+# textual and cannot tell the two apart; see the note on that test.
 [[producers]]
 id = "basket_admission_granted"
 purpose = "basket_admission_granted"
@@ -376,6 +395,8 @@ repeat_semantics = "owner approved retaining every basket admission result as ap
 dedupe_key_evidence = "basket_id event identity; no suppression"
 census_ancestor = "basket_admission_decision"
 
+# `record_basket_submit_rejection_for_test` below is feature-gated in the same
+# way as `reserve_basket_submit_slots` above, with the same caveat.
 [[producers]]
 id = "basket_admission_rejected"
 purpose = "basket_admission_rejected"
@@ -520,9 +541,9 @@ census_ancestor = "terminal_settlement"
 id = "submit_admission_provider_collateral_allowance_capture_failure"
 purpose = "provider_collateral_allowance_capture_failure"
 classification = "no-named-reader"
-handler_reachability = ["startup"]
+handler_reachability = ["timer"]
 call_sites = ["src/bolt_v3_submit_admission.rs::suspend_capital_admission_for_provider_collateral_allowance_capture_failure"]
-repeat_semantics = "one record per failed allowance capture at startup"
+repeat_semantics = "one record per failed allowance poll, unbounded while the failure persists -- OUTSTANDING #1354 gap. The allowance runtime is a permanent `tokio::time::interval` loop, not a startup one-shot, and the recording call is unconditional, so a capture that stays broken appends once per poll interval indefinitely. `captures_missed` increments per attempt, so payload dedupe would not collapse them either. Needs a closed capture-failure domain before this path can claim finite suppression"
 dedupe_key_evidence = "no suppression; each capture failure is its own event"
 census_ancestor = ""
 

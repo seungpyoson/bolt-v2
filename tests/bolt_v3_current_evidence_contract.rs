@@ -217,11 +217,29 @@ fn at_least_one_startup_recovery_consumer_is_required() {
 /// not a behavioural test. The claim under test -- "the census names a function
 /// this tree defines" -- is a claim *about source*, so reading source is the
 /// only way to settle it, and no amount of exercising the producers would.
-/// Review found the first version of it settling that claim too loosely: a
-/// substring search for `fn <name>` also matches the name in a doc comment, in
-/// a call, or in a signature behind `#[cfg(...)]` that nothing compiles. So the
-/// match is anchored to a definition at the start of a line, with comment lines
-/// removed first, which is as close to "is defined here" as text can get.
+/// Review found the first version settling that claim too loosely: a bare
+/// substring search for `fn <name>` also matched the name inside a longer
+/// identifier. The match now requires `(` or `<` to follow the name, and skips
+/// `//` comment lines, which rules out prose mentions and partial-name hits.
+///
+/// What it still does not prove, stated plainly so nobody reads more into a
+/// green run than it earns:
+///
+///   * the match is not line-anchored -- it trims and searches anywhere in the
+///     line, so a trailing comment, a string literal, or a macro body
+///     containing `fn name(` satisfies it;
+///   * only `//` lines are skipped, so a signature inside a block comment
+///     satisfies it;
+///   * a `#[cfg(...)]`-gated signature is textually identical to a compiled
+///     one, so this cannot tell a production append path from a feature-gated
+///     one. Two rows here are feature-gated on purpose and say so.
+///
+/// Each of those is a way for a *declared* site to resolve against source that
+/// does not run. None is a way for a real site to go missing, which is the
+/// direction that matters: the check is a guard against the census naming
+/// functions this tree does not define, not a proof of production reachability.
+/// Deriving call sites from the tree rather than declaring them is what would
+/// close the rest, and is a larger change than this contract.
 #[test]
 fn every_declared_append_path_resolves_in_this_tree() {
     let contract = parse_contract_registry(REGISTRY).expect("current contract must parse");

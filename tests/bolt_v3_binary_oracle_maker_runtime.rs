@@ -1844,6 +1844,7 @@ fn maker_runtime_refresh_resolves_declared_market_and_emits_subscription_delta()
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
 
     assert_eq!(runtime.active_market_count(), 1);
@@ -1881,6 +1882,7 @@ fn maker_runtime_refresh_reports_miss_for_undiscoverable_market_not_silent_drop(
         &[],
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
 
     assert_eq!(runtime.active_market_count(), 0);
@@ -1911,6 +1913,7 @@ fn maker_runtime_refresh_rerolls_when_a_leg_instrument_changes_under_the_same_wi
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
 
     let reissued_yes = InstrumentId::from(RUNTIME_YES_INSTRUMENT_REISSUED);
@@ -1920,6 +1923,7 @@ fn maker_runtime_refresh_rerolls_when_a_leg_instrument_changes_under_the_same_wi
         &runtime_static_instruments_reissued_yes(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
 
     assert_eq!(
@@ -2320,6 +2324,7 @@ fn maker_runtime_retains_identities_on_same_window_and_rebuilds_on_roll() {
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
     assert!(
         runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"),
@@ -2339,6 +2344,7 @@ fn maker_runtime_retains_identities_on_same_window_and_rebuilds_on_roll() {
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
     assert_eq!(
         runtime
@@ -2373,6 +2379,7 @@ fn maker_runtime_retains_identities_on_same_window_and_rebuilds_on_roll() {
         &runtime_static_instruments_rolled(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
     assert!(
         runtime
@@ -2416,6 +2423,7 @@ fn maker_runtime_mints_a_unique_id_when_a_leg_instrument_rerolls_under_the_same_
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
     assert!(
         runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"),
@@ -2437,6 +2445,7 @@ fn maker_runtime_mints_a_unique_id_when_a_leg_instrument_rerolls_under_the_same_
         &runtime_static_instruments_reissued_yes(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
     assert!(
         runtime
@@ -2482,6 +2491,7 @@ fn maker_runtime_mints_a_unique_id_after_a_market_drops_and_refills_the_same_win
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
     assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
     let pre_drop_yes = runtime
@@ -2499,6 +2509,7 @@ fn maker_runtime_mints_a_unique_id_after_a_market_drops_and_refills_the_same_win
         &[],
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
     assert_eq!(
         runtime.active_market_count(),
@@ -2517,6 +2528,7 @@ fn maker_runtime_mints_a_unique_id_after_a_market_drops_and_refills_the_same_win
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
     assert!(
         runtime
@@ -2561,6 +2573,7 @@ fn maker_runtime_deactivate_all_preserves_generation_high_water_for_a_restart() 
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
     assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
     let pre_stop_yes = runtime
@@ -2572,7 +2585,7 @@ fn maker_runtime_deactivate_all_preserves_generation_high_water_for_a_restart() 
         .expect("a next YES identity was minted");
 
     // Stop: deactivate the active set (as `on_stop` does).
-    runtime.deactivate_all();
+    runtime.deactivate_all(&mut Vec::new());
     assert_eq!(
         runtime.active_market_count(),
         0,
@@ -2585,6 +2598,7 @@ fn maker_runtime_deactivate_all_preserves_generation_high_water_for_a_restart() 
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
+        &mut Vec::new(),
     );
     assert!(
         restart

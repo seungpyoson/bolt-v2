@@ -162,26 +162,15 @@ pub struct BinaryOracleMakerRuntimeQuoteRouteOutcome {
 /// once, and only `market_key` is validated unique. Keying an episode by family
 /// made two concurrently-quoted markets one episode: either could clear the
 /// other's record, and the second to block emitted nothing.
+/// Public only because [`MakerRuntime::refresh_active_markets`] takes the
+/// episode list to prune, which is what stops a refresh from silently skipping
+/// the prune. The fields stay private: the runtime reads `market_key` as a child
+/// module, and nothing outside this strategy constructs or inspects one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RequoteThrottleEpisodeId {
+pub struct RequoteThrottleEpisodeId {
     market_key: String,
     leg: Leg,
     block_reason: BoltV3RequoteThrottleBlockReason,
-}
-
-/// Drop the episodes of markets that are no longer active, keep the rest.
-///
-/// A free function taking the active-set test rather than a method reaching for
-/// it, so both directions can be asserted without resolving instruments: that a
-/// departed market's episode goes, and -- the half that matters -- that a live
-/// market's episode next to it stays. A method would have made "removes
-/// everything" indistinguishable from "removes the right thing" in any test that
-/// could be written for it.
-fn retain_episodes_of_active_markets(
-    episodes: &mut Vec<RequoteThrottleEpisodeId>,
-    is_active: impl Fn(&str) -> bool,
-) {
-    episodes.retain(|episode| is_active(&episode.market_key));
 }
 
 /// Which market a throttle record is about: the unique key, and the family it was
@@ -211,6 +200,13 @@ impl BoltV3RequoteThrottleEvidence {
         Self {
             strategy_id,
             family_key: market.family_key.to_string(),
+            // The declaration key, which is what identifies the episode. Named
+            // `market_id` by the wire contract, where every other producer means
+            // the venue/discovery id -- so a cross-evidence join on this field
+            // would miss. Recorded here rather than renamed because the field is
+            // unread at this revision and renaming it is an evidence-schema
+            // change this PR does not carry; the concrete venue binding is still
+            // recoverable from the runtime for the same key.
             market_id: Some(market.key.to_string()),
             leg: requote_throttle_leg_label(leg).to_string(),
             now_ms,
@@ -906,6 +902,7 @@ impl BinaryOracleMaker {
             &instruments,
             now_milliseconds,
             policy,
+            &mut self.recorded_requote_throttle_episodes,
         );
         let client_id = self.data_client_id();
         for instrument_id in refresh.unsubscribe {
@@ -921,21 +918,6 @@ impl BinaryOracleMaker {
                 miss,
             );
         }
-
-        // An episode outlives the market it describes otherwise. A leg that is
-        // blocked when its market leaves the active set never reaches the clear
-        // on unblock, so its record stays; if that market later resolves again,
-        // its first block is suppressed as one already recorded -- the same
-        // confusion of a stable key with a live market that the episode identity
-        // above exists to prevent, arriving through the lifecycle instead.
-        //
-        // The active set is the authority, so this asks it rather than reading
-        // the unsubscribe list: a market can leave for reasons that produce no
-        // unsubscribe, and one authority cannot disagree with itself.
-        let runtime = &self.runtime;
-        retain_episodes_of_active_markets(&mut self.recorded_requote_throttle_episodes, |key| {
-            runtime.market(key).is_some()
-        });
     }
 
     /// Register the autonomous quote/refresh timer (period = `quote_interval_ms`).
@@ -1089,7 +1071,8 @@ impl DataActor for BinaryOracleMaker {
         // stop/start: a re-mint after restart cannot reproduce a `ClientOrderId` a
         // prior run consumed. (Cross-process restart durability needs a persisted
         // high-water — arming-time work, #869.)
-        self.runtime.deactivate_all();
+        self.runtime
+            .deactivate_all(&mut self.recorded_requote_throttle_episodes);
         Ok(())
     }
 
@@ -1516,37 +1499,6 @@ mod tests {
                 .map(UsableMu::get),
             Ok(1.0),
             "on_trade must route each tick into the per-instrument μ buffer"
-        );
-    }
-
-    /// A blocked leg whose market leaves the active set never reaches the clear
-    /// on unblock, so without this its episode outlives the market: if that key
-    /// resolves again later, its first block is suppressed as one already
-    /// recorded. Silence exactly where a fresh block belongs -- the same
-    /// confusion of a stable key with a live market that the episode identity
-    /// fixes, arriving through the lifecycle instead.
-    ///
-    /// Both directions in one call, because "removes the departed one" and
-    /// "removes everything" are the same assertion otherwise.
-    #[test]
-    fn a_departed_markets_throttle_episode_is_dropped_and_a_live_ones_is_kept() {
-        let episode = |market_key: &str| RequoteThrottleEpisodeId {
-            market_key: market_key.to_string(),
-            leg: Leg::Yes,
-            block_reason: BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted,
-        };
-        let mut episodes = vec![
-            episode("departed"),
-            episode("live"),
-            episode("also-departed"),
-        ];
-
-        retain_episodes_of_active_markets(&mut episodes, |key| key == "live");
-
-        assert_eq!(
-            episodes,
-            vec![episode("live")],
-            "only the episodes of markets still in the active set survive a refresh"
         );
     }
 

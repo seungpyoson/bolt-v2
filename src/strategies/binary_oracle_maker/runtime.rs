@@ -104,6 +104,19 @@ fn make_leg_identity(
     )
 }
 
+/// Keep the episodes of active markets, drop the rest.
+///
+/// Takes the active-set test rather than reading it, so both directions can be
+/// asserted in one call: that a departed market's episode goes, and -- the half
+/// that matters -- that a live market's episode beside it stays. A test that only
+/// proved removal would pass on a prune that removed everything.
+fn retain_episodes_of_active_markets(
+    episodes: &mut Vec<super::RequoteThrottleEpisodeId>,
+    is_active: impl Fn(&str) -> bool,
+) {
+    episodes.retain(|episode| is_active(&episode.market_key));
+}
+
 /// The per-leg generation high-water marks for one declared market — the highest
 /// generation its YES and NO legs have minted. Held by [`MakerRuntime`] keyed by
 /// `market_key` (not by the per-refresh [`MakerMarketRuntime`]) so the next
@@ -296,7 +309,13 @@ impl MakerRuntime {
     /// any drop/refill) cannot re-mint a `ClientOrderId` a prior active period
     /// already consumed. Durability across a full process restart still needs a
     /// persisted high-water (arming-time work, #869).
-    pub fn deactivate_all(&mut self) {
+    /// Takes the episode list for the same reason [`Self::refresh_active_markets`]
+    /// does: a stop leaves no refresh behind, so nothing else would prune it, and
+    /// a market present on both sides of a stop/start would carry an episode from
+    /// the prior run and have its first block after restart suppressed as one
+    /// already recorded.
+    pub fn deactivate_all(&mut self, throttle_episodes: &mut Vec<super::RequoteThrottleEpisodeId>) {
+        throttle_episodes.clear();
         self.markets = BTreeMap::new();
     }
 
@@ -346,15 +365,39 @@ impl MakerRuntime {
     /// the persistent per-(market_key, leg) high-water ([`MakerRuntime::generations`]),
     /// so re-minted ids stay unique across a roll AND across a drop/refill. Returns
     /// the trade-subscription delta plus any resolution misses.
+    /// `throttle_episodes` is pruned against the resulting active set, and is a
+    /// parameter rather than the caller's business because forgetting to prune it
+    /// is silent: an episode belonging to a market that left the active set while
+    /// blocked never reaches the clear-on-unblock, so the market's first block
+    /// after it resolves again is suppressed as one already recorded. Taking it
+    /// here makes a refresh that does not prune unrepresentable rather than
+    /// merely tested -- the previous shape put the prune at the call site, where
+    /// deleting it left every test green.
     pub fn refresh_active_markets(
         &mut self,
         declarations: &[MakerMarketDeclaration],
         instruments: &[InstrumentAny],
         now_milliseconds: u64,
         policy: MakerMarketPortfolioPolicy,
+        throttle_episodes: &mut Vec<super::RequoteThrottleEpisodeId>,
     ) -> MakerRuntimeRefresh {
         let resolution = resolve_declared_markets(declarations, instruments, now_milliseconds);
-        self.apply_resolution(resolution, policy)
+        let refresh = self.apply_resolution(resolution, policy);
+        // The active set is the authority, rather than the unsubscribe list: a
+        // market can leave for reasons that produce no unsubscribe, and one
+        // authority cannot disagree with itself.
+        self.prune_throttle_episodes(throttle_episodes);
+        refresh
+    }
+
+    /// Drop the episodes of markets that are no longer active, keep the rest.
+    ///
+    /// Separated from the refresh so both directions can be asserted without
+    /// resolving instruments: that a departed market's episode goes, and -- the
+    /// half that matters -- that a live market's episode beside it stays. A test
+    /// that only proved removal would pass on a prune that removed everything.
+    fn prune_throttle_episodes(&self, episodes: &mut Vec<super::RequoteThrottleEpisodeId>) {
+        retain_episodes_of_active_markets(episodes, |key| self.markets.contains_key(key));
     }
 
     fn apply_resolution(
@@ -732,5 +775,93 @@ mod tests {
         rotate_leg_identity(&mut binding, None);
         assert_eq!(binding.next_order, Some(next));
         assert_eq!(binding.active_order, None);
+    }
+
+    /// A blocked leg whose market leaves the active set never reaches the clear
+    /// on unblock, so without this its episode outlives the market: if that key
+    /// resolves again later, its first block is suppressed as one already
+    /// recorded -- silence exactly where a fresh block belongs.
+    ///
+    /// Lives beside the prune rather than at the strategy call site, because the
+    /// refresh now takes the episode list and prunes it unconditionally: the
+    /// previous shape put the call in `mod.rs`, where deleting it left every test
+    /// in the crate green.
+    #[test]
+    fn a_departed_markets_throttle_episode_is_dropped_and_a_live_ones_is_kept() {
+        let episode = |market_key: &str| {
+            super::super::RequoteThrottleEpisodeId {
+            market_key: market_key.to_string(),
+            leg: Leg::Yes,
+            block_reason: crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted,
+        }
+        };
+        let mut episodes = vec![
+            episode("departed"),
+            episode("live"),
+            episode("also-departed"),
+        ];
+
+        retain_episodes_of_active_markets(&mut episodes, |key| key == "live");
+
+        assert_eq!(
+            episodes,
+            vec![episode("live")],
+            "only the episodes of markets still in the active set survive a refresh"
+        );
+    }
+
+    /// Teeth for the prune *call*, not just the predicate. Deleting
+    /// `prune_throttle_episodes` from `refresh_active_markets` compiles cleanly --
+    /// an ignored parameter is not an error here -- so the signature alone does
+    /// not enforce anything. This drives the real refresh with no declarations,
+    /// which resolves to an empty active set, and fails if the episode survives.
+    #[test]
+    fn refreshing_active_markets_prunes_episodes_of_markets_that_are_gone() {
+        let mut runtime = MakerRuntime::empty();
+        let mut episodes = vec![super::super::RequoteThrottleEpisodeId {
+            market_key: "gone".to_string(),
+            leg: Leg::Yes,
+            block_reason:
+                crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted,
+        }];
+
+        runtime.refresh_active_markets(
+            &[],
+            &[],
+            0,
+            MakerMarketPortfolioPolicy {
+                max_active_markets: 3,
+                total_bankroll_notional: 1_500.0,
+                min_slot_notional: 100.0,
+            },
+            &mut episodes,
+        );
+
+        assert!(
+            episodes.is_empty(),
+            "a refresh that leaves no market active must leave no episode behind"
+        );
+    }
+
+    /// A stop drops every market, so it must drop every episode with them: nothing
+    /// else prunes across a stop/start, and the next `on_start` refresh prunes
+    /// against the repopulated set -- which would keep the episode of a market
+    /// active on both sides and suppress its first block after restart.
+    #[test]
+    fn deactivating_every_market_drops_every_throttle_episode() {
+        let mut runtime = MakerRuntime::empty();
+        let mut episodes = vec![super::super::RequoteThrottleEpisodeId {
+            market_key: "still-declared".to_string(),
+            leg: Leg::Yes,
+            block_reason:
+                crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted,
+        }];
+
+        runtime.deactivate_all(&mut episodes);
+
+        assert!(
+            episodes.is_empty(),
+            "a market that is declared again after a restart must record its first block as new"
+        );
     }
 }

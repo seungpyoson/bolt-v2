@@ -313,7 +313,7 @@ classification = "state-observation"
 handler_reachability = ["quote", "book", "timer", "index-price"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_blocked_entry_strategy_input_snapshot_once"]
 repeat_semantics = "finite per-episode monotone suppression over six RV gate results and watermark presence"
-dedupe_key_evidence = "EvidenceEpisodeId plus the exact twelve-state TOML domain; payload churn and writer failure cannot claim a state"
+dedupe_key_evidence = "EvidenceEpisodeId plus the exact twelve-state closed domain -- six RV gate results by watermark presence; payload churn and writer failure cannot claim a state. The registry TOML that is the sole authority for that domain arrives with the episode-suppression change stacked above this one, so at this revision the twelve states are the enumeration, not a file reference"
 census_ancestor = "strategy_input_snapshot_blocked_rv"
 
 [[producers]]
@@ -522,7 +522,7 @@ classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer"]
 call_sites = ["src/strategies/binary_oracle_maker/mod.rs::update_requote_throttle_edge"]
 repeat_semantics = "finite monotone suppression over the closed action-cost and throttle-bound domain, per episode identity"
-dedupe_key_evidence = "typed episode identity plus the exact seventeen-state TOML domain; timestamps and budget counters remain payload only. The identity is the family key at this revision, which several concrete markets share, so two markets throttling under one family are one episode here; #1517 replaces it with the market key and is not an ancestor of this stack"
+dedupe_key_evidence = "typed episode identity plus the exact seventeen-state closed domain -- three action-cost classes by six throttle bounds less the unreachable pair; timestamps and budget counters remain payload only. The identity is the family key at this revision, which several concrete markets share, so two markets throttling under one family are one episode here; #1517 replaces it with the market key and is not an ancestor of this stack"
 census_ancestor = "requote_throttle"
 
 [[producers]]

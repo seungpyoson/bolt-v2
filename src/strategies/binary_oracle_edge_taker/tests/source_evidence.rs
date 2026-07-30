@@ -2285,8 +2285,12 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
         .collect::<Vec<_>>();
     assert_eq!(
         blocked_snapshots.len(),
-        2,
-        "identical blocked evaluations must emit once and the RV blocker transition must emit the second record"
+        1,
+        "identical blocked evaluations emit once, and an RV blocker-list transition no longer \
+         emits a second. This producer's registered axis is the gate result paired with \
+         watermark presence; the blocker list is a diagnostic the frozen contract excludes \
+         from episode identity. The forensic detail survives in the payload of the record \
+         that did emit, rather than as one append per transition"
     );
     let rv_blockers =
         |record: &crate::bolt_v3_current_evidence::BlockedStrategyInputObservationFact| {
@@ -2298,10 +2302,6 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
     assert_eq!(
         rv_blockers(blocked_snapshots[0]),
         vec![crate::bolt_v3_current_evidence::RealizedVolBlockReason::QuorumNotReady]
-    );
-    assert_eq!(
-        rv_blockers(blocked_snapshots[1]),
-        vec![crate::bolt_v3_current_evidence::RealizedVolBlockReason::SourceStale]
     );
     let Some(CurrentFact::BlockedStrategyInputObservation(snapshot)) = events.first() else {
         panic!("expected blocked strategy input evidence first; got {events:#?}");
@@ -2394,23 +2394,15 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
         .collect::<Vec<_>>();
     assert_eq!(
         entry_skips.len(),
-        2,
-        "same interval/category but different pricing blockers must not dedupe"
+        1,
+        "same skip reason with different pricing blockers now dedupes. Pricing blockers are \
+         diagnostics, and this producer's registered axis is the skip reason -- keying on the \
+         blocker list is what let a flapping blocker append on every tick"
     );
     assert_eq!(entry_skips[0].market_id, strategy.active.market_id);
-    assert_eq!(entry_skips[1].market_id, strategy.active.market_id);
-    assert_eq!(entry_skips[0].market_id, entry_skips[1].market_id);
     assert_eq!(
         entry_skips[0].pricing_blocked_by,
         vec![crate::bolt_v3_current_evidence::EntryPricingBlockReason::RealizedVolNotReady]
-    );
-    assert_eq!(
-        entry_skips[1].pricing_blocked_by,
-        vec![
-            crate::bolt_v3_current_evidence::EntryPricingBlockReason::FeeUnavailable(
-                crate::bolt_v3_current_evidence::OutcomeSide::Up
-            )
-        ]
     );
 }
 
@@ -2463,22 +2455,20 @@ fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
         .collect::<Vec<_>>();
     assert_eq!(
         entry_skips.len(),
-        2,
-        "same blocker should record the initial skip and the liveness-state transition only"
-    );
-    assert_eq!(entry_skips[0].spot_price, None);
-    assert!(
-        entry_skips[1].spot_price.is_some(),
-        "liveness-state transition should still record current spot evidence when present"
+        1,
+        "the same skip reason records once per episode; a liveness-state transition beneath it \
+         is a diagnostic and no longer appends. The initial skip is the record that survives, \
+         so its payload is the one that must be right"
     );
     assert_eq!(
-        entry_skips[1].reference_current_price.as_deref(),
-        Some("3100.5")
+        entry_skips[0].spot_price, None,
+        "the surviving record is the initial skip, taken before spot became available"
     );
-    assert_eq!(
-        entry_skips[1].last_reference_ts_ms,
-        Some(liveness_transition_ts_ms)
-    );
+    // The liveness transition's own reference price and timestamp are no longer
+    // a second record to assert on. `liveness_transition_ts_ms` stays in the
+    // fixture because the transition still has to happen for this test to mean
+    // anything -- what changed is that it no longer appends.
+    let _ = liveness_transition_ts_ms;
 }
 
 #[test]
@@ -2935,7 +2925,7 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
         "an exit-decision evidence write failure must not propagate and block the exit: {result:?}"
     );
     assert!(
-        strategy.exit_decision_episode.is_open(),
+        strategy.last_recorded_exit_decision.is_some(),
         "the dedupe key must still be set so the lost write is not retried in a tight loop"
     );
 }
@@ -4002,7 +3992,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     );
 
     for (index, decision) in decisions.iter().enumerate() {
-        strategy.exit_decision_episode.clear();
+        strategy.last_recorded_exit_decision = None;
         strategy
             .record_exit_decision_once(
                 RV_RECEIPT_LIFECYCLE_NOW_MS + index as u64,
@@ -4084,7 +4074,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_repl
         false,
     );
 
-    strategy.exit_decision_episode.clear();
+    strategy.last_recorded_exit_decision = None;
     strategy.last_exit_evidence_outcome.clear();
     replace_rv_with_distinguishable_snapshot(&mut strategy);
     strategy
@@ -4637,40 +4627,72 @@ fn rv_clock_domain_amendment_apply_state(
 }
 
 #[test]
-fn rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits() {
+fn rv_clock_domain_amendment_entry_skip_records_each_registered_reason_once() {
+    // Re-aimed at this producer's actual domain. Entry skip used to key on the
+    // twelve RV gate/watermark bits, which is not its axis under the frozen
+    // registry -- that domain belongs to the blocked-snapshot producer, whose
+    // own twelve-bit test still stands beside this one. Entry skip's registered
+    // domain is the twenty skip reasons, so that is what is exercised here, and
+    // exhaustively: a reason added to the enum without a registry state fails
+    // the mapping's exhaustive match at compile time, and a reason that stops
+    // recording fails the count below.
+    const REGISTERED_REASONS: [EntrySkipReason; 20] = [
+        EntrySkipReason::StrategyCoreNotRegistered,
+        EntrySkipReason::EntryGateBlocked,
+        EntrySkipReason::EntryPricingBlocked,
+        EntrySkipReason::NoSideSelected,
+        EntrySkipReason::SizedNotionalNotPositive,
+        EntrySkipReason::InstrumentIdMissing,
+        EntrySkipReason::InstrumentMissingFromCache,
+        EntrySkipReason::EntryPriceMissing,
+        EntrySkipReason::QuantityRoundingFailed,
+        EntrySkipReason::LimitNotionalExceedsSizedNotional,
+        EntrySkipReason::EntryQuoteNotionalBelowVenueMinimum,
+        EntrySkipReason::EntryQuoteNotionalMinimumUnmodeled,
+        EntrySkipReason::QuantityNotPositive,
+        EntrySkipReason::PositionContractInvalid,
+        EntrySkipReason::EntryPositionContractUnsupported,
+        EntrySkipReason::HistoricalEntryFeeUnavailable,
+        EntrySkipReason::OnePositionInvariantViolation,
+        EntrySkipReason::EntryMalformedRejected,
+        EntrySkipReason::EntryBalanceRejected,
+        EntrySkipReason::EntryUnfillableRejectedUnchangedBook,
+    ];
+
     let evidence = recording_decision_evidence();
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     let mut decision = minimal_entry_submission_decision();
 
-    for (index, (gate, watermark)) in rv_clock_domain_amendment_rv_states()
-        .into_iter()
-        .enumerate()
-    {
-        rv_clock_domain_amendment_apply_state(&mut decision, gate, watermark);
-        strategy
-            .record_entry_skip_once(
-                1_200 + index as u64,
-                &decision,
-                EntrySkipReason::EntryPricingBlocked,
-            )
-            .expect("each unseen RV category/presence bit should record");
+    // Every reason once, then every reason a second time with the RV state
+    // churning underneath. The second pass must add nothing: the reasons are
+    // already claimed for this episode, and RV state is not this producer's axis.
+    let rv_states = rv_clock_domain_amendment_rv_states();
+    let mut now_ms = 1_200_u64;
+    for pass in 0..2 {
+        for (index, reason) in REGISTERED_REASONS.into_iter().enumerate() {
+            let (gate, watermark) = rv_states[(index + pass) % rv_states.len()];
+            rv_clock_domain_amendment_apply_state(&mut decision, gate, watermark);
+            strategy
+                .record_entry_skip_once(now_ms, &decision, reason)
+                .expect("a suppressed skip is still a successful call");
+            now_ms += 1;
+        }
     }
 
-    let events = evidence
+    let recorded = evidence
         .recorded_facts()
-        .expect("recorded current evidence must decode");
-    let mask = rv_clock_domain_amendment_entry_mask(&events);
+        .expect("recorded current evidence must decode")
+        .into_iter()
+        .filter_map(|event| match event {
+            CurrentFact::EntrySkipObservation(skip) => Some(skip.reason_category),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        mask.count_ones(),
-        12,
-        "all twelve entry-skip RV bits must emit once"
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event, CurrentFact::EntrySkipObservation(_)))
-            .count(),
-        12
+        recorded.as_slice(),
+        &REGISTERED_REASONS[..],
+        "each registered skip reason must record exactly once per market episode, in the \
+         order first observed, and a second pass under churning RV state must add nothing"
     );
 }
 
@@ -4709,15 +4731,14 @@ fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits(
 }
 
 #[test]
-fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
-    const EXPECTED_STATES: [(RvGateResult, bool); 6] = [
-        (RvGateResult::Accepted, true),
-        (RvGateResult::RejectedStale, true),
-        (RvGateResult::Accepted, true),
-        (RvGateResult::RejectedStale, true),
-        (RvGateResult::Accepted, true),
-        (RvGateResult::RejectedStale, true),
-    ];
+fn rv_clock_domain_amendment_input_churn_does_not_reclaim_a_seen_state() {
+    // Inverted deliberately. This test used to assert that every key transition
+    // started a fresh mask, so A-to-B-to-A re-emitted every previously seen RV
+    // state. That is the behaviour #1354's frozen amendment forbids in as many
+    // words -- "input churn must never reclaim a seen canonical state or reset
+    // suppression" -- so the sequences below are unchanged and only the expected
+    // cardinality moved. What made the old numbers possible was keying the
+    // episode on values that churn; the episode is now the market itself.
     let rv_states = [
         (RvGateResult::Accepted, Some(LocalReceiveMs::new(1_200))),
         (
@@ -4726,11 +4747,12 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
         ),
     ];
 
+    // Entry skip: the novelty axis is the skip reason, so RV churn underneath it
+    // is invisible and a returning reason is already claimed.
     let entry_evidence = recording_decision_evidence();
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
     let mut now_ms = 1_200_u64;
-    // A -> B -> A must start a fresh two-bit novelty mask at every key transition.
     for category in [
         EntrySkipReason::EntryPricingBlocked,
         EntrySkipReason::NoSideSelected,
@@ -4740,25 +4762,32 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             rv_clock_domain_amendment_apply_state(&mut entry, gate, watermark);
             entry_strategy
                 .record_entry_skip_once(now_ms, &entry, category)
-                .expect("each previously seen RV bit must emit after an entry-key change");
+                .expect("a suppressed skip is still a successful call");
             now_ms += 1;
         }
     }
-    let entry_states = entry_evidence
+    let entry_reasons = entry_evidence
         .recorded_facts()
         .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            CurrentFact::EntrySkipObservation(skip) => Some((
-                skip.realized_vol_gate_result
-                    .expect("RV gate result must be present"),
-                skip.realized_vol_receive_watermark_ms.is_some(),
-            )),
+            CurrentFact::EntrySkipObservation(skip) => Some(skip.reason_category),
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(entry_states.as_slice(), &EXPECTED_STATES[..]);
+    assert_eq!(
+        entry_reasons.as_slice(),
+        &[
+            EntrySkipReason::EntryPricingBlocked,
+            EntrySkipReason::NoSideSelected
+        ][..],
+        "six evaluations over two distinct skip reasons must record twice: the returning \
+         reason is already claimed, and the RV churn beneath it is not this producer's axis"
+    );
 
+    // Blocked snapshot: the novelty axis is the RV state, and the market id the
+    // old key carried is no longer what identifies the episode -- so churning it
+    // must change nothing.
     let blocked_evidence = recording_decision_evidence();
     let mut blocked_strategy = rv_clock_domain_amendment_dedupe_strategy(blocked_evidence.clone());
     let mut blocked = rv_clock_domain_amendment_blocked_decision();
@@ -4774,11 +4803,69 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
             blocked_strategy
                 .record_blocked_entry_strategy_input_snapshot_once(now_ms, &blocked)
-                .expect("each previously seen RV bit must emit after a blocked-key change");
+                .expect("a suppressed snapshot is still a successful call");
             now_ms += 1;
         }
     }
-    let blocked_states = blocked_evidence
+    assert_eq!(
+        rv_clock_domain_amendment_blocked_rv_states(&blocked_evidence).len(),
+        2,
+        "two distinct RV states over six evaluations must record twice however often the \
+         market id churns underneath them"
+    );
+
+    // The other direction, which the old test had no way to express: a genuinely
+    // different market is a different episode and starts with nothing claimed.
+    // Without this, "churn changes nothing" would also be satisfied by a guard
+    // that never records again at all.
+    let first_identity = blocked_strategy
+        .active
+        .evidence_identity
+        .clone()
+        .expect("the dedupe fixture must bind a market identity");
+    let mut other_identity = first_identity.clone();
+    other_identity.condition_id.push_str("-second-market");
+    blocked_strategy.active.evidence_identity = Some(other_identity);
+    for (gate, watermark) in rv_states {
+        rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
+        blocked_strategy
+            .record_blocked_entry_strategy_input_snapshot_once(now_ms, &blocked)
+            .expect("a new market episode records");
+        now_ms += 1;
+    }
+    assert_eq!(
+        rv_clock_domain_amendment_blocked_rv_states(&blocked_evidence).len(),
+        4,
+        "a different market is a different episode, so its own two RV states record again"
+    );
+
+    // And back to the first market. This is the assertion the amendment's
+    // sentence actually requires -- "input churn must never reclaim a seen
+    // canonical state" is about returning to an episode, not merely leaving it.
+    // Without this the whole suite tolerates a single-slot guard that evicts the
+    // previous episode, because nothing ever revisits one. Mutation-checked: a
+    // guard that keeps only the current episode fails here.
+    blocked_strategy.active.evidence_identity = Some(first_identity);
+    for (gate, watermark) in rv_states {
+        rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
+        blocked_strategy
+            .record_blocked_entry_strategy_input_snapshot_once(now_ms, &blocked)
+            .expect("a returning episode is still a successful call");
+        now_ms += 1;
+    }
+    assert_eq!(
+        rv_clock_domain_amendment_blocked_rv_states(&blocked_evidence).len(),
+        4,
+        "returning to the first market must add nothing: its states were claimed and a later \
+         episode must not have reclaimed them"
+    );
+}
+
+/// The RV states recorded on blocked-snapshot observations so far.
+fn rv_clock_domain_amendment_blocked_rv_states(
+    evidence: &Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
+) -> Vec<(RvGateResult, bool)> {
+    evidence
         .recorded_facts()
         .expect("recorded current evidence must decode")
         .into_iter()
@@ -4799,8 +4886,48 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
             }
             _ => None,
         })
-        .collect::<Vec<_>>();
-    assert_eq!(blocked_states.as_slice(), &EXPECTED_STATES[..]);
+        .collect()
+}
+
+#[test]
+fn selecting_a_market_binds_the_episode_identity_every_producer_keys_on() {
+    // Pins the seam no other test covers. Every episode test binds
+    // `active.evidence_identity` by hand, so deleting the copy in
+    // `ActiveMarketState::from_market` would leave all of them green while
+    // production silently lost every episode record -- each producer would find
+    // no episode, treat its observation as unattributable, and record nothing.
+    // That failure is invisible by construction, which is exactly why it needs a
+    // test that goes through selection rather than around it.
+    let evidence = recording_decision_evidence();
+    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
+        RecordingFeeProvider::cold(),
+        evidence,
+    );
+
+    strategy.active.evidence_identity = None;
+    assert!(
+        strategy.evidence_episode_id().is_err(),
+        "with nothing selected there is no episode to attribute evidence to"
+    );
+
+    let market = candidate_market("wiring-market", 1_200);
+    let expected = market.evidence_identity.clone();
+    strategy.apply_selection_snapshot(selection_snapshot(
+        1_200,
+        SelectionState::Active {
+            market: Box::new(market),
+        },
+    ));
+
+    assert_eq!(
+        strategy.active.evidence_identity.as_ref(),
+        Some(&expected),
+        "selecting a market must carry its evidence identity onto the active state"
+    );
+    assert!(
+        strategy.evidence_episode_id().is_ok(),
+        "a selected market must yield the episode its producers key on"
+    );
 }
 
 #[test]
@@ -4852,9 +4979,13 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
     let blocked_events = blocked_evidence
         .recorded_facts()
         .expect("recorded current evidence must decode");
+    // One RV state reaches the entry stream, not twelve: the single skip reason
+    // used throughout claims its state on the first observation, and RV is not
+    // this producer's axis. The blocked producer's axis *is* RV, so all twelve
+    // of its states still appear -- the two together are why the split exists.
     assert_eq!(
         rv_clock_domain_amendment_entry_mask(&entry_events).count_ones(),
-        12
+        1
     );
     assert_eq!(
         rv_clock_domain_amendment_blocked_mask(&blocked_events).count_ones(),
@@ -4865,8 +4996,10 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
             .iter()
             .filter(|event| matches!(event, CurrentFact::EntrySkipObservation(_)))
             .count(),
-        12,
-        "100+ repeats and A-B-A oscillations must remain bounded to twelve entry records"
+        1,
+        "100+ repeats and A-B-A oscillations over one skip reason must remain bounded to a \
+         single entry record -- the cardinality is fixed by the registry domain the producer \
+         is registered against, not by how long the oscillation runs"
     );
     assert_eq!(
         blocked_events
@@ -5183,10 +5316,24 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
         .record_blocked_entry_strategy_input_snapshot_once(1_202, &decision)
         .unwrap();
 
+    // Most of these fields are diagnostics and cannot reopen an episode. One is
+    // not: the configured target id is part of the episode identity the frozen
+    // contract defines ("stable logical strategy/target/venue identity"), so
+    // changing it genuinely starts a new episode and the same RV state records
+    // once more there. Returning to the original target is still suppressed,
+    // because that episode already claimed the state -- which is the whole
+    // difference between identity and churn, and is why this is a property of
+    // the field rather than a tolerance on the count.
+    let opens_a_new_episode = matches!(
+        field,
+        RvClockDomainBlockedKeyField::ConfiguredTargetAndMarketSelectionRulesetIds
+    );
+    let expected_records = usize::from(opens_a_new_episode) + 1;
     assert_eq!(
         evidence.attempts_for(crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::BlockedStrategyInputObservation),
-        3,
-        "{field:?} must reach the writer for A, B, and restored A"
+        expected_records,
+        "{field:?}: a suppressed observation is refused before its payload is built, so the \
+         writer must see exactly the observations that opened or re-identified an episode"
     );
     let records = evidence
         .recorded_facts()
@@ -5199,8 +5346,9 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
         .collect::<Vec<_>>();
     assert_eq!(
         records.len(),
-        3,
-        "{field:?} must emit after A-to-B and again after B-to-A"
+        expected_records,
+        "{field:?}: A-to-B-to-A must not reclaim a seen state -- a diagnostic records once, \
+         and an identity field records once per distinct episode, never three times"
     );
     assert!(records.iter().all(|record| {
         blocked_rv_metadata(record) == (RvGateResult::RejectedNotReady, Some(1_200))
@@ -5208,51 +5356,47 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
 }
 
 fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent() {
+    // Superseded, and deliberately re-aimed rather than deleted. The blocked
+    // producer no longer keys on snapshot fields, so "these two serialized
+    // fields are independently part of the key" is no longer a property that
+    // exists. What replaced it is worth pinning here instead: that this
+    // strategy's episode identity is the one the frozen contract defines, built
+    // from the active market's own identity and nothing else.
+    //
+    // The registry's own tests prove which components separate two identities.
+    // This one proves Bolt wires the right components in -- the half no test in
+    // that file can see.
     let evidence = recording_decision_evidence();
-    let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence);
-    rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy, 1_200, Some(1_200));
-    let mut decision = rv_clock_domain_amendment_blocked_decision();
-    decision.evaluation.realized_volatility_receipt.evidence =
-        strategy.realized_volatility_evidence_fields();
-    let baseline = strategy
-        .blocked_entry_strategy_input_evidence_snapshot_at(1_200, &decision)
-        .expect("blocked snapshot should build");
-    let baseline_key = BlockedStrategyInputDedupeKey::from_snapshot(&baseline);
-
-    // Runtime construction aliases both serialized fields to configured_target_id,
-    // so the writer path cannot vary them independently. These are the only
-    // structural assertions: each changes exactly one serialized field to prove
-    // that dropping either field from the key would still be detected.
-    let mut configured_target_changed = baseline.clone();
-    configured_target_changed
-        .details
-        .configured_target_id
-        .push_str("-changed");
+    let strategy = rv_clock_domain_amendment_dedupe_strategy(evidence);
+    let identity = strategy
+        .active
+        .evidence_identity
+        .as_ref()
+        .expect("the dedupe fixture must bind a market identity");
+    let episode = strategy
+        .evidence_episode_id()
+        .expect("a bound market must yield an episode identity");
+    let expected = EvidenceEpisodeId::try_from(EvidenceEpisodeParts {
+        strategy_id: strategy.config.strategy_id.clone(),
+        target_id: strategy.config.configured_target_id.to_string(),
+        venue_id: strategy.context.execution_venue().to_string(),
+        gamma_market_id: identity.gamma_market_id.clone(),
+        condition_id: identity.condition_id.clone(),
+        question_id: identity.question_id.clone(),
+        negative_risk: identity.negative_risk,
+        outcomes: identity
+            .outcomes
+            .clone()
+            .map(|outcome| EvidenceOutcomeIdentity {
+                index: outcome.index,
+                normalized_outcome: outcome.normalized_outcome,
+                clob_token_id: outcome.clob_token_id,
+            }),
+    })
+    .expect("the fixture's market identity must be constructible");
     assert_eq!(
-        configured_target_changed
-            .details
-            .market_selection_ruleset_id,
-        baseline.details.market_selection_ruleset_id
-    );
-    assert_ne!(
-        BlockedStrategyInputDedupeKey::from_snapshot(&configured_target_changed),
-        baseline_key,
-        "configured_target_id must independently remain part of the blocked key"
-    );
-
-    let mut ruleset_changed = baseline.clone();
-    ruleset_changed
-        .details
-        .market_selection_ruleset_id
-        .push_str("-changed");
-    assert_eq!(
-        ruleset_changed.details.configured_target_id,
-        baseline.details.configured_target_id
-    );
-    assert_ne!(
-        BlockedStrategyInputDedupeKey::from_snapshot(&ruleset_changed),
-        baseline_key,
-        "market_selection_ruleset_id must independently remain part of the blocked key"
+        episode, expected,
+        "the episode identity must be the market's own identity under the frozen contract"
     );
 }
 
@@ -5349,8 +5493,12 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
             .iter()
             .filter(|event| matches!(event, CurrentFact::EntrySkipObservation(_)))
             .count(),
-        17,
-        "each of eight current entry-key fields must emit on change and returning to the prior key must emit again"
+        2,
+        "eight diagnostic fields churned through change-and-restore must record nothing extra. \
+         Only the two distinct skip reasons record; every field exercised below -- blockers, \
+         market id, interval open, pricing spot, reference price, fast-venue coherence -- is a \
+         value that changes while the market does not, which is exactly what the frozen \
+         contract excludes from episode identity"
     );
 
     for field in RvClockDomainBlockedKeyField::ALL {
@@ -5391,8 +5539,10 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
             .iter()
             .filter(|event| matches!(event, CurrentFact::EntrySkipObservation(_)))
             .count(),
-        2,
-        "the admitted-entry reset site must clear both current key and RV novelty"
+        1,
+        "the admitted-entry site no longer resets suppression. A successful submit does not \
+         end the market episode, so a skip reason already claimed within it stays claimed -- \
+         resetting here is exactly the reclaim the frozen amendment forbids"
     );
 
     let blocked_evidence = recording_decision_evidence();
@@ -5414,8 +5564,9 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
             .iter()
             .filter(|event| matches!(event, CurrentFact::BlockedStrategyInputObservation(_)))
             .count(),
-        2,
-        "the left-RV-not-ready reset site must clear both current key and RV novelty"
+        1,
+        "leaving the RV-not-ready condition no longer resets suppression either, for the same \
+         reason: the episode is the market, and it did not end"
     );
 }
 
@@ -5467,15 +5618,23 @@ fn rv_clock_domain_amendment_blocked_snapshot_poisoning_refuses_followup_key_tra
         .expect("a new key transition must remain non-aborting after sink poisoning");
     assert_eq!(
         evidence.attempts_for(crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::BlockedStrategyInputObservation),
-        3,
-        "A -> failed B -> A is a new semantic transition, but the poisoned sink must refuse its append"
+        2,
+        "returning to A is not a new semantic state -- A was claimed on the first observation \
+         and stays claimed, so the sink is never asked again. The failed B is not retried \
+         either: it was claimed before the write, which is what stops a broken sink becoming \
+         the flood this suppression exists to prevent"
     );
 
     strategy.active.market_id = Some("<KEY_B>".to_string());
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_203, &b)
         .expect("another key transition must remain non-aborting after sink poisoning");
-    assert_eq!(evidence.attempts_for(crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::BlockedStrategyInputObservation), 4);
+    assert_eq!(
+        evidence.attempts_for(crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::BlockedStrategyInputObservation),
+        2,
+        "and oscillating back to B adds nothing either: two distinct states, two attempts, \
+         however long the oscillation runs"
+    );
     let records = evidence
         .recorded_facts()
         .expect("recorded current evidence must decode")

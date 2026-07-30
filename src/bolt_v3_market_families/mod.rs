@@ -148,6 +148,7 @@ pub struct SelectedBinaryOptionMarket {
     pub instrument_id: InstrumentId,
     pub up_instrument_id: InstrumentId,
     pub down_instrument_id: InstrumentId,
+    pub evidence_identity: SelectedMarketEvidenceIdentity,
     pub selection_outcome: MarketSelectionOutcome,
     pub start_timestamp_milliseconds: u64,
     pub expiration_timestamp_milliseconds: u64,
@@ -160,6 +161,35 @@ pub struct SelectedMarketSourceIdentity {
     pub condition_id: String,
     pub market_slug: String,
     pub question_id: String,
+}
+
+/// One outcome of a selected market, in the venue's own order.
+///
+/// The index is the position rather than a label because the pair is what makes
+/// an episode identity complete: two markets can share a condition and question
+/// and still be different markets if their outcomes are ordered differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedMarketEvidenceOutcome {
+    pub index: u8,
+    pub normalized_outcome: String,
+    pub clob_token_id: String,
+}
+
+/// The stable identity of a selected market, as evidence episodes key on it.
+///
+/// Deliberately carries no price, timestamp, slug, availability flag, or other
+/// value that changes while the market does not: an episode identity built from
+/// any of those reopens on churn, which is the defect this identity exists to
+/// make unrepresentable. `market_slug` in particular is excluded and lives on
+/// [`SelectedMarketSourceIdentity`] instead, because a venue may re-slug a
+/// market whose condition and question are unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedMarketEvidenceIdentity {
+    pub gamma_market_id: String,
+    pub condition_id: String,
+    pub question_id: String,
+    pub negative_risk: bool,
+    pub outcomes: [SelectedMarketEvidenceOutcome; 2],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1160,6 +1190,24 @@ mod tests {
             instrument_id: InstrumentId::from("fixture-market.FIXTURE"),
             up_instrument_id: InstrumentId::from("fixture-up.FIXTURE"),
             down_instrument_id: InstrumentId::from("fixture-down.FIXTURE"),
+            evidence_identity: SelectedMarketEvidenceIdentity {
+                gamma_market_id: "fixture-market".to_string(),
+                condition_id: "fixture-condition".to_string(),
+                question_id: "fixture-question".to_string(),
+                negative_risk: false,
+                outcomes: [
+                    SelectedMarketEvidenceOutcome {
+                        index: 0,
+                        normalized_outcome: "up".to_string(),
+                        clob_token_id: "fixture-up".to_string(),
+                    },
+                    SelectedMarketEvidenceOutcome {
+                        index: 1,
+                        normalized_outcome: "down".to_string(),
+                        clob_token_id: "fixture-down".to_string(),
+                    },
+                ],
+            },
             selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 1_000,
             expiration_timestamp_milliseconds: 61_000,

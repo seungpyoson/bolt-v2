@@ -741,7 +741,35 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
         )),
     );
     register_test_strategy(&mut strategy);
+    // Every producer that keys on an episode runs after market selection in
+    // production, so a fixture with no bound identity is not a realistic
+    // strategy -- it is one in which episode evidence is unattributable and
+    // therefore not recorded at all. Bound here so the recording tests exercise
+    // the path they mean to.
+    strategy.active.evidence_identity = Some(fixture_evidence_identity());
     strategy
+}
+
+/// The bound market identity every episode-keyed fixture shares.
+pub(super) fn fixture_evidence_identity() -> SelectedMarketEvidenceIdentity {
+    SelectedMarketEvidenceIdentity {
+        gamma_market_id: "fixture-market".to_string(),
+        condition_id: "fixture-condition".to_string(),
+        question_id: "fixture-question".to_string(),
+        negative_risk: false,
+        outcomes: [
+            SelectedMarketEvidenceOutcome {
+                index: 0,
+                normalized_outcome: "up".to_string(),
+                clob_token_id: "fixture-up".to_string(),
+            },
+            SelectedMarketEvidenceOutcome {
+                index: 1,
+                normalized_outcome: "down".to_string(),
+                clob_token_id: "fixture-down".to_string(),
+            },
+        ],
+    }
 }
 
 pub(super) fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {
@@ -1562,7 +1590,7 @@ pub(super) fn active_snapshot_with_start(
     selection_snapshot(
         interval_start_ms,
         SelectionState::Active {
-            market: candidate_market(market_id, interval_start_ms),
+            market: Box::new(candidate_market(market_id, interval_start_ms)),
         },
     )
 }
@@ -1574,7 +1602,7 @@ pub(super) fn freeze_snapshot_with_start(
     selection_snapshot(
         interval_start_ms,
         SelectionState::Freeze {
-            market: candidate_market(market_id, interval_start_ms),
+            market: Box::new(candidate_market(market_id, interval_start_ms)),
             reason: "freeze window".to_string(),
         },
     )
@@ -1609,6 +1637,24 @@ pub(super) fn candidate_market(market_id: &str, interval_start_ms: u64) -> Candi
         },
         down: CandidateOutcome {
             instrument_id: down_instrument_id,
+        },
+        evidence_identity: SelectedMarketEvidenceIdentity {
+            gamma_market_id: market_id.to_string(),
+            condition_id: condition_id.clone(),
+            question_id: format!("question-{market_id}"),
+            negative_risk: false,
+            outcomes: [
+                SelectedMarketEvidenceOutcome {
+                    index: 0,
+                    normalized_outcome: "up".to_string(),
+                    clob_token_id: up_token_id,
+                },
+                SelectedMarketEvidenceOutcome {
+                    index: 1,
+                    normalized_outcome: "down".to_string(),
+                    clob_token_id: down_token_id,
+                },
+            ],
         },
         source_identity: SelectedMarketSourceIdentity {
             condition_id,
@@ -1648,6 +1694,9 @@ pub(super) fn updown_binary_option(
         "question_id".to_string(),
         serde_json::Value::String(format!("question-{market_id}")),
     );
+    // Production instruments carry this; selection now refuses a market whose
+    // evidence identity cannot be completed without it.
+    info.insert("neg_risk".to_string(), serde_json::Value::Bool(false));
     InstrumentAny::BinaryOption(BinaryOption::new(
         InstrumentId::from(instrument_id),
         Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),

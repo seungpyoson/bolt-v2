@@ -7612,6 +7612,19 @@ nautilus_trading::nautilus_strategy!(BinaryOracleEdgeTaker, {
         // a closed position never re-emits exit evidence, so its dedup key is dead
         // state. Removal here is behavior-neutral and bounds the map over a long run.
         self.last_exit_evidence_outcome.remove(&event.position_id);
+        // The adjacent-repeat guard has to be reclaimed here too, and this is not
+        // symmetry for its own sake: NautilusTrader reuses `{instrument}-{strategy}`
+        // as the netting `PositionId`, so a later position carries the same id as
+        // this one. Leaving the key behind lets that position's *first* exit
+        // decision match a closed position's last and be suppressed -- silence on
+        // the one record a new position most needs.
+        if self
+            .last_recorded_exit_decision
+            .as_ref()
+            .is_some_and(|key| key.position_id.as_deref() == Some(event.position_id.as_str()))
+        {
+            self.last_recorded_exit_decision = None;
+        }
         let managed_position_close = match &self.exposure {
             ExposureState::Managed(position) if position.position_id == event.position_id => {
                 Some(position.pending_entry.clone())

@@ -138,9 +138,8 @@ fn validate_reconciliation_completeness_attested(
     // Every unmet condition is reported, not just the first: each is a separate
     // reason the enforced projection can be wrong, and closing one upstream
     // defect does not clear the rest. Closing one can change how another fails
-    // rather than fixing it -- `specs/506` works an example through -- which is
-    // a reason to report them all rather than to collapse them. An empty list
-    // reports nothing and enforcement proceeds.
+    // rather than fixing it, which is a reason to report them all rather than
+    // to collapse them. An empty list reports nothing and enforcement proceeds.
     for condition in binding.reconciliation_unmet {
         errors.push(format!(
             "{label}.enforce_submit_admission must be false until the configured venue \

@@ -7227,11 +7227,10 @@ fn enforced_submit_admission_rejects_venue_without_attested_reconciliation_compl
     // Every unmet condition must be reported, not just the first. Five upstream
     // defects gate this flip; closing one does not clear the rest, so an engineer
     // who fixes one has to see the others still listed. Closing one can change
-    // how another fails rather than fixing it -- `specs/506` works the zero floor
-    // and the discarded trade through as an example -- which is a reason to
-    // report all five, not a reason to collapse them. Four are adapter defects
-    // and the fifth is in the execution engine, so fixing the adapter alone
-    // cannot empty this list.
+    // how another fails rather than fixing it, which is a reason to report all
+    // five, not a reason to collapse them. Four are adapter defects and the
+    // fifth is in the execution engine, so fixing the adapter alone cannot
+    // empty this list.
     assert_eq!(
         unmet.len(),
         5,

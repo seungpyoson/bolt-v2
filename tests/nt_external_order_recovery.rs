@@ -329,8 +329,9 @@ fn the_venues_own_later_confirmation_is_not_deduplicated_against_an_inferred_fil
     // A same-pass batch reconciliation is not that. It applies the fill to a
     // working copy and then projects the order snapshot against the report,
     // which still says forty -- a material decrease from the eighty just
-    // projected -- so the excess is voided back off. The engine self-corrects
-    // there, and only there.
+    // projected -- so the LIFO void removes the venue-confirmed fill. Quantity
+    // returns to forty, but the inferred fill's fabricated identity, order-field
+    // price and absent venue fee remain.
     let corrected = generate_reconciliation_order_snapshot_events(
         &projected,
         &status_report,
@@ -345,8 +346,8 @@ fn the_venues_own_later_confirmation_is_not_deduplicated_against_an_inferred_fil
         batched.filled_qty(),
         Quantity::from("40"),
         "a same-pass batch reconciliation projects the order snapshot after the fill, sees the \
-         doubled quantity as a decrease against the report, and voids the excess -- so the double \
-         count is specific to a confirmation reconciled on its own"
+         doubled quantity as a decrease against the report, and voids the excess quantity -- it \
+         does not restore the venue-confirmed fill identity"
     );
 
     let past_quantity = reconcile_fill_report(

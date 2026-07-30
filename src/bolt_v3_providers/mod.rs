@@ -635,10 +635,11 @@ condition on its own therefore converts a permanent understatement into a double
 route where that confirmation is reconciled by itself: applied on top of the inferred fill, with \
 no order status report in the same pass to measure the result against, it leaves twice the \
 executed quantity standing. A same-pass batch reconciliation is not that route and does not \
-double count -- it applies the fill to a working copy and then projects the order snapshot \
-against the report, which still carries the smaller quantity, so the excess is voided back off. \
-A fix supplying the status report and its fill reports together therefore lands on the route \
-that self-corrects",
+double count by quantity -- it applies the fill to a working copy and then projects the order \
+snapshot against the report, which still carries the smaller quantity, so the LIFO void removes \
+the venue-confirmed fill and leaves the inferred fill standing. A fix supplying the status report \
+and its fill reports together therefore restores quantity but still loses the venue trade id, \
+venue price and venue fee",
             "the pinned Polymarket adapter builds no fill report for a confirmed maker trade \
 holding none of the account's own maker orders, incrementing no counter and logging nothing, so a \
 confirmed fill can be missing from a mass status that reports success; ownership is decided by \

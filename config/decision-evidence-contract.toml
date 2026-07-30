@@ -278,12 +278,13 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 # that must be classified once is the fact reaching the stream.
 #
 # The five census fields below are #1354 acceptance criteria, carried over from
-# `config/evidence-novelty.toml` on the retired `codex/1354-owner-ruling` branch
-# when the schema-v15 writer/readers that file described were replaced. The
-# census recorded 20 producers against the old layer; this contract splits them
-# finer -- by strategy, and by outcome where the census carried a single
-# decision row -- so `census_ancestor` names which row each inherited from, and
-# is empty for a producer that postdates the census and was derived directly.
+# the append-layer census preserved in git history. The final census revision
+# had 19 producer rows; its immediately preceding 20-row revision also named
+# `settlement_booking_error_legacy_append`, which the final revision folded into
+# terminal settlement. This contract splits the surviving producers finer -- by
+# strategy, and by outcome where the census carried a single decision row -- so
+# `census_ancestor` names which row each inherited from, and is empty for a
+# producer that postdates the census and was derived directly.
 #
 # All 20 are accounted for: 16 are named as ancestors below, 3 are append paths
 # the replacement deleted outright (`submit_reservation_metadata`,
@@ -297,10 +298,11 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 # reconciling this contract against the census must be able to find where it
 # went, which is what this paragraph exists for.
 #
-# `named_readers`, the sixth criterion, is deliberately absent. Every one of the
-# census's 74 named reader functions was deleted with that layer, and the
-# `[[dispositions]]` table below states the same fact per consumer and carries an
-# owner ruling with it, which the census's flat name list did not.
+# `named_readers`, the sixth criterion, is deliberately absent. The final
+# 19-row census carried 74 producer-to-reader references across 17 distinct
+# function names; every named reader was deleted with that layer. The
+# `[[dispositions]]` table below states the same fact per consumer and carries
+# an owner ruling with it, which the census's flat name list did not.
 #
 # `call_sites` names the enclosing function rather than a line, because a
 # line-pinned census goes stale on any edit above it, and a gate that fails for
@@ -312,8 +314,8 @@ purpose = "blocked_strategy_input_observation"
 classification = "state-observation"
 handler_reachability = ["quote", "book", "timer", "index-price"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_blocked_entry_strategy_input_snapshot_once"]
-repeat_semantics = "finite per-episode monotone suppression over six RV gate results and watermark presence"
-dedupe_key_evidence = "EvidenceEpisodeId plus the exact twelve-state closed domain -- six RV gate results by watermark presence; payload churn and writer failure cannot claim a state. The registry TOML that is the sole authority for that domain arrives with the episode-suppression change stacked above this one, so at this revision the twelve states are the enumeration, not a file reference"
+repeat_semantics = "the current last-key mask suppresses the twelve RV-result-by-watermark states only while its full observation key remains adjacent and therefore re-emits A-B-A; the stacked episode-suppression slice replaces that key with a stable episode identity and a monotone twelve-state mask"
+dedupe_key_evidence = "at this revision the full snapshot-derived key contains volatile observation fields; the required target is stable strategy, target, venue and ordered market identity plus the exact twelve-state enumeration -- six RV gate results by watermark presence"
 census_ancestor = "strategy_input_snapshot_blocked_rv"
 
 [[producers]]
@@ -441,8 +443,8 @@ purpose = "entry_skip_observation"
 classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer", "index-price"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_entry_skip_once"]
-repeat_semantics = "finite per-episode monotone suppression over the closed twenty-state reason domain"
-dedupe_key_evidence = "EvidenceEpisodeId plus TOML canonical state; payload churn and writer failure cannot claim a state"
+repeat_semantics = "the current last-key mask suppresses the twenty entry-skip reasons only while its full observation key remains adjacent and therefore re-emits A-B-A; the stacked episode-suppression slice replaces that key with a stable episode identity and a monotone twenty-state mask"
+dedupe_key_evidence = "at this revision the full entry-evaluation key contains volatile observation fields; the required target is stable strategy, target, venue and ordered market identity plus the exact twenty-state entry-skip enumeration"
 census_ancestor = "entry_skip"
 
 [[producers]]
@@ -482,7 +484,7 @@ classification = "already-deduped"
 handler_reachability = ["quote", "timer"]
 call_sites = ["src/bolt_v3_submit_admission.rs::record_stale_loss_governor_halt"]
 repeat_semantics = "current per-key power-of-two sampling continues indefinitely; migrate to one emission per closed stale-loss reason state"
-dedupe_key_evidence = "current episode key also includes source and mutable counters; the required state is stale-loss reason only"
+dedupe_key_evidence = "current episode key includes stale-loss reason and source, while mutable counters live in the episode value; the required state is stale-loss reason only"
 census_ancestor = "loss_governor_halt"
 
 [[producers]]
@@ -521,8 +523,8 @@ purpose = "requote_throttle_observation"
 classification = "already-deduped"
 handler_reachability = ["quote", "book", "timer"]
 call_sites = ["src/strategies/binary_oracle_maker/mod.rs::update_requote_throttle_edge"]
-repeat_semantics = "finite monotone suppression over the closed action-cost and throttle-bound domain, per episode identity"
-dedupe_key_evidence = "typed episode identity plus the exact seventeen-state closed domain -- three action-cost classes by six throttle bounds less the unreachable pair; timestamps and budget counters remain payload only. The identity is the family key at this revision, which several concrete markets share, so two markets throttling under one family are one episode here; #1517 replaces it with the market key and is not an ancestor of this stack"
+repeat_semantics = "the current last-key guard suppresses only adjacent repeats and re-emits A-B-A; the requote-throttle slice replaces it with an explicit blocked-episode lifecycle"
+dedupe_key_evidence = "current key includes family, leg, action-cost class, block reason and throttle bound; action cost, bound, timestamps and budget counters are diagnostics rather than episode identity. The requote-throttle slice replaces the family key with concrete market identity and keys the episode on market, leg and block reason"
 census_ancestor = "requote_throttle"
 
 [[producers]]

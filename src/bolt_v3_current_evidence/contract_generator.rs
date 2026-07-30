@@ -31,21 +31,23 @@ const HANDLER_REACHABILITY: &[&str] = &["book", "index-price", "quote", "startup
 /// check here is a set, and because the value that replaces it arrives as a
 /// vocabulary entry rather than as an edit to a comparison.
 const NOVELTY_CAPABILITIES: &[&str] = &["prohibited"];
-/// The 20 producer rows of the retired `config/evidence-novelty.toml`.
+/// The complete producer accounting from the retired evidence census.
 ///
-/// Spelled out because that file was deleted with the layer it described, so
-/// there is nothing left to resolve a name against. Without the list, provenance
-/// is an unvalidated string and a producer could claim a census row that never
-/// existed -- which is how the census would quietly stop meaning anything.
-/// Four names here have no producer in this contract, for two different
-/// reasons. `submit_reservation_metadata`, `venue_truth_capture_failure` and
+/// The final retired census revision had 19 producer rows. Its immediately
+/// preceding 20-row revision also named
+/// `settlement_booking_error_legacy_append`, which the final revision folded
+/// into terminal settlement rather than deleting. The live file was deleted
+/// with the append layer; these names are copied from those historical
+/// revisions so provenance remains validated without treating a future file at
+/// the same path as the retired census.
+///
+/// Four names here have no independent producer in this contract.
+/// `submit_reservation_metadata`, `venue_truth_capture_failure` and
 /// `venue_truth_divergence` are append paths this layer removed outright.
-/// `settlement_booking_error_legacy_append` was folded instead: its fact is now
-/// a field of `TerminalSettlementFact`, so it reaches the stream through
-/// `apply_terminal_settlement_transition` and is censused by
-/// `edge_taker_terminal_settlement`. It stays in this list because the list is
-/// the record of what the census contained, not of what still appends
-/// independently -- dropping it is how a folded path becomes an untraceable one.
+/// `settlement_booking_error_legacy_append` is the folded path: its fact is now
+/// a field of `TerminalSettlementFact`, reaches the stream through
+/// `apply_terminal_settlement_transition`, and is censused by
+/// `edge_taker_terminal_settlement`.
 const CENSUS_PRODUCERS: &[&str] = &[
     "admission_decision",
     "basket_admission_decision",
@@ -168,20 +170,6 @@ pub struct ContractRegistry {
 impl ContractRegistry {
     pub fn consumer_count(&self) -> usize {
         self.wire.consumers.len()
-    }
-
-    /// Every declared append path, as (producer id, call site).
-    ///
-    /// Exposed because whether a call site still exists is a question about the
-    /// source tree, and this generator is deliberately a pure function of the
-    /// registry string -- so the check belongs to a test that can read files.
-    pub fn declared_call_sites(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.wire.producers.iter().flat_map(|producer| {
-            producer
-                .call_sites
-                .iter()
-                .map(|site| (producer.id.as_str(), site.as_str()))
-        })
     }
 
     pub fn producer_count(&self) -> usize {

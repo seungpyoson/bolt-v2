@@ -789,6 +789,17 @@ fn same_market_transition_replaces_changed_selection_metadata() {
 fn same_boundary_replaces_a_changed_evidence_identity() {
     let mut active =
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let prior_up = active
+        .books
+        .up
+        .instrument_id
+        .expect("fixture must bind the up outcome");
+    active.books.up.update_from_deltas(&book_deltas(
+        prior_up,
+        &[(BookAction::Add, OrderSide::Buy, 0.45, 10.0)],
+    ));
+    assert_eq!(active.books.up.best_bid, Some(0.45));
+
     let mut corrected = candidate_market("MKT-1", 1_000);
     corrected.source_identity.question_id = "question-MKT-1-corrected".to_string();
     corrected.evidence_identity = SelectedMarketEvidenceIdentity::try_new(
@@ -824,6 +835,10 @@ fn same_boundary_replaces_a_changed_evidence_identity() {
         active.evidence_identity.as_ref(),
         Some(&expected_identity),
         "a valid identity correction at the same cadence boundary must replace the prior episode identity"
+    );
+    assert!(
+        active.books.up.bid_levels.is_empty(),
+        "levels from the prior evidence identity must not survive the replacement"
     );
 }
 

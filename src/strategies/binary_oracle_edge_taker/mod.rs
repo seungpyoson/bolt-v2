@@ -5835,22 +5835,25 @@ impl BinaryOracleEdgeTaker {
                 .receive_watermark_ms
                 .is_some(),
         );
-        // Checked before the snapshot is built, so a suppressed observation
-        // costs no payload construction; claimed before the write, so a failed
-        // write cannot become a per-tick retry.
-        if self
-            .blocked_strategy_input_novelty
-            .has_claimed(&episode, state)?
-        {
-            return Ok(());
-        }
-        let snapshot = self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, decision)?;
+        // Claim before payload construction and append. A malformed telemetry
+        // snapshot or broken sink stays bounded to one attempt for this
+        // registered state and cannot abort or flood the strategy callback.
         if !self
             .blocked_strategy_input_novelty
             .claim_once(&episode, state)?
         {
             return Ok(());
         }
+        let snapshot =
+            match self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, decision) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    log::error!(
+                        "blocked strategy-input observation payload construction failed: {error}"
+                    );
+                    return Ok(());
+                }
+            };
         if let ObservationRecordOutcome::FailureReported(error) = self
             .context
             .edge_taker_evidence()

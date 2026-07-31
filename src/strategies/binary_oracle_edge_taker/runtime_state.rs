@@ -262,9 +262,15 @@ impl ActiveMarketState {
             && self.market_id == other.market_id
             && self.evidence_identity == other.evidence_identity
             && self.instrument_id == other.instrument_id
+            && self.same_outcome_instruments(other)
             && self.market_selection_outcome == other.market_selection_outcome
             && self.interval_start_ms == other.interval_start_ms
             && self.interval_end_ms == other.interval_end_ms
+    }
+
+    pub(super) fn same_outcome_instruments(&self, other: &Self) -> bool {
+        self.books.up.instrument_id == other.books.up.instrument_id
+            && self.books.down.instrument_id == other.books.down.instrument_id
     }
 
     /// Binds the live resolution strike (Chainlink `IndexPriceUpdate`) to the

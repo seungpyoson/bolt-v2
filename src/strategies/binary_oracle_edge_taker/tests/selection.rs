@@ -828,7 +828,7 @@ fn same_boundary_replaces_a_changed_evidence_identity() {
 }
 
 #[test]
-fn same_boundary_drops_books_when_one_outcome_instrument_is_reissued() {
+fn same_boundary_drops_books_when_one_outcome_instrument_changes_without_a_new_token() {
     let mut active =
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
     let prior_down = active
@@ -845,25 +845,6 @@ fn same_boundary_drops_books_when_one_outcome_instrument_is_reissued() {
     let mut reissued = candidate_market("MKT-1", 1_000);
     let reissued_down = InstrumentId::from("condition-MKT-1-MKT-1-DOWN-REISSUED.POLYMARKET");
     reissued.down.instrument_id = reissued_down.to_string();
-    reissued.evidence_identity = SelectedMarketEvidenceIdentity::try_new(
-        "MKT-1".to_string(),
-        "condition-MKT-1".to_string(),
-        "question-MKT-1".to_string(),
-        false,
-        [
-            SelectedMarketEvidenceOutcome {
-                index: 0,
-                normalized_outcome: "up".to_string(),
-                clob_token_id: "MKT-1-UP".to_string(),
-            },
-            SelectedMarketEvidenceOutcome {
-                index: 1,
-                normalized_outcome: "down".to_string(),
-                clob_token_id: "MKT-1-DOWN-REISSUED".to_string(),
-            },
-        ],
-    )
-    .expect("reissued down outcome must remain a valid evidence identity");
     let next = selection_snapshot(
         1_000,
         SelectionState::Active {

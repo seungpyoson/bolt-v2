@@ -60,52 +60,36 @@ fn novelty_registry_has_a_production_mapping_for_every_declared_state() {
             .collect::<std::collections::BTreeSet<_>>()
     };
 
-    let blocked_states = [
-        EvidenceRvGateResult::Accepted,
-        EvidenceRvGateResult::MissingSnapshot,
-        EvidenceRvGateResult::MissingEvaluationEventTime,
-        EvidenceRvGateResult::RejectedFutureDated,
-        EvidenceRvGateResult::RejectedStale,
-        EvidenceRvGateResult::RejectedNotReady,
-    ]
-    .into_iter()
-    .flat_map(|gate_result| {
-        [false, true].map(|watermark_present| {
-            blocked_strategy_input_canonical_state(gate_result, watermark_present)
+    let blocked_states = EvidenceRvGateResult::ALL
+        .iter()
+        .copied()
+        .flat_map(|gate_result| {
+            [false, true].map(|watermark_present| {
+                blocked_strategy_input_canonical_state(gate_result, watermark_present)
+            })
         })
-    })
-    .collect::<std::collections::BTreeSet<EvidenceCanonicalState>>();
+        .collect::<std::collections::BTreeSet<EvidenceCanonicalState>>();
+    assert_eq!(
+        blocked_states.len(),
+        EvidenceRvGateResult::ALL.len() * 2,
+        "every production RV-gate state and watermark pairing must map injectively"
+    );
     assert_eq!(
         blocked_states,
         registered(EvidenceStateOwner::BlockedStrategyInputSnapshot),
         "every blocked-strategy-input registry state must be constructible by production mapping"
     );
 
-    let entry_skip_states = [
-        EvidenceEntrySkipReason::StrategyCoreNotRegistered,
-        EvidenceEntrySkipReason::EntryGateBlocked,
-        EvidenceEntrySkipReason::EntryPricingBlocked,
-        EvidenceEntrySkipReason::NoSideSelected,
-        EvidenceEntrySkipReason::SizedNotionalNotPositive,
-        EvidenceEntrySkipReason::InstrumentIdMissing,
-        EvidenceEntrySkipReason::InstrumentMissingFromCache,
-        EvidenceEntrySkipReason::EntryPriceMissing,
-        EvidenceEntrySkipReason::QuantityRoundingFailed,
-        EvidenceEntrySkipReason::LimitNotionalExceedsSizedNotional,
-        EvidenceEntrySkipReason::EntryQuoteNotionalBelowVenueMinimum,
-        EvidenceEntrySkipReason::EntryQuoteNotionalMinimumUnmodeled,
-        EvidenceEntrySkipReason::QuantityNotPositive,
-        EvidenceEntrySkipReason::PositionContractInvalid,
-        EvidenceEntrySkipReason::EntryPositionContractUnsupported,
-        EvidenceEntrySkipReason::HistoricalEntryFeeUnavailable,
-        EvidenceEntrySkipReason::OnePositionInvariantViolation,
-        EvidenceEntrySkipReason::EntryMalformedRejected,
-        EvidenceEntrySkipReason::EntryBalanceRejected,
-        EvidenceEntrySkipReason::EntryUnfillableRejectedUnchangedBook,
-    ]
-    .into_iter()
-    .map(entry_skip_canonical_state)
-    .collect::<std::collections::BTreeSet<_>>();
+    let entry_skip_states = EvidenceEntrySkipReason::ALL
+        .iter()
+        .copied()
+        .map(entry_skip_canonical_state)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        entry_skip_states.len(),
+        EvidenceEntrySkipReason::ALL.len(),
+        "every production entry-skip reason must map injectively"
+    );
     assert_eq!(
         entry_skip_states,
         registered(EvidenceStateOwner::EntrySkip),

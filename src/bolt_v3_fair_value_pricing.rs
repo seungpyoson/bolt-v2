@@ -13,14 +13,16 @@ use crate::{
     bolt_v3_timestamp_domain::LocalReceiveMs,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RvGateResult {
-    Accepted,
-    MissingSnapshot,
-    MissingEvaluationEventTime,
-    RejectedFutureDated,
-    RejectedStale,
-    RejectedNotReady,
+define_closed_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum RvGateResult {
+        Accepted,
+        MissingSnapshot,
+        MissingEvaluationEventTime,
+        RejectedFutureDated,
+        RejectedStale,
+        RejectedNotReady,
+    }
 }
 
 use std::collections::BTreeMap;

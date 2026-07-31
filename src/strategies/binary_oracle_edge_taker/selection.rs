@@ -97,6 +97,7 @@ pub(super) fn apply_selection_snapshot_to_active(
     let next = ActiveMarketState::from_snapshot(snapshot, warmup_target);
     let preserve_books = active.market_id.is_some()
         && active.market_id == next.market_id
+        && active.evidence_identity == next.evidence_identity
         && active.same_outcome_instruments(&next);
     if active.same_boundary(&next) {
         active.trade_flow = previous_trade_flow;

@@ -123,6 +123,7 @@ pub(super) fn same_market_transition(
 ) -> bool {
     current.market_id.is_some()
         && current.market_id == next.market_id
+        && current.evidence_identity == next.evidence_identity
         && current.instrument_id == next.instrument_id
         && current.market_selection_outcome == next.market_selection_outcome
         && current.interval_start_ms == next.interval_start_ms

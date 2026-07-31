@@ -71,6 +71,8 @@ struct NautilusSourceCapabilityEvidence {
 struct EvidenceNoveltyProducer {
     kind: String,
     rust_owner: String,
+    rust_state_prefix: String,
+    semantic_prefix: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,9 +165,16 @@ fn parse_evidence_novelty_registry(text: &str, path: &Path) -> EvidenceNoveltyRe
         let table = value
             .as_table()
             .unwrap_or_else(|| panic!("{}: {owner} must be a table", path.display()));
-        assert_exact_keys(table, &["kind", "rust_owner"], path, &owner);
+        assert_exact_keys(
+            table,
+            &["kind", "rust_owner", "rust_state_prefix", "semantic_prefix"],
+            path,
+            &owner,
+        );
         let kind = required_toml_string(table, "kind", path, &owner);
         let rust_owner = required_toml_string(table, "rust_owner", path, &owner);
+        let rust_state_prefix = required_toml_string(table, "rust_state_prefix", path, &owner);
+        let semantic_prefix = required_toml_string(table, "semantic_prefix", path, &owner);
         assert!(
             is_snake_case(&kind),
             "{}: {owner}.kind must be snake_case",
@@ -174,6 +183,17 @@ fn parse_evidence_novelty_registry(text: &str, path: &Path) -> EvidenceNoveltyRe
         assert!(
             is_upper_camel_case(&rust_owner),
             "{}: {owner}.rust_owner must be UpperCamelCase",
+            path.display()
+        );
+        assert!(
+            is_upper_camel_case(&rust_state_prefix),
+            "{}: {owner}.rust_state_prefix must be UpperCamelCase",
+            path.display()
+        );
+        assert!(
+            is_dotted_snake_case(&semantic_prefix)
+                && (semantic_prefix == kind || semantic_prefix.starts_with(&format!("{kind}."))),
+            "{}: {owner}.semantic_prefix must belong to its producer",
             path.display()
         );
         assert!(
@@ -186,7 +206,12 @@ fn parse_evidence_novelty_registry(text: &str, path: &Path) -> EvidenceNoveltyRe
             "{}: duplicate producer rust_owner `{rust_owner}`",
             path.display()
         );
-        producers.push(EvidenceNoveltyProducer { kind, rust_owner });
+        producers.push(EvidenceNoveltyProducer {
+            kind,
+            rust_owner,
+            rust_state_prefix,
+            semantic_prefix,
+        });
     }
 
     let allocation_values = required_toml_array(&document, "allocation", path, "root");
@@ -292,15 +317,38 @@ fn parse_evidence_novelty_registry(text: &str, path: &Path) -> EvidenceNoveltyRe
             "{}: {owner}.rust_variant must be UpperCamelCase",
             path.display()
         );
+        let producer = producer_by_kind
+            .get(producer_kind.as_str())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: {owner} references unknown producer `{producer_kind}`",
+                    path.display()
+                )
+            });
         assert!(
-            producer_by_kind.contains_key(producer_kind.as_str()),
-            "{}: {owner} references unknown producer `{producer_kind}`",
+            is_dotted_snake_case(&semantic_state),
+            "{}: {owner}.semantic_state must be dotted snake_case",
             path.display()
         );
-        assert!(
-            is_dotted_snake_case(&semantic_state)
-                && semantic_state.starts_with(&format!("{producer_kind}.")),
-            "{}: {owner}.semantic_state must belong to its producer",
+        let semantic_suffix = semantic_state
+            .strip_prefix(&format!("{}.", producer.semantic_prefix))
+            .filter(|suffix| !suffix.is_empty())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: {owner}.semantic_state must begin with `{}.`",
+                    path.display(),
+                    producer.semantic_prefix
+                )
+            });
+        let expected_rust_variant = format!(
+            "{}{}",
+            producer.rust_state_prefix,
+            dotted_snake_to_upper_camel_case(semantic_suffix)
+        );
+        assert_eq!(
+            rust_variant,
+            expected_rust_variant,
+            "{}: {owner}.rust_variant must be derived from semantic_state",
             path.display()
         );
         let allocation_row = allocation_by_name
@@ -451,6 +499,21 @@ fn is_snake_case(value: &str) -> bool {
         && chars.all(|character| {
             character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
         })
+}
+
+fn dotted_snake_to_upper_camel_case(value: &str) -> String {
+    value
+        .split(['.', '_'])
+        .map(|part| {
+            let mut chars = part.chars();
+            chars
+                .next()
+                .into_iter()
+                .flat_map(char::to_uppercase)
+                .chain(chars)
+                .collect::<String>()
+        })
+        .collect()
 }
 
 fn is_dotted_snake_case(value: &str) -> bool {

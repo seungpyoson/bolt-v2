@@ -862,6 +862,43 @@ mod tests {
     }
 
     #[test]
+    fn rejects_static_event_with_missing_negative_risk_metadata() {
+        let mut instruments = selectable_static_instruments();
+        let InstrumentAny::BinaryOption(no) = &mut instruments[0] else {
+            panic!("fixture must be a binary option");
+        };
+        no.info
+            .as_mut()
+            .expect("fixture must carry metadata")
+            .shift_remove(METADATA_NEGATIVE_RISK_FIELD);
+
+        assert!(
+            select_binary_option_market(static_selection_target(), &instruments, 10_000).is_none(),
+            "selection must not default an absent negative-risk flag"
+        );
+    }
+
+    #[test]
+    fn rejects_static_event_with_mismatched_negative_risk_metadata() {
+        let mut instruments = selectable_static_instruments();
+        let InstrumentAny::BinaryOption(yes) = &mut instruments[1] else {
+            panic!("fixture must be a binary option");
+        };
+        yes.info
+            .as_mut()
+            .expect("fixture must carry metadata")
+            .insert(
+                METADATA_NEGATIVE_RISK_FIELD.to_string(),
+                serde_json::Value::Bool(true),
+            );
+
+        assert!(
+            select_binary_option_market(static_selection_target(), &instruments, 10_000).is_none(),
+            "selection must refuse legs that disagree on negative-risk mode"
+        );
+    }
+
+    #[test]
     fn rejects_static_event_when_configured_condition_id_is_absent_from_instruments() {
         let instruments = vec![
             test_binary_option(
@@ -1395,5 +1432,30 @@ mod tests {
             1.into(),
             1.into(),
         ))
+    }
+
+    fn selectable_static_instruments() -> Vec<InstrumentAny> {
+        vec![
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ]
     }
 }

@@ -784,3 +784,45 @@ fn same_market_transition_replaces_changed_selection_metadata() {
     );
     assert_eq!(active.interval_end_ms, Some(301_999));
 }
+
+#[test]
+fn same_boundary_replaces_a_changed_evidence_identity() {
+    let mut active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let mut corrected = candidate_market("MKT-1", 1_000);
+    corrected.source_identity.question_id = "question-MKT-1-corrected".to_string();
+    corrected.evidence_identity = SelectedMarketEvidenceIdentity::try_new(
+        "MKT-1".to_string(),
+        "condition-MKT-1".to_string(),
+        "question-MKT-1-corrected".to_string(),
+        false,
+        [
+            SelectedMarketEvidenceOutcome {
+                index: 0,
+                normalized_outcome: "up".to_string(),
+                clob_token_id: "MKT-1-UP".to_string(),
+            },
+            SelectedMarketEvidenceOutcome {
+                index: 1,
+                normalized_outcome: "down".to_string(),
+                clob_token_id: "MKT-1-DOWN".to_string(),
+            },
+        ],
+    )
+    .expect("corrected evidence identity must remain valid");
+    let expected_identity = corrected.evidence_identity.clone();
+    let next = selection_snapshot(
+        1_000,
+        SelectionState::Active {
+            market: Box::new(corrected),
+        },
+    );
+
+    apply_selection_snapshot_to_active(&mut active, &next, 0);
+
+    assert_eq!(
+        active.evidence_identity.as_ref(),
+        Some(&expected_identity),
+        "a valid identity correction at the same cadence boundary must replace the prior episode identity"
+    );
+}

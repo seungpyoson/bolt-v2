@@ -1938,6 +1938,58 @@ mod tests {
     }
 
     #[test]
+    fn selected_updown_market_rejects_missing_negative_risk_metadata() {
+        let mut instruments = selectable_updown_instruments();
+        let InstrumentAny::BinaryOption(up) = &mut instruments[0] else {
+            panic!("fixture must be a binary option");
+        };
+        up.info
+            .as_mut()
+            .expect("fixture must carry metadata")
+            .shift_remove("neg_risk");
+
+        assert!(
+            select_market_from_instruments(
+                UpdownSelectionTarget {
+                    underlying_asset: TEST_UNDERLYING_ASSET,
+                    cadence_secs: 300,
+                    cadence_slug_token: TEST_CADENCE_SLUG_TOKEN,
+                },
+                &instruments,
+                600_001,
+            )
+            .is_none(),
+            "selection must not default an absent negative-risk flag"
+        );
+    }
+
+    #[test]
+    fn selected_updown_market_rejects_mismatched_negative_risk_metadata() {
+        let mut instruments = selectable_updown_instruments();
+        let InstrumentAny::BinaryOption(down) = &mut instruments[1] else {
+            panic!("fixture must be a binary option");
+        };
+        down.info
+            .as_mut()
+            .expect("fixture must carry metadata")
+            .insert("neg_risk".to_string(), serde_json::Value::Bool(true));
+
+        assert!(
+            select_market_from_instruments(
+                UpdownSelectionTarget {
+                    underlying_asset: TEST_UNDERLYING_ASSET,
+                    cadence_secs: 300,
+                    cadence_slug_token: TEST_CADENCE_SLUG_TOKEN,
+                },
+                &instruments,
+                600_001,
+            )
+            .is_none(),
+            "selection must refuse legs that disagree on negative-risk mode"
+        );
+    }
+
+    #[test]
     fn selected_updown_market_start_preserves_later_instrument_activation() {
         let market_slug = updown_market_slug(TEST_UNDERLYING_ASSET, TEST_CADENCE_SLUG_TOKEN, 600);
         let instruments = vec![
@@ -2151,6 +2203,32 @@ mod tests {
             1.into(),
             1.into(),
         ))
+    }
+
+    fn selectable_updown_instruments() -> Vec<InstrumentAny> {
+        let market_slug = updown_market_slug(TEST_UNDERLYING_ASSET, TEST_CADENCE_SLUG_TOKEN, 600);
+        vec![
+            test_binary_option(
+                "configured-condition-up.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Up",
+                600_000,
+                900_000,
+            ),
+            test_binary_option(
+                "configured-condition-down.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Down",
+                600_000,
+                900_000,
+            ),
+        ]
     }
 
     #[test]

@@ -7,10 +7,14 @@ capacity = 256
 [[producer]]
 kind = "strategy_input_snapshot"
 rust_owner = "BlockedStrategyInputSnapshot"
+rust_state_prefix = "BlockedStrategyInput"
+semantic_prefix = "strategy_input_snapshot.blocked_rv"
 
 [[producer]]
 kind = "entry_skip"
 rust_owner = "EntrySkip"
+rust_state_prefix = "EntrySkip"
+semantic_prefix = "entry_skip"
 
 [[allocation]]
 name = "discovery_identity"

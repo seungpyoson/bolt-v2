@@ -29,6 +29,34 @@ fn producer_block(input: &str, id: &str) -> String {
     input[start..end].to_string()
 }
 
+/// Replace one field in one producer without coupling the mutation to the
+/// field's current reviewed prose.
+///
+/// Child slices legitimately update that prose. A negative-control test must
+/// continue to exercise the validator after such an update instead of failing
+/// because its old text is no longer present.
+fn replace_producer_field(
+    input: &str,
+    producer_id: &str,
+    field: &str,
+    replacement_value: &str,
+) -> String {
+    let block = producer_block(input, producer_id);
+    let prefix = format!("{field} = ");
+    let current = block
+        .lines()
+        .filter(|line| line.starts_with(&prefix))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        current.len(),
+        1,
+        "producer {producer_id} must contain exactly one {field} field"
+    );
+    let replacement = format!("{field} = {replacement_value}");
+    let mutated_block = replace_once(&block, current[0], &replacement);
+    replace_once(input, &block, &mutated_block)
+}
+
 #[test]
 fn current_contract_is_closed_and_deterministic() {
     let contract = parse_contract_registry(REGISTRY).expect("current contract must parse");
@@ -260,10 +288,11 @@ fn a_call_site_without_a_rust_path_and_function_is_rejected() {
 
 #[test]
 fn empty_repeat_semantics_are_rejected() {
-    let mutated = replace_once(
+    let mutated = replace_producer_field(
         REGISTRY,
-        "repeat_semantics = \"the current last-key mask suppresses the twenty entry-skip reasons only while its full observation key remains adjacent and therefore re-emits A-B-A; the stacked episode-suppression slice replaces that key with a stable episode identity and a monotone twenty-state mask\"",
-        "repeat_semantics = \"\"",
+        "edge_taker_entry_skip",
+        "repeat_semantics",
+        "\"\"",
     );
     let error = parse_contract_registry(&mutated)
         .expect_err("a producer without reviewed repeat semantics must fail");
@@ -275,10 +304,11 @@ fn empty_repeat_semantics_are_rejected() {
 
 #[test]
 fn empty_dedupe_key_evidence_is_rejected() {
-    let mutated = replace_once(
+    let mutated = replace_producer_field(
         REGISTRY,
-        "dedupe_key_evidence = \"at this revision the full entry-evaluation key contains volatile observation fields; the required target is stable strategy, target, venue and ordered market identity plus the exact twenty-state entry-skip enumeration\"",
-        "dedupe_key_evidence = \"\"",
+        "edge_taker_entry_skip",
+        "dedupe_key_evidence",
+        "\"\"",
     );
     let error = parse_contract_registry(&mutated)
         .expect_err("a producer without reviewed dedupe-key evidence must fail");

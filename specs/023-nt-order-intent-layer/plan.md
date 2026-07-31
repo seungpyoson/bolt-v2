@@ -50,15 +50,19 @@ specs/023-nt-order-intent-layer/
 
 ```text
 src/
-├── bolt_v3_archetypes/
-│   └── binary_oracle_edge_taker.rs
 ├── bolt_v3_order_intent.rs
 ├── strategies/
-│   └── binary_oracle_edge_taker.rs
-└── bolt_v3_decision_evidence.rs
+│   └── binary_oracle_edge_taker/
+│       ├── archetype.rs
+│       ├── mod.rs
+│       └── orders.rs
+└── bolt_v3_current_evidence/
+    ├── facts.rs
+    └── mod.rs
 
 tests/
 ├── bolt_v3_order_intent.rs
+├── bolt_v3_current_evidence_runtime.rs
 ├── config_parsing.rs
 └── bolt_v3_strategy_registration.rs
 ```

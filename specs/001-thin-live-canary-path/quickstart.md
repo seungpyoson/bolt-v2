@@ -9,7 +9,7 @@ For Phase 6, run only after the Phase 6 implementation branch exists and the fir
 ```bash
 cargo fmt --check
 cargo test --test bolt_v3_submit_admission
-cargo test --test bolt_v3_decision_evidence
+cargo test --test bolt_v3_current_evidence_runtime
 cargo test --test bolt_v3_strategy_registration
 cargo test --test bolt_v3_live_canary_gate
 git diff --check
@@ -23,7 +23,7 @@ Phase 6 green criteria:
 - missing or unarmed gate report rejects before NT submit with a distinct diagnostic
 - exhausted count cap rejects before NT submit
 - over notional cap rejects before NT submit, while notional equal to the cap admits
-- decision evidence failure rejects before admission budget consumption
+- current-evidence write failure rejects before admission budget consumption
 - valid submit path orders as decision evidence write, submit admission, NT submit
 - entry, exit, and replace-submit candidates consume one global budget
 - plain cancel requests do not consume submit admission budget
@@ -125,7 +125,8 @@ The harness computes the approved root TOML hash from `BOLT_V3_PHASE8_ROOT_TOML_
 
 Expected result:
 - at most one NT-submitted order
-- decision evidence at `decision_evidence_path`
+- current machine and observation evidence below `[persistence].catalog_directory` at
+  the relative paths configured by `[persistence.decision_evidence]`
 - client and venue ids recorded after submit as `client_order_id_hash` and `venue_order_id_hash`
 - NT submit event captured at `nt_submit_event_path`
 - venue accept, fill, or reject captured at `venue_order_state_path`

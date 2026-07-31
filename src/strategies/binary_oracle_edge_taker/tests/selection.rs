@@ -826,3 +826,56 @@ fn same_boundary_replaces_a_changed_evidence_identity() {
         "a valid identity correction at the same cadence boundary must replace the prior episode identity"
     );
 }
+
+#[test]
+fn same_boundary_drops_books_when_one_outcome_instrument_is_reissued() {
+    let mut active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let prior_down = active
+        .books
+        .down
+        .instrument_id
+        .expect("fixture must bind the down outcome");
+    active.books.down.update_from_deltas(&book_deltas(
+        prior_down,
+        &[(BookAction::Add, OrderSide::Buy, 0.40, 10.0)],
+    ));
+    assert_eq!(active.books.down.best_bid, Some(0.40));
+
+    let mut reissued = candidate_market("MKT-1", 1_000);
+    let reissued_down = InstrumentId::from("condition-MKT-1-MKT-1-DOWN-REISSUED.POLYMARKET");
+    reissued.down.instrument_id = reissued_down.to_string();
+    reissued.evidence_identity = SelectedMarketEvidenceIdentity::try_new(
+        "MKT-1".to_string(),
+        "condition-MKT-1".to_string(),
+        "question-MKT-1".to_string(),
+        false,
+        [
+            SelectedMarketEvidenceOutcome {
+                index: 0,
+                normalized_outcome: "up".to_string(),
+                clob_token_id: "MKT-1-UP".to_string(),
+            },
+            SelectedMarketEvidenceOutcome {
+                index: 1,
+                normalized_outcome: "down".to_string(),
+                clob_token_id: "MKT-1-DOWN-REISSUED".to_string(),
+            },
+        ],
+    )
+    .expect("reissued down outcome must remain a valid evidence identity");
+    let next = selection_snapshot(
+        1_000,
+        SelectionState::Active {
+            market: Box::new(reissued),
+        },
+    );
+
+    apply_selection_snapshot_to_active(&mut active, &next, 0);
+
+    assert_eq!(active.books.down.instrument_id, Some(reissued_down));
+    assert!(
+        active.books.down.bid_levels.is_empty(),
+        "levels from the retired down instrument must not survive the replacement"
+    );
+}

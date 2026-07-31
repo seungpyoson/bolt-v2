@@ -26,11 +26,12 @@ use rust_decimal::Decimal;
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
+use binding::MakerConcreteMarketIdentity;
 
 use crate::{
-    bolt_v3_decision_evidence::{
-        BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
-        BoltV3RequoteThrottleEvidence,
+    bolt_v3_current_evidence::{
+        EvidenceRequoteLeg, ObservationRecordOutcome, RequoteActionCostClass,
+        RequoteThrottleBlockReason, RequoteThrottleBound, RequoteThrottleObservationFact,
     },
     bolt_v3_loss_governor::LossAdmissionDecision,
     bolt_v3_maker_market_selection::MakerMarketPortfolioPolicy,
@@ -68,7 +69,6 @@ use crate::{
     bolt_v3_quoting::QuoteTargets,
     bolt_v3_reference_price::ReferencePriceSelector,
     bolt_v3_requote_budget::RequoteBudgetPair,
-    bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::mu::MakerMuState,
     strategies::binary_oracle_maker::runtime::MakerRuntime,
@@ -89,8 +89,6 @@ pub use config::{
 /// `RUNTIME_BINDING.key`, validation-binding key, and operator TOML
 /// `strategy_archetype` value are all this single constant.
 pub const KEY: &str = "binary_oracle_maker";
-const REQUOTE_THROTTLE_LEG_YES: &str = "yes";
-const REQUOTE_THROTTLE_LEG_NO: &str = "no";
 const REQUOTE_THROTTLE_FRESH_SUBMIT_SUBMIT_COST: u64 = 1;
 const REQUOTE_THROTTLE_FRESH_SUBMIT_REST_COST: u64 = 1;
 const REQUOTE_THROTTLE_CANCEL_RESUBMIT_SUBMIT_COST: u64 = 1;
@@ -109,22 +107,6 @@ pub struct BinaryOracleMaker {
     context: StrategyBuildContext,
     mu: MakerMuState,
     runtime: MakerRuntime,
-    /// Episodes already recorded for currently-blocked legs.
-    ///
-    /// Accumulates rather than replacing: holding only the newest identity per
-    /// leg makes suppression last-write-wins, so any identity with more than one
-    /// reachable value re-emits on every alternation instead of being
-    /// suppressed. Entries for a market's leg are dropped when it stops being
-    /// blocked, which bounds this to the reachable identities of the legs
-    /// blocked right now.
-    ///
-    /// Worth stating plainly: while `BoltV3RequoteThrottleBlockReason` has one
-    /// variant, at most one identity per `(market_key, leg)` is reachable, so
-    /// accumulating and replacing compute the same set and no test can tell them
-    /// apart. This is the shape that stays correct when a second reason lands --
-    /// replacing would silently suppress the other one -- but it is not, and
-    /// cannot yet be, mutation-tested.
-    recorded_requote_throttle_episodes: Vec<RequoteThrottleEpisodeId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,7 +117,6 @@ pub struct BinaryOracleMakerRuntimeQuoteRouteInput<'a> {
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,27 +131,23 @@ pub struct BinaryOracleMakerRuntimeQuoteRouteOutcome {
 /// `action_cost_class` and `bound_by` are deliberately absent. Both vary while
 /// the blocked state does not: `action_cost_class` follows whatever the strategy
 /// was attempting this tick, and `bound_by` is computed from `now_ms` against the
-/// budget window, so together they give one blocked leg eighteen reachable
+/// budget window, so together they give one blocked leg seventeen reachable
 /// spellings. They remain on the emitted evidence, where they are diagnostics;
 /// they are not identity.
 ///
 /// `block_reason` stays. It is the blocker category, which is semantic state, and
 /// it is what a second reason would have to differ in to deserve its own record.
 ///
-/// `market_key`, not `family_key`. A family is a category -- `updown`,
-/// `static_binary_event` -- that the portfolio may quote several markets from at
-/// once, and only `market_key` is validated unique. Keying an episode by family
-/// made two concurrently-quoted markets one episode: either could clear the
-/// other's record, and the second to block emitted nothing.
-/// Public only because [`MakerRuntime::refresh_active_markets`] takes the
-/// episode list to prune, which is what stops a refresh from silently skipping
-/// the prune. The fields stay private: the runtime reads `market_key` as a child
-/// module, and nothing outside this strategy constructs or inspects one.
+/// The configured market key remains for active-set ownership, but is not the
+/// concrete identity: a cadence successor or reissued instrument can resolve
+/// under the same key. The validated venue identity, window start, and leg
+/// instruments distinguish those successors.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RequoteThrottleEpisodeId {
+struct RequoteThrottleEpisodeId {
     market_key: String,
+    market: MakerConcreteMarketIdentity,
     leg: Leg,
-    block_reason: BoltV3RequoteThrottleBlockReason,
+    block_reason: RequoteThrottleBlockReason,
 }
 
 /// Which market a throttle record is about: the unique key, and the family it was
@@ -183,45 +160,40 @@ pub struct RequoteThrottleEpisodeId {
 struct ThrottledMarket<'a> {
     key: &'a str,
     family_key: &'a str,
+    concrete_identity: &'a MakerConcreteMarketIdentity,
 }
 
-impl BoltV3RequoteThrottleEvidence {
-    #[allow(clippy::too_many_arguments)]
-    fn from_requote_throttle(
-        strategy_id: String,
-        market: ThrottledMarket<'_>,
-        leg: Leg,
-        now_ms: u64,
-        action_cost_class: BoltV3RequoteActionCostClass,
-        block_reason: BoltV3RequoteThrottleBlockReason,
-        bound_by: BoltV3RequoteThrottleBound,
-        budget: &RequoteBudgetPair,
-    ) -> Self {
-        Self {
-            strategy_id,
-            family_key: market.family_key.to_string(),
-            // The declaration key, which is what identifies the episode. Named
-            // `market_id` by the wire contract, where every other producer means
-            // the venue/discovery id -- so a cross-evidence join on this field
-            // would miss. Recorded here rather than renamed because the field is
-            // unread at this revision and renaming it is an evidence-schema
-            // change this PR does not carry; the concrete venue binding is still
-            // recoverable from the runtime for the same key.
-            market_id: Some(market.key.to_string()),
-            leg: requote_throttle_leg_label(leg).to_string(),
-            now_ms,
-            observed_at_ns: now_ms.saturating_mul(NANOS_PER_MILLI_U64),
-            action_cost_class,
-            block_reason,
-            bound_by,
-            submit_commands_in_window: budget.submit_commands_in_window(),
-            submit_command_cap: budget.submit_command_cap(),
-            submit_window_ms: budget.submit_window_ms(),
-            rest_cost_in_window: budget.rest_cost_in_window(),
-            rest_cap_per_minute: budget.rest_cap_per_window(),
-            rest_window_ms: budget.rest_window_ms(),
-            min_interval_ms: budget.min_interval_ms(),
-        }
+#[allow(clippy::too_many_arguments)]
+fn requote_throttle_observation(
+    strategy_id: String,
+    market: ThrottledMarket<'_>,
+    leg: Leg,
+    now_ms: u64,
+    action_cost_class: RequoteActionCostClass,
+    block_reason: RequoteThrottleBlockReason,
+    bound_by: RequoteThrottleBound,
+    budget: &RequoteBudgetPair,
+) -> RequoteThrottleObservationFact {
+    RequoteThrottleObservationFact {
+        strategy_id,
+        family_key: market.family_key.to_string(),
+        market_id: Some(market.concrete_identity.gamma_market_id().to_string()),
+        leg: match leg {
+            Leg::Yes => EvidenceRequoteLeg::Yes,
+            Leg::No => EvidenceRequoteLeg::No,
+        },
+        now_ms,
+        observed_at_ns: now_ms.saturating_mul(NANOS_PER_MILLI_U64),
+        action_cost_class,
+        block_reason,
+        bound_by,
+        submit_commands_in_window: budget.submit_commands_in_window(),
+        submit_command_cap: budget.submit_command_cap(),
+        submit_window_ms: budget.submit_window_ms(),
+        rest_cost_in_window: budget.rest_cost_in_window(),
+        rest_cap_per_minute: budget.rest_cap_per_window(),
+        rest_window_ms: budget.rest_window_ms(),
+        min_interval_ms: budget.min_interval_ms(),
     }
 }
 
@@ -236,7 +208,6 @@ pub struct BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'a> {
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -261,7 +232,6 @@ pub struct BinaryOracleMakerMarketActionRouteInput<'a> {
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -284,7 +254,6 @@ pub struct BinaryOracleMakerRiskRouteInput<'a> {
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -324,7 +293,6 @@ impl BinaryOracleMaker {
             context,
             mu,
             runtime: MakerRuntime::empty(),
-            recorded_requote_throttle_episodes: Vec::new(),
         }
     }
 
@@ -344,23 +312,24 @@ impl BinaryOracleMaker {
         command: &MakerCompiledOrderCommand,
         submit_order_prefix: &str,
         max_fee_bps: Decimal,
-        submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     ) -> Result<MakerOrderDispatchOutcome> {
         let policy = self.context.order_execution_policy();
-        let decision_evidence = self.context.decision_evidence_arc();
+        let decision_evidence = self
+            .context
+            .order_execution_evidence()
+            .expect("maker strategy must own order-intent evidence");
         let submit_admission = self.context.submit_admission_arc();
         let strategy_id = self.config.strategy_id.clone();
         let execution_client_id = self.config.client_id.clone();
         route_maker_order_command_through_policy(
             policy,
             self,
-            decision_evidence.as_ref(),
+            &decision_evidence,
             submit_admission.as_ref(),
             BoltV3MakerOrderRoutingContext {
                 strategy_id: strategy_id.as_str(),
                 execution_client_id: execution_client_id.as_str(),
                 max_fee_bps,
-                submit_lifecycle_policy,
             },
             MakerOrderDispatchInput {
                 command,
@@ -391,20 +360,21 @@ impl BinaryOracleMaker {
             // The leg is no longer blocked: the episode is over, so forget it.
             // This is what keeps the accumulated set bounded, and it is what
             // lets a leg that becomes blocked again record that as new.
-            self.recorded_requote_throttle_episodes
-                .retain(|episode| !(episode.market_key == market.key && episode.leg == leg));
+            self.runtime
+                .clear_throttle_episode(market.key, market.concrete_identity, leg);
             return Ok(());
         };
         let bound_by = requote_throttle_bound(action_cost_class, budget, now_ms);
         let episode = RequoteThrottleEpisodeId {
             market_key: market.key.to_string(),
+            market: market.concrete_identity.clone(),
             leg,
             block_reason,
         };
-        if self.recorded_requote_throttle_episodes.contains(&episode) {
+        if self.runtime.contains_throttle_episode(&episode) {
             return Ok(());
         }
-        let evidence = BoltV3RequoteThrottleEvidence::from_requote_throttle(
+        let evidence = requote_throttle_observation(
             self.config.strategy_id.clone(),
             market,
             leg,
@@ -414,10 +384,11 @@ impl BinaryOracleMaker {
             bound_by,
             budget,
         );
-        if let Err(error) = self
+        if let ObservationRecordOutcome::FailureReported(error) = self
             .context
-            .decision_evidence()
-            .record_requote_throttle(&evidence)
+            .maker_evidence()
+            .expect("maker strategy must own maker evidence")
+            .record_requote_throttle_observation(evidence)
         {
             // A requote throttle is declining/limiting action (no new risk): a
             // telemetry-write failure must never abort the maker quote routing.
@@ -428,7 +399,7 @@ impl BinaryOracleMaker {
                 self.config.strategy_id
             );
         }
-        self.recorded_requote_throttle_episodes.push(episode);
+        self.runtime.record_throttle_episode(episode);
         Ok(())
     }
 
@@ -439,6 +410,7 @@ impl BinaryOracleMaker {
     pub fn route_maker_runtime_quote(
         &mut self,
         market_key: &str,
+        market_identity: MakerConcreteMarketIdentity,
         market: &mut MarketQuote,
         budget: &mut RequoteBudgetPair,
         input: BinaryOracleMakerRuntimeQuoteRouteInput<'_>,
@@ -450,7 +422,6 @@ impl BinaryOracleMaker {
             quantity_precision,
             submit_order_prefix,
             max_fee_bps,
-            submit_lifecycle_policy,
         } = input;
 
         let family_key = quote.quote_plan.family_key.to_string();
@@ -465,6 +436,7 @@ impl BinaryOracleMaker {
                 ThrottledMarket {
                     key: market_key,
                     family_key: family_key.as_str(),
+                    concrete_identity: &market_identity,
                 },
                 market,
                 budget,
@@ -476,12 +448,7 @@ impl BinaryOracleMaker {
         let orders = if let Some(order_plan) = quote_decision.order_plan.as_ref() {
             let mut route_command =
                 |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-                    self.route_maker_order_command(
-                        command,
-                        submit_order_prefix,
-                        max_fee_bps,
-                        submit_lifecycle_policy,
-                    )
+                    self.route_maker_order_command(command, submit_order_prefix, max_fee_bps)
                 };
             Some(dispatch_maker_runtime_order_plan_with_command_router(
                 MakerRuntimeOrderDispatchInput {
@@ -506,6 +473,7 @@ impl BinaryOracleMaker {
     pub fn route_maker_runtime_reference_quote(
         &mut self,
         market_key: &str,
+        market_identity: MakerConcreteMarketIdentity,
         market: &mut MarketQuote,
         budget: &mut RequoteBudgetPair,
         reference_selector: &mut ReferencePriceSelector,
@@ -521,7 +489,6 @@ impl BinaryOracleMaker {
             quantity_precision,
             submit_order_prefix,
             max_fee_bps,
-            submit_lifecycle_policy,
         } = input;
 
         let fair_value = maker_reference_current_price_fair_value_decision(
@@ -540,6 +507,7 @@ impl BinaryOracleMaker {
                     ThrottledMarket {
                         key: market_key,
                         family_key: reference_fair_value.family_key,
+                        concrete_identity: &market_identity,
                     },
                     market,
                     budget,
@@ -560,6 +528,7 @@ impl BinaryOracleMaker {
         let oracle_fair_probability_up = reference_fair_value_result.fair_probability_up;
         let quote_route = self.route_maker_runtime_quote(
             market_key,
+            market_identity,
             market,
             budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
@@ -577,7 +546,6 @@ impl BinaryOracleMaker {
                 quantity_precision,
                 submit_order_prefix,
                 max_fee_bps,
-                submit_lifecycle_policy,
             },
         )?;
         // A routing error is now per-leg data, not a `?` abort; fail loud here to
@@ -615,19 +583,13 @@ impl BinaryOracleMaker {
             quantity_precision,
             submit_order_prefix,
             max_fee_bps,
-            submit_lifecycle_policy,
         } = input;
 
         let action_kind = action.action;
         let order_plan = maker_order_plan_from_market_action(action);
 
         let mut route_command = |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-            self.route_maker_order_command(
-                command,
-                submit_order_prefix,
-                max_fee_bps,
-                submit_lifecycle_policy,
-            )
+            self.route_maker_order_command(command, submit_order_prefix, max_fee_bps)
         };
         let orders = dispatch_maker_runtime_order_plan_with_command_router(
             MakerRuntimeOrderDispatchInput {
@@ -675,7 +637,6 @@ impl BinaryOracleMaker {
             quantity_precision,
             submit_order_prefix,
             max_fee_bps,
-            submit_lifecycle_policy,
         } = input;
         let mode = maker_risk_mode_for_loss_decision(&policy, loss_decision);
         let risk = apply_maker_risk_mode(market, mode);
@@ -695,7 +656,6 @@ impl BinaryOracleMaker {
                     quantity_precision,
                     submit_order_prefix,
                     max_fee_bps,
-                    submit_lifecycle_policy,
                 })?
                 .orders,
             )
@@ -731,37 +691,27 @@ fn requote_throttle_block(
     market: &MarketQuote,
     leg: Leg,
     decision: &QuoteSetLegDecision,
-) -> Option<(
-    BoltV3RequoteActionCostClass,
-    BoltV3RequoteThrottleBlockReason,
-)> {
+) -> Option<(RequoteActionCostClass, RequoteThrottleBlockReason)> {
     if decision.control.blocked_by == Some(QuoteControlBlockReason::RequoteBudgetExhausted) {
-        return requote_action_cost_class(market, leg).map(|class| {
-            (
-                class,
-                BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted,
-            )
-        });
+        return requote_action_cost_class(market, leg)
+            .map(|class| (class, RequoteThrottleBlockReason::RequoteBudgetExhausted));
     }
     if decision.blocked_by == Some(QuoteSetBlockReason::ReservationRejected) {
         return Some((
-            BoltV3RequoteActionCostClass::FreshSubmit,
-            BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted,
+            RequoteActionCostClass::FreshSubmit,
+            RequoteThrottleBlockReason::RequoteBudgetExhausted,
         ));
     }
     None
 }
 
-fn requote_action_cost_class(
-    market: &MarketQuote,
-    leg: Leg,
-) -> Option<BoltV3RequoteActionCostClass> {
+fn requote_action_cost_class(market: &MarketQuote, leg: Leg) -> Option<RequoteActionCostClass> {
     match market.leg_state(leg) {
-        LegState::Idle => Some(BoltV3RequoteActionCostClass::FreshSubmit),
+        LegState::Idle => Some(RequoteActionCostClass::FreshSubmit),
         LegState::Resting if market.leg_supports_modify(leg) => {
-            Some(BoltV3RequoteActionCostClass::Cancel)
+            Some(RequoteActionCostClass::Cancel)
         }
-        LegState::Resting => Some(BoltV3RequoteActionCostClass::CancelResubmit),
+        LegState::Resting => Some(RequoteActionCostClass::CancelResubmit),
         LegState::SubmitPending
         | LegState::RequotePending
         | LegState::ModifyPending
@@ -770,59 +720,52 @@ fn requote_action_cost_class(
 }
 
 fn requote_throttle_bound(
-    action_cost_class: BoltV3RequoteActionCostClass,
+    action_cost_class: RequoteActionCostClass,
     budget: &RequoteBudgetPair,
     now_ms: u64,
-) -> BoltV3RequoteThrottleBound {
+) -> RequoteThrottleBound {
     let (submit_cost, rest_cost) = match action_cost_class {
-        BoltV3RequoteActionCostClass::FreshSubmit => (
+        RequoteActionCostClass::FreshSubmit => (
             REQUOTE_THROTTLE_FRESH_SUBMIT_SUBMIT_COST,
             REQUOTE_THROTTLE_FRESH_SUBMIT_REST_COST,
         ),
-        BoltV3RequoteActionCostClass::CancelResubmit => (
+        RequoteActionCostClass::CancelResubmit => (
             REQUOTE_THROTTLE_CANCEL_RESUBMIT_SUBMIT_COST,
             REQUOTE_THROTTLE_CANCEL_RESUBMIT_REST_COST,
         ),
-        BoltV3RequoteActionCostClass::Cancel => (
+        RequoteActionCostClass::Cancel => (
             REQUOTE_THROTTLE_CANCEL_SUBMIT_COST,
             REQUOTE_THROTTLE_CANCEL_REST_COST,
         ),
     };
     if let Some(last_emit_ms) = budget.last_emit_ms() {
         if now_ms < last_emit_ms {
-            return BoltV3RequoteThrottleBound::OutOfOrderTs;
+            return RequoteThrottleBound::OutOfOrderTs;
         }
         // Mirror `RequoteBudget::try_acquire`: the min interval applies only to
         // distinct requote ticks, so same-millisecond emits fall through to the
         // sliding-window cap checks below.
         if now_ms > last_emit_ms && now_ms - last_emit_ms < budget.min_interval_ms() {
-            return BoltV3RequoteThrottleBound::MinInterval;
+            return RequoteThrottleBound::MinInterval;
         }
     }
     if submit_cost > 0 {
         let Some(next_submit_cost) =
             (budget.submit_commands_in_window() as u64).checked_add(submit_cost)
         else {
-            return BoltV3RequoteThrottleBound::Overflow;
+            return RequoteThrottleBound::Overflow;
         };
         if next_submit_cost > budget.submit_command_cap() {
-            return BoltV3RequoteThrottleBound::SubmitCommandWindow;
+            return RequoteThrottleBound::SubmitCommandWindow;
         }
     }
     let Some(next_rest_cost) = budget.rest_cost_in_window().checked_add(rest_cost) else {
-        return BoltV3RequoteThrottleBound::Overflow;
+        return RequoteThrottleBound::Overflow;
     };
     if next_rest_cost > budget.rest_cap_per_window() {
-        return BoltV3RequoteThrottleBound::RestCallWindow;
+        return RequoteThrottleBound::RestCallWindow;
     }
-    BoltV3RequoteThrottleBound::WindowCap
-}
-
-fn requote_throttle_leg_label(leg: Leg) -> &'static str {
-    match leg {
-        Leg::Yes => REQUOTE_THROTTLE_LEG_YES,
-        Leg::No => REQUOTE_THROTTLE_LEG_NO,
-    }
+    RequoteThrottleBound::WindowCap
 }
 
 /// Inputs for one intent-only quote cycle on an active market. Bundles the
@@ -839,7 +782,6 @@ pub struct BinaryOracleMakerQuoteCycleInput<'a> {
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 impl BinaryOracleMaker {
@@ -902,7 +844,6 @@ impl BinaryOracleMaker {
             &instruments,
             now_milliseconds,
             policy,
-            &mut self.recorded_requote_throttle_episodes,
         );
         let client_id = self.data_client_id();
         for instrument_id in refresh.unsubscribe {
@@ -981,9 +922,10 @@ impl BinaryOracleMaker {
         budget: &mut RequoteBudgetPair,
         input: BinaryOracleMakerQuoteCycleInput<'_>,
     ) -> Result<Option<BinaryOracleMakerRuntimeQuoteRouteOutcome>> {
-        if self.runtime.market(market_key).is_none() {
+        let Some(active_market) = self.runtime.market(market_key) else {
             return Ok(None);
-        }
+        };
+        let market_identity = active_market.concrete_identity();
         let order_id_tag = self.config.order_id_tag.clone();
         self.runtime.mint_next_identities(market_key, &order_id_tag);
         let order_plan = self
@@ -999,10 +941,10 @@ impl BinaryOracleMaker {
             quantity_precision,
             submit_order_prefix,
             max_fee_bps,
-            submit_lifecycle_policy,
         } = input;
         let outcome = self.route_maker_runtime_quote(
             market_key,
+            market_identity,
             market,
             budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
@@ -1016,7 +958,6 @@ impl BinaryOracleMaker {
                 quantity_precision,
                 submit_order_prefix,
                 max_fee_bps,
-                submit_lifecycle_policy,
             },
         )?;
         if let Some(orders) = outcome.orders.as_ref() {
@@ -1071,8 +1012,7 @@ impl DataActor for BinaryOracleMaker {
         // stop/start: a re-mint after restart cannot reproduce a `ClientOrderId` a
         // prior run consumed. (Cross-process restart durability needs a persisted
         // high-water — arming-time work, #869.)
-        self.runtime
-            .deactivate_all(&mut self.recorded_requote_throttle_episodes);
+        self.runtime.deactivate_all();
         Ok(())
     }
 
@@ -1089,7 +1029,7 @@ impl DataActor for BinaryOracleMaker {
     }
 }
 
-crate::strategies::nautilus_strategy_with_fill_void_guard!(BinaryOracleMaker, {});
+nautilus_trading::nautilus_strategy!(BinaryOracleMaker, {});
 
 impl StrategyBuilder for BinaryOracleMakerBuilder {
     type Strategy = BinaryOracleMaker;
@@ -1111,13 +1051,8 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
 mod tests {
     use super::*;
     use crate::{
-        bolt_v3_decision_evidence::{
-            BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-            BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-            BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-            BoltV3SubmitReservationMetadataEvidence,
+        bolt_v3_current_evidence::{
+            DecisionEvidenceRecorder, MakerEvidence, OrderExecutionEvidence,
         },
         bolt_v3_maker_mu_estimator::{MuHealthReason, UsableMu},
         bolt_v3_market_families::OutcomeSide,
@@ -1125,6 +1060,7 @@ mod tests {
         bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
         bolt_v3_position_contract::BoltV3PositionMarketLifecycle,
         bolt_v3_providers::FeeProvider,
+        bolt_v3_strategy_context::StrategyDecisionEvidence,
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     };
     use futures_util::{FutureExt, future::BoxFuture};
@@ -1240,108 +1176,15 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct NoopDecisionEvidenceWriter;
-
-    impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
-        fn record_strategy_input_snapshot(
-            &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            _decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &BoltV3BasketAdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_capital_admission_rebuild_audit(
-            &self,
-            _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-            anyhow::bail!("maker noop writer received entry-skip evidence")
-        }
-
-        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-            anyhow::bail!("maker noop writer received exit-decision evidence")
-        }
-
-        fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_loss_governor_halt(
-            &self,
-            _evidence: &BoltV3LossGovernorHaltEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-            anyhow::bail!("maker noop writer received requote-throttle evidence")
-        }
-
-        fn record_settlement(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("maker noop writer received settlement evidence")
-        }
-
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("maker noop writer received settlement booking-error evidence")
-        }
-
-        fn drain_shutdown(&self) -> Result<()> {
-            // Deliberate no-op: this test fixture never owns durable evidence.
-            Ok(())
-        }
-    }
-
     fn test_context() -> StrategyBuildContext {
-        let writer = Arc::new(NoopDecisionEvidenceWriter);
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let evidence = StrategyDecisionEvidence::maker(
+            MakerEvidence::new(&writer),
+            OrderExecutionEvidence::new(&writer),
+        );
         StrategyBuildContext::new(
             Arc::new(NoopFeeProvider),
-            writer.clone(),
+            evidence,
             Arc::new(BoltV3SubmitAdmissionState::new(writer)),
             BoltV3OrderExecutionPolicy::shadow(),
             Venue::from("MAKER.TEST"),
@@ -1518,11 +1361,11 @@ mod tests {
         // that is the admitted-by-bound WindowCap sentinel, not MinInterval.
         assert_eq!(
             requote_throttle_bound(
-                BoltV3RequoteActionCostClass::CancelResubmit,
+                RequoteActionCostClass::CancelResubmit,
                 &remaining_budget,
                 1_000,
             ),
-            BoltV3RequoteThrottleBound::WindowCap,
+            RequoteThrottleBound::WindowCap,
             "same-millisecond emits with budget remaining must not be labeled MinInterval"
         );
 
@@ -1537,11 +1380,11 @@ mod tests {
         // refuse on the window cap, so the evidence must name that cap.
         assert_eq!(
             requote_throttle_bound(
-                BoltV3RequoteActionCostClass::CancelResubmit,
+                RequoteActionCostClass::CancelResubmit,
                 &exhausted_budget,
                 1_000,
             ),
-            BoltV3RequoteThrottleBound::SubmitCommandWindow,
+            RequoteThrottleBound::SubmitCommandWindow,
             "same-millisecond budget exhaustion must be labeled by the window cap"
         );
 
@@ -1549,11 +1392,11 @@ mod tests {
         // anti-flicker floor and is classified as MinInterval.
         assert_eq!(
             requote_throttle_bound(
-                BoltV3RequoteActionCostClass::CancelResubmit,
+                RequoteActionCostClass::CancelResubmit,
                 &remaining_budget,
                 1_001,
             ),
-            BoltV3RequoteThrottleBound::MinInterval,
+            RequoteThrottleBound::MinInterval,
             "strictly-later ticks inside the interval remain bounded by MinInterval"
         );
     }

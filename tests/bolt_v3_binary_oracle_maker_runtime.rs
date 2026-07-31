@@ -56,7 +56,7 @@ use nautilus_common::{
     clock::{Clock, TestClock},
     timer::{TimeEvent, TimeEventCallback},
 };
-use nautilus_core::UnixNanos;
+use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     data::TradeTick,
     enums::{AggressorSide, OrderSide, OrderType, TimeInForce},
@@ -1844,7 +1844,6 @@ fn maker_runtime_refresh_resolves_declared_market_and_emits_subscription_delta()
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
 
     assert_eq!(runtime.active_market_count(), 1);
@@ -1882,7 +1881,6 @@ fn maker_runtime_refresh_reports_miss_for_undiscoverable_market_not_silent_drop(
         &[],
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
 
     assert_eq!(runtime.active_market_count(), 0);
@@ -1913,7 +1911,6 @@ fn maker_runtime_refresh_rerolls_when_a_leg_instrument_changes_under_the_same_wi
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
 
     let reissued_yes = InstrumentId::from(RUNTIME_YES_INSTRUMENT_REISSUED);
@@ -1923,7 +1920,6 @@ fn maker_runtime_refresh_rerolls_when_a_leg_instrument_changes_under_the_same_wi
         &runtime_static_instruments_reissued_yes(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
 
     assert_eq!(
@@ -1978,7 +1974,7 @@ fn maker_sim_context(
 ) -> StrategyBuildContext {
     StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        writer,
+        bolt_v2::bolt_v3_strategy_context::StrategyDecisionEvidence::maker_for_test(writer),
         admission,
         BoltV3OrderExecutionPolicy::shadow(),
         Venue::from("SIM"),
@@ -2119,6 +2115,100 @@ fn maker_on_stop_resets_runtime_so_a_restart_re_resolves_and_re_subscribes() {
         maker.runtime().active_market_count(),
         1,
         "the restart re-activates the declared market from an empty runtime"
+    );
+}
+
+#[test]
+fn maker_lifecycle_retires_throttle_episodes_from_the_runtime_owned_store() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config_with_static_market(),
+        maker_sim_context(writer.recorder(), admission),
+    );
+    let cache = register_maker_at_runtime_now_for_order_factory(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+    DataActor::on_start(&mut maker).expect("on_start resolves the declared market");
+
+    let record_block = |maker: &mut BinaryOracleMaker| {
+        let identity = maker
+            .runtime()
+            .market(RUNTIME_MARKET_KEY)
+            .expect("the declared market is active")
+            .concrete_identity();
+        let mut quote = MarketQuote::new(false);
+        let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
+            .expect("one-submit budget fixture builds");
+        let submit_template = maker_limit_post_only_template();
+        maker
+            .route_maker_runtime_quote(
+                RUNTIME_MARKET_KEY,
+                identity,
+                &mut quote,
+                &mut budget,
+                BinaryOracleMakerRuntimeQuoteRouteInput {
+                    quote: MakerRuntimeQuoteInput {
+                        quote_plan: quote_plan_inputs(RUNTIME_STATIC_FAMILY),
+                        quote_set: quote_set_inputs(),
+                        order_plan: order_plan_inputs(),
+                    },
+                    submit_template: &submit_template,
+                    price_precision: 2,
+                    quantity_precision: 2,
+                    submit_order_prefix: "maker_submit",
+                    max_fee_bps: Decimal::ZERO,
+                },
+            )
+            .expect("the first denied leg in an active lifecycle records");
+    };
+
+    record_block(&mut maker);
+    assert_eq!(writer.requote_throttles().len(), 1);
+
+    // A real timer refresh drives the market out of the active set. The episode
+    // must leave with it, so resolving the same concrete market again records its
+    // first new block. This pins the strategy shell to the runtime-owned store;
+    // there is no caller-supplied vector that can be replaced with a decoy.
+    cache.borrow_mut().reset();
+    let timer_event = TimeEvent::new(
+        ustr::Ustr::from("maker-strategy:quote_loop"),
+        UUID4::new(),
+        UnixNanos::from(RUNTIME_NOW_MS.saturating_mul(1_000_000)),
+        UnixNanos::from(RUNTIME_NOW_MS.saturating_mul(1_000_000)),
+    );
+    DataActor::on_time_event(&mut maker, &timer_event)
+        .expect("the timer refresh retires the missing market");
+    assert_eq!(maker.runtime().active_market_count(), 0);
+
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("re-seeding the same concrete market");
+    }
+    DataActor::on_time_event(&mut maker, &timer_event)
+        .expect("the timer refresh resolves the market again");
+    record_block(&mut maker);
+    assert_eq!(
+        writer.requote_throttles().len(),
+        2,
+        "the same concrete market must record again after a real refresh retires its prior episode"
+    );
+
+    // Stop is the other market-retirement path. It must clear the same owned
+    // store before a same-market restart.
+    DataActor::on_stop(&mut maker).expect("on_stop retires the active market");
+    DataActor::on_start(&mut maker).expect("on_start resolves the same market after stop");
+    record_block(&mut maker);
+    assert_eq!(
+        writer.requote_throttles().len(),
+        3,
+        "the same concrete market must record again after stop/start"
     );
 }
 
@@ -2324,7 +2414,6 @@ fn maker_runtime_retains_identities_on_same_window_and_rebuilds_on_roll() {
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
     assert!(
         runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"),
@@ -2344,7 +2433,6 @@ fn maker_runtime_retains_identities_on_same_window_and_rebuilds_on_roll() {
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
     assert_eq!(
         runtime
@@ -2379,7 +2467,6 @@ fn maker_runtime_retains_identities_on_same_window_and_rebuilds_on_roll() {
         &runtime_static_instruments_rolled(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
     assert!(
         runtime
@@ -2423,7 +2510,6 @@ fn maker_runtime_mints_a_unique_id_when_a_leg_instrument_rerolls_under_the_same_
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
     assert!(
         runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"),
@@ -2445,7 +2531,6 @@ fn maker_runtime_mints_a_unique_id_when_a_leg_instrument_rerolls_under_the_same_
         &runtime_static_instruments_reissued_yes(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
     assert!(
         runtime
@@ -2491,7 +2576,6 @@ fn maker_runtime_mints_a_unique_id_after_a_market_drops_and_refills_the_same_win
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
     assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
     let pre_drop_yes = runtime
@@ -2509,7 +2593,6 @@ fn maker_runtime_mints_a_unique_id_after_a_market_drops_and_refills_the_same_win
         &[],
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
     assert_eq!(
         runtime.active_market_count(),
@@ -2528,7 +2611,6 @@ fn maker_runtime_mints_a_unique_id_after_a_market_drops_and_refills_the_same_win
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
     assert!(
         runtime
@@ -2573,7 +2655,6 @@ fn maker_runtime_deactivate_all_preserves_generation_high_water_for_a_restart() 
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
     assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
     let pre_stop_yes = runtime
@@ -2585,7 +2666,7 @@ fn maker_runtime_deactivate_all_preserves_generation_high_water_for_a_restart() 
         .expect("a next YES identity was minted");
 
     // Stop: deactivate the active set (as `on_stop` does).
-    runtime.deactivate_all(&mut Vec::new());
+    runtime.deactivate_all();
     assert_eq!(
         runtime.active_market_count(),
         0,
@@ -2598,7 +2679,6 @@ fn maker_runtime_deactivate_all_preserves_generation_high_water_for_a_restart() 
         &runtime_static_instruments(),
         RUNTIME_NOW_MS,
         runtime_portfolio_policy(),
-        &mut Vec::new(),
     );
     assert!(
         restart

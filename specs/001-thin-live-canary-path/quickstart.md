@@ -1,5 +1,10 @@
 # Quickstart: Thin Bolt-v3 Live Canary Path
 
+> **Historical feature artifact — do not execute as current verification or live
+> operating procedure.** After merge, `main`, `AGENTS.md`, `.github/workflows/`,
+> the `justfile`, and the current `ops launch` status map are authoritative.
+> This file preserves the feature's former phase-oriented workflow only.
+
 This quickstart is for the completed feature path. It is not approval to run live capital.
 
 ## Local Verification

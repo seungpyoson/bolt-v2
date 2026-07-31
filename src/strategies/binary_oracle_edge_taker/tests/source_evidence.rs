@@ -46,6 +46,73 @@ fn strategy_input_quote_replay() -> StrategyInputQuoteReplay {
         .expect("strategy input quote replay fixture should parse")
 }
 
+#[test]
+fn novelty_registry_has_a_production_mapping_for_every_declared_state() {
+    use crate::bolt_v3_evidence_novelty::{
+        EVIDENCE_STATE_REGISTRATIONS, EvidenceCanonicalState, EvidenceStateOwner,
+    };
+
+    let registered = |owner| {
+        EVIDENCE_STATE_REGISTRATIONS
+            .iter()
+            .filter(|registration| registration.owner == owner)
+            .map(|registration| registration.state)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+
+    let blocked_states = [
+        EvidenceRvGateResult::Accepted,
+        EvidenceRvGateResult::MissingSnapshot,
+        EvidenceRvGateResult::MissingEvaluationEventTime,
+        EvidenceRvGateResult::RejectedFutureDated,
+        EvidenceRvGateResult::RejectedStale,
+        EvidenceRvGateResult::RejectedNotReady,
+    ]
+    .into_iter()
+    .flat_map(|gate_result| {
+        [false, true].map(|watermark_present| {
+            blocked_strategy_input_canonical_state(gate_result, watermark_present)
+        })
+    })
+    .collect::<std::collections::BTreeSet<EvidenceCanonicalState>>();
+    assert_eq!(
+        blocked_states,
+        registered(EvidenceStateOwner::BlockedStrategyInputSnapshot),
+        "every blocked-strategy-input registry state must be constructible by production mapping"
+    );
+
+    let entry_skip_states = [
+        EvidenceEntrySkipReason::StrategyCoreNotRegistered,
+        EvidenceEntrySkipReason::EntryGateBlocked,
+        EvidenceEntrySkipReason::EntryPricingBlocked,
+        EvidenceEntrySkipReason::NoSideSelected,
+        EvidenceEntrySkipReason::SizedNotionalNotPositive,
+        EvidenceEntrySkipReason::InstrumentIdMissing,
+        EvidenceEntrySkipReason::InstrumentMissingFromCache,
+        EvidenceEntrySkipReason::EntryPriceMissing,
+        EvidenceEntrySkipReason::QuantityRoundingFailed,
+        EvidenceEntrySkipReason::LimitNotionalExceedsSizedNotional,
+        EvidenceEntrySkipReason::EntryQuoteNotionalBelowVenueMinimum,
+        EvidenceEntrySkipReason::EntryQuoteNotionalMinimumUnmodeled,
+        EvidenceEntrySkipReason::QuantityNotPositive,
+        EvidenceEntrySkipReason::PositionContractInvalid,
+        EvidenceEntrySkipReason::EntryPositionContractUnsupported,
+        EvidenceEntrySkipReason::HistoricalEntryFeeUnavailable,
+        EvidenceEntrySkipReason::OnePositionInvariantViolation,
+        EvidenceEntrySkipReason::EntryMalformedRejected,
+        EvidenceEntrySkipReason::EntryBalanceRejected,
+        EvidenceEntrySkipReason::EntryUnfillableRejectedUnchangedBook,
+    ]
+    .into_iter()
+    .map(entry_skip_canonical_state)
+    .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        entry_skip_states,
+        registered(EvidenceStateOwner::EntrySkip),
+        "every entry-skip registry state must be constructible by production mapping"
+    );
+}
+
 fn replay_reference_price_config(
     replay: &StrategyInputQuoteReplay,
 ) -> crate::bolt_v3_config::ReferencePriceBlock {

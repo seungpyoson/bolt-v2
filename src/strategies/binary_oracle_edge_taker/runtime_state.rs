@@ -260,6 +260,7 @@ impl ActiveMarketState {
     pub(super) fn same_boundary(&self, other: &Self) -> bool {
         self.phase == other.phase
             && self.market_id == other.market_id
+            && self.evidence_identity == other.evidence_identity
             && self.instrument_id == other.instrument_id
             && self.market_selection_outcome == other.market_selection_outcome
             && self.interval_start_ms == other.interval_start_ms

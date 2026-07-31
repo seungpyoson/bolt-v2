@@ -1250,9 +1250,9 @@ order was omitted. Mass-status partiality is one of several conditions on this b
 does not open the gate: the pinned adapter also silently loses confirmed fills, and the pinned
 execution engine drops position reports the adapter built correctly, so a fix confined to the adapter
 leaves the completeness question open. `ProviderBinding::reconciliation_unmet` carries the current
-list, and each condition on it states in its own text what closing it does and does not achieve --
-the code is the authority rather than a finished spec, which is why the spec that used to carry this
-list is gone. Bolt does
+list, and condition 3 records the known interaction between closing batch-order duplication and the
+still-open cap condition. The code is the authority rather than a finished spec, which is why the spec
+that used to carry this list is gone. Bolt does
 not query or reconcile venue orders, positions, balances, or fills again, so at this pin Bolt cannot
 distinguish a complete mass-status report from a partial one. Startup reconciliation completeness is
 therefore an open boundary question at this pin, not a guarantee this document asserts. Every Bolt live

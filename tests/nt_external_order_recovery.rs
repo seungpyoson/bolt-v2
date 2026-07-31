@@ -338,6 +338,18 @@ fn the_venues_own_later_confirmation_is_not_deduplicated_against_an_inferred_fil
         Some(&instrument()),
         UnixNanos::default(),
     );
+    let voided_trade_ids = corrected
+        .iter()
+        .filter_map(|event| match event {
+            OrderEventAny::FillVoided(voided) => Some(voided.trade_id.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        voided_trade_ids,
+        vec![VENUE_TRADE_ID.to_string()],
+        "the same-pass correction must void the venue-confirmed fill, not the inferred fill"
+    );
     let mut batched = projected.clone();
     for event in corrected {
         let _ = batched.apply(event);

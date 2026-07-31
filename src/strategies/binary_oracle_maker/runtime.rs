@@ -549,18 +549,17 @@ impl MakerRuntime {
 /// not guaranteed to change on a roll — is the primary discriminator, so a genuine
 /// roll (a new `start_timestamp_milliseconds`) always rebuilds the runtime with
 /// fresh identities even when the venue reuses the same `market_id`. The leg
-/// instrument ids are compared too, so a venue that re-issues the period's market
-/// under new instrument ids at an unchanged window start is treated as a roll
-/// (fail-closed): the leg instrument id is read live by the trade-subscription
-/// differ ([`MakerRuntime::instrument_id_set`]), so a window-start-only retain would
-/// strand the maker on the gone instrument's feed. The discovery engine resolves a
-/// period to stable instruments, so in practice the instrument ids match whenever
-/// the window start does; comparing them makes that trusted invariant fail-closed
-/// rather than merely assumed.
+/// instrument ids and validated evidence identity are compared too, so a venue
+/// reissue or corrected stable metadata at an unchanged window start is treated
+/// as a roll (fail-closed). The leg instrument id is read live by the
+/// trade-subscription differ ([`MakerRuntime::instrument_id_set`]), while the
+/// evidence identity keys throttle episodes; retaining either predecessor would
+/// strand the maker on stale market state.
 fn same_window(prior: &MakerResolvedMarketBinding, current: &MakerResolvedMarketBinding) -> bool {
     prior.start_timestamp_milliseconds == current.start_timestamp_milliseconds
         && prior.yes.instrument_id == current.yes.instrument_id
         && prior.no.instrument_id == current.no.instrument_id
+        && prior.evidence_identity == current.evidence_identity
 }
 
 /// Apply one leg's dispatched intent to its identity slots. See
@@ -596,6 +595,8 @@ fn rotate_leg_identity(
 mod tests {
     use super::*;
 
+    use crate::bolt_v3_evidence_novelty::{EvidenceMarketIdentity, EvidenceOutcomeIdentity};
+    use crate::bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity};
     use nautilus_model::identifiers::{ClientOrderId, InstrumentId};
     use nautilus_model::{
         enums::OrderSide,
@@ -608,6 +609,83 @@ mod tests {
             active_order: None,
             next_order: None,
         }
+    }
+
+    fn concrete_market_identity(
+        market_id: &str,
+    ) -> super::super::binding::MakerConcreteMarketIdentity {
+        let evidence_identity = crate::bolt_v3_evidence_novelty::EvidenceMarketIdentity::try_new(
+            market_id.to_string(),
+            format!("condition-{market_id}"),
+            format!("question-{market_id}"),
+            [
+                crate::bolt_v3_evidence_novelty::EvidenceOutcomeIdentity {
+                    index: 0,
+                    normalized_outcome: "yes".to_string(),
+                    clob_token_id: format!("{market_id}-yes"),
+                },
+                crate::bolt_v3_evidence_novelty::EvidenceOutcomeIdentity {
+                    index: 1,
+                    normalized_outcome: "no".to_string(),
+                    clob_token_id: format!("{market_id}-no"),
+                },
+            ],
+        )
+        .expect("runtime fixture identity must be valid");
+        super::super::binding::MakerConcreteMarketIdentity::new(
+            evidence_identity,
+            1_000,
+            InstrumentId::from(format!("{market_id}-yes.SIM")),
+            InstrumentId::from(format!("{market_id}-no.SIM")),
+        )
+    }
+
+    fn resolved_binding(question_id: &str) -> MakerResolvedMarketBinding {
+        MakerResolvedMarketBinding {
+            market_key: "configured-market".to_string(),
+            family_key: "static_binary_event".to_string(),
+            market_id: "gamma-market".to_string(),
+            evidence_identity: EvidenceMarketIdentity::try_new(
+                "gamma-market".to_string(),
+                "condition-1".to_string(),
+                question_id.to_string(),
+                [
+                    EvidenceOutcomeIdentity {
+                        index: 0,
+                        normalized_outcome: "yes".to_string(),
+                        clob_token_id: "yes-token".to_string(),
+                    },
+                    EvidenceOutcomeIdentity {
+                        index: 1,
+                        normalized_outcome: "no".to_string(),
+                        clob_token_id: "no-token".to_string(),
+                    },
+                ],
+            )
+            .expect("binding fixture evidence identity must be valid"),
+            yes: leg_binding("yes-token.POLYMARKET"),
+            no: leg_binding("no-token.POLYMARKET"),
+            selection_outcome: MarketSelectionOutcome::Current,
+            source_identity: SelectedMarketSourceIdentity {
+                condition_id: "condition-1".to_string(),
+                market_slug: "market-slug".to_string(),
+                question_id: question_id.to_string(),
+            },
+            start_timestamp_milliseconds: 1_000,
+            expiration_timestamp_milliseconds: 301_000,
+            seconds_to_end: 300,
+        }
+    }
+
+    #[test]
+    fn same_window_rejects_a_changed_evidence_identity() {
+        let prior = resolved_binding("question-1");
+        let corrected = resolved_binding("question-1-corrected");
+
+        assert!(
+            !same_window(&prior, &corrected),
+            "a valid evidence-identity successor must rebuild even when its window and leg instruments are unchanged"
+        );
     }
 
     #[test]

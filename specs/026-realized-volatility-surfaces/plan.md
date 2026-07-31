@@ -6,7 +6,9 @@
 > authority. Current-only evidence replaced the append-only evidence surface
 > that existed when this plan was drafted.
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Original implementation note:** this plan used checkbox (`- [ ]`) syntax
+> and a task-by-task agent workflow. Those checkboxes are preserved as history,
+> not as current work.
 >
 > **Start prompt:** Before implementing, read `implementation-prompt.md` in this
 > directory. It records the latest external review outcomes and design

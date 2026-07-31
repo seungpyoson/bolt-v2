@@ -1,5 +1,11 @@
 # Realized Volatility Surfaces Implementation Plan
 
+> **Historical implementation record.** The RV surface is implemented. Do not
+> execute the task recipes below as current instructions; use `main`,
+> `AGENTS.md`, `config/root.toml`, and the current Rust/test modules as
+> authority. Current-only evidence replaced the append-only evidence surface
+> that existed when this plan was drafted.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Start prompt:** Before implementing, read `implementation-prompt.md` in this
@@ -956,7 +962,8 @@ max_order_modify_rate = "1"
 max_notional_per_order = {}
 
 [logging]
-log_level = "INFO"
+stdout_level = "INFO"
+fileout_level = "INFO"
 
 [persistence]
 catalog_directory = "/tmp/bolt-v3-catalog"
@@ -971,6 +978,12 @@ observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl
 retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
 reject_episode_max_count = 4096
 recovery_evidence_max_bytes = 1048576
+
+[persistence.streaming]
+catalog_fs_protocol = "file"
+flush_interval_ms = 1000
+replace_existing = false
+rotation_kind = "none"
 
 [aws]
 region = "us-east-1"

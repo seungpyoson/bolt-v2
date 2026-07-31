@@ -1,5 +1,10 @@
 # Implementation Plan: NT Order Intent Layer
 
+> **Historical implementation record.** The feature has been reconciled by
+> later merged slices. Do not execute this plan as a current work queue; use
+> `main`, `AGENTS.md`, the current source tree, and the repository verification
+> recipes as authority.
+
 **Branch**: `codex/maker-order-proof-clean` | **Date**: 2026-05-20 | **Spec**: `specs/023-nt-order-intent-layer/spec.md`
 **Input**: Feature specification from `specs/023-nt-order-intent-layer/spec.md`
 

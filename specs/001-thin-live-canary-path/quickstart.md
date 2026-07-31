@@ -13,15 +13,11 @@ For Phase 6, run only after the Phase 6 implementation branch exists and the fir
 
 ```bash
 cargo fmt --check
-cargo test --test bolt_v3_submit_admission
+cargo test --test admission_orders
 cargo test --test bolt_v3_current_evidence_runtime
-cargo test --test bolt_v3_strategy_registration
-cargo test --test bolt_v3_live_node_startup_boot
+cargo test --test wiring_registration
+cargo test --test chainlink_startup_boot
 git diff --check
-python3 scripts/verify_bolt_v3_runtime_literals.py
-python3 scripts/verify_bolt_v3_provider_leaks.py
-python3 scripts/verify_bolt_v3_naming.py
-python3 scripts/verify_bolt_v3_core_boundary.py
 ```
 
 Phase 6 green criteria:

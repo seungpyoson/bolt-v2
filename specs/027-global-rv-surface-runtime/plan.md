@@ -57,7 +57,7 @@ src/
 ├── bolt_v3_realized_volatility_runtime.rs  # runtime-level surface service and subscription routing
 ├── bolt_v3_config.rs                       # TOML schema extensions
 ├── bolt_v3_validate.rs                     # root validation for sources, horizons, methods, clients
-├── bolt_v3_decision_evidence.rs            # evidence schema/version updates
+├── bolt_v3_current_evidence/               # current evidence schema/version updates
 ├── bolt_v3_taker_pricing.rs                # snapshot consumer only
 ├── strategies/
 │   ├── registry.rs                         # build context exposes global snapshot/runtime handle
@@ -68,7 +68,7 @@ tests/
 ├── bolt_v3_realized_volatility.rs
 ├── bolt_v3_realized_volatility_runtime.rs
 ├── bolt_v3_realized_volatility_source_fence.rs
-├── bolt_v3_decision_evidence.rs
+├── bolt_v3_current_evidence_runtime.rs
 ├── bolt_v3_strategy_registration.rs
 └── bolt_v3_taker_pricing.rs
 

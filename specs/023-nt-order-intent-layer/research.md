@@ -1,5 +1,8 @@
 # Research: NT Order Intent Layer
 
+> **Historical research record — not current authority or work direction.**
+> Current `main`, `AGENTS.md`, and tracked issues are authoritative.
+
 ## Current Anchors
 
 - Worktree: `/Users/spson/Projects/Claude/bolt-v2/.worktrees/maker-order-replay`

@@ -1,5 +1,8 @@
 # Contract: Review Gates
 
+> **Historical feature artifact — not current authority.** This contract records
+> the retired feature design. Current `main` and `AGENTS.md` are authoritative.
+
 ## Before Implementation
 
 - Spec and plan exist.

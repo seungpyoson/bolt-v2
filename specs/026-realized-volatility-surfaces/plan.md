@@ -23,10 +23,12 @@
 - Modify `src/bolt_v3_taker_pricing.rs`: consume `RealizedVolSnapshot` in surfaced RV mode.
 - Modify `src/strategies/binary_oracle_edge_taker/config.rs`: reject legacy RV fields in surfaced RV mode.
 - Modify `src/strategies/binary_oracle_edge_taker/mod.rs`: forward configured RV observations and consume pricing snapshots without implementing RV policy.
-- Modify `src/bolt_v3_decision_evidence.rs`: add RV snapshot evidence fields.
+- Modify `src/bolt_v3_current_evidence/facts.rs` and
+  `src/bolt_v3_current_evidence/realized_volatility.rs`: add and map RV snapshot evidence fields.
 - Add `tests/bolt_v3_realized_volatility.rs`: engine integration tests.
 - Modify `tests/bolt_v3_strategy_registration.rs`: root/strategy mapping and validation tests.
-- Modify `tests/bolt_v3_decision_evidence.rs`: evidence serialization tests.
+- Modify `src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs`:
+  behavioral current-evidence tests.
 - Add `tests/bolt_v3_realized_volatility_source_fence.rs`: strategy boundary source-fence test.
 
 ## Task 1: RV Engine Contract
@@ -957,8 +959,18 @@ max_notional_per_order = {}
 log_level = "INFO"
 
 [persistence]
-decision_evidence_path = "/tmp/decision-evidence.jsonl"
-decision_evidence_max_bytes = 1048576
+catalog_directory = "/tmp/bolt-v3-catalog"
+required_catalog_prefix = "/tmp"
+min_free_bytes = 1
+runtime_capture_start_poll_interval_ms = 50
+data_client_readiness_probe_poll_interval_ms = 50
+
+[persistence.decision_evidence]
+machine_relative_path = "bolt-v3/decision-evidence/current/machine.jsonl"
+observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl"
+retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
+reject_episode_max_count = 4096
+recovery_evidence_max_bytes = 1048576
 
 [aws]
 region = "us-east-1"
@@ -1487,72 +1499,23 @@ git commit -m "feat: forward realized volatility observations from strategy"
 
 ## Task 6: RV Evidence
 
-**Files:**
-- Modify: `src/bolt_v3_decision_evidence.rs`
-- Modify: `src/strategies/binary_oracle_edge_taker/mod.rs`
-- Test: `tests/bolt_v3_decision_evidence.rs`
-- Test: `src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs`
+The append-only evidence implementation named by the original plan has been
+retired. RV evidence now belongs to the current-only contract:
 
-- [ ] **Step 1: Write failing evidence serialization test**
+- `src/bolt_v3_current_evidence/facts.rs` owns the typed fact schema.
+- `src/bolt_v3_current_evidence/realized_volatility.rs` maps runtime snapshots
+  into that schema.
+- `src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs` verifies
+  producer behavior through decoded current facts.
 
-Add to `tests/bolt_v3_decision_evidence.rs`:
-
-```rust
-#[test]
-fn strategy_input_evidence_records_realized_volatility_snapshot_provenance() {
-    let line = fixture_strategy_input_snapshot_line_with_realized_volatility_snapshot();
-
-    assert_eq!(line.realized_volatility_surface_id, "<surface_id>");
-    assert_eq!(line.realized_volatility_annualized_decimal, "2.5");
-    assert_eq!(line.realized_volatility_aggregation, "upper_quantile");
-    assert_eq!(line.realized_volatility_sources_used, vec!["<SOURCE_ID_A>".to_string()]);
-    assert!(line.realized_volatility_blockers.is_empty());
-}
-```
-
-- [ ] **Step 2: Run test to verify RED**
-
-Run:
+Verify the implemented behavior:
 
 ```bash
-cargo test --test bolt_v3_decision_evidence strategy_input_evidence_records_realized_volatility_snapshot_provenance -- --nocapture
-```
-
-Expected: FAIL because evidence fields do not exist.
-
-- [ ] **Step 3: Add evidence fields**
-
-Add RV snapshot fields to strategy input and entry/exit evidence structures:
-
-- `realized_volatility_surface_id`
-- `realized_volatility_as_of_ms`
-- `realized_volatility_annualized_decimal`
-- `realized_volatility_seconds_per_annum`
-- `realized_volatility_aggregation`
-- `realized_volatility_sources_used`
-- `realized_volatility_source_diagnostics`
-- `realized_volatility_blockers`
-- `realized_volatility_config_fingerprint`
-
-- [ ] **Step 4: Run evidence tests**
-
-Run:
-
-```bash
-cargo test --test bolt_v3_decision_evidence -- --nocapture
-cargo test --lib source_evidence -- --nocapture
+cargo test --lib strategy_input_evidence_records_realized_volatility_unknown_source_rejections -- --nocapture
+cargo test --lib strategy_input_evidence_accepts_ready_surfaced_zero_realized_volatility -- --nocapture
 ```
 
 Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-Run:
-
-```bash
-git add src/bolt_v3_decision_evidence.rs src/strategies/binary_oracle_edge_taker/mod.rs tests/bolt_v3_decision_evidence.rs src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs
-git commit -m "feat: record realized volatility snapshot evidence"
-```
 
 ## Final Verification
 
@@ -1574,7 +1537,7 @@ cargo clippy --locked --lib -- -D warnings
 cargo test --test bolt_v3_realized_volatility -- --nocapture
 cargo test --test bolt_v3_taker_pricing -- --nocapture
 cargo test --test bolt_v3_strategy_registration realized_volatility -- --nocapture
-cargo test --test bolt_v3_decision_evidence realized_volatility -- --nocapture
+cargo test --lib realized_volatility -- --nocapture
 cargo test --test bolt_v3_realized_volatility_source_fence -- --nocapture
 ```
 

@@ -5837,3 +5837,38 @@ fn rv_clock_domain_amendment_blocked_snapshot_same_key_failure_marks_bit_seen_wi
         "only the fact committed before poisoning may be readable"
     );
 }
+
+#[test]
+fn rv_clock_domain_amendment_blocked_snapshot_payload_failure_is_claimed_without_retry() {
+    let evidence = recording_decision_evidence();
+    let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
+    let decision = rv_clock_domain_amendment_blocked_decision();
+    let episode = strategy
+        .evidence_episode_id()
+        .expect("the dedupe fixture must bind a market episode");
+
+    strategy.active.last_reference_ts_ms = None;
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_200, &decision)
+        .expect("telemetry payload failure must not abort the strategy callback");
+    strategy.active.last_reference_ts_ms = Some(1_201);
+    strategy
+        .record_blocked_entry_strategy_input_snapshot_once(1_201, &decision)
+        .expect("a failed payload must remain claimed rather than retrying");
+
+    assert_eq!(
+        strategy
+            .blocked_strategy_input_novelty
+            .seen_state_count(&episode),
+        1,
+        "the registered state must be claimed before fallible payload construction"
+    );
+    assert_eq!(
+        evidence.attempts_for(
+            crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::
+                BlockedStrategyInputObservation,
+        ),
+        0,
+        "payload construction failure must never reach the evidence writer, including on a later tick"
+    );
+}

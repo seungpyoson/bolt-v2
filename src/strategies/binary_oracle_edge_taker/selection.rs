@@ -97,8 +97,7 @@ pub(super) fn apply_selection_snapshot_to_active(
     let next = ActiveMarketState::from_snapshot(snapshot, warmup_target);
     let preserve_books = active.market_id.is_some()
         && active.market_id == next.market_id
-        && active.books.up.instrument_id == next.books.up.instrument_id
-        && active.books.down.instrument_id == next.books.down.instrument_id;
+        && active.same_outcome_instruments(&next);
     if active.same_boundary(&next) {
         active.trade_flow = previous_trade_flow;
         return;
@@ -126,6 +125,7 @@ pub(super) fn same_market_transition(
         && current.market_id == next.market_id
         && current.evidence_identity == next.evidence_identity
         && current.instrument_id == next.instrument_id
+        && current.same_outcome_instruments(next)
         && current.market_selection_outcome == next.market_selection_outcome
         && current.interval_start_ms == next.interval_start_ms
         && current.interval_end_ms == next.interval_end_ms
@@ -137,7 +137,9 @@ pub(super) fn same_market_interval_rollover(
 ) -> bool {
     current.market_id.is_some()
         && current.market_id == next.market_id
+        && current.evidence_identity == next.evidence_identity
         && current.instrument_id == next.instrument_id
+        && current.same_outcome_instruments(next)
         && current.interval_start_ms != next.interval_start_ms
 }
 

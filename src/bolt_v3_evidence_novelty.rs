@@ -213,19 +213,6 @@ impl EvidenceNoveltyGuard {
         Ok(true)
     }
 
-    /// Check a registered state without creating or mutating an episode bitmap.
-    pub fn has_claimed(
-        &self,
-        episode: &EvidenceEpisodeId,
-        state: EvidenceCanonicalState,
-    ) -> Result<bool> {
-        let (word, mask) = self.state_bit(state)?;
-        Ok(self
-            .seen_by_episode
-            .get(episode)
-            .is_some_and(|words| words[word] & mask == mask))
-    }
-
     fn state_bit(&self, state: EvidenceCanonicalState) -> Result<(usize, u64)> {
         let registration = canonical_state_registration(state);
         if registration.owner != self.owner {

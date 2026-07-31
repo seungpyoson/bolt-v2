@@ -1548,15 +1548,14 @@ impl BoltV3SubmitAdmissionState {
                     .copied()
                     .unwrap_or(0);
                 let next_execution_client_count = current_execution_client_count.checked_add(1)?;
-                let next_forced_reduction_count = if request.intent_kind
-                    == BoltV3SubmitIntentKind::KillSwitchForcedReduction
-                {
-                    inner
-                        .live_kill_switch_forced_reduction_order_count
-                        .checked_add(1)?
-                } else {
-                    inner.live_kill_switch_forced_reduction_order_count
-                };
+                let next_forced_reduction_count =
+                    if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
+                        inner
+                            .live_kill_switch_forced_reduction_order_count
+                            .checked_add(1)?
+                    } else {
+                        inner.live_kill_switch_forced_reduction_order_count
+                    };
                 let forced_reduction_client_order_id = (request.intent_kind
                     == BoltV3SubmitIntentKind::KillSwitchForcedReduction)
                     .then(|| request.client_order_id.clone());

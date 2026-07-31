@@ -271,11 +271,12 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 #
 # "Exactly once" is per producer, not per function. One function can serve two
 # producers whose facts differ, and then it appears under both with each fact's
-# own classification: `record_admission_decision` is event-keyed for an admitted
-# entry and already-deduped for a rejected one, because those are two facts, not
-# two labels for one. Review read the shared name as a double classification,
-# which is worth ruling on here rather than leaving to be re-derived -- the thing
-# that must be classified once is the fact reaching the stream.
+# own classification: `record_admission_decision` is event-keyed for both
+# admitted-entry and rejected-entry facts, while the separate order-reject fact
+# is already deduped before recording. Review read the shared function name as a
+# double classification, which is worth ruling on here rather than leaving to be
+# re-derived -- the thing that must be classified once is the fact reaching the
+# stream.
 #
 # The five census fields below are #1354 acceptance criteria, carried over from
 # the append-layer census preserved in git history. The final census revision
@@ -304,9 +305,9 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 # `[[dispositions]]` table below states the same fact per consumer and carries
 # an owner ruling with it, which the census's flat name list did not.
 #
-# `call_sites` names the enclosing function rather than a line, because a
-# line-pinned census goes stale on any edit above it, and a gate that fails for
-# unrelated reasons is a gate someone switches off.
+# `call_sites` is reviewed provenance inventory and names the enclosing function
+# rather than a line. The parser validates only the `<path>.rs::<function>`
+# shape; it does not scan source or claim that the named target resolves.
 
 [[producers]]
 id = "edge_taker_blocked_strategy_input"
@@ -393,8 +394,9 @@ census_ancestor = "admission_decision"
 # feature is on. It is listed because it is a real call site under the feature
 # this contract's own test compiles with, and the production path
 # (`bolt_v3_basket_admission.rs::admit`) is listed beside it -- but a reader
-# auditing production reachability must not count it. The call-site check is
-# textual and cannot tell the two apart; see the note on that test.
+# auditing production reachability must not count it. The reviewed inventory
+# records the feature boundary explicitly because it is not executable
+# reachability evidence.
 [[producers]]
 id = "basket_admission_granted"
 purpose = "basket_admission_granted"
@@ -531,7 +533,7 @@ census_ancestor = "requote_throttle"
 id = "edge_taker_settlement"
 purpose = "settlement"
 classification = "event-keyed"
-handler_reachability = ["timer"]
+handler_reachability = ["index-price"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::try_book_resolution_settlement"]
 repeat_semantics = "every settlement update remains append-complete"
 dedupe_key_evidence = "settlement_key recovery identity; no suppression"
@@ -541,7 +543,7 @@ census_ancestor = "settlement"
 id = "edge_taker_terminal_settlement"
 purpose = "terminal_settlement"
 classification = "event-keyed"
-handler_reachability = ["timer"]
+handler_reachability = ["quote", "book", "timer", "index-price", "startup"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::apply_terminal_settlement_transition"]
 repeat_semantics = "every canonical terminal settlement update remains append-complete"
 dedupe_key_evidence = "settlement_key recovery identity; no suppression"

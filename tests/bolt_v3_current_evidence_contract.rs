@@ -236,7 +236,9 @@ fn a_producer_without_a_call_site_is_rejected() {
     let error = parse_contract_registry(&replace_once(REGISTRY, &block, &stripped))
         .expect_err("a producer naming no call site must fail");
     assert!(
-        error.to_string().contains("names no call site"),
+        error
+            .to_string()
+            .contains("names no reviewed call-site provenance"),
         "unexpected error: {error}"
     );
 }

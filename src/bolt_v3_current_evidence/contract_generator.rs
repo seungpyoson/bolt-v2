@@ -126,6 +126,8 @@ struct ProducerRow {
     purpose: String,
     classification: String,
     handler_reachability: Vec<String>,
+    /// Reviewed provenance inventory. Validation checks its stable textual
+    /// shape, not source-code reachability.
     call_sites: Vec<String>,
     repeat_semantics: String,
     dedupe_key_evidence: String,
@@ -323,7 +325,7 @@ fn validate_registry(wire: &RegistryWire) -> Result<()> {
         }
         ensure!(
             !producer.call_sites.is_empty(),
-            "producer `{}` names no call site, so nothing ties its classification to code",
+            "producer `{}` names no reviewed call-site provenance",
             producer.id
         );
         for site in &producer.call_sites {

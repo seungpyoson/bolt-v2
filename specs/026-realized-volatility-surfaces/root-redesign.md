@@ -1,5 +1,8 @@
 # Realized Volatility Surface Root Redesign
 
+> **Historical design record — not current authority or work direction.**
+> Current `main`, `AGENTS.md`, and tracked issues are authoritative.
+
 ## Status
 
 Implemented on PR #609 after Claude, Gemini, and Grok design review. This

@@ -16,7 +16,7 @@ cargo fmt --check
 cargo test --test bolt_v3_submit_admission
 cargo test --test bolt_v3_current_evidence_runtime
 cargo test --test bolt_v3_strategy_registration
-cargo test --test bolt_v3_live_canary_gate
+cargo test --test bolt_v3_live_node_startup_boot
 git diff --check
 python3 scripts/verify_bolt_v3_runtime_literals.py
 python3 scripts/verify_bolt_v3_provider_leaks.py

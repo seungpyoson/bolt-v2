@@ -23,9 +23,18 @@ const CLASSIFICATIONS: &[&str] = &[
     "no-named-reader",
     "state-observation",
 ];
-/// The runtime entry points an append path is reachable from. `startup` is the
-/// one that cannot flood; the rest are per-tick and are why #1354 exists.
-const HANDLER_REACHABILITY: &[&str] = &["book", "index-price", "quote", "startup", "timer"];
+/// The runtime callback classes an append path is reachable from. `startup` is
+/// one-shot; the market-data, timer, order-event, and position-event classes
+/// can all recur and therefore belong in the #1354 flood-surface inventory.
+const HANDLER_REACHABILITY: &[&str] = &[
+    "book",
+    "index-price",
+    "order-event",
+    "position-event",
+    "quote",
+    "startup",
+    "timer",
+];
 /// Suppression is not implemented on this layer, so `prohibited` is the only
 /// legal value today. It is a set rather than an equality because every sibling
 /// check here is a set, and because the value that replaces it arrives as a

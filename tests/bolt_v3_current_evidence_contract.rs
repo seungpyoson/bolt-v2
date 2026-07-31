@@ -243,6 +243,68 @@ fn a_producer_without_a_call_site_is_rejected() {
     );
 }
 
+#[test]
+fn a_call_site_without_a_rust_path_and_function_is_rejected() {
+    let mutated = replace_once(
+        REGISTRY,
+        "call_sites = [\"src/strategies/binary_oracle_edge_taker/mod.rs::record_entry_skip_once\"]",
+        "call_sites = [\"record_entry_skip_once\"]",
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("reviewed call-site provenance without its stable shape must fail");
+    assert!(
+        error.to_string().contains("is not `<path>.rs::<function>`"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn empty_repeat_semantics_are_rejected() {
+    let mutated = replace_once(
+        REGISTRY,
+        "repeat_semantics = \"the current last-key mask suppresses the twenty entry-skip reasons only while its full observation key remains adjacent and therefore re-emits A-B-A; the stacked episode-suppression slice replaces that key with a stable episode identity and a monotone twenty-state mask\"",
+        "repeat_semantics = \"\"",
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("a producer without reviewed repeat semantics must fail");
+    assert!(
+        error.to_string().contains("states no repeat semantics"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn empty_dedupe_key_evidence_is_rejected() {
+    let mutated = replace_once(
+        REGISTRY,
+        "dedupe_key_evidence = \"at this revision the full entry-evaluation key contains volatile observation fields; the required target is stable strategy, target, venue and ordered market identity plus the exact twenty-state entry-skip enumeration\"",
+        "dedupe_key_evidence = \"\"",
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("a producer without reviewed dedupe-key evidence must fail");
+    assert!(
+        error.to_string().contains("states no dedupe-key evidence"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn an_unknown_census_ancestor_is_rejected() {
+    let mutated = replace_once(
+        REGISTRY,
+        "census_ancestor = \"entry_skip\"",
+        "census_ancestor = \"unknown_retired_row\"",
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("an unknown retired-census ancestor must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("is not a row of the retired census"),
+        "unexpected error: {error}"
+    );
+}
+
 fn replace_runtime_provenance(block: &str, wiring: &str, triggers: &str) -> String {
     block
         .lines()

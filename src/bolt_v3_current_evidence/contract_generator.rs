@@ -23,14 +23,16 @@ const CLASSIFICATIONS: &[&str] = &[
     "no-named-reader",
     "state-observation",
 ];
-/// The runtime callback classes an append path is reachable from. `startup` is
-/// one-shot; the market-data, timer, order-event, and position-event classes
-/// can all recur and therefore belong in the #1354 flood-surface inventory.
-const HANDLER_REACHABILITY: &[&str] = &[
+const RUNTIME_WIRING: &[&str] = &["unwired", "wired"];
+/// Reviewed runtime callback provenance. The parser closes the vocabulary and
+/// checks it against `runtime_wiring`; it does not derive a call graph.
+const REVIEWED_RUNTIME_TRIGGERS: &[&str] = &[
+    "account-event",
     "book",
     "index-price",
     "order-event",
     "position-event",
+    "portfolio-event",
     "quote",
     "startup",
     "timer",
@@ -134,7 +136,8 @@ struct ProducerRow {
     id: String,
     purpose: String,
     classification: String,
-    handler_reachability: Vec<String>,
+    runtime_wiring: String,
+    reviewed_runtime_triggers: Vec<String>,
     /// Reviewed provenance inventory. Validation checks its stable textual
     /// shape, not source-code reachability.
     call_sites: Vec<String>,
@@ -316,21 +319,31 @@ fn validate_registry(wire: &RegistryWire) -> Result<()> {
             producer.id,
             producer.classification
         );
-        // Reachability is what makes a classification consequential -- an
-        // append path reachable only from startup cannot flood a per-tick
-        // stream whatever it is classified as -- so an empty list is a census
-        // row that decided nothing.
         ensure!(
-            !producer.handler_reachability.is_empty(),
-            "producer `{}` names no handler reachability",
-            producer.id
+            RUNTIME_WIRING.contains(&producer.runtime_wiring.as_str()),
+            "producer `{}` names unknown runtime wiring `{}`",
+            producer.id,
+            producer.runtime_wiring
         );
-        for handler in &producer.handler_reachability {
+        for trigger in &producer.reviewed_runtime_triggers {
             ensure!(
-                HANDLER_REACHABILITY.contains(&handler.as_str()),
-                "producer `{}` names unknown handler `{handler}`",
+                REVIEWED_RUNTIME_TRIGGERS.contains(&trigger.as_str()),
+                "producer `{}` names unknown reviewed runtime trigger `{trigger}`",
                 producer.id
             );
+        }
+        match producer.runtime_wiring.as_str() {
+            "wired" => ensure!(
+                !producer.reviewed_runtime_triggers.is_empty(),
+                "producer `{}` is wired but names no reviewed runtime trigger",
+                producer.id
+            ),
+            "unwired" => ensure!(
+                producer.reviewed_runtime_triggers.is_empty(),
+                "producer `{}` is unwired but names reviewed runtime triggers",
+                producer.id
+            ),
+            _ => unreachable!("runtime wiring vocabulary checked above"),
         }
         ensure!(
             !producer.call_sites.is_empty(),

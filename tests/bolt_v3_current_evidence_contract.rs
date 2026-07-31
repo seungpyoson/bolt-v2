@@ -243,28 +243,78 @@ fn a_producer_without_a_call_site_is_rejected() {
     );
 }
 
-/// A handler outside the runtime's entry points is refused.
+fn replace_runtime_provenance(block: &str, wiring: &str, triggers: &str) -> String {
+    block
+        .lines()
+        .map(|line| {
+            if line.starts_with("runtime_wiring = ") {
+                format!("runtime_wiring = \"{wiring}\"")
+            } else if line.starts_with("reviewed_runtime_triggers = ") {
+                format!("reviewed_runtime_triggers = [{triggers}]")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Reviewed runtime provenance uses a closed trigger vocabulary.
 #[test]
-fn an_unknown_handler_reachability_is_rejected() {
+fn an_unknown_reviewed_runtime_trigger_is_rejected() {
     let block = producer_block(REGISTRY, "edge_taker_entry_skip");
     let mutated = replace_once(
         REGISTRY,
         &block,
-        &block
-            .lines()
-            .map(|line| {
-                if line.starts_with("handler_reachability = ") {
-                    "handler_reachability = [\"cron\"]".to_string()
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        &replace_runtime_provenance(&block, "wired", "\"cron\""),
     );
-    let error = parse_contract_registry(&mutated).expect_err("an unknown handler must fail");
+    let error = parse_contract_registry(&mutated).expect_err("an unknown trigger must fail");
     assert!(
-        error.to_string().contains("unknown handler `cron`"),
+        error
+            .to_string()
+            .contains("unknown reviewed runtime trigger `cron`"),
         "unexpected error: {error}"
     );
+}
+
+#[test]
+fn a_wired_producer_requires_a_reviewed_runtime_trigger() {
+    let block = producer_block(REGISTRY, "edge_taker_entry_skip");
+    let mutated = replace_once(
+        REGISTRY,
+        &block,
+        &replace_runtime_provenance(&block, "wired", ""),
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("wired producer without a reviewed trigger must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("is wired but names no reviewed runtime trigger"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn an_unwired_producer_refuses_reviewed_runtime_triggers() {
+    let block = producer_block(REGISTRY, "edge_taker_entry_skip");
+    let mutated = replace_once(
+        REGISTRY,
+        &block,
+        &replace_runtime_provenance(&block, "unwired", "\"book\""),
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("unwired producer with reviewed triggers must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("is unwired but names reviewed runtime triggers"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn an_unwired_producer_accepts_no_reviewed_runtime_triggers() {
+    parse_contract_registry(REGISTRY)
+        .expect("an unwired producer with no reviewed runtime triggers must parse");
 }

@@ -1,0 +1,64 @@
+name: CodSpeed
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_CODSPEED_VERSION: "5.0.1"
+  CARGO_TERM_COLOR: always
+  JUST_VERSION: "1.49.0"
+
+permissions: {}
+
+jobs:
+  benchmarks:
+    name: CPU simulation benchmarks
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # On pull_request, benchmark the exact pushed head rather than GitHub's
+      # synthetic merge commit so reports map to the reviewed revision.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          build-jobs-key: codspeed.benchmarks
+
+      - name: Install cargo-codspeed
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-codspeed@${{ env.CARGO_CODSPEED_VERSION }}
+          fallback: none
+
+      - name: Build benchmark targets
+        run: |
+          set -x
+          cargo codspeed build \
+            --locked \
+            --measurement-mode simulation \
+            --bench codspeed_pricing \
+            --bench codspeed_realized_volatility \
+            --bench codspeed_outcome_group_scan
+
+      - name: Run and upload benchmarks
+        uses: CodSpeedHQ/action@88472375d0a4572cf70a9f1fe3a4e0ab8da1b924 # v5.0.1
+        with:
+          mode: simulation
+          run: cargo codspeed run

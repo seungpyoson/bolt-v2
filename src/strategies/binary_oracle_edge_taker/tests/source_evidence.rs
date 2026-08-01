@@ -60,41 +60,40 @@ fn novelty_registry_has_a_production_mapping_for_every_declared_state() {
             .collect::<std::collections::BTreeSet<_>>()
     };
 
-    let blocked_states = EvidenceRvGateResult::ALL
-        .iter()
-        .copied()
-        .flat_map(|gate_result| {
-            [false, true].map(|watermark_present| {
-                blocked_strategy_input_canonical_state(gate_result, watermark_present)
-            })
-        })
-        .collect::<std::collections::BTreeSet<EvidenceCanonicalState>>();
-    assert_eq!(
-        blocked_states.len(),
-        EvidenceRvGateResult::ALL.len() * 2,
-        "every production RV-gate state and watermark pairing must map injectively"
-    );
-    assert_eq!(
-        blocked_states,
-        registered(EvidenceStateOwner::BlockedStrategyInputSnapshot),
-        "every blocked-strategy-input registry state must be constructible by production mapping"
-    );
-
-    let entry_skip_states = EvidenceEntrySkipReason::ALL
-        .iter()
-        .copied()
-        .map(entry_skip_canonical_state)
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(
-        entry_skip_states.len(),
-        EvidenceEntrySkipReason::ALL.len(),
-        "every production entry-skip reason must map injectively"
-    );
-    assert_eq!(
-        entry_skip_states,
-        registered(EvidenceStateOwner::EntrySkip),
-        "every entry-skip registry state must be constructible by production mapping"
-    );
+    for owner in EvidenceStateOwner::ALL {
+        let (production_states, expected_count) = match production_novelty_domain(*owner) {
+            EvidenceNoveltyProductionDomain::BlockedStrategyInputSnapshot => {
+                let states = EvidenceRvGateResult::ALL
+                    .iter()
+                    .copied()
+                    .flat_map(|gate_result| {
+                        [false, true].map(|watermark_present| {
+                            blocked_strategy_input_canonical_state(gate_result, watermark_present)
+                        })
+                    })
+                    .collect::<std::collections::BTreeSet<EvidenceCanonicalState>>();
+                (states, EvidenceRvGateResult::ALL.len() * 2)
+            }
+            EvidenceNoveltyProductionDomain::EntrySkip => {
+                let states = EvidenceEntrySkipReason::ALL
+                    .iter()
+                    .copied()
+                    .map(entry_skip_canonical_state)
+                    .collect::<std::collections::BTreeSet<_>>();
+                (states, EvidenceEntrySkipReason::ALL.len())
+            }
+        };
+        assert_eq!(
+            production_states.len(),
+            expected_count,
+            "every production state must map injectively"
+        );
+        assert_eq!(
+            production_states,
+            registered(*owner),
+            "every registered owner must have one exhaustive production domain"
+        );
+    }
 }
 
 fn replay_reference_price_config(

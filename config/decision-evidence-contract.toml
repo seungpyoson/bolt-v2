@@ -287,11 +287,10 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 # `census_ancestor` names which row each inherited from, and is empty for a
 # producer that postdates the census and was derived directly.
 #
-# All 20 are accounted for by the closed `[[census_dispositions]]` relation:
-# 17 have direct current descendants, 2 are folded into current facts, and 1
-# was deleted outright. The parser requires exactly one typed row per retired
-# producer, validates every current target, and requires inherited mappings to
-# equal the producers' `census_ancestor` fields.
+# All retired producers are accounted for by the closed
+# `[[census_dispositions]]` relation. The parser requires exactly one typed row
+# per retired producer, validates every current target, and requires inherited
+# mappings to equal the producers' `census_ancestor` fields.
 #
 # `named_readers`, the sixth criterion, is deliberately absent. The final
 # 19-row census carried 74 producer-to-reader references across 17 distinct

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, anyhow, ensure};
 use serde::Deserialize;
 
-const CONTRACT_SCHEMA_VERSION: u32 = 1;
+const CONTRACT_SCHEMA_VERSION: u32 = 2;
 const CONSUMER_MODES: &[&str] = &["offline_projection", "startup_recovery"];
 const OBSERVATION_DUTIES: &[&str] = &["diagnostic_observation", "state_observation"];
 const MACHINE_DUTIES: &[&str] = &["action", "join", "reconciliation", "recovery"];
@@ -42,6 +42,7 @@ const REVIEWED_RUNTIME_TRIGGERS: &[&str] = &[
 /// check here is a set, and because the value that replaces it arrives as a
 /// vocabulary entry rather than as an edit to a comparison.
 const NOVELTY_CAPABILITIES: &[&str] = &["prohibited"];
+const CENSUS_DISPOSITIONS: &[&str] = &["deleted", "folded", "inherited"];
 /// The complete producer accounting from the retired evidence census.
 ///
 /// The final retired census revision had 19 producer rows. Its immediately
@@ -52,13 +53,9 @@ const NOVELTY_CAPABILITIES: &[&str] = &["prohibited"];
 /// revisions so provenance remains validated without treating a future file at
 /// the same path as the retired census.
 ///
-/// Four names here have no independent producer in this contract.
-/// `submit_reservation_metadata`, `venue_truth_capture_failure` and
-/// `venue_truth_divergence` are append paths this layer removed outright.
-/// `settlement_booking_error_legacy_append` is the folded path: its fact is now
-/// a field of `TerminalSettlementFact`, reaches the stream through
-/// `apply_terminal_settlement_transition`, and is censused by
-/// `edge_taker_terminal_settlement`.
+/// Four names here have no independent producer in this contract. Their typed
+/// `[[census_dispositions]]` rows distinguish folds from deletions and name the
+/// current producers that carry folded evidence.
 const CENSUS_PRODUCERS: &[&str] = &[
     "admission_decision",
     "basket_admission_decision",
@@ -93,7 +90,16 @@ struct RegistryWire {
     producers: Vec<ProducerRow>,
     identities: Vec<IdentityRow>,
     facts: Vec<FactRow>,
+    census_dispositions: Vec<CensusDispositionRow>,
     dispositions: Vec<DispositionRow>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CensusDispositionRow {
+    ancestor: String,
+    disposition: String,
+    current_producers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -201,6 +207,18 @@ impl ContractRegistry {
     pub fn fact_count(&self) -> usize {
         self.wire.facts.len()
     }
+
+    pub fn census_disposition_count(&self) -> usize {
+        self.wire.census_dispositions.len()
+    }
+
+    pub fn census_disposition(&self, ancestor: &str) -> Option<(&str, &[String])> {
+        self.wire
+            .census_dispositions
+            .iter()
+            .find(|row| row.ancestor == ancestor)
+            .map(|row| (row.disposition.as_str(), row.current_producers.as_slice()))
+    }
 }
 
 pub fn parse_contract_registry(input: &str) -> Result<ContractRegistry> {
@@ -222,11 +240,25 @@ fn validate_registry(wire: &RegistryWire) -> Result<()> {
     let consumers = unique_ids("consumer", wire.consumers.iter().map(|row| row.id.as_str()))?;
     let purposes = unique_ids("purpose", wire.purposes.iter().map(|row| row.id.as_str()))?;
     let _producers = unique_ids("producer", wire.producers.iter().map(|row| row.id.as_str()))?;
+    let census_dispositions = unique_ids(
+        "census disposition",
+        wire.census_dispositions
+            .iter()
+            .map(|row| row.ancestor.as_str()),
+    )?;
     let identities = unique_ids(
         "identity",
         wire.identities.iter().map(|row| row.id.as_str()),
     )?;
     let facts = unique_ids("fact", wire.facts.iter().map(|row| row.id.as_str()))?;
+
+    ensure!(
+        census_dispositions.len() == CENSUS_PRODUCERS.len()
+            && CENSUS_PRODUCERS
+                .iter()
+                .all(|ancestor| census_dispositions.contains(ancestor)),
+        "census dispositions must account for every retired producer exactly once"
+    );
 
     ensure!(sinks.contains("machine"), "missing machine sink");
     ensure!(sinks.contains("observation"), "missing observation sink");
@@ -494,6 +526,63 @@ fn validate_registry(wire: &RegistryWire) -> Result<()> {
             "purpose `{}` current fact does not bind its current identity",
             purpose.id
         );
+    }
+
+    let producer_ids: BTreeSet<_> = wire.producers.iter().map(|row| row.id.as_str()).collect();
+    for disposition in &wire.census_dispositions {
+        ensure!(
+            CENSUS_PRODUCERS.contains(&disposition.ancestor.as_str()),
+            "census disposition names unknown retired producer `{}`",
+            disposition.ancestor
+        );
+        ensure!(
+            CENSUS_DISPOSITIONS.contains(&disposition.disposition.as_str()),
+            "census disposition for `{}` names unknown disposition `{}`",
+            disposition.ancestor,
+            disposition.disposition
+        );
+        let current_producers: BTreeSet<_> = disposition
+            .current_producers
+            .iter()
+            .map(String::as_str)
+            .collect();
+        ensure!(
+            current_producers.len() == disposition.current_producers.len(),
+            "census disposition for `{}` repeats a current producer",
+            disposition.ancestor
+        );
+        ensure!(
+            current_producers
+                .iter()
+                .all(|producer| producer_ids.contains(producer)),
+            "census disposition for `{}` names an unknown current producer",
+            disposition.ancestor
+        );
+
+        let inherited_producers: BTreeSet<_> = wire
+            .producers
+            .iter()
+            .filter(|producer| producer.census_ancestor == disposition.ancestor)
+            .map(|producer| producer.id.as_str())
+            .collect();
+        match disposition.disposition.as_str() {
+            "inherited" => ensure!(
+                !current_producers.is_empty() && current_producers == inherited_producers,
+                "inherited census disposition for `{}` must exactly name its current producers",
+                disposition.ancestor
+            ),
+            "folded" => ensure!(
+                !current_producers.is_empty() && inherited_producers.is_empty(),
+                "folded census disposition for `{}` must name live fold targets and no direct descendants",
+                disposition.ancestor
+            ),
+            "deleted" => ensure!(
+                current_producers.is_empty() && inherited_producers.is_empty(),
+                "deleted census disposition for `{}` cannot name surviving producers",
+                disposition.ancestor
+            ),
+            _ => unreachable!("census disposition vocabulary checked above"),
+        }
     }
 
     let mut facts_per_identity: BTreeMap<&str, usize> = BTreeMap::new();

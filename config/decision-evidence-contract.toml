@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 
 [[owners]]
 id = "bolt_v3_decision_evidence"
@@ -287,17 +287,11 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 # `census_ancestor` names which row each inherited from, and is empty for a
 # producer that postdates the census and was derived directly.
 #
-# All 20 are accounted for: 16 are named as ancestors below, 3 are append paths
-# the replacement deleted outright (`submit_reservation_metadata`,
-# `venue_truth_capture_failure`, `venue_truth_divergence` -- no function, record
-# kind, or equivalent evidence survives), and 1 was folded rather than removed.
-# `settlement_booking_error_legacy_append` is that one: the booking-error fact is
-# now a field of `TerminalSettlementFact` rather than its own append, so it
-# reaches the stream through `apply_terminal_settlement_transition` and is
-# censused by `edge_taker_terminal_settlement`. It has no `census_ancestor` entry
-# of its own because it is no longer a distinct append path -- but a reader
-# reconciling this contract against the census must be able to find where it
-# went, which is what this paragraph exists for.
+# All 20 are accounted for by the closed `[[census_dispositions]]` relation:
+# 16 have direct current descendants, 2 are folded into current facts, and 2
+# were deleted outright. The parser requires exactly one typed row per retired
+# producer, validates every current target, and requires inherited mappings to
+# equal the producers' `census_ancestor` fields.
 #
 # `named_readers`, the sixth criterion, is deliberately absent. The final
 # 19-row census carried 74 producer-to-reader references across 17 distinct
@@ -312,6 +306,106 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 # reviewed runtime provenance. The parser closes the trigger vocabulary and
 # requires it to agree with wired/unwired status; it does not derive a call
 # graph from source.
+
+[[census_dispositions]]
+ancestor = "admission_decision"
+disposition = "inherited"
+current_producers = ["submit_admission_admitted_entry", "submit_admission_rejected_entry", "submit_admission_exit", "submit_admission_forced_reduction"]
+
+[[census_dispositions]]
+ancestor = "basket_admission_decision"
+disposition = "inherited"
+current_producers = ["basket_admission_granted", "basket_admission_rejected"]
+
+[[census_dispositions]]
+ancestor = "capital_admission_rebuild_audit"
+disposition = "inherited"
+current_producers = ["capital_admission_rebuild"]
+
+[[census_dispositions]]
+ancestor = "entry_skip"
+disposition = "inherited"
+current_producers = ["edge_taker_entry_skip"]
+
+[[census_dispositions]]
+ancestor = "exit_decision"
+disposition = "inherited"
+current_producers = ["edge_taker_exit_submit_decision", "edge_taker_exit_hold_decision"]
+
+[[census_dispositions]]
+ancestor = "exit_evaluation"
+disposition = "inherited"
+current_producers = ["edge_taker_exit_evaluation"]
+
+[[census_dispositions]]
+ancestor = "loss_governor_halt"
+disposition = "inherited"
+current_producers = ["submit_admission_loss_halt"]
+
+[[census_dispositions]]
+ancestor = "order_intent"
+disposition = "inherited"
+current_producers = ["order_execution_entry_intent", "order_execution_exit_intent"]
+
+[[census_dispositions]]
+ancestor = "order_lifecycle"
+disposition = "inherited"
+current_producers = ["edge_taker_order_lifecycle"]
+
+[[census_dispositions]]
+ancestor = "order_reject"
+disposition = "inherited"
+current_producers = ["submit_admission_order_reject", "order_reject_observer_feed"]
+
+[[census_dispositions]]
+ancestor = "requote_throttle"
+disposition = "inherited"
+current_producers = ["maker_requote_throttle"]
+
+[[census_dispositions]]
+ancestor = "settlement"
+disposition = "inherited"
+current_producers = ["edge_taker_settlement"]
+
+[[census_dispositions]]
+ancestor = "strategy_input_snapshot_blocked_rv"
+disposition = "inherited"
+current_producers = ["edge_taker_blocked_strategy_input"]
+
+[[census_dispositions]]
+ancestor = "strategy_input_snapshot_submit"
+disposition = "inherited"
+current_producers = ["edge_taker_submit_strategy_input"]
+
+[[census_dispositions]]
+ancestor = "submit_reservation_fill"
+disposition = "inherited"
+current_producers = ["submit_reservation_fill"]
+
+[[census_dispositions]]
+ancestor = "terminal_settlement"
+disposition = "inherited"
+current_producers = ["edge_taker_terminal_settlement"]
+
+[[census_dispositions]]
+ancestor = "settlement_booking_error_legacy_append"
+disposition = "folded"
+current_producers = ["edge_taker_terminal_settlement"]
+
+[[census_dispositions]]
+ancestor = "submit_reservation_metadata"
+disposition = "folded"
+current_producers = ["submit_admission_admitted_entry", "basket_admission_granted"]
+
+[[census_dispositions]]
+ancestor = "venue_truth_capture_failure"
+disposition = "deleted"
+current_producers = []
+
+[[census_dispositions]]
+ancestor = "venue_truth_divergence"
+disposition = "deleted"
+current_producers = []
 
 [[producers]]
 id = "edge_taker_blocked_strategy_input"

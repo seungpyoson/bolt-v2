@@ -29,6 +29,16 @@ fn producer_block(input: &str, id: &str) -> String {
     input[start..end].to_string()
 }
 
+fn census_disposition_block(input: &str, ancestor: &str) -> String {
+    let anchor = format!("[[census_dispositions]]\nancestor = \"{ancestor}\"\n");
+    let start = input.find(&anchor).expect("census disposition must exist");
+    let rest = &input[start + anchor.len()..];
+    let end = rest
+        .find("\n[[")
+        .map_or(input.len(), |at| start + anchor.len() + at + 1);
+    input[start..end].to_string()
+}
+
 /// Replace one field in one producer without coupling the mutation to the
 /// field's current reviewed prose.
 ///
@@ -65,11 +75,80 @@ fn current_contract_is_closed_and_deterministic() {
     assert_eq!(contract.purpose_count(), 23);
     assert_eq!(contract.identity_count(), 23);
     assert_eq!(contract.fact_count(), 23);
+    assert_eq!(contract.census_disposition_count(), 20);
+    let (disposition, current_producers) = contract
+        .census_disposition("submit_reservation_metadata")
+        .expect("reservation metadata must be historically accounted for");
+    assert_eq!(disposition, "folded");
+    assert_eq!(
+        current_producers,
+        [
+            "submit_admission_admitted_entry".to_string(),
+            "basket_admission_granted".to_string(),
+        ]
+    );
 
     let first = render_contract(&contract);
     let second = render_contract(&contract);
     assert_eq!(first, second);
     assert_eq!(first, GENERATED);
+}
+
+#[test]
+fn every_retired_producer_requires_one_typed_disposition() {
+    let mutated = replace_once(
+        REGISTRY,
+        &census_disposition_block(REGISTRY, "submit_reservation_metadata"),
+        "",
+    );
+    let error =
+        parse_contract_registry(&mutated).expect_err("an unaccounted retired producer must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("account for every retired producer exactly once")
+    );
+}
+
+#[test]
+fn inherited_census_dispositions_must_exactly_name_their_descendants() {
+    let block = census_disposition_block(REGISTRY, "admission_decision");
+    let mutated_block = replace_once(
+        &block,
+        "current_producers = [\"submit_admission_admitted_entry\", \"submit_admission_rejected_entry\", \"submit_admission_exit\", \"submit_admission_forced_reduction\"]",
+        "current_producers = [\"submit_admission_admitted_entry\"]",
+    );
+    let mutated = replace_once(REGISTRY, &block, &mutated_block);
+    let error =
+        parse_contract_registry(&mutated).expect_err("an incomplete inherited mapping must fail");
+    assert!(error.to_string().contains("must exactly name"));
+}
+
+#[test]
+fn folded_and_deleted_census_dispositions_have_closed_shapes() {
+    let folded = census_disposition_block(REGISTRY, "submit_reservation_metadata");
+    let empty_fold = replace_once(
+        &folded,
+        "current_producers = [\"submit_admission_admitted_entry\", \"basket_admission_granted\"]",
+        "current_producers = []",
+    );
+    let error = parse_contract_registry(&replace_once(REGISTRY, &folded, &empty_fold))
+        .expect_err("a fold without live targets must fail");
+    assert!(error.to_string().contains("must name live fold targets"));
+
+    let deleted = census_disposition_block(REGISTRY, "venue_truth_divergence");
+    let surviving_delete = replace_once(
+        &deleted,
+        "current_producers = []",
+        "current_producers = [\"edge_taker_terminal_settlement\"]",
+    );
+    let error = parse_contract_registry(&replace_once(REGISTRY, &deleted, &surviving_delete))
+        .expect_err("a deletion with a live target must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot name surviving producers")
+    );
 }
 
 #[test]

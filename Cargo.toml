@@ -125,6 +125,8 @@ zeroize = "1.8.2"
 
 [dev-dependencies]
 arrow = "58.3.0"
+# Keep this release aligned with CARGO_CODSPEED_VERSION and CodSpeedHQ/action
+# in .github/workflows/codspeed.yml.
 divan = { package = "codspeed-divan-compat", version = "=5.0.1" }
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
@@ -154,4 +156,6 @@ strip = true
 panic = "abort"
 
 [profile.bench]
+# CodSpeed uses this profile as a relative-regression indicator; disabling LTO
+# keeps the GitHub-hosted simulation build inside its memory budget.
 lto = false

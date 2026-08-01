@@ -5,8 +5,8 @@ use std::{collections::BTreeMap, sync::OnceLock};
 use bolt_v2::{
     bolt_v3_outcome_group_proofs::StructuredOutcomeGroupingProof,
     bolt_v3_outcome_group_scanner::{
-        OutcomeGroupCandidateLeg, OutcomeGroupDepthSnapshot, OutcomeGroupScanInput,
-        scan_outcome_group_candidate,
+        OutcomeGroupCandidateLeg, OutcomeGroupDepthSnapshot, OutcomeGroupScanBlockReason,
+        OutcomeGroupScanInput, scan_outcome_group_candidate,
     },
     bolt_v3_outcome_groups::{
         CanonicalField, GroupingProof, NormalizedPriceScaleEvidence, OrderConstraintSource,
@@ -33,6 +33,7 @@ struct FixtureFile {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ScanFixture {
     group_id: String,
     source_client_id: String,
@@ -60,12 +61,14 @@ struct ScanFixture {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct StateFixture {
     state_id: String,
     label: String,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LegFixture {
     leg_id: String,
     instrument_id: String,
@@ -76,6 +79,7 @@ struct LegFixture {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CandidateFixture {
     leg_id: String,
     order_side: String,
@@ -83,6 +87,7 @@ struct CandidateFixture {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BookFixture {
     leg_id: String,
     bid_price: String,
@@ -112,7 +117,11 @@ fn main() {
 
 fn fixture() -> &'static ScanFixture {
     static FIXTURE: OnceLock<ScanFixture> = OnceLock::new();
-    FIXTURE.get_or_init(|| support::decode_fixtures::<FixtureFile>().outcome_group_scan)
+    FIXTURE.get_or_init(|| {
+        let fixture = support::decode_fixtures::<FixtureFile>().outcome_group_scan;
+        validate_fixture(&fixture);
+        fixture
+    })
 }
 
 #[divan::bench]
@@ -325,4 +334,56 @@ fn order_side(value: &str) -> OrderSide {
         "buy" => OrderSide::Buy,
         value => panic!("unsupported benchmark order side: {value}"),
     }
+}
+
+fn validate_fixture(fixture: &ScanFixture) {
+    let admissible = run_scan(scan_case(fixture, &fixture.admissible_min_edge_bps));
+    assert!(
+        admissible.admissible,
+        "admissible scanner fixture must pass, got {:?}",
+        admissible.block_reason
+    );
+    assert!(admissible.block_reason.is_none());
+    assert_eq!(
+        admissible.leg_costs.len(),
+        fixture.candidates.len(),
+        "admissible scanner fixture must price every candidate leg"
+    );
+    let executable_quantity = admissible
+        .leg_costs
+        .first()
+        .expect("scanner fixture must price at least one leg")
+        .executable_quantity;
+    assert!(executable_quantity > Decimal::ZERO);
+    assert!(
+        admissible
+            .leg_costs
+            .iter()
+            .all(|leg| leg.executable_quantity == executable_quantity),
+        "scanner fixture notionals must produce equal, step-aligned payout quantities"
+    );
+    assert!(admissible.total_fee_cost > Decimal::ZERO);
+    assert!(admissible.total_slippage_buffer > Decimal::ZERO);
+    assert!(admissible.absolute_edge > Decimal::ZERO);
+    assert!(
+        admissible.edge_bps >= decimal(&fixture.admissible_min_edge_bps),
+        "admissible scanner fixture must clear its configured edge threshold"
+    );
+
+    let blocked = run_scan(scan_case(fixture, &fixture.blocked_min_edge_bps));
+    assert!(!blocked.admissible);
+    assert_eq!(
+        blocked.block_reason,
+        Some(OutcomeGroupScanBlockReason::EdgeThreshold),
+        "blocked scanner fixture must reach the final edge-threshold comparison"
+    );
+    assert_eq!(
+        blocked.leg_costs, admissible.leg_costs,
+        "scanner cases must share the complete pricing path"
+    );
+    assert_eq!(blocked.edge_bps, admissible.edge_bps);
+    assert!(
+        blocked.edge_bps < decimal(&fixture.blocked_min_edge_bps),
+        "blocked scanner fixture must remain below its configured edge threshold"
+    );
 }

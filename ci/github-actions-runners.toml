@@ -35,7 +35,7 @@ build = "managed_build"
 advisories = "github_hosted"
 
 [workflows.codspeed]
-benchmarks = "github_hosted"
+benchmarks = "managed_build"
 
 [cargo_build_jobs.rust_probe]
 probe-heavy = 3

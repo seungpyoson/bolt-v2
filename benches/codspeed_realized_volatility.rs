@@ -5,8 +5,9 @@ use std::{collections::BTreeSet, sync::OnceLock};
 use bolt_v2::{
     bolt_v3_config::{RealizedVolatilitySurfaceBlock, realized_volatility_engine_config},
     bolt_v3_realized_volatility::{
-        RealizedVolEngine, RealizedVolEngineConfig, RealizedVolJumpPolicy, RealizedVolNoiseMethod,
-        RealizedVolObservation, RealizedVolPricingComponent, RealizedVolSourceStatus,
+        RealizedVolAggregation, RealizedVolEngine, RealizedVolEngineConfig, RealizedVolJumpPolicy,
+        RealizedVolNoiseMethod, RealizedVolObservation, RealizedVolPricingComponent,
+        RealizedVolSourceStatus,
     },
 };
 use serde::Deserialize;
@@ -146,6 +147,11 @@ fn validate_fixture(fixture: &RealizedVolFixture) {
         RealizedVolPricingComponent::NoiseRobust,
         "benchmark must price from the noise-robust component"
     );
+    assert_eq!(
+        config.aggregation,
+        RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+        "benchmark must aggregate from the largest ready source"
+    );
 
     let observations = observations(fixture, &config);
     let mut engine = RealizedVolEngine::from_config(config.clone())
@@ -195,6 +201,7 @@ fn validate_fixture(fixture: &RealizedVolFixture) {
         config.sources.len(),
         "every configured source must have a diagnostic"
     );
+    let mut selected_source_values = Vec::with_capacity(snapshot.source_diagnostics.len());
     for diagnostic in &snapshot.source_diagnostics {
         assert_eq!(
             diagnostic.status,
@@ -205,14 +212,24 @@ fn validate_fixture(fixture: &RealizedVolFixture) {
         assert!(diagnostic.block_reason.is_none());
         assert!(diagnostic.last_rejected_reason.is_none());
         assert!(diagnostic.rejection_counters.is_empty());
+        let selected = assert_component(
+            diagnostic.annualized_realized_vol_decimal,
+            "source selected",
+        );
         assert_component(
             diagnostic.measured_annualized_realized_vol_decimal,
             "source measured",
         );
-        assert_component(
+        let noise_robust = assert_component(
             diagnostic.noise_robust_annualized_realized_vol_decimal,
             "source noise-robust",
         );
+        assert_eq!(
+            selected, noise_robust,
+            "source {} must select its noise-robust component",
+            diagnostic.source_id
+        );
+        selected_source_values.push(selected);
         assert_component(
             diagnostic.continuous_annualized_realized_vol_decimal,
             "source continuous",
@@ -227,13 +244,39 @@ fn validate_fixture(fixture: &RealizedVolFixture) {
         );
     }
 
+    let selected = assert_component(
+        snapshot.annualized_realized_vol_decimal,
+        "aggregate selected",
+    );
     let measured = assert_component(
         snapshot.measured_annualized_realized_vol_decimal,
         "aggregate measured",
     );
+    let min_selected = selected_source_values
+        .iter()
+        .copied()
+        .reduce(f64::min)
+        .expect("three ready sources must produce selected values");
+    let max_selected = selected_source_values
+        .iter()
+        .copied()
+        .reduce(f64::max)
+        .expect("three ready sources must produce selected values");
+    assert!(
+        max_selected - min_selected > f64::EPSILON,
+        "sources must have non-zero dispersion"
+    );
+    assert_eq!(
+        selected, max_selected,
+        "upper-quantile aggregation must select the largest source value"
+    );
     let noise_robust = assert_component(
         snapshot.noise_robust_annualized_realized_vol_decimal,
         "aggregate noise-robust",
+    );
+    assert_eq!(
+        selected, noise_robust,
+        "aggregate must select its noise-robust component"
     );
     let continuous = assert_component(
         snapshot.continuous_annualized_realized_vol_decimal,

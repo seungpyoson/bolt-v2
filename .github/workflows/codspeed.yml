@@ -17,6 +17,7 @@ on:
       - gated_source_roots.manifest
       - rust-toolchain.toml
       - src/**
+      # ci/nautilus-source-capabilities.toml owns these build.rs evidence paths.
       - tests/binance_sbe_quote_timestamps.rs
       - tests/binance_sbe_schema_v5_decode.rs
   pull_request:
@@ -33,18 +34,16 @@ on:
       - gated_source_roots.manifest
       - rust-toolchain.toml
       - src/**
+      # ci/nautilus-source-capabilities.toml owns these build.rs evidence paths.
       - tests/binance_sbe_quote_timestamps.rs
       - tests/binance_sbe_schema_v5_decode.rs
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Keep this release aligned with codspeed-divan-compat in Cargo.toml and the
-  # CodSpeed action release below.
-  CARGO_CODSPEED_VERSION: "5.0.1"
   CARGO_TERM_COLOR: always
   JUST_VERSION: "1.49.0"
 
@@ -53,7 +52,7 @@ permissions: {}
 jobs:
   benchmarks:
     name: CPU simulation benchmarks
-    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_BUILD }}
     timeout-minutes: 180
     permissions:
       contents: read
@@ -78,10 +77,37 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           build-jobs-key: codspeed.benchmarks
 
+      - name: Resolve cargo-codspeed version
+        id: cargo-codspeed-version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(
+            python3 - Cargo.lock <<'PY'
+          import pathlib
+          import sys
+          import tomllib
+
+          lock = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          versions = sorted({
+              package["version"]
+              for package in lock["package"]
+              if package["name"] == "codspeed-divan-compat"
+          })
+          if len(versions) != 1:
+              raise SystemExit("expected exactly one codspeed-divan-compat version")
+          print(versions[0])
+          PY
+          )"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
       - name: Install cargo-codspeed
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
-          tool: cargo-codspeed@${{ env.CARGO_CODSPEED_VERSION }}
+          tool: cargo-codspeed@${{ steps.cargo-codspeed-version.outputs.version }}
+          # cargo-codspeed is not in this action's manifest. Select its locked,
+          # source-only installation route instead of relying on a fallback default.
+          fallback: cargo-install
 
       - name: Build benchmark targets
         run: |
@@ -94,8 +120,8 @@ jobs:
             --bench codspeed_outcome_group_scan
 
       - name: Run and upload benchmarks
-        # Keep this release aligned with CARGO_CODSPEED_VERSION and the
-        # codspeed-divan-compat dependency in Cargo.toml.
+        # The action is independently pinned; the CLI version is derived from
+        # the locked codspeed-divan-compat dependency above.
         uses: CodSpeedHQ/action@88472375d0a4572cf70a9f1fe3a4e0ab8da1b924 # v5.0.1
         with:
           mode: simulation

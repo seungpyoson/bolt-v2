@@ -35,6 +35,7 @@ struct FixtureFile {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ScanFixture {
+    group_shape: ScanGroupShape,
     group_id: String,
     source_client_id: String,
     venue: String,
@@ -58,6 +59,12 @@ struct ScanFixture {
     legs: Vec<LegFixture>,
     candidates: Vec<CandidateFixture>,
     books: Vec<BookFixture>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScanGroupShape {
+    HyperliquidExactlyOneWinner,
 }
 
 #[derive(Deserialize)]
@@ -251,37 +258,44 @@ fn outcome_group(fixture: &ScanFixture) -> OutcomeGroup {
         TerminalStateConvention::ExactlyOneWinner,
     )
     .expect("outcome-group fixture must derive a standard payout matrix");
+    let (source_kind, grouping_proof, role_binding_proof, settlement_source_kind) =
+        match fixture.group_shape {
+            ScanGroupShape::HyperliquidExactlyOneWinner => (
+                OutcomeGroupSourceKind::Hyperliquid,
+                GroupingProof::HyperliquidOutcome(StructuredOutcomeGroupingProof {
+                    question: fixture.grouping_question,
+                    outcome_indices: fixture.outcome_indices.clone(),
+                    proof_fingerprint: canonical_fingerprint(vec![CanonicalField::new(
+                        ["grouping", "group_id"],
+                        &fixture.group_id,
+                    )]),
+                }),
+                RoleBindingProof::VenueStructuredFields {
+                    source_id: fixture.freshness_source_id.clone(),
+                    question: fixture.grouping_question,
+                    outcome_indices: fixture.outcome_indices.clone(),
+                    proof_fingerprint: canonical_fingerprint(vec![CanonicalField::new(
+                        ["role_binding", "source_id"],
+                        &fixture.freshness_source_id,
+                    )]),
+                },
+                SettlementSourceKind::VenueStructuredFields,
+            ),
+        };
     let mut group = OutcomeGroup {
         group_id: fixture.group_id.clone(),
         source_client_id: ClientId::from(fixture.source_client_id.as_str()),
         venue: Venue::from(fixture.venue.as_str()),
-        source_kind: OutcomeGroupSourceKind::Hyperliquid,
+        source_kind,
         settlement_asset_id: fixture.settlement_asset_id.clone(),
         terminal_states,
         tradable_legs: legs,
         payout_matrix,
-        grouping_proof: Some(GroupingProof::HyperliquidOutcome(
-            StructuredOutcomeGroupingProof {
-                question: fixture.grouping_question,
-                outcome_indices: fixture.outcome_indices.clone(),
-                proof_fingerprint: canonical_fingerprint(vec![CanonicalField::new(
-                    ["grouping", "group_id"],
-                    &fixture.group_id,
-                )]),
-            },
-        )),
-        role_binding_proof: Some(RoleBindingProof::VenueStructuredFields {
-            source_id: fixture.freshness_source_id.clone(),
-            question: fixture.grouping_question,
-            outcome_indices: fixture.outcome_indices.clone(),
-            proof_fingerprint: canonical_fingerprint(vec![CanonicalField::new(
-                ["role_binding", "source_id"],
-                &fixture.freshness_source_id,
-            )]),
-        }),
+        grouping_proof: Some(grouping_proof),
+        role_binding_proof: Some(role_binding_proof),
         settlement_rules: SettlementRules {
             terminal_state_convention: TerminalStateConvention::ExactlyOneWinner,
-            settlement_source_kind: SettlementSourceKind::VenueStructuredFields,
+            settlement_source_kind,
             non_standard_terminal_payouts: Vec::new(),
             terminal_payout_derivation: TerminalPayoutDerivation::StandardRowsPlusAttestedVectors,
         },

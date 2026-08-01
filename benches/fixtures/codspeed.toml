@@ -26,11 +26,12 @@ snapshot_as_of_ms = 5000
 canonical_base_asset = "BASE"
 canonical_quote_asset = "QUOTE"
 
+# Policy values are benchmark-scale; the estimator shape below mirrors deployment.
 [realized_volatility.surface.policy]
 window_ms = 4000
 sampling_interval_ms = 1000
 min_ready_sources = 1
-max_source_age_ms = 500
+max_source_age_ms = 600
 max_inter_sample_gap_ms = 2000
 min_coverage_ratio = 0.75
 max_cross_source_dispersion = 0.50
@@ -80,12 +81,6 @@ canonical_quote_asset = "QUOTE"
 
 [[realized_volatility.observations]]
 source_id = "codspeed-spot-source-a"
-price = 100.0
-event_ts_ms = 1000
-recv_ts_ms = 1000
-
-[[realized_volatility.observations]]
-source_id = "codspeed-spot-source-a"
 price = 100.2
 event_ts_ms = 2000
 recv_ts_ms = 2000
@@ -110,12 +105,6 @@ recv_ts_ms = 5000
 
 [[realized_volatility.observations]]
 source_id = "codspeed-spot-source-b"
-price = 200.0
-event_ts_ms = 1000
-recv_ts_ms = 1000
-
-[[realized_volatility.observations]]
-source_id = "codspeed-spot-source-b"
 price = 200.4
 event_ts_ms = 2000
 recv_ts_ms = 2000
@@ -128,7 +117,7 @@ recv_ts_ms = 3000
 
 [[realized_volatility.observations]]
 source_id = "codspeed-spot-source-b"
-price = 280.4
+price = 280.5
 event_ts_ms = 4000
 recv_ts_ms = 4000
 
@@ -137,12 +126,6 @@ source_id = "codspeed-spot-source-b"
 price = 280.8
 event_ts_ms = 5000
 recv_ts_ms = 5000
-
-[[realized_volatility.observations]]
-source_id = "codspeed-spot-source-c"
-price = 50.0
-event_ts_ms = 1000
-recv_ts_ms = 1000
 
 [[realized_volatility.observations]]
 source_id = "codspeed-spot-source-c"
@@ -169,6 +152,7 @@ event_ts_ms = 5000
 recv_ts_ms = 5000
 
 [outcome_group_scan]
+group_shape = "hyperliquid_exactly_one_winner"
 group_id = "codspeed-structured-outcome"
 source_client_id = "codspeed_outcome_data"
 venue = "TESTVENUE"

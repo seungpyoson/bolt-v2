@@ -53,9 +53,8 @@ const CENSUS_DISPOSITIONS: &[&str] = &["deleted", "folded", "inherited"];
 /// revisions so provenance remains validated without treating a future file at
 /// the same path as the retired census.
 ///
-/// Four names here have no independent producer in this contract. Their typed
-/// `[[census_dispositions]]` rows distinguish folds from deletions and name the
-/// current producers that carry folded evidence.
+/// Ancestors without an independent producer are accounted for by their typed
+/// `[[census_dispositions]]` rows; no derived count is maintained here.
 const CENSUS_PRODUCERS: &[&str] = &[
     "admission_decision",
     "basket_admission_decision",

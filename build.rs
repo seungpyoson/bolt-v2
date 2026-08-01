@@ -412,6 +412,15 @@ pub enum EvidenceStateOwner {\n",
     }
     output.push_str(
         "}\n\n\
+impl EvidenceStateOwner {\n\
+    pub const ALL: &'static [Self] = &[\n",
+    );
+    for producer in &registry.producers {
+        output.push_str(&format!("        Self::{},\n", producer.rust_owner));
+    }
+    output.push_str(
+        "    ];\n\
+}\n\n\
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]\n\
 #[repr(u16)]\n\
 pub enum EvidenceCanonicalState {\n",

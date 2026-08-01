@@ -29,6 +29,26 @@ use crate::bolt_v3_evidence_novelty::{
 };
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EvidenceNoveltyProductionDomain {
+    BlockedStrategyInputSnapshot,
+    EntrySkip,
+}
+
+const fn production_novelty_domain(owner: EvidenceStateOwner) -> EvidenceNoveltyProductionDomain {
+    match owner {
+        EvidenceStateOwner::BlockedStrategyInputSnapshot => {
+            EvidenceNoveltyProductionDomain::BlockedStrategyInputSnapshot
+        }
+        EvidenceStateOwner::EntrySkip => EvidenceNoveltyProductionDomain::EntrySkip,
+    }
+}
+
+fn production_novelty_guard(owner: EvidenceStateOwner) -> Result<EvidenceNoveltyGuard> {
+    let _domain = production_novelty_domain(owner);
+    EvidenceNoveltyGuard::for_owner(owner)
+}
+
 use crate::{
     bolt_v3_binary_outcome_edge::{
         BinaryOutcomeEdgeBlockReason, BinaryOutcomeEdgeInputs, BinaryOutcomeEdgeResult,
@@ -805,11 +825,11 @@ impl BinaryOracleEdgeTaker {
             exposure: ExposureState::Flat,
             last_flat_terminal_entry_override: None,
             last_reported_exposure_occupancy: Cell::new(None),
-            blocked_strategy_input_novelty: EvidenceNoveltyGuard::for_owner(
+            blocked_strategy_input_novelty: production_novelty_guard(
                 EvidenceStateOwner::BlockedStrategyInputSnapshot,
             )
             .expect("blocked strategy-input novelty owner is registered"),
-            entry_skip_novelty: EvidenceNoveltyGuard::for_owner(EvidenceStateOwner::EntrySkip)
+            entry_skip_novelty: production_novelty_guard(EvidenceStateOwner::EntrySkip)
                 .expect("entry-skip novelty owner is registered"),
             last_recorded_exit_decision: None,
             pricing,

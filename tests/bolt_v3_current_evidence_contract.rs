@@ -87,6 +87,14 @@ fn current_contract_is_closed_and_deterministic() {
             "basket_admission_granted".to_string(),
         ]
     );
+    let (disposition, current_producers) = contract
+        .census_disposition("venue_truth_capture_failure")
+        .expect("capture failure must be historically accounted for");
+    assert_eq!(disposition, "inherited");
+    assert_eq!(
+        current_producers,
+        ["submit_admission_provider_collateral_allowance_capture_failure".to_string()]
+    );
 
     let first = render_contract(&contract);
     let second = render_contract(&contract);

@@ -288,8 +288,8 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 # producer that postdates the census and was derived directly.
 #
 # All 20 are accounted for by the closed `[[census_dispositions]]` relation:
-# 16 have direct current descendants, 2 are folded into current facts, and 2
-# were deleted outright. The parser requires exactly one typed row per retired
+# 17 have direct current descendants, 2 are folded into current facts, and 1
+# was deleted outright. The parser requires exactly one typed row per retired
 # producer, validates every current target, and requires inherited mappings to
 # equal the producers' `census_ancestor` fields.
 #
@@ -399,8 +399,8 @@ current_producers = ["submit_admission_admitted_entry", "basket_admission_grante
 
 [[census_dispositions]]
 ancestor = "venue_truth_capture_failure"
-disposition = "deleted"
-current_producers = []
+disposition = "inherited"
+current_producers = ["submit_admission_provider_collateral_allowance_capture_failure"]
 
 [[census_dispositions]]
 ancestor = "venue_truth_divergence"
@@ -679,7 +679,7 @@ reviewed_runtime_triggers = ["timer"]
 call_sites = ["src/bolt_v3_submit_admission.rs::suspend_capital_admission_for_provider_collateral_allowance_capture_failure"]
 repeat_semantics = "one record per failed allowance poll, unbounded while the failure persists -- OUTSTANDING #1354 gap. The allowance runtime is a permanent `tokio::time::interval` loop, not a startup one-shot, and the recording call is unconditional, so a capture that stays broken appends once per poll interval indefinitely. `captures_missed` increments per attempt, so payload dedupe would not collapse them either. Needs a closed capture-failure domain before this path can claim finite suppression"
 dedupe_key_evidence = "no suppression; each capture failure is its own event"
-census_ancestor = ""
+census_ancestor = "venue_truth_capture_failure"
 
 [[identities]]
 id = "blocked_strategy_input_observation_v1"

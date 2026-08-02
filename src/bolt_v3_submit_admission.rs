@@ -1537,8 +1537,7 @@ impl BoltV3SubmitAdmissionState {
         let mut evaluation = self.evaluate(&mut inner, request, now_ns);
         let mut admitted_counter_update = None;
         if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
-            #[allow(clippy::redundant_closure_call)]
-            let apply_counters = || -> Option<_> {
+            admitted_counter_update = (|| -> Option<_> {
                 let admitted_order_count_before = inner.admitted_order_count;
                 let forced_reduction_order_count_before =
                     inner.live_kill_switch_forced_reduction_order_count;
@@ -1581,9 +1580,8 @@ impl BoltV3SubmitAdmissionState {
                     forced_reduction_client_order_id,
                     counter_rollback,
                 ))
-            };
+            })();
 
-            admitted_counter_update = apply_counters();
             if admitted_counter_update.is_none() {
                 if let Some(rollback) = evaluation.rollback.as_ref() {
                     rollback_capital_admission_reservation(&mut inner, rollback);
@@ -2091,8 +2089,7 @@ impl BoltV3SubmitAdmissionState {
             .try_into()
             .ok();
 
-        #[allow(clippy::redundant_closure_call)]
-        let apply_counters = || -> Option<_> {
+        let admitted_counter_update = (|| -> Option<_> {
             let count = claim_count?;
             let reduction_count = forced_reduction_count?;
 
@@ -2123,9 +2120,8 @@ impl BoltV3SubmitAdmissionState {
                 counter_rollback,
                 count,
             ))
-        };
+        })();
 
-        let admitted_counter_update = apply_counters();
         if admitted_counter_update.is_none() && outcome == BoltV3AdmissionOutcome::Admitted {
             outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
         }

@@ -1537,6 +1537,7 @@ impl BoltV3SubmitAdmissionState {
         let mut evaluation = self.evaluate(&mut inner, request, now_ns);
         let mut admitted_counter_update = None;
         if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
+            #[allow(clippy::redundant_closure_call)]
             let apply_counters = || -> Option<_> {
                 let admitted_order_count_before = inner.admitted_order_count;
                 let forced_reduction_order_count_before =
@@ -1551,15 +1552,14 @@ impl BoltV3SubmitAdmissionState {
                     .unwrap_or(0);
                 let next_execution_client_count = current_execution_client_count.checked_add(1)?;
 
-                let next_forced_reduction_count = if request.intent_kind
-                    == BoltV3SubmitIntentKind::KillSwitchForcedReduction
-                {
-                    inner
-                        .live_kill_switch_forced_reduction_order_count
-                        .checked_add(1)?
-                } else {
-                    inner.live_kill_switch_forced_reduction_order_count
-                };
+                let next_forced_reduction_count =
+                    if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
+                        inner
+                            .live_kill_switch_forced_reduction_order_count
+                            .checked_add(1)?
+                    } else {
+                        inner.live_kill_switch_forced_reduction_order_count
+                    };
 
                 let forced_reduction_client_order_id = (request.intent_kind
                     == BoltV3SubmitIntentKind::KillSwitchForcedReduction)
@@ -2091,6 +2091,7 @@ impl BoltV3SubmitAdmissionState {
             .try_into()
             .ok();
 
+        #[allow(clippy::redundant_closure_call)]
         let apply_counters = || -> Option<_> {
             let count = claim_count?;
             let reduction_count = forced_reduction_count?;
@@ -2138,8 +2139,7 @@ impl BoltV3SubmitAdmissionState {
                 .get(execution_client_id)
                 .copied()
                 .unwrap_or(0);
-            outcome =
-                live_submit_count_cap_outcome(current_count, count, limits.max_order_count);
+            outcome = live_submit_count_cap_outcome(current_count, count, limits.max_order_count);
         }
 
         let mut evidence = evidence.clone();
@@ -2174,7 +2174,8 @@ impl BoltV3SubmitAdmissionState {
             next_forced_reduction_order_count,
             counter_rollback,
             _count,
-        ) = admitted_counter_update.expect("admitted_counter_update should be Some if outcome is Admitted");
+        ) = admitted_counter_update
+            .expect("admitted_counter_update should be Some if outcome is Admitted");
 
         for metadata in &reservation_metadata {
             if let Err(err) = self

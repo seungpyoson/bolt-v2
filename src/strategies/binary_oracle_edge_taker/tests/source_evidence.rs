@@ -1754,7 +1754,7 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     assert_eq!(exit_decisions[0].rv_surface_id, TEST_SURFACE_ID);
     assert_eq!(exit_decisions[0].rv_snapshot_as_of_ms, Some(1_200));
     assert!(exit_decisions[0].rv_snapshot_ready);
-    assert_eq!(exit_decisions[0].rv_snapshot_blockers, Vec::new());
+    assert_eq!(exit_decisions[0].rv_snapshot_blockers, Some(Vec::new()));
     assert_eq!(
         exit_decisions[0].rv_gate_result,
         BoltV3ExitRvGateResult::Accepted
@@ -2749,8 +2749,8 @@ fn minimal_exit_submission_decision() -> ExitSubmissionDecision {
                 realized_vol: None,
                 realized_vol_source_venue: None,
                 realized_vol_source_ts_ms: None,
-                raw_snapshot_blockers: Vec::new(),
-                source_diagnostics: Vec::new(),
+                raw_snapshot_blockers: Some(Vec::new()),
+                source_diagnostics: Some(Vec::new()),
                 snapshot_as_of_minus_trigger_event_ms: None,
                 fair_probability_up: None,
                 fair_probability_down: None,
@@ -4009,11 +4009,11 @@ fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_repl
     .collect::<Vec<_>>();
     assert_eq!(
         decisions[0].rv_snapshot_blockers,
-        expected_decision_blockers
+        Some(expected_decision_blockers.clone())
     );
     assert_eq!(
         decisions[1].rv_snapshot_blockers,
-        expected_decision_blockers
+        Some(expected_decision_blockers)
     );
     assert_eq!(evaluations[0].rv_blockers, expected_evaluation_blockers);
     assert_eq!(evaluations[1].rv_blockers, expected_evaluation_blockers);

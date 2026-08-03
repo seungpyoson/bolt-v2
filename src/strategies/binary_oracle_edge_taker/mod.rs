@@ -5174,8 +5174,7 @@ impl BinaryOracleEdgeTaker {
         };
         let realized_vol_source_ts_ms = if accepted { snapshot_as_of_ms } else { None };
         let raw_snapshot_blockers = snapshot
-            .map(|snapshot| snapshot.blocked_reasons.clone())
-            .unwrap_or_default();
+            .map(|snapshot| snapshot.blocked_reasons.clone());
         let source_diagnostics = snapshot
             .map(|snapshot| {
                 snapshot
@@ -5185,8 +5184,7 @@ impl BinaryOracleEdgeTaker {
                         BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic,
                     )
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         let snapshot_as_of_minus_trigger_event_ms = snapshot_as_of_ms
             .zip(trigger_context.venue_event_ms().map(VenueEventMs::value))
             .map(|(snapshot_as_of_ms, trigger_event_ms)| {
@@ -5439,10 +5437,14 @@ impl BinaryOracleEdgeTaker {
         let receipt = &decision.evaluation.realized_volatility_receipt;
         let rv_snapshot_blockers = receipt
             .raw_snapshot_blockers
-            .iter()
-            .copied()
-            .map(realized_vol_blocker_to_exit_evidence)
-            .collect();
+            .as_ref()
+            .map(|blockers| {
+                blockers
+                    .iter()
+                    .copied()
+                    .map(realized_vol_blocker_to_exit_evidence)
+                    .collect()
+            });
         let rv_future_dating_delta_ms = receipt
             .snapshot_as_of_minus_trigger_event_ms
             .filter(|delta_ms| delta_ms.is_positive())
@@ -6581,12 +6583,16 @@ impl BinaryOracleEdgeTaker {
             rv_max_source_age_ms: Some(receipt.max_source_age_ms),
             rv_blockers: receipt
                 .raw_snapshot_blockers
-                .iter()
+                .as_ref()
+                .into_iter()
+                .flatten()
                 .map(|reason| realized_volatility_block_reason_evidence_label(*reason).to_string())
                 .collect(),
             rv_source_diagnostics: receipt
                 .source_diagnostics
-                .iter()
+                .as_ref()
+                .into_iter()
+                .flatten()
                 .map(|diagnostic| format!("{}:{}", diagnostic.source_id, diagnostic.status))
                 .collect(),
             rv_gate_result: receipt.gate_result,

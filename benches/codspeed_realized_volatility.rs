@@ -67,14 +67,19 @@ fn construct_engine(bencher: divan::Bencher<'_, '_>) {
 fn observe_and_snapshot(bencher: divan::Bencher<'_, '_>) {
     bencher
         .with_inputs(|| observe_case(fixture()))
-        .bench_values(|mut case| {
-            for observation in case.observations {
-                divan::black_box(case.engine.observe(divan::black_box(observation)));
+        .bench_values(|case| {
+            let ObserveCase {
+                mut engine,
+                observations,
+                snapshot_as_of_ms,
+            } = case;
+            let mut observations = observations.into_iter();
+            for observation in observations.by_ref() {
+                divan::black_box(engine.observe(divan::black_box(observation)));
             }
-            divan::black_box(
-                case.engine
-                    .snapshot_at(divan::black_box(case.snapshot_as_of_ms)),
-            )
+            let snapshot =
+                divan::black_box(engine.snapshot_at(divan::black_box(snapshot_as_of_ms)));
+            (snapshot, engine, observations)
         });
 }
 

@@ -204,7 +204,12 @@ fn scan_case(fixture: &ScanFixture, min_edge_bps: &str) -> ScanCase {
     }
 }
 
-fn run_scan(case: ScanCase) -> bolt_v2::bolt_v3_outcome_group_scanner::OutcomeGroupScanEvidence {
+fn run_scan(
+    case: ScanCase,
+) -> (
+    bolt_v2::bolt_v3_outcome_group_scanner::OutcomeGroupScanEvidence,
+    OutcomeGroup,
+) {
     let ScanCase {
         group,
         candidate_legs,
@@ -216,7 +221,7 @@ fn run_scan(case: ScanCase) -> bolt_v2::bolt_v3_outcome_group_scanner::OutcomeGr
         vwap_depth_limit_bps,
         slippage_buffer_bps,
     } = case;
-    scan_outcome_group_candidate(OutcomeGroupScanInput {
+    let evidence = scan_outcome_group_candidate(OutcomeGroupScanInput {
         group: &group,
         candidate_legs,
         books,
@@ -226,7 +231,8 @@ fn run_scan(case: ScanCase) -> bolt_v2::bolt_v3_outcome_group_scanner::OutcomeGr
         min_edge_bps,
         vwap_depth_limit_bps,
         slippage_buffer_bps,
-    })
+    });
+    (evidence, group)
 }
 
 fn outcome_group(fixture: &ScanFixture) -> OutcomeGroup {
@@ -351,7 +357,8 @@ fn order_side(value: &str) -> OrderSide {
 }
 
 fn validate_fixture(fixture: &ScanFixture) {
-    let admissible = run_scan(scan_case(fixture, &fixture.admissible_min_edge_bps));
+    let (admissible, _admissible_group) =
+        run_scan(scan_case(fixture, &fixture.admissible_min_edge_bps));
     assert!(
         admissible.admissible,
         "admissible scanner fixture must pass, got {:?}",
@@ -384,7 +391,7 @@ fn validate_fixture(fixture: &ScanFixture) {
         "admissible scanner fixture must clear its configured edge threshold"
     );
 
-    let blocked = run_scan(scan_case(fixture, &fixture.blocked_min_edge_bps));
+    let (blocked, _blocked_group) = run_scan(scan_case(fixture, &fixture.blocked_min_edge_bps));
     assert!(!blocked.admissible);
     assert_eq!(
         blocked.block_reason,

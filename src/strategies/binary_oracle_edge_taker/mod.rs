@@ -5173,18 +5173,14 @@ impl BinaryOracleEdgeTaker {
             None
         };
         let realized_vol_source_ts_ms = if accepted { snapshot_as_of_ms } else { None };
-        let raw_snapshot_blockers = snapshot
-            .map(|snapshot| snapshot.blocked_reasons.clone());
-        let source_diagnostics = snapshot
-            .map(|snapshot| {
-                snapshot
-                    .source_diagnostics
-                    .iter()
-                    .map(
-                        BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic,
-                    )
-                    .collect()
-            });
+        let raw_snapshot_blockers = snapshot.map(|snapshot| snapshot.blocked_reasons.clone());
+        let source_diagnostics = snapshot.map(|snapshot| {
+            snapshot
+                .source_diagnostics
+                .iter()
+                .map(BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic)
+                .collect()
+        });
         let snapshot_as_of_minus_trigger_event_ms = snapshot_as_of_ms
             .zip(trigger_context.venue_event_ms().map(VenueEventMs::value))
             .map(|(snapshot_as_of_ms, trigger_event_ms)| {
@@ -5435,16 +5431,13 @@ impl BinaryOracleEdgeTaker {
         let (historical_entry_fee_rate_known, historical_entry_fee_rate_reason) =
             self.historical_entry_fee_log_fields();
         let receipt = &decision.evaluation.realized_volatility_receipt;
-        let rv_snapshot_blockers = receipt
-            .raw_snapshot_blockers
-            .as_ref()
-            .map(|blockers| {
-                blockers
-                    .iter()
-                    .copied()
-                    .map(realized_vol_blocker_to_exit_evidence)
-                    .collect()
-            });
+        let rv_snapshot_blockers = receipt.raw_snapshot_blockers.as_ref().map(|blockers| {
+            blockers
+                .iter()
+                .copied()
+                .map(realized_vol_blocker_to_exit_evidence)
+                .collect()
+        });
         let rv_future_dating_delta_ms = receipt
             .snapshot_as_of_minus_trigger_event_ms
             .filter(|delta_ms| delta_ms.is_positive())

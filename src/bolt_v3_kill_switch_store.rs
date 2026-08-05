@@ -16,7 +16,7 @@ use crate::{
         AtomicIoError, append_private_file, write_private_atomic_file, write_private_new_file,
     },
     bolt_v3_config::{KillSwitchConfigBlock, resolve_root_relative_path},
-    bolt_v3_kill_switch::KillSwitchState,
+    bolt_v3_kill_switch::{KillSwitchHaltTriggerKind, KillSwitchState},
 };
 
 pub const KILL_SWITCH_STORE_SCHEMA_VERSION: u32 = 2;
@@ -39,6 +39,13 @@ pub enum KillSwitchRecoveryReason {
     OversizedEvidence,
     UnsupportedSchemaVersion,
     UnresolvedHalt,
+    /// The store is readable and carries the current schema version, but names a
+    /// halt trigger this build no longer represents. `KillSwitchHaltTriggerKind`
+    /// dropped `BasketExecutionStuck` and `VenueTruthDivergence`, and serde
+    /// reports the resulting unknown variant identically to unreadable bytes.
+    /// Reporting it as corrupt evidence would send an operator looking for disk
+    /// damage instead of a halt raised by a retired subsystem.
+    UnrepresentableHaltTrigger,
 }
 
 impl std::fmt::Display for KillSwitchRecoveryReason {
@@ -50,7 +57,102 @@ impl std::fmt::Display for KillSwitchRecoveryReason {
             Self::OversizedEvidence => write!(f, "oversized evidence"),
             Self::UnsupportedSchemaVersion => write!(f, "unsupported schema version"),
             Self::UnresolvedHalt => write!(f, "unresolved halt"),
+            Self::UnrepresentableHaltTrigger => {
+                write!(f, "halt trigger not representable by this build")
+            }
         }
+    }
+}
+
+/// Reports whether a store that failed to deserialize names a halt-trigger kind
+/// this build cannot represent.
+///
+/// The known kinds are not listed here: the candidate string is handed back to
+/// `KillSwitchHaltTriggerKind`'s own deserializer, so retiring or adding a
+/// variant cannot leave a duplicated vocabulary behind to drift.
+/// Reads only the schema version from a store, without interpreting its payload.
+///
+/// The version governs how the rest should be read, so it has to be recoverable
+/// from a store whose payload this build cannot parse. Returns `None` when the
+/// bytes are not readable JSON or carry no version, leaving those to be
+/// diagnosed as corrupt.
+fn declared_schema_version(bytes: &[u8]) -> Option<u32> {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()?
+        .get("schema_version")?
+        .as_u64()
+        .and_then(|version| u32::try_from(version).ok())
+}
+
+fn names_unrepresentable_halt_trigger(bytes: &[u8]) -> bool {
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+
+    // Only a store at the current schema version can be diagnosed this way; an
+    // older or newer one is a version question, not a vocabulary question.
+    if value.get("schema_version") != Some(&serde_json::json!(KILL_SWITCH_STORE_SCHEMA_VERSION)) {
+        return false;
+    }
+
+    let Ok(representable) = serde_json::to_value(KillSwitchHaltTriggerKind::LossGovernorBreach)
+    else {
+        return false;
+    };
+    if !substitute_unrepresentable_kinds(&mut value, &representable) {
+        return false;
+    }
+
+    // Substituting the unknown kinds and nothing else must make the whole record
+    // load. Otherwise the store has some other defect and calling it an
+    // unrepresentable trigger would send the operator after the wrong thing.
+    let Ok(persisted) = serde_json::from_value::<PersistedKillSwitchState>(value) else {
+        return false;
+    };
+
+    // Deserializing is not the whole load: the loss snapshot is validated
+    // separately below, so a record that is semantically corrupt there must stay
+    // corrupt evidence. Mirror that check rather than stopping at serde.
+    match persisted.loss_protection {
+        Some(snapshot) => KillSwitchLossProtectionSnapshot::try_from(snapshot).is_ok(),
+        None => true,
+    }
+}
+
+/// Replaces every `trigger.kind` this build cannot represent with a kind it can,
+/// reporting whether any substitution happened.
+fn substitute_unrepresentable_kinds(
+    value: &mut serde_json::Value,
+    representable: &serde_json::Value,
+) -> bool {
+    match value {
+        serde_json::Value::Object(fields) => {
+            let mut substituted = false;
+            if let Some(kind) = fields
+                .get_mut("trigger")
+                .and_then(|trigger| trigger.get_mut("kind"))
+                && kind.is_string()
+                && serde_json::from_value::<KillSwitchHaltTriggerKind>(kind.clone()).is_err()
+            {
+                *kind = representable.clone();
+                substituted = true;
+            }
+            // Deliberately not `any`: this walk mutates, so short-circuiting
+            // would leave later unknown kinds in place and the re-parse below
+            // would then blame the record instead of the vocabulary.
+            for nested in fields.values_mut() {
+                substituted |= substitute_unrepresentable_kinds(nested, representable);
+            }
+            substituted
+        }
+        serde_json::Value::Array(items) => {
+            let mut substituted = false;
+            for nested in items {
+                substituted |= substitute_unrepresentable_kinds(nested, representable);
+            }
+            substituted
+        }
+        _ => false,
     }
 }
 
@@ -345,28 +447,47 @@ impl KillSwitchStore {
             });
         }
 
+        // Read the version out of the envelope before parsing the payload as the
+        // current schema. A store at another version is expected to carry a shape
+        // this build cannot deserialize, so attempting the payload parse first
+        // reports that shape as corrupt when the version is the real answer.
+        //
+        // This is the only version check there can be. `schema_version` is a
+        // plain `u32` with no serde default, so the payload parse below succeeds
+        // only for bytes where this one already read the same value; a second
+        // check after that parse would be unreachable.
+        if let Some(declared) = declared_schema_version(&bytes)
+            && declared != KILL_SWITCH_STORE_SCHEMA_VERSION
+        {
+            return Ok(KillSwitchRecoveryRecord {
+                recovery_state: KillSwitchRecoveryState::FailClosed {
+                    reason: KillSwitchRecoveryReason::UnsupportedSchemaVersion,
+                    state: None,
+                },
+                loss_protection: None,
+            });
+        }
+
         let persisted = match serde_json::from_slice::<PersistedKillSwitchState>(&bytes) {
             Ok(persisted) => persisted,
             Err(_) => {
+                // Serde cannot distinguish unreadable bytes from a readable
+                // store naming a halt trigger this build dropped, so separate
+                // them here rather than sending the operator after disk damage.
+                let reason = if names_unrepresentable_halt_trigger(&bytes) {
+                    KillSwitchRecoveryReason::UnrepresentableHaltTrigger
+                } else {
+                    KillSwitchRecoveryReason::CorruptEvidence
+                };
                 return Ok(KillSwitchRecoveryRecord {
                     recovery_state: KillSwitchRecoveryState::FailClosed {
-                        reason: KillSwitchRecoveryReason::CorruptEvidence,
+                        reason,
                         state: None,
                     },
                     loss_protection: None,
                 });
             }
         };
-
-        if persisted.schema_version != KILL_SWITCH_STORE_SCHEMA_VERSION {
-            return Ok(KillSwitchRecoveryRecord {
-                recovery_state: KillSwitchRecoveryState::FailClosed {
-                    reason: KillSwitchRecoveryReason::UnsupportedSchemaVersion,
-                    state: Some(persisted.state),
-                },
-                loss_protection: None,
-            });
-        }
 
         let loss_protection = match persisted.loss_protection {
             Some(snapshot) => match KillSwitchLossProtectionSnapshot::try_from(snapshot) {

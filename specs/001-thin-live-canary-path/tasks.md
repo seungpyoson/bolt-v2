@@ -1,5 +1,9 @@
 # Tasks: Thin Bolt-v3 Live Canary Path
 
+> **Historical task record — not an active work queue.** Unchecked boxes below
+> preserve the former feature history; do not execute them. Current `main`,
+> `AGENTS.md`, and tracked issues are authoritative.
+
 **Input**: Design documents from `/specs/001-thin-live-canary-path/`
 **Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/`
 

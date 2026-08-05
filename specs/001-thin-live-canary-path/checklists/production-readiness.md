@@ -1,5 +1,9 @@
 # Production Readiness Checklist: Thin Bolt-v3 Live Canary Path
 
+> **Historical feature artifact — not an active checklist.** Do not execute or
+> complete items from this file. Current `main`, `AGENTS.md`, and tracked issues
+> are authoritative.
+
 **Purpose**: Validate whether the current requirements are complete, clear, and measurable enough to support production-grade live trade readiness, not only a tiny-capital canary.
 **Created**: 2026-05-20
 **Feature**: [spec.md](../spec.md)

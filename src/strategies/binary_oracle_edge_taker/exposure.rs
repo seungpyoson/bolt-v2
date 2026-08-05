@@ -46,17 +46,24 @@ pub(super) struct PendingExitState {
     pub(super) submitted_at_ms: Option<u64>,
     pub(super) market_id: Option<String>,
     pub(super) position_id: Option<PositionId>,
-    pub(super) fill_received: bool,
-    pub(super) filled_quantity: Option<Quantity>,
-    pub(super) close_received: bool,
-    pub(super) terminal_received: bool,
-    pub(super) residual_position_observed_after_fill: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ManagedPositionOrigin {
     StrategyEntry,
     RecoveryBootstrap,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ManagedPositionContext {
+    pub(super) lifecycle: BoltV3PositionMarketLifecycle,
+    pub(super) instrument_id: InstrumentId,
+    pub(super) position_id: PositionId,
+    pub(super) outcome_fees: OutcomeFeeState,
+    pub(super) historical_entry_fee_bps: Option<f64>,
+    pub(super) book: OutcomeBookState,
+    pub(super) origin: ManagedPositionOrigin,
+    pub(super) pending_entry: Option<PendingEntryState>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,50 +75,8 @@ pub(super) struct ManagedPositionState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ExitPendingState {
-    pub(super) position: Option<ManagedPositionState>,
+    pub(super) position: Option<ManagedPositionContext>,
     pub(super) pending_exit: PendingExitState,
-}
-
-impl ExitPendingState {
-    pub(super) fn is_terminal(&self) -> bool {
-        self.pending_exit.fill_received && self.pending_exit.close_received
-    }
-
-    pub(super) fn residual_position_after_terminal(&self) -> Option<OpenPositionState> {
-        let position = self.position.as_ref()?;
-        if self.pending_exit.residual_position_observed_after_fill {
-            return Some(position.position.clone());
-        }
-        let filled_quantity = self.pending_exit.filled_quantity.as_ref()?;
-        let residual = position.position.quantity.as_f64() - filled_quantity.as_f64();
-        if !is_positive_finite(residual) {
-            return None;
-        }
-        let mut residual_position = position.position.clone();
-        let residual_precision = position
-            .position
-            .quantity
-            .precision
-            .max(filled_quantity.precision);
-        residual_position.quantity = Quantity::new(residual, residual_precision);
-        Some(residual_position)
-    }
-
-    pub(super) fn into_state_after_exit_update(self) -> ExposureState {
-        if self.is_terminal() {
-            return ExposureState::Flat;
-        }
-        if self.pending_exit.terminal_received
-            && (!self.pending_exit.fill_received
-                || self.pending_exit.residual_position_observed_after_fill)
-        {
-            return match self.position {
-                Some(position) => ExposureState::Managed(position),
-                None => ExposureState::Flat,
-            };
-        }
-        ExposureState::ExitPending(self)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,7 +128,7 @@ pub(super) enum BlindRecoveryReason {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct UnsupportedObservedState {
-    pub(super) observed: OpenPositionState,
+    pub(super) context: ManagedPositionContext,
     pub(super) reason: UnsupportedObservedReason,
 }
 
@@ -179,9 +144,8 @@ pub(super) enum ExposureState {
     EntryReconcilePending {
         pending: PendingEntryState,
         reason: EntryReconcileReason,
-        observed_fill_quantity: Option<Quantity>,
     },
-    Managed(ManagedPositionState),
+    Managed(ManagedPositionContext),
     ExitPending(ExitPendingState),
     UnsupportedObserved(UnsupportedObservedState),
     BlindRecovery(BlindRecoveryState),
@@ -216,7 +180,7 @@ impl ExposureState {
         }
     }
 
-    pub(super) fn managed_position(&self) -> Option<&ManagedPositionState> {
+    pub(super) fn managed_position_context(&self) -> Option<&ManagedPositionContext> {
         match self {
             Self::Managed(position) => Some(position),
             Self::ExitPending(exit) => exit.position.as_ref(),
@@ -224,7 +188,7 @@ impl ExposureState {
         }
     }
 
-    pub(super) fn managed_position_mut(&mut self) -> Option<&mut ManagedPositionState> {
+    pub(super) fn managed_position_context_mut(&mut self) -> Option<&mut ManagedPositionContext> {
         match self {
             Self::Managed(position) => Some(position),
             Self::ExitPending(exit) => exit.position.as_mut(),
@@ -232,41 +196,29 @@ impl ExposureState {
         }
     }
 
-    pub(super) fn observed_position(&self) -> Option<&OpenPositionState> {
+    pub(super) fn tracked_position_context(&self) -> Option<&ManagedPositionContext> {
+        self.managed_position_context().or(match self {
+            Self::UnsupportedObserved(observed) => Some(&observed.context),
+            _ => None,
+        })
+    }
+
+    pub(super) fn tracked_position_context_mut(&mut self) -> Option<&mut ManagedPositionContext> {
         match self {
-            Self::Managed(position) => Some(&position.position),
-            Self::ExitPending(exit) => exit.position.as_ref().map(|position| &position.position),
-            Self::UnsupportedObserved(observed) => Some(&observed.observed),
+            Self::Managed(position) => Some(position),
+            Self::ExitPending(exit) => exit.position.as_mut(),
+            Self::UnsupportedObserved(observed) => Some(&mut observed.context),
             _ => None,
         }
     }
 
     pub(super) fn held_instrument_id(&self) -> Option<InstrumentId> {
-        self.observed_position()
+        self.tracked_position_context()
             .map(|position| position.instrument_id)
             .or_else(|| self.pending_entry().map(|pending| pending.instrument_id))
     }
 
-    pub(super) fn observed_position_mut(&mut self) -> Option<&mut OpenPositionState> {
-        match self {
-            Self::Managed(position) => Some(&mut position.position),
-            Self::ExitPending(exit) => exit
-                .position
-                .as_mut()
-                .map(|position| &mut position.position),
-            Self::UnsupportedObserved(observed) => Some(&mut observed.observed),
-            _ => None,
-        }
-    }
-
     pub(super) fn exit_pending(&self) -> Option<&ExitPendingState> {
-        match self {
-            Self::ExitPending(exit) => Some(exit),
-            _ => None,
-        }
-    }
-
-    pub(super) fn exit_pending_mut(&mut self) -> Option<&mut ExitPendingState> {
         match self {
             Self::ExitPending(exit) => Some(exit),
             _ => None,
@@ -304,8 +256,8 @@ impl ExposureState {
     }
 
     pub(super) fn current_position_market_id(&self) -> Option<String> {
-        self.managed_position()
-            .and_then(|position| position.position.lifecycle.market_id_owned())
+        self.managed_position_context()
+            .and_then(|position| position.lifecycle.market_id_owned())
             .or_else(|| {
                 self.exit_pending()
                     .and_then(|exit| exit.pending_exit.market_id.clone())

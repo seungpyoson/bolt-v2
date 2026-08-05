@@ -283,7 +283,7 @@ pub fn next_loss_governor_manual_recovery_trading_state(
         return None;
     }
     let snapshot = snapshot?;
-    if snapshot.source.trim().is_empty() || snapshot.observed_at_ns > now_ns {
+    if snapshot.source.is_none() || snapshot.observed_at_ns > now_ns {
         return None;
     }
     if now_ns - snapshot.observed_at_ns > max_snapshot_age_ns {
@@ -437,7 +437,7 @@ mod tests {
     };
     use crate::bolt_v3_loss_governor::{
         LossAdmissionDecision, LossHaltReason, LossSnapshot, LossSnapshotDiagnostics,
-        LossSourceObservationTimestamps,
+        LossSnapshotSource, LossSourceObservationTimestamps,
     };
     use nautilus_model::enums::TradingState;
     use rust_decimal::Decimal;
@@ -472,7 +472,7 @@ mod tests {
 
     fn fresh_snapshot() -> LossSnapshot {
         LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::ZERO),
             daily_pnl: Some(Decimal::ZERO),
@@ -855,7 +855,7 @@ mod tests {
         );
 
         let mut unattributed = fresh_snapshot();
-        unattributed.source = " ".to_string();
+        unattributed.source = None;
         assert_eq!(
             manual_recovery_target(
                 TradingState::Halted,

@@ -219,41 +219,6 @@ fn retired_evidence_gate_runtime_surface_is_deleted() {
 }
 
 #[test]
-fn retired_readiness_gate_identity_is_not_part_of_strategy_evidence() {
-    assert_absent(
-        "src/bolt_v3_decision_evidence.rs",
-        &[
-            retired(&["BoltV3", "Readiness", "Gate", "Evidence", "Snapshot"]),
-            retired(&["BoltV3", "Gate", "Evidence", "Identity"]),
-            retired(&["validate", "_strategy_input", "_readiness", "_evidence"]),
-            retired(&["validate", "_readiness", "_gate", "_evidence", "_snapshot"]),
-            retired(&["from", "_entry", "_readiness", "_gate", "_session"]),
-            retired(&["gate", "_session", "_hash"]),
-            retired(&["gate", "_evidence"]),
-            retired(&["canary", "_proof", "_claim"]),
-        ],
-    );
-    assert_absent(
-        "src/strategies/registry.rs",
-        &[
-            retired(&["BoltV3", "Readiness", "Gate", "Evidence", "Snapshot"]),
-            retired(&["readiness", "_evidence"]),
-            retired(&["with", "_readiness", "_evidence"]),
-        ],
-    );
-    assert_absent(
-        "src/strategies/binary_oracle_edge_taker/mod.rs",
-        &[
-            retired(&["readiness", "_evidence"]),
-            retired(&["with", "_readiness", "_evidence"]),
-            retired(&["gate", "_session", "_hash"]),
-            retired(&["gate", "_evidence"]),
-            retired(&["canary", "_proof", "_claim"]),
-        ],
-    );
-}
-
-#[test]
 fn shipped_config_has_no_retired_live_gate_blocks() {
     assert_absent(
         "config/root.toml",

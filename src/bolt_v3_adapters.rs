@@ -13,13 +13,8 @@
 
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
-use nautilus_common::{
-    clock::Clock,
-    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
-    live::clock::LiveClock,
-    runner::try_get_time_event_sender,
-};
-use nautilus_core::datetime::NANOSECONDS_IN_SECOND;
+use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
+use nautilus_core::{datetime::NANOSECONDS_IN_SECOND, time::get_atomic_clock_realtime};
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
@@ -33,9 +28,9 @@ use crate::{
 /// Boxed closure used by the provider-binding layer to obtain the
 /// current unix-seconds value at the moment a provider filter wants
 /// fresh slugs. The closure is invoked from inside the provider's
-/// `load_all` cycle on every refresh, so it must be `Send + Sync` and
-/// own all state it captures. Tests inject a fixed-time closure;
-/// future live wiring will inject one backed by an NT runtime clock.
+/// `load_all` cycle on every refresh, so it must be `Send + Sync`.
+/// Tests inject a fixed-time closure; live wiring uses NT's global
+/// thread-safe realtime clock.
 pub type BoltV3MarketClockFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 /// Provider-owned NT data-client factory and config for one configured
@@ -234,7 +229,7 @@ impl std::error::Error for BoltV3AdapterMappingError {
 ///
 /// This entry point derives [`MarketIdentityPlan`] from the loaded
 /// strategy TOML and gives provider bindings an NT
-/// [`LiveClock`]-backed timestamp source for filter projection.
+/// NT realtime-clock-backed timestamp source for filter projection.
 pub fn map_bolt_v3_adapters(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
@@ -259,9 +254,9 @@ pub fn map_bolt_v3_adapters_with_runtime_approvals(
 }
 
 fn nt_market_clock() -> BoltV3MarketClockFn {
-    let clock = LiveClock::new(try_get_time_event_sender());
     Arc::new(move || {
-        let now_unix_seconds = clock.timestamp_ns().as_u64() / NANOSECONDS_IN_SECOND;
+        let now_unix_seconds =
+            get_atomic_clock_realtime().get_time_ns().as_u64() / NANOSECONDS_IN_SECOND;
         now_unix_seconds.min(i64::MAX as u64) as i64
     })
 }
@@ -507,6 +502,7 @@ mod tests {
 
     static FAKE_UPDOWN_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[updown::KEY],
@@ -524,11 +520,12 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     };
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[],
@@ -546,11 +543,12 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     };
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[],
@@ -568,7 +566,7 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
@@ -971,7 +969,6 @@ mod tests {
         assert_eq!(exec.max_retries, 3);
         assert_eq!(exec.retry_delay_initial_ms, 250);
         assert_eq!(exec.retry_delay_max_ms, 2000);
-        assert_eq!(exec.ack_timeout_secs, 5);
     }
 
     #[test]

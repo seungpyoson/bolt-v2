@@ -400,6 +400,7 @@ mod tests {
                             resolve_poll_grace_secs: 10,
                             resolve_poll_max_wait_secs: 1800,
                             transport_backend: TransportBackend::Sockudo,
+                            proxy_url: None,
                             filters: Vec::new(),
                             new_market_filter: None,
                         }),

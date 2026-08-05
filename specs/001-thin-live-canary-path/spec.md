@@ -2,7 +2,7 @@
 
 **Feature Branch**: `001-thin-live-canary-path`
 **Created**: 2026-05-12
-**Status**: Locked for Phase 1
+**Status**: Historical — implemented feature record; current `main` and `AGENTS.md` are authoritative
 **Input**: User description: define the problem with hard evidence, plan before runtime code, then TDD the 1-8 path into a production-shaped bolt-v3 spine proven with tiny capital. Initial strategy is a taker strategy comparing Polymarket option price against Chainlink and configurable exchange references using option-pricing edge. Core must not be hardcoded to Binance, Chainlink, Polymarket, one market family, or one strategy.
 
 ## User Scenarios & Testing

@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_iv::config::IvRootConfig,
     bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
-    bolt_v3_outcome_group_sources::{BasketExecutionRiskBlock, OutcomeGroupSourceConfig},
+    bolt_v3_outcome_group_sources::OutcomeGroupSourceConfig,
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolCoarserGridPolicy, RealizedVolEngineConfig,
         RealizedVolEstimatorConfig, RealizedVolJumpConfig, RealizedVolJumpPolicy,
@@ -225,12 +225,8 @@ pub struct RiskBlock {
     pub live_submit_governance: Option<LiveSubmitGovernanceBlock>,
     pub loss_governor: Option<LossGovernorBlock>,
     pub capital_pools: Option<Vec<CapitalPoolBlock>>,
-    pub risk_reservation_substrate: Option<
-        crate::bolt_v3_risk_reservation_substrate::contracts::RiskReservationSubstrateConfig,
-    >,
     pub nautilus: NautilusRiskBlock,
     pub kill_switch: Option<KillSwitchConfigBlock>,
-    pub basket_execution: Option<BasketExecutionRiskBlock>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -274,10 +270,6 @@ pub struct CapitalPoolBlock {
     pub enforce_submit_admission: bool,
     pub max_pool_liability: String,
     pub max_snapshot_age_ns: u64,
-    pub dedupe_retention_ns: u64,
-    pub venue_spendability_source_path: Option<String>,
-    pub venue_spendability_source_sha256: Option<String>,
-    pub venue_spendability_source_max_bytes: Option<u64>,
     pub prediction_market_binary: Option<PredictionMarketBinaryProductBlock>,
     pub capital_admission_policy: CapitalAdmissionPolicyBlock,
 }
@@ -386,15 +378,12 @@ pub struct PersistenceBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionEvidenceBlock {
-    pub order_intents_relative_path: String,
-    /// Byte cap applied when the live-node startup driver reads this same
-    /// decision-evidence file to recover known submit-reservation metadata
-    /// after a restart. The path is owned by this block
-    /// (`order_intents_relative_path` via `decision_evidence_path`), so its
-    /// read bound lives here too. `None` opts startup reservation recovery
-    /// out: capital admission then fails closed if any open orders exist at
-    /// boot (it cannot attribute them without recovered metadata).
-    pub recovery_evidence_max_bytes: Option<u64>,
+    pub machine_relative_path: String,
+    pub observation_relative_path: String,
+    pub retired_relative_paths: Vec<String>,
+    pub reject_episode_max_count: usize,
+    /// Mandatory byte cap for every current-evidence read, including both startup streams.
+    pub recovery_evidence_max_bytes: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

@@ -18,15 +18,13 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::{
-    bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps},
+    bolt_v3_loss_governor::{LossSnapshot, LossSnapshotSource, LossSourceObservationTimestamps},
     bolt_v3_loss_halt_actions::LossGovernorHaltActionHandler,
     bolt_v3_submit_admission::{BoltV3LossFreshness, BoltV3SubmitAdmissionState},
     nt_runtime_capture::{
         account_states_pattern, portfolio_snapshots_pattern, position_events_pattern,
     },
 };
-
-const LOSS_RUNTIME_FEED_SOURCE: &str = stringify!(nt_loss_runtime_feed);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LossGovernorRuntimeFeedConfig {
@@ -419,7 +417,7 @@ impl LossGovernorRuntimeFeed {
             .min(current_equity.observed_at_ns);
 
         let snapshot = LossSnapshot {
-            source: LOSS_RUNTIME_FEED_SOURCE.to_string(),
+            source: Some(LossSnapshotSource::NtLossRuntimeFeed),
             observed_at_ns,
             per_trade_pnl: Some(per_trade_pnl.value),
             daily_pnl: Some(daily_pnl.value),

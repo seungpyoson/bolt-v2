@@ -1,5 +1,8 @@
 # Contract: NT Order Intent Layer
 
+> **Historical feature artifact — not current authority.** This contract records
+> the retired feature design. Current `main` and `AGENTS.md` are authoritative.
+
 ## Boundary
 
 Bolt owns:

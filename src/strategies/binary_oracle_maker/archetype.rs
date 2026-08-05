@@ -44,8 +44,9 @@ use crate::bolt_v3_operator_artifacts::{
     build_head_sha_matches_current, is_lowercase_sha256, json_artifact_sha256,
 };
 use crate::bolt_v3_strategy_registration::{
-    BoltV3StrategyRegistrationError, PreparedStrategyRegistration, StrategyRegistrationContext,
-    StrategyRuntimeBinding, StrategyRuntimeCapabilities, assemble_strategy_build_context,
+    BoltV3StrategyRegistrationError, PreparedStrategyRegistration, StrategyEvidenceCapability,
+    StrategyRegistrationContext, StrategyRuntimeBinding, StrategyRuntimeCapabilities,
+    assemble_strategy_build_context,
 };
 use crate::strategies::binary_oracle_maker::binding::MakerMarketDeclaration;
 use crate::strategies::binary_oracle_maker::{BinaryOracleMakerBuilder, KEY};
@@ -64,6 +65,7 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
         realized_volatility: true,
         settlement: false,
     },
+    evidence_capability: StrategyEvidenceCapability::Maker,
     prepare: prepare_runtime_strategy,
 };
 

@@ -1,5 +1,10 @@
 # Implementation Plan: NT Order Intent Layer
 
+> **Historical implementation record.** The feature has been reconciled by
+> later merged slices. Do not execute this plan as a current work queue; use
+> `main`, `AGENTS.md`, the current source tree, and the repository verification
+> recipes as authority.
+
 **Branch**: `codex/maker-order-proof-clean` | **Date**: 2026-05-20 | **Spec**: `specs/023-nt-order-intent-layer/spec.md`
 **Input**: Feature specification from `specs/023-nt-order-intent-layer/spec.md`
 
@@ -50,15 +55,19 @@ specs/023-nt-order-intent-layer/
 
 ```text
 src/
-├── bolt_v3_archetypes/
-│   └── binary_oracle_edge_taker.rs
 ├── bolt_v3_order_intent.rs
 ├── strategies/
-│   └── binary_oracle_edge_taker.rs
-└── bolt_v3_decision_evidence.rs
+│   └── binary_oracle_edge_taker/
+│       ├── archetype.rs
+│       ├── mod.rs
+│       └── orders.rs
+└── bolt_v3_current_evidence/
+    ├── facts.rs
+    └── mod.rs
 
 tests/
 ├── bolt_v3_order_intent.rs
+├── bolt_v3_current_evidence_runtime.rs
 ├── config_parsing.rs
 └── bolt_v3_strategy_registration.rs
 ```

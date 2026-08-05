@@ -731,6 +731,12 @@ It must remain thin enough that pricing, reference data, risk, decision, and exe
 
 ## 9. Forensic Event Contract
 
+> **Current-only supersession:** the legacy event names, common-field inventory, and payload
+> sketches in Sections 9.1 through 9.5 are historical glossary material only. They are not a
+> runtime schema, writer, reader, or compatibility authority. The sole normative decision-evidence
+> contract is the generated registry and immutable Rust codecs described in Sections 9.6 and 9.7.
+> No runtime path may emit the legacy inventory as NT custom data or decode it as current evidence.
+
 ### 9.1 Principle
 
 NautilusTrader-native observability first.
@@ -847,7 +853,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `d81be0bcc7a473c45d2dc8a8885638336073a218`
+  - current value: `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1191,51 +1197,87 @@ Allowed `exit_pre_submit_rejection_reason` values:
 
 ### 9.6 Transport
 
-Primary machine-readable decision evidence:
+Bolt-owned decision evidence uses the generated current-only contract in
+`config/decision-evidence-contract.toml`. Each producer has one registered purpose, exact current
+identity, immutable Rust codec, statically selected sink, and effect policy. One private runtime core
+owns the recorder and both streams. Component-scoped weak handles expose only the purposes registered
+to that component, and each record method asserts its exact generated effect policy. Decision evidence
+is never handed to an NT custom-data/catalog writer.
 
-- structured decision events encoded as NautilusTrader registered custom-data values
+The recorder appends newline-framed JSON to two configured paths beneath
+`persistence.catalog_directory`:
 
-For live trading, these events are persisted to the local catalog directory as machine-readable evidence.
+- the machine stream is startup and recovery authority;
+- the observation stream is non-authoritative diagnostics and never gates machine recovery.
 
-Registration and persistence mechanism:
+Configuration constructs canonical component-based relative paths and one positive finite read cap
+before filesystem mutation. Equality and ancestor/descendant conflicts across the complete active and
+retired path set fail validation. The current runtime opens the catalog descriptor, takes one
+nonblocking exclusive process lock on that descriptor, then creates missing active stream parent
+directories and files through the same descriptor-relative, no-symlink authority used to open them.
+The lock is retained until the runtime closes and prevents any second live or offline writer from
+acquiring append capability in the same catalog. Retired paths are existence fences and are never
+created, decoded, repaired, or migrated.
 
-- bolt registers the fixed decision-event custom-data types with NautilusTrader at startup
-- registration happens before any strategy can emit decision evidence
-- the current live-trading persistence path uses one canonical bolt call site which hands registered custom-data values to NautilusTrader's catalog API
-- `[persistence.streaming]` supplies the catalog protocol, flush interval, replace behavior, and no-rotation policy for this call site
-- bolt does not implement a second writer, subscriber-writer loop, or parallel persistence path
+A receipt is constructed only after the complete record write and file synchronization succeed.
+Write or synchronization ambiguity returns `CommitIndeterminate`, permanently poisons that sink for
+the process lifetime, and permits no retry through that sink. A subsequent append returns
+`SinkPoisoned` without I/O. The current runtime never reports an accepted-before-flush handoff.
+An encoded record larger than the configured recovery cap is rejected before I/O.
 
-Every decision event must be constructed as the fixed registered NautilusTrader custom-data value before emission.
-The constructed value must include all Section 9.3 common fields and all Section 9.5 event-type-specific required fields, populated according to their stated nullability rules.
+Admission authorization and capital attribution are one append. An admitted-entry fact contains its
+optional reservation attribution, and a basket-grant fact contains its complete ordered set of
+leg attributions. Rejected decisions cannot carry attribution. A committed-admission token is created
+only after that atomic fact is synchronized and is consumed to construct the submit permit; standalone
+reservation-metadata facts do not exist.
 
-For order-submission events, the constructed value must be accepted by the single canonical in-process persistence handoff before the NautilusTrader order submit may proceed.
-Order-submission events are `entry_order_submission` and `exit_order_submission`.
+Startup settlement recovery accepts exactly one terminal outcome per settlement key. A recovered
+successful settlement replays the loss-governor reducer under its durable idempotency key and
+restores flat exposure without appending again. A recovered booking-terminal
+outcome restores its terminal state without appending again. Duplicate or contradictory outcomes fail
+activation.
 
-For pre-submit rejection events, the constructed value must be accepted by the single canonical in-process persistence handoff before the local rejection path completes.
-Pre-submit rejection events are `entry_pre_submit_rejection` and `exit_pre_submit_rejection`.
+Capital-admission reconstruction occurs only after NautilusTrader reports `Running`, which follows its
+startup reconciliation. The gate remains unreconciled and rejects submission until the reconstruction
+from the reconciled NT cache, current evidence, and provider-only collateral allowance succeeds.
+At the pinned revision NautilusTrader's Polymarket mass-status construction is not fail-closed: a venue
+open order whose instrument cannot be mapped into the instrument universe, and a venue position that
+cannot be represented as an NT quantity, are both dropped, so the returned report can be silently
+partial (`crates/adapters/polymarket/src/execution/reconciliation.rs` at the pinned revision). Neither
+drop is recoverable from the report: the order increments a counter and is not logged, the position is
+logged and not counted, and no count reaches the mass status, so an operator cannot identify which
+order was omitted. Mass-status partiality is one of several conditions on this boundary and closing it
+does not open the gate: the pinned adapter also silently loses confirmed fills, and the pinned
+execution engine drops position reports the adapter built correctly, so a fix confined to the adapter
+leaves the completeness question open. `ProviderBinding::reconciliation_unmet` carries the current
+list, and condition 3 records the known interaction between closing batch-order duplication and the
+still-open cap condition. The code is the authority rather than a finished spec, which is why the spec
+that used to carry this list is gone. Bolt does
+not query or reconcile venue orders, positions, balances, or fills again, so at this pin Bolt cannot
+distinguish a complete mass-status report from a partial one. Startup reconciliation completeness is
+therefore an open boundary question at this pin, not a guarantee this document asserts. Every Bolt live
+configuration requires unbounded, unfiltered NT startup reconciliation. Every open NT order must have a
+unique client-order ID with committed admission attribution. A startup reconciliation or Bolt
+reconstruction failure keeps admission unreconciled rather than opening the gate from incomplete state.
+Bolt does not claim or configure a separate continuous-reconciliation authority mode.
 
-Accepted handoff means the registered custom-data value has been accepted by the canonical bounded in-process catalog handoff without registration, encoding, capacity, or path rejection.
-Accepted handoff does not require durable catalog flush completion.
-Full handoff capacity is a handoff failure.
-An unbounded queue is forbidden.
-If construction, encoding, registration lookup, or accepted handoff fails for an order-submission event, the current submit is blocked.
-If construction, encoding, registration lookup, or accepted handoff fails for a pre-submit rejection event, the strategy enters `persistence_failed` before completing the local rejection path.
+Committed reservation-fill evidence is the sole duplicate identity authority. The identity is the
+client-order ID, reservation ID, trade ID, instrument, side, and decimal quantity. Re-delivery of the
+same identity is idempotent even after the live NT projection no longer contains the order; reuse of the
+same trade ID with conflicting identity data fails capital admission closed. No retention-window cache or
+second in-memory seen-trade set exists.
 
-For all other decision events, construction or handoff failure follows the Section 9.7 `persistence_failed` behavior: loud structured log, emitting strategy blocked/degraded, and no future submits until recovery.
-If the process crashes after order submit but before durable catalog flush, the venue order remains live and local decision evidence for that submit may be absent; recovery authority comes from NautilusTrader state reconciliation and venue-confirmed state.
-
-If a future NautilusTrader pin exposes a Rust live-node bus-to-catalog writer with equivalent failure behavior, migration to that path is a dedicated pin-update slice and not an implicit behavior change.
-
-Fixed custom-data type contract:
-
-- each decision event type in Section 9.4 has one Rust custom-data type
-- each type must be registered with NautilusTrader before startup can trade
-- every common field from Section 9.3 is represented on every type
-- event-specific fields from Section 9.5 are represented on the corresponding type
-- required event fields are non-optional Rust fields
-- nullable event fields are `Option` fields and must serialize as explicit null when absent
-- the NautilusTrader custom-data `ts_event` field is the event timestamp
-- the NautilusTrader custom-data `ts_init` field is the timestamp when bolt constructs the custom-data value
+The strategy layer follows the same authority boundary. It retains only
+strategy-owned order-intent correlation and decision context: client-order and
+position identifiers, market lifecycle, fees, books, and the configured
+strategy origin. Current position side, quantity, average entry price, open
+versus closed status, and partial-fill progress are projected from the NT cache
+when evaluated. Order and position callbacks request or consume that projection;
+they do not update a Bolt-owned position or fill reducer. NT position-close
+events trigger a fresh scoped NT-cache projection. Bolt releases strategy
+context only when that projection contains zero open positions; one open
+position is rematerialized from NT truth and multiple open positions enter
+fail-closed recovery.
 
 Join rule:
 
@@ -1252,17 +1294,32 @@ No strategy may invent its own ad hoc forensic schema.
 
 ### 9.7 Catalog Failure Behavior
 
-Decision-event persistence is a live-trading safety gate.
+Decision-evidence failure behavior is purpose-specific and generated from the contract:
 
-If decision-event construction, accepted handoff, or durable catalog persistence fails because of registration, encoding, write, flush, rotation, permission, path, or capacity error:
+- `must_precede_new_risk` refuses the risk-creating action;
+- `reconciliation_fail_closed` enters the owning fail-closed recovery state;
+- `preserve_result` and `risk_reducing_continues` preserve the domain result while surfacing the
+  evidence failure;
+- `observation_bounded_failure` reports once per bounded purpose episode and never becomes readiness
+  authority.
 
-- emit a loud structured log with `decision_trace_id` when available
-- mark the emitting strategy blocked/degraded with reason `persistence_failed`
-- do not submit new orders while that strategy is in `persistence_failed`
-- continue allowing market-selection retries and non-order callbacks
-- require operator intervention or process restart to clear the state
+Machine-stream corruption or foreign content fails activation. Observation-stream corruption is
+byte-preserved and constructs a poisoned observation sink while machine recovery continues. The
+live operator-health surface reads the recorder's current machine- and observation-sink states.
+The first healthy-to-poisoned edge publishes exactly one typed transition after releasing the sink
+mutex; a startup-detected observation poison is published when the health publisher is registered.
+Episode suppression cannot hide or restore sink health.
 
-`just check` Phase 2 must prove catalog write/read readiness by round-tripping a registered test decision-event custom-data value in the configured catalog directory.
+Startup validation and recovery readers reject every non-newline-terminated final record. A concurrent
+diagnostic Shadow-PnL read may encounter a writer's incomplete final append; it ignores only that
+unterminated final record and still counts its bytes against the configured cap. It never repairs or
+truncates the stream and never applies this exception to startup recovery.
+
+Shutdown first stops and joins every evidence-producing subscription and task while the core remains
+open. The core then enters closing, rejects new operations, waits for accepted append/publication
+operations. The subsequent recorder drop closes both streams and releases the catalog lock. Weak
+component handles cannot prolong
+runtime ownership or write after closure.
 
 ## 10. Local Disk and Later Archival
 
@@ -1289,11 +1346,13 @@ Raw capture must preserve the NautilusTrader Rust API path, type name, field nam
 If a raw fact does not have `ts_event` or `ts_init`, capture uses the closest NautilusTrader-provided timestamp and records the field name that supplied it.
 If no NautilusTrader timestamp is available, capture records the bolt node-clock capture timestamp as a bolt capture timestamp, not as a replacement NautilusTrader timestamp.
 
-The catalog writer configured by `[persistence]` and `[persistence.streaming]` is the single local persistence path for both structured decision events and raw NautilusTrader capture.
-bolt must not add a second raw-data writer, side database, subscriber-writer loop, or parallel persistence path.
+Raw NautilusTrader capture uses the configured NT catalog path. Bolt-owned decision evidence uses
+only the current recorder described in Section 9.6; it is not an NT custom-data stream. Bolt must
+not add a second decision-evidence writer, raw-data writer, side database, subscriber-writer loop,
+or parallel persistence path.
 
-Raw capture failure is a persistence failure.
-If raw capture construction, encoding, accepted handoff, or durable catalog persistence fails because of registration, schema, write, flush, rotation, permission, path, or capacity error, Section 9.7 applies.
+Section 9.7 governs Bolt-owned decision evidence. Raw-capture failure behavior remains owned by the
+raw-capture contract and cannot be used as an alternate decision-evidence policy.
 
 Immediate follow-up:
 
@@ -1366,15 +1425,14 @@ The NautilusTrader pin is part of the runtime contract because bolt is a thin Ru
 Governance rules:
 
 - Cargo dependency metadata and lock/build metadata are the dependency source of truth
-- Section 9.3 records the same `nautilus_trader_revision` value for emitted decision evidence and must match the compiled pin
 - the release manifest `nautilus_trader_revision` must match the compiled pin before startup can trade
 - a NautilusTrader pin change is a dedicated verification slice, not an incidental dependency update
-- each pin-change slice must update the recorded revision, rerun the CLOB V2 readiness gate, rerun the panic gate test matrix, and update the contract ledger
-- `just check` Phase 1 must fail if the recorded Section 9.3 revision disagrees with the Cargo dependency revision
+- each pin-change slice must rerun the CLOB V2 readiness gate, rerun the panic gate test matrix, and update the contract ledger
+- current decision evidence does not mirror the dependency revision; it uses only the exact identities and fields in the generated current contract
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`d81be0bcc7a473c45d2dc8a8885638336073a218`. WebSocket frames flow through
+`e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows the handler
 capturing one local clock value per decoded message and supplying it to
@@ -1384,16 +1442,46 @@ capturing one local clock value per decoded message and supplying it to
 private BBO handler arm. This NT-owned path feeds both
 `RealizedVolatilityObservation` and `StrategySignalObservation`.
 
-`ci/nautilus-source-capabilities.toml` records the two official-source facts
-for this exact revision. `build.rs` requires its revision to equal the official
-`nautilus-binance` Cargo pin and emits the immutable
-`NautilusSourceCapabilityRegistry` value `NAUTILUS_SOURCE_CAPABILITIES`; neither
-fact is exposed through operator TOML. Both facts are true at this pin, so the
-production runtime has one direct Binance path. It does not contain a runtime
-capability branch, timestamp substitution, or fallback provider. A later pin
-with either fact false must first add an issue-bound affected-new-risk blocker;
-the current build and source fence reject a false fact instead of silently
-using the direct path.
+`ci/nautilus-source-capabilities.toml` records the Binance market-data facts for
+this exact revision. `build.rs` requires its revision to equal the official
+`nautilus-binance` Cargo pin, verifies each behavior-test artifact hash, and
+emits the immutable
+`NautilusSourceCapabilityRegistry` value `NAUTILUS_SOURCE_CAPABILITIES`; the
+capability family is not exposed through operator TOML. Every recorded fact is
+true at this pin, so the production runtime has a direct NT-owned Binance path.
+It does not contain a runtime capability branch, timestamp substitution,
+reconciliation fallback, or alternate venue reader. A later pin with any fact
+false must first add an issue-bound affected-new-risk blocker; the build fence
+rejects a false recorded fact instead of silently using the direct path.
+
+`build.rs` cannot prove that a pinned revision is merged upstream: a fork-only
+revision is fetchable through the official repository URL because GitHub serves
+it from the shared fork network, so the URL and revision assertions pass for
+unmerged fork work. Mergedness is enforced by the `nautilus-pin` CI lane. It discovers every
+tracked manifest and lockfile by asking git rather than walking the filesystem,
+and registers both halves of each lockfile git entry -- the commit after `#`,
+which is what cargo checks out, and the `?rev=` that requested it -- so an entry
+whose halves disagree fails as two revisions. Revisions must be written in the
+canonical lowercase form, the same rule `build.rs` applies, so that one commit
+cannot be spelled two ways. Neither reading is
+sufficient alone: a `[patch]` naming a git source appears in the lockfile, while
+one naming a path resolves with no lockfile source at all, and it refuses any
+tracked cargo config whatever it contains. The lane does not identify
+NautilusTrader references and then judge them -- that reading lost repeatedly,
+because the ways to spell or indirect a name are unbounded and each miss was a
+silent pass. It places *every* resolved source into one of the kinds this
+repository allows -- crates.io, the official repository at an exact revision, or a
+crate the owning workspace reaches by path within this repository -- and rejects
+whatever it cannot place, without consulting the package name at all. Every git
+reference must then name one revision that is an ancestor of the official upstream
+default branch. Its bypass controls run in the same lane, and acceptance controls
+run beside them, because a lane that rejects what it does not recognise can also
+reject the ordinary build.
+
+Polymarket reconciliation completeness is deliberately not recorded as a source
+capability. No merged upstream revision provides it, so declaring it would
+assert a fact the pinned source does not support; the startup-reconciliation
+paragraph above states the resulting gap.
 
 Bolt's `binance_sbe_quote_timestamps` harness exercises only the public parser
 contract: unequal venue-event and adapter-initialization stamps across every
@@ -1514,8 +1602,8 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins the official NautilusTrader repository at
-merge commit `d81be0bcc7a473c45d2dc8a8885638336073a218` for upstream PR #4474. That
-official commit contains the Binance Spot SBE schema 3:5 instrument-loading
+exact official commit `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`, merged upstream.
+That official commit contains the Binance Spot SBE schema 3:5 instrument-loading
 fix, schema 3:5 request negotiation, and adapter receive-clock ownership.
 The pin carries Polymarket CLOB V2 adapter support, version-tolerant Binance
 Spot REST SBE decode within schema id 3, and the Hyperliquid HIP-4 metadata

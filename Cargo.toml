@@ -136,12 +136,27 @@ zeroize = "1.8.2"
 
 [dev-dependencies]
 arrow = "58.3.0"
+# The workflow derives the cargo-codspeed CLI version from this exact dependency;
+# CodSpeedHQ/action is an independently pinned release stream.
+divan = { package = "codspeed-divan-compat", version = "=5.0.1" }
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = "=0.29.0"
 # Already a runtime dependency; mirrored here so integration tests can assert on the
 # composed runtime config's TOML structure (e.g. deterministic key ordering, #768).
 toml = "1.1"
+
+[[bench]]
+name = "codspeed_pricing"
+harness = false
+
+[[bench]]
+name = "codspeed_realized_volatility"
+harness = false
+
+[[bench]]
+name = "codspeed_outcome_group_scan"
+harness = false
 
 [build-dependencies]
 sha2 = "0.10.9"
@@ -151,3 +166,8 @@ toml = "1.1"
 lto = "thin"
 strip = true
 panic = "abort"
+
+[profile.bench]
+# CodSpeed uses this profile as a relative-regression indicator; disabling LTO
+# reduces peak memory while the managed runner supplies the required disk capacity.
+lto = false

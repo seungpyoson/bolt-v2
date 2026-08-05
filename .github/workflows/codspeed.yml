@@ -1,0 +1,128 @@
+name: CodSpeed
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .cargo/**
+      - .github/actions/setup-environment/**
+      - .github/workflows/codspeed.yml
+      - benches/**
+      - build.rs
+      - Cargo.lock
+      - Cargo.toml
+      - ci/github-actions-runners.toml
+      - ci/nautilus-source-capabilities.toml
+      - gated_source_roots.manifest
+      - rust-toolchain.toml
+      - src/**
+      # ci/nautilus-source-capabilities.toml owns these build.rs evidence paths.
+      - tests/binance_sbe_quote_timestamps.rs
+      - tests/binance_sbe_schema_v5_decode.rs
+  pull_request:
+    paths:
+      - .cargo/**
+      - .github/actions/setup-environment/**
+      - .github/workflows/codspeed.yml
+      - benches/**
+      - build.rs
+      - Cargo.lock
+      - Cargo.toml
+      - ci/github-actions-runners.toml
+      - ci/nautilus-source-capabilities.toml
+      - gated_source_roots.manifest
+      - rust-toolchain.toml
+      - src/**
+      # ci/nautilus-source-capabilities.toml owns these build.rs evidence paths.
+      - tests/binance_sbe_quote_timestamps.rs
+      - tests/binance_sbe_schema_v5_decode.rs
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  JUST_VERSION: "1.49.0"
+
+permissions: {}
+
+jobs:
+  benchmarks:
+    name: CPU simulation benchmarks
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_BUILD }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # The default pull_request ref is GitHub's synthetic merge commit, which
+      # is the revision CodSpeed compares with the base-branch baseline.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checked-out revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          build-jobs-key: codspeed.benchmarks
+
+      - name: Resolve cargo-codspeed version
+        id: cargo-codspeed-version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(
+            python3 - Cargo.lock <<'PY'
+          import pathlib
+          import sys
+          import tomllib
+
+          lock = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          versions = sorted({
+              package["version"]
+              for package in lock["package"]
+              if package["name"] == "codspeed-divan-compat"
+          })
+          if len(versions) != 1:
+              raise SystemExit("expected exactly one codspeed-divan-compat version")
+          print(versions[0])
+          PY
+          )"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install cargo-codspeed
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-codspeed@${{ steps.cargo-codspeed-version.outputs.version }}
+          # cargo-codspeed is not in this action's manifest. Select its locked,
+          # source-only installation route instead of relying on a fallback default.
+          fallback: cargo-install
+
+      - name: Build benchmark targets
+        run: |
+          set -x
+          cargo codspeed build \
+            --locked \
+            --measurement-mode simulation \
+            --bench codspeed_pricing \
+            --bench codspeed_realized_volatility \
+            --bench codspeed_outcome_group_scan
+
+      - name: Run and upload benchmarks
+        # The action is independently pinned; the CLI version is derived from
+        # the locked codspeed-divan-compat dependency above.
+        uses: CodSpeedHQ/action@88472375d0a4572cf70a9f1fe3a4e0ab8da1b924 # v5.0.1
+        with:
+          mode: simulation
+          run: cargo codspeed run

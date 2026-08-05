@@ -1,0 +1,228 @@
+[pricing]
+best_bid = 0.47
+best_ask = 0.49
+bid_size = 120.0
+ask_size = 80.0
+oracle_fair = 0.485
+micro_weight = 0.35
+fair_probability = 0.485
+informed_fraction = 0.08
+family_key = "updown"
+inventory_skew = -0.004
+half_spread_floor = 0.005
+max_half_spread = 0.12
+epsilon = 0.001
+time_to_expiry = 300.0
+reference_time_to_expiry = 900.0
+time_widen_cap = 2.0
+order_notional_target = 250.0
+maximum_position_notional = 500.0
+
+[realized_volatility]
+surface_id = "codspeed-rv-surface"
+snapshot_as_of_ms = 5000
+
+[realized_volatility.surface]
+canonical_base_asset = "BASE"
+canonical_quote_asset = "QUOTE"
+
+# Policy values are benchmark-scale; the estimator shape below mirrors deployment.
+[realized_volatility.surface.policy]
+window_ms = 4000
+sampling_interval_ms = 1000
+min_ready_sources = 1
+max_source_age_ms = 600
+max_inter_sample_gap_ms = 2000
+min_coverage_ratio = 0.75
+max_cross_source_dispersion = 0.50
+seconds_per_annum = 31536000.0
+aggregation = "upper_quantile"
+upper_quantile = 1.0
+
+[realized_volatility.surface.estimator]
+noise_robust_method = "subsampled"
+subsamples = 2
+min_ready_subsamples = 2
+jump_policy = "separate"
+pricing_component = "noise_robust"
+
+[[realized_volatility.surface.sources]]
+source_id = "codspeed-spot-source-a"
+data_client_id = "codspeed_market_data_a"
+instrument_id = "BASEQUOTE.TESTVENUEA"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_base_asset = "BASE"
+canonical_quote_asset = "QUOTE"
+
+[[realized_volatility.surface.sources]]
+source_id = "codspeed-spot-source-b"
+data_client_id = "codspeed_market_data_b"
+instrument_id = "BASEQUOTE.TESTVENUEB"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_base_asset = "BASE"
+canonical_quote_asset = "QUOTE"
+
+[[realized_volatility.surface.sources]]
+source_id = "codspeed-spot-source-c"
+data_client_id = "codspeed_market_data_c"
+instrument_id = "BASEQUOTE.TESTVENUEC"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_base_asset = "BASE"
+canonical_quote_asset = "QUOTE"
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-a"
+price = 100.2
+event_ts_ms = 2000
+recv_ts_ms = 2000
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-a"
+price = 140.0
+event_ts_ms = 3000
+recv_ts_ms = 3000
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-a"
+price = 140.2
+event_ts_ms = 4000
+recv_ts_ms = 4000
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-a"
+price = 140.4
+event_ts_ms = 5000
+recv_ts_ms = 5000
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-b"
+price = 200.4
+event_ts_ms = 2000
+recv_ts_ms = 2000
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-b"
+price = 280.0
+event_ts_ms = 3000
+recv_ts_ms = 3000
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-b"
+price = 280.5
+event_ts_ms = 4000
+recv_ts_ms = 4000
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-b"
+price = 280.8
+event_ts_ms = 5000
+recv_ts_ms = 5000
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-c"
+price = 50.1
+event_ts_ms = 2000
+recv_ts_ms = 2000
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-c"
+price = 70.0
+event_ts_ms = 3000
+recv_ts_ms = 3000
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-c"
+price = 70.1
+event_ts_ms = 4000
+recv_ts_ms = 4000
+
+[[realized_volatility.observations]]
+source_id = "codspeed-spot-source-c"
+price = 70.2
+event_ts_ms = 5000
+recv_ts_ms = 5000
+
+[outcome_group_scan]
+group_shape = "hyperliquid_exactly_one_winner"
+group_id = "codspeed-structured-outcome"
+source_client_id = "codspeed_outcome_data"
+venue = "TESTVENUE"
+settlement_asset_id = "SETTLE"
+freshness_source_id = "codspeed-outcome-source"
+grouping_question = 42
+outcome_indices = [0, 1]
+payout_per_contract = "1"
+price_units_per_payout = "1"
+min_quantity = "1"
+min_notional = "0.1"
+quantity_step = "1"
+fee_bps = "5"
+now_unix_ms = 1000
+max_book_age_ms = 100
+admissible_min_edge_bps = "100"
+blocked_min_edge_bps = "2000"
+vwap_depth_limit_bps = 2000
+slippage_buffer_bps = 100
+
+[[outcome_group_scan.states]]
+state_id = "home"
+label = "home"
+
+[[outcome_group_scan.states]]
+state_id = "away"
+label = "away"
+
+[[outcome_group_scan.legs]]
+leg_id = "home-positive"
+instrument_id = "home-positive.TESTVENUE"
+native_leg_id = "home-positive"
+outcome_label = "home"
+side_label = "true"
+terminal_state_id = "home"
+
+[[outcome_group_scan.legs]]
+leg_id = "away-positive"
+instrument_id = "away-positive.TESTVENUE"
+native_leg_id = "away-positive"
+outcome_label = "away"
+side_label = "true"
+terminal_state_id = "away"
+
+[[outcome_group_scan.candidates]]
+leg_id = "home-positive"
+order_side = "buy"
+target_notional = "8"
+
+[[outcome_group_scan.candidates]]
+leg_id = "away-positive"
+order_side = "buy"
+target_notional = "9"
+
+[[outcome_group_scan.books]]
+leg_id = "home-positive"
+bid_price = "0.39"
+bid_quantity = "30"
+ask_price = "0.40"
+ask_quantity = "30"
+observed_unix_ms = 1000
+bid_order_id = 1
+ask_order_id = 2
+
+[[outcome_group_scan.books]]
+leg_id = "away-positive"
+bid_price = "0.44"
+bid_quantity = "30"
+ask_price = "0.45"
+ask_quantity = "30"
+observed_unix_ms = 1000
+bid_order_id = 3
+ask_order_id = 4

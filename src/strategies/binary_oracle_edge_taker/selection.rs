@@ -18,12 +18,10 @@ use std::str::FromStr;
 use nautilus_model::identifiers::{InstrumentId, Venue};
 use nautilus_model::instruments::InstrumentAny;
 
-use crate::bolt_v3_decision_evidence::{
-    BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
-    BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT,
-};
+use crate::bolt_v3_current_evidence::StrategyInputMarketSelectionOutcome;
 use crate::bolt_v3_market_families::{
-    self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketSourceIdentity,
+    self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketEvidenceIdentity,
+    SelectedMarketSourceIdentity,
 };
 
 use super::{ActiveMarketState, BinaryOracleEdgeTakerConfig, OutcomeBookSubscriptions};
@@ -46,6 +44,7 @@ pub(super) struct CandidateMarket {
     pub(super) instrument_id: String,
     pub(super) up: CandidateOutcome,
     pub(super) down: CandidateOutcome,
+    pub(super) evidence_identity: SelectedMarketEvidenceIdentity,
     pub(super) source_identity: SelectedMarketSourceIdentity,
     pub(super) selection_outcome: MarketSelectionOutcome,
     pub(super) price_to_beat: Option<f64>,
@@ -56,12 +55,15 @@ pub(super) struct CandidateMarket {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum SelectionState {
+    // Boxed because the selected market now carries the market's complete
+    // evidence identity, which makes this variant far larger than `Idle` and
+    // this enum is cloned per selection pass.
     Active {
-        market: CandidateMarket,
+        market: Box<CandidateMarket>,
     },
     #[cfg(test)]
     Freeze {
-        market: CandidateMarket,
+        market: Box<CandidateMarket>,
         reason: String,
     },
     Idle {
@@ -95,7 +97,8 @@ pub(super) fn apply_selection_snapshot_to_active(
     let next = ActiveMarketState::from_snapshot(snapshot, warmup_target);
     let preserve_books = active.market_id.is_some()
         && active.market_id == next.market_id
-        && active.instrument_id == next.instrument_id;
+        && active.evidence_identity == next.evidence_identity
+        && active.same_outcome_instruments(&next);
     if active.same_boundary(&next) {
         active.trade_flow = previous_trade_flow;
         return;
@@ -121,7 +124,9 @@ pub(super) fn same_market_transition(
 ) -> bool {
     current.market_id.is_some()
         && current.market_id == next.market_id
+        && current.evidence_identity == next.evidence_identity
         && current.instrument_id == next.instrument_id
+        && current.same_outcome_instruments(next)
         && current.market_selection_outcome == next.market_selection_outcome
         && current.interval_start_ms == next.interval_start_ms
         && current.interval_end_ms == next.interval_end_ms
@@ -133,7 +138,9 @@ pub(super) fn same_market_interval_rollover(
 ) -> bool {
     current.market_id.is_some()
         && current.market_id == next.market_id
+        && current.evidence_identity == next.evidence_identity
         && current.instrument_id == next.instrument_id
+        && current.same_outcome_instruments(next)
         && current.interval_start_ms != next.interval_start_ms
 }
 
@@ -184,7 +191,13 @@ pub(super) fn selection_snapshot_from_instruments(
     else {
         return idle_selection_snapshot(config, now_ms, TARGET_MARKET_NOT_FOUND_REASON);
     };
-    selection_snapshot_for_state(config, now_ms, SelectionState::Active { market })
+    selection_snapshot_for_state(
+        config,
+        now_ms,
+        SelectionState::Active {
+            market: Box::new(market),
+        },
+    )
 }
 
 pub(super) fn idle_selection_snapshot(
@@ -244,6 +257,7 @@ pub(super) fn select_configured_market_from_instruments(
         down: CandidateOutcome {
             instrument_id: market.down_instrument_id.to_string(),
         },
+        evidence_identity: market.evidence_identity,
         source_identity: market.source_identity,
         selection_outcome: market.selection_outcome,
         price_to_beat: None,
@@ -255,9 +269,9 @@ pub(super) fn select_configured_market_from_instruments(
 
 pub(super) fn strategy_input_market_selection_outcome(
     outcome: MarketSelectionOutcome,
-) -> &'static str {
+) -> StrategyInputMarketSelectionOutcome {
     match outcome {
-        MarketSelectionOutcome::Current => BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
-        MarketSelectionOutcome::Next => BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT,
+        MarketSelectionOutcome::Current => StrategyInputMarketSelectionOutcome::Current,
+        MarketSelectionOutcome::Next => StrategyInputMarketSelectionOutcome::Next,
     }
 }

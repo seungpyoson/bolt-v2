@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_binary_settlement::BinarySettlementPayout,
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
+    bolt_v3_evidence_novelty::{EvidenceMarketIdentity, EvidenceOutcomeIdentity},
     bolt_v3_instrument_filters::InstrumentFilterError,
     bolt_v3_numeric::Probability,
     bolt_v3_quote_lifecycle::Leg,
@@ -148,6 +149,7 @@ pub struct SelectedBinaryOptionMarket {
     pub instrument_id: InstrumentId,
     pub up_instrument_id: InstrumentId,
     pub down_instrument_id: InstrumentId,
+    pub evidence_identity: SelectedMarketEvidenceIdentity,
     pub selection_outcome: MarketSelectionOutcome,
     pub start_timestamp_milliseconds: u64,
     pub expiration_timestamp_milliseconds: u64,
@@ -160,6 +162,68 @@ pub struct SelectedMarketSourceIdentity {
     pub condition_id: String,
     pub market_slug: String,
     pub question_id: String,
+}
+
+/// One outcome of a selected market, in the venue's own order.
+///
+/// The index is the position rather than a label because the pair is what makes
+/// an episode identity complete: two markets can share a condition and question
+/// and still be different markets if their outcomes are ordered differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedMarketEvidenceOutcome {
+    pub index: u8,
+    pub normalized_outcome: String,
+    pub clob_token_id: String,
+}
+
+/// The stable identity of a selected market, as evidence episodes key on it.
+///
+/// Deliberately carries no price, timestamp, slug, availability flag, or other
+/// value that changes while the market does not: an episode identity built from
+/// any of those reopens on churn, which is the defect this identity exists to
+/// make unrepresentable. `market_slug` in particular is excluded and lives on
+/// [`SelectedMarketSourceIdentity`] instead, because a venue may re-slug a
+/// market whose condition and question are unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedMarketEvidenceIdentity {
+    market: EvidenceMarketIdentity,
+    negative_risk: bool,
+}
+
+impl SelectedMarketEvidenceIdentity {
+    pub fn try_new(
+        gamma_market_id: String,
+        condition_id: String,
+        question_id: String,
+        negative_risk: bool,
+        outcomes: [SelectedMarketEvidenceOutcome; 2],
+    ) -> Option<Self> {
+        let market = EvidenceMarketIdentity::try_new(
+            gamma_market_id,
+            condition_id,
+            question_id,
+            outcomes.map(|outcome| EvidenceOutcomeIdentity {
+                index: outcome.index,
+                normalized_outcome: outcome.normalized_outcome,
+                clob_token_id: outcome.clob_token_id,
+            }),
+        )
+        .ok()?;
+        Some(Self {
+            market,
+            negative_risk,
+        })
+    }
+
+    #[must_use]
+    pub fn market(&self) -> &EvidenceMarketIdentity {
+        &self.market
+    }
+
+    #[must_use]
+    pub fn negative_risk(&self) -> bool {
+        self.negative_risk
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1160,6 +1224,25 @@ mod tests {
             instrument_id: InstrumentId::from("fixture-market.FIXTURE"),
             up_instrument_id: InstrumentId::from("fixture-up.FIXTURE"),
             down_instrument_id: InstrumentId::from("fixture-down.FIXTURE"),
+            evidence_identity: SelectedMarketEvidenceIdentity::try_new(
+                "fixture-market".to_string(),
+                "fixture-condition".to_string(),
+                "fixture-question".to_string(),
+                false,
+                [
+                    SelectedMarketEvidenceOutcome {
+                        index: 0,
+                        normalized_outcome: "up".to_string(),
+                        clob_token_id: "fixture-up".to_string(),
+                    },
+                    SelectedMarketEvidenceOutcome {
+                        index: 1,
+                        normalized_outcome: "down".to_string(),
+                        clob_token_id: "fixture-down".to_string(),
+                    },
+                ],
+            )
+            .expect("fixture evidence identity must be valid"),
             selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 1_000,
             expiration_timestamp_milliseconds: 61_000,

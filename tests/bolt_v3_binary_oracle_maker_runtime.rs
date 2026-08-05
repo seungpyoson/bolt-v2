@@ -3,10 +3,9 @@ use crate::support;
 use anyhow::Result;
 use bolt_v2::{
     bolt_v3_config::ReferencePriceProvider,
-    bolt_v3_decision_evidence::{
-        BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter, BoltV3RequoteActionCostClass,
-        BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
-        BoltV3RequoteThrottleEvidence,
+    bolt_v3_current_evidence::{
+        AdmissionDecisionOutcome, DecisionEvidenceRecorder, EvidenceRequoteLeg,
+        RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
     },
     bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshotDiagnostics},
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
@@ -35,7 +34,7 @@ use bolt_v2::{
     },
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_strategy_context::StrategyBuildContext,
-    bolt_v3_submit_admission::{BoltV3SubmitAdmissionState, BoltV3SubmitLifecyclePolicy},
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     bolt_v3_timestamp_domain::LocalReceiveMs,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::{
@@ -62,12 +61,7 @@ use nautilus_model::{
 use nautilus_portfolio::portfolio::Portfolio;
 use nautilus_trading::StrategyNative;
 use rust_decimal::Decimal;
-use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    rc::Rc,
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
 const TEST_REFERENCE_ASSET: &str = "reference_asset";
 const TEST_REALIZED_VOL_SURFACE_ID: &str = "maker_reference_surface";
@@ -101,11 +95,11 @@ fn ready_realized_vol_snapshot(as_of_ms: u64, realized_vol: f64) -> RealizedVolS
 
 #[test]
 fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config(),
-        maker_context(writer.clone(), admission.clone()),
+        maker_context(writer.recorder(), admission.clone()),
     );
     register_maker_for_order_factory(&mut maker);
     let command = MakerCompiledOrderCommand::Submit {
@@ -122,12 +116,7 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
     };
 
     let outcome = maker
-        .route_maker_order_command(
-            &command,
-            "maker_submit",
-            Decimal::ZERO,
-            BoltV3SubmitLifecyclePolicy::new(true),
-        )
+        .route_maker_order_command(&command, "maker_submit", Decimal::ZERO)
         .expect("maker submit should route through shared execution context");
 
     assert_eq!(
@@ -146,17 +135,17 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
     assert_eq!(writer.admission_decisions().len(), 1);
     assert_eq!(
         writer.admission_decisions()[0].outcome,
-        BoltV3AdmissionOutcome::Admitted
+        AdmissionDecisionOutcome::Admitted
     );
 }
 
 #[test]
 fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config(),
-        maker_context(writer.clone(), admission.clone()),
+        maker_context(writer.recorder(), admission.clone()),
     );
     register_maker_for_order_factory(&mut maker);
     let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
@@ -178,7 +167,6 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
         .expect("maker quote tick should route through shared execution context");
@@ -228,11 +216,11 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
 
 #[test]
 fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config(),
-        maker_context(writer.clone(), admission.clone()),
+        maker_context(writer.recorder(), admission.clone()),
     );
     register_maker_for_order_factory(&mut maker);
     let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
@@ -251,7 +239,6 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
         quantity_precision: 2,
         submit_order_prefix: "maker_submit",
         max_fee_bps: Decimal::ZERO,
-        submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
     };
 
     maker
@@ -270,19 +257,16 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
     let throttle = &throttles[0];
     assert_eq!(throttle.strategy_id, "maker-strategy");
     assert_eq!(throttle.family_key, static_binary_event::KEY);
-    assert_eq!(throttle.leg, "no");
+    assert_eq!(throttle.leg, EvidenceRequoteLeg::No);
     assert_eq!(
         throttle.action_cost_class,
-        BoltV3RequoteActionCostClass::FreshSubmit
+        RequoteActionCostClass::FreshSubmit
     );
     assert_eq!(
         throttle.block_reason,
-        BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted
+        RequoteThrottleBlockReason::RequoteBudgetExhausted
     );
-    assert_eq!(
-        throttle.bound_by,
-        BoltV3RequoteThrottleBound::SubmitCommandWindow
-    );
+    assert_eq!(throttle.bound_by, RequoteThrottleBound::SubmitCommandWindow);
     assert_eq!(throttle.submit_commands_in_window, 1);
     assert_eq!(throttle.submit_command_cap, 1);
     assert_eq!(throttle.rest_cost_in_window, 1);
@@ -290,88 +274,12 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
 }
 
 #[test]
-fn maker_runtime_quote_surfaces_requote_throttle_write_failure_at_error_and_proceeds() {
-    let logger = install_capturing_logger();
-    let _observer_guard = CAPTURING_LOGGER_OBSERVERS
-        .lock()
-        .expect("capturing logger observer mutex poisoned");
-    logger.reset();
-
-    let failure_message = "injected maker requote-throttle evidence write failure";
-    let writer = Arc::new(FailingRequoteThrottleDecisionEvidenceWriter::new(
-        failure_message,
-    ));
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
-    let mut maker = BinaryOracleMaker::new(
-        maker_config(),
-        maker_context_with_writer(writer.clone(), admission),
-    );
-    register_maker_for_order_factory(&mut maker);
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
-    let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
-        .expect("one-submit budget fixture builds");
-    let submit_template = maker_limit_post_only_template();
-
-    let outcome = maker.route_maker_runtime_quote(
-        &mut market,
-        &mut budget,
-        BinaryOracleMakerRuntimeQuoteRouteInput {
-            quote: MakerRuntimeQuoteInput {
-                quote_plan: quote_plan_inputs(static_binary_event::KEY),
-                quote_set: quote_set_inputs(),
-                order_plan: order_plan_inputs(),
-            },
-            submit_template: &submit_template,
-            price_precision: 2,
-            quantity_precision: 2,
-            submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
-            submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-        },
-    );
-
-    assert!(
-        outcome.is_ok(),
-        "requote-throttle evidence write failure must not propagate"
-    );
-    let throttles = writer.requote_throttles();
-    assert_eq!(
-        throttles.len(),
-        1,
-        "the failing writer must be called exactly once for the blocked leg"
-    );
-    assert_eq!(
-        throttles[0].block_reason,
-        BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted
-    );
-
-    let matching: Vec<(log::Level, String)> = logger
-        .records()
-        .into_iter()
-        .filter(|(_, message)| {
-            message.contains("binary_oracle_maker requote throttle evidence write failed")
-                && message.contains(failure_message)
-        })
-        .collect();
-    assert_eq!(
-        matching.len(),
-        1,
-        "the requote-throttle evidence write failure must be surfaced exactly once, not swallowed; got {matching:?}"
-    );
-    assert_eq!(
-        matching[0].0,
-        log::Level::Error,
-        "the requote-throttle evidence write failure must be surfaced at error! severity, not warn!"
-    );
-}
-
-#[test]
 fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_before_quote() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config(),
-        maker_context(writer.clone(), admission.clone()),
+        maker_context(writer.recorder(), admission.clone()),
     );
     register_maker_for_order_factory(&mut maker);
     let quotes = vec![
@@ -432,7 +340,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
         .expect("maker reference quote tick should route through shared context");
@@ -484,11 +391,11 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
     assert_eq!(market.market_state(), MarketState::Quoting);
     assert_eq!(writer.records().len(), 2);
 
-    let blocked_writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let blocked_admission = Arc::new(BoltV3SubmitAdmissionState::new(blocked_writer.clone()));
+    let blocked_writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let blocked_admission = Arc::new(BoltV3SubmitAdmissionState::new(blocked_writer.recorder()));
     let mut blocked_maker = BinaryOracleMaker::new(
         maker_config(),
-        maker_context(blocked_writer.clone(), blocked_admission),
+        maker_context(blocked_writer.recorder(), blocked_admission),
     );
     register_maker_for_order_factory(&mut blocked_maker);
     let mut blocked_selector = ReferencePriceSelector::new(
@@ -521,7 +428,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
         .expect("maker reference quote blocker should be a route outcome");
@@ -562,13 +468,14 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
             MakerRuntimeReferenceFairValueBlockReason::SecondsToExpiryMissing,
         ),
     ] {
-        let missing_input_writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+        let missing_input_writer =
+            support::current_evidence::RecordingDecisionEvidenceWriter::default();
         let missing_input_admission = Arc::new(BoltV3SubmitAdmissionState::new(
-            missing_input_writer.clone(),
+            missing_input_writer.recorder(),
         ));
         let mut missing_input_maker = BinaryOracleMaker::new(
             maker_config(),
-            maker_context(missing_input_writer.clone(), missing_input_admission),
+            maker_context(missing_input_writer.recorder(), missing_input_admission),
         );
         register_maker_for_order_factory(&mut missing_input_maker);
         let mut missing_input_selector = ReferencePriceSelector::new(
@@ -598,7 +505,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                     quantity_precision: 2,
                     submit_order_prefix: "maker_submit",
                     max_fee_bps: Decimal::ZERO,
-                    submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
                 },
             )
             .expect("maker reference quote shared fair-value blocker should be a route outcome");
@@ -617,12 +523,13 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         assert_eq!(missing_input_writer.records().len(), 0);
     }
 
-    let unsupported_writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let unsupported_admission =
-        Arc::new(BoltV3SubmitAdmissionState::new(unsupported_writer.clone()));
+    let unsupported_writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let unsupported_admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        unsupported_writer.recorder(),
+    ));
     let mut unsupported_maker = BinaryOracleMaker::new(
         maker_config(),
-        maker_context(unsupported_writer.clone(), unsupported_admission),
+        maker_context(unsupported_writer.recorder(), unsupported_admission),
     );
     register_maker_for_order_factory(&mut unsupported_maker);
     let mut unsupported_selector = ReferencePriceSelector::new(
@@ -655,7 +562,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
         .expect("maker reference quote fair-value blocker should be a route outcome");
@@ -683,11 +589,11 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
 
 #[test]
 fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config(),
-        maker_context(writer.clone(), admission.clone()),
+        maker_context(writer.recorder(), admission.clone()),
     );
     register_maker_for_order_factory(&mut maker);
     let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
@@ -772,7 +678,6 @@ fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
             max_fee_bps: Decimal::ZERO,
-            submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         })
         .expect("maker should route pre-paid replacement submit through shared context");
 
@@ -806,11 +711,11 @@ fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
 
 #[test]
 fn maker_loss_risk_route_soft_holds_without_order_mutation() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config(),
-        maker_context(writer.clone(), admission.clone()),
+        maker_context(writer.recorder(), admission.clone()),
     );
     register_maker_for_order_factory(&mut maker);
     let mut market = resting_market_quote();
@@ -843,11 +748,11 @@ fn maker_loss_risk_route_soft_holds_without_order_mutation() {
 
 #[test]
 fn maker_loss_risk_route_drains_quotes_for_untrusted_loss_snapshot() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config(),
-        maker_context(writer.clone(), admission.clone()),
+        maker_context(writer.recorder(), admission.clone()),
     );
     register_maker_for_order_factory(&mut maker);
     let mut market = resting_market_quote();
@@ -898,11 +803,11 @@ fn maker_loss_risk_route_drains_quotes_for_untrusted_loss_snapshot() {
 
 #[test]
 fn maker_loss_risk_route_hard_flat_does_not_hide_unsupported_active_reduce() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config(),
-        maker_context(writer.clone(), admission.clone()),
+        maker_context(writer.recorder(), admission.clone()),
     );
     register_maker_for_order_factory(&mut maker);
     let mut market = resting_market_quote();
@@ -955,191 +860,6 @@ fn maker_loss_risk_route_hard_flat_does_not_hide_unsupported_active_reduce() {
 }
 
 #[derive(Debug)]
-struct FailingRequoteThrottleDecisionEvidenceWriter {
-    failure_message: String,
-    requote_throttles: Mutex<Vec<BoltV3RequoteThrottleEvidence>>,
-}
-
-impl FailingRequoteThrottleDecisionEvidenceWriter {
-    fn new(failure_message: impl Into<String>) -> Self {
-        Self {
-            failure_message: failure_message.into(),
-            requote_throttles: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn requote_throttles(&self) -> Vec<BoltV3RequoteThrottleEvidence> {
-        self.requote_throttles
-            .lock()
-            .expect("requote throttle evidence mutex poisoned")
-            .clone()
-    }
-}
-
-impl BoltV3DecisionEvidenceWriter for FailingRequoteThrottleDecisionEvidenceWriter {
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &bolt_v2::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(
-        &self,
-        _intent: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(
-        &self,
-        _skip: &bolt_v2::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_exit_decision(
-        &self,
-        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _halt: &bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-        self.requote_throttles
-            .lock()
-            .expect("requote throttle evidence mutex poisoned")
-            .push(throttle.clone());
-        anyhow::bail!("{}", self.failure_message)
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-struct CapturingLogger {
-    records: Mutex<Vec<(log::Level, String)>>,
-}
-
-impl log::Log for CapturingLogger {
-    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
-        true
-    }
-
-    fn log(&self, record: &log::Record<'_>) {
-        self.records
-            .lock()
-            .expect("capturing logger mutex poisoned")
-            .push((record.level(), record.args().to_string()));
-    }
-
-    fn flush(&self) {}
-}
-
-impl CapturingLogger {
-    fn reset(&self) {
-        self.records
-            .lock()
-            .expect("capturing logger mutex poisoned")
-            .clear();
-    }
-
-    fn records(&self) -> Vec<(log::Level, String)> {
-        self.records
-            .lock()
-            .expect("capturing logger mutex poisoned")
-            .clone()
-    }
-}
-
-static CAPTURING_LOGGER: OnceLock<&'static CapturingLogger> = OnceLock::new();
-static CAPTURING_LOGGER_OBSERVERS: Mutex<()> = Mutex::new(());
-
-fn install_capturing_logger() -> &'static CapturingLogger {
-    static INSTALL_OUTCOME: OnceLock<bool> = OnceLock::new();
-    let logger = CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
-    let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
-    assert!(
-        installed,
-        "capturing logger could not claim the global log slot; another logger is installed"
-    );
-    log::set_max_level(log::LevelFilter::Trace);
-    logger
-}
-
-#[derive(Debug)]
 struct NoopFeeProvider;
 
 impl FeeProvider for NoopFeeProvider {
@@ -1153,19 +873,19 @@ impl FeeProvider for NoopFeeProvider {
 }
 
 fn maker_context(
-    writer: Arc<support::RecordingDecisionEvidenceWriter>,
+    writer: Arc<DecisionEvidenceRecorder>,
     admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> StrategyBuildContext {
     maker_context_with_writer(writer, admission)
 }
 
 fn maker_context_with_writer(
-    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    writer: Arc<DecisionEvidenceRecorder>,
     admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> StrategyBuildContext {
     StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        writer,
+        bolt_v2::bolt_v3_strategy_context::StrategyDecisionEvidence::maker_for_test(writer),
         admission,
         BoltV3OrderExecutionPolicy::shadow(),
         Venue::from("MAKER.TEST"),
@@ -1347,7 +1067,6 @@ fn risk_route_input<'a>(
         quantity_precision: 2,
         submit_order_prefix: "maker_submit",
         max_fee_bps: Decimal::ZERO,
-        submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
     }
 }
 
@@ -1519,6 +1238,9 @@ fn runtime_binary_option_with_market_id(
             serde_json::Value::String(value.to_string()),
         );
     }
+    // Production instruments carry this -- the pinned adapter always writes it
+    // (`http/parse.rs`), so a fixture without it is not a real instrument.
+    info.insert("neg_risk".to_string(), serde_json::Value::Bool(false));
     InstrumentAny::BinaryOption(BinaryOption::new(
         InstrumentId::from(instrument_id),
         Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),
@@ -1758,7 +1480,7 @@ fn maker_config_with_static_market() -> BinaryOracleMakerConfig {
 /// other maker fixtures use a dotted `MAKER.TEST` venue, which never matches an
 /// `InstrumentId`'s parsed venue and so is unsuitable for the cache-read path.)
 fn maker_sim_context(
-    writer: Arc<support::RecordingDecisionEvidenceWriter>,
+    writer: Arc<DecisionEvidenceRecorder>,
     admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> StrategyBuildContext {
     StrategyBuildContext::new(
@@ -1828,11 +1550,11 @@ fn maker_on_start_resolves_declared_markets_from_the_execution_venue_cache() {
     // cache, resolves the declared markets through the shared engine, and tracks
     // them in the runtime. With both leg instruments cached on the maker's venue,
     // the declared market becomes active (an empty cache would leave it idle).
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config_with_static_market(),
-        maker_sim_context(writer, admission),
+        maker_sim_context(writer.recorder(), admission),
     );
     let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
     for instrument in runtime_static_instruments() {
@@ -1871,11 +1593,11 @@ fn maker_on_stop_resets_runtime_so_a_restart_re_resolves_and_re_subscribes() {
     // runs active with no trade feeds. The post-on_stop `active_market_count() == 0`
     // assertion below is differential: it fails if the on_stop runtime reset is
     // removed (the count would stay 1, and no re-subscribe would be emitted).
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config_with_static_market(),
-        maker_sim_context(writer, admission),
+        maker_sim_context(writer.recorder(), admission),
     );
     let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
     for instrument in runtime_static_instruments() {
@@ -1914,13 +1636,13 @@ fn maker_on_start_fails_loud_when_quote_interval_overflows_the_nanosecond_clock(
     // abort on_start (fail loud) rather than silently run with a wrong/saturated
     // cadence. Differential: it fails if the checked_mul guard is reverted to the
     // prior saturating_mul (which would silently clamp instead of erroring).
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let config = BinaryOracleMakerConfig {
         quote_interval_ms: u64::MAX,
         ..maker_config_with_static_market()
     };
-    let mut maker = BinaryOracleMaker::new(config, maker_sim_context(writer, admission));
+    let mut maker = BinaryOracleMaker::new(config, maker_sim_context(writer.recorder(), admission));
     let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
     for instrument in runtime_static_instruments() {
         cache
@@ -1958,11 +1680,11 @@ fn maker_on_start_fails_loud_when_the_quote_timer_cannot_register() {
     // provided", so on_start must error naming the timer-registration failure. If
     // register_quote_timer is reverted to logging-and-swallowing that error,
     // on_start returns Ok and this expect_err fails.
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config_with_static_market(),
-        maker_sim_context(writer, admission),
+        maker_sim_context(writer.recorder(), admission),
     );
     let cache =
         register_maker_at_runtime_now_lifecycle_only_with_quote_timer_handler(&mut maker, false);
@@ -1998,11 +1720,11 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
     // context, and rotates the dispatched identity from `next` to `active`. The
     // global shadow chokepoint suppresses every venue mutation, so the intent is
     // produced but nothing is admitted.
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let mut maker = BinaryOracleMaker::new(
         maker_config_with_static_market(),
-        maker_sim_context(writer, admission.clone()),
+        maker_sim_context(writer.recorder(), admission.clone()),
     );
     let cache = register_maker_at_runtime_now_for_order_factory(&mut maker);
     for instrument in runtime_static_instruments() {
@@ -2033,7 +1755,6 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             },
         )
         .expect("run_quote_cycle routes an active market")

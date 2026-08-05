@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/maker-order-proof-clean`
 **Created**: 2026-05-20
-**Status**: Draft
+**Status**: Historical — implemented and reconciled by later slices; current `main` is authoritative
 **Input**: User goal to understand and implement a systematic, NT-first order intent layer using evidence from pinned NautilusTrader, TDD, Spec Kit plan/tasks, no-mistakes, and intentional multi-agent review.
 
 ## User Scenarios & Testing

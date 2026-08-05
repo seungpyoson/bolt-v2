@@ -9,23 +9,6 @@ use super::{
     string_array_values, string_field,
 };
 
-pub(super) fn validate_complete_set_activation_is_shadow_only(
-    context: &str,
-    root: &BoltV3RootConfig,
-    strategy: &BoltV3StrategyConfig,
-) -> Vec<String> {
-    if strategy.strategy_archetype.as_str()
-        != crate::bolt_v3_complete_set_contract::COMPLETE_SET_ARBITRAGE_KEY
-        || root.runtime.order_execution_mode == BoltV3OrderExecutionMode::Shadow
-    {
-        return Vec::new();
-    }
-
-    vec![format!(
-        "{context}: complete_set_arbitrage runtime activation is registration-only until NautilusTrader event forwarding is wired; runtime.order_execution_mode must be shadow for this substrate slice"
-    )]
-}
-
 pub(super) fn validate_shadow_order_execution_mode_forbids_managed_venue_actions(
     context: &str,
     root: &BoltV3RootConfig,

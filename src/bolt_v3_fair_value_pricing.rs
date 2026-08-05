@@ -7,12 +7,23 @@
 //! inventory, skew, and submit mechanics stay outside this module.
 
 use crate::{
-    bolt_v3_decision_evidence::BoltV3RvGateResult,
     bolt_v3_market_families::{self, FairProbabilityInputs},
     bolt_v3_numeric::is_positive_finite,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_timestamp_domain::LocalReceiveMs,
 };
+
+define_closed_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum RvGateResult {
+        Accepted,
+        MissingSnapshot,
+        MissingEvaluationEventTime,
+        RejectedFutureDated,
+        RejectedStale,
+        RejectedNotReady,
+    }
+}
 
 use std::collections::BTreeMap;
 
@@ -97,7 +108,7 @@ pub struct AcceptedRealizedVolSnapshot {
 pub enum RealizedVolGateClassification {
     Accepted(AcceptedRealizedVolSnapshot),
     Rejected {
-        gate_result: BoltV3RvGateResult,
+        gate_result: RvGateResult,
         snapshot: Option<RealizedVolSnapshot>,
     },
 }
@@ -223,7 +234,7 @@ impl FairValuePricingState {
         let snapshot = self.latest_realized_vol_snapshots.get(surface_id);
         let gate_result =
             classify_rv_gate(snapshot, Some(evaluation_receive_ms), max_source_age_ms);
-        if gate_result != BoltV3RvGateResult::Accepted {
+        if gate_result != RvGateResult::Accepted {
             return RealizedVolGateClassification::Rejected {
                 gate_result,
                 snapshot: snapshot.cloned(),
@@ -428,12 +439,12 @@ impl FairValuePricingState {
             Some(realized_vol_gate_receive_ms),
             max_source_age_ms,
         ) {
-            BoltV3RvGateResult::Accepted => snapshot,
-            BoltV3RvGateResult::MissingSnapshot
-            | BoltV3RvGateResult::MissingEvaluationEventTime
-            | BoltV3RvGateResult::RejectedFutureDated
-            | BoltV3RvGateResult::RejectedStale
-            | BoltV3RvGateResult::RejectedNotReady => None,
+            RvGateResult::Accepted => snapshot,
+            RvGateResult::MissingSnapshot
+            | RvGateResult::MissingEvaluationEventTime
+            | RvGateResult::RejectedFutureDated
+            | RvGateResult::RejectedStale
+            | RvGateResult::RejectedNotReady => None,
         }
     }
 
@@ -478,7 +489,7 @@ impl FairValuePricingState {
                     quantile: 1.0,
                 },
             seconds_per_annum: 31_536_000.0,
-            config_fingerprint: String::new(),
+            config_fingerprint: "<test-seed-config-fingerprint>".to_string(),
         });
     }
 }
@@ -493,7 +504,7 @@ fn realized_vol_source_evidence(snapshot: &RealizedVolSnapshot) -> (Option<Strin
 /// Classify the realized-vol staleness gate in the process-local receive clock.
 ///
 /// Single source of truth for the gate decision: `current_surfaced_realized_vol_snapshot_at`
-/// admits a snapshot only when this returns [`BoltV3RvGateResult::Accepted`], and the #885
+/// admits a snapshot only when this returns [`RvGateResult::Accepted`], and the #885
 /// exit-evaluation evidence records the same classification so a rejected snapshot is
 /// explainable from disk. Production pricing requests require `LocalReceiveMs`; only this
 /// lower diagnostic boundary accepts `None` so missing receive context remains classifiable
@@ -504,28 +515,28 @@ pub fn classify_rv_gate(
     snapshot: Option<&RealizedVolSnapshot>,
     realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
     max_source_age_ms: Option<u64>,
-) -> BoltV3RvGateResult {
+) -> RvGateResult {
     let Some(snapshot) = snapshot else {
-        return BoltV3RvGateResult::MissingSnapshot;
+        return RvGateResult::MissingSnapshot;
     };
     let Some(realized_vol_gate_receive_ms) = realized_vol_gate_receive_ms else {
-        return BoltV3RvGateResult::MissingEvaluationEventTime;
+        return RvGateResult::MissingEvaluationEventTime;
     };
     let Some(snapshot_receive_ms) = snapshot.latest_accepted_receive_ms else {
-        return BoltV3RvGateResult::RejectedNotReady;
+        return RvGateResult::RejectedNotReady;
     };
     if snapshot_receive_ms > realized_vol_gate_receive_ms {
-        return BoltV3RvGateResult::RejectedFutureDated;
+        return RvGateResult::RejectedFutureDated;
     }
     if max_source_age_ms.is_some_and(|max_age_ms| {
         realized_vol_gate_receive_ms.saturating_duration_since(snapshot_receive_ms) > max_age_ms
     }) {
-        return BoltV3RvGateResult::RejectedStale;
+        return RvGateResult::RejectedStale;
     }
     if snapshot.ready_realized_vol().is_none() {
-        return BoltV3RvGateResult::RejectedNotReady;
+        return RvGateResult::RejectedNotReady;
     }
-    BoltV3RvGateResult::Accepted
+    RvGateResult::Accepted
 }
 
 #[cfg(test)]
@@ -559,7 +570,7 @@ mod tests {
         // Missing snapshot.
         assert_eq!(
             classify_rv_gate(None, Some(LocalReceiveMs::new(1_000)), Some(500)),
-            BoltV3RvGateResult::MissingSnapshot
+            RvGateResult::MissingSnapshot
         );
 
         // Present but as_of in the future relative to now.
@@ -574,7 +585,7 @@ mod tests {
                 Some(LocalReceiveMs::new(500)),
                 Some(500)
             ),
-            BoltV3RvGateResult::RejectedFutureDated
+            RvGateResult::RejectedFutureDated
         );
 
         // Present and not in the future, but not ready.
@@ -585,7 +596,7 @@ mod tests {
                 Some(LocalReceiveMs::new(1_000)),
                 Some(500)
             ),
-            BoltV3RvGateResult::RejectedNotReady
+            RvGateResult::RejectedNotReady
         );
 
         // Ready and as_of <= now.
@@ -595,7 +606,7 @@ mod tests {
                 Some(LocalReceiveMs::new(1_000)),
                 Some(500)
             ),
-            BoltV3RvGateResult::Accepted
+            RvGateResult::Accepted
         );
     }
 
@@ -609,7 +620,7 @@ mod tests {
 
         assert_eq!(
             classify_rv_gate(Some(ready_snapshot), None, Some(500)),
-            BoltV3RvGateResult::MissingEvaluationEventTime
+            RvGateResult::MissingEvaluationEventTime
         );
     }
 
@@ -627,7 +638,7 @@ mod tests {
                 Some(LocalReceiveMs::new(1_500)),
                 Some(500)
             ),
-            BoltV3RvGateResult::Accepted,
+            RvGateResult::Accepted,
             "source age equal to max_source_age_ms remains fresh"
         );
         assert_eq!(
@@ -636,7 +647,7 @@ mod tests {
                 Some(LocalReceiveMs::new(1_501)),
                 Some(500)
             ),
-            BoltV3RvGateResult::RejectedStale,
+            RvGateResult::RejectedStale,
             "source age beyond max_source_age_ms is stale at consumption"
         );
     }

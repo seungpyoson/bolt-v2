@@ -1,10 +1,32 @@
+/// Defines a finite production enum and its complete variant inventory from one
+/// declaration. Tests that compare a production domain with a generated
+/// registry must iterate `ALL`; adding a variant therefore cannot silently
+/// leave the reverse mapping check unchanged.
+macro_rules! define_closed_enum {
+    (
+        $(#[$enum_meta:meta])*
+        $visibility:vis enum $name:ident {
+            $($variant:ident),+ $(,)?
+        }
+    ) => {
+        $(#[$enum_meta])*
+        $visibility enum $name {
+            $($variant),+
+        }
+
+        impl $name {
+            pub const ALL: &'static [Self] = &[
+                $(Self::$variant),+
+            ];
+        }
+    };
+}
+
 pub mod bolt_v3_adapters;
 pub mod bolt_v3_application_resource_ledger;
 pub mod bolt_v3_archetypes;
 pub mod bolt_v3_atomic_io;
 pub mod bolt_v3_basket_admission;
-pub mod bolt_v3_basket_execution;
-pub mod bolt_v3_basket_store;
 pub mod bolt_v3_binary_outcome_edge;
 pub mod bolt_v3_binary_settlement;
 pub mod bolt_v3_binary_settlement_runtime;
@@ -13,10 +35,12 @@ pub mod bolt_v3_capital_admission;
 pub mod bolt_v3_capital_admission_runtime_feed;
 pub mod bolt_v3_capital_reservation;
 pub mod bolt_v3_client_registration;
-pub mod bolt_v3_complete_set_contract;
 pub mod bolt_v3_config;
-pub mod bolt_v3_decision_evidence;
+pub mod bolt_v3_current_evidence;
 pub mod bolt_v3_deploy_target;
+pub mod bolt_v3_evidence_novelty;
+mod bolt_v3_evidence_sampling;
+mod bolt_v3_evidence_values;
 pub mod bolt_v3_executable_cost;
 pub mod bolt_v3_fair_value_pricing;
 pub mod bolt_v3_feed_health;
@@ -54,7 +78,6 @@ pub mod bolt_v3_maker_runtime_order;
 pub mod bolt_v3_maker_runtime_quote;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_numeric;
-mod bolt_v3_observed_dedupe;
 pub mod bolt_v3_operator_artifacts;
 pub mod bolt_v3_operator_health;
 pub mod bolt_v3_order_execution;
@@ -80,8 +103,6 @@ pub mod bolt_v3_realized_volatility;
 pub mod bolt_v3_realized_volatility_runtime;
 pub mod bolt_v3_reference_price;
 pub mod bolt_v3_reference_price_health;
-pub mod bolt_v3_risk_reservation_substrate;
-pub mod bolt_v3_runtime_reconcile;
 // Re-exported at crate root so backtesting consumers can name these
 // reconstruction types without writing the snake_case module path. The
 // backtesting-vertical-slice sample-venue source fence forbids the literal
@@ -89,6 +110,7 @@ pub mod bolt_v3_runtime_reconcile;
 // fence-clean, the module path is not.
 pub use bolt_v3_reference_price::{ReferencePriceUpdate, ReferenceQuoteProvenance};
 pub mod bolt_v3_capital_admission_state;
+pub mod bolt_v3_provider_collateral_allowance;
 pub mod bolt_v3_requote_budget;
 pub mod bolt_v3_secrets;
 pub mod bolt_v3_settlement_booking;
@@ -99,10 +121,10 @@ pub mod bolt_v3_strategy_registration;
 pub mod bolt_v3_submit_admission;
 pub mod bolt_v3_taker_pricing;
 pub mod bolt_v3_taker_updown_signal;
+pub mod bolt_v3_target_identity;
 pub mod bolt_v3_timestamp_domain;
 pub mod bolt_v3_trade_flow;
 pub mod bolt_v3_validate;
-pub mod bolt_v3_venue_truth;
 pub mod bolt_v3_wire_boundary;
 mod bounded_config_read;
 pub mod execution_state;

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env,
     ffi::OsStr,
     fs,
@@ -7,10 +7,13 @@ use std::{
     process::Command,
 };
 
+use sha2::{Digest, Sha256};
+
 /// Repo-root manifest that is the single owner of the gated source-root list;
 /// this build script is its sole enforcing parser.
 const GATED_SOURCE_ROOTS_MANIFEST: &str = "gated_source_roots.manifest";
 const NAUTILUS_SOURCE_CAPABILITIES_MANIFEST: &str = "ci/nautilus-source-capabilities.toml";
+const EVIDENCE_NOVELTY_MANIFEST: &str = "config/evidence-novelty.toml";
 const OFFICIAL_NAUTILUS_REPOSITORY: &str = "https://github.com/nautechsystems/nautilus_trader.git";
 
 fn main() {
@@ -23,6 +26,7 @@ fn main() {
     emit_git_head_rerun_paths(&manifest_dir);
     emit_gated_source_roots(&manifest_dir);
     emit_nautilus_source_capabilities(&manifest_dir);
+    emit_evidence_novelty_registry(&manifest_dir);
 
     match Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -60,6 +64,475 @@ struct NautilusSourceCapabilityEvidence {
     capability: String,
     cargo_test_target: String,
     path: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvidenceNoveltyProducer {
+    kind: String,
+    rust_owner: String,
+    rust_state_prefix: String,
+    semantic_prefix: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvidenceNoveltyAllocation {
+    name: String,
+    id_start: usize,
+    id_end_exclusive: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvidenceNoveltyState {
+    rust_variant: String,
+    producer_kind: String,
+    semantic_state: String,
+    id: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvidenceNoveltyRegistry {
+    family_name: String,
+    family_capacity: usize,
+    producers: Vec<EvidenceNoveltyProducer>,
+    states: Vec<EvidenceNoveltyState>,
+}
+
+fn emit_evidence_novelty_registry(manifest_dir: &Path) {
+    let registry_path = manifest_dir.join(EVIDENCE_NOVELTY_MANIFEST);
+    println!("cargo:rerun-if-changed={}", registry_path.display());
+    let text = fs::read_to_string(&registry_path).unwrap_or_else(|error| {
+        panic!(
+            "reading {} should succeed: {error}",
+            registry_path.display()
+        )
+    });
+    let registry = parse_evidence_novelty_registry(&text, &registry_path);
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
+    let out_path = out_dir.join("evidence_novelty_generated.rs");
+    fs::write(&out_path, render_evidence_novelty_registry(&registry))
+        .unwrap_or_else(|error| panic!("writing {} should succeed: {error}", out_path.display()));
+}
+
+fn parse_evidence_novelty_registry(text: &str, path: &Path) -> EvidenceNoveltyRegistry {
+    let document = toml::from_str::<toml::Table>(text)
+        .unwrap_or_else(|error| panic!("parsing {} should succeed: {error}", path.display()));
+    assert_exact_keys(
+        &document,
+        &[
+            "allocation",
+            "family",
+            "producer",
+            "schema_version",
+            "state",
+        ],
+        path,
+        "root",
+    );
+    assert_eq!(
+        required_toml_integer(&document, "schema_version", path, "root"),
+        1,
+        "{}: root.schema_version must be 1",
+        path.display()
+    );
+
+    let family = required_toml_table(&document, "family", path, "root");
+    assert_exact_keys(family, &["capacity", "name"], path, "family");
+    let family_name = required_toml_string(family, "name", path, "family");
+    assert!(
+        is_snake_case(&family_name),
+        "{}: family.name must be snake_case",
+        path.display()
+    );
+    let family_capacity = required_toml_usize(family, "capacity", path, "family");
+    assert!(
+        family_capacity > 0 && family_capacity <= usize::from(u16::MAX) + 1,
+        "{}: family.capacity must fit the generated u16 state representation",
+        path.display()
+    );
+
+    let producer_values = required_toml_array(&document, "producer", path, "root");
+    assert!(
+        !producer_values.is_empty(),
+        "{}: at least one [[producer]] is required",
+        path.display()
+    );
+    let mut producers = Vec::with_capacity(producer_values.len());
+    let mut producer_kinds = BTreeSet::new();
+    let mut producer_owners = BTreeSet::new();
+    for (index, value) in producer_values.iter().enumerate() {
+        let owner = format!("producer[{index}]");
+        let table = value
+            .as_table()
+            .unwrap_or_else(|| panic!("{}: {owner} must be a table", path.display()));
+        assert_exact_keys(
+            table,
+            &["kind", "rust_owner", "rust_state_prefix", "semantic_prefix"],
+            path,
+            &owner,
+        );
+        let kind = required_toml_string(table, "kind", path, &owner);
+        let rust_owner = required_toml_string(table, "rust_owner", path, &owner);
+        let rust_state_prefix = required_toml_string(table, "rust_state_prefix", path, &owner);
+        let semantic_prefix = required_toml_string(table, "semantic_prefix", path, &owner);
+        assert!(
+            is_snake_case(&kind),
+            "{}: {owner}.kind must be snake_case",
+            path.display()
+        );
+        assert!(
+            is_upper_camel_case(&rust_owner),
+            "{}: {owner}.rust_owner must be UpperCamelCase",
+            path.display()
+        );
+        assert!(
+            is_upper_camel_case(&rust_state_prefix),
+            "{}: {owner}.rust_state_prefix must be UpperCamelCase",
+            path.display()
+        );
+        assert!(
+            is_dotted_snake_case(&semantic_prefix)
+                && (semantic_prefix == kind || semantic_prefix.starts_with(&format!("{kind}."))),
+            "{}: {owner}.semantic_prefix must belong to its producer",
+            path.display()
+        );
+        assert!(
+            producer_kinds.insert(kind.clone()),
+            "{}: duplicate producer kind `{kind}`",
+            path.display()
+        );
+        assert!(
+            producer_owners.insert(rust_owner.clone()),
+            "{}: duplicate producer rust_owner `{rust_owner}`",
+            path.display()
+        );
+        producers.push(EvidenceNoveltyProducer {
+            kind,
+            rust_owner,
+            rust_state_prefix,
+            semantic_prefix,
+        });
+    }
+
+    let allocation_values = required_toml_array(&document, "allocation", path, "root");
+    assert!(
+        !allocation_values.is_empty(),
+        "{}: at least one [[allocation]] is required",
+        path.display()
+    );
+    let mut allocations = Vec::with_capacity(allocation_values.len());
+    let mut allocation_names = BTreeSet::new();
+    let mut expected_start = 0usize;
+    for (index, value) in allocation_values.iter().enumerate() {
+        let owner = format!("allocation[{index}]");
+        let table = value
+            .as_table()
+            .unwrap_or_else(|| panic!("{}: {owner} must be a table", path.display()));
+        assert_exact_keys(
+            table,
+            &["id_end_exclusive", "id_start", "name"],
+            path,
+            &owner,
+        );
+        let name = required_toml_string(table, "name", path, &owner);
+        let id_start = required_toml_usize(table, "id_start", path, &owner);
+        let id_end_exclusive = required_toml_usize(table, "id_end_exclusive", path, &owner);
+        assert!(
+            is_snake_case(&name),
+            "{}: {owner}.name must be snake_case",
+            path.display()
+        );
+        assert!(
+            allocation_names.insert(name.clone()),
+            "{}: duplicate allocation `{name}`",
+            path.display()
+        );
+        assert_eq!(
+            id_start,
+            expected_start,
+            "{}: {owner} must begin at the preceding allocation boundary {expected_start}",
+            path.display()
+        );
+        assert!(
+            id_end_exclusive > id_start && id_end_exclusive <= family_capacity,
+            "{}: {owner} has an invalid id range",
+            path.display()
+        );
+        expected_start = id_end_exclusive;
+        allocations.push(EvidenceNoveltyAllocation {
+            name,
+            id_start,
+            id_end_exclusive,
+        });
+    }
+    assert_eq!(
+        expected_start,
+        family_capacity,
+        "{}: allocations must cover the complete family capacity",
+        path.display()
+    );
+
+    let producer_by_kind = producers
+        .iter()
+        .map(|producer| (producer.kind.as_str(), producer))
+        .collect::<BTreeMap<_, _>>();
+    let allocation_by_name = allocations
+        .iter()
+        .map(|allocation| (allocation.name.as_str(), allocation))
+        .collect::<BTreeMap<_, _>>();
+    let state_values = required_toml_array(&document, "state", path, "root");
+    assert!(
+        !state_values.is_empty(),
+        "{}: at least one [[state]] is required",
+        path.display()
+    );
+    let mut states = Vec::with_capacity(state_values.len());
+    let mut variants = BTreeSet::new();
+    let mut mappings = BTreeSet::new();
+    let mut ids = BTreeSet::new();
+    for (index, value) in state_values.iter().enumerate() {
+        let owner = format!("state[{index}]");
+        let table = value
+            .as_table()
+            .unwrap_or_else(|| panic!("{}: {owner} must be a table", path.display()));
+        assert_exact_keys(
+            table,
+            &[
+                "allocation",
+                "id",
+                "producer_kind",
+                "rust_variant",
+                "semantic_state",
+            ],
+            path,
+            &owner,
+        );
+        let rust_variant = required_toml_string(table, "rust_variant", path, &owner);
+        let producer_kind = required_toml_string(table, "producer_kind", path, &owner);
+        let semantic_state = required_toml_string(table, "semantic_state", path, &owner);
+        let allocation = required_toml_string(table, "allocation", path, &owner);
+        let id = required_toml_usize(table, "id", path, &owner);
+        assert!(
+            is_upper_camel_case(&rust_variant),
+            "{}: {owner}.rust_variant must be UpperCamelCase",
+            path.display()
+        );
+        let producer = producer_by_kind
+            .get(producer_kind.as_str())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: {owner} references unknown producer `{producer_kind}`",
+                    path.display()
+                )
+            });
+        assert!(
+            is_dotted_snake_case(&semantic_state),
+            "{}: {owner}.semantic_state must be dotted snake_case",
+            path.display()
+        );
+        let semantic_suffix = semantic_state
+            .strip_prefix(&format!("{}.", producer.semantic_prefix))
+            .filter(|suffix| !suffix.is_empty())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: {owner}.semantic_state must begin with `{}.`",
+                    path.display(),
+                    producer.semantic_prefix
+                )
+            });
+        let expected_rust_variant = format!(
+            "{}{}",
+            producer.rust_state_prefix,
+            dotted_snake_to_upper_camel_case(semantic_suffix)
+        );
+        assert_eq!(
+            rust_variant,
+            expected_rust_variant,
+            "{}: {owner}.rust_variant must be derived from semantic_state",
+            path.display()
+        );
+        let allocation_row = allocation_by_name
+            .get(allocation.as_str())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: {owner} references unknown allocation `{allocation}`",
+                    path.display()
+                )
+            });
+        assert!(
+            allocation_row.id_start <= id && id < allocation_row.id_end_exclusive,
+            "{}: {owner}.id is outside allocation `{allocation}`",
+            path.display()
+        );
+        assert!(
+            variants.insert(rust_variant.clone()),
+            "{}: duplicate state rust_variant `{rust_variant}`",
+            path.display()
+        );
+        assert!(
+            mappings.insert((producer_kind.clone(), semantic_state.clone())),
+            "{}: duplicate producer/state mapping `{producer_kind}.{semantic_state}`",
+            path.display()
+        );
+        assert!(
+            ids.insert(id),
+            "{}: duplicate state id `{id}`",
+            path.display()
+        );
+        states.push(EvidenceNoveltyState {
+            rust_variant,
+            producer_kind,
+            semantic_state,
+            id,
+        });
+    }
+    states.sort_by_key(|state| state.id);
+
+    EvidenceNoveltyRegistry {
+        family_name,
+        family_capacity,
+        producers,
+        states,
+    }
+}
+
+fn render_evidence_novelty_registry(registry: &EvidenceNoveltyRegistry) -> String {
+    let owner_by_producer = registry
+        .producers
+        .iter()
+        .map(|producer| (producer.kind.as_str(), producer.rust_owner.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let mut output = String::from(
+        "// @generated by build.rs from config/evidence-novelty.toml. Do not edit.\n\n\
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]\n\
+pub enum EvidenceStateOwner {\n",
+    );
+    for producer in &registry.producers {
+        output.push_str(&format!("    {},\n", producer.rust_owner));
+    }
+    output.push_str(
+        "}\n\n\
+impl EvidenceStateOwner {\n\
+    pub const ALL: &'static [Self] = &[\n",
+    );
+    for producer in &registry.producers {
+        output.push_str(&format!("        Self::{},\n", producer.rust_owner));
+    }
+    output.push_str(
+        "    ];\n\
+}\n\n\
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]\n\
+#[repr(u16)]\n\
+pub enum EvidenceCanonicalState {\n",
+    );
+    for state in &registry.states {
+        output.push_str(&format!("    {} = {},\n", state.rust_variant, state.id));
+    }
+    output.push_str(
+        "}\n\n\
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n\
+pub struct EvidenceStateRegistration {\n\
+    pub state: EvidenceCanonicalState,\n\
+    pub owner: EvidenceStateOwner,\n\
+    pub family: &'static str,\n\
+    pub producer_kind: &'static str,\n\
+    pub semantic_state: &'static str,\n\
+    pub id: usize,\n\
+}\n\n",
+    );
+    output.push_str(&format!(
+        "pub const EVIDENCE_NOVELTY_FAMILY_CAPACITY: usize = {};\n\
+pub const EVIDENCE_NOVELTY_WORD_COUNT: usize = {};\n",
+        registry.family_capacity,
+        registry.family_capacity.div_ceil(64)
+    ));
+    output.push_str(
+        "const _: () = assert!(\n\
+    EVIDENCE_NOVELTY_WORD_COUNT == EVIDENCE_NOVELTY_FAMILY_CAPACITY.div_ceil(64),\n\
+    \"EVIDENCE_NOVELTY_WORD_COUNT must cover EVIDENCE_NOVELTY_FAMILY_CAPACITY\"\n\
+);\n\n\
+pub const EVIDENCE_STATE_REGISTRATIONS: &[EvidenceStateRegistration] = &[\n",
+    );
+    for state in &registry.states {
+        let owner = owner_by_producer[state.producer_kind.as_str()];
+        output.push_str(&format!(
+            "    EvidenceStateRegistration {{\n\
+        state: EvidenceCanonicalState::{},\n\
+        owner: EvidenceStateOwner::{owner},\n\
+        family: {:?},\n\
+        producer_kind: {:?},\n\
+        semantic_state: {:?},\n\
+        id: {},\n\
+    }},\n",
+            state.rust_variant,
+            registry.family_name,
+            state.producer_kind,
+            state.semantic_state,
+            state.id,
+        ));
+    }
+    output.push_str(
+        "];\n\n\
+pub const fn canonical_state_registration(\n\
+    state: EvidenceCanonicalState,\n\
+) -> &'static EvidenceStateRegistration {\n\
+    match state {\n",
+    );
+    for (index, state) in registry.states.iter().enumerate() {
+        output.push_str(&format!(
+            "        EvidenceCanonicalState::{} => &EVIDENCE_STATE_REGISTRATIONS[{index}],\n",
+            state.rust_variant
+        ));
+    }
+    output.push_str(
+        "    }\n\
+}\n\n\
+pub const fn evidence_state_registration_by_id(\n\
+    id: usize,\n\
+) -> Option<&'static EvidenceStateRegistration> {\n\
+    match id {\n",
+    );
+    for (index, state) in registry.states.iter().enumerate() {
+        output.push_str(&format!(
+            "        {} => Some(&EVIDENCE_STATE_REGISTRATIONS[{index}]),\n",
+            state.id
+        ));
+    }
+    output.push_str("        _ => None,\n    }\n}\n");
+    output
+}
+
+fn is_snake_case(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|first| first.is_ascii_lowercase())
+        && chars.all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
+}
+
+fn dotted_snake_to_upper_camel_case(value: &str) -> String {
+    value
+        .split(['.', '_'])
+        .map(|part| {
+            let mut chars = part.chars();
+            chars
+                .next()
+                .into_iter()
+                .flat_map(char::to_uppercase)
+                .chain(chars)
+                .collect::<String>()
+        })
+        .collect()
+}
+
+fn is_dotted_snake_case(value: &str) -> bool {
+    value.split('.').all(is_snake_case)
+}
+
+fn is_upper_camel_case(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|first| first.is_ascii_uppercase())
+        && chars.all(|character| character.is_ascii_alphanumeric())
 }
 
 /// Generate immutable Nautilus source-capability facts from the governed CI
@@ -163,6 +636,7 @@ fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSource
                 capability: required_toml_string(table, "capability", path, &owner),
                 cargo_test_target: required_toml_string(table, "cargo_test_target", path, &owner),
                 path: artifact_path,
+                sha256,
             }
         })
         .collect::<Vec<_>>();
@@ -271,13 +745,23 @@ fn validate_nautilus_manifest_binding(
             evidence.cargo_test_target,
             evidence.path
         );
-        assert!(
-            cargo_path
-                .parent()
-                .expect("Cargo.toml must have a parent")
-                .join(&evidence.path)
-                .is_file(),
-            "{}: capability {} evidence artifact {} must exist",
+        let evidence_path = cargo_path
+            .parent()
+            .expect("Cargo.toml must have a parent")
+            .join(&evidence.path);
+        let evidence_bytes = fs::read(&evidence_path).unwrap_or_else(|error| {
+            panic!(
+                "{}: capability {} evidence artifact {} must be readable: {error}",
+                cargo_path.display(),
+                evidence.capability,
+                evidence.path
+            )
+        });
+        let actual_sha256 = format!("{:x}", Sha256::digest(&evidence_bytes));
+        assert_eq!(
+            actual_sha256,
+            evidence.sha256,
+            "{}: capability {} evidence artifact {} hash must match the governed manifest",
             cargo_path.display(),
             evidence.capability,
             evidence.path
@@ -302,6 +786,42 @@ fn required_toml_string(table: &toml::Table, key: &str, path: &Path, owner: &str
         .and_then(toml::Value::as_str)
         .unwrap_or_else(|| panic!("{}: {owner}.{key} must be a string", path.display()))
         .to_string()
+}
+
+fn required_toml_integer(table: &toml::Table, key: &str, path: &Path, owner: &str) -> i64 {
+    table
+        .get(key)
+        .and_then(toml::Value::as_integer)
+        .unwrap_or_else(|| panic!("{}: {owner}.{key} must be an integer", path.display()))
+}
+
+fn required_toml_usize(table: &toml::Table, key: &str, path: &Path, owner: &str) -> usize {
+    usize::try_from(required_toml_integer(table, key, path, owner))
+        .unwrap_or_else(|_| panic!("{}: {owner}.{key} must be non-negative", path.display()))
+}
+
+fn required_toml_table<'a>(
+    table: &'a toml::Table,
+    key: &str,
+    path: &Path,
+    owner: &str,
+) -> &'a toml::Table {
+    table
+        .get(key)
+        .and_then(toml::Value::as_table)
+        .unwrap_or_else(|| panic!("{}: {owner}.{key} must be a table", path.display()))
+}
+
+fn required_toml_array<'a>(
+    table: &'a toml::Table,
+    key: &str,
+    path: &Path,
+    owner: &str,
+) -> &'a Vec<toml::Value> {
+    table
+        .get(key)
+        .and_then(toml::Value::as_array)
+        .unwrap_or_else(|| panic!("{}: {owner}.{key} must be an array", path.display()))
 }
 
 fn required_toml_bool(table: &toml::Table, key: &str, path: &Path, owner: &str) -> bool {

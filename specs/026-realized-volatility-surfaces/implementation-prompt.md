@@ -1,5 +1,8 @@
 # Realized Volatility Surfaces Implementation Prompt
 
+> **Historical implementation prompt — do not reuse it.** Current `main`,
+> `AGENTS.md`, and the exact-head review request are authoritative.
+
 Use this prompt to start implementation of the realized-volatility surface
 feature. It captures the current reviewed design state and late review findings.
 

@@ -1,5 +1,8 @@
 # External Review Prompt: Phase 6 Submit Admission Plan
 
+> **Historical review record — do not reuse this prompt.** Current `main`,
+> `AGENTS.md`, and the exact-head review request are authoritative.
+
 Review the Phase 6 plan for bolt-v2 / bolt-v3 submit admission. Be adversarial. Focus on correctness, stale-branch drift, NT boundary violations, fail-closed semantics, and hidden implementation traps. Do not review Phase 7 no-submit readiness or Phase 8 live canary implementation except to flag scope leaks.
 
 ## Authoritative State

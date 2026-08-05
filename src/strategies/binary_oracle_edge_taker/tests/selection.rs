@@ -114,8 +114,6 @@ fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
         &mut strategy,
         open_position,
         exit_client_order_id,
-        false,
-        false,
         ManagedPositionOrigin::StrategyEntry,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
@@ -150,8 +148,6 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
         &mut strategy,
         open_position,
         exit_client_order_id,
-        false,
-        false,
         ManagedPositionOrigin::StrategyEntry,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
@@ -166,7 +162,7 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
 }
 
 #[test]
-fn delayed_exit_fill_after_position_closed_does_not_cool_down_active_selection() {
+fn authoritative_position_close_cools_the_closed_market_before_delayed_exit_fill() {
     let mut strategy = ready_to_trade_strategy();
     let tracked_instrument = selected_entry_instrument(&strategy);
     let exit_client_order_id = ClientOrderId::from("EXIT-DELAYED");
@@ -182,12 +178,17 @@ fn delayed_exit_fill_after_position_closed_does_not_cool_down_active_selection()
         &mut strategy,
         open_position,
         exit_client_order_id,
-        false,
-        false,
         ManagedPositionOrigin::StrategyEntry,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+    close_nt_position(&mut strategy, position_id);
     strategy.on_position_closed(position_closed_event(tracked_instrument, position_id));
+
+    assert!(
+        strategy.market_in_cooldown("MKT-1", 1_000),
+        "the NT position-close event must cool the closed market without retaining a shadow exit order"
+    );
+    assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
 
     strategy.on_order_filled(&order_filled_event(
         exit_client_order_id,
@@ -771,7 +772,7 @@ fn same_market_transition_replaces_changed_selection_metadata() {
     let next = selection_snapshot(
         1_000,
         SelectionState::Active {
-            market: next_market,
+            market: Box::new(next_market),
         },
     );
 
@@ -782,4 +783,95 @@ fn same_market_transition_replaces_changed_selection_metadata() {
         MarketSelectionOutcome::Next
     );
     assert_eq!(active.interval_end_ms, Some(301_999));
+}
+
+#[test]
+fn same_boundary_replaces_a_changed_evidence_identity() {
+    let mut active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let prior_up = active
+        .books
+        .up
+        .instrument_id
+        .expect("fixture must bind the up outcome");
+    active.books.up.update_from_deltas(&book_deltas(
+        prior_up,
+        &[(BookAction::Add, OrderSide::Buy, 0.45, 10.0)],
+    ));
+    assert_eq!(active.books.up.best_bid, Some(0.45));
+
+    let mut corrected = candidate_market("MKT-1", 1_000);
+    corrected.source_identity.question_id = "question-MKT-1-corrected".to_string();
+    corrected.evidence_identity = SelectedMarketEvidenceIdentity::try_new(
+        "MKT-1".to_string(),
+        "condition-MKT-1".to_string(),
+        "question-MKT-1-corrected".to_string(),
+        false,
+        [
+            SelectedMarketEvidenceOutcome {
+                index: 0,
+                normalized_outcome: "up".to_string(),
+                clob_token_id: "MKT-1-UP".to_string(),
+            },
+            SelectedMarketEvidenceOutcome {
+                index: 1,
+                normalized_outcome: "down".to_string(),
+                clob_token_id: "MKT-1-DOWN".to_string(),
+            },
+        ],
+    )
+    .expect("corrected evidence identity must remain valid");
+    let expected_identity = corrected.evidence_identity.clone();
+    let next = selection_snapshot(
+        1_000,
+        SelectionState::Active {
+            market: Box::new(corrected),
+        },
+    );
+
+    apply_selection_snapshot_to_active(&mut active, &next, 0);
+
+    assert_eq!(
+        active.evidence_identity.as_ref(),
+        Some(&expected_identity),
+        "a valid identity correction at the same cadence boundary must replace the prior episode identity"
+    );
+    assert!(
+        active.books.up.bid_levels.is_empty(),
+        "levels from the prior evidence identity must not survive the replacement"
+    );
+}
+
+#[test]
+fn same_boundary_drops_books_when_one_outcome_instrument_changes_without_a_new_token() {
+    let mut active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let prior_down = active
+        .books
+        .down
+        .instrument_id
+        .expect("fixture must bind the down outcome");
+    active.books.down.update_from_deltas(&book_deltas(
+        prior_down,
+        &[(BookAction::Add, OrderSide::Buy, 0.40, 10.0)],
+    ));
+    assert_eq!(active.books.down.best_bid, Some(0.40));
+
+    let mut reissued = candidate_market("MKT-1", 1_000);
+    let reissued_down = InstrumentId::from("condition-MKT-1-MKT-1-DOWN-REISSUED.POLYMARKET");
+    reissued.down.instrument_id = reissued_down.to_string();
+    let next = selection_snapshot(
+        1_000,
+        SelectionState::Active {
+            market: Box::new(reissued),
+        },
+    );
+
+    apply_selection_snapshot_to_active(&mut active, &next, 0);
+
+    assert_eq!(active.books.down.instrument_id, Some(reissued_down));
+    assert!(
+        active.books.down.bid_levels.is_empty(),
+        "levels from the retired down instrument must not survive the replacement"
+    );
 }

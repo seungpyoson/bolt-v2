@@ -1,5 +1,8 @@
 # Research: Thin Bolt-v3 Live Canary Path
 
+> **Historical research record — not current authority or work direction.**
+> Current `main`, `AGENTS.md`, and tracked issues are authoritative.
+
 ## Problem Statement
 
 The project now has Phases 3-5 merged on authoritative `main`, including the bolt-v3 production entrypoint, configured strategy registration, and mandatory decision evidence. Phase 6 must restart from that current main and add the missing submit admission gate before any live order reaches NautilusTrader submit.

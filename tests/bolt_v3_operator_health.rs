@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 
 use bolt_v2::{
     bolt_v3_capital_admission::{PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot},
-    bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE,
+    bolt_v3_capital_admission_runtime_feed::POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE,
     bolt_v3_capital_admission_state::{
         NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
-        PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
+        PortfolioCapitalAdmissionSnapshot, ProviderCollateralAllowanceSnapshot,
+        ReservationLedgerSnapshot,
     },
     bolt_v3_config::{
         ReferencePriceBlock, ReferencePriceDriftPolicy, ReferencePriceProvider,
@@ -17,17 +18,17 @@ use bolt_v2::{
     bolt_v3_iv::config::load_iv_config_from_toml,
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
     bolt_v3_operator_health::{
-        BoltV3InputHealth, BoltV3OperatorHealthStatus, BoltV3RejectObserverHealth,
-        BoltV3RuntimeFeedAnnouncementStatus, BoltV3SettlementHealth,
-        BoltV3SettlementHealthTransition, BoltV3VenueTruthHealth,
-        node_scoped_runtime_source_announcements, runtime_source_announcements,
+        BoltV3InputHealth, BoltV3OperatorHealthStatus, BoltV3ProviderCollateralAllowanceHealth,
+        BoltV3RejectObserverHealth, BoltV3RuntimeFeedAnnouncementStatus, BoltV3SettlementHealth,
+        BoltV3SettlementHealthTransition, node_scoped_runtime_source_announcements,
+        runtime_source_announcements,
     },
     bolt_v3_order_reject_observer_feed::BoltV3OrderRejectObserverHealthSnapshot,
     bolt_v3_reference_price_health::{
         ReferenceCurrentPriceHealthReport, ReferenceCurrentPriceSourceUpdateObservation,
     },
     bolt_v3_strategy_registration::{BoltV3RegisteredStrategy, BoltV3StrategyRegistrationSummary},
-    bolt_v3_submit_admission::VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE,
+    bolt_v3_submit_admission::PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE_RESERVATION_SOURCE,
 };
 use nautilus_model::identifiers::ClientId;
 use rust_decimal::Decimal;
@@ -105,7 +106,7 @@ fn configured_but_cold_input_health_renders_unobserved() {
 }
 
 #[test]
-fn node_scoped_announcements_cover_venue_truth_rest_and_configured_iv_sources() {
+fn node_scoped_announcements_cover_provider_collateral_allowance_rest_and_configured_iv_sources() {
     let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture v3 config should load");
     loaded
@@ -120,16 +121,19 @@ fn node_scoped_announcements_cover_venue_truth_rest_and_configured_iv_sources() 
 
     let announcements = node_scoped_runtime_source_announcements(&loaded, true);
 
-    let venue_truth = announcements
-        .venue_truth_rest_capture
-        .expect("venue-truth REST capture must be announced");
-    assert_eq!(venue_truth.source_id, POLYMARKET_VENUE_TRUTH_REST_SOURCE);
+    let provider_collateral_allowance = announcements
+        .provider_collateral_allowance_rest_capture
+        .expect("provider-allowance REST capture must be announced");
     assert_eq!(
-        venue_truth.status,
+        provider_collateral_allowance.source_id,
+        POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE
+    );
+    assert_eq!(
+        provider_collateral_allowance.status,
         BoltV3RuntimeFeedAnnouncementStatus::Active
     );
-    assert!(venue_truth.enabled);
-    assert!(venue_truth.runtime_available);
+    assert!(provider_collateral_allowance.enabled);
+    assert!(provider_collateral_allowance.runtime_available);
     assert_eq!(announcements.iv_runtime_sources.len(), 2);
     assert!(
         announcements
@@ -261,76 +265,84 @@ fn reject_observer_health_distinguishes_not_configured_nominal_and_read_error() 
 }
 
 #[test]
-fn venue_truth_health_distinguishes_not_configured_unobserved_nominal_and_suspended() {
+fn provider_collateral_allowance_health_distinguishes_not_configured_unobserved_nominal_and_suspended()
+ {
     assert_eq!(
-        BoltV3VenueTruthHealth::not_configured().status,
+        BoltV3ProviderCollateralAllowanceHealth::not_configured().status,
         BoltV3OperatorHealthStatus::NotConfigured
     );
 
-    let unobserved = BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(
-        &KillSwitchState::Armed,
-        None,
-    );
+    let unobserved =
+        BoltV3ProviderCollateralAllowanceHealth::from_configured_kill_switch_and_capital_state(
+            &KillSwitchState::Armed,
+            None,
+        );
     assert_eq!(unobserved.status, BoltV3OperatorHealthStatus::Unobserved);
     assert_eq!(unobserved.kill_switch_state, "Armed");
 
     let nominal_state = capital_state_with_source("nt_capital_admission_state");
-    let nominal = BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(
-        &KillSwitchState::Armed,
-        Some(&nominal_state),
-    );
+    let nominal =
+        BoltV3ProviderCollateralAllowanceHealth::from_configured_kill_switch_and_capital_state(
+            &KillSwitchState::Armed,
+            Some(&nominal_state),
+        );
     assert_eq!(nominal.status, BoltV3OperatorHealthStatus::Nominal);
-    assert!(!nominal.venue_truth_capture_suspended);
+    assert!(!nominal.provider_collateral_allowance_capture_suspended);
 
-    let suspended_state =
-        capital_state_with_reservation_source(VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE);
-    let suspended = BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(
-        &KillSwitchState::Armed,
-        Some(&suspended_state),
+    let suspended_state = capital_state_with_reservation_source(
+        PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE_RESERVATION_SOURCE,
     );
+    let suspended =
+        BoltV3ProviderCollateralAllowanceHealth::from_configured_kill_switch_and_capital_state(
+            &KillSwitchState::Armed,
+            Some(&suspended_state),
+        );
     assert_eq!(suspended.status, BoltV3OperatorHealthStatus::Degraded);
-    assert!(suspended.venue_truth_capture_suspended);
+    assert!(suspended.provider_collateral_allowance_capture_suspended);
 }
 
 #[test]
-fn venue_truth_health_renders_divergence_trigger_as_halted() {
+fn provider_collateral_allowance_health_renders_divergence_trigger_as_halted() {
     let state = KillSwitchState::Halted {
         halt_id: "halt-001".to_string(),
-        trigger: KillSwitchHaltTrigger::venue_truth_divergence(
-            "polymarket_venue_truth_rest",
+        trigger: KillSwitchHaltTrigger::provider_collateral_allowance_runtime_failure(
+            "polymarket_allowance_rest",
             1_000,
-            "venue truth divergence: collateral_balance",
+            "provider collateral allowance runtime_failure: collateral_balance",
         ),
     };
 
-    let health = BoltV3VenueTruthHealth::from_kill_switch_and_capital_state(&state, None);
+    let health =
+        BoltV3ProviderCollateralAllowanceHealth::from_kill_switch_and_capital_state(&state, None);
 
     assert_eq!(health.status, BoltV3OperatorHealthStatus::Halted);
     assert_eq!(health.kill_switch_state, "Halted");
     assert_eq!(
-        health.divergence.as_ref().map(|divergence| {
+        health.runtime_failure.as_ref().map(|runtime_failure| {
             (
-                divergence.source.as_str(),
-                divergence.source_timestamp_unix_nanos,
+                runtime_failure.source.as_str(),
+                runtime_failure.source_timestamp_unix_nanos,
             )
         }),
-        Some(("polymarket_venue_truth_rest", 1_000))
+        Some(("polymarket_allowance_rest", 1_000))
     );
 }
 
 #[test]
-fn venue_truth_health_renders_non_divergence_latch_as_halted() {
+fn provider_collateral_allowance_health_renders_non_divergence_latch_as_halted() {
     let state = KillSwitchState::FailedManualIntervention {
         halt_id: "halt-002".to_string(),
         reason: "runtime failure latch".to_string(),
     };
 
     let health =
-        BoltV3VenueTruthHealth::from_configured_kill_switch_and_capital_state(&state, None);
+        BoltV3ProviderCollateralAllowanceHealth::from_configured_kill_switch_and_capital_state(
+            &state, None,
+        );
 
     assert_eq!(health.status, BoltV3OperatorHealthStatus::Halted);
     assert_eq!(health.kill_switch_state, "FailedManualIntervention");
-    assert!(health.divergence.is_none());
+    assert!(health.runtime_failure.is_none());
 }
 
 fn capital_state_with_source(source: &str) -> NtDerivedCapitalAdmissionState {
@@ -357,13 +369,12 @@ fn capital_state_with_sources(
             free_collateral: Decimal::new(100, 0),
             total_equity: Decimal::new(100, 0),
         },
-        venue_spendability: VenueSpendabilitySnapshot {
-            source: "operator_venue_spendability".to_string(),
+        provider_collateral_allowance: ProviderCollateralAllowanceSnapshot {
+            source: "operator_provider_collateral_allowance".to_string(),
             observed_at_ns: 1_000,
             venue_id: "VENUE-A".to_string(),
             account_id: "ACCOUNT-A".to_string(),
             collateral_currency: "USD".to_string(),
-            spendable_collateral: Decimal::new(100, 0),
             collateral_allowance: Decimal::new(100, 0),
         },
         order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
@@ -381,7 +392,6 @@ fn capital_state_with_sources(
                 yes_position: Decimal::ZERO,
                 no_position: Decimal::ZERO,
                 collateral_allowance: Decimal::new(100, 0),
-                conditional_token_allowance: Decimal::new(100, 0),
                 collateral_coupled_group_id: "group-1".to_string(),
             },
         ),

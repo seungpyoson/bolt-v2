@@ -79,9 +79,11 @@ fn trade_transport_config_keeps_capital_admission_execution_client_without_strat
         .expect("fixture should configure capital pools")[0]
         .enforce_submit_admission = true;
 
-    let scoped =
-        trade_transport_loaded_config(&loaded, RealizedVolatilityTransportScope::Subscribed)
-            .expect("capital admission venue truth requires the venue execution client");
+    let scoped = trade_transport_loaded_config(
+        &loaded,
+        RealizedVolatilityTransportScope::Subscribed,
+    )
+    .expect("capital admission provider collateral allowance requires the venue execution client");
 
     assert!(scoped.root.clients.contains_key("polymarket_main"));
 }
@@ -684,7 +686,7 @@ fn registration_rejects_rv_source_missing_from_node_transport() {
         .expect("test LiveNodeBuilder should construct")
         .build()
         .expect("test LiveNode should build");
-    let writer: Arc<dyn BoltV3DecisionEvidenceWriter> = Arc::new(NoStrategyDecisionEvidenceWriter);
+    let writer: Arc<DecisionEvidenceRecorder> = Arc::new(DecisionEvidenceRecorder::recording());
 
     let error = register_bolt_v3_strategies_on_node_with_bindings(
         &mut node,
@@ -716,7 +718,7 @@ fn registration_with_iv_runtime_rejects_rv_source_missing_from_node_transport() 
         .expect("test LiveNodeBuilder should construct")
         .build()
         .expect("test LiveNode should build");
-    let writer: Arc<dyn BoltV3DecisionEvidenceWriter> = Arc::new(NoStrategyDecisionEvidenceWriter);
+    let writer: Arc<DecisionEvidenceRecorder> = Arc::new(DecisionEvidenceRecorder::recording());
     let iv_runtime = IvRuntimeEngine::from_iv_root(&IvRootConfig {
         schema_version: 1,
         profiles: Vec::new(),

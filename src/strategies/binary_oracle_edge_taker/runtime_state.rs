@@ -4,7 +4,9 @@ use nautilus_model::identifiers::InstrumentId;
 
 use crate::{
     bolt_v3_book_sizing::{OutcomeBookState, OutcomeBookSubscriptions, OutcomePreparedBooks},
-    bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity},
+    bolt_v3_market_families::{
+        MarketSelectionOutcome, SelectedMarketEvidenceIdentity, SelectedMarketSourceIdentity,
+    },
     bolt_v3_numeric::{MILLIS_PER_SECOND_U64, is_positive_finite},
     bolt_v3_providers::FeeProvider,
     bolt_v3_reference_price::ReferenceQuote,
@@ -72,6 +74,7 @@ pub(super) struct ActiveMarketState {
     pub(super) phase: SelectionPhase,
     pub(super) market_id: Option<String>,
     pub(super) source_identity: Option<SelectedMarketSourceIdentity>,
+    pub(super) evidence_identity: Option<SelectedMarketEvidenceIdentity>,
     pub(super) instrument_id: Option<InstrumentId>,
     pub(super) outcome_fees: OutcomeFeeState,
     pub(super) price_to_beat: Option<f64>,
@@ -175,6 +178,7 @@ impl ActiveMarketState {
             phase: SelectionPhase::Idle,
             market_id: None,
             source_identity: None,
+            evidence_identity: None,
             instrument_id: None,
             outcome_fees: OutcomeFeeState::empty(),
             price_to_beat: None,
@@ -227,6 +231,7 @@ impl ActiveMarketState {
             phase,
             market_id: Some(market.market_id.clone()),
             source_identity: Some(market.source_identity.clone()),
+            evidence_identity: Some(market.evidence_identity.clone()),
             instrument_id: Some(InstrumentId::from(market.instrument_id.as_str())),
             outcome_fees: OutcomeFeeState::from_market(market),
             price_to_beat: market.price_to_beat,
@@ -255,10 +260,17 @@ impl ActiveMarketState {
     pub(super) fn same_boundary(&self, other: &Self) -> bool {
         self.phase == other.phase
             && self.market_id == other.market_id
+            && self.evidence_identity == other.evidence_identity
             && self.instrument_id == other.instrument_id
+            && self.same_outcome_instruments(other)
             && self.market_selection_outcome == other.market_selection_outcome
             && self.interval_start_ms == other.interval_start_ms
             && self.interval_end_ms == other.interval_end_ms
+    }
+
+    pub(super) fn same_outcome_instruments(&self, other: &Self) -> bool {
+        self.books.up.instrument_id == other.books.up.instrument_id
+            && self.books.down.instrument_id == other.books.down.instrument_id
     }
 
     /// Binds the live resolution strike (Chainlink `IndexPriceUpdate`) to the

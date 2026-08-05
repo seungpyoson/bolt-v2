@@ -620,7 +620,12 @@ fn signal_quote_tick_does_not_warm_active_reference_state() {
     let mut strategy = test_strategy();
     let mut market = candidate_market("market-1", 1_000);
     market.price_to_beat = Some(3_100.0);
-    strategy.apply_selection_snapshot(selection_snapshot(1_000, SelectionState::Active { market }));
+    strategy.apply_selection_snapshot(selection_snapshot(
+        1_000,
+        SelectionState::Active {
+            market: Box::new(market),
+        },
+    ));
     strategy
         .pricing
         .set_last_reference_fair_value(Some(3_101.0));

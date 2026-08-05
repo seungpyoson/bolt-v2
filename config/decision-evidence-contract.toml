@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 
 [[owners]]
 id = "bolt_v3_decision_evidence"
@@ -267,102 +267,418 @@ current_identity = "provider_collateral_allowance_capture_failure_v1"
 current_fact = "provider_collateral_allowance_capture_failure_v1"
 
 
+# Every append path into the evidence streams, classified exactly once.
+#
+# "Exactly once" is per producer, not per function. One function can serve two
+# producers whose facts differ, and then it appears under both with each fact's
+# own classification: `record_admission_decision` is event-keyed for both
+# admitted-entry and rejected-entry facts, while the separate order-reject fact
+# is already deduped before recording. Review read the shared function name as a
+# double classification, which is worth ruling on here rather than leaving to be
+# re-derived -- the thing that must be classified once is the fact reaching the
+# stream.
+#
+# The five census fields below are #1354 acceptance criteria, carried over from
+# the append-layer census preserved in git history. The final census revision
+# had 19 producer rows; its immediately preceding 20-row revision also named
+# `settlement_booking_error_legacy_append`, which the final revision folded into
+# terminal settlement. This contract splits the surviving producers finer -- by
+# strategy, and by outcome where the census carried a single decision row -- so
+# `census_ancestor` names which row each inherited from, and is empty for a
+# producer that postdates the census and was derived directly.
+#
+# All retired producers are accounted for by the closed
+# `[[census_dispositions]]` relation. The parser requires exactly one typed row
+# per retired producer, validates every current target, and requires inherited
+# mappings to equal the producers' `census_ancestor` fields.
+#
+# `named_readers`, the sixth criterion, is deliberately absent. The final
+# 19-row census carried 74 producer-to-reader references across 17 distinct
+# function names; every named reader was deleted with that layer. The
+# `[[dispositions]]` table below states the same fact per consumer and carries
+# an owner ruling with it, which the census's flat name list did not.
+#
+# `call_sites` is reviewed provenance inventory and names the enclosing function
+# rather than a line. The parser validates only the `<path>.rs::<function>`
+# shape; it does not scan source or claim that the named target resolves.
+# `runtime_wiring` and `reviewed_runtime_triggers` are the corresponding
+# reviewed runtime provenance. The parser closes the trigger vocabulary and
+# requires it to agree with wired/unwired status; it does not derive a call
+# graph from source.
+
+[[census_dispositions]]
+ancestor = "admission_decision"
+disposition = "inherited"
+current_producers = ["submit_admission_admitted_entry", "submit_admission_rejected_entry", "submit_admission_exit", "submit_admission_forced_reduction"]
+
+[[census_dispositions]]
+ancestor = "basket_admission_decision"
+disposition = "inherited"
+current_producers = ["basket_admission_granted", "basket_admission_rejected"]
+
+[[census_dispositions]]
+ancestor = "capital_admission_rebuild_audit"
+disposition = "inherited"
+current_producers = ["capital_admission_rebuild"]
+
+[[census_dispositions]]
+ancestor = "entry_skip"
+disposition = "inherited"
+current_producers = ["edge_taker_entry_skip"]
+
+[[census_dispositions]]
+ancestor = "exit_decision"
+disposition = "inherited"
+current_producers = ["edge_taker_exit_submit_decision", "edge_taker_exit_hold_decision"]
+
+[[census_dispositions]]
+ancestor = "exit_evaluation"
+disposition = "inherited"
+current_producers = ["edge_taker_exit_evaluation"]
+
+[[census_dispositions]]
+ancestor = "loss_governor_halt"
+disposition = "inherited"
+current_producers = ["submit_admission_loss_halt"]
+
+[[census_dispositions]]
+ancestor = "order_intent"
+disposition = "inherited"
+current_producers = ["order_execution_entry_intent", "order_execution_exit_intent"]
+
+[[census_dispositions]]
+ancestor = "order_lifecycle"
+disposition = "inherited"
+current_producers = ["edge_taker_order_lifecycle"]
+
+[[census_dispositions]]
+ancestor = "order_reject"
+disposition = "inherited"
+current_producers = ["submit_admission_order_reject", "order_reject_observer_feed"]
+
+[[census_dispositions]]
+ancestor = "requote_throttle"
+disposition = "inherited"
+current_producers = ["maker_requote_throttle"]
+
+[[census_dispositions]]
+ancestor = "settlement"
+disposition = "inherited"
+current_producers = ["edge_taker_settlement"]
+
+[[census_dispositions]]
+ancestor = "strategy_input_snapshot_blocked_rv"
+disposition = "inherited"
+current_producers = ["edge_taker_blocked_strategy_input"]
+
+[[census_dispositions]]
+ancestor = "strategy_input_snapshot_submit"
+disposition = "inherited"
+current_producers = ["edge_taker_submit_strategy_input"]
+
+[[census_dispositions]]
+ancestor = "submit_reservation_fill"
+disposition = "inherited"
+current_producers = ["submit_reservation_fill"]
+
+[[census_dispositions]]
+ancestor = "terminal_settlement"
+disposition = "inherited"
+current_producers = ["edge_taker_terminal_settlement"]
+
+[[census_dispositions]]
+ancestor = "settlement_booking_error_legacy_append"
+disposition = "folded"
+current_producers = ["edge_taker_terminal_settlement"]
+
+[[census_dispositions]]
+ancestor = "submit_reservation_metadata"
+disposition = "folded"
+current_producers = ["submit_admission_admitted_entry", "basket_admission_granted"]
+
+[[census_dispositions]]
+ancestor = "venue_truth_capture_failure"
+disposition = "inherited"
+current_producers = ["submit_admission_provider_collateral_allowance_capture_failure"]
+
+[[census_dispositions]]
+ancestor = "venue_truth_divergence"
+disposition = "deleted"
+current_producers = []
+
 [[producers]]
 id = "edge_taker_blocked_strategy_input"
 purpose = "blocked_strategy_input_observation"
+classification = "state-observation"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["book"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_blocked_entry_strategy_input_snapshot_once"]
+repeat_semantics = "the current last-key mask suppresses the twelve RV-result-by-watermark states only while its full observation key remains adjacent and therefore re-emits A-B-A; the stacked episode-suppression slice replaces that key with a stable episode identity and a monotone twelve-state mask"
+dedupe_key_evidence = "at this revision the full snapshot-derived key contains volatile observation fields; the required target is stable strategy, target, venue and ordered market identity plus the exact twelve-state enumeration -- six RV gate results by watermark presence"
+census_ancestor = "strategy_input_snapshot_blocked_rv"
 
 [[producers]]
 id = "edge_taker_submit_strategy_input"
 purpose = "submit_linked_strategy_input_snapshot"
+classification = "event-keyed"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["book"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::submit_admitted_entry_decision"]
+repeat_semantics = "every submit-linked snapshot remains append-complete"
+dedupe_key_evidence = "non-empty client_order_id event identity; no suppression"
+census_ancestor = "strategy_input_snapshot_submit"
 
 [[producers]]
 id = "order_execution_entry_intent"
 purpose = "entry_order_intent"
+classification = "event-keyed"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["book"]
+call_sites = ["src/bolt_v3_order_execution.rs::record_entry_order_intent", "src/bolt_v3_order_execution.rs::record_order_intent"]
+repeat_semantics = "every distinct order intent remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "order_intent"
 
 [[producers]]
 id = "order_execution_exit_intent"
 purpose = "risk_reducing_exit_order_intent"
+classification = "event-keyed"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "quote", "book", "timer", "index-price", "position-event"]
+call_sites = ["src/bolt_v3_order_execution.rs::record_order_intent", "src/bolt_v3_order_execution.rs::record_risk_reducing_exit_order_intent"]
+repeat_semantics = "every distinct order intent remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "order_intent"
 
 [[producers]]
 id = "submit_admission_admitted_entry"
 purpose = "admitted_entry_admission"
+classification = "event-keyed"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["book"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision"]
+repeat_semantics = "every submit admission result remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "admission_decision"
 
 [[producers]]
 id = "submit_admission_rejected_entry"
 purpose = "rejected_entry_admission"
+classification = "event-keyed"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["book"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision"]
+repeat_semantics = "every submit admission result remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "admission_decision"
 
 [[producers]]
 id = "submit_admission_exit"
 purpose = "risk_reducing_exit_admission"
+classification = "event-keyed"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "quote", "book", "timer"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision"]
+repeat_semantics = "every submit admission result remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "admission_decision"
 
 [[producers]]
 id = "submit_admission_forced_reduction"
 purpose = "forced_reduction_admission"
+classification = "event-keyed"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "timer", "index-price", "position-event"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision"]
+repeat_semantics = "every submit admission result remains append-complete"
+dedupe_key_evidence = "client_order_id event identity; no suppression"
+census_ancestor = "admission_decision"
 
+# `reserve_basket_submit_slots` below is `#[cfg(feature =
+# "test-current-evidence-inspection")]`, so it is an append path only when that
+# feature is on. It is listed because it is a real call site under the feature
+# this contract's own test compiles with, and the production path
+# (`bolt_v3_basket_admission.rs::admit`) is listed beside it -- but a reader
+# auditing production reachability must not count it. The reviewed inventory
+# records the feature boundary explicitly because it is not executable
+# reachability evidence.
 [[producers]]
 id = "basket_admission_granted"
 purpose = "basket_admission_granted"
+classification = "no-named-reader"
+runtime_wiring = "unwired"
+reviewed_runtime_triggers = []
+call_sites = ["src/bolt_v3_basket_admission.rs::admit", "src/bolt_v3_submit_admission.rs::reserve_basket_submit_slots"]
+repeat_semantics = "owner approved retaining every basket admission result as append-complete event evidence"
+dedupe_key_evidence = "basket_id event identity; no suppression"
+census_ancestor = "basket_admission_decision"
 
+# `record_basket_submit_rejection_for_test` below is feature-gated in the same
+# way as `reserve_basket_submit_slots` above, with the same caveat.
 [[producers]]
 id = "basket_admission_rejected"
 purpose = "basket_admission_rejected"
+classification = "no-named-reader"
+runtime_wiring = "unwired"
+reviewed_runtime_triggers = []
+call_sites = ["src/bolt_v3_basket_admission.rs::record_basket_rejection", "src/bolt_v3_submit_admission.rs::record_basket_submit_rejection_for_test"]
+repeat_semantics = "owner approved retaining every basket admission result as append-complete event evidence"
+dedupe_key_evidence = "basket_id event identity; no suppression"
+census_ancestor = "basket_admission_decision"
 
 [[producers]]
 id = "capital_admission_rebuild"
 purpose = "capital_admission_rebuild"
+classification = "no-named-reader"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "timer", "order-event", "position-event", "account-event", "portfolio-event"]
+call_sites = ["src/bolt_v3_submit_admission.rs::finish_capital_admission_rebuild"]
+repeat_semantics = "every rebuild observation remains append-complete"
+dedupe_key_evidence = "none; recovery-bearing updates are unsuppressed"
+census_ancestor = "capital_admission_rebuild_audit"
 
 [[producers]]
 id = "submit_reservation_fill"
 purpose = "submit_reservation_fill"
+classification = "event-keyed"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["order-event"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_capital_admission_fill_evidence"]
+repeat_semantics = "every fill remains append-complete"
+dedupe_key_evidence = "trade_id event identity; no suppression"
+census_ancestor = "submit_reservation_fill"
 
 [[producers]]
 id = "edge_taker_entry_skip"
 purpose = "entry_skip_observation"
+classification = "already-deduped"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["book"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_entry_skip_once"]
+repeat_semantics = "the current last-key mask suppresses the twenty entry-skip reasons only while its full observation key remains adjacent and therefore re-emits A-B-A; the stacked episode-suppression slice replaces that key with a stable episode identity and a monotone twenty-state mask"
+dedupe_key_evidence = "at this revision the full entry-evaluation key contains volatile observation fields; the required target is stable strategy, target, venue and ordered market identity plus the exact twenty-state entry-skip enumeration"
+census_ancestor = "entry_skip"
 
 [[producers]]
 id = "edge_taker_exit_submit_decision"
 purpose = "exit_submission_decision"
+classification = "already-deduped"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "quote", "book", "timer"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_decision_once"]
+repeat_semantics = "current last-key guard suppresses only adjacent repeats and re-emits A-B-A; migrate to the closed exit-outcome domain"
+dedupe_key_evidence = "current key includes market and position identity plus semantic outcome; the required monotone state excludes volatile timing fields"
+census_ancestor = "exit_decision"
 
 [[producers]]
 id = "edge_taker_exit_hold_decision"
 purpose = "exit_hold_decision"
+classification = "already-deduped"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "quote", "book", "timer"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_decision_once"]
+repeat_semantics = "current last-key guard suppresses only adjacent repeats and re-emits A-B-A; migrate to the closed exit-outcome domain"
+dedupe_key_evidence = "current key includes market and position identity plus semantic outcome; the required monotone state excludes volatile timing fields"
+census_ancestor = "exit_decision"
 
 [[producers]]
 id = "edge_taker_exit_evaluation"
 purpose = "exit_evaluation"
+classification = "already-deduped"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "quote", "book", "timer"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_evaluation_evidence"]
+repeat_semantics = "current last-outcome guard suppresses only adjacent repeats per position and re-emits A-B-A; migrate to the closed exit outcome and RV-gate domain"
+dedupe_key_evidence = "current key is semantic but non-monotone; the required state excludes prices, timestamps, ages, and counters"
+census_ancestor = "exit_evaluation"
 
 [[producers]]
 id = "submit_admission_loss_halt"
 purpose = "loss_governor_halt"
+classification = "already-deduped"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["book"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_stale_loss_governor_halt"]
+repeat_semantics = "current per-key power-of-two sampling continues indefinitely; migrate to one emission per closed stale-loss reason state"
+dedupe_key_evidence = "current episode key includes stale-loss reason and source, while mutable counters live in the episode value; the required state is stale-loss reason only"
+census_ancestor = "loss_governor_halt"
 
 [[producers]]
 id = "submit_admission_order_reject"
 purpose = "order_reject"
+classification = "already-deduped"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "quote", "book", "timer", "index-price", "position-event"]
+call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision", "src/bolt_v3_submit_admission.rs::record_submit_admission_order_reject"]
+repeat_semantics = "current per-episode power-of-two sampling and bounded map continue emitting and can forget episodes; migrate to the closed reject-source and reject-reason domain"
+dedupe_key_evidence = "current episode keys and counters are not the required monotone state; the required state excludes identifiers, retry, elapsed, and raw reason"
+census_ancestor = "order_reject"
 
 [[producers]]
 id = "order_reject_observer_feed"
 purpose = "order_reject"
+classification = "already-deduped"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["order-event"]
+call_sites = ["src/bolt_v3_order_reject_observer_feed.rs::on_order_event"]
+repeat_semantics = "current per-episode power-of-two sampling and bounded map continue emitting and can forget episodes; migrate to the closed reject-source and reject-reason domain"
+dedupe_key_evidence = "current episode keys and counters are not the required monotone state; the required state excludes identifiers, retry, elapsed, and raw reason"
+census_ancestor = "order_reject"
 
 [[producers]]
 id = "edge_taker_order_lifecycle"
 purpose = "order_lifecycle"
+classification = "no-named-reader"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "timer", "index-price", "order-event", "position-event"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::persist_order_lifecycle_record"]
+repeat_semantics = "every evolving lifecycle update remains append-complete"
+dedupe_key_evidence = "none; recovery-bearing updates are unsuppressed"
+census_ancestor = "order_lifecycle"
 
 [[producers]]
 id = "maker_requote_throttle"
 purpose = "requote_throttle_observation"
+classification = "already-deduped"
+runtime_wiring = "unwired"
+reviewed_runtime_triggers = []
+call_sites = ["src/strategies/binary_oracle_maker/mod.rs::update_requote_throttle_edge"]
+repeat_semantics = "the current last-key guard suppresses only adjacent repeats and re-emits A-B-A; the requote-throttle slice replaces it with an explicit blocked-episode lifecycle"
+dedupe_key_evidence = "current key includes family, leg, action-cost class, block reason and throttle bound; action cost, bound, timestamps and budget counters are diagnostics rather than episode identity. The requote-throttle slice replaces the family key with concrete market identity and keys the episode on market, leg and block reason"
+census_ancestor = "requote_throttle"
 
 [[producers]]
 id = "edge_taker_settlement"
 purpose = "settlement"
+classification = "event-keyed"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["index-price"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::try_book_resolution_settlement"]
+repeat_semantics = "every settlement update remains append-complete"
+dedupe_key_evidence = "settlement_key recovery identity; no suppression"
+census_ancestor = "settlement"
 
 [[producers]]
 id = "edge_taker_terminal_settlement"
 purpose = "terminal_settlement"
+classification = "event-keyed"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "quote", "book", "timer", "index-price"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::apply_terminal_settlement_transition"]
+repeat_semantics = "every canonical terminal settlement update remains append-complete"
+dedupe_key_evidence = "settlement_key recovery identity; no suppression"
+census_ancestor = "terminal_settlement"
 
 [[producers]]
 id = "submit_admission_provider_collateral_allowance_capture_failure"
 purpose = "provider_collateral_allowance_capture_failure"
-
+classification = "no-named-reader"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["timer"]
+call_sites = ["src/bolt_v3_submit_admission.rs::suspend_capital_admission_for_provider_collateral_allowance_capture_failure"]
+repeat_semantics = "one record per failed allowance poll, unbounded while the failure persists -- OUTSTANDING #1354 gap. The allowance runtime is a permanent `tokio::time::interval` loop, not a startup one-shot, and the recording call is unconditional, so a capture that stays broken appends once per poll interval indefinitely. `captures_missed` increments per attempt, so payload dedupe would not collapse them either. Needs a closed capture-failure domain before this path can claim finite suppression"
+dedupe_key_evidence = "no suppression; each capture failure is its own event"
+census_ancestor = "venue_truth_capture_failure"
 
 [[identities]]
 id = "blocked_strategy_input_observation_v1"

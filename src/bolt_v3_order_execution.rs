@@ -9,8 +9,7 @@ use nautilus_common::{
 };
 use nautilus_core::Params;
 use nautilus_model::{
-    enums::OrderSide,
-    events::OrderFillVoided,
+    enums::{OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId},
     instruments::InstrumentAny,
     orders::{Order, OrderAny, OrderList},
@@ -22,11 +21,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bolt_v3_capital_admission::ProductAdmissionSnapshot,
-    bolt_v3_capital_admission_state::capital_admission_source_is_accepted_venue_truth,
-    bolt_v3_decision_evidence::{
-        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentClampNotEvaluatedReason,
-        BoltV3OrderIntentClampOutcome, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields,
+    bolt_v3_current_evidence::{
+        EntryOrderIntentFact, EvidenceOrderSide, EvidenceOrderType, EvidenceTimeInForce,
+        EvidenceTrailingOffsetType, EvidenceTriggerType, NonBlockingRecordOutcome,
+        OrderExecutionEvidence, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
+        OrderIntentDetails, OrderIntentOrderFields, RecordFailure, RiskReducingExitOrderIntentFact,
     },
     bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
     bolt_v3_maker_order_dispatch::{
@@ -37,10 +36,55 @@ use crate::{
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
-        BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+        BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
         build_submit_admission_request_from_order,
     },
 };
+
+pub trait OrderIntentEvidence {
+    fn record_entry_order_intent(
+        &self,
+        fact: EntryOrderIntentFact,
+    ) -> Result<crate::bolt_v3_current_evidence::AppendReceipt, RecordFailure>;
+
+    fn record_risk_reducing_exit_order_intent(
+        &self,
+        fact: RiskReducingExitOrderIntentFact,
+    ) -> NonBlockingRecordOutcome;
+}
+
+impl OrderIntentEvidence for OrderExecutionEvidence {
+    fn record_entry_order_intent(
+        &self,
+        fact: EntryOrderIntentFact,
+    ) -> Result<crate::bolt_v3_current_evidence::AppendReceipt, RecordFailure> {
+        self.record_entry_order_intent(fact)
+    }
+
+    fn record_risk_reducing_exit_order_intent(
+        &self,
+        fact: RiskReducingExitOrderIntentFact,
+    ) -> NonBlockingRecordOutcome {
+        self.record_risk_reducing_exit_order_intent(fact)
+    }
+}
+
+#[cfg(any(test, feature = "test-current-evidence-inspection"))]
+impl OrderIntentEvidence for crate::bolt_v3_current_evidence::DecisionEvidenceRecorder {
+    fn record_entry_order_intent(
+        &self,
+        fact: EntryOrderIntentFact,
+    ) -> Result<crate::bolt_v3_current_evidence::AppendReceipt, RecordFailure> {
+        self.record_entry_order_intent(fact)
+    }
+
+    fn record_risk_reducing_exit_order_intent(
+        &self,
+        fact: RiskReducingExitOrderIntentFact,
+    ) -> NonBlockingRecordOutcome {
+        self.record_risk_reducing_exit_order_intent(fact)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -73,16 +117,6 @@ pub fn nt_order_management_contract() -> BoltV3NtOrderManagementContract {
         cancel_all_orders_type: type_name::<CancelAllOrders>(),
         modify_order_type: type_name::<ModifyOrder>(),
     }
-}
-
-/// Stops the runtime when the venue retracts a fill that Bolt has already
-/// incorporated into strategy-local exposure or basket state.
-///
-/// Reversal is not safe without a caller-bounded correction protocol. Silently
-/// accepting NT's default no-op would leave Bolt's state diverged from venue
-/// truth, so all registered strategy callbacks share this fail-closed boundary.
-pub(crate) fn fail_closed_on_order_fill_voided(event: &OrderFillVoided) -> ! {
-    panic!("order fill correction requires an explicit reversal protocol: {event:?}")
 }
 
 impl BoltV3OrderExecutionPolicy {
@@ -136,6 +170,7 @@ impl BoltV3OrderExecutionPolicy {
             intent,
             request,
         } = routing;
+        let intent_kind = request.intent_kind;
         let (intent, request, order) = match clamp_risk_reducing_exit_to_venue_position(
             submit_admission,
             intent,
@@ -144,11 +179,11 @@ impl BoltV3OrderExecutionPolicy {
         ) {
             Ok(clamped) => clamped,
             Err(error) => {
-                decision_evidence.record_order_intent(error.intent())?;
+                record_order_intent(decision_evidence, intent_kind, error.intent().clone())?;
                 return Err(error.into_error());
             }
         };
-        decision_evidence.record_order_intent(&intent)?;
+        record_order_intent(decision_evidence, intent_kind, intent.clone())?;
         match self.mode {
             BoltV3OrderExecutionMode::Live => {
                 let permit = submit_admission.admit(&request)?;
@@ -313,17 +348,136 @@ impl BoltV3OrderExecutionPolicy {
     }
 }
 
+fn record_order_intent(
+    recorder: &dyn OrderIntentEvidence,
+    intent_kind: BoltV3SubmitIntentKind,
+    details: OrderIntentDetails,
+) -> Result<()> {
+    match intent_kind {
+        BoltV3SubmitIntentKind::Entry => recorder
+            .record_entry_order_intent(EntryOrderIntentFact { details })
+            .map(|_| ())
+            .map_err(anyhow::Error::from),
+        BoltV3SubmitIntentKind::RiskReducingExit
+        | BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+            if let NonBlockingRecordOutcome::Failed(error) = recorder
+                .record_risk_reducing_exit_order_intent(RiskReducingExitOrderIntentFact { details })
+            {
+                log::error!("risk-reducing order intent evidence failed: {error}");
+            }
+            Ok(())
+        }
+    }
+}
+
+pub fn order_intent_details_from_compiled_order(
+    strategy_id: String,
+    fallback_price: String,
+    order: &OrderAny,
+) -> OrderIntentDetails {
+    OrderIntentDetails {
+        strategy_id,
+        instrument_id: order.instrument_id().to_string(),
+        client_order_id: order.client_order_id().to_string(),
+        order_side: evidence_order_side(order.order_side()),
+        price: order
+            .price()
+            .map(|price| price.to_string())
+            .or_else(|| order.trigger_price().map(|price| price.to_string()))
+            .or_else(|| order.activation_price().map(|price| price.to_string()))
+            .unwrap_or(fallback_price),
+        quantity: order.quantity().to_string(),
+        clamp_outcome: None,
+        order_fields: order_intent_order_fields(order),
+    }
+}
+
+fn order_intent_order_fields(order: &OrderAny) -> OrderIntentOrderFields {
+    OrderIntentOrderFields {
+        order_type: evidence_order_type(order.order_type()),
+        time_in_force: evidence_time_in_force(order.time_in_force()),
+        price: order.price().map(|price| price.to_string()),
+        trigger_price: order.trigger_price().map(|price| price.to_string()),
+        activation_price: order.activation_price().map(|price| price.to_string()),
+        trigger_type: order.trigger_type().map(evidence_trigger_type),
+        trigger_instrument_id: order.trigger_instrument_id().map(|value| value.to_string()),
+        trailing_offset: order.trailing_offset().map(|value| value.to_string()),
+        trailing_offset_type: order
+            .trailing_offset_type()
+            .map(evidence_trailing_offset_type),
+        expire_time_unix_nanos: order.expire_time().map(|value| value.as_u64().to_string()),
+        is_post_only: order.is_post_only(),
+        is_reduce_only: order.is_reduce_only(),
+        is_quote_quantity: order.is_quote_quantity(),
+    }
+}
+
+fn evidence_order_side(value: OrderSide) -> EvidenceOrderSide {
+    match value {
+        OrderSide::NoOrderSide => EvidenceOrderSide::Unspecified,
+        OrderSide::Buy => EvidenceOrderSide::Buy,
+        OrderSide::Sell => EvidenceOrderSide::Sell,
+    }
+}
+
+fn evidence_order_type(value: OrderType) -> EvidenceOrderType {
+    match value {
+        OrderType::Market => EvidenceOrderType::Market,
+        OrderType::Limit => EvidenceOrderType::Limit,
+        OrderType::StopMarket => EvidenceOrderType::StopMarket,
+        OrderType::StopLimit => EvidenceOrderType::StopLimit,
+        OrderType::MarketToLimit => EvidenceOrderType::MarketToLimit,
+        OrderType::MarketIfTouched => EvidenceOrderType::MarketIfTouched,
+        OrderType::LimitIfTouched => EvidenceOrderType::LimitIfTouched,
+        OrderType::TrailingStopMarket => EvidenceOrderType::TrailingStopMarket,
+        OrderType::TrailingStopLimit => EvidenceOrderType::TrailingStopLimit,
+    }
+}
+
+fn evidence_time_in_force(value: TimeInForce) -> EvidenceTimeInForce {
+    match value {
+        TimeInForce::Gtc => EvidenceTimeInForce::Gtc,
+        TimeInForce::Ioc => EvidenceTimeInForce::Ioc,
+        TimeInForce::Fok => EvidenceTimeInForce::Fok,
+        TimeInForce::Gtd => EvidenceTimeInForce::Gtd,
+        TimeInForce::Day => EvidenceTimeInForce::Day,
+        TimeInForce::AtTheOpen => EvidenceTimeInForce::AtTheOpen,
+        TimeInForce::AtTheClose => EvidenceTimeInForce::AtTheClose,
+    }
+}
+
+fn evidence_trigger_type(value: TriggerType) -> EvidenceTriggerType {
+    match value {
+        TriggerType::NoTrigger => EvidenceTriggerType::NoTrigger,
+        TriggerType::Default => EvidenceTriggerType::Default,
+        TriggerType::LastPrice => EvidenceTriggerType::LastPrice,
+        TriggerType::MarkPrice => EvidenceTriggerType::MarkPrice,
+        TriggerType::IndexPrice => EvidenceTriggerType::IndexPrice,
+        TriggerType::BidAsk => EvidenceTriggerType::BidAsk,
+        TriggerType::DoubleLast => EvidenceTriggerType::DoubleLast,
+        TriggerType::DoubleBidAsk => EvidenceTriggerType::DoubleBidAsk,
+        TriggerType::LastOrBidAsk => EvidenceTriggerType::LastOrBidAsk,
+        TriggerType::MidPoint => EvidenceTriggerType::MidPoint,
+    }
+}
+
+fn evidence_trailing_offset_type(value: TrailingOffsetType) -> EvidenceTrailingOffsetType {
+    match value {
+        TrailingOffsetType::NoTrailingOffset => EvidenceTrailingOffsetType::NoTrailingOffset,
+        TrailingOffsetType::Price => EvidenceTrailingOffsetType::Price,
+        TrailingOffsetType::BasisPoints => EvidenceTrailingOffsetType::BasisPoints,
+        TrailingOffsetType::Ticks => EvidenceTrailingOffsetType::Ticks,
+        TrailingOffsetType::PriceTier => EvidenceTrailingOffsetType::PriceTier,
+    }
+}
+
 fn clamp_risk_reducing_exit_to_venue_position(
     submit_admission: &BoltV3SubmitAdmissionState,
-    mut intent: BoltV3OrderIntentEvidence,
+    mut intent: OrderIntentDetails,
     mut request: BoltV3SubmitAdmissionRequest,
     mut order: OrderAny,
 ) -> std::result::Result<
-    (
-        BoltV3OrderIntentEvidence,
-        BoltV3SubmitAdmissionRequest,
-        OrderAny,
-    ),
+    (OrderIntentDetails, BoltV3SubmitAdmissionRequest, OrderAny),
     BoltV3ExitClampError,
 > {
     if !request.intent_kind.is_venue_position_exit_clamp_eligible()
@@ -332,28 +486,28 @@ fn clamp_risk_reducing_exit_to_venue_position(
         return Ok((intent, request, order));
     }
     if request.order_side != OrderSide::Sell {
-        intent.clamp_outcome = Some(BoltV3OrderIntentClampOutcome::NotEvaluated {
-            reason: BoltV3OrderIntentClampNotEvaluatedReason::NonSellOrderSide,
+        intent.clamp_outcome = Some(OrderIntentClampOutcome::NotEvaluated {
+            reason: OrderIntentClampNotEvaluatedReason::NonSellOrderSide,
         });
         return Ok((intent, request, order));
     }
-    let venue_position = match venue_truth_exit_position(submit_admission, &request) {
-        VenueTruthExitPosition::Position(position) => position,
-        VenueTruthExitPosition::NoVenueTruth => {
-            intent.clamp_outcome = Some(BoltV3OrderIntentClampOutcome::NotEvaluated {
-                reason: BoltV3OrderIntentClampNotEvaluatedReason::NoVenueTruth,
+    let venue_position = match canonical_nt_exit_position(submit_admission, &request) {
+        CanonicalNtExitPosition::Position(position) => position,
+        CanonicalNtExitPosition::Missing => {
+            intent.clamp_outcome = Some(OrderIntentClampOutcome::NotEvaluated {
+                reason: OrderIntentClampNotEvaluatedReason::NoCanonicalNtPosition,
             });
             return Ok((intent, request, order));
         }
-        VenueTruthExitPosition::ForeignInstrument => {
-            intent.clamp_outcome = Some(BoltV3OrderIntentClampOutcome::NotEvaluated {
-                reason: BoltV3OrderIntentClampNotEvaluatedReason::ForeignInstrument,
+        CanonicalNtExitPosition::ForeignInstrument => {
+            intent.clamp_outcome = Some(OrderIntentClampOutcome::NotEvaluated {
+                reason: OrderIntentClampNotEvaluatedReason::ForeignInstrument,
             });
             return Ok((intent, request, order));
         }
     };
     if request.order_quantity <= venue_position {
-        intent.clamp_outcome = Some(BoltV3OrderIntentClampOutcome::WithinBounds);
+        intent.clamp_outcome = Some(OrderIntentClampOutcome::WithinBounds);
         return Ok((intent, request, order));
     }
     if venue_position <= Decimal::ZERO {
@@ -433,22 +587,22 @@ fn clamp_risk_reducing_exit_to_venue_position(
         admission_evidence.quantity = submitted_quantity;
     }
     intent.quantity = order.quantity().to_string();
-    intent.clamp_outcome = Some(BoltV3OrderIntentClampOutcome::Clamped {
+    intent.clamp_outcome = Some(OrderIntentClampOutcome::Clamped {
         original_quantity: original_order_quantity.to_string(),
     });
-    intent.order_fields = BoltV3OrderIntentOrderFields::from_order(&order);
+    intent.order_fields = order_intent_order_fields(&order);
 
     Ok((intent, request, order))
 }
 
 #[derive(Debug)]
 struct BoltV3ExitClampError {
-    intent: Box<BoltV3OrderIntentEvidence>,
+    intent: Box<OrderIntentDetails>,
     error: anyhow::Error,
 }
 
 impl BoltV3ExitClampError {
-    fn intent(&self) -> &BoltV3OrderIntentEvidence {
+    fn intent(&self) -> &OrderIntentDetails {
         self.intent.as_ref()
     }
 
@@ -458,39 +612,36 @@ impl BoltV3ExitClampError {
 }
 
 fn rejected_exit_clamp(
-    mut intent: BoltV3OrderIntentEvidence,
+    mut intent: OrderIntentDetails,
     error: anyhow::Error,
 ) -> BoltV3ExitClampError {
-    intent.clamp_outcome = Some(BoltV3OrderIntentClampOutcome::Rejected);
+    intent.clamp_outcome = Some(OrderIntentClampOutcome::Rejected);
     BoltV3ExitClampError {
         intent: Box::new(intent),
         error,
     }
 }
 
-enum VenueTruthExitPosition {
+enum CanonicalNtExitPosition {
     Position(Decimal),
-    NoVenueTruth,
+    Missing,
     ForeignInstrument,
 }
 
-fn venue_truth_exit_position(
+fn canonical_nt_exit_position(
     submit_admission: &BoltV3SubmitAdmissionState,
     request: &BoltV3SubmitAdmissionRequest,
-) -> VenueTruthExitPosition {
+) -> CanonicalNtExitPosition {
     let Some(state) = submit_admission.capital_admission_state_snapshot() else {
-        return VenueTruthExitPosition::NoVenueTruth;
+        return CanonicalNtExitPosition::Missing;
     };
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
-    if !capital_admission_source_is_accepted_venue_truth(&product.source) {
-        return VenueTruthExitPosition::NoVenueTruth;
-    }
     if request.instrument_id == product.yes_instrument_id {
-        VenueTruthExitPosition::Position(product.yes_position)
+        CanonicalNtExitPosition::Position(product.yes_position)
     } else if request.instrument_id == product.no_instrument_id {
-        VenueTruthExitPosition::Position(product.no_position)
+        CanonicalNtExitPosition::Position(product.no_position)
     } else {
-        VenueTruthExitPosition::ForeignInstrument
+        CanonicalNtExitPosition::ForeignInstrument
     }
 }
 
@@ -499,17 +650,17 @@ fn floor_decimal_to_quantity_precision(value: Decimal, precision: u8) -> Result<
 }
 
 pub struct BoltV3SubmitRoutingRequest<'a> {
-    decision_evidence: &'a dyn BoltV3DecisionEvidenceWriter,
+    decision_evidence: &'a dyn OrderIntentEvidence,
     submit_admission: &'a BoltV3SubmitAdmissionState,
-    intent: BoltV3OrderIntentEvidence,
+    intent: OrderIntentDetails,
     request: BoltV3SubmitAdmissionRequest,
 }
 
 impl<'a> BoltV3SubmitRoutingRequest<'a> {
     pub fn new(
-        decision_evidence: &'a dyn BoltV3DecisionEvidenceWriter,
+        decision_evidence: &'a dyn OrderIntentEvidence,
         submit_admission: &'a BoltV3SubmitAdmissionState,
-        intent: BoltV3OrderIntentEvidence,
+        intent: OrderIntentDetails,
         request: BoltV3SubmitAdmissionRequest,
     ) -> Self {
         Self {
@@ -579,7 +730,6 @@ pub struct BoltV3MakerOrderRoutingContext<'a> {
     pub strategy_id: &'a str,
     pub execution_client_id: &'a str,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -588,14 +738,13 @@ pub struct BoltV3KillSwitchFlattenRoutingContext<'a> {
     pub fallback_price: &'a str,
     pub instrument: Option<&'a InstrumentAny>,
     pub max_fee_bps: Decimal,
-    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 pub(crate) fn route_kill_switch_flatten_command_with_sink<S>(
     policy: BoltV3OrderExecutionPolicy,
     sink: &mut S,
     order_factory: &mut OrderFactory,
-    decision_evidence: &dyn BoltV3DecisionEvidenceWriter,
+    decision_evidence: &dyn OrderIntentEvidence,
     submit_admission: &BoltV3SubmitAdmissionState,
     context: BoltV3KillSwitchFlattenRoutingContext<'_>,
     command: &BoltV3KillSwitchFlattenCommand,
@@ -616,9 +765,8 @@ where
             client_order_id,
         },
     )?;
-    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = order_intent_details_from_compiled_order(
         command.strategy_id().to_string(),
-        BoltV3OrderIntentKind::Exit,
         context.fallback_price.to_string(),
         &order,
     );
@@ -626,12 +774,12 @@ where
         BoltV3SubmitAdmissionRequestInput {
             execution_client_id: context.execution_client_id,
             intent: &intent,
+            intent_kind: BoltV3SubmitIntentKind::KillSwitchForcedReduction,
             order: &order,
             valuation: crate::bolt_v3_submit_admission::OrderValuationContext {
                 instrument: context.instrument,
                 ..crate::bolt_v3_submit_admission::OrderValuationContext::empty()
             },
-            lifecycle_policy: context.submit_lifecycle_policy,
             risk_reducing_exit_position: None,
         },
         |_| Ok(context.max_fee_bps),
@@ -664,7 +812,7 @@ fn flatten_client_order_id(command: &BoltV3KillSwitchFlattenCommand) -> ClientOr
 pub fn route_maker_order_command<S>(
     policy: BoltV3OrderExecutionPolicy,
     strategy: &mut S,
-    decision_evidence: &dyn BoltV3DecisionEvidenceWriter,
+    decision_evidence: &dyn OrderIntentEvidence,
     submit_admission: &BoltV3SubmitAdmissionState,
     context: BoltV3MakerOrderRoutingContext<'_>,
     input: MakerOrderDispatchInput<'_>,
@@ -921,7 +1069,7 @@ where
 fn route_maker_order_command_with_runtime<R>(
     policy: BoltV3OrderExecutionPolicy,
     runtime: &mut R,
-    decision_evidence: &dyn BoltV3DecisionEvidenceWriter,
+    decision_evidence: &dyn OrderIntentEvidence,
     submit_admission: &BoltV3SubmitAdmissionState,
     context: BoltV3MakerOrderRoutingContext<'_>,
     input: MakerOrderDispatchInput<'_>,
@@ -945,7 +1093,7 @@ where
 {
     policy: BoltV3OrderExecutionPolicy,
     runtime: &'a mut R,
-    decision_evidence: &'a dyn BoltV3DecisionEvidenceWriter,
+    decision_evidence: &'a dyn OrderIntentEvidence,
     submit_admission: &'a BoltV3SubmitAdmissionState,
     context: BoltV3MakerOrderRoutingContext<'a>,
 }
@@ -968,9 +1116,8 @@ where
                     order.client_order_id()
                 )
             })?;
-        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        let intent = order_intent_details_from_compiled_order(
             self.context.strategy_id.to_string(),
-            BoltV3OrderIntentKind::Entry,
             fallback_price,
             &order,
         );
@@ -978,9 +1125,9 @@ where
             BoltV3SubmitAdmissionRequestInput {
                 execution_client_id: self.context.execution_client_id,
                 intent: &intent,
+                intent_kind: BoltV3SubmitIntentKind::Entry,
                 order: &order,
                 valuation: crate::bolt_v3_submit_admission::OrderValuationContext::empty(),
-                lifecycle_policy: self.context.submit_lifecycle_policy,
                 risk_reducing_exit_position: None,
             },
             |_| Ok(self.context.max_fee_bps),
@@ -1066,7 +1213,7 @@ mod tests {
         cell::{RefCell, RefMut},
         collections::BTreeMap,
         rc::Rc,
-        sync::{Arc, Mutex},
+        sync::Arc,
     };
 
     use anyhow::Result;
@@ -1077,14 +1224,11 @@ mod tests {
     use nautilus_core::Params;
     use nautilus_core::UnixNanos;
     use nautilus_model::{
-        enums::{
-            AssetClass, LiquiditySide, OrderSide, OrderType, PositionSide, TimeInForce,
-            TradingState,
-        },
-        events::{OrderCanceled, OrderEventAny, OrderFillVoided},
+        enums::{AssetClass, OrderSide, OrderType, PositionSide, TimeInForce, TradingState},
+        events::{OrderCanceled, OrderEventAny},
         identifiers::{
             AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol,
-            TradeId, TraderId, VenueOrderId,
+            TraderId, VenueOrderId,
         },
         instruments::{BinaryOption, InstrumentAny},
         orders::{LimitOrder, Order, OrderAny},
@@ -1098,39 +1242,9 @@ mod tests {
         BoltV3MakerOrderRuntime, BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink,
         BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy, BoltV3SubmitContext,
         BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
-        clamp_risk_reducing_exit_to_venue_position, fail_closed_on_order_fill_voided,
+        clamp_risk_reducing_exit_to_venue_position, order_intent_details_from_compiled_order,
         route_kill_switch_flatten_command_with_sink, route_maker_order_command_with_runtime,
     };
-
-    #[test]
-    #[should_panic(expected = "order fill correction requires an explicit reversal protocol")]
-    fn order_fill_voided_correction_fails_closed() {
-        fail_closed_on_order_fill_voided(&OrderFillVoided::new(
-            TraderId::from("TRADER-001"),
-            StrategyId::from("strategy-a"),
-            InstrumentId::from("instrument-yes.VENUE-A"),
-            ClientOrderId::from("COID-VOIDED"),
-            VenueOrderId::from("venue-order-1"),
-            AccountId::from("ACCOUNT-001"),
-            Ustr::from("CORRECTION-001"),
-            TradeId::from("TRADE-001"),
-            Quantity::from("1"),
-            None,
-            OrderSide::Buy,
-            OrderType::Market,
-            Price::from("0.50"),
-            Currency::USD(),
-            LiquiditySide::Taker,
-            None,
-            None,
-            None,
-            nautilus_core::UUID4::new(),
-            UnixNanos::from(1_u64),
-            UnixNanos::from(2_u64),
-            false,
-            false,
-        ));
-    }
     use crate::{
         bolt_v3_capital_admission::{
             CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
@@ -1138,23 +1252,17 @@ mod tests {
         },
         bolt_v3_capital_admission_runtime_feed::{
             CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
-            POLYMARKET_VENUE_TRUTH_REST_SOURCE,
+            POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE,
         },
         bolt_v3_capital_admission_state::{
             OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
-            VenueSpendabilitySnapshot,
+            ProviderCollateralAllowanceSnapshot,
         },
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
-        bolt_v3_decision_evidence::{
-            BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
-            BoltV3BasketAdmissionDecisionEvidence, BoltV3CapitalAdmissionRebuildAuditEvidence,
-            BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
-            BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
-            BoltV3OrderIntentClampNotEvaluatedReason, BoltV3OrderIntentClampOutcome,
-            BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
-            BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence,
-            BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
-            BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+        bolt_v3_current_evidence::{
+            AdmittedEntryAdmissionFact, CurrentFact, DecisionEvidenceRecorder,
+            ForcedReductionAdmissionFact, OrderIntentClampNotEvaluatedReason,
+            OrderIntentClampOutcome, OrderIntentDetails, RejectedEntryAdmissionFact,
         },
         bolt_v3_kill_switch::KillSwitchState,
         bolt_v3_kill_switch_flatten::{
@@ -1175,29 +1283,78 @@ mod tests {
             BoltV3LiveSubmitApprovalLimits, BoltV3RiskReducingExitProof,
             BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
             BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitCapitalAdmissionNtComponents,
-            BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
+            BoltV3SubmitIntentKind, PredictionMarketOutcomeSide,
         },
     };
 
-    #[derive(Debug, Default)]
-    struct RecordingDecisionEvidenceWriter {
-        records: Mutex<Vec<BoltV3OrderIntentEvidence>>,
-        admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
+    trait RecordedCurrentEvidence {
+        fn order_intents(&self) -> Vec<OrderIntentDetails>;
+        fn admitted_entry_admissions(&self) -> Vec<AdmittedEntryAdmissionFact>;
+        fn rejected_entry_admissions(&self) -> Vec<RejectedEntryAdmissionFact>;
+        fn forced_reduction_admissions(&self) -> Vec<ForcedReductionAdmissionFact>;
+        fn admission_count(&self) -> usize;
     }
 
-    impl RecordingDecisionEvidenceWriter {
-        fn records(&self) -> Vec<BoltV3OrderIntentEvidence> {
-            self.records
-                .lock()
-                .expect("recording evidence mutex should not be poisoned")
-                .clone()
+    impl RecordedCurrentEvidence for DecisionEvidenceRecorder {
+        fn order_intents(&self) -> Vec<OrderIntentDetails> {
+            self.recorded_facts()
+                .expect("recorded current evidence must decode")
+                .into_iter()
+                .filter_map(|fact| match fact {
+                    CurrentFact::EntryOrderIntent(fact) => Some(fact.details),
+                    CurrentFact::RiskReducingExitOrderIntent(fact) => Some(fact.details),
+                    _ => None,
+                })
+                .collect()
         }
 
-        fn admission_decisions(&self) -> Vec<BoltV3AdmissionDecisionEvidence> {
-            self.admission_decisions
-                .lock()
-                .expect("recording admission mutex should not be poisoned")
-                .clone()
+        fn admitted_entry_admissions(&self) -> Vec<AdmittedEntryAdmissionFact> {
+            self.recorded_facts()
+                .expect("recorded current evidence must decode")
+                .into_iter()
+                .filter_map(|fact| match fact {
+                    CurrentFact::AdmittedEntryAdmission(fact) => Some(*fact),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn rejected_entry_admissions(&self) -> Vec<RejectedEntryAdmissionFact> {
+            self.recorded_facts()
+                .expect("recorded current evidence must decode")
+                .into_iter()
+                .filter_map(|fact| match fact {
+                    CurrentFact::RejectedEntryAdmission(fact) => Some(*fact),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn forced_reduction_admissions(&self) -> Vec<ForcedReductionAdmissionFact> {
+            self.recorded_facts()
+                .expect("recorded current evidence must decode")
+                .into_iter()
+                .filter_map(|fact| match fact {
+                    CurrentFact::ForcedReductionAdmission(fact) => Some(*fact),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn admission_count(&self) -> usize {
+            self.recorded_facts()
+                .expect("recorded current evidence must decode")
+                .into_iter()
+                .filter(|fact| {
+                    matches!(
+                        fact,
+                        CurrentFact::AdmittedEntryAdmission(_)
+                            | CurrentFact::RejectedEntryAdmission(_)
+                            | CurrentFact::RiskReducingExitAdmission(_)
+                            | CurrentFact::ForcedReductionAdmission(_)
+                    )
+                })
+                .count()
         }
     }
 
@@ -1267,7 +1424,7 @@ mod tests {
 
     #[test]
     fn maker_submit_routes_through_shared_execution_policy_and_admission() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
             writer.clone(),
             live_submit_cap_for_client("maker_execution_client"),
@@ -1310,23 +1467,19 @@ mod tests {
             }
         );
         assert_eq!(runtime.venue_sink.submit_calls, 1);
-        assert_eq!(writer.records().len(), 1);
-        assert_eq!(writer.records()[0].strategy_id, "maker-strategy");
+        assert_eq!(writer.order_intents().len(), 1);
+        assert_eq!(writer.order_intents()[0].strategy_id, "maker-strategy");
         assert_eq!(
-            writer.records()[0].instrument_id,
+            writer.order_intents()[0].instrument_id,
             InstrumentId::from("YES.INSTRUMENT").to_string()
         );
-        assert_eq!(writer.admission_decisions().len(), 1);
-        assert_eq!(
-            writer.admission_decisions()[0].outcome,
-            BoltV3AdmissionOutcome::Admitted
-        );
+        assert_eq!(writer.admitted_entry_admissions().len(), 1);
         assert_eq!(admission.admitted_order_count(), 1);
     }
 
     #[test]
     fn maker_cancel_routes_through_shared_execution_policy_with_configured_client() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
         let mut runtime = RecordingMakerRuntime::new();
         let command = MakerCompiledOrderCommand::Cancel {
@@ -1357,13 +1510,13 @@ mod tests {
             }
         );
         assert_eq!(runtime.venue_sink.cancel_calls, 1);
-        assert!(writer.records().is_empty());
-        assert!(writer.admission_decisions().is_empty());
+        assert!(writer.order_intents().is_empty());
+        assert_eq!(writer.admission_count(), 0);
     }
 
     #[test]
     fn maker_cancel_all_routes_through_shared_execution_policy_with_configured_client() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
         let mut runtime = RecordingMakerRuntime::new();
         let command = MakerCompiledOrderCommand::CancelAll {
@@ -1403,108 +1556,8 @@ mod tests {
             )]
         );
         assert_eq!(runtime.venue_sink.cancel_calls, 0);
-        assert!(writer.records().is_empty());
-        assert!(writer.admission_decisions().is_empty());
-    }
-
-    impl BoltV3DecisionEvidenceWriter for RecordingDecisionEvidenceWriter {
-        fn record_strategy_input_snapshot(
-            &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_intent(&self, intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-            self.records
-                .lock()
-                .expect("recording evidence mutex should not be poisoned")
-                .push(intent.clone());
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            self.admission_decisions
-                .lock()
-                .expect("recording admission mutex should not be poisoned")
-                .push(decision.clone());
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &BoltV3BasketAdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_capital_admission_rebuild_audit(
-            &self,
-            _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-            anyhow::bail!("recording order-execution writer received entry-skip evidence")
-        }
-
-        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-            anyhow::bail!("recording order-execution writer received exit-decision evidence")
-        }
-
-        fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_loss_governor_halt(
-            &self,
-            _evidence: &BoltV3LossGovernorHaltEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-            anyhow::bail!("recording order-execution writer received requote-throttle evidence")
-        }
-
-        fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> Result<()> {
-            anyhow::bail!("recording order-execution writer received settlement evidence")
-        }
-
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
-            anyhow::bail!(
-                "recording order-execution writer received settlement booking-error evidence"
-            )
-        }
-
-        fn drain_shutdown(&self) -> Result<()> {
-            Ok(())
-        }
+        assert!(writer.order_intents().is_empty());
+        assert_eq!(writer.admission_count(), 0);
     }
 
     #[derive(Debug, Default)]
@@ -1573,7 +1626,7 @@ mod tests {
 
     #[test]
     fn live_submit_records_evidence_consumes_capacity_and_calls_nt_submit_once() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
             writer.clone(),
             live_submit_cap(),
@@ -1600,18 +1653,14 @@ mod tests {
 
         assert_eq!(outcome, BoltV3SubmitRoutingOutcome::Submitted);
         assert_eq!(sink.submit_calls, 1);
-        assert_eq!(writer.records().len(), 1);
-        assert_eq!(writer.admission_decisions().len(), 1);
-        assert_eq!(
-            writer.admission_decisions()[0].outcome,
-            BoltV3AdmissionOutcome::Admitted
-        );
+        assert_eq!(writer.order_intents().len(), 1);
+        assert_eq!(writer.admitted_entry_admissions().len(), 1);
         assert_eq!(admission.admitted_order_count(), 1);
     }
 
     #[test]
     fn live_submit_rejected_by_latched_kill_switch_never_calls_nt() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
             writer.clone(),
             live_submit_cap(),
@@ -1647,23 +1696,24 @@ mod tests {
         );
         assert_eq!(sink.submit_calls, 0);
         assert_eq!(admission.admitted_order_count(), 0);
-        assert_eq!(writer.records().len(), 1);
-        assert_eq!(writer.admission_decisions().len(), 1);
+        assert_eq!(writer.order_intents().len(), 1);
+        assert_eq!(writer.rejected_entry_admissions().len(), 1);
         assert_eq!(
-            writer.admission_decisions()[0].outcome,
-            BoltV3AdmissionOutcome::RejectedKillSwitchLatched
+            writer.rejected_entry_admissions()[0].reason,
+            crate::bolt_v3_current_evidence::AdmissionRejectionReason::KillSwitchLatched
         );
     }
 
     #[test]
     fn live_submit_failure_rolls_back_capital_admission_reservation() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
             writer.clone(),
             capital_admission_config(),
         ));
         admission.update_capital_admission_nt_components(capital_admission_components());
-        let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1);
+        let rebuild =
+            admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1);
         assert!(rebuild.accepted);
 
         let mut sink = RecordingVenueMutationSink {
@@ -1696,8 +1746,11 @@ mod tests {
 
     #[test]
     fn live_risk_reducing_exit_clamps_submitted_quantity_to_venue_position() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::new(3, 0),
+        );
 
         let mut sink = RecordingVenueMutationSink::default();
         let order = limit_exit_order("O-19700101-000000-001-EXIT-CLAMP-1", Quantity::new(5.0, 2));
@@ -1727,20 +1780,66 @@ mod tests {
         assert_eq!(sink.submit_calls, 1);
         assert_eq!(sink.submitted_order_quantities, vec![Quantity::new(3.0, 2)]);
         assert_eq!(admission.admitted_order_count(), 1);
-        let records = writer.records();
+        let records = writer.order_intents();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].quantity, Quantity::new(3.0, 2).to_string());
         assert_eq!(
             records[0].clamp_outcome,
-            Some(BoltV3OrderIntentClampOutcome::Clamped {
+            Some(OrderIntentClampOutcome::Clamped {
                 original_quantity: Decimal::new(5, 0).to_string(),
             })
         );
     }
 
     #[test]
-    fn risk_reducing_exit_without_venue_truth_records_not_evaluated_reason() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+    fn live_risk_reducing_exit_reaches_nt_when_order_intent_evidence_fails() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        writer.fail_purpose_on_attempt_for_test(
+            crate::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::RiskReducingExitOrderIntent,
+            1,
+        );
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::new(3, 0),
+        );
+        let mut sink = RecordingVenueMutationSink::default();
+        let order = limit_exit_order(
+            "O-19700101-000000-001-EXIT-EVIDENCE-FAILURE-1",
+            Quantity::new(3.0, 2),
+        );
+        let intent = exit_intent_for_order(&order);
+        let request = risk_reducing_exit_submit_request_for_order(
+            &order,
+            Decimal::new(3, 0),
+            Decimal::new(3, 0),
+        );
+
+        let outcome = BoltV3OrderExecutionPolicy::live()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::new(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect("risk-reducing evidence failure must not block the NT submit");
+
+        assert_eq!(outcome, BoltV3SubmitRoutingOutcome::Submitted);
+        assert_eq!(sink.submit_calls, 1);
+        assert_eq!(admission.admitted_order_count(), 1);
+        assert!(
+            writer.order_intents().is_empty(),
+            "the targeted order-intent write must fail before appending evidence"
+        );
+    }
+
+    #[test]
+    fn risk_reducing_exit_without_provider_collateral_allowance_records_not_evaluated_reason() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
             writer.clone(),
             live_submit_cap(),
@@ -1770,24 +1869,27 @@ mod tests {
                 order,
                 BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
             )
-            .expect("missing venue truth should pass through with explicit evidence");
+            .expect(
+                "missing provider collateral allowance should pass through with explicit evidence",
+            );
 
         assert_eq!(outcome, BoltV3SubmitRoutingOutcome::Submitted);
         assert_eq!(sink.submitted_order_quantities, vec![Quantity::new(5.0, 2)]);
-        let records = writer.records();
+        let records = writer.order_intents();
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].clamp_outcome,
-            Some(BoltV3OrderIntentClampOutcome::NotEvaluated {
-                reason: BoltV3OrderIntentClampNotEvaluatedReason::NoVenueTruth,
+            Some(OrderIntentClampOutcome::NotEvaluated {
+                reason: OrderIntentClampNotEvaluatedReason::NoCanonicalNtPosition,
             })
         );
     }
 
     #[test]
     fn risk_reducing_exit_for_foreign_instrument_records_not_evaluated_reason() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = venue_truth_admission_with_yes_position(writer, Decimal::new(3, 0));
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission =
+            provider_collateral_allowance_admission_with_yes_position(writer, Decimal::new(3, 0));
         let order = limit_exit_order_for_instrument(
             "O-19700101-000000-001-EXIT-FOREIGN-1",
             InstrumentId::from("instrument-foreign.VENUE-A"),
@@ -1808,16 +1910,17 @@ mod tests {
         assert_eq!(request.order_quantity, Decimal::new(5, 0));
         assert_eq!(
             intent.clamp_outcome,
-            Some(BoltV3OrderIntentClampOutcome::NotEvaluated {
-                reason: BoltV3OrderIntentClampNotEvaluatedReason::ForeignInstrument,
+            Some(OrderIntentClampOutcome::NotEvaluated {
+                reason: OrderIntentClampNotEvaluatedReason::ForeignInstrument,
             })
         );
     }
 
     #[test]
     fn clamp_eligible_non_sell_order_records_not_evaluated_reason() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = venue_truth_admission_with_yes_position(writer, Decimal::new(3, 0));
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission =
+            provider_collateral_allowance_admission_with_yes_position(writer, Decimal::new(3, 0));
         let order = limit_order("O-19700101-000000-001-FLAT-BUY-1");
         let intent = exit_intent_for_order(&order);
         let mut request = risk_reducing_exit_submit_request_for_order(
@@ -1840,16 +1943,19 @@ mod tests {
         assert_eq!(request.order_side, OrderSide::Buy);
         assert_eq!(
             intent.clamp_outcome,
-            Some(BoltV3OrderIntentClampOutcome::NotEvaluated {
-                reason: BoltV3OrderIntentClampNotEvaluatedReason::NonSellOrderSide,
+            Some(OrderIntentClampOutcome::NotEvaluated {
+                reason: OrderIntentClampNotEvaluatedReason::NonSellOrderSide,
             })
         );
     }
 
     #[test]
     fn zero_venue_position_rejects_with_rejected_clamp_evidence() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::ZERO);
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::ZERO,
+        );
         let mut sink = RecordingVenueMutationSink::default();
         let order = limit_exit_order(
             "O-19700101-000000-001-EXIT-REJECTED-1",
@@ -1884,18 +1990,19 @@ mod tests {
             "unexpected clamp rejection: {error:#}"
         );
         assert_eq!(sink.submit_calls, 0);
-        let records = writer.records();
+        let records = writer.order_intents();
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].clamp_outcome,
-            Some(BoltV3OrderIntentClampOutcome::Rejected)
+            Some(OrderIntentClampOutcome::Rejected)
         );
     }
 
     #[test]
     fn kill_switch_forced_reduction_clamps_to_venue_position() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = venue_truth_admission_with_yes_position(writer, Decimal::new(3, 0));
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission =
+            provider_collateral_allowance_admission_with_yes_position(writer, Decimal::new(3, 0));
         let order = limit_exit_order(
             "O-19700101-000000-001-FORCED-CLAMP-1",
             Quantity::new(5.0, 2),
@@ -1930,7 +2037,7 @@ mod tests {
         );
         assert_eq!(
             intent.clamp_outcome,
-            Some(BoltV3OrderIntentClampOutcome::Clamped {
+            Some(OrderIntentClampOutcome::Clamped {
                 original_quantity: Decimal::new(5, 0).to_string(),
             })
         );
@@ -1938,8 +2045,9 @@ mod tests {
 
     #[test]
     fn kill_switch_forced_reduction_within_venue_position_records_within_bounds() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = venue_truth_admission_with_yes_position(writer, Decimal::new(8, 0));
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission =
+            provider_collateral_allowance_admission_with_yes_position(writer, Decimal::new(8, 0));
         let order = limit_exit_order(
             "O-19700101-000000-001-FORCED-WITHIN-1",
             Quantity::new(3.0, 2),
@@ -1965,14 +2073,17 @@ mod tests {
         assert_eq!(request.order_quantity, Decimal::new(3, 0));
         assert_eq!(
             intent.clamp_outcome,
-            Some(BoltV3OrderIntentClampOutcome::WithinBounds)
+            Some(OrderIntentClampOutcome::WithinBounds)
         );
     }
 
     #[test]
     fn kill_switch_flatten_command_routes_forced_reduction_through_clamped_submit() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::new(3, 0),
+        );
         admission.replace_kill_switch_state(KillSwitchState::Flattening {
             halt_id: "halt-001".to_string(),
         });
@@ -1980,6 +2091,7 @@ mod tests {
             BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 2, Decimal::new(10, 0))
                 .expect("forced reduction policy should be valid"),
         );
+        reconcile_no_live_forced_reductions(admission.as_ref(), 2);
         let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
         let claim = BoltV3KillSwitchForcedReductionClaim::new(
             "halt-001",
@@ -2039,7 +2151,6 @@ mod tests {
                 fallback_price: "1",
                 instrument: Some(&instrument),
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             },
             command,
         )
@@ -2049,24 +2160,23 @@ mod tests {
         assert_eq!(sink.submit_calls, 1);
         assert_eq!(sink.submitted_order_quantities, vec![Quantity::new(3.0, 2)]);
         assert_eq!(admission.admitted_order_count(), 1);
-        assert_eq!(writer.records().len(), 1);
+        assert_eq!(writer.order_intents().len(), 1);
         assert_eq!(
-            writer.records()[0].clamp_outcome,
-            Some(BoltV3OrderIntentClampOutcome::Clamped {
+            writer.order_intents()[0].clamp_outcome,
+            Some(OrderIntentClampOutcome::Clamped {
                 original_quantity: Quantity::new(5.0, 2).as_decimal().to_string(),
             })
         );
-        assert_eq!(writer.admission_decisions().len(), 1);
-        assert_eq!(
-            writer.admission_decisions()[0].intent_kind,
-            BoltV3SubmitIntentKind::KillSwitchForcedReduction
-        );
+        assert_eq!(writer.forced_reduction_admissions().len(), 1);
     }
 
     #[test]
     fn kill_switch_flatten_command_rejects_zero_venue_position_with_clamp_evidence() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::ZERO);
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::ZERO,
+        );
         admission.replace_kill_switch_state(KillSwitchState::Flattening {
             halt_id: "halt-001".to_string(),
         });
@@ -2074,6 +2184,7 @@ mod tests {
             BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 2, Decimal::new(10, 0))
                 .expect("forced reduction policy should be valid"),
         );
+        reconcile_no_live_forced_reductions(admission.as_ref(), 2);
         let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
         let claim = BoltV3KillSwitchForcedReductionClaim::new(
             "halt-001",
@@ -2133,7 +2244,6 @@ mod tests {
                 fallback_price: "1",
                 instrument: Some(&instrument),
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             },
             command,
         )
@@ -2146,25 +2256,29 @@ mod tests {
             "unexpected flatten clamp rejection: {error:#}"
         );
         assert_eq!(sink.submit_calls, 0);
-        assert_eq!(writer.records().len(), 1);
+        assert_eq!(writer.order_intents().len(), 1);
         assert_eq!(
-            writer.records()[0].clamp_outcome,
-            Some(BoltV3OrderIntentClampOutcome::Rejected)
+            writer.order_intents()[0].clamp_outcome,
+            Some(OrderIntentClampOutcome::Rejected)
         );
         assert_eq!(
-            writer.records()[0].client_order_id,
+            writer.order_intents()[0].client_order_id,
             "halt-001-flatten-positions-POSITION-001"
         );
     }
 
     #[test]
-    fn two_halt_cycles_release_terminal_forced_reduction_and_second_submits_clamped() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = venue_truth_admission_with_yes_position(writer.clone(), Decimal::new(3, 0));
+    fn two_halt_cycles_require_reconciled_terminal_absence_before_second_submit() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::new(3, 0),
+        );
         admission.configure_kill_switch_forced_reduction_policy(
             BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 1, Decimal::new(10, 0))
                 .expect("forced reduction policy should be valid"),
         );
+        reconcile_no_live_forced_reductions(admission.as_ref(), 2);
         let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
         let mut feed = CapitalAdmissionRuntimeFeed::new(
             capital_admission_runtime_feed_config(),
@@ -2191,8 +2305,9 @@ mod tests {
         ));
         assert!(
             feed.on_order_event(&first_terminal).is_none(),
-            "forced-reduction terminal release should not require capital-reservation ownership"
+            "terminal callbacks must not mutate canonical forced-reduction liveness"
         );
+        reconcile_no_live_forced_reductions(admission.as_ref(), 1_101);
         admission.replace_kill_switch_state(KillSwitchState::Armed);
 
         let second = flatten_command_for_halt("halt-002", "POSITION-002");
@@ -2205,17 +2320,17 @@ mod tests {
             &second,
         )
         .expect(
-            "second halt should submit after the first terminal releases the forced-reduction cap",
+            "second halt should submit after NT reconciliation proves the first order is no longer live",
         );
 
         assert_eq!(
             sink.submitted_order_quantities,
             vec![Quantity::new(3.0, 2), Quantity::new(3.0, 2)]
         );
-        let records = writer.records();
+        let records = writer.order_intents();
         assert_eq!(
             records.last().map(|record| record.clamp_outcome.clone()),
-            Some(Some(BoltV3OrderIntentClampOutcome::Clamped {
+            Some(Some(OrderIntentClampOutcome::Clamped {
                 original_quantity: Quantity::new(5.0, 2).as_decimal().to_string(),
             }))
         );
@@ -2223,7 +2338,7 @@ mod tests {
 
     #[test]
     fn shadow_submit_records_evidence_without_consuming_capacity_or_calling_nt_submit() {
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
             writer.clone(),
             live_submit_cap(),
@@ -2250,12 +2365,8 @@ mod tests {
 
         assert_eq!(outcome, BoltV3SubmitRoutingOutcome::SkippedByPolicy);
         assert_eq!(sink.submit_calls, 0);
-        assert_eq!(writer.records().len(), 1);
-        assert_eq!(writer.admission_decisions().len(), 1);
-        assert_eq!(
-            writer.admission_decisions()[0].outcome,
-            BoltV3AdmissionOutcome::Admitted
-        );
+        assert_eq!(writer.order_intents().len(), 1);
+        assert_eq!(writer.admitted_entry_admissions().len(), 1);
         assert_eq!(admission.admitted_order_count(), 0);
     }
 
@@ -2383,7 +2494,7 @@ mod tests {
         // `supports_modify=false`, so the FSM never emits a Modify). No venue mutation
         // occurs, so no intent/admission is recorded. Forcing the Live arm back to a
         // venue call turns this red.
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
         let mut runtime = RecordingMakerRuntime::new();
         let command = MakerCompiledOrderCommand::Modify {
@@ -2412,8 +2523,8 @@ mod tests {
         );
         assert_eq!(runtime.venue_sink.modify_calls, 0);
         // No venue mutation → no order intent / admission recorded.
-        assert!(writer.records().is_empty());
-        assert!(writer.admission_decisions().is_empty());
+        assert!(writer.order_intents().is_empty());
+        assert_eq!(writer.admission_count(), 0);
     }
 
     #[test]
@@ -2422,7 +2533,7 @@ mod tests {
         // `Modified` command shape, but the execution policy suppresses the venue
         // call, so `modify_calls` stays 0. Pre-fix the path bailed in BOTH modes; a
         // shadow run that leaked a venue modify (counter > 0) also fails here.
-        let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
         let mut runtime = RecordingMakerRuntime::new();
         let command = MakerCompiledOrderCommand::Modify {
@@ -2484,19 +2595,17 @@ mod tests {
         )])
     }
 
-    fn intent_for_order(order: &OrderAny) -> BoltV3OrderIntentEvidence {
-        BoltV3OrderIntentEvidence::from_compiled_order(
+    fn intent_for_order(order: &OrderAny) -> OrderIntentDetails {
+        order_intent_details_from_compiled_order(
             "strategy-a".to_string(),
-            BoltV3OrderIntentKind::Entry,
             "0.50".to_string(),
             order,
         )
     }
 
-    fn exit_intent_for_order(order: &OrderAny) -> BoltV3OrderIntentEvidence {
-        BoltV3OrderIntentEvidence::from_compiled_order(
+    fn exit_intent_for_order(order: &OrderAny) -> OrderIntentDetails {
+        order_intent_details_from_compiled_order(
             "strategy-a".to_string(),
-            BoltV3OrderIntentKind::Exit,
             "0.50".to_string(),
             order,
         )
@@ -2515,7 +2624,6 @@ mod tests {
             order_side: OrderSide::Buy,
             order_quantity: Decimal::new(1, 0),
             intent_kind: BoltV3SubmitIntentKind::Entry,
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_proof: None,
             kill_switch_forced_reduction: None,
             admission_evidence: None,
@@ -2556,7 +2664,6 @@ mod tests {
             order_side: OrderSide::Sell,
             order_quantity,
             intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_proof: Some(BoltV3RiskReducingExitProof {
                 position_id: "POSITION-001".to_string(),
                 instrument_id: order.instrument_id().to_string(),
@@ -2632,7 +2739,6 @@ mod tests {
             strategy_id: "maker-strategy",
             execution_client_id: "maker_execution_client",
             max_fee_bps: Decimal::ZERO,
-            submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         }
     }
 
@@ -2657,7 +2763,6 @@ mod tests {
                     max_slippage_liability: Decimal::new(20, 2),
                 }),
             },
-            dedupe_retention_ns: u64::MAX,
         }
     }
 
@@ -2674,13 +2779,12 @@ mod tests {
                 free_collateral: Decimal::new(100, 0),
                 total_equity: Decimal::new(100, 0),
             },
-            venue_spendability: VenueSpendabilitySnapshot {
+            provider_collateral_allowance: ProviderCollateralAllowanceSnapshot {
                 source: "nt_account_free_collateral".to_string(),
                 observed_at_ns: 0,
                 venue_id: "VENUE-A".to_string(),
                 account_id: "ACCOUNT-001".to_string(),
                 collateral_currency: "USD".to_string(),
-                spendable_collateral: Decimal::new(100, 0),
                 collateral_allowance: Decimal::new(100, 0),
             },
             order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
@@ -2698,7 +2802,6 @@ mod tests {
                     yes_position: Decimal::ZERO,
                     no_position: Decimal::ZERO,
                     collateral_allowance: Decimal::new(100, 0),
-                    conditional_token_allowance: Decimal::new(100, 0),
                     collateral_coupled_group_id: "group-1".to_string(),
                 },
             ),
@@ -2706,8 +2809,8 @@ mod tests {
         }
     }
 
-    fn venue_truth_admission_with_yes_position(
-        writer: Arc<RecordingDecisionEvidenceWriter>,
+    fn provider_collateral_allowance_admission_with_yes_position(
+        writer: Arc<DecisionEvidenceRecorder>,
         yes_position: Decimal,
     ) -> Arc<BoltV3SubmitAdmissionState> {
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
@@ -2717,12 +2820,25 @@ mod tests {
         let mut components = capital_admission_components();
         let ProductAdmissionSnapshot::PredictionMarketBinary(product) =
             &mut components.product_state;
-        product.source = POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string();
+        product.source = POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string();
         product.yes_position = yes_position;
         admission.update_capital_admission_nt_components(components);
-        let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1);
+        let rebuild =
+            admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1);
         assert!(rebuild.accepted);
         admission
+    }
+
+    fn reconcile_no_live_forced_reductions(
+        admission: &BoltV3SubmitAdmissionState,
+        observed_at_ns: u64,
+    ) {
+        let rebuild = admission
+            .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), observed_at_ns);
+        assert!(
+            rebuild.accepted,
+            "canonical NT open-order projection should reconcile forced-reduction liveness"
+        );
     }
 
     fn capital_admission_runtime_feed_config() -> CapitalAdmissionRuntimeFeedConfig {
@@ -2739,12 +2855,9 @@ mod tests {
                     yes_position: Decimal::ZERO,
                     no_position: Decimal::ZERO,
                     collateral_allowance: Decimal::ZERO,
-                    conditional_token_allowance: Decimal::ZERO,
                     collateral_coupled_group_id: "group-1".to_string(),
                 },
             ),
-            startup_observed_at_ns: 0,
-            dedupe_retention_ns: u64::MAX,
         }
     }
 
@@ -2797,7 +2910,7 @@ mod tests {
 
     fn route_one_flatten_command(
         admission: &BoltV3SubmitAdmissionState,
-        writer: &RecordingDecisionEvidenceWriter,
+        writer: &DecisionEvidenceRecorder,
         instrument: &InstrumentAny,
         sink: &mut RecordingVenueMutationSink,
         order_factory: &mut OrderFactory,
@@ -2817,7 +2930,6 @@ mod tests {
                 fallback_price: "1",
                 instrument: Some(instrument),
                 max_fee_bps: Decimal::ZERO,
-                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             },
             command,
         )

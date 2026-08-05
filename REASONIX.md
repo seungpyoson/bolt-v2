@@ -4,7 +4,7 @@ Rust binary for automated trading on Polymarket via NautilusTrader.
 
 ## Stack
 
-- **Language** — Rust 2024 edition, pinned to 1.97.0 (`rust-toolchain.toml`).
+- **Language** — Rust 2024 edition; `rust-toolchain.toml` pins the compiler version.
 - **Framework** — NautilusTrader (`nautilus_*` crates, git dep) — live trading, exchange clients, data pipelines.
 - **Async** — `tokio` (full features); WebSocket transport is provided by the NautilusTrader provider crates.
 - **CLI** — `clap` derive, subcommands: `run`, `secrets check`, `secrets resolve`.

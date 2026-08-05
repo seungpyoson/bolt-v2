@@ -143,23 +143,6 @@ pub(super) fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     if let Some(capital_pools) = block.capital_pools.as_ref() {
         errors.extend(validate_capital_pools(capital_pools));
     }
-    let risk_reservation_substrate_enabled = block
-        .risk_reservation_substrate
-        .as_ref()
-        .is_some_and(|substrate| substrate.enabled);
-    if risk_reservation_substrate_enabled {
-        errors.push(
-            "risk.risk_reservation_substrate.enabled must remain false until live admission arming is implemented; current live submit admission is controlled by risk.capital_pools[].enforce_submit_admission"
-                .to_string(),
-        );
-    }
-    if risk_reservation_substrate_enabled && block.capital_pools.as_ref().is_none_or(Vec::is_empty)
-    {
-        errors.push(
-            "risk.risk_reservation_substrate requires at least one configured capital pool when enabled"
-                .to_string(),
-        );
-    }
     let nt_risk_default = nautilus_live::config::LiveRiskEngineConfig::default();
     if block.nautilus.qsize != nt_risk_default.qsize {
         errors.push(format!(
@@ -207,11 +190,6 @@ pub(super) fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     }
     if let Some(kill_switch) = &block.kill_switch {
         errors.extend(validate_kill_switch_block(kill_switch));
-    }
-    if let Some(basket_execution) = &block.basket_execution {
-        errors.extend(
-            crate::bolt_v3_outcome_group_sources::validate_basket_execution(basket_execution),
-        );
     }
     errors
 }

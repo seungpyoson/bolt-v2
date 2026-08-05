@@ -1,5 +1,9 @@
 # Implementation Plan: Thin Bolt-v3 Live Canary Path
 
+> **Historical implementation record — not an active plan.** Do not execute
+> slices or commands from this file. Current `main`, `AGENTS.md`, and tracked
+> issues are authoritative.
+
 **Branch**: `001-thin-live-canary-path` | **Date**: 2026-05-13 | **Spec**: `specs/001-thin-live-canary-path/spec.md`
 **Input**: Feature specification from `/specs/001-thin-live-canary-path/spec.md`
 

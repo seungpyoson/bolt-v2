@@ -114,8 +114,6 @@ fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
         &mut strategy,
         open_position,
         exit_client_order_id,
-        false,
-        false,
         ManagedPositionOrigin::StrategyEntry,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
@@ -150,8 +148,6 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
         &mut strategy,
         open_position,
         exit_client_order_id,
-        false,
-        false,
         ManagedPositionOrigin::StrategyEntry,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
@@ -166,7 +162,7 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
 }
 
 #[test]
-fn delayed_exit_fill_after_position_closed_does_not_cool_down_active_selection() {
+fn authoritative_position_close_cools_the_closed_market_before_delayed_exit_fill() {
     let mut strategy = ready_to_trade_strategy();
     let tracked_instrument = selected_entry_instrument(&strategy);
     let exit_client_order_id = ClientOrderId::from("EXIT-DELAYED");
@@ -182,12 +178,17 @@ fn delayed_exit_fill_after_position_closed_does_not_cool_down_active_selection()
         &mut strategy,
         open_position,
         exit_client_order_id,
-        false,
-        false,
         ManagedPositionOrigin::StrategyEntry,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+    close_nt_position(&mut strategy, position_id);
     strategy.on_position_closed(position_closed_event(tracked_instrument, position_id));
+
+    assert!(
+        strategy.market_in_cooldown("MKT-1", 1_000),
+        "the NT position-close event must cool the closed market without retaining a shadow exit order"
+    );
+    assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
 
     strategy.on_order_filled(&order_filled_event(
         exit_client_order_id,

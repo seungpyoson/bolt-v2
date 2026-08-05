@@ -367,7 +367,7 @@ impl TakerPricingState {
         surface_id: &str,
         realized_vol_gate_receive_ms: Option<LocalReceiveMs>,
         max_source_age_ms: Option<u64>,
-    ) -> crate::bolt_v3_decision_evidence::BoltV3RvGateResult {
+    ) -> crate::bolt_v3_current_evidence::RvGateResult {
         crate::bolt_v3_fair_value_pricing::classify_rv_gate(
             self.fair_value
                 .latest_realized_vol_snapshot_for_surface(surface_id),

@@ -59,16 +59,16 @@ fmt: check-workspace
     cargo fmt --manifest-path "{{bte_root}}/Cargo.toml"
 
 clippy: check-workspace
-    cargo clippy --locked -- -D warnings
+    cargo clippy --locked --features test-current-evidence-inspection --lib --bins -- -D warnings
 
 _test-merge-queue:
     bash scripts/test_merge_queue.sh
 
 test *args: check-workspace _test-merge-queue
-    cargo nextest run --locked {{args}}
+    cargo nextest run --locked --no-fail-fast --features test-current-evidence-inspection {{args}}
 
 test-archive archive *args: check-workspace
-    cargo nextest archive --locked --archive-file "{{archive}}" {{args}}
+    cargo nextest archive --locked --features test-current-evidence-inspection --archive-file "{{archive}}" {{args}}
 
 test-archive-run archive extract_root *args: check-workspace
     cargo nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}" {{args}}

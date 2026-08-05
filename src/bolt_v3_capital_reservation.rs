@@ -120,6 +120,10 @@ impl ReservationLedger {
         self.reconciliation_complete
     }
 
+    pub fn invalidate_reconciliation(&mut self) {
+        self.reconciliation_complete = false;
+    }
+
     pub fn reserve(
         &mut self,
         pool: &CapitalPoolSnapshot,

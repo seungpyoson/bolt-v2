@@ -1,5 +1,9 @@
 # T118 Approval Envelope Schema Plan
 
+> **Historical implementation record — not an active plan.** Do not execute
+> commands or tasks from this file. Current `main`, `AGENTS.md`, and tracked
+> issues are authoritative.
+
 ## Scope
 
 T118 defines and enforces a non-circular approval-envelope schema for the T046

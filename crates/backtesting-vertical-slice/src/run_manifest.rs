@@ -65,6 +65,11 @@ pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
 pub const STRATEGY_PARAM_CONFIG_TOML: &str = "config_toml";
 /// Strategy parameter key for the backtest fee-provider assumption.
 pub const STRATEGY_PARAM_FEE_BPS: &str = "fee_bps";
+/// Strategy parameter key for the bounded evidence-rejection episode map.
+pub const STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT: &str =
+    "evidence_reject_episode_max_count";
+/// Strategy parameter key for the independent current-evidence read bound.
+pub const STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES: &str = "evidence_read_max_bytes";
 /// Strategy parameter key for the Bolt-v3 order execution policy mode.
 pub const STRATEGY_PARAM_ORDER_EXECUTION_MODE: &str = "order_execution_mode";
 /// Strategy parameter key for the number of delivered trades before the entry order.
@@ -140,11 +145,15 @@ pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'
         }
         STRATEGY_BINARY_ORACLE_EDGE_TAKER => Some(&[
             STRATEGY_PARAM_CONFIG_TOML,
+            STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
+            STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
             STRATEGY_PARAM_FEE_BPS,
             STRATEGY_PARAM_ORDER_EXECUTION_MODE,
         ]),
         STRATEGY_BINARY_ORACLE_MAKER => Some(&[
             STRATEGY_PARAM_CONFIG_TOML,
+            STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
+            STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
             STRATEGY_PARAM_FEE_BPS,
             STRATEGY_PARAM_ORDER_EXECUTION_MODE,
         ]),
@@ -1022,6 +1031,23 @@ impl std::fmt::Display for ManifestError {
 
 impl std::error::Error for ManifestError {}
 
+fn validate_positive_strategy_parameter(
+    strategy: &StrategySource,
+    key: &'static str,
+    field: &'static str,
+) -> Result<(), ManifestError> {
+    let value = strategy
+        .parameters
+        .get(key)
+        .ok_or(ManifestError::MissingField(field))?
+        .parse::<u64>()
+        .map_err(|_| ManifestError::MissingField(field))?;
+    if value == 0 {
+        return Err(ManifestError::MissingField(field));
+    }
+    Ok(())
+}
+
 fn validate_strategy_source(
     strategy: &StrategySource,
     artifact_root: &str,
@@ -1112,8 +1138,12 @@ fn validate_strategy_source(
                     message: "cannot be combined with strategy.parameters.config_toml".to_string(),
                 });
             }
-            let mut required_parameters =
-                vec![STRATEGY_PARAM_FEE_BPS, STRATEGY_PARAM_ORDER_EXECUTION_MODE];
+            let mut required_parameters = vec![
+                STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
+                STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
+                STRATEGY_PARAM_FEE_BPS,
+                STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+            ];
             if !has_config_overlay {
                 required_parameters.push(STRATEGY_PARAM_CONFIG_TOML);
             }
@@ -1122,6 +1152,12 @@ fn validate_strategy_source(
                     return Err(ManifestError::MissingField(match parameter {
                         STRATEGY_PARAM_CONFIG_TOML => "strategy.parameters.config_toml",
                         STRATEGY_PARAM_FEE_BPS => "strategy.parameters.fee_bps",
+                        STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES => {
+                            "strategy.parameters.evidence_read_max_bytes"
+                        }
+                        STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT => {
+                            "strategy.parameters.evidence_reject_episode_max_count"
+                        }
                         STRATEGY_PARAM_ORDER_EXECUTION_MODE => {
                             "strategy.parameters.order_execution_mode"
                         }
@@ -1129,6 +1165,16 @@ fn validate_strategy_source(
                     }));
                 }
             }
+            validate_positive_strategy_parameter(
+                strategy,
+                STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
+                "strategy.parameters.evidence_read_max_bytes",
+            )?;
+            validate_positive_strategy_parameter(
+                strategy,
+                STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
+                "strategy.parameters.evidence_reject_episode_max_count",
+            )?;
             let order_execution_mode = strategy
                 .parameters
                 .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
@@ -1182,6 +1228,8 @@ fn validate_strategy_source(
             }
             for parameter in [
                 STRATEGY_PARAM_CONFIG_TOML,
+                STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
+                STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
                 STRATEGY_PARAM_FEE_BPS,
                 STRATEGY_PARAM_ORDER_EXECUTION_MODE,
             ] {
@@ -1189,6 +1237,12 @@ fn validate_strategy_source(
                     return Err(ManifestError::MissingField(match parameter {
                         STRATEGY_PARAM_CONFIG_TOML => "strategy.parameters.config_toml",
                         STRATEGY_PARAM_FEE_BPS => "strategy.parameters.fee_bps",
+                        STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES => {
+                            "strategy.parameters.evidence_read_max_bytes"
+                        }
+                        STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT => {
+                            "strategy.parameters.evidence_reject_episode_max_count"
+                        }
                         STRATEGY_PARAM_ORDER_EXECUTION_MODE => {
                             "strategy.parameters.order_execution_mode"
                         }
@@ -1196,6 +1250,16 @@ fn validate_strategy_source(
                     }));
                 }
             }
+            validate_positive_strategy_parameter(
+                strategy,
+                STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
+                "strategy.parameters.evidence_read_max_bytes",
+            )?;
+            validate_positive_strategy_parameter(
+                strategy,
+                STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
+                "strategy.parameters.evidence_reject_episode_max_count",
+            )?;
             let order_execution_mode = strategy
                 .parameters
                 .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
@@ -4801,6 +4865,14 @@ mod tests {
         let mut manifest = valid_manifest();
         manifest.strategy.registry_key = STRATEGY_BINARY_ORACLE_EDGE_TAKER.to_string();
         manifest.strategy.parameters = BTreeMap::from([
+            (
+                STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES.to_string(),
+                "1048576".to_string(),
+            ),
+            (
+                STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT.to_string(),
+                "4096".to_string(),
+            ),
             (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
             (
                 STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
@@ -4853,6 +4925,14 @@ mod tests {
                 STRATEGY_PARAM_CONFIG_TOML.to_string(),
                 binary_oracle_maker_config_toml(),
             ),
+            (
+                STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES.to_string(),
+                "1048576".to_string(),
+            ),
+            (
+                STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT.to_string(),
+                "4096".to_string(),
+            ),
             (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
             (
                 STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
@@ -4871,6 +4951,20 @@ mod tests {
         manifest
             .validate(&accepted_dataset())
             .expect("binary-oracle production config overlay should validate");
+    }
+
+    #[test]
+    fn binary_oracle_requires_a_positive_independent_evidence_read_cap() {
+        let mut manifest = binary_oracle_overlay_manifest();
+        manifest.strategy.parameters.insert(
+            STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES.to_string(),
+            "0".to_string(),
+        );
+
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("strategy.parameters.evidence_read_max_bytes")
+        ));
     }
 
     #[test]

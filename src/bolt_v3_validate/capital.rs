@@ -59,12 +59,7 @@ pub(super) fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> 
                 "{label}.max_snapshot_age_ns must be a positive integer"
             ));
         }
-        if pool.dedupe_retention_ns == 0 {
-            errors.push(format!(
-                "{label}.dedupe_retention_ns must be a positive integer"
-            ));
-        }
-        validate_venue_spendability_source_binding(pool, &label, &mut errors);
+        validate_live_provider_collateral_allowance_source(pool, &label, &mut errors);
         if let Some(min_remaining_pool_balance) = pool
             .capital_admission_policy
             .min_remaining_pool_balance
@@ -101,39 +96,55 @@ pub(super) fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> 
     errors
 }
 
-fn validate_venue_spendability_source_binding(
+fn validate_live_provider_collateral_allowance_source(
     pool: &CapitalPoolBlock,
     label: &str,
     errors: &mut Vec<String>,
 ) {
-    let has_binding = pool.venue_spendability_source_path.is_some()
-        || pool.venue_spendability_source_sha256.is_some()
-        || pool.venue_spendability_source_max_bytes.is_some();
-    if !has_binding {
-        return;
-    }
-    if !pool.enforce_submit_admission {
+    let has_live_provider_source = crate::bolt_v3_providers::binding_for_provider_key(
+        pool.venue_id.as_str(),
+    )
+    .is_some_and(|binding| {
+        binding
+            .build_provider_collateral_allowance_runtime_source
+            .is_some()
+    });
+    if pool.enforce_submit_admission && !has_live_provider_source {
         errors.push(format!(
-            "{label}.venue_spendability_source_path requires enforce_submit_admission = true"
+            "{label}.venue_id must select a registered live provider collateral allowance source"
         ));
     }
-    match pool.venue_spendability_source_path.as_deref() {
-        Some(path) if !path.trim().is_empty() => {}
-        _ => errors.push(format!(
-            "{label}.venue_spendability_source_path must be a non-empty string"
-        )),
+    validate_reconciliation_completeness_attested(pool, label, errors);
+}
+
+/// Enforced capital admission derives new-risk capability from the reconciled NT
+/// open-order set. If the provider's adapter can return a report that silently
+/// omits venue orders, that projection understates committed liability and Bolt
+/// can admit risk beyond its configured pool ceiling. Bolt cannot detect the
+/// omission, so the only safe position is to refuse to enforce admission until
+/// the provider attests completeness.
+fn validate_reconciliation_completeness_attested(
+    pool: &CapitalPoolBlock,
+    label: &str,
+    errors: &mut Vec<String>,
+) {
+    if !pool.enforce_submit_admission {
+        return;
     }
-    match pool.venue_spendability_source_sha256.as_deref() {
-        Some(sha256) if is_lowercase_sha256_hex(sha256) => {}
-        _ => errors.push(format!(
-            "{label}.venue_spendability_source_sha256 must be a lowercase sha256 hex string"
-        )),
-    }
-    match pool.venue_spendability_source_max_bytes {
-        Some(max_bytes) if max_bytes > 0 => {}
-        _ => errors.push(format!(
-            "{label}.venue_spendability_source_max_bytes must be positive"
-        )),
+    let Some(binding) = crate::bolt_v3_providers::binding_for_provider_key(pool.venue_id.as_str())
+    else {
+        return;
+    };
+    // Every unmet condition is reported, not just the first: each is a separate
+    // reason the enforced projection can be wrong, and closing one upstream
+    // defect does not clear the rest. Closing one can change how another fails
+    // rather than fixing it, which is a reason to report them all rather than
+    // to collapse them. An empty list reports nothing and enforcement proceeds.
+    for condition in binding.reconciliation_unmet {
+        errors.push(format!(
+            "{label}.enforce_submit_admission must be false until the configured venue \
+             attests reconciliation completeness: {condition}"
+        ));
     }
 }
 
@@ -182,11 +193,4 @@ fn validate_positive_decimal(label: &str, value: &str, errors: &mut Vec<String>)
             ));
         }
     }
-}
-
-pub(super) fn is_lowercase_sha256_hex(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }

@@ -846,6 +846,7 @@ fn recovery_reason_label(reason: KillSwitchRecoveryReason) -> &'static str {
         KillSwitchRecoveryReason::OversizedEvidence => "oversized_evidence",
         KillSwitchRecoveryReason::UnsupportedSchemaVersion => "unsupported_schema_version",
         KillSwitchRecoveryReason::UnresolvedHalt => "unresolved_halt",
+        KillSwitchRecoveryReason::UnrepresentableHaltTrigger => "unrepresentable_halt_trigger",
     }
 }
 
@@ -941,14 +942,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        bolt_v3_decision_evidence::{
-            BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-            BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-            BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-            BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
-            BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
-        },
+        bolt_v3_current_evidence::DecisionEvidenceRecorder,
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     };
 
@@ -956,7 +950,7 @@ mod tests {
     fn adjusted_observation_missing_event_id_fails_closed() {
         let temp = tempfile::tempdir().expect("tempdir should create");
         let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-            NoopDecisionEvidenceWriter,
+            DecisionEvidenceRecorder::recording(),
         )));
         let store = KillSwitchStore::new(temp.path().join("kill-switch.json"), 65_536);
         let mut protection = KillSwitchLossProtection::new(
@@ -1009,108 +1003,72 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn recovered_settlement_event_id_prevents_double_count_after_restart() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let store_path = temp.path().join("kill-switch.json");
+        let config = KillSwitchLossProtectionConfig {
+            max_utc_daily_realized_loss: Decimal::new(10, 0),
+            action_retry_interval_ms: 250,
+            action_retry_timeout_ms: 5_000,
+            account_ids: vec!["POLYMARKET-001".to_string()],
+            instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
+        };
+        let observation = PositionRealizedPnlObservation {
+            account_id: "POLYMARKET-001".to_string(),
+            instrument_id: "BTC-USD.BINANCE".to_string(),
+            position_id: "P-001".to_string(),
+            event_id: Some("settlement-key-1".to_string()),
+            observed: RealizedPnlObservation {
+                source: "binary_settlement",
+                observed_at_unix_nanos: 1_717_200_000_000_000_000,
+                realized_pnl: Decimal::new(-1, 0),
+                settlement_currency: Currency::USDC(),
+            },
+            cumulative_realized_pnl: false,
+            closes_position: true,
+        };
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+            DecisionEvidenceRecorder::recording(),
+        )));
+        let mut first = KillSwitchLossProtection::new(
+            config.clone(),
+            Arc::clone(&admission),
+            KillSwitchStore::new(store_path.clone(), 65_536),
+            Rc::new(NoopLossActionSink),
+        )
+        .expect("loss protection should initialize");
+        first
+            .record_position_realized_pnl(observation.clone())
+            .expect("first settlement observation should record");
+        assert_eq!(first.daily_realized_pnl, Decimal::new(-1, 0));
+        drop(first);
+
+        let mut restarted = KillSwitchLossProtection::new(
+            config,
+            admission,
+            KillSwitchStore::new(store_path, 65_536),
+            Rc::new(NoopLossActionSink),
+        )
+        .expect("loss protection should reinitialize");
+        restarted
+            .seed_from_store(observation.observed.observed_at_unix_nanos)
+            .expect("persisted loss snapshot should restore");
+        restarted
+            .record_position_realized_pnl(observation)
+            .expect("replayed settlement observation should deduplicate");
+        assert_eq!(
+            restarted.daily_realized_pnl,
+            Decimal::new(-1, 0),
+            "restart replay must not apply the durable settlement twice"
+        );
+    }
+
     #[derive(Debug)]
     struct NoopLossActionSink;
 
     impl KillSwitchLossActionSink for NoopLossActionSink {
         fn emit(&self, _action: KillSwitchLossAction) -> Result<()> {
-            Ok(())
-        }
-    }
-
-    #[derive(Debug)]
-    struct NoopDecisionEvidenceWriter;
-
-    impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
-        fn record_strategy_input_snapshot(
-            &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            _decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &BoltV3BasketAdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_capital_admission_rebuild_audit(
-            &self,
-            _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-            anyhow::bail!("loss-protection noop writer received entry-skip evidence")
-        }
-
-        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-            anyhow::bail!("loss-protection noop writer received exit-decision evidence")
-        }
-
-        fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_loss_governor_halt(
-            &self,
-            _evidence: &BoltV3LossGovernorHaltEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-            anyhow::bail!("loss-protection noop writer received requote-throttle evidence")
-        }
-
-        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_settlement(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("loss-protection noop writer received settlement evidence")
-        }
-
-        fn record_settlement_booking_error(
-            &self,
-            _evidence: &crate::bolt_v3_decision_evidence::BoltV3SettlementBookingErrorEvidence,
-        ) -> Result<()> {
-            anyhow::bail!("loss-protection noop writer received settlement booking-error evidence")
-        }
-
-        fn drain_shutdown(&self) -> Result<()> {
-            // Deliberate no-op: this loss-protection fixture never owns durable evidence.
             Ok(())
         }
     }

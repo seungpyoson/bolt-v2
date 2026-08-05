@@ -264,6 +264,7 @@ pub(crate) fn item_header<'a>(
     Some(&source[tokens[signature_start].start..tokens[open].end])
 }
 
+#[allow(dead_code)]
 fn impl_body_entries<'a>(tokens: &'a [Token], type_name: &str) -> Vec<(bool, &'a [Token])> {
     let mut bodies = Vec::new();
     let mut cursor = 0usize;
@@ -322,6 +323,7 @@ fn impl_body_entries<'a>(tokens: &'a [Token], type_name: &str) -> Vec<(bool, &'a
     bodies
 }
 
+#[allow(dead_code)]
 pub(crate) fn impl_body_tokens<'a>(tokens: &'a [Token], type_name: &str) -> Vec<&'a [Token]> {
     impl_body_entries(tokens, type_name)
         .into_iter()
@@ -329,6 +331,7 @@ pub(crate) fn impl_body_tokens<'a>(tokens: &'a [Token], type_name: &str) -> Vec<
         .collect()
 }
 
+#[allow(dead_code)]
 pub(crate) fn inherent_impl_body_tokens<'a>(
     tokens: &'a [Token],
     type_name: &str,

@@ -26,22 +26,19 @@
 
 mod adapter_signing_source;
 mod balance_allowance_cache;
-mod collateral_accounting_source;
 mod fee_behavior_source;
 mod fees;
-mod venue_account_state_source;
-mod venue_truth_runtime_source;
+mod provider_collateral_allowance_runtime_source;
 
 pub use adapter_signing_source::materialize_clob_v2_adapter_signing_source_from_nt_signing_source;
 pub use balance_allowance_cache::sync_clob_v2_balance_allowance_cache_from_configured_account;
-pub use collateral_accounting_source::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance;
 pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
-pub use venue_account_state_source::materialize_venue_account_state_source_from_configured_account_queries;
-pub use venue_truth_runtime_source::{
-    PolymarketVenueTruthBuildError, PolymarketVenueTruthInput,
-    PolymarketVenueTruthOrderEventMapper, PolymarketVenueTruthRuntimeSource,
-    PolymarketVenueTruthRuntimeSourceConfig, build_polymarket_venue_truth_runtime_source,
-    build_polymarket_venue_truth_snapshot, extract_polymarket_token_id,
+pub use provider_collateral_allowance_runtime_source::{
+    PolymarketProviderCollateralAllowanceBuildError, PolymarketProviderCollateralAllowanceInput,
+    PolymarketProviderCollateralAllowanceRuntimeSource,
+    PolymarketProviderCollateralAllowanceRuntimeSourceConfig,
+    build_polymarket_provider_collateral_allowance_runtime_source,
+    build_polymarket_provider_collateral_allowance_snapshot,
 };
 
 use std::{
@@ -87,10 +84,10 @@ use crate::{
         GammaQueryBlock, OutcomeGroupSourceConfig, OutcomeGroupSourceKind,
     },
     bolt_v3_providers::{
-        FeeProvider, ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
-        ProviderVenueTruthRuntimeSource, ProviderVenueTruthSourceContext, ResolvedClientSecrets,
-        SsmSecretResolver,
+        FeeProvider, ProviderAdapterMapContext, ProviderCollateralAllowanceRuntimeSource,
+        ProviderCollateralAllowanceSourceContext, ProviderCredentialedBlock,
+        ProviderResolvedSecrets, ProviderSecretRequirement, ProviderSecretResolveContext,
+        ProviderSsmPathReference, ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{
         BoltV3SecretError, EVM_SIGNING_KEY_BYTES, ResolvedEvmSigningKey, resolve_field,
@@ -241,9 +238,8 @@ pub struct PolymarketExecutionConfig {
     pub max_retries: u64,
     pub retry_delay_initial_ms: u64,
     pub retry_delay_max_ms: u64,
-    pub ack_timeout_secs: u64,
     pub fee_cache_ttl_secs: u64,
-    pub venue_truth_poll_interval_ms: Option<u64>,
+    pub provider_collateral_allowance_poll_interval_ms: Option<u64>,
     pub transport_backend: TransportBackend,
     pub on_chain_collateral: Option<PolymarketOnChainCollateralConfig>,
 }
@@ -510,7 +506,6 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
         ("max_retries", execution.max_retries),
         ("retry_delay_initial_ms", execution.retry_delay_initial_ms),
         ("retry_delay_max_ms", execution.retry_delay_max_ms),
-        ("ack_timeout_secs", execution.ack_timeout_secs),
         ("fee_cache_ttl_secs", execution.fee_cache_ttl_secs),
     ];
     for (field, value) in positive_fields {
@@ -520,9 +515,9 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
             ));
         }
     }
-    if execution.venue_truth_poll_interval_ms == Some(0) {
+    if execution.provider_collateral_allowance_poll_interval_ms == Some(0) {
         errors.push(format!(
-            "clients.{key}.execution.venue_truth_poll_interval_ms must be a positive integer"
+            "clients.{key}.execution.provider_collateral_allowance_poll_interval_ms must be a positive integer"
         ));
     }
     if execution.retry_delay_initial_ms > execution.retry_delay_max_ms {
@@ -811,12 +806,12 @@ pub fn build_fee_provider(
     )))
 }
 
-pub fn build_venue_truth_runtime_source(
-    context: ProviderVenueTruthSourceContext<'_>,
-) -> Result<ProviderVenueTruthRuntimeSource, anyhow::Error> {
+pub fn build_provider_collateral_allowance_runtime_source(
+    context: ProviderCollateralAllowanceSourceContext<'_>,
+) -> Result<ProviderCollateralAllowanceRuntimeSource, anyhow::Error> {
     let execution = context.client.execution.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
-            "clients.{}.execution is required for venue truth",
+            "clients.{}.execution is required for provider collateral allowance",
             context.client_key
         )
     })?;
@@ -825,19 +820,19 @@ pub fn build_venue_truth_runtime_source(
         .try_into::<PolymarketExecutionConfig>()
         .map_err(|message| {
             anyhow::anyhow!(
-                "clients.{}.execution invalid for venue truth: {message}",
+                "clients.{}.execution invalid for provider collateral allowance: {message}",
                 context.client_key
             )
         })?;
-    let poll_interval_ms = cfg.venue_truth_poll_interval_ms.ok_or_else(|| {
+    let poll_interval_ms = cfg.provider_collateral_allowance_poll_interval_ms.ok_or_else(|| {
         anyhow::anyhow!(
-            "clients.{}.execution.venue_truth_poll_interval_ms must be configured when venue truth is enforced",
+            "clients.{}.execution.provider_collateral_allowance_poll_interval_ms must be configured when provider collateral allowance is enforced",
             context.client_key
         )
     })?;
     if poll_interval_ms == 0 {
         return Err(anyhow::anyhow!(
-            "clients.{}.execution.venue_truth_poll_interval_ms must be a positive integer when venue truth is enforced",
+            "clients.{}.execution.provider_collateral_allowance_poll_interval_ms must be a positive integer when provider collateral allowance is enforced",
             context.client_key
         ));
     }
@@ -846,23 +841,24 @@ pub fn build_venue_truth_runtime_source(
         .get_as::<ResolvedBoltV3PolymarketSecrets>(context.client_key)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "clients.{}.secrets are required for venue truth",
+                "clients.{}.secrets are required for provider collateral allowance",
                 context.client_key
             )
         })?;
-    let collateral_currency = polymarket_venue_truth_collateral_currency(
-        context.client_key,
-        context.collateral_currency,
+    let collateral_currency =
+        polymarket_allowance_collateral_currency(context.client_key, context.collateral_currency)?;
+    let source = build_polymarket_provider_collateral_allowance_runtime_source(
+        &cfg,
+        resolved,
+        collateral_currency,
     )?;
-    let source = build_polymarket_venue_truth_runtime_source(&cfg, resolved, collateral_currency)?;
-    Ok(ProviderVenueTruthRuntimeSource {
+    Ok(ProviderCollateralAllowanceRuntimeSource {
         source: Arc::new(source),
-        order_event_mapper: Arc::new(PolymarketVenueTruthOrderEventMapper),
         poll_interval_ms,
     })
 }
 
-fn polymarket_venue_truth_collateral_currency(
+fn polymarket_allowance_collateral_currency(
     client_key: &str,
     configured: &str,
 ) -> Result<Currency, anyhow::Error> {
@@ -871,7 +867,7 @@ fn polymarket_venue_truth_collateral_currency(
         return Ok(collateral_currency);
     }
     Err(anyhow::anyhow!(
-        "clients.{client_key}.execution venue truth collateral currency must be `{}`, got `{configured}`",
+        "clients.{client_key}.execution provider collateral allowance collateral currency must be `{}`, got `{configured}`",
         collateral_currency.code
     ))
 }
@@ -957,6 +953,7 @@ fn map_data(
         transport_backend: cfg.transport_backend,
         filters,
         new_market_filter: None,
+        ..PolymarketDataClientConfig::default()
     })
 }
 
@@ -1211,42 +1208,26 @@ fn gamma_market_params(
     sports_market_types: Option<&Vec<String>>,
     tag_id: Option<&String>,
 ) -> Result<GetGammaMarketsParams, BoltV3AdapterMappingError> {
+    let tag_id = tag_id
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map(|value| vec![value])
+                .map_err(|error| BoltV3AdapterMappingError::ValidationInvariant {
+                    client_key: client_key.to_string(),
+                    field: "outcome_group_sources.gamma_query.tag_id",
+                    message: format!("must be an unsigned Gamma tag id: {error}"),
+                })
+        })
+        .transpose()?;
     Ok(GetGammaMarketsParams {
-        active: None,
-        closed: None,
-        archived: None,
-        id: None,
-        limit: None,
-        offset: None,
-        order: None,
-        ascending: None,
-        slug: None,
-        clob_token_ids: None,
-        condition_ids: None,
-        liquidity_num_min: None,
-        liquidity_num_max: None,
-        volume_num_min: None,
-        volume_num_max: None,
-        start_date_min: None,
-        start_date_max: None,
-        end_date_min: None,
-        end_date_max: None,
-        tag_id: tag_id.cloned(),
-        related_tags: None,
-        rewards_min_size: None,
-        include_tag: None,
-        question_ids: None,
-        game_id: None,
-        sports_market_types: joined_sports_market_types(sports_market_types),
-        market_maker_address: None,
+        tag_id,
+        sports_market_types: sports_market_types
+            .filter(|values| !values.is_empty())
+            .cloned(),
         max_markets: optional_cap_to_u32(client_key, cap_field, max_markets)?,
+        ..GetGammaMarketsParams::default()
     })
-}
-
-fn joined_sports_market_types(values: Option<&Vec<String>>) -> Option<String> {
-    values
-        .filter(|values| !values.is_empty())
-        .map(|values| values.join(","))
 }
 
 fn required_values(
@@ -1333,8 +1314,8 @@ fn map_execution(
         max_retries,
         retry_delay_initial_ms: cfg.retry_delay_initial_ms,
         retry_delay_max_ms: cfg.retry_delay_max_ms,
-        ack_timeout_secs: cfg.ack_timeout_secs,
         transport_backend: cfg.transport_backend,
+        ..PolymarketExecClientConfig::default()
     })
 }
 

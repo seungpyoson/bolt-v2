@@ -1925,7 +1925,11 @@ mod tests {
             .expect_err("help should exit through clap without loading config");
 
         assert_eq!(error.kind(), ErrorKind::DisplayHelp);
-        let help = error.to_string();
+        let help = error
+            .to_string()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             help.contains("node must be stopped"),
             "help must state the node-stopped operator posture: {help}"

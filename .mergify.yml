@@ -1,58 +1,14 @@
-# Single serial queue for main: approval queues; the five advisory checks must
-# pass on the combined result before squash merge. `nautilus-pin` is gated with
-# the rest because an unmerged-fork pin compiles and tests clean: the other four
-# are green in exactly the case where it is the only signal. Batching (carried from the
-# proven prior config): several queued PRs validate together with one combined
-# check run and merge as a batch — one CI bill instead of one per PR.
+# One serial queue for stacks rooted at main. GitHub Actions checks remain
+# visible advisory evidence; neither queue admission nor merge depends on their
+# status. The live main ruleset owns reviewer approval and mergeability.
 merge_queue:
   max_parallel_checks: 1
   reset_on_external_merge: always
 
 queue_rules:
-  # Exceptional path only. NOTE: since Mergify's 2025-06-30 change, queue-rule
-  # listing order no longer implies priority; without a top-level
-  # priority_rules block, hotfix entries have no express priority over
-  # already-queued default entries (owner decision pending). Normal merge
-  # sessions use the default queue below.
-  - name: hotfix
-    queue_conditions:
-      - label = hotfix
-    merge_conditions:
-      - approved-reviews-by = sp-reviewer
-      - check-success = fmt
-      - check-success = clippy
-      - check-success = test
-      - check-success = build
-      - check-success = nautilus-pin
-    merge_method: squash
-    update_method: rebase
-    batch_size: 1
-    batch_max_wait_time: 30 seconds
-    batch_max_failure_resolution_attempts: 0
-    checks_timeout: 150 minutes
-    branch_protection_injection_mode: none
-    merge_bot_account: seungpyoson
-    update_bot_account: seungpyoson
-
   - name: default
-    queue_conditions:
-      - approved-reviews-by = sp-reviewer
-    merge_conditions:
-      - check-success = fmt
-      - check-success = clippy
-      - check-success = test
-      - check-success = build
-      - check-success = nautilus-pin
-    merge_method: squash
-    update_method: rebase
-    batch_size:
-      min: 2
-      max: 6
+    merge_method: merge
+    batch_size: 20
     batch_max_wait_time: 5 minutes
-    batch_max_failure_resolution_attempts: 3
-    checks_timeout: 150 minutes
-    # Carried from the proven prior config: checks are advisory (no required
-    # status contexts) and merges use the owner's identity.
-    branch_protection_injection_mode: none
+    branch_protection_injection_mode: queue
     merge_bot_account: seungpyoson
-    update_bot_account: seungpyoson

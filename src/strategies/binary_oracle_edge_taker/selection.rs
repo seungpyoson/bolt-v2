@@ -18,10 +18,7 @@ use std::str::FromStr;
 use nautilus_model::identifiers::{InstrumentId, Venue};
 use nautilus_model::instruments::InstrumentAny;
 
-use crate::bolt_v3_decision_evidence::{
-    BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
-    BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT,
-};
+use crate::bolt_v3_current_evidence::StrategyInputMarketSelectionOutcome;
 use crate::bolt_v3_market_families::{
     self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketSourceIdentity,
 };
@@ -255,9 +252,9 @@ pub(super) fn select_configured_market_from_instruments(
 
 pub(super) fn strategy_input_market_selection_outcome(
     outcome: MarketSelectionOutcome,
-) -> &'static str {
+) -> StrategyInputMarketSelectionOutcome {
     match outcome {
-        MarketSelectionOutcome::Current => BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
-        MarketSelectionOutcome::Next => BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT,
+        MarketSelectionOutcome::Current => StrategyInputMarketSelectionOutcome::Current,
+        MarketSelectionOutcome::Next => StrategyInputMarketSelectionOutcome::Next,
     }
 }

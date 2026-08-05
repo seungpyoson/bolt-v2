@@ -123,14 +123,11 @@ fn binary_oracle_edge_taker_tests_are_split_by_a10_ownership() {
 }
 
 #[test]
-fn runtime_reconcile_and_reference_health_mechanics_are_shared_owned() {
+fn reference_health_mechanics_are_shared_owned() {
     let strategy_source =
         std::fs::read_to_string(repo_path("src/strategies/binary_oracle_edge_taker/mod.rs"))
             .expect("strategy mod.rs should be readable");
     for moved_symbol in [
-        "fn reconcile_runtime_venue_state(",
-        "fn query_order_for_reconcile(",
-        "fn reconcile_transition_for_order_status(",
         "fn observe_reference_price_update(",
         "fn select_current_reference_price(",
         "fn refresh_reference_price_source_statuses(",
@@ -140,15 +137,6 @@ fn runtime_reconcile_and_reference_health_mechanics_are_shared_owned() {
             "A10 requires moved shared symbol `{moved_symbol}` to be absent from the taker"
         );
     }
-
-    let reconcile_source = std::fs::read_to_string(repo_path("src/bolt_v3_runtime_reconcile.rs"))
-        .expect("shared runtime reconcile module should be readable");
-    assert!(reconcile_source.contains("pub struct IssueVenueOrderQuery"));
-    assert!(reconcile_source.contains("pub fn reconcile_runtime_venue_state("));
-    assert!(reconcile_source.contains("pub fn query_order_for_reconcile("));
-    assert!(reconcile_source.contains("pub fn reconcile_transition_for_order_status("));
-    assert!(!reconcile_source.contains("BinaryOracleEdgeTaker"));
-    assert!(!reconcile_source.contains("self.cache()"));
 
     let health_source = std::fs::read_to_string(repo_path("src/bolt_v3_reference_price_health.rs"))
         .expect("shared reference-price health module should be readable");

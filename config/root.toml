@@ -109,14 +109,14 @@ generate_missing_orders = true
 inflight_check_interval_ms = 2000
 inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_secs = 0
-open_check_lookback_mins = 60
+open_check_interval_secs = 30
+open_check_lookback_mins = 0
 open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
 single_order_query_delay_ms = 100
-position_check_interval_secs = 0
+position_check_interval_secs = 30
 position_check_lookback_mins = 60
 position_check_threshold_ms = 5000
 position_check_retries = 3
@@ -165,7 +165,6 @@ product_kind = "prediction_market_binary"
 enforce_submit_admission = false
 max_pool_liability = "25.00"
 max_snapshot_age_ns = 5000000000
-dedupe_retention_ns = 60000000000
 
 [risk.capital_pools.capital_admission_policy.fee_slippage]
 max_fee_liability = "0.10"
@@ -191,7 +190,10 @@ runtime_capture_start_poll_interval_ms = 50
 data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
-order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+machine_relative_path = "bolt-v3/decision-evidence/current/machine.jsonl"
+observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl"
+retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
+reject_episode_max_count = 4096
 recovery_evidence_max_bytes = 1048576
 
 [persistence.streaming]
@@ -275,9 +277,8 @@ http_timeout_secs = 60
 max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
-ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
-venue_truth_poll_interval_ms = 1000
+provider_collateral_allowance_poll_interval_ms = 1000
 transport_backend = "sockudo"
 
 

@@ -1,0 +1,1 @@
+{"schema_version":1,"recorded_at_utc_ns":16,"gate_id":"wrong.gate","gate_version":"0.1.0","kind":"basket_admission_granted","decision":{"strategy_id":"strategy-1","execution_client_id":"execution-1","basket_id":"basket-1","group_id":"group-1","leg_instrument_ids":["YES-USD.POLYMARKET","NO-USD.POLYMARKET"],"total_notional":"10","leg_order_count":2}}

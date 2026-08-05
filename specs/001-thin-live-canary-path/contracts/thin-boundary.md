@@ -1,5 +1,8 @@
 # Contract: Thin Boundary
 
+> **Historical feature artifact — not current authority.** This contract records
+> the retired feature design. Current `main` and `AGENTS.md` are authoritative.
+
 ## Bolt-v3 Owns
 
 - TOML schema and loaded config shape

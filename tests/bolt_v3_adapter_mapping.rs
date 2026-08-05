@@ -604,7 +604,6 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(exec.max_retries, 3);
     assert_eq!(exec.retry_delay_initial_ms, 250);
     assert_eq!(exec.retry_delay_max_ms, 2000);
-    assert_eq!(exec.ack_timeout_secs, 5);
     assert_eq!(exec.transport_backend, TransportBackend::Sockudo);
 }
 
@@ -1413,14 +1412,14 @@ generate_missing_orders = true
 inflight_check_interval_ms = 2000
 inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_secs = 0
-open_check_lookback_mins = 60
+open_check_interval_secs = 30
+open_check_lookback_mins = 0
 open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
 single_order_query_delay_ms = 100
-position_check_interval_secs = 0
+position_check_interval_secs = 30
 position_check_lookback_mins = 60
 position_check_threshold_ms = 5000
 position_check_retries = 3
@@ -1456,7 +1455,11 @@ runtime_capture_start_poll_interval_ms = 50
 data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
-order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+machine_relative_path = "bolt-v3/decision-evidence/current/machine.jsonl"
+observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl"
+retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
+reject_episode_max_count = 4096
+recovery_evidence_max_bytes = 1048576
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
@@ -1481,7 +1484,6 @@ http_timeout_secs = 60
 max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
-ack_timeout_secs = 5
 fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 "#;
@@ -1536,7 +1538,11 @@ fn live_node_build_path_runs_adapter_mapping_after_secret_resolution() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-adapter-mapping-build-path");
-    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    loaded.root.persistence.catalog_directory = std::fs::canonicalize(temp.path())
+        .expect("test catalog should canonicalize")
+        .to_string_lossy()
+        .to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
     let _node = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
         .expect("v3 LiveNode should build through the adapter mapping boundary");
 }

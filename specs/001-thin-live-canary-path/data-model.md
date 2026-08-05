@@ -1,5 +1,8 @@
 # Data Model: Thin Bolt-v3 Live Canary Path
 
+> **Historical feature artifact — not current authority.** This model records
+> the retired feature design. Current `main` and `AGENTS.md` are authoritative.
+
 ## BoltV3RuntimeConfig
 
 TOML-backed loaded config used by the production entrypoint.

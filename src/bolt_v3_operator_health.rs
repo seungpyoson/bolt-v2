@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::{
-    bolt_v3_capital_admission_runtime_feed::POLYMARKET_VENUE_TRUTH_REST_SOURCE,
+    bolt_v3_capital_admission_runtime_feed::POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE,
     bolt_v3_capital_admission_state::NtDerivedCapitalAdmissionState,
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_iv::runtime::cargo_pinned_nt_revision,
@@ -14,7 +14,7 @@ use crate::{
     },
     bolt_v3_reference_price_health::ReferenceCurrentPriceHealthReport,
     bolt_v3_strategy_registration::BoltV3StrategyRegistrationSummary,
-    bolt_v3_submit_admission::VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE,
+    bolt_v3_submit_admission::PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE_RESERVATION_SOURCE,
 };
 
 pub type BoltV3OperatorHealthTransitionEmitter = Arc<dyn Fn(&'static str) + Send + Sync + 'static>;
@@ -49,6 +49,39 @@ pub struct BoltV3SettlementHealth {
     pub latest_settlement_key: Option<String>,
     pub latest_position_id: Option<String>,
     pub latest_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3DecisionEvidenceObservationHealth {
+    pub status: BoltV3OperatorHealthStatus,
+    pub configured: bool,
+    pub poison_cause: Option<String>,
+}
+
+impl BoltV3DecisionEvidenceObservationHealth {
+    pub fn not_configured() -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::NotConfigured,
+            configured: false,
+            poison_cause: None,
+        }
+    }
+
+    pub fn available() -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Nominal,
+            configured: true,
+            poison_cause: None,
+        }
+    }
+
+    pub fn poisoned(cause: impl Into<String>) -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Degraded,
+            configured: true,
+            poison_cause: Some(cause.into()),
+        }
+    }
 }
 
 impl BoltV3SettlementHealth {
@@ -150,30 +183,30 @@ impl BoltV3RejectObserverHealth {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct BoltV3VenueTruthDivergenceHealth {
+pub struct BoltV3ProviderCollateralAllowanceRuntimeFailureHealth {
     pub source: String,
     pub source_timestamp_unix_nanos: u64,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct BoltV3VenueTruthHealth {
+pub struct BoltV3ProviderCollateralAllowanceHealth {
     pub status: BoltV3OperatorHealthStatus,
     pub kill_switch_state: String,
-    pub divergence: Option<BoltV3VenueTruthDivergenceHealth>,
+    pub runtime_failure: Option<BoltV3ProviderCollateralAllowanceRuntimeFailureHealth>,
     pub capital_state_source: Option<String>,
-    pub venue_truth_capture_suspended: bool,
+    pub provider_collateral_allowance_capture_suspended: bool,
     pub read_error: Option<String>,
 }
 
-impl BoltV3VenueTruthHealth {
+impl BoltV3ProviderCollateralAllowanceHealth {
     pub fn not_configured() -> Self {
         Self {
             status: BoltV3OperatorHealthStatus::NotConfigured,
             kill_switch_state: format!("{:?}", BoltV3OperatorHealthStatus::NotConfigured),
-            divergence: None,
+            runtime_failure: None,
             capital_state_source: None,
-            venue_truth_capture_suspended: false,
+            provider_collateral_allowance_capture_suspended: false,
             read_error: None,
         }
     }
@@ -182,9 +215,9 @@ impl BoltV3VenueTruthHealth {
         Self {
             status: BoltV3OperatorHealthStatus::Unobserved,
             kill_switch_state: kill_switch_state_kind_label(kill_switch_state),
-            divergence: None,
+            runtime_failure: None,
             capital_state_source: None,
-            venue_truth_capture_suspended: false,
+            provider_collateral_allowance_capture_suspended: false,
             read_error: None,
         }
     }
@@ -193,9 +226,9 @@ impl BoltV3VenueTruthHealth {
         Self {
             status: BoltV3OperatorHealthStatus::Degraded,
             kill_switch_state: stringify!(read_error).to_string(),
-            divergence: None,
+            runtime_failure: None,
             capital_state_source: None,
-            venue_truth_capture_suspended: false,
+            provider_collateral_allowance_capture_suspended: false,
             read_error: Some(error.into()),
         }
     }
@@ -214,31 +247,33 @@ impl BoltV3VenueTruthHealth {
         kill_switch_state: &KillSwitchState,
         capital_state: Option<&NtDerivedCapitalAdmissionState>,
     ) -> Self {
-        let divergence = venue_truth_divergence_trigger(kill_switch_state).map(|trigger| {
-            BoltV3VenueTruthDivergenceHealth {
-                source: trigger.source.clone(),
-                source_timestamp_unix_nanos: trigger.source_timestamp_unix_nanos,
-                reason: trigger.reason.clone(),
-            }
-        });
+        let runtime_failure =
+            provider_collateral_allowance_runtime_failure_trigger(kill_switch_state).map(
+                |trigger| BoltV3ProviderCollateralAllowanceRuntimeFailureHealth {
+                    source: trigger.source.clone(),
+                    source_timestamp_unix_nanos: trigger.source_timestamp_unix_nanos,
+                    reason: trigger.reason.clone(),
+                },
+            );
         let capital_state_source = capital_state.map(|state| state.source.clone());
-        let venue_truth_capture_suspended = capital_state.is_some_and(|state| {
-            state.reservation_snapshot.source == VENUE_TRUTH_CAPTURE_FAILURE_RESERVATION_SOURCE
+        let provider_collateral_allowance_capture_suspended = capital_state.is_some_and(|state| {
+            state.reservation_snapshot.source
+                == PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE_RESERVATION_SOURCE
         });
-        let status = if divergence.is_some() || !matches!(kill_switch_state, KillSwitchState::Armed)
-        {
-            BoltV3OperatorHealthStatus::Halted
-        } else if venue_truth_capture_suspended {
-            BoltV3OperatorHealthStatus::Degraded
-        } else {
-            BoltV3OperatorHealthStatus::Nominal
-        };
+        let status =
+            if runtime_failure.is_some() || !matches!(kill_switch_state, KillSwitchState::Armed) {
+                BoltV3OperatorHealthStatus::Halted
+            } else if provider_collateral_allowance_capture_suspended {
+                BoltV3OperatorHealthStatus::Degraded
+            } else {
+                BoltV3OperatorHealthStatus::Nominal
+            };
         Self {
             status,
             kill_switch_state: kill_switch_state_kind_label(kill_switch_state),
-            divergence,
+            runtime_failure,
             capital_state_source,
-            venue_truth_capture_suspended,
+            provider_collateral_allowance_capture_suspended,
             read_error: None,
         }
     }
@@ -347,52 +382,66 @@ impl BoltV3InputHealth {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3OperatorHealthSurface {
     pub reject_observer: BoltV3RejectObserverHealth,
-    pub venue_truth: BoltV3VenueTruthHealth,
+    pub provider_collateral_allowance: BoltV3ProviderCollateralAllowanceHealth,
     pub input_health: BoltV3InputHealth,
     pub settlement: BoltV3SettlementHealth,
+    pub decision_evidence_machine: BoltV3DecisionEvidenceObservationHealth,
+    pub decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth,
 }
 
 impl BoltV3OperatorHealthSurface {
     pub fn not_configured() -> Self {
         Self {
             reject_observer: BoltV3RejectObserverHealth::not_configured(),
-            venue_truth: BoltV3VenueTruthHealth::not_configured(),
+            provider_collateral_allowance: BoltV3ProviderCollateralAllowanceHealth::not_configured(
+            ),
             input_health: BoltV3InputHealth::not_configured(),
             settlement: BoltV3SettlementHealth::not_configured(),
+            decision_evidence_machine: BoltV3DecisionEvidenceObservationHealth::not_configured(),
+            decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth::not_configured(
+            ),
         }
     }
 
     pub fn from_parts(
         reject_observer: BoltV3RejectObserverHealth,
-        venue_truth: BoltV3VenueTruthHealth,
+        provider_collateral_allowance: BoltV3ProviderCollateralAllowanceHealth,
         input_health: BoltV3InputHealth,
     ) -> Self {
         Self {
             reject_observer,
-            venue_truth,
+            provider_collateral_allowance,
             input_health,
             settlement: BoltV3SettlementHealth::not_configured(),
+            decision_evidence_machine: BoltV3DecisionEvidenceObservationHealth::not_configured(),
+            decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth::not_configured(
+            ),
         }
     }
 
     pub fn from_live_parts(
         reject_observer: BoltV3RejectObserverHealth,
-        venue_truth: BoltV3VenueTruthHealth,
+        provider_collateral_allowance: BoltV3ProviderCollateralAllowanceHealth,
         input_health: BoltV3InputHealth,
         settlement: BoltV3SettlementHealth,
+        decision_evidence_machine: BoltV3DecisionEvidenceObservationHealth,
+        decision_evidence_observation: BoltV3DecisionEvidenceObservationHealth,
     ) -> Self {
         Self {
             reject_observer,
-            venue_truth,
+            provider_collateral_allowance,
             input_health,
             settlement,
+            decision_evidence_machine,
+            decision_evidence_observation,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3NodeScopedRuntimeSourceAnnouncements {
-    pub venue_truth_rest_capture: Option<BoltV3VenueTruthRestCaptureAnnouncement>,
+    pub provider_collateral_allowance_rest_capture:
+        Option<BoltV3ProviderCollateralAllowanceRestCaptureAnnouncement>,
     pub iv_runtime_sources: Vec<BoltV3IvRuntimeSourceAnnouncement>,
 }
 
@@ -405,7 +454,7 @@ pub enum BoltV3RuntimeFeedAnnouncementStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct BoltV3VenueTruthRestCaptureAnnouncement {
+pub struct BoltV3ProviderCollateralAllowanceRestCaptureAnnouncement {
     pub source_id: String,
     pub venue_id: String,
     pub account_id: String,
@@ -478,23 +527,23 @@ pub struct BoltV3RealizedVolatilitySourceAnnouncement {
 
 pub fn node_scoped_runtime_source_announcements(
     loaded: &LoadedBoltV3Config,
-    venue_truth_runtime_available: bool,
+    provider_collateral_allowance_runtime_available: bool,
 ) -> BoltV3NodeScopedRuntimeSourceAnnouncements {
-    let venue_truth_rest_capture =
+    let provider_collateral_allowance_rest_capture =
         crate::bolt_v3_settlement_runtime::capital_admission_runtime_feed_pool(&loaded.root).map(
             |pool| {
-                let status = if venue_truth_runtime_available {
+                let status = if provider_collateral_allowance_runtime_available {
                     BoltV3RuntimeFeedAnnouncementStatus::Active
                 } else {
                     BoltV3RuntimeFeedAnnouncementStatus::Unsupported
                 };
-                BoltV3VenueTruthRestCaptureAnnouncement {
-                    source_id: POLYMARKET_VENUE_TRUTH_REST_SOURCE.to_string(),
+                BoltV3ProviderCollateralAllowanceRestCaptureAnnouncement {
+                    source_id: POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string(),
                     venue_id: pool.venue_id.clone(),
                     account_id: pool.account_id.to_string(),
                     collateral_currency: pool.collateral_currency.clone(),
-                    enabled: venue_truth_runtime_available,
-                    runtime_available: venue_truth_runtime_available,
+                    enabled: provider_collateral_allowance_runtime_available,
+                    runtime_available: provider_collateral_allowance_runtime_available,
                     status,
                 }
             },
@@ -525,7 +574,7 @@ pub fn node_scoped_runtime_source_announcements(
         None => Vec::new(),
     };
     BoltV3NodeScopedRuntimeSourceAnnouncements {
-        venue_truth_rest_capture,
+        provider_collateral_allowance_rest_capture,
         iv_runtime_sources,
     }
 }
@@ -656,10 +705,13 @@ fn realized_volatility_source_announcements(
         .collect())
 }
 
-fn venue_truth_divergence_trigger(state: &KillSwitchState) -> Option<&KillSwitchHaltTrigger> {
+fn provider_collateral_allowance_runtime_failure_trigger(
+    state: &KillSwitchState,
+) -> Option<&KillSwitchHaltTrigger> {
     match state {
         KillSwitchState::Halting { trigger, .. } | KillSwitchState::Halted { trigger, .. }
-            if trigger.kind == KillSwitchHaltTriggerKind::VenueTruthDivergence =>
+            if trigger.kind
+                == KillSwitchHaltTriggerKind::ProviderCollateralAllowanceRuntimeFailure =>
         {
             Some(trigger)
         }

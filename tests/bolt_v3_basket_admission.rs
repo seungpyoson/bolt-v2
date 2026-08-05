@@ -1,12 +1,13 @@
 use std::{
     collections::BTreeMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::support::current_evidence::{
+    RecordedBasketAdmissionOutcome,
+    RecordingDecisionEvidenceWriter as RecordingBasketDecisionWriter,
+};
 use bolt_v2::{
     bolt_v3_basket_admission::{
         BoltV3BasketAdmissionError, BoltV3BasketAdmissionLimits,
@@ -19,18 +20,12 @@ use bolt_v2::{
     },
     bolt_v3_capital_admission_state::{
         OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
-        VenueSpendabilitySnapshot,
+        ProviderCollateralAllowanceSnapshot,
     },
     bolt_v3_capital_reservation::CapitalPoolSnapshot,
-    bolt_v3_decision_evidence::{
-        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
-        BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
-        BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-        BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-        BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence,
-        BoltV3SettlementEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+    bolt_v3_current_evidence::{
+        AdmissionDecisionOutcome, AdmissionRejectionReason, BasketAdmissionDetails,
+        DecisionEvidenceRecorder,
     },
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
     bolt_v3_outcome_group_proofs::{
@@ -53,8 +48,7 @@ use bolt_v2::{
         BoltV3LiveSubmitApprovalLimits, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
         BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitCapitalAdmissionNtComponents,
-        BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
-        live_submit_count_cap_outcome,
+        BoltV3SubmitIntentKind, PredictionMarketOutcomeSide, live_submit_count_cap_outcome,
     },
 };
 use nautilus_model::{
@@ -75,9 +69,9 @@ macro_rules! dec {
 
 #[test]
 fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_exposure() {
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
-    let submit_state = submit_state(writer.clone(), 4, dec!(10));
+    let writer = RecordingBasketDecisionWriter::default();
+    let basket_state = BoltV3BasketAdmissionState::new(writer.recorder(), admission_limits());
+    let submit_state = submit_state(writer.recorder(), 4, dec!(10));
     let group = fixture_group();
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
     let claims = entry_claims(&group, dec!(0.9));
@@ -103,7 +97,10 @@ fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_ex
             .map(|claim| claim.instrument_id.clone())
             .collect::<Vec<_>>()
     );
-    assert_eq!(decisions[0].outcome, BoltV3BasketAdmissionOutcome::Admitted);
+    assert_eq!(
+        decisions[0].outcome,
+        RecordedBasketAdmissionOutcome::Granted
+    );
 
     let capped = basket_state
         .admit(
@@ -117,9 +114,10 @@ fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_ex
         .release_basket("basket-1", BoltV3BasketAdmissionReleaseReason::Terminal)
         .expect("terminal release should free basket exposure reservation");
     drop(permit);
+    let second_claims = rekey_claims(claims, "basket-2");
     let mut second_permit = basket_state
         .admit(
-            &basket_request("basket-2", &group, &scan, claims),
+            &basket_request("basket-2", &group, &scan, second_claims),
             &submit_state,
         )
         .expect("released exposure should allow the next basket");
@@ -134,9 +132,9 @@ fn basket_admission_reserves_whole_basket_records_keyed_evidence_and_releases_ex
 
 #[test]
 fn dropped_basket_admission_permit_releases_open_reservation() {
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
-    let submit_state = submit_state(writer, 4, dec!(10));
+    let writer = RecordingBasketDecisionWriter::default();
+    let basket_state = BoltV3BasketAdmissionState::new(writer.recorder(), admission_limits());
+    let submit_state = submit_state(writer.recorder(), 4, dec!(10));
     let group = fixture_group();
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
     let claims = entry_claims(&group, dec!(0.9));
@@ -155,9 +153,10 @@ fn dropped_basket_admission_permit_releases_open_reservation() {
         "dropping before downstream submit commit must roll back submit slots"
     );
 
+    let second_claims = rekey_claims(claims, "basket-2");
     let mut second_permit = basket_state
         .admit(
-            &basket_request("basket-2", &group, &scan, claims),
+            &basket_request("basket-2", &group, &scan, second_claims),
             &submit_state,
         )
         .expect("dropped permit should release the open basket reservation");
@@ -166,10 +165,52 @@ fn dropped_basket_admission_permit_releases_open_reservation() {
 }
 
 #[test]
+fn basket_client_order_identity_reuse_rejects_before_a_second_grant_is_recorded() {
+    let writer = RecordingBasketDecisionWriter::default();
+    let basket_state = BoltV3BasketAdmissionState::new(writer.recorder(), admission_limits());
+    let submit_state = submit_state(writer.recorder(), 4, dec!(10));
+    let group = fixture_group();
+    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
+    let claims = entry_claims(&group, dec!(0.9));
+
+    let mut first = basket_state
+        .admit(
+            &basket_request("basket-1", &group, &scan, claims.clone()),
+            &submit_state,
+        )
+        .expect("first unique basket claim set should admit");
+    first.commit_submitted();
+    basket_state
+        .release_basket("basket-1", BoltV3BasketAdmissionReleaseReason::Terminal)
+        .expect("first basket exposure should release");
+
+    let error = basket_state
+        .admit(
+            &basket_request("basket-2", &group, &scan, claims),
+            &submit_state,
+        )
+        .expect_err("committed basket client-order identities must not authorize twice");
+    assert!(matches!(
+        error,
+        BoltV3BasketAdmissionError::SubmitAdmissionFailed(_)
+    ));
+
+    let decisions = writer.basket_admission_decisions();
+    assert_eq!(
+        decisions
+            .iter()
+            .filter(|decision| { decision.outcome == RecordedBasketAdmissionOutcome::Granted })
+            .count(),
+        1,
+        "the duplicate claim set must be rejected before a second grant append"
+    );
+}
+
+#[test]
 fn stuck_reason_cannot_release_basket_exposure_reservation() {
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
-    let submit_state = submit_state(writer, 4, dec!(10));
+    let writer = RecordingBasketDecisionWriter::default();
+    let basket_state = BoltV3BasketAdmissionState::new(writer.recorder(), admission_limits());
+    let submit_state = submit_state(writer.recorder(), 4, dec!(10));
     let group = fixture_group();
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1111.111111), 1_000);
     let claims = entry_claims(&group, dec!(0.9));
@@ -414,12 +455,12 @@ fn basket_admission_rejects_stale_or_non_admissible_scanner_and_group_evidence()
 fn basket_submit_slots_share_single_order_gate_and_count_cap_arithmetic() {
     assert_eq!(
         live_submit_count_cap_outcome(u32::MAX, 1, u32::MAX),
-        BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CountCapExhausted),
         "overflow in current-count plus leg-count must reject"
     );
 
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_gate = submit_state(writer.clone(), 2, dec!(10));
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = submit_state(writer.recorder(), 2, dec!(10));
     submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
@@ -430,8 +471,8 @@ fn basket_submit_slots_share_single_order_gate_and_count_cap_arithmetic() {
         .commit_submitted();
     assert_eq!(submit_gate.admitted_order_count(), 2);
 
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_gate = submit_state(writer.clone(), 2, dec!(10));
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = submit_state(writer.recorder(), 2, dec!(10));
     submit_gate
         .admit(&single_order_request("seed-order", dec!(1)))
         .expect("seed single order should consume one slot")
@@ -445,8 +486,8 @@ fn basket_submit_slots_share_single_order_gate_and_count_cap_arithmetic() {
         .expect_err("current count plus basket leg count should exceed cap");
     assert_eq!(exhausted, BoltV3SubmitAdmissionError::CountCapExhausted);
 
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_gate = submit_state(writer, 2, dec!(0.5));
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = submit_state(writer.recorder(), 2, dec!(0.5));
     let notional = submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
@@ -459,9 +500,9 @@ fn basket_submit_slots_share_single_order_gate_and_count_cap_arithmetic() {
 
 #[test]
 fn basket_submit_slots_carry_capital_admission_evidence_into_shared_gate() {
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
-    let submit_gate = capital_admission_submit_state(writer.clone());
+    let writer = RecordingBasketDecisionWriter::default();
+    let basket_state = BoltV3BasketAdmissionState::new(writer.recorder(), admission_limits());
+    let submit_gate = capital_admission_submit_state(writer.recorder());
     let group = fixture_group();
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
     let mut claims = entry_claims(&group, dec!(0.9));
@@ -490,75 +531,64 @@ fn basket_submit_slots_carry_capital_admission_evidence_into_shared_gate() {
         );
     }
     assert_eq!(
-        writer.submit_reservation_metadata().len(),
+        writer.reservation_attributions().len(),
         2,
         "basket legs must record submit reservation metadata before commit"
     );
 }
 
 #[test]
-fn basket_admission_rolls_back_submit_slots_when_metadata_evidence_fails() {
-    let writer = Arc::new(RecordingBasketDecisionWriter {
-        fail_submit_reservation_metadata: AtomicBool::new(true),
-        ..Default::default()
-    });
-    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
-    let submit_gate = capital_admission_submit_state(writer.clone());
+fn basket_grant_evidence_failure_rolls_back_every_leg_before_submit() {
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = capital_admission_submit_state(writer.recorder());
     let group = fixture_group();
-    let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
     let mut claims = entry_claims(&group, dec!(0.9));
     attach_capital_admission(&mut claims);
     seed_capital_admission_for_claims(&submit_gate, &claims);
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::BasketAdmissionGranted,
+        1,
+    );
 
-    let error = basket_state
-        .admit(
-            &basket_request("metadata-failure-basket", &group, &scan, claims.clone()),
-            &submit_gate,
+    let error = submit_gate
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &claims,
+            &basket_slot_evidence("evidence-failure", &group),
         )
-        .expect_err("metadata evidence failure must reject the basket admission");
+        .expect_err("basket evidence failure must reject before any leg submits");
 
     assert!(matches!(
         error,
-        BoltV3BasketAdmissionError::SubmitAdmissionFailed(
-            BoltV3SubmitAdmissionError::EvidenceWriteFailed { .. }
-        )
+        BoltV3SubmitAdmissionError::EvidenceWriteFailed { .. }
     ));
     assert_eq!(submit_gate.admitted_order_count(), 0);
     assert_eq!(
         submit_gate.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
-    assert!(
-        writer.basket_admission_decisions().is_empty(),
-        "admitted basket evidence must not be recorded before per-leg reservation metadata"
-    );
     for claim in &claims {
         assert!(
             !submit_gate.capital_admission_has_live_reservation(&claim.client_order_id),
-            "failed metadata write must roll back {}",
+            "failed basket evidence must roll back {}",
             claim.client_order_id
         );
     }
-
-    writer
-        .fail_submit_reservation_metadata
-        .store(false, Ordering::SeqCst);
-    let mut retry_claims = entry_claims(&group, dec!(0.9));
-    attach_capital_admission(&mut retry_claims);
-    seed_capital_admission_for_claims(&submit_gate, &retry_claims);
-    let mut plain_permit = basket_state
-        .admit(
-            &basket_request("metadata-failure-basket", &group, &scan, retry_claims),
-            &submit_gate,
-        )
-        .expect("failed submit reservation must release the open basket");
-    plain_permit.commit_submitted();
+    assert_eq!(
+        writer.reservation_attributions().len(),
+        0,
+        "atomic basket attribution must not survive a failed grant append"
+    );
+    assert!(
+        writer.basket_admission_decisions().is_empty(),
+        "the injected failure must prevent the entire atomic basket-grant fact"
+    );
 }
 
 #[test]
 fn basket_submit_slots_reject_capital_admission_that_does_not_match_order_shape() {
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_gate = capital_admission_submit_state(writer);
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = capital_admission_submit_state(writer.recorder());
     let group = fixture_group();
     let mut claims = entry_claims(&group, dec!(0.9));
     attach_capital_admission(&mut claims);
@@ -599,8 +629,8 @@ fn basket_submit_slots_reject_capital_admission_that_does_not_match_order_shape(
 
 #[test]
 fn dropped_capital_admission_basket_submit_permit_rolls_back_all_leg_reservations() {
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_gate = capital_admission_submit_state(writer.clone());
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = capital_admission_submit_state(writer.recorder());
     let group = fixture_group();
     let mut claims = entry_claims(&group, dec!(0.9));
     attach_capital_admission(&mut claims);
@@ -644,8 +674,8 @@ fn basket_submit_slots_enforce_kill_switch_and_risk_reducing_proof_binding() {
         .next()
         .expect("fixture should have at least one leg");
 
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_gate = submit_state(writer.clone(), 2, dec!(10));
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = submit_state(writer.recorder(), 2, dec!(10));
     submit_gate.replace_kill_switch_state(halted_kill_switch_state());
     let latched_entry = submit_gate
         .reserve_basket_submit_slots(
@@ -672,8 +702,8 @@ fn basket_submit_slots_enforce_kill_switch_and_risk_reducing_proof_binding() {
         BoltV3SubmitAdmissionError::KillSwitchLatched { .. }
     ));
 
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_gate = submit_state(writer, 2, dec!(10));
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = submit_state(writer.recorder(), 2, dec!(10));
     let mut mismatched = valid_exit_proof(first_leg);
     mismatched.exit_order_side = OrderSide::Buy;
     let invalid = submit_gate
@@ -722,9 +752,9 @@ fn assert_basket_rejects(
     request: BoltV3BasketAdmissionRequest<'_>,
     expected: BoltV3BasketAdmissionError,
 ) {
-    let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
-    let submit_state = submit_state(writer, 4, dec!(10));
+    let writer = RecordingBasketDecisionWriter::default();
+    let basket_state = BoltV3BasketAdmissionState::new(writer.recorder(), admission_limits());
+    let submit_state = submit_state(writer.recorder(), 4, dec!(10));
 
     let actual = basket_state
         .admit(&request, &submit_state)
@@ -736,141 +766,6 @@ fn assert_basket_rejects(
         0,
         "{case_name}: basket-level rejects must not consume submit slots"
     );
-}
-
-#[derive(Debug, Default)]
-struct RecordingBasketDecisionWriter {
-    admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
-    basket_admission_decisions: Mutex<Vec<BoltV3BasketAdmissionDecisionEvidence>>,
-    submit_reservation_metadata: Mutex<Vec<BoltV3SubmitReservationMetadataEvidence>>,
-    fail_submit_reservation_metadata: AtomicBool,
-}
-
-impl RecordingBasketDecisionWriter {
-    fn basket_admission_decisions(&self) -> Vec<BoltV3BasketAdmissionDecisionEvidence> {
-        self.basket_admission_decisions
-            .lock()
-            .expect("basket decisions mutex should not be poisoned")
-            .clone()
-    }
-
-    fn submit_reservation_metadata(&self) -> Vec<BoltV3SubmitReservationMetadataEvidence> {
-        self.submit_reservation_metadata
-            .lock()
-            .expect("submit reservation metadata mutex should not be poisoned")
-            .clone()
-    }
-}
-
-impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.admission_decisions
-            .lock()
-            .expect("admission decisions mutex should not be poisoned")
-            .push(decision.clone());
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.basket_admission_decisions
-            .lock()
-            .expect("basket admission decisions mutex should not be poisoned")
-            .push(decision.clone());
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        if self.fail_submit_reservation_metadata.load(Ordering::SeqCst) {
-            anyhow::bail!("submit reservation metadata write failed");
-        }
-        self.submit_reservation_metadata
-            .lock()
-            .expect("submit reservation metadata mutex should not be poisoned")
-            .push(metadata.clone());
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        anyhow::bail!("basket admission writer received entry-skip evidence")
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        anyhow::bail!("basket admission writer received exit-decision evidence")
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("basket admission writer received requote-throttle evidence")
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        anyhow::bail!("basket admission writer received settlement evidence")
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("basket admission writer received settlement booking-error evidence")
-    }
-
-    fn drain_shutdown(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
 }
 
 fn admission_limits() -> BoltV3BasketAdmissionLimits {
@@ -885,7 +780,7 @@ fn admission_limits() -> BoltV3BasketAdmissionLimits {
 }
 
 fn submit_state(
-    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    writer: Arc<DecisionEvidenceRecorder>,
     max_order_count: u32,
     max_order_notional: Decimal,
 ) -> BoltV3SubmitAdmissionState {
@@ -902,7 +797,7 @@ fn submit_state(
 }
 
 fn capital_admission_submit_state(
-    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    writer: Arc<DecisionEvidenceRecorder>,
 ) -> BoltV3SubmitAdmissionState {
     let observed_at_ns = capital_admission_fixture_observed_at_ns();
     BoltV3SubmitAdmissionState::new_with_capital_admission(
@@ -927,7 +822,6 @@ fn capital_admission_submit_state(
                     max_slippage_liability: dec!(0.2),
                 }),
             },
-            dedupe_retention_ns: 1_000,
         },
     )
 }
@@ -941,8 +835,8 @@ fn seed_capital_admission_for_claims(
         claims,
         observed_at_ns,
     ));
-    let rebuild =
-        submit_gate.rebuild_capital_admission_open_order_reservations(Vec::new(), observed_at_ns);
+    let rebuild = submit_gate
+        .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), observed_at_ns);
     assert!(
         rebuild.accepted,
         "empty open-order rebuild should reconcile the test capital admission"
@@ -982,11 +876,8 @@ fn basket_request<'a>(
     }
 }
 
-fn basket_slot_evidence(
-    basket_id: &str,
-    group: &OutcomeGroup,
-) -> BoltV3BasketAdmissionDecisionEvidence {
-    BoltV3BasketAdmissionDecisionEvidence {
+fn basket_slot_evidence(basket_id: &str, group: &OutcomeGroup) -> BasketAdmissionDetails {
+    BasketAdmissionDetails {
         strategy_id: "complete-set-arb".to_string(),
         execution_client_id: "polymarket_main".to_string(),
         basket_id: basket_id.to_string(),
@@ -999,7 +890,6 @@ fn basket_slot_evidence(
             .collect(),
         total_notional: dec!(1.8).to_string(),
         leg_order_count: 2,
-        outcome: BoltV3BasketAdmissionOutcome::Admitted,
     }
 }
 
@@ -1015,11 +905,20 @@ fn entry_claims(group: &OutcomeGroup, notional: Decimal) -> Vec<BoltV3BasketSubm
             order_quantity: dec!(1),
             notional,
             intent_kind: BoltV3SubmitIntentKind::Entry,
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             risk_reducing_exit_proof: None,
             admission_evidence: None,
         })
         .collect()
+}
+
+fn rekey_claims(
+    mut claims: Vec<BoltV3BasketSubmitSlotClaim>,
+    scope: &str,
+) -> Vec<BoltV3BasketSubmitSlotClaim> {
+    for claim in &mut claims {
+        claim.client_order_id = format!("{scope}-{}", claim.client_order_id);
+    }
+    claims
 }
 
 fn risk_reducing_claim(
@@ -1033,7 +932,6 @@ fn risk_reducing_claim(
         order_quantity: dec!(1),
         notional: dec!(0.9),
         intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
         risk_reducing_exit_proof: Some(proof),
         admission_evidence: None,
     }
@@ -1085,13 +983,12 @@ fn capital_admission_components(
             free_collateral: dec!(100),
             total_equity: dec!(100),
         },
-        venue_spendability: VenueSpendabilitySnapshot {
-            source: "basket-admission-test-spendability".to_string(),
+        provider_collateral_allowance: ProviderCollateralAllowanceSnapshot {
+            source: "basket-admission-test-allowance".to_string(),
             observed_at_ns,
             venue_id: "POLYMARKET".to_string(),
             account_id: "POLYMARKET-001".to_string(),
             collateral_currency: "USDC".to_string(),
-            spendable_collateral: dec!(100),
             collateral_allowance: dec!(100),
         },
         order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
@@ -1109,7 +1006,6 @@ fn capital_admission_components(
                 yes_position: Decimal::ZERO,
                 no_position: Decimal::ZERO,
                 collateral_allowance: dec!(100),
-                conditional_token_allowance: dec!(100),
                 collateral_coupled_group_id: "basket-admission-group".to_string(),
             },
         ),
@@ -1138,7 +1034,6 @@ fn single_order_request(client_order_id: &str, notional: Decimal) -> BoltV3Submi
         order_side: OrderSide::Buy,
         order_quantity: dec!(1),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
         admission_evidence: None,

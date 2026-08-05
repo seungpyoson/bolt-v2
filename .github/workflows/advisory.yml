@@ -1,9 +1,12 @@
 name: Advisory Check
 
-# Advisory Rust evidence only. Zero merge authority: no required status
-# contexts exist, and GitHub code-owner review is the only merge gate.
+# Rust evidence for pull requests. These lanes carry no authority in GitHub's own
+# ruleset -- it declares no required status contexts, so a direct merge evaluates
+# none of them -- but `.mergify.yml` requires every lane below to succeed before
+# either queue merges. Deleting a lane, or making one `continue-on-error`,
+# removes a merge gate.
 #
-# Four parallel jobs (fmt / clippy / test / build) each surface one ✓/✗ line
+# Parallel jobs each surface one ✓/✗ line
 # per PR. Every Rust lane runs its cargo command directly; the test lane also
 # runs focused repository behavior checks before Cargo. A red check shows the
 # raw command and output, reproducible locally from the repo root.
@@ -53,7 +56,51 @@ jobs:
         run: |
           set -x
           cargo fmt --check
+
+      - name: fmt (backtesting vertical slice)
+        if: ${{ !cancelled() }}
+        run: |
+          set -x
           cargo fmt --check --manifest-path crates/backtesting-vertical-slice/Cargo.toml
+
+  # `build.rs` asserts the dependency URL is official and that the capability
+  # manifest revision equals the `nautilus-binance` pin, but neither proves the
+  # revision is merged: GitHub serves fork-only commits from the official
+  # repository URL, so a pin to unmerged fork work satisfies both and builds
+  # green. Proving mergedness needs the network, which a hermetic build script
+  # must not use, so it is checked here across every manifest declaration.
+  nautilus_pin:
+    name: nautilus-pin
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    timeout-minutes: 10
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    permissions:
+      contents: read
+    steps:
+      # On pull_request, check out the exact pushed head, not GitHub's synthetic
+      # merge commit: this evidence is adjudicated against the reported head SHA.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Controls first: each is a shape that bypassed an earlier version of this
+      # check. If a future edit reopens one, this fails before the real check can
+      # report a false all-clear.
+      - name: Pin check rejects every known bypass
+        env:
+          # One control asserts the merged check itself rejects an unmerged
+          # revision, so this step calls the API and needs the same token.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -x
+          python3 .github/scripts/verify-nautilus-pin.py --self-test
+
+      - name: Every NautilusTrader revision is merged upstream
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -x
+          python3 .github/scripts/verify-nautilus-pin.py
 
   sccache_source:
     name: sccache-source
@@ -115,7 +162,14 @@ jobs:
       - name: clippy
         run: |
           set -x
-          cargo clippy --locked -- -D warnings
+          cargo clippy --locked --features test-current-evidence-inspection --lib --bins -- -D warnings
+
+      - name: clippy (backtesting vertical slice)
+        if: ${{ !cancelled() }}
+        working-directory: crates/backtesting-vertical-slice
+        run: |
+          set -x
+          cargo clippy --locked --lib --bins -- -D warnings
 
       - name: Print sccache stats
         if: always()
@@ -177,13 +231,35 @@ jobs:
           set -x
           bash scripts/test_merge_queue.sh
 
+      # The statistics gate's own behavioral controls. They existed and ran
+      # nowhere: no workflow, recipe, or hook referenced the file, and it defines
+      # no `test_*` functions, so even a pytest sweep collected zero from it. The
+      # controls that decide whether a counter fails a build had therefore never
+      # run in CI, including the four added when that decision last changed.
+      - name: sccache statistics gate behavior
+        run: |
+          set -x
+          python3 scripts/test_sccache_stats_gate.py
+
       - name: test
         env:
           CARGO_PROFILE_TEST_DEBUG: "0"
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           set -x
-          mold -run cargo nextest run --locked
+          mold -run cargo nextest run --locked --no-fail-fast --features test-current-evidence-inspection
+
+      - name: test (backtesting vertical slice)
+        if: ${{ !cancelled() }}
+        working-directory: crates/backtesting-vertical-slice
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          set -x
+          # The MinIO conformance module owns an opt-in external service
+          # environment; this advisory lane verifies the host-native workspace.
+          mold -run cargo nextest run --locked --no-fail-fast -- --skip backtesting_vertical_slice_s3_catalog_smoke
 
       - name: Print sccache stats
         if: always()
@@ -245,6 +321,13 @@ jobs:
         run: |
           set -x
           cargo zigbuild --release --target "$BUILD_TARGET" --locked
+
+      - name: build (backtesting vertical slice)
+        if: ${{ !cancelled() }}
+        working-directory: crates/backtesting-vertical-slice
+        run: |
+          set -x
+          cargo build --release --locked
 
       - name: Print sccache stats
         if: always()

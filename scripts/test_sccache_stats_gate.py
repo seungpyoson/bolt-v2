@@ -102,9 +102,29 @@ def main() -> int:
     read_write_error["stats"]["cache_write_errors"] = 1
     expect_status("read-write error", read_write_error, 1, cache_mode="read_write")
 
-    runtime_error = copy.deepcopy(read_write)
-    runtime_error["stats"]["cache_timeouts"] = 1
-    expect_status("runtime error", runtime_error, 1, cache_mode="read_write")
+    # Every sccache error counter, one control each, asserted in both
+    # directions: the run survives, and the count is still reported. Each of
+    # these records a lookup sccache abandoned and then compiled, so failing on
+    # them turned cache infrastructure into red builds. Summing them into one
+    # check previously made a single test stand for three, and none of the three
+    # was pinned in either direction.
+    tolerated = {
+        "cache timeout": ("cache_timeouts", 1, "1 cache timeout(s)"),
+        "cache read error": ("cache_read_errors", 1, "1 cache read error(s)"),
+        "distributed-compile error": ("dist_errors", 1, "1 distributed-compile error(s)"),
+        "cache error": (
+            "cache_errors",
+            {"counts": {"Rust": 1}, "adv_counts": {"rustc": 1}},
+            "1 cache error(s)",
+        ),
+    }
+    for label, (field, value, announcement) in tolerated.items():
+        stats = copy.deepcopy(read_write)
+        stats["stats"][field] = value
+        expect_status(f"{label} is not fatal", stats, 0, cache_mode="read_write")
+        assert announcement in run_gate(stats, cache_mode="read_write").stdout, (
+            f"a tolerated {label} must still be reported"
+        )
 
     incomplete_request = copy.deepcopy(read_write)
     incomplete_request["stats"]["requests_executed"] = 0

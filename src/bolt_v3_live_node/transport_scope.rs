@@ -147,7 +147,7 @@ fn insert_capital_admission_execution_client_keys(
             _ => {
                 return Err(BoltV3LiveNodeError::LiveTransportScope {
                     reason: format!(
-                        "capital admission pool `{}` has multiple execution clients for venue `{}`: {}; one venue-truth source must be unambiguous",
+                        "capital admission pool `{}` has multiple execution clients for venue `{}`: {}; one provider-allowance source must be unambiguous",
                         pool.pool_id,
                         pool.venue_id,
                         matching_client_keys.join(", ")

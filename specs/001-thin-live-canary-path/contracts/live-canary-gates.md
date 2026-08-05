@@ -1,5 +1,8 @@
 # Contract: Live Canary Gates
 
+> **Historical feature artifact — not current authority.** This contract records
+> the retired feature design. Current `main` and `AGENTS.md` are authoritative.
+
 ## Gate Order
 
 1. Load TOML.

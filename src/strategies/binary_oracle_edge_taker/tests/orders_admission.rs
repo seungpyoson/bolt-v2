@@ -5,16 +5,16 @@ use super::*;
 #[test]
 fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
     let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-            RecordingDecisionEvidenceWriter,
-        )),
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(
+            recording_decision_evidence(),
+        ),
     );
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee leaves the notional unchanged; with no optional gate armed,
     // production admission now allows the submit to reach NT.
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -51,9 +51,8 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
         )
         .expect("limit order should be valid"),
     );
-    let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -61,6 +60,7 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
     strategy
         .submit_order_with_decision_evidence(
             intent,
+            BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
@@ -74,7 +74,7 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
 
 #[test]
 fn shadow_policy_records_evidence_and_admission_without_nt_submit() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -125,9 +125,8 @@ fn shadow_policy_records_evidence_and_admission_without_nt_submit() {
         )
         .expect("limit order should be valid"),
     );
-    let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -135,6 +134,7 @@ fn shadow_policy_records_evidence_and_admission_without_nt_submit() {
     strategy
         .submit_order_with_decision_evidence(
             intent,
+            BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
@@ -148,33 +148,33 @@ fn shadow_policy_records_evidence_and_admission_without_nt_submit() {
         risk_messages.get_messages().is_empty(),
         "shadow policy must not emit an NT SubmitOrder command"
     );
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_))),
+            .any(|event| matches!(event, CurrentFact::EntryOrderIntent(_))),
         "shadow submission must still record order-intent evidence"
     );
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, RecordedDecisionEvidenceEvent::AdmissionDecision(_))),
+            .any(|event| matches!(event, CurrentFact::AdmittedEntryAdmission(_))),
         "shadow submission must still record admission evidence"
     );
 }
 
 #[test]
 fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
-    let submit_admission = submit_admission_with_provider_cap(
-        Decimal::new(1, 0),
-        Arc::new(RecordingDecisionEvidenceWriter),
-    );
+    let submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(1, 0), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee keeps the notional (0.50) under the 1.0 cap so admission
     // succeeds; the test then proves the registered submit reaches NT.
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -211,9 +211,8 @@ fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
         )
         .expect("limit order should be valid"),
     );
-    let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -221,6 +220,7 @@ fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
     strategy
         .submit_order_with_decision_evidence(
             intent,
+            BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
@@ -230,16 +230,14 @@ fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
 
 #[test]
 fn submit_context_routes_non_empty_nt_params_to_submit_order() {
-    let submit_admission = submit_admission_with_provider_cap(
-        Decimal::new(1, 0),
-        Arc::new(RecordingDecisionEvidenceWriter),
-    );
+    let submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(1, 0), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee leaves the 0.50 notional under the 1.0 cap; this test
     // exercises submit-param routing, not the fee-inclusive cap.
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -264,9 +262,8 @@ fn submit_context_routes_non_empty_nt_params_to_submit_order() {
         strategy.config.strategy_id.to_string(),
         serde_json::Value::Bool(true),
     );
-    let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -274,6 +271,7 @@ fn submit_context_routes_non_empty_nt_params_to_submit_order() {
     strategy
         .submit_order_with_decision_evidence(
             intent,
+            BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::from_parts(
                 Some(ClientId::from("POLYMARKET")),
@@ -294,17 +292,15 @@ fn submit_context_routes_non_empty_nt_params_to_submit_order() {
 
 #[test]
 fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
-    let submit_admission = submit_admission_with_provider_cap(
-        Decimal::new(1, 0),
-        Arc::new(RecordingDecisionEvidenceWriter),
-    );
+    let submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(1, 0), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee isolates the assertion to "compiled order price drives the
     // notional": the compiled 2.0 notional still exceeds the 1.0 cap, while
     // the understated intent price (0.50) must NOT be what is checked.
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -342,9 +338,8 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
         .expect("limit order should be valid"),
     );
     let mut understated_intent =
-        crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+        crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
             strategy.config.strategy_id.clone(),
-            crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
             price.to_string(),
             &order,
         );
@@ -353,6 +348,7 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
     let error = strategy
         .submit_order_with_decision_evidence(
             understated_intent,
+            BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
@@ -394,12 +390,12 @@ fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy()
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
                 price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect("quote-quantity admission should use NT effective notional");
@@ -439,12 +435,12 @@ fn quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity() {
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
                 limit_price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect("quote-quantity sell limit admission should derive from compiled order context");
@@ -481,12 +477,12 @@ fn quote_quantity_sell_limit_missing_quote_uses_submitted_quote_quantity() {
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
                 limit_price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect("missing quote should fall back to submitted quote quantity");
@@ -529,12 +525,12 @@ fn quote_quantity_sell_limit_missing_context_fails_closed() {
 
     let error = strategy_without_instrument
         .submit_admission_request_from_order(
-            &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy_without_instrument.config.strategy_id.clone(),
-                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
                 limit_price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect_err("missing instrument context must fail closed");
@@ -579,12 +575,12 @@ fn quote_quantity_sell_stop_limit_submit_admission_floors_to_quote_quantity() {
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
                 limit_price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect(
@@ -628,12 +624,12 @@ fn quote_quantity_sell_stop_limit_missing_quote_uses_submitted_quote_quantity() 
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
                 limit_price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect("missing quote should fall back to submitted quote quantity");
@@ -681,12 +677,12 @@ fn quote_quantity_sell_stop_limit_missing_context_fails_closed() {
 
     let error = strategy_without_instrument
         .submit_admission_request_from_order(
-            &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy_without_instrument.config.strategy_id.clone(),
-                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
                 limit_price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect_err("missing instrument context must fail closed");
@@ -721,12 +717,12 @@ fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing(
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
                 price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect("quote-quantity admission should use NT no-quote fallback");
@@ -781,12 +777,12 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
                 "0.99".to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect("quote-quantity market admission should use submitted quote quantity");
@@ -827,12 +823,12 @@ fn base_quantity_market_entry_admission_values_at_instrument_price_ceiling() {
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
                 price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect("base-quantity market admission should value at the instrument price ceiling");
@@ -895,12 +891,12 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
                 "0.99".to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect("quote-quantity market admission should use submitted quote quantity");
@@ -920,11 +916,11 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
     // only proves a grossly over-cap raw notional is rejected before NT
     // submit.
     let submit_admission =
-        submit_admission_with_provider_cap(Decimal::ONE, Arc::new(RecordingDecisionEvidenceWriter));
+        submit_admission_with_provider_cap(Decimal::ONE, recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -961,9 +957,8 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
         )
         .expect("limit order should be valid"),
     );
-    let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -971,6 +966,7 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
     let error = strategy
         .submit_order_with_decision_evidence(
             intent,
+            BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
@@ -999,14 +995,12 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
     // `binary_oracle_edge_taker.rs:3972` is pinned by the
     // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`
     // / `zero_fee_submit_admission_admits_at_same_cap` pair below.
-    let submit_admission = submit_admission_with_provider_cap(
-        Decimal::new(10025, 4),
-        Arc::new(RecordingDecisionEvidenceWriter),
-    );
+    let submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(10025, 4), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -1043,9 +1037,8 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
         )
         .expect("limit order should be valid"),
     );
-    let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -1053,6 +1046,7 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
     strategy
         .submit_order_with_decision_evidence(
             intent,
+            BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
@@ -1080,14 +1074,12 @@ fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
     // The zero-fee CONTROL `zero_fee_submit_admission_admits_at_same_cap`
     // below uses the SAME raw 1.00 notional and SAME 1.001 cap and ADMITS,
     // proving the rejection here is caused by the fee scaling.
-    let submit_admission = submit_admission_with_provider_cap(
-        Decimal::new(1001, 3),
-        Arc::new(RecordingDecisionEvidenceWriter),
-    );
+    let submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(1001, 3), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -1124,9 +1116,8 @@ fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
         )
         .expect("limit order should be valid"),
     );
-    let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -1134,6 +1125,7 @@ fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
     let error = strategy
         .submit_order_with_decision_evidence(
             intent,
+            BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
@@ -1159,14 +1151,12 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
     // and the order is ADMITTED. Together with the reject test this pair proves the
     // rejection there is caused by the fee scaling specifically, not by the
     // raw notional (which admits at this cap when the fee is zero).
-    let submit_admission = submit_admission_with_provider_cap(
-        Decimal::new(1001, 3),
-        Arc::new(RecordingDecisionEvidenceWriter),
-    );
+    let submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(1001, 3), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -1203,9 +1193,8 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
         )
         .expect("limit order should be valid"),
     );
-    let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -1213,6 +1202,7 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
     strategy
         .submit_order_with_decision_evidence(
             intent,
+            BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
@@ -1226,10 +1216,8 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
 
 #[test]
 fn exhausted_count_submit_admission_rejects_before_nt_submit() {
-    let submit_admission = submit_admission_with_provider_cap(
-        Decimal::new(1, 0),
-        Arc::new(RecordingDecisionEvidenceWriter),
-    );
+    let submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(1, 0), recording_decision_evidence());
     submit_admission
         .admit(
             &crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest {
@@ -1241,9 +1229,6 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
                 order_side: OrderSide::Buy,
                 order_quantity: Decimal::new(1, 0),
                 intent_kind: crate::bolt_v3_submit_admission::BoltV3SubmitIntentKind::Entry,
-                lifecycle_policy: crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(
-                    true,
-                ),
                 risk_reducing_exit_proof: None,
                 kill_switch_forced_reduction: None,
                 admission_evidence: None,
@@ -1256,7 +1241,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
     // the count-exhausted check, not the notional cap.
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -1293,9 +1278,8 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
         )
         .expect("limit order should be valid"),
     );
-    let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -1303,6 +1287,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
     let error = strategy
         .submit_order_with_decision_evidence(
             intent,
+            BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
@@ -1387,7 +1372,7 @@ fn market_quote_quantity_entry_submission_blocks_below_venue_minimum() {
 
     assert_eq!(
         decision.blocked_reason,
-        Some("entry_quote_notional_below_venue_minimum")
+        Some(EvidenceEntrySkipReason::EntryQuoteNotionalBelowVenueMinimum)
     );
     assert_eq!(decision.quantity_value, None);
 }
@@ -1419,12 +1404,12 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Entry,
                 fallback_price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect("MarketIfTouched admission should derive from the instrument price ceiling");
@@ -1464,9 +1449,8 @@ fn submit_admission_test_helper_uses_explicit_execution_client_id() {
             ClientOrderId::from("O-19700101-000000-001-HL-1"),
         )
         .expect("configured entry order should build");
-    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
@@ -1474,10 +1458,10 @@ fn submit_admission_test_helper_uses_explicit_execution_client_id() {
     let admission = build_submit_admission_request_from_order(
         BoltV3SubmitAdmissionRequestInput {
             execution_client_id: "hyperliquid_perps",
+            intent_kind: BoltV3SubmitIntentKind::Entry,
             intent: &intent,
             order: &order,
             valuation: OrderValuationContext::empty(),
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_position: None,
         },
         |_| Ok(Decimal::ZERO),
@@ -1582,7 +1566,7 @@ fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used()
 
     assert_eq!(
         decision.blocked_reason,
-        Some("exit_quote_quantity_unsupported")
+        Some(EvidenceExitBlockedReason::ExitQuoteQuantityUnsupported)
     );
     assert_eq!(decision.quantity, None);
     assert_eq!(decision.is_quote_quantity, None);
@@ -1914,12 +1898,12 @@ fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Entry,
                 admission_price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect("StopMarket admission should derive from the instrument price ceiling");
@@ -1968,11 +1952,11 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
         .expect("trigger_instrument_id should parse through runtime config");
     let context = StrategyBuildContext::new(
         RecordingFeeProvider::cold(),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-                RecordingDecisionEvidenceWriter,
-            )),
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(
+                recording_decision_evidence(),
+            ),
         ),
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
@@ -2016,11 +2000,11 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
         .expect("trigger_instrument_id should parse through runtime config");
     let context = StrategyBuildContext::new(
         RecordingFeeProvider::cold(),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-                RecordingDecisionEvidenceWriter,
-            )),
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(
+                recording_decision_evidence(),
+            ),
         ),
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
@@ -2077,19 +2061,18 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
         )
         .expect("StopLimit order with explicit trigger price should build");
 
-    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
     let admission = build_submit_admission_request_from_order(
         BoltV3SubmitAdmissionRequestInput {
             execution_client_id: "polymarket_main",
+            intent_kind: BoltV3SubmitIntentKind::Entry,
             intent: &intent,
             order: &order,
             valuation: OrderValuationContext::empty(),
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_position: None,
         },
         |_| Ok(Decimal::ZERO),
@@ -2171,19 +2154,18 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
         )
         .expect("LimitIfTouched entry order with explicit trigger price should build");
 
-    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
         strategy.config.strategy_id.clone(),
-        BoltV3OrderIntentKind::Entry,
         price.to_string(),
         &order,
     );
     let admission = build_submit_admission_request_from_order(
         BoltV3SubmitAdmissionRequestInput {
             execution_client_id: "polymarket_main",
+            intent_kind: BoltV3SubmitIntentKind::Entry,
             intent: &intent,
             order: &order,
             valuation: OrderValuationContext::empty(),
-            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_position: None,
         },
         |_| Ok(Decimal::ZERO),
@@ -2274,12 +2256,12 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
 
     let admission = strategy
         .submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Entry,
                 fallback_price.to_string(),
                 &order,
             ),
+            BoltV3SubmitIntentKind::Entry,
             &order,
         )
         .expect("TrailingStopMarket admission should derive from the instrument price ceiling");
@@ -2342,12 +2324,12 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
     // the strategy method that carries instrument context.
     let exit_admission = strategy
         .submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
+            &crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
                 strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Exit,
                 exit_fallback_price.to_string(),
                 &exit_order,
             ),
+            BoltV3SubmitIntentKind::RiskReducingExit,
             &exit_order,
         )
         .expect("market-style exit admission should derive from the instrument price ceiling");
@@ -2767,22 +2749,22 @@ fn task5_entry_order_plan_uses_configured_tif_and_side_specific_best_price() {
 #[test]
 fn expected_exit_submission_blocks_do_not_warn() {
     assert!(!should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_NO_OPEN_POSITION
+        EvidenceExitBlockedReason::NoOpenPosition
     )));
     assert!(!should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
+        EvidenceExitBlockedReason::ExitAlreadyPending
     )));
     assert!(!should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
+        EvidenceExitBlockedReason::EntryOrderStillWorking
     )));
     assert!(!should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_EXIT_HOLD
+        EvidenceExitBlockedReason::ExitHold
     )));
     assert!(!should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN
+        EvidenceExitBlockedReason::PositionIntervalUnknown
     )));
     assert!(should_warn_on_exit_submission_block(Some(
-        EXIT_BLOCK_REASON_EXIT_PRICE_MISSING
+        EvidenceExitBlockedReason::ExitPriceMissing
     )));
 }
 
@@ -2821,16 +2803,24 @@ fn historical_entry_fee_rate_exit_ev_uses_entry_fee_from_submission_time() {
     set_pending_entry(&mut strategy, pending);
 
     fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
+    let position_id = PositionId::from("P-HIST-FEE-001");
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
     strategy.on_order_filled(&order_filled_event(
         client_order_id,
         instrument_id,
-        PositionId::from("P-HIST-FEE-001"),
+        position_id,
     ));
 
     let order_config = strategy
         .normal_exit_order_execution_config()
         .expect("normal exit order config should parse");
-    let outcome_side = managed_position_ref(&strategy)
+    let outcome_side = managed_position_snapshot(&strategy)
         .and_then(|position| position.lifecycle.outcome_side())
         .expect("entry fill should preserve configured outcome side");
     let exit_ev_bps = strategy
@@ -2854,10 +2844,18 @@ fn historical_entry_fee_rate_logs_known_for_strategy_managed_positions() {
     set_pending_entry(&mut strategy, pending);
 
     fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
+    let position_id = PositionId::from("P-HIST-LOG-001");
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
     strategy.on_order_filled(&order_filled_event(
         client_order_id,
         instrument_id,
-        PositionId::from("P-HIST-LOG-001"),
+        position_id,
     ));
 
     let decision = strategy.exit_submission_decision_at(1_200);
@@ -2911,7 +2909,10 @@ fn quarantined_legacy_short_position_blocks_exit_submission() {
     // exit evaluation blocks with the precise NoOpenPosition reason. The decision
     // trace surfaces that real reason rather than the generic ExitDecisionUnavailable
     // (which previously masked it via an unconditional clobber).
-    assert_eq!(decision.blocked_reason, Some("no_open_position"));
+    assert_eq!(
+        decision.blocked_reason,
+        Some(EvidenceExitBlockedReason::NoOpenPosition)
+    );
 }
 
 #[test]

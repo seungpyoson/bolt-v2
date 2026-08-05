@@ -134,14 +134,14 @@ generate_missing_orders = true
 inflight_check_interval_ms = 2000
 inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_secs = 0
-open_check_lookback_mins = 60
+open_check_interval_secs = 30
+open_check_lookback_mins = 0
 open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
 single_order_query_delay_ms = 100
-position_check_interval_secs = 0
+position_check_interval_secs = 30
 position_check_lookback_mins = 60
 position_check_threshold_ms = 5000
 position_check_retries = 3
@@ -196,7 +196,11 @@ runtime_capture_start_poll_interval_ms = 50
 data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
-order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+machine_relative_path = "bolt-v3/decision-evidence/current/machine.jsonl"
+observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl"
+retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
+reject_episode_max_count = 4096
+recovery_evidence_max_bytes = 1048576
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
@@ -244,7 +248,6 @@ http_timeout_secs = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
 max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_ms = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_ms = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
-ack_timeout_secs = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
 fee_cache_ttl_secs = 300 # NT: PolymarketExecClientConfig fee cache TTL
 transport_backend = "sockudo" # NT: PolymarketExecClientConfig.transport_backend
 
@@ -392,7 +395,7 @@ All pinned `LiveDataEngineConfig` fields are explicit in TOML and mapped into th
 
 Runtime-support guard fields are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
 
-- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `d81be0bcc7a473c45d2dc8a8885638336073a218`
+- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
 
 | Field | Type / Rule | Maps to |
 |---|---|---|
@@ -408,7 +411,7 @@ Runtime-support guard fields are still required in TOML at the only accepted val
 | `emit_quotes_from_book_depths` | boolean | `LiveDataEngineConfig.emit_quotes_from_book_depths` |
 | `external_clients` | array of valid NT client IDs; empty maps to `None` | `LiveDataEngineConfig.external_clients` |
 | `debug` | boolean | `LiveDataEngineConfig.debug` |
-| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `d81be0bcc7a473c45d2dc8a8885638336073a218` | `LiveDataEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6` | `LiveDataEngineConfig.qsize` |
 
 ### `[nautilus.exec_engine]`
 
@@ -419,7 +422,26 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - `snapshot_orders = false`
 - `snapshot_positions = false`
 - `purge_from_database = false`
-- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `d81be0bcc7a473c45d2dc8a8885638336073a218`
+- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
+
+Every Bolt live configuration must give NT an unbounded, unfiltered startup reconciliation scope;
+this requirement is unconditional because NT owns order and position lifecycle even when Bolt capital
+admission is disabled. Validation therefore requires `reconciliation = true`,
+`reconciliation_lookback_mins = 0`, empty
+`reconciliation_instrument_ids`, empty `filtered_client_order_ids`,
+`filter_unclaimed_external_orders = false`, `filter_position_reports = false`,
+`generate_missing_orders = true`, positive open-order and position check intervals, and unbounded
+ongoing-check lookback.
+The pinned NT Polymarket adapter does not fail
+reconciliation when venue orders, confirmed fills, or positions cannot be
+represented in NT: it logs and skips them and still returns a successful
+mass status, so a startup snapshot can be silently partial. Bolt cannot detect
+the omission, which is why `enforce_submit_admission` is refused while the
+provider lists open reconciliation conditions. After NT reaches `Running`, Bolt projects the canonical NT
+cache and requires every admission-relevant open order to join exactly one
+committed Bolt authorization before admission can become reconciled. Bolt does
+not perform a second raw-venue reconciliation or configure a separate NT
+continuous-reconciliation authority mode.
 
 #### `reconciliation_lookback_mins`
 
@@ -434,7 +456,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - required: yes
 - maps to Nautilus `LiveExecEngineConfig.reconciliation_startup_delay_secs`
 - this is explicit to prevent inheriting upstream reconciliation startup timing changes silently
-- `0` is valid and disables the post-startup reconciliation grace period before continuous reconciliation checks begin
+- `0` starts startup reconciliation without an additional delay
 
 #### `max_single_order_queries_per_cycle`
 
@@ -469,13 +491,13 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `inflight_check_interval_ms` | non-negative integer | `LiveExecEngineConfig.inflight_check_interval_ms` |
 | `inflight_check_threshold_ms` | positive integer | `LiveExecEngineConfig.inflight_check_threshold_ms` |
 | `inflight_check_retries` | non-negative integer | `LiveExecEngineConfig.inflight_check_retries` |
-| `open_check_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.open_check_interval_secs` |
-| `open_check_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.open_check_lookback_mins` |
+| `open_check_interval_secs` | non-negative integer; `0` disables the timer; must be positive when capital admission is enforced | `LiveExecEngineConfig.open_check_interval_secs` |
+| `open_check_lookback_mins` | non-negative integer; `0` maps to `None` and is required when capital admission is enforced | `LiveExecEngineConfig.open_check_lookback_mins` |
 | `open_check_threshold_ms` | positive integer | `LiveExecEngineConfig.open_check_threshold_ms` |
 | `open_check_missing_retries` | non-negative integer | `LiveExecEngineConfig.open_check_missing_retries` |
 | `open_check_open_only` | boolean | `LiveExecEngineConfig.open_check_open_only` |
 | `single_order_query_delay_ms` | non-negative integer | `LiveExecEngineConfig.single_order_query_delay_ms` |
-| `position_check_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.position_check_interval_secs` |
+| `position_check_interval_secs` | non-negative integer; `0` disables the timer; must be positive when capital admission is enforced | `LiveExecEngineConfig.position_check_interval_secs` |
 | `position_check_lookback_mins` | non-negative integer; NT pins this as `u32`, so `0` passes through as a 0-minute lookback rather than mapping to `None` | `LiveExecEngineConfig.position_check_lookback_mins` |
 | `position_check_retries` | non-negative integer | `LiveExecEngineConfig.position_check_retries` |
 | `purge_closed_orders_interval_mins` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.purge_closed_orders_interval_mins` |
@@ -486,7 +508,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `purge_account_events_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.purge_account_events_lookback_mins` |
 | `purge_from_database` | must be `false` | `LiveExecEngineConfig.purge_from_database` |
 | `own_books_audit_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.own_books_audit_interval_secs` |
-| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `d81be0bcc7a473c45d2dc8a8885638336073a218` | `LiveExecEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6` | `LiveExecEngineConfig.qsize` |
 | `allow_overfills` | boolean | `LiveExecEngineConfig.allow_overfills` |
 | `manage_own_order_books` | boolean | `LiveExecEngineConfig.manage_own_order_books` |
 
@@ -573,7 +595,7 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - type: positive integer
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.qsize`
-- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `d81be0bcc7a473c45d2dc8a8885638336073a218`
+- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
 
 ### `[logging]`
 
@@ -620,7 +642,8 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 
 - type: absolute path string
 - required: yes for live startup and storage prestart checks
-- canonical parent path that `catalog_directory` must stay under before a live node starts
+- normalized, existing parent path that `catalog_directory` must stay under before a live node starts
+- every prefix and catalog component is opened descriptor-relative with symlinks rejected
 
 #### `min_free_bytes`
 
@@ -644,26 +667,33 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 
 ### `[persistence.decision_evidence]`
 
-#### `order_intents_relative_path`
+#### Current streams and cutover fence
 
-- type: relative path string
-- required: yes
-- local decision-evidence JSONL path under `catalog_directory`
-- must remain relative so a root catalog move changes only one config location
+- `machine_relative_path`: required relative JSONL path containing recovery, join, action, and reconciliation evidence.
+- `observation_relative_path`: required relative JSONL path containing observations that startup recovery never reads.
+- `retired_relative_paths`: required list of pre-cutover paths whose presence makes startup fail closed.
+- `reject_episode_max_count`: positive bound for retained semantic-key rejection diagnostics.
+- `recovery_evidence_max_bytes`: positive finite mandatory byte cap for every current-evidence read and encoded write, including startup validation of both machine and observation streams and offline Shadow-PnL reads. Zero and the sentinel-overflow value are rejected.
 
-Decision-evidence JSONL records use `schema_version = 15` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `capital_admission_rebuild`, `submit_reservation_metadata`, `submit_reservation_fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, `requote_throttle`, `settlement`, `settlement_booking_error`, `venue_truth_capture_failure`, and `venue_truth_divergence` envelopes.
-The additive optional strategy-input fields `realized_volatility_gate_result` and `realized_volatility_receive_watermark_ms`, plus the entry-skip fields `realized_vol_gate_result`, `realized_vol_receive_watermark_ms`, and `realized_vol_snapshot`, remain within schema 15. Explicit JSON `null` is treated like omission: receive watermarks and the entry-skip snapshot deserialize as `None`, while both gate-result fields follow the same legacy fallback and infer `Accepted` only when complete, valid legacy realized-volatility provenance supports that inference; otherwise the gate result remains `None`. Older serde readers accept and ignore these unknown keys. No evidence migration or schema-version bump is required for this additive extension.
-Legacy inferred `Accepted` reflects the pre-fix event-domain gate and must not be pooled or interpreted as equivalent to explicit post-fix receive-domain gate results.
-The additive optional exit-replay inputs also remain within schema 15. `exit_decision` carries `rv_snapshot_receive_watermark_ms: Option<u64>`, `rv_max_source_age_ms: Option<u64>`, and `rv_snapshot_has_ready_realized_vol: Option<bool>`; `exit_evaluation` carries `rv_snapshot_receive_watermark_ms: Option<i64>` and `rv_max_source_age_ms: Option<u64>`, matching each record family's existing timestamp convention, and retains its existing `rv_ready` usable-readiness projection. A record is legacy-unreplayable only when `rv_max_source_age_ms` is omitted, `null`, or nonpositive, or, for `exit_decision`, when the independent `rv_snapshot_has_ready_realized_vol` marker is omitted or `null`. Once those markers are present, an omitted or `null` snapshot/as-of input, evaluation receive input, or receive-watermark input is a legitimate classifier input rather than a legacy marker and reconstructs `MissingSnapshot`, `MissingEvaluationEventTime`, or `RejectedNotReady`, respectively, in the normative classifier precedence. New `exit_evaluation` records use checked conversion for all five outbound absolute timestamps (`trigger_ts_event_ms`, `trigger_ts_init_ms`, `exit_eval_now_ms`, `rv_as_of_ms`, and `rv_snapshot_receive_watermark_ms`); a conversion failure logs one field-specific error, skips the entire evidence record without a partial write or substituted value, and does not abort or alter the exit callback. Evaluation `trigger_ts_init_ms` and `rv_snapshot_receive_watermark_ms` are non-negative receive-domain millisecond integers, with negative values rejected during decoding and encoding. The historical `rv_as_of_minus_now_ms` field name and wire semantics are preserved: it remains the checked signed difference between the RV snapshot as-of time and the trigger venue-event time. Replay never consults the stored gate result or gate-filtered realized-volatility value. These fields are additive and optional, so pre-extension records remain readable and no schema-version bump or migration is required.
-Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, `fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, `requote_throttle`, `settlement`, `booking_error`, `capture_failure`, or `divergence`.
-The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `capital_admission_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, `submit_reservation_fill` for fill metadata, `entry_skip` for entry skip rationale, `exit_decision` for exit rationale, `loss_governor_halt` for loss-governor halt transitions, `requote_throttle` for maker requote budget throttle transitions, `settlement` for successful hold-to-resolution settlement bookings, `settlement_booking_error` for accepted fail-closed settlement booking errors, `venue_truth_capture_failure` for degraded venue REST capture authority evidence, and `venue_truth_divergence` for durable venue-truth halt evidence.
-`order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
-`order_intent.clamp_outcome` is `null` for orders that do not enter the venue-position clamp. Clamp-eligible risk-reducing exits and kill-switch forced reductions record one of: `within_bounds` when the order quantity is already no larger than venue truth, `clamped` with `original_quantity` when the order is resized before submit, `rejected` when the clamp refuses the submit, or `not_evaluated` with `no_venue_truth` / `foreign_instrument` when venue truth cannot authoritatively size that instrument.
-`admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id` and the `execution_client_id` whose submit-admission limits were evaluated.
-`strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
-`exit_decision` and `exit_evaluation` payloads carry optional observed exit inputs when available: `spot_price`, `spot_venue_name`, `fast_venue_available`, `reference_current_price`, `reference_current_price_available`, `interval_open`, `fair_probability_up`, `fair_probability_down`, `uncertainty_band_probability`, `up_fee_bps`, and `down_fee_bps`. `exit_decision` also carries optional `submission_order_side`, `submission_price`, and `submission_quantity`. Numeric observed-input fields are serialized as decimal strings. Pre-extension schema-14 records may omit these keys; readers treat omitted optional fields as absent and omitted availability flags as `false`.
-`capital_admission_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-14 reservation records.
-Schema 11 added reference-current-price provenance fields in strategy-input snapshots; schema 13 added durable state-change rationale for entry skips, exit decisions, loss-governor halts, and maker requote throttles; schema 14 renamed the rebuild audit kind to `capital_admission_rebuild`; schema 15 added position-interval exit block reasons.
+All configured paths use one canonical component spelling relative to `catalog_directory`. Redundant
+separators, dot components, trailing separators, parent traversal, equality, and every
+ancestor/descendant relation among active and retired paths are rejected before filesystem mutation.
+The runtime holds a nonblocking exclusive lock on the opened catalog descriptor for the complete
+writer lifetime; a second writer fails before retired checks, parent creation, stream creation, or
+validation.
+The trading runtime has one current-format path: exact `(kind, schema_version)` plus exact `gate_id`
+selects one codec from the checked-in Rust contract generated from
+`config/decision-evidence-contract.toml`. `gate_version` is required nonempty diagnostic metadata;
+it does not select or reject codecs. Old, unknown, mixed, malformed, blank, or torn machine records
+fail closed. There is no schema ordering, compatibility decoder, fallback, migration, or runtime
+path for pre-cutover evidence. The hard-cutover runbook is
+`docs/runbooks/current-decision-evidence-hard-cutover.md`.
+
+Admitted entry and basket-grant identities embed any capital-reservation attribution authorized by
+that same decision. No standalone reservation-metadata identity exists, and rejected decisions cannot
+carry reservation attribution. Startup joins embedded attribution to the reconciled NautilusTrader
+open-order cache only after NT startup reconciliation completes; an unattributed open order fails
+closed.
 
 `order_intent.order_fields` fields:
 
@@ -685,10 +715,11 @@ There is no `state_directory` in the current bolt-v3 scope. NT's pinned `LiveNod
 
 ### `[persistence.streaming]`
 
-This section carries the current local catalog writer settings.
+This section carries the NT raw-capture catalog writer settings.
 It is required in the current live-trading scope.
-These settings apply to the single local persistence path for both structured decision events and raw NautilusTrader capture.
-The schema does not expose a separate raw-capture backend, rotation policy, or writer path.
+These settings do not configure Bolt-owned decision evidence, whose sole writer and paths are
+defined by `[persistence.decision_evidence]`.
+The schema does not expose a second raw-capture backend, rotation policy, or writer path.
 
 #### `catalog_fs_protocol`
 
@@ -942,12 +973,6 @@ bolt parses this string enum and maps it to the current pinned Nautilus/Polymark
 
 - type: positive integer
 - required: yes
-
-#### `ack_timeout_secs`
-
-- type: positive integer
-- required: yes
-- maps directly to the pinned Polymarket execution-client acknowledgment timeout field
 
 #### Additional Polymarket execution fields
 
@@ -1728,14 +1753,14 @@ generate_missing_orders = true
 inflight_check_interval_ms = 2000
 inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_secs = 0
-open_check_lookback_mins = 60
+open_check_interval_secs = 30
+open_check_lookback_mins = 0
 open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
 single_order_query_delay_ms = 100
-position_check_interval_secs = 0
+position_check_interval_secs = 30
 position_check_lookback_mins = 60
 position_check_threshold_ms = 5000
 position_check_retries = 3
@@ -1790,7 +1815,11 @@ runtime_capture_start_poll_interval_ms = 50
 data_client_readiness_probe_poll_interval_ms = 50
 
 [persistence.decision_evidence]
-order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+machine_relative_path = "bolt-v3/decision-evidence/current/machine.jsonl"
+observation_relative_path = "bolt-v3/decision-evidence/current/observation.jsonl"
+retired_relative_paths = ["bolt-v3/decision-evidence/order-intents.jsonl"]
+reject_episode_max_count = 4096
+recovery_evidence_max_bytes = 1048576
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
@@ -1838,7 +1867,6 @@ http_timeout_secs = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
 max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_ms = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_ms = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
-ack_timeout_secs = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
 fee_cache_ttl_secs = 300 # NT: PolymarketExecClientConfig fee cache TTL
 transport_backend = "sockudo" # NT: PolymarketExecClientConfig.transport_backend
 

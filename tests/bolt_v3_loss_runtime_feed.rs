@@ -1,13 +1,8 @@
 use crate::support;
 
-use bolt_v2::bolt_v3_decision_evidence::{
-    BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-    BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
-    BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-    BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-    BoltV3RequoteThrottleEvidence, BoltV3SettlementBookingErrorEvidence, BoltV3SettlementEvidence,
-    BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
-    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+use bolt_v2::bolt_v3_current_evidence::{
+    AdmissionDecisionOutcome, AdmissionRejectionReason, CurrentFact, LossSnapshotSource,
+    LossSnapshotStaleReason, StaleLossReason,
 };
 use bolt_v2::bolt_v3_loss_governor::{
     LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
@@ -18,7 +13,7 @@ use bolt_v2::bolt_v3_loss_runtime_feed::{
 };
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
-    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+    BoltV3SubmitIntentKind,
 };
 use nautilus_common::msgbus::{publish_account_state, publish_portfolio_snapshot};
 use nautilus_core::{UUID4, UnixNanos, nanos::DurationNanos};
@@ -32,17 +27,13 @@ use nautilus_model::identifiers::{
 };
 use nautilus_model::types::{AccountBalance, Currency, Money, Price, Quantity};
 use rust_decimal::Decimal;
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::{Arc, Mutex},
-};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 #[test]
 fn nt_runtime_feed_publishes_fresh_portfolio_loss_snapshot_to_submit_admission() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer.clone(),
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-001");
@@ -77,9 +68,9 @@ fn nt_runtime_feed_publishes_fresh_portfolio_loss_snapshot_to_submit_admission()
 
 #[test]
 fn subscribed_nt_events_update_submit_admission_loss_snapshot() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-002");
@@ -113,9 +104,9 @@ fn subscribed_nt_events_update_submit_admission_loss_snapshot() {
 
 #[test]
 fn subscribed_account_state_without_portfolio_snapshot_updates_loss_snapshot() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-ACCOUNT");
@@ -153,9 +144,9 @@ fn subscribed_account_state_without_portfolio_snapshot_updates_loss_snapshot() {
 
 #[test]
 fn account_state_equity_drop_updates_daily_and_rolling_loss() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-ACCOUNT-DROP");
@@ -197,9 +188,9 @@ fn account_state_equity_drop_updates_daily_and_rolling_loss() {
 
 #[test]
 fn account_state_heartbeat_preserves_portfolio_loss_components() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-ACCOUNT-PRESERVE");
@@ -243,9 +234,9 @@ fn account_state_heartbeat_preserves_portfolio_loss_components() {
 
 #[test]
 fn halt_action_handler_receives_snapshot_init_time_as_now() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-HALT-INIT");
@@ -280,9 +271,9 @@ fn halt_action_handler_receives_snapshot_init_time_as_now() {
 
 #[test]
 fn subscribed_untrusted_portfolio_snapshot_invokes_halt_action_with_none() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-UNTRUSTED");
@@ -323,9 +314,9 @@ fn subscribed_untrusted_portfolio_snapshot_invokes_halt_action_with_none() {
 
 #[test]
 fn stale_snapshot_admission_records_real_source_observation_diagnostics() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer.clone(),
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-STALE-DIAG");
@@ -359,17 +350,17 @@ fn stale_snapshot_admission_records_real_source_observation_diagnostics() {
     let decision = &decisions[0];
     assert_eq!(
         decision.outcome,
-        bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::RejectedLossGovernorHalted
+        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::LossGovernorHalted)
     );
     assert_eq!(
         decision.stale_reason,
-        Some(bolt_v2::bolt_v3_decision_evidence::BoltV3LossSnapshotStaleReason::AgeExceeded)
+        Some(LossSnapshotStaleReason::AgeExceeded)
     );
     assert_eq!(decision.snapshot_age_ns, Some(1_501));
     assert_eq!(decision.max_snapshot_age_ns, Some(1_000));
     assert_eq!(
         decision.snapshot_source,
-        Some(bolt_v2::bolt_v3_decision_evidence::BoltV3LossSnapshotSource::NtLossRuntimeFeed)
+        Some(LossSnapshotSource::NtLossRuntimeFeed)
     );
     assert!(decision.per_trade_pnl_present);
     assert!(decision.daily_pnl_present);
@@ -383,9 +374,9 @@ fn stale_snapshot_admission_records_real_source_observation_diagnostics() {
 
 #[test]
 fn stale_loss_halt_emits_populated_loss_governor_halt_evidence() {
-    let writer = Arc::new(RecordingLossHaltEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer.clone(),
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-RCA-EVIDENCE");
@@ -428,15 +419,15 @@ fn stale_loss_halt_emits_populated_loss_governor_halt_evidence() {
     let records = writer.loss_governor_halts();
     assert_eq!(records.len(), 1);
     let evidence = &records[0];
-    assert_eq!(evidence.stale_reason, BoltV3StaleLossReason::AgeExceeded);
+    assert_eq!(evidence.stale_reason, StaleLossReason::AgeExceeded);
     assert!(evidence.snapshot_present);
     assert_eq!(evidence.snapshot_observed_at_ns, Some(1_000));
     assert_eq!(evidence.admission_now_ns, 2_101);
     assert_eq!(evidence.snapshot_age_ns, Some(1_101));
     assert_eq!(evidence.max_snapshot_age_ns, 1_000);
     assert_eq!(
-        evidence.snapshot_source.as_deref(),
-        Some("nt_loss_runtime_feed")
+        evidence.snapshot_source,
+        Some(LossSnapshotSource::NtLossRuntimeFeed)
     );
     assert!(evidence.has_per_trade_pnl);
     assert!(evidence.has_daily_pnl);
@@ -455,15 +446,19 @@ fn stale_loss_halt_emits_populated_loss_governor_halt_evidence() {
     );
     assert_eq!(evidence.retry_count, 1);
     assert_eq!(evidence.elapsed_since_first_halt_ns, 0);
-    assert_eq!(writer.loss_halt_channel_count(), 1);
-    assert_eq!(writer.other_evidence_channel_count(), 0);
+    assert!(writer.facts().into_iter().all(|fact| matches!(
+        fact,
+        CurrentFact::LossGovernorHalt(_)
+            | CurrentFact::RejectedEntryAdmission(_)
+            | CurrentFact::OrderReject(_)
+    )));
 }
 
 #[test]
 fn stale_loss_halt_evidence_exponentially_samples_and_resets_after_accept() {
-    let writer = Arc::new(RecordingLossHaltEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer.clone(),
+        writer.recorder(),
         loss_policy(),
     ));
     admission.update_loss_snapshot(loss_snapshot_at(1_000));
@@ -495,8 +490,10 @@ fn stale_loss_halt_evidence_exponentially_samples_and_resets_after_accept() {
         .expect("fresh loss snapshot should reset stale-halt sampling")
         .commit_submitted();
     admission.update_loss_snapshot(loss_snapshot_at(3_000));
+    let mut recurring_stale_request = submit_request(Decimal::new(1, 0));
+    recurring_stale_request.client_order_id = "client-order-2".to_string();
     admission
-        .admit_at(&submit_request(Decimal::new(1, 0)), 4_001)
+        .admit_at(&recurring_stale_request, 4_001)
         .expect_err("recurring stale loss snapshot should restart sampling at one");
 
     let reset_records = writer.loss_governor_halts();
@@ -507,9 +504,9 @@ fn stale_loss_halt_evidence_exponentially_samples_and_resets_after_accept() {
 
 #[test]
 fn freshness_counts_advance_when_raw_events_do_not_publish_loss_snapshot() {
-    let writer = Arc::new(RecordingLossHaltEvidenceWriter::new());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::new();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer.clone(),
+        writer.recorder(),
         loss_policy(),
     ));
     let stale_snapshot = loss_snapshot_at(1_000);
@@ -557,9 +554,9 @@ fn freshness_counts_advance_when_raw_events_do_not_publish_loss_snapshot() {
 
 #[test]
 fn rolling_window_advances_from_portfolio_pnl_deltas_and_evicts_on_heartbeat() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         LossGovernorPolicy {
             max_snapshot_age_ns: 1_000,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
@@ -599,9 +596,9 @@ fn rolling_window_advances_from_portfolio_pnl_deltas_and_evicts_on_heartbeat() {
 
 #[test]
 fn position_adjustment_does_not_mask_larger_per_trade_loss() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-004");
@@ -632,9 +629,9 @@ fn position_adjustment_does_not_mask_larger_per_trade_loss() {
 
 #[test]
 fn later_safe_position_event_does_not_mask_open_position_per_trade_loss() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-PER-TRADE-WORST");
@@ -683,9 +680,9 @@ fn later_safe_position_event_does_not_mask_open_position_per_trade_loss() {
 
 #[test]
 fn active_position_pnl_cap_preserves_worst_overflow_loss() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-PER-TRADE-CAPPED");
@@ -747,9 +744,9 @@ fn active_position_pnl_cap_preserves_worst_overflow_loss() {
 
 #[test]
 fn position_opened_resets_completed_position_per_trade_pnl() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-PER-TRADE-OPENED");
@@ -798,9 +795,9 @@ fn position_opened_resets_completed_position_per_trade_pnl() {
 
 #[test]
 fn account_state_heartbeat_refreshes_position_event_per_trade_timestamp() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-PER-TRADE-FRESH");
@@ -834,9 +831,9 @@ fn account_state_heartbeat_refreshes_position_event_per_trade_timestamp() {
 
 #[test]
 fn stale_peak_timestamp_does_not_make_fresh_portfolio_snapshot_stale() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         LossGovernorPolicy {
             max_snapshot_age_ns: 100,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
@@ -871,9 +868,9 @@ fn stale_peak_timestamp_does_not_make_fresh_portfolio_snapshot_stale() {
 
 #[test]
 fn flat_daily_pnl_portfolio_snapshot_does_not_lower_peak_equity() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-DRAWDOWN-PRESERVE");
@@ -911,9 +908,9 @@ fn flat_daily_pnl_portfolio_snapshot_does_not_lower_peak_equity() {
 
 #[test]
 fn feed_fails_closed_on_mixed_currency_portfolio_without_base_currency() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-006");
@@ -937,9 +934,9 @@ fn feed_fails_closed_on_mixed_currency_portfolio_without_base_currency() {
 
 #[test]
 fn feed_fails_closed_on_empty_portfolio_money_facts() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-007");
@@ -963,9 +960,9 @@ fn feed_fails_closed_on_empty_portfolio_money_facts() {
 
 #[test]
 fn feed_fails_closed_on_mixed_currency_position_pnl() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-008");
@@ -989,9 +986,9 @@ fn feed_fails_closed_on_mixed_currency_position_pnl() {
 
 #[test]
 fn published_snapshot_invokes_configured_halt_action_handler() {
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer,
+        writer.recorder(),
         loss_policy(),
     ));
     let account_id = AccountId::from("SIM-LOSS-009");
@@ -1034,177 +1031,6 @@ fn published_snapshot_invokes_configured_halt_action_handler() {
     assert_eq!(recorded[0], (1_000, Some(Decimal::new(-50, 0))));
 }
 
-#[derive(Debug)]
-struct RecordingLossHaltEvidenceWriter {
-    loss_halts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,
-    loss_halt_channel_count: Mutex<usize>,
-    admission_decision_count: Mutex<usize>,
-    other_evidence_channel_count: Mutex<usize>,
-}
-
-impl RecordingLossHaltEvidenceWriter {
-    fn new() -> Self {
-        Self {
-            loss_halts: Mutex::new(Vec::new()),
-            loss_halt_channel_count: Mutex::new(0),
-            admission_decision_count: Mutex::new(0),
-            other_evidence_channel_count: Mutex::new(0),
-        }
-    }
-
-    fn loss_governor_halts(&self) -> Vec<BoltV3LossGovernorHaltEvidence> {
-        self.loss_halts
-            .lock()
-            .expect("loss halt evidence mutex should not be poisoned")
-            .clone()
-    }
-
-    fn loss_halt_channel_count(&self) -> usize {
-        *self
-            .loss_halt_channel_count
-            .lock()
-            .expect("loss halt channel count mutex should not be poisoned")
-    }
-
-    fn other_evidence_channel_count(&self) -> usize {
-        *self
-            .other_evidence_channel_count
-            .lock()
-            .expect("other evidence channel count mutex should not be poisoned")
-    }
-
-    fn increment_other_evidence_channel(&self) {
-        let mut count = self
-            .other_evidence_channel_count
-            .lock()
-            .expect("other evidence channel count mutex should not be poisoned");
-        *count += 1;
-    }
-}
-
-impl BoltV3DecisionEvidenceWriter for RecordingLossHaltEvidenceWriter {
-    fn record_strategy_input_snapshot(
-        &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_admission_decision(
-        &self,
-        _decision: &BoltV3AdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        let mut count = self
-            .admission_decision_count
-            .lock()
-            .expect("admission decision count mutex should not be poisoned");
-        *count += 1;
-        Ok(())
-    }
-
-    fn record_basket_admission_decision(
-        &self,
-        _decision: &BoltV3BasketAdmissionDecisionEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_capital_admission_rebuild_audit(
-        &self,
-        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_submit_reservation_metadata(
-        &self,
-        _metadata: &BoltV3SubmitReservationMetadataEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_submit_reservation_fill(
-        &self,
-        _fill: &BoltV3SubmitReservationFillEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_loss_governor_halt(
-        &self,
-        evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> anyhow::Result<()> {
-        self.loss_halts
-            .lock()
-            .expect("loss halt evidence mutex should not be poisoned")
-            .push(evidence.clone());
-        let mut count = self
-            .loss_halt_channel_count
-            .lock()
-            .expect("loss halt channel count mutex should not be poisoned");
-        *count += 1;
-        Ok(())
-    }
-
-    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_requote_throttle(
-        &self,
-        _throttle: &BoltV3RequoteThrottleEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_settlement(&self, _evidence: &BoltV3SettlementEvidence) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn record_settlement_booking_error(
-        &self,
-        _evidence: &BoltV3SettlementBookingErrorEvidence,
-    ) -> anyhow::Result<()> {
-        self.increment_other_evidence_channel();
-        Ok(())
-    }
-
-    fn drain_shutdown(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
 fn loss_policy() -> LossGovernorPolicy {
     LossGovernorPolicy {
         max_snapshot_age_ns: 1_000,
@@ -1217,7 +1043,7 @@ fn loss_policy() -> LossGovernorPolicy {
 
 fn loss_snapshot_at(observed_at_ns: u64) -> LossSnapshot {
     LossSnapshot {
-        source: "nt_loss_runtime_feed".to_string(),
+        source: Some(LossSnapshotSource::NtLossRuntimeFeed),
         observed_at_ns,
         per_trade_pnl: Some(Decimal::ZERO),
         daily_pnl: Some(Decimal::ZERO),
@@ -1238,7 +1064,6 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         order_side: OrderSide::Buy,
         order_quantity: Decimal::new(1, 0),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
         admission_evidence: None,

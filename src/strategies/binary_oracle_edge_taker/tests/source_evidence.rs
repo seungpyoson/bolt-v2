@@ -196,7 +196,7 @@ fn test_strategy_with_realized_volatility_surface(
     config.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
     let mut surfaces = std::collections::BTreeMap::new();
     surfaces.insert(TEST_SURFACE_ID.to_string(), engine_config);
-    let decision_evidence = std::sync::Arc::new(RecordingDecisionEvidenceWriter);
+    let decision_evidence = recording_decision_evidence();
     let submit_admission = std::sync::Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(decision_evidence.clone()),
     );
@@ -903,7 +903,7 @@ fn resolution_strike_reissue_does_not_depend_on_index_unsubscribe_pairing() {
 
 #[test]
 fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -965,46 +965,59 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
         "entry-evaluation log must keep the conjunction marker separate: {entry_evaluation_log}"
     );
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let [
-        RecordedDecisionEvidenceEvent::StrategyInput(snapshot),
-        RecordedDecisionEvidenceEvent::OrderIntent(intent),
-        RecordedDecisionEvidenceEvent::AdmissionDecision(admission),
+        CurrentFact::SubmitLinkedStrategyInputSnapshot(snapshot),
+        CurrentFact::EntryOrderIntent(intent),
+        CurrentFact::RejectedEntryAdmission(admission),
+        CurrentFact::OrderReject(reject),
     ] = events.as_slice()
     else {
-        panic!("expected strategy input, order intent, admission sequence; got {events:#?}");
+        panic!(
+            "expected strategy input, order intent, admission, order-reject sequence; got {events:#?}"
+        );
     };
 
-    assert_eq!(snapshot.strategy_id, strategy.config.strategy_id);
-    assert_eq!(snapshot.price_to_beat_value, "3100");
-    assert_eq!(snapshot.reference_quote_ts_event, 1_200);
-    assert_eq!(snapshot.spot_price, "3100.5");
-    assert_eq!(snapshot.realized_volatility, "1.5");
-    assert_eq!(snapshot.seconds_to_market_end, 300);
-    assert_eq!(snapshot.market_id.as_deref(), Some("MKT-1"));
+    let details = &snapshot.details;
+    assert_eq!(details.strategy_id, strategy.config.strategy_id);
+    assert_eq!(details.price_to_beat_value, "3100");
+    assert_eq!(details.reference_quote_ts_event, 1_200);
+    assert_eq!(details.spot_price, "3100.5");
+    let StrategyInputRvState::Present {
+        selected_annualized_decimal,
+        ..
+    } = &details.realized_volatility
+    else {
+        panic!("admitted snapshot must carry present realized volatility");
+    };
+    assert_eq!(selected_annualized_decimal.as_deref(), Some("1.5"));
+    assert_eq!(details.seconds_to_market_end, 300);
+    assert_eq!(details.market_id.as_deref(), Some("MKT-1"));
     assert_eq!(
-        snapshot.polymarket_condition_id.as_deref(),
+        details.polymarket_condition_id.as_deref(),
         Some("condition-MKT-1")
     );
     assert_eq!(
-        snapshot.polymarket_market_slug.as_deref(),
+        details.polymarket_market_slug.as_deref(),
         Some("slug-MKT-1")
     );
     assert_eq!(
-        snapshot.polymarket_question_id.as_deref(),
+        details.polymarket_question_id.as_deref(),
         Some("question-MKT-1")
     );
     assert_eq!(
-        snapshot.up_instrument_id.as_deref(),
+        details.up_instrument_id.as_deref(),
         Some("condition-MKT-1-MKT-1-UP.POLYMARKET")
     );
     assert_eq!(
-        snapshot.down_instrument_id.as_deref(),
+        details.down_instrument_id.as_deref(),
         Some("condition-MKT-1-MKT-1-DOWN.POLYMARKET")
     );
-    assert_eq!(snapshot.selected_side.as_deref(), Some("up"));
+    assert_eq!(details.selected_side, Some(EvidenceOutcomeSide::Up));
     assert!(
-        snapshot
+        details
             .up_worst_case_edge_basis_points
             .as_deref()
             .and_then(|value| value.parse::<f64>().ok())
@@ -1012,43 +1025,61 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
         "admitted entry snapshot must preserve the up-side thin margin"
     );
     assert!(
-        snapshot
+        details
             .down_worst_case_edge_basis_points
             .as_deref()
             .and_then(|value| value.parse::<f64>().ok())
             .is_some(),
         "admitted entry snapshot must preserve the down-side thin margin"
     );
-    assert!(snapshot.gate_blocked_by.is_empty());
-    assert!(snapshot.pricing_blocked_by.is_empty());
-    assert_eq!(snapshot.fast_venue_name.as_deref(), Some("bybit"));
+    assert!(details.gate_blocked_by.is_empty());
+    assert!(details.pricing_blocked_by.is_empty());
+    assert_eq!(details.fast_venue_name.as_deref(), Some("bybit"));
     assert!(
-        snapshot.fast_venue_available,
+        details.fast_venue_available,
         "admitted entry snapshot must expose admitted spot state"
     );
     assert!(
-        snapshot.reference_current_price_available,
+        details.reference_current_price_available,
         "admitted entry snapshot must expose admitted reference state"
     );
-    assert_eq!(snapshot.fast_venue_age_ms, Some(17));
-    assert_eq!(snapshot.fast_venue_jitter_ms, Some(3));
-    assert!(!snapshot.fast_venue_incoherent);
+    assert_eq!(details.fast_venue_age_ms, Some(17));
+    assert_eq!(details.fast_venue_jitter_ms, Some(3));
+    assert!(!details.fast_venue_incoherent);
     assert_eq!(
-        snapshot
+        details
             .lead_agreement_corr
             .as_deref()
             .and_then(|value| value.parse::<f64>().ok()),
         Some(0.99)
     );
-    assert_eq!(snapshot.submission_instrument_id, intent.instrument_id);
-    assert_eq!(snapshot.submission_order_side, intent.order_side);
-    assert_eq!(snapshot.submission_price, intent.price);
-    assert_eq!(snapshot.submission_quantity, intent.quantity);
-    assert_eq!(snapshot.client_order_id, intent.client_order_id);
-    assert_eq!(admission.client_order_id, intent.client_order_id);
     assert_eq!(
-        admission.outcome,
-        crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::RejectedNotionalCapExceeded
+        snapshot.submission.instrument_id,
+        intent.details.instrument_id
+    );
+    assert_eq!(snapshot.submission.order_side, intent.details.order_side);
+    assert_eq!(snapshot.submission.price, intent.details.price);
+    assert_eq!(snapshot.submission.quantity, intent.details.quantity);
+    assert_eq!(
+        snapshot.submission.client_order_id,
+        intent.details.client_order_id
+    );
+    assert_eq!(
+        admission.details.client_order_id,
+        intent.details.client_order_id
+    );
+    assert_eq!(
+        admission.reason,
+        crate::bolt_v3_current_evidence::AdmissionRejectionReason::NotionalCapExceeded
+    );
+    assert_eq!(reject.client_order_id, intent.details.client_order_id);
+    assert_eq!(
+        reject.reject_source,
+        crate::bolt_v3_current_evidence::OrderRejectSource::SubmitAdmission
+    );
+    assert_eq!(
+        reject.reject_reason,
+        crate::bolt_v3_current_evidence::OrderRejectReason::AdmissionRejected
     );
 }
 
@@ -1074,10 +1105,7 @@ fn rv_clock_domain_amendment_entry_log_uses_admitted_receipt_after_snapshot_repl
         Some(TEST_SOURCE_ID)
     );
     assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
-    assert_eq!(
-        fields.realized_vol_gate_result,
-        BoltV3RvGateResult::Accepted
-    );
+    assert_eq!(fields.realized_vol_gate_result, RvGateResult::Accepted);
     assert_eq!(
         fields.realized_vol_receive_watermark_ms,
         Some(LocalReceiveMs::new(1_200))
@@ -1100,16 +1128,13 @@ fn rv_clock_domain_amendment_entry_skip_uses_admitted_receipt_after_snapshot_rep
 
     replace_rv_with_distinguishable_snapshot(&mut strategy);
     strategy
-        .record_entry_skip_once(
-            1_300,
-            &decision,
-            BoltV3EntrySkipReasonCategory::NoSideSelected,
-            None,
-        )
+        .record_entry_skip_once(1_300, &decision, EntrySkipReason::NoSideSelected)
         .expect("skip evidence should record from the admitted receipt");
 
-    let events = evidence.events();
-    let Some(RecordedDecisionEvidenceEvent::EntrySkip(skip)) = events.first() else {
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
+    let Some(CurrentFact::EntrySkipObservation(skip)) = events.first() else {
         panic!("expected entry-skip evidence; got {events:#?}");
     };
     assert_eq!(skip.realized_vol.as_deref(), Some("1.5"));
@@ -1118,34 +1143,40 @@ fn rv_clock_domain_amendment_entry_skip_uses_admitted_receipt_after_snapshot_rep
         Some(TEST_SOURCE_ID)
     );
     assert_eq!(skip.realized_vol_source_ts_ms, Some(1_200));
-    assert_eq!(
-        skip.realized_vol_gate_result,
-        Some(BoltV3RvGateResult::Accepted)
-    );
-    assert_eq!(
-        skip.realized_vol_receive_watermark_ms,
-        Some(LocalReceiveMs::new(1_200))
-    );
+    assert_eq!(skip.realized_vol_gate_result, Some(RvGateResult::Accepted));
+    assert_eq!(skip.realized_vol_receive_watermark_ms, Some(1_200));
     let snapshot = skip
         .realized_vol_snapshot
         .as_ref()
         .expect("durable skip must independently identify admitted snapshot A");
     assert_eq!(snapshot.surface_id, TEST_SURFACE_ID);
     assert_eq!(snapshot.as_of_ms, Some(1_200));
-    assert_eq!(snapshot.annualized_decimal, "1.5");
-    assert_eq!(snapshot.measured_annualized_decimal, "1.5");
-    assert_eq!(snapshot.noise_robust_annualized_decimal, "1.5");
-    assert_eq!(snapshot.continuous_annualized_decimal, "1.5");
-    assert_eq!(snapshot.jump_annualized_decimal, "0");
-    assert_eq!(snapshot.forecast_annualized_decimal, "");
-    assert_eq!(snapshot.pricing_component, "measured");
+    assert_eq!(snapshot.annualized_decimal.as_deref(), Some("1.5"));
+    assert_eq!(snapshot.measured_annualized_decimal.as_deref(), Some("1.5"));
+    assert_eq!(
+        snapshot.noise_robust_annualized_decimal.as_deref(),
+        Some("1.5")
+    );
+    assert_eq!(
+        snapshot.continuous_annualized_decimal.as_deref(),
+        Some("1.5")
+    );
+    assert_eq!(snapshot.jump_annualized_decimal.as_deref(), Some("0"));
+    assert_eq!(snapshot.forecast_annualized_decimal, None);
+    assert_eq!(
+        snapshot.pricing_component,
+        RealizedVolPricingComponent::Measured
+    );
     assert_eq!(snapshot.seconds_per_annum, "31536000");
-    assert_eq!(snapshot.aggregation, "upper_quantile");
+    assert_eq!(snapshot.aggregation, RealizedVolAggregation::UpperQuantile);
     assert_eq!(snapshot.sources_used, vec![TEST_SOURCE_ID.to_string()]);
     assert!(snapshot.source_diagnostics.is_empty());
     assert!(snapshot.unknown_source_rejections.is_empty());
     assert!(snapshot.blockers.is_empty());
-    assert!(snapshot.config_fingerprint.is_empty());
+    assert_eq!(
+        snapshot.config_fingerprint,
+        "<test-seed-config-fingerprint>"
+    );
 }
 
 #[test]
@@ -1173,89 +1204,137 @@ fn rv_clock_domain_amendment_submit_evidence_cannot_veto_admitted_order() {
         matches!(&strategy.exposure, ExposureState::PendingEntry(_)),
         "submitted routing must retain pending entry exposure"
     );
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_))),
+            .any(|event| matches!(event, CurrentFact::EntryOrderIntent(_))),
         "actual submit routing must persist an order intent"
     );
     assert!(
-        events.iter().any(|event| matches!(
-            event,
-            RecordedDecisionEvidenceEvent::AdmissionDecision(admission)
-                if admission.outcome
-                    == crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::Admitted
-        )),
+        events
+            .iter()
+            .any(|event| matches!(event, CurrentFact::AdmittedEntryAdmission(_))),
         "actual submit routing must persist accepted submit admission"
     );
     let snapshot = events
         .into_iter()
         .find_map(|event| match event {
-            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some(snapshot),
+            CurrentFact::SubmitLinkedStrategyInputSnapshot(snapshot) => Some(snapshot),
             _ => None,
         })
         .expect("actual submit route must persist strategy-input evidence");
-    assert_eq!(snapshot.realized_volatility, "1.5");
-    assert_eq!(snapshot.realized_volatility_surface_id, TEST_SURFACE_ID);
-    assert_eq!(snapshot.realized_volatility_as_of_ms, Some(1_200));
+    let StrategyInputRvState::Present {
+        selected_annualized_decimal,
+        gate_result,
+        receive_watermark_ms,
+        snapshot,
+    } = &snapshot.details.realized_volatility
+    else {
+        panic!("submit-linked snapshot must carry present realized volatility");
+    };
+    assert_eq!(selected_annualized_decimal.as_deref(), Some("1.5"));
+    assert_eq!(snapshot.surface_id, TEST_SURFACE_ID);
+    assert_eq!(snapshot.as_of_ms, Some(1_200));
+    assert_eq!(snapshot.sources_used, vec![TEST_SOURCE_ID.to_string()]);
+    assert_eq!(*gate_result, RvGateResult::Accepted);
+    assert_eq!(*receive_watermark_ms, Some(1_200));
+    assert_eq!(snapshot.annualized_decimal.as_deref(), Some("1.5"));
+    assert_eq!(snapshot.measured_annualized_decimal.as_deref(), Some("1.5"));
     assert_eq!(
-        snapshot.realized_volatility_sources_used,
-        vec![TEST_SOURCE_ID.to_string()]
+        snapshot.noise_robust_annualized_decimal.as_deref(),
+        Some("1.5")
     );
     assert_eq!(
-        snapshot.realized_volatility_gate_result,
-        Some(BoltV3RvGateResult::Accepted)
+        snapshot.continuous_annualized_decimal.as_deref(),
+        Some("1.5")
     );
+    assert_eq!(snapshot.jump_annualized_decimal.as_deref(), Some("0"));
+    assert_eq!(snapshot.forecast_annualized_decimal, None);
     assert_eq!(
-        snapshot.realized_volatility_receive_watermark_ms,
-        Some(LocalReceiveMs::new(1_200))
+        snapshot.pricing_component,
+        RealizedVolPricingComponent::Measured
     );
-    assert_eq!(snapshot.realized_volatility_annualized_decimal, "1.5");
+    assert_eq!(snapshot.seconds_per_annum, "31536000");
+    assert_eq!(snapshot.aggregation, RealizedVolAggregation::UpperQuantile);
+    assert!(snapshot.source_diagnostics.is_empty());
+    assert!(snapshot.unknown_source_rejections.is_empty());
+    assert!(snapshot.blockers.is_empty());
     assert_eq!(
-        snapshot.realized_volatility_measured_annualized_decimal,
-        "1.5"
+        snapshot.config_fingerprint,
+        "<test-seed-config-fingerprint>"
     );
-    assert_eq!(
-        snapshot.realized_volatility_noise_robust_annualized_decimal,
-        "1.5"
+}
+
+#[test]
+fn submit_snapshot_failure_clears_pending_entry_and_never_reaches_submit_admission() {
+    let evidence = failing_decision_evidence();
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
-    assert_eq!(
-        snapshot.realized_volatility_continuous_annualized_decimal,
-        "1.5"
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence,
+        submit_admission.clone(),
     );
-    assert_eq!(snapshot.realized_volatility_jump_annualized_decimal, "0");
-    assert_eq!(snapshot.realized_volatility_forecast_annualized_decimal, "");
-    assert_eq!(snapshot.realized_volatility_pricing_component, "measured");
-    assert_eq!(snapshot.realized_volatility_seconds_per_annum, "31536000");
-    assert_eq!(snapshot.realized_volatility_aggregation, "upper_quantile");
-    assert!(snapshot.realized_volatility_source_diagnostics.is_empty());
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
+    let decision = strategy.entry_submission_decision_at(1_200);
     assert!(
-        snapshot
-            .realized_volatility_unknown_source_rejections
-            .is_empty()
+        decision.instrument_id.is_some(),
+        "fixture must reach admitted entry order construction"
     );
-    assert!(snapshot.realized_volatility_blockers.is_empty());
-    assert!(snapshot.realized_volatility_config_fingerprint.is_empty());
+
+    let error = strategy
+        .submit_admitted_entry_decision(1_200, decision)
+        .expect_err("submit-linked snapshot failure must veto the entry");
+
+    assert!(
+        error
+            .to_string()
+            .contains("evidence commit indeterminate during write"),
+        "{error:#}"
+    );
+    assert!(
+        !matches!(strategy.exposure, ExposureState::PendingEntry(_)),
+        "snapshot failure must clear strategy-local pending-entry state"
+    );
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "snapshot failure must stop before shared submit admission and NT submit"
+    );
 }
 
 fn assert_admitted_a_snapshot_fields(fields: &RealizedVolatilityEvidenceFields) {
     assert_eq!(fields.surface_id, TEST_SURFACE_ID);
     assert_eq!(fields.as_of_ms, Some(1_200));
-    assert_eq!(fields.annualized_decimal, "1.5");
-    assert_eq!(fields.measured_annualized_decimal, "1.5");
-    assert_eq!(fields.noise_robust_annualized_decimal, "1.5");
-    assert_eq!(fields.continuous_annualized_decimal, "1.5");
-    assert_eq!(fields.jump_annualized_decimal, "0");
-    assert_eq!(fields.forecast_annualized_decimal, "");
-    assert_eq!(fields.pricing_component, "measured");
+    assert_eq!(fields.annualized_decimal.as_deref(), Some("1.5"));
+    assert_eq!(fields.measured_annualized_decimal.as_deref(), Some("1.5"));
+    assert_eq!(
+        fields.noise_robust_annualized_decimal.as_deref(),
+        Some("1.5")
+    );
+    assert_eq!(fields.continuous_annualized_decimal.as_deref(), Some("1.5"));
+    assert_eq!(fields.jump_annualized_decimal.as_deref(), Some("0"));
+    assert_eq!(fields.forecast_annualized_decimal, None);
+    assert_eq!(
+        fields.pricing_component,
+        Some(RealizedVolPricingComponent::Measured)
+    );
     assert_eq!(fields.seconds_per_annum, "31536000");
-    assert_eq!(fields.aggregation, "upper_quantile");
+    assert_eq!(
+        fields.aggregation,
+        Some(RealizedVolAggregation::UpperQuantile)
+    );
     assert_eq!(fields.sources_used, vec![TEST_SOURCE_ID.to_string()]);
     assert!(fields.source_diagnostics.is_empty());
     assert!(fields.unknown_source_rejections.is_empty());
     assert!(fields.blockers.is_empty());
-    assert!(fields.config_fingerprint.is_empty());
+    assert_eq!(fields.config_fingerprint, "<test-seed-config-fingerprint>");
 }
 
 fn replace_rv_with_distinguishable_snapshot(strategy: &mut BinaryOracleEdgeTaker) {
@@ -1326,9 +1405,9 @@ fn replace_rv_with_distinguishable_snapshot(strategy: &mut BinaryOracleEdgeTaker
 
 fn admitted_entry_strategy_for_rv_receipt() -> (
     BinaryOracleEdgeTaker,
-    Arc<RecordingSequencedDecisionEvidenceWriter>,
+    Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
 ) {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1343,7 +1422,7 @@ fn admitted_entry_strategy_for_rv_receipt() -> (
 #[test]
 fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     let replay = strategy_input_quote_replay();
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1446,22 +1525,37 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
             &replay_decision,
         )
         .expect("replay should build blocked strategy-input evidence");
-    assert_eq!(snapshot.spot_price, "108642.25");
+    let record_outcome =
+        recording_decision_evidence().record_blocked_strategy_input_observation(snapshot.clone());
+    assert!(
+        matches!(
+            record_outcome,
+            crate::bolt_v3_current_evidence::ObservationRecordOutcome::Appended(_)
+        ),
+        "a snapshot built by the blocked producer must be recordable: {record_outcome:?}"
+    );
+    assert_eq!(snapshot.details.spot_price.as_deref(), Some("108642.25"));
     assert_eq!(
-        snapshot.reference_current_price.as_deref(),
+        snapshot.details.reference_current_price.as_deref(),
         Some("108500.25")
     );
     assert_eq!(
-        snapshot.reference_current_price_source_id.as_deref(),
+        snapshot
+            .details
+            .reference_current_price_source_id
+            .as_deref(),
         Some(replay.reference.source_id.as_str())
     );
-    assert_eq!(snapshot.reference_current_price_failed_over, Some(false));
+    assert_eq!(
+        snapshot.details.reference_current_price_failed_over,
+        Some(false)
+    );
     assert!(
-        !snapshot.fast_venue_available,
+        !snapshot.details.fast_venue_available,
         "fallback spot evidence must not be reported as admitted"
     );
     assert!(
-        !snapshot.reference_current_price_available,
+        !snapshot.details.reference_current_price_available,
         "fallback reference evidence must not be reported as admitted"
     );
     let log_fields =
@@ -1515,10 +1609,11 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     assert_eq!(submitted, None);
 
     let entry_skips = evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            CurrentFact::EntrySkipObservation(skip) => Some(skip),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1529,9 +1624,8 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     );
     let skip = &entry_skips[0];
     assert!(
-        skip.pricing_blocked_by.contains(
-            &crate::bolt_v3_decision_evidence::BoltV3EntryPricingBlockReason::SpotPriceMissing
-        ),
+        skip.pricing_blocked_by
+            .contains(&crate::bolt_v3_current_evidence::EntryPricingBlockReason::SpotPriceMissing),
         "replay should preserve the incident blocker shape, got {:?}",
         skip.pricing_blocked_by
     );
@@ -1555,7 +1649,7 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
 
 #[test]
 fn shadow_policy_does_not_leave_pending_entry_between_would_be_entries() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1588,9 +1682,10 @@ fn shadow_policy_does_not_leave_pending_entry_between_would_be_entries() {
     );
     assert_eq!(
         evidence
-            .events()
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
             .iter()
-            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_)))
+            .filter(|event| matches!(event, CurrentFact::EntryOrderIntent(_)))
             .count(),
         2,
         "each shadow entry should still record order-intent evidence"
@@ -1599,7 +1694,7 @@ fn shadow_policy_does_not_leave_pending_entry_between_would_be_entries() {
 
 #[test]
 fn shadow_policy_entries_do_not_exhaust_live_admission_count_cap() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission =
         submit_admission_with_provider_cap(Decimal::new(10_000, 0), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
@@ -1624,27 +1719,21 @@ fn shadow_policy_entries_do_not_exhaust_live_admission_count_cap() {
         0,
         "shadow entries must not consume live submit admission capacity"
     );
-    let admission_outcomes = evidence
-        .events()
+    let admitted_count = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
-        .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::AdmissionDecision(admission) => Some(admission.outcome),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+        .filter(|event| matches!(event, CurrentFact::AdmittedEntryAdmission(_)))
+        .count();
     assert_eq!(
-        admission_outcomes,
-        vec![
-            crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::Admitted,
-            crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::Admitted,
-        ],
+        admitted_count, 2,
         "shadow mode should still record admitted decisions for each would-be entry"
     );
 }
 
 #[test]
 fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1716,18 +1805,23 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     );
     assert_eq!(
         evidence
-            .events()
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
             .iter()
-            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_)))
+            .filter(|event| matches!(event, CurrentFact::RiskReducingExitOrderIntent(_)))
             .count(),
         1,
-        "latched shadow exit should record one order-intent"
+        "latched shadow exit should record one risk-reducing order intent"
     );
     let exit_decisions = evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::ExitDecision(decision) => Some(decision),
+            CurrentFact::ExitSubmissionDecision(decision) => {
+                Some(RecordedExitDecision::Submission(*decision))
+            }
+            CurrentFact::ExitHoldDecision(decision) => Some(RecordedExitDecision::Hold(*decision)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1736,43 +1830,42 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
         2,
         "exit action plus one pending-exit block should be recorded once each"
     );
+    assert!(matches!(
+        exit_decisions[0],
+        RecordedExitDecision::Submission(ref record)
+            if record.outcome == ExitSubmissionOutcome::ExitFailClosed
+    ));
+    let first_details = exit_decisions[0].details();
     assert_eq!(
-        exit_decisions[0].exit_decision,
-        BoltV3ExitDecisionOutcome::Exit
+        first_details.forced_flat_reasons,
+        vec![crate::bolt_v3_current_evidence::ForcedFlatReason::Freeze]
     );
+    assert_eq!(first_details.exit_eval_now_ms, 1_200);
     assert_eq!(
-        exit_decisions[0].forced_flat_reasons,
-        vec![BoltV3ForcedFlatReason::Freeze]
+        first_details.exit_trigger_source,
+        ExitTriggerSource::SelectionUpdate
     );
-    assert_eq!(exit_decisions[0].exit_eval_now_ms, 1_200);
+    assert_eq!(first_details.trigger_ts_event_ms, 1_200);
+    assert_eq!(first_details.trigger_ts_init_ms, Some(1_200));
+    assert_eq!(first_details.rv_surface_id, TEST_SURFACE_ID);
+    assert_eq!(first_details.rv_snapshot_as_of_ms, Some(1_200));
+    assert!(first_details.rv_snapshot_ready);
+    assert_eq!(first_details.rv_snapshot_blockers, Vec::new());
+    assert_eq!(first_details.rv_gate_result, RvGateResult::Accepted);
+    assert_eq!(first_details.rv_future_dating_delta_ms, None);
+    assert!(matches!(
+        exit_decisions[1],
+        RecordedExitDecision::Hold(ref record) if record.outcome == ExitHoldOutcome::Blocked
+    ));
     assert_eq!(
-        exit_decisions[0].exit_trigger_source,
-        BoltV3ExitTriggerSource::SelectionUpdate
-    );
-    assert_eq!(exit_decisions[0].trigger_ts_event_ms, 1_200);
-    assert_eq!(exit_decisions[0].trigger_ts_init_ms, Some(1_200));
-    assert_eq!(exit_decisions[0].rv_surface_id, TEST_SURFACE_ID);
-    assert_eq!(exit_decisions[0].rv_snapshot_as_of_ms, Some(1_200));
-    assert!(exit_decisions[0].rv_snapshot_ready);
-    assert_eq!(exit_decisions[0].rv_snapshot_blockers, Vec::new());
-    assert_eq!(
-        exit_decisions[0].rv_gate_result,
-        BoltV3ExitRvGateResult::Accepted
-    );
-    assert_eq!(exit_decisions[0].rv_future_dating_delta_ms, None);
-    assert_eq!(
-        exit_decisions[1].exit_decision,
-        BoltV3ExitDecisionOutcome::Blocked
-    );
-    assert_eq!(
-        exit_decisions[1].blocked_reason,
-        Some(BoltV3ExitBlockedReason::ExitAlreadyPending)
+        exit_decisions[1].blocked_reason(),
+        Some(ExitBlockedReason::ExitAlreadyPending)
     );
 }
 
 #[test]
 fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
@@ -1877,80 +1970,69 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
         ))
         .expect("signal quote trigger should process");
 
-    let exit_decisions = evidence
-        .events()
-        .into_iter()
-        .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::ExitDecision(decision) => Some(decision),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let exit_decisions = recorded_exit_decisions(&evidence);
     assert_eq!(exit_decisions.len(), 1);
-    let decision = &exit_decisions[0];
-    assert_eq!(decision.realized_vol, None);
-    assert_eq!(decision.rv_snapshot_as_of_ms, Some(future_as_of_ms));
-    assert!(decision.rv_snapshot_ready);
-    assert_eq!(
-        decision.rv_gate_result,
-        BoltV3ExitRvGateResult::RejectedFutureDated
-    );
-    assert_eq!(decision.rv_future_dating_delta_ms, Some(future_delta_ms));
+    let RecordedExitDecision::Submission(decision) = &exit_decisions[0] else {
+        panic!("freeze exit must record a submission decision");
+    };
+    let details = &decision.details;
+    assert_eq!(details.realized_vol, None);
+    assert_eq!(details.rv_snapshot_as_of_ms, Some(future_as_of_ms));
+    assert!(details.rv_snapshot_ready);
+    assert_eq!(details.rv_gate_result, RvGateResult::RejectedFutureDated);
+    assert_eq!(details.rv_future_dating_delta_ms, Some(future_delta_ms));
     // Freeze phase forces the position flat, so the recorded exit is a
     // forced-flat Exit: exit_evaluation_at short-circuits on
     // forced_flat_reasons before the RV gate, so the future-dated RV is
     // captured only as a diagnostic (rv_gate_result above), not as the exit
     // cause. RV-driven missing valuation input holds rather than liquidating by
     // default; that path is covered by the pricing / exposure tests.
-    assert_eq!(decision.exit_decision, BoltV3ExitDecisionOutcome::Exit);
+    assert_eq!(decision.outcome, ExitSubmissionOutcome::ExitFailClosed);
     assert_eq!(
-        decision.forced_flat_reasons,
-        vec![BoltV3ForcedFlatReason::Freeze]
+        details.forced_flat_reasons,
+        vec![crate::bolt_v3_current_evidence::ForcedFlatReason::Freeze]
     );
-    assert_eq!(decision.blocked_reason, None);
-    assert_eq!(decision.spot_price.as_deref(), Some("3100.25"));
+    assert_eq!(details.spot_price.as_deref(), Some("3100.25"));
     assert_eq!(
-        decision.spot_venue_name.as_deref(),
+        details.spot_venue_name.as_deref(),
         Some("signal_data_client")
     );
-    assert!(decision.fast_venue_available);
-    assert_eq!(decision.reference_current_price.as_deref(), Some("3100.5"));
-    assert!(decision.reference_current_price_available);
-    assert_eq!(decision.interval_open.as_deref(), Some("3100"));
-    assert_eq!(decision.fair_probability_up, None);
-    assert_eq!(decision.fair_probability_down, None);
-    assert_eq!(decision.uncertainty_band_probability, None);
+    assert!(details.fast_venue_available);
+    assert_eq!(details.reference_current_price.as_deref(), Some("3100.5"));
+    assert!(details.reference_current_price_available);
+    assert_eq!(details.interval_open.as_deref(), Some("3100"));
+    assert_eq!(details.fair_probability_up, None);
+    assert_eq!(details.fair_probability_down, None);
+    assert_eq!(details.uncertainty_band_probability, None);
     assert!(
-        decision.up_fee_bps.is_some(),
+        details.up_fee_bps.is_some(),
         "exit decision evidence must preserve the up-side fee input"
     );
     assert!(
-        decision.down_fee_bps.is_some(),
+        details.down_fee_bps.is_some(),
         "exit decision evidence must preserve the down-side fee input"
     );
     assert!(
-        decision.submission_order_side.is_some(),
+        decision.submission.order_side != EvidenceOrderSide::Unspecified,
         "exit decision evidence must preserve the submitted order side"
     );
     assert!(
-        decision.submission_price.is_some(),
+        !decision.submission.price.is_empty(),
         "exit decision evidence must preserve the submitted order price"
     );
     assert!(
-        decision.submission_quantity.is_some(),
+        !decision.submission.quantity.is_empty(),
         "exit decision evidence must preserve the submitted order quantity"
     );
-    assert_eq!(
-        decision.exit_trigger_source,
-        BoltV3ExitTriggerSource::SignalQuote
-    );
-    assert_eq!(decision.trigger_ts_event_ms, exit_eval_now_ms);
-    assert_eq!(decision.trigger_ts_init_ms, Some(exit_eval_now_ms));
-    assert_eq!(decision.exit_eval_now_ms, exit_eval_now_ms);
+    assert_eq!(details.exit_trigger_source, ExitTriggerSource::SignalQuote);
+    assert_eq!(details.trigger_ts_event_ms, exit_eval_now_ms);
+    assert_eq!(details.trigger_ts_init_ms, Some(exit_eval_now_ms));
+    assert_eq!(details.exit_eval_now_ms, exit_eval_now_ms);
 }
 
 #[test]
 fn shadow_policy_surfaces_admission_rejection_and_clears_pending_entry() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -1976,24 +2058,25 @@ fn shadow_policy_surfaces_admission_rejection_and_clears_pending_entry() {
         0,
         "a rejected shadow entry must not consume live submit capacity"
     );
-    let admission_outcomes = evidence
-        .events()
+    let rejection_reasons = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::AdmissionDecision(admission) => Some(admission.outcome),
+            CurrentFact::RejectedEntryAdmission(admission) => Some(admission.reason),
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        admission_outcomes,
-        vec![crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::RejectedNotionalCapExceeded],
+        rejection_reasons,
+        vec![AdmissionRejectionReason::NotionalCapExceeded],
         "a rejected shadow entry must still record the rejected admission decision"
     );
 }
 
 #[test]
 fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -2038,13 +2121,19 @@ fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections
         .try_submit_entry_order(1_200)
         .expect_err("submit admission should reject after evidence capture");
 
-    let events = evidence.events();
-    let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
+    let Some(CurrentFact::SubmitLinkedStrategyInputSnapshot(snapshot)) = events.first() else {
         panic!("expected first evidence event to be strategy input; got {events:#?}");
+    };
+    let StrategyInputRvState::Present { snapshot, .. } = &snapshot.details.realized_volatility
+    else {
+        panic!("ready RV snapshot must be present");
     };
     assert_eq!(
         snapshot
-            .realized_volatility_unknown_source_rejections
+            .unknown_source_rejections
             .get("<UNKNOWN_SOURCE_ID>"),
         Some(&2)
     );
@@ -2052,7 +2141,7 @@ fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections
 
 #[test]
 fn strategy_input_evidence_accepts_ready_surfaced_zero_realized_volatility() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -2099,17 +2188,27 @@ fn strategy_input_evidence_accepts_ready_surfaced_zero_realized_volatility() {
         "{error:#}"
     );
 
-    let events = evidence.events();
-    let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
+    let Some(CurrentFact::SubmitLinkedStrategyInputSnapshot(snapshot)) = events.first() else {
         panic!("expected first evidence event to be strategy input; got {events:#?}");
     };
-    assert_eq!(snapshot.realized_volatility, "0");
-    assert_eq!(snapshot.realized_volatility_annualized_decimal, "0");
+    let StrategyInputRvState::Present {
+        selected_annualized_decimal,
+        snapshot,
+        ..
+    } = &snapshot.details.realized_volatility
+    else {
+        panic!("ready zero RV snapshot must be present");
+    };
+    assert_eq!(selected_annualized_decimal.as_deref(), Some("0"));
+    assert_eq!(snapshot.annualized_decimal.as_deref(), Some("0"));
 }
 
 #[test]
 fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -2174,15 +2273,13 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
         None
     );
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let blocked_snapshots = events
         .iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::StrategyInput(snapshot)
-                if snapshot.client_order_id.is_empty() =>
-            {
-                Some(snapshot)
-            }
+            CurrentFact::BlockedStrategyInputObservation(snapshot) => Some(snapshot),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -2191,35 +2288,48 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
         2,
         "identical blocked evaluations must emit once and the RV blocker transition must emit the second record"
     );
+    let rv_blockers =
+        |record: &crate::bolt_v3_current_evidence::BlockedStrategyInputObservationFact| {
+            match &record.details.realized_volatility {
+                StrategyInputRvState::Present { snapshot, .. } => snapshot.blockers.clone(),
+                StrategyInputRvState::Absent { .. } => panic!("fixture provides an RV snapshot"),
+            }
+        };
     assert_eq!(
-        blocked_snapshots[0].realized_volatility_blockers,
-        vec!["quorum_not_ready".to_string()]
+        rv_blockers(blocked_snapshots[0]),
+        vec![crate::bolt_v3_current_evidence::RealizedVolBlockReason::QuorumNotReady]
     );
     assert_eq!(
-        blocked_snapshots[1].realized_volatility_blockers,
-        vec!["source_stale".to_string()]
+        rv_blockers(blocked_snapshots[1]),
+        vec![crate::bolt_v3_current_evidence::RealizedVolBlockReason::SourceStale]
     );
-    let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+    let Some(CurrentFact::BlockedStrategyInputObservation(snapshot)) = events.first() else {
         panic!("expected blocked strategy input evidence first; got {events:#?}");
     };
-    assert_eq!(snapshot.realized_volatility_surface_id, TEST_SURFACE_ID);
-    assert_eq!(snapshot.realized_volatility_as_of_ms, Some(1_200));
-    assert_eq!(snapshot.realized_volatility, "");
-    assert_eq!(snapshot.realized_volatility_annualized_decimal, "");
+    let StrategyInputRvState::Present {
+        selected_annualized_decimal,
+        snapshot: rv_snapshot,
+        ..
+    } = &snapshot.details.realized_volatility
+    else {
+        panic!("fixture provides an RV snapshot");
+    };
+    assert_eq!(rv_snapshot.surface_id, TEST_SURFACE_ID);
+    assert_eq!(rv_snapshot.as_of_ms, Some(1_200));
+    assert_eq!(selected_annualized_decimal, &None);
+    assert_eq!(rv_snapshot.annualized_decimal, None);
     assert_eq!(
-        snapshot.realized_volatility_blockers,
-        vec!["quorum_not_ready".to_string()]
+        rv_snapshot.blockers,
+        vec![crate::bolt_v3_current_evidence::RealizedVolBlockReason::QuorumNotReady]
     );
-    assert_eq!(snapshot.submission_instrument_id, "");
-    assert_eq!(snapshot.client_order_id, "");
     assert_eq!(
-        snapshot.pricing_blocked_by,
-        vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady]
+        snapshot.details.pricing_blocked_by,
+        vec![crate::bolt_v3_current_evidence::EntryPricingBlockReason::RealizedVolNotReady]
     );
     let entry_skips = events
         .iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            CurrentFact::EntrySkipObservation(skip) => Some(skip),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -2229,13 +2339,10 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
         "same blocked interval/reason must emit one entry skip record"
     );
     let skip = entry_skips[0];
-    assert_eq!(
-        skip.reason_category,
-        BoltV3EntrySkipReasonCategory::EntryPricingBlocked
-    );
+    assert_eq!(skip.reason_category, EntrySkipReason::EntryPricingBlocked);
     assert_eq!(
         skip.pricing_blocked_by,
-        vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady]
+        vec![crate::bolt_v3_current_evidence::EntryPricingBlockReason::RealizedVolNotReady]
     );
     assert_eq!(skip.market_id, strategy.active.market_id);
     // RV not ready: the readiness-gated source path yields no usable RV, so the
@@ -2246,7 +2353,7 @@ fn blocked_strategy_input_evidence_records_state_transitions_not_ticks() {
 
 #[test]
 fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -2265,24 +2372,23 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
         .record_entry_skip_once(
             1_200,
             &realized_vol_not_ready,
-            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
+            EntrySkipReason::EntryPricingBlocked,
         )
         .expect("first pricing-blocked skip should record");
     strategy
         .record_entry_skip_once(
             1_201,
             &fee_unavailable,
-            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
+            EntrySkipReason::EntryPricingBlocked,
         )
         .expect("distinct pricing blocker in same interval should record");
 
     let entry_skips = evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            CurrentFact::EntrySkipObservation(skip) => Some(skip),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -2296,19 +2402,21 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
     assert_eq!(entry_skips[0].market_id, entry_skips[1].market_id);
     assert_eq!(
         entry_skips[0].pricing_blocked_by,
-        vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady]
+        vec![crate::bolt_v3_current_evidence::EntryPricingBlockReason::RealizedVolNotReady]
     );
     assert_eq!(
         entry_skips[1].pricing_blocked_by,
-        vec![BoltV3EntryPricingBlockReason::FeeUnavailable(
-            BoltV3OutcomeSide::Up
-        )]
+        vec![
+            crate::bolt_v3_current_evidence::EntryPricingBlockReason::FeeUnavailable(
+                crate::bolt_v3_current_evidence::OutcomeSide::Up
+            )
+        ]
     );
 }
 
 #[test]
 fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -2322,22 +2430,12 @@ fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
     spot_missing.evaluation.pricing_blocked_by = vec![EntryPricingBlockReason::SpotPriceMissing];
 
     strategy
-        .record_entry_skip_once(
-            1_200,
-            &spot_missing,
-            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
-        )
+        .record_entry_skip_once(1_200, &spot_missing, EntrySkipReason::EntryPricingBlocked)
         .expect("first spot-missing skip should record");
 
     strategy.latest_signal_quote = Some(fast_spot("bybit", 3_101.5, 1_201));
     strategy
-        .record_entry_skip_once(
-            1_201,
-            &spot_missing,
-            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
-        )
+        .record_entry_skip_once(1_201, &spot_missing, EntrySkipReason::EntryPricingBlocked)
         .expect("same blocker with price-only evidence changes should not error");
 
     let liveness_transition_ts_ms = strategy
@@ -2351,19 +2449,15 @@ fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
         liveness_transition_ts_ms,
     ));
     strategy
-        .record_entry_skip_once(
-            1_202,
-            &spot_missing,
-            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
-        )
+        .record_entry_skip_once(1_202, &spot_missing, EntrySkipReason::EntryPricingBlocked)
         .expect("same blocker with a liveness-state transition should record");
 
     let entry_skips = evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            CurrentFact::EntrySkipObservation(skip) => Some(skip),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -2390,7 +2484,7 @@ fn entry_skip_dedupe_records_liveness_state_transitions_not_price_ticks() {
 #[test]
 fn entry_skip_dedupe_does_not_record_every_reference_tick_while_blocked() {
     let replay = strategy_input_quote_replay();
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -2447,17 +2541,17 @@ fn entry_skip_dedupe_does_not_record_every_reference_tick_while_blocked() {
             .record_entry_skip_once(
                 received_ts_ms,
                 &spot_missing,
-                BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
+                EntrySkipReason::EntryPricingBlocked,
             )
             .expect("blocked entry skip should record or dedupe without error");
     }
 
     let entry_skips = evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            CurrentFact::EntrySkipObservation(skip) => Some(skip),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -2475,7 +2569,7 @@ fn entry_skip_dedupe_does_not_record_every_reference_tick_while_blocked() {
 
 #[test]
 fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_seconds() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -2491,16 +2585,21 @@ fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_second
         .try_submit_entry_order(2_000)
         .expect_err("submit admission should reject after evidence capture");
 
-    let events = evidence.events();
-    let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
+    let Some(CurrentFact::SubmitLinkedStrategyInputSnapshot(snapshot)) = events.first() else {
         panic!("expected first evidence event to be strategy input; got {events:#?}");
     };
 
-    assert_eq!(snapshot.seconds_to_market_end, 299);
-    assert_eq!(snapshot.market_selection_timestamp_ms, Some(1_000));
-    assert_eq!(snapshot.polymarket_market_start_timestamp_ms, Some(1_000));
+    assert_eq!(snapshot.details.seconds_to_market_end, 299);
+    assert_eq!(snapshot.details.market_selection_timestamp_ms, Some(1_000));
     assert_eq!(
-        snapshot.polymarket_market_end_timestamp_ms,
+        snapshot.details.polymarket_market_start_timestamp_ms,
+        Some(1_000)
+    );
+    assert_eq!(
+        snapshot.details.polymarket_market_end_timestamp_ms,
         Some(301_999),
         "market end must bind to selected expiration without seconds rounding"
     );
@@ -2508,7 +2607,7 @@ fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_second
 
 #[test]
 fn strategy_input_evidence_records_next_market_selection_outcome() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -2524,12 +2623,17 @@ fn strategy_input_evidence_records_next_market_selection_outcome() {
         .try_submit_entry_order(2_000)
         .expect_err("submit admission should reject after evidence capture");
 
-    let events = evidence.events();
-    let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
+    let Some(CurrentFact::SubmitLinkedStrategyInputSnapshot(snapshot)) = events.first() else {
         panic!("expected first evidence event to be strategy input; got {events:#?}");
     };
 
-    assert_eq!(snapshot.market_selection_outcome, "next");
+    assert_eq!(
+        snapshot.details.market_selection_outcome,
+        crate::bolt_v3_current_evidence::StrategyInputMarketSelectionOutcome::Next
+    );
 }
 
 #[test]
@@ -2678,7 +2782,7 @@ fn minimal_entry_evaluation() -> EntryEvaluation {
     EntryEvaluation {
         gate: EntryGateDecision { blocked_by: vec![] },
         realized_volatility_receipt: EntryRealizedVolatilityReceipt {
-            gate_result: BoltV3RvGateResult::MissingSnapshot,
+            gate_result: RvGateResult::MissingSnapshot,
             receive_watermark_ms: None,
             realized_vol: None,
             source_venue: None,
@@ -2686,15 +2790,15 @@ fn minimal_entry_evaluation() -> EntryEvaluation {
             evidence: RealizedVolatilityEvidenceFields {
                 surface_id: String::new(),
                 as_of_ms: None,
-                annualized_decimal: String::new(),
-                measured_annualized_decimal: String::new(),
-                noise_robust_annualized_decimal: String::new(),
-                continuous_annualized_decimal: String::new(),
-                jump_annualized_decimal: String::new(),
-                forecast_annualized_decimal: String::new(),
-                pricing_component: String::new(),
+                annualized_decimal: None,
+                measured_annualized_decimal: None,
+                noise_robust_annualized_decimal: None,
+                continuous_annualized_decimal: None,
+                jump_annualized_decimal: None,
+                forecast_annualized_decimal: None,
+                pricing_component: None,
                 seconds_per_annum: String::new(),
-                aggregation: String::new(),
+                aggregation: None,
                 sources_used: Vec::new(),
                 source_diagnostics: Vec::new(),
                 unknown_source_rejections: BTreeMap::new(),
@@ -2738,7 +2842,7 @@ fn minimal_exit_submission_decision() -> ExitSubmissionDecision {
     ExitSubmissionDecision {
         evaluation: ExitEvaluation {
             realized_volatility_receipt: ExitRealizedVolatilityGateReceipt {
-                gate_result: BoltV3RvGateResult::MissingSnapshot,
+                gate_result: RvGateResult::MissingSnapshot,
                 surface_id: TEST_SURFACE_ID.to_string(),
                 max_source_age_ms: 500,
                 evaluation_receive_ms: Some(LocalReceiveMs::new(1_200)),
@@ -2761,7 +2865,7 @@ fn minimal_exit_submission_decision() -> ExitSubmissionDecision {
             hold_ev_bps: None,
             exit_ev_bps: None,
             exit_decision: Some(ExitDecision::Hold),
-            blocked_reason: Some(EXIT_BLOCK_REASON_EXIT_HOLD),
+            blocked_reason: Some(EvidenceExitBlockedReason::ExitHold),
         },
         instrument_id: None,
         order_type: None,
@@ -2781,7 +2885,7 @@ fn minimal_exit_submission_decision() -> ExitSubmissionDecision {
         trigger_instrument_id: None,
         trailing_offset: None,
         trailing_offset_type: None,
-        blocked_reason: Some(EXIT_BLOCK_REASON_EXIT_HOLD),
+        blocked_reason: Some(EvidenceExitBlockedReason::ExitHold),
         forced_flat_reasons: vec![],
     }
 }
@@ -2808,7 +2912,7 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
 
     let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
         RecordingFeeProvider::cold(),
-        Arc::new(FailingDecisionEvidenceWriter),
+        failing_decision_evidence(),
     );
     let strategy_id = unique_log_capture_strategy_id("exit");
     strategy.config.strategy_id = strategy_id.clone();
@@ -2841,9 +2945,9 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
 /// and the writer (the caller drives exits and reads back `events()`).
 fn exit_evidence_strategy_with_open_position() -> (
     BinaryOracleEdgeTaker,
-    Arc<RecordingSequencedDecisionEvidenceWriter>,
+    Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
 ) {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let strategy = exit_evidence_strategy_with_open_position_using_writer(evidence.clone());
     (strategy, evidence)
 }
@@ -2852,7 +2956,7 @@ fn exit_evidence_strategy_with_open_position() -> (
 /// evidence writer. Shared by the recording-writer tests and the failing-writer
 /// swallow test so the open-position setup lives in ONE place.
 fn exit_evidence_strategy_with_open_position_using_writer(
-    evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    evidence: Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
 ) -> BinaryOracleEdgeTaker {
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
@@ -2888,27 +2992,54 @@ fn exit_evidence_strategy_with_open_position_using_writer(
 
 /// Collect every recorded exit-evaluation evidence record, in order.
 fn recorded_exit_evaluations(
-    evidence: &RecordingSequencedDecisionEvidenceWriter,
-) -> Vec<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence> {
+    evidence: &crate::bolt_v3_current_evidence::DecisionEvidenceRecorder,
+) -> Vec<crate::bolt_v3_current_evidence::ExitEvaluationFact> {
     evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::ExitEvaluation(evidence) => Some(*evidence),
+            CurrentFact::ExitEvaluation(evidence) => Some(*evidence),
             _ => None,
         })
         .collect()
 }
 
 /// Collect every recorded exit-decision evidence record, in order.
+#[derive(Debug, Clone)]
+enum RecordedExitDecision {
+    Submission(crate::bolt_v3_current_evidence::ExitSubmissionDecisionFact),
+    Hold(crate::bolt_v3_current_evidence::ExitHoldDecisionFact),
+}
+
+impl RecordedExitDecision {
+    fn details(&self) -> &crate::bolt_v3_current_evidence::ExitDecisionDetails {
+        match self {
+            Self::Submission(record) => &record.details,
+            Self::Hold(record) => &record.details,
+        }
+    }
+
+    fn blocked_reason(&self) -> Option<crate::bolt_v3_current_evidence::ExitBlockedReason> {
+        match self {
+            Self::Submission(_) => None,
+            Self::Hold(record) => record.blocked_reason,
+        }
+    }
+}
+
 fn recorded_exit_decisions(
-    evidence: &RecordingSequencedDecisionEvidenceWriter,
-) -> Vec<crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence> {
+    evidence: &crate::bolt_v3_current_evidence::DecisionEvidenceRecorder,
+) -> Vec<RecordedExitDecision> {
     evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::ExitDecision(evidence) => Some(evidence),
+            CurrentFact::ExitSubmissionDecision(record) => {
+                Some(RecordedExitDecision::Submission(*record))
+            }
+            CurrentFact::ExitHoldDecision(record) => Some(RecordedExitDecision::Hold(*record)),
             _ => None,
         })
         .collect()
@@ -2964,11 +3095,13 @@ fn signal_quote_exit_uses_pinned_quote_receive_stamp_without_fallback() {
     );
     assert_eq!(
         records[0].rv_gate_result,
-        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::Accepted,
+        crate::bolt_v3_current_evidence::RvGateResult::Accepted,
         "signal RV evaluation must use QuoteTick.ts_init, not its venue event stamp or strategy clock"
     );
-    assert_eq!(records[0].exit_decision, BoltV3ExitDecisionOutcome::Exit);
-    assert_eq!(records[0].submission_blocked_reason, None);
+    assert!(matches!(
+        records[0].decision,
+        crate::bolt_v3_current_evidence::ExitEvaluationDecision::Submission { .. }
+    ));
 }
 
 #[test]
@@ -3031,14 +3164,14 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
         .try_submit_exit_order_for_trigger(
             1_200,
             ExitEvaluationTriggerContext::new(
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
                 1_200,
                 Some(1_220),
             ),
         )
         .expect("control exit evaluation should not error with a ready realized-vol surface");
 
-    let failing_evidence = Arc::new(ExitEvaluationFailingDecisionEvidenceWriter::default());
+    let failing_evidence = failing_observation_evidence();
     let mut failing_strategy =
         exit_evidence_strategy_with_open_position_using_writer(failing_evidence.clone());
     failing_strategy
@@ -3048,7 +3181,7 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
         .try_submit_exit_order_for_trigger(
             1_200,
             ExitEvaluationTriggerContext::new(
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
                 1_200,
                 Some(1_220),
             ),
@@ -3061,7 +3194,9 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
     assert_eq!(control_result.is_some(), failing_result.is_some());
     // The swallow path was exercised: the sink was reached and did error.
     assert_eq!(
-        failing_evidence.exit_evaluation_attempts(),
+        failing_evidence.attempts_for(
+            crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::ExitEvaluation
+        ),
         1,
         "the exit-evaluation sink must have been attempted exactly once"
     );
@@ -3088,7 +3223,7 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
 
     let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
         RecordingFeeProvider::cold(),
-        Arc::new(FailingDecisionEvidenceWriter),
+        failing_decision_evidence(),
     );
     let strategy_id = unique_log_capture_strategy_id("entry");
     strategy.config.strategy_id = strategy_id.clone();
@@ -3097,14 +3232,7 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
     let result = with_captured_error_log(
         "binary_oracle_edge_taker entry skip evidence write failed",
         &strategy_id,
-        || {
-            strategy.record_entry_skip_once(
-                1_000,
-                &decision,
-                BoltV3EntrySkipReasonCategory::NoSideSelected,
-                None,
-            )
-        },
+        || strategy.record_entry_skip_once(1_000, &decision, EntrySkipReason::NoSideSelected),
     );
 
     assert!(
@@ -3126,7 +3254,7 @@ fn exit_decision_evidence_reports_fast_venue_when_position_spot_is_absent() {
         .record_exit_decision_once(
             1_200,
             ExitEvaluationTriggerContext::new(
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
                 1_200,
                 Some(1_180),
             ),
@@ -3138,11 +3266,12 @@ fn exit_decision_evidence_reports_fast_venue_when_position_spot_is_absent() {
     assert_eq!(records.len(), 1);
     let record = &records[0];
     assert_eq!(
-        record.spot_price, None,
+        record.details().spot_price,
+        None,
         "the position-coupled exit spot price should be absent for a market mismatch"
     );
     assert!(
-        record.fast_venue_available,
+        record.details().fast_venue_available,
         "fast_venue_available must report selected venue state, not position-coupled price presence"
     );
 }
@@ -3162,7 +3291,7 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
         .try_submit_exit_order_for_trigger(
             1_200,
             ExitEvaluationTriggerContext::new(
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
                 1_200,
                 Some(1_220),
             ),
@@ -3178,7 +3307,7 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
     let record = &records[0];
     assert_eq!(
         record.rv_gate_result,
-        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::Accepted,
+        crate::bolt_v3_current_evidence::RvGateResult::Accepted,
         "a fresh, ready realized-vol snapshot must classify as Accepted"
     );
     assert_eq!(record.exit_eval_now_ms, 1_200);
@@ -3189,7 +3318,7 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
     );
     assert_eq!(
         record.exit_trigger_source,
-        crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+        crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
         "the durable record must preserve the triggering runtime path"
     );
     assert_eq!(record.trigger_ts_event_ms, Some(1_200));
@@ -3223,6 +3352,41 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
 }
 
 #[test]
+fn exit_evaluation_policy_exit_is_recordable_before_submission_linkage_exists() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+    let trigger = ExitEvaluationTriggerContext::new(
+        crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
+        1_200,
+        Some(1_200),
+    );
+    let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
+    assert!(matches!(
+        decision.evaluation.exit_decision,
+        Some(ExitDecision::Exit)
+    ));
+    assert!(
+        decision.client_order_id.is_none(),
+        "evaluation precedes order construction and cannot require submit linkage"
+    );
+
+    strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(
+        records.len(),
+        1,
+        "a diagnostic exit-policy result must be recordable before submission linkage exists"
+    );
+    assert!(matches!(
+        records[0].decision,
+        crate::bolt_v3_current_evidence::ExitEvaluationDecision::Submission { .. }
+    ));
+}
+
+#[test]
 fn exit_evaluation_evidence_reports_fast_venue_when_position_spot_is_absent() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
     strategy.active.market_id = Some("different-active-market".to_string());
@@ -3231,7 +3395,7 @@ fn exit_evaluation_evidence_reports_fast_venue_when_position_spot_is_absent() {
         1_200,
         &minimal_exit_submission_decision(),
         ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
             1_200,
             Some(1_180),
         ),
@@ -3263,7 +3427,7 @@ fn exit_evaluation_evidence_omits_non_finite_optional_numbers() {
         1_200,
         &decision,
         ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
             1_200,
             Some(1_180),
         ),
@@ -3275,7 +3439,10 @@ fn exit_evaluation_evidence_omits_non_finite_optional_numbers() {
     let record = &records[0];
     assert_eq!(record.hold_ev_bps, None);
     assert_eq!(record.exit_ev_bps, None);
-    assert_eq!(record.submission_price, None);
+    assert!(matches!(
+        record.decision,
+        crate::bolt_v3_current_evidence::ExitEvaluationDecision::Hold { .. }
+    ));
 }
 
 #[test]
@@ -3291,7 +3458,7 @@ fn exit_evaluation_evidence_records_future_dated_rv_gate_with_delta() {
         .try_submit_exit_order_for_trigger(
             1_200,
             ExitEvaluationTriggerContext::new(
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+                crate::bolt_v3_current_evidence::ExitTriggerSource::BookDelta,
                 1_190,
                 Some(1_190),
             ),
@@ -3307,7 +3474,7 @@ fn exit_evaluation_evidence_records_future_dated_rv_gate_with_delta() {
     let record = &records[0];
     assert_eq!(
         record.rv_gate_result,
-        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::RejectedFutureDated,
+        crate::bolt_v3_current_evidence::RvGateResult::RejectedFutureDated,
         "a snapshot dated after now must classify as RejectedFutureDated"
     );
     assert_eq!(record.exit_eval_now_ms, 1_200);
@@ -3340,7 +3507,7 @@ fn exit_evaluation_evidence_accepts_local_trigger_with_receive_time() {
     let record = &records[0];
     assert_eq!(
         record.rv_gate_result,
-        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::Accepted,
+        crate::bolt_v3_current_evidence::RvGateResult::Accepted,
         "local triggers must use their receive-domain evaluation timestamp"
     );
     assert_eq!(record.rv_as_of_ms, Some(1_200));
@@ -3359,7 +3526,7 @@ fn diagnostic_exit_evaluation_holds_when_receive_time_is_structurally_absent() {
         .try_submit_exit_order_for_trigger(
             1_200,
             ExitEvaluationTriggerContext::diagnostic_missing(
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::Other,
+                crate::bolt_v3_current_evidence::ExitTriggerSource::Other,
                 1_200,
             ),
         )
@@ -3370,12 +3537,15 @@ fn diagnostic_exit_evaluation_holds_when_receive_time_is_structurally_absent() {
     let record = &records[0];
     assert_eq!(
         record.rv_gate_result,
-        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::MissingEvaluationEventTime
+        crate::bolt_v3_current_evidence::RvGateResult::MissingEvaluationEventTime
     );
     assert_eq!(
-        record.exit_decision,
-        crate::bolt_v3_decision_evidence::BoltV3ExitDecisionOutcome::Hold,
-        "missing receive-domain input must hold, never liquidate by default"
+        record.decision,
+        crate::bolt_v3_current_evidence::ExitEvaluationDecision::Hold {
+            outcome: ExitHoldOutcome::Blocked,
+            blocked_reason: Some(ExitBlockedReason::ExitHold),
+        },
+        "missing receive-domain input must record the explicit hold block, never liquidate by default"
     );
     assert_eq!(record.fair_probability_up, None);
     assert_eq!(record.fair_probability_down, None);
@@ -3392,22 +3562,22 @@ fn exit_evaluation_dedupe_does_not_oscillate_across_trigger_sources() {
 
     for trigger_context in [
         ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::BookDelta,
             1_200,
             Some(1_210),
         ),
         ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::SelectionUpdate,
             1_220,
             Some(1_220),
         ),
         ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
             1_200,
             Some(1_230),
         ),
         ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::SelectionUpdate,
             1_240,
             Some(1_240),
         ),
@@ -3439,7 +3609,7 @@ fn exit_evaluation_dedupe_ignores_alternating_consuming_venue_clock_lead() {
             1_300,
             &decision,
             ExitEvaluationTriggerContext::new(
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+                crate::bolt_v3_current_evidence::ExitTriggerSource::BookDelta,
                 event_ts_ms,
                 Some(1_210 + index as u64),
             ),
@@ -3464,22 +3634,22 @@ fn rv_clock_domain_amendment_exit_decision_and_evidence_stay_stable_across_trigg
 
     let trigger_contexts = [
         ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::BookDelta,
             1_199,
             Some(1_210),
         ),
         ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
             1_201,
             Some(1_220),
         ),
         ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::SelectionUpdate,
             1_230,
             Some(1_230),
         ),
         ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::BookDelta,
             1_201,
             Some(1_240),
         ),
@@ -3512,7 +3682,7 @@ fn rv_clock_domain_amendment_exit_decision_and_evidence_stay_stable_across_trigg
     );
     assert_eq!(
         records[0].rv_gate_result,
-        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::Accepted
+        crate::bolt_v3_current_evidence::RvGateResult::Accepted
     );
 }
 
@@ -3528,7 +3698,7 @@ fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
         .try_submit_exit_order_for_trigger(
             1_200,
             ExitEvaluationTriggerContext::new(
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
                 1_200,
                 Some(1_200),
             ),
@@ -3545,7 +3715,7 @@ fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
                 .try_submit_exit_order_for_trigger(
                     tick,
                     ExitEvaluationTriggerContext::new(
-                        crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                        crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
                         tick,
                         Some(tick),
                     ),
@@ -3640,24 +3810,6 @@ fn rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(
     strategy.pricing.observe_realized_vol_snapshot(snapshot);
 }
 
-fn rv_clock_domain_amendment_json_projection(
-    record: &impl serde::Serialize,
-    fields: &[&str],
-) -> serde_json::Value {
-    let value = serde_json::to_value(record).expect("evidence record should serialize");
-    let mut projection = serde_json::Map::new();
-    for field in fields {
-        projection.insert(
-            (*field).to_string(),
-            value
-                .get(*field)
-                .cloned()
-                .unwrap_or(serde_json::Value::Null),
-        );
-    }
-    serde_json::Value::Object(projection)
-}
-
 #[test]
 fn rv_clock_domain_amendment_exit_records_share_the_captured_receipt() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
@@ -3667,7 +3819,7 @@ fn rv_clock_domain_amendment_exit_records_share_the_captured_receipt() {
         Some(RV_RECEIPT_WATERMARK_MS),
     );
     let trigger = ExitEvaluationTriggerContext::new(
-        crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+        crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
         RV_RECEIPT_TRIGGER_EVENT_MS,
         Some(RV_RECEIPT_TRIGGER_RECEIVE_MS),
     );
@@ -3687,67 +3839,51 @@ fn rv_clock_domain_amendment_exit_records_share_the_captured_receipt() {
     let evaluations = recorded_exit_evaluations(&evidence);
     assert_eq!(decisions.len(), 1);
     assert_eq!(evaluations.len(), 1);
-    let decision = serde_json::to_value(&decisions[0]).unwrap();
-    let evaluation = serde_json::to_value(&evaluations[0]).unwrap();
-
+    let decision = decisions[0].details();
+    let evaluation = &evaluations[0];
+    assert_eq!(decision.exit_eval_now_ms, RV_RECEIPT_LIFECYCLE_NOW_MS);
     assert_eq!(
-        decision["exit_eval_now_ms"],
-        serde_json::json!(RV_RECEIPT_LIFECYCLE_NOW_MS)
+        evaluation.exit_eval_now_ms,
+        RV_RECEIPT_LIFECYCLE_NOW_MS as i64
+    );
+    assert_eq!(decision.trigger_ts_event_ms, RV_RECEIPT_TRIGGER_EVENT_MS);
+    assert_eq!(
+        evaluation.trigger_ts_event_ms,
+        Some(RV_RECEIPT_TRIGGER_EVENT_MS as i64)
     );
     assert_eq!(
-        evaluation["exit_eval_now_ms"],
-        serde_json::json!(RV_RECEIPT_LIFECYCLE_NOW_MS as i64)
+        decision.trigger_ts_init_ms,
+        Some(RV_RECEIPT_TRIGGER_RECEIVE_MS)
     );
     assert_eq!(
-        decision["trigger_ts_event_ms"],
-        serde_json::json!(RV_RECEIPT_TRIGGER_EVENT_MS)
+        evaluation.trigger_ts_init_ms,
+        Some(RV_RECEIPT_TRIGGER_RECEIVE_MS as i64)
     );
     assert_eq!(
-        evaluation["trigger_ts_event_ms"],
-        serde_json::json!(RV_RECEIPT_TRIGGER_EVENT_MS as i64)
+        decision.rv_snapshot_as_of_ms,
+        Some(RV_RECEIPT_SNAPSHOT_AS_OF_MS)
     );
     assert_eq!(
-        decision["trigger_ts_init_ms"],
-        serde_json::json!(RV_RECEIPT_TRIGGER_RECEIVE_MS)
+        evaluation.rv_as_of_ms,
+        Some(RV_RECEIPT_SNAPSHOT_AS_OF_MS as i64)
+    );
+    assert_eq!(decision.rv_gate_result, evaluation.rv_gate_result);
+    assert_eq!(decision.rv_gate_result, RvGateResult::Accepted);
+    assert_eq!(
+        decision.rv_snapshot_receive_watermark_ms,
+        Some(RV_RECEIPT_WATERMARK_MS)
     );
     assert_eq!(
-        evaluation["trigger_ts_init_ms"],
-        serde_json::json!(RV_RECEIPT_TRIGGER_RECEIVE_MS as i64)
+        evaluation.rv_snapshot_receive_watermark_ms,
+        Some(RV_RECEIPT_WATERMARK_MS as i64)
     );
-    assert_eq!(
-        decision["rv_snapshot_as_of_ms"],
-        serde_json::json!(RV_RECEIPT_SNAPSHOT_AS_OF_MS)
-    );
-    assert_eq!(decision["rv_snapshot_as_of_ms"], evaluation["rv_as_of_ms"]);
-    assert_eq!(decision["rv_gate_result"], evaluation["rv_gate_result"]);
-    assert_eq!(decision["rv_gate_result"], serde_json::json!("accepted"));
-    assert_eq!(
-        decision["rv_snapshot_receive_watermark_ms"],
-        serde_json::json!(RV_RECEIPT_WATERMARK_MS)
-    );
-    assert_eq!(
-        evaluation["rv_snapshot_receive_watermark_ms"],
-        serde_json::json!(RV_RECEIPT_WATERMARK_MS as i64)
-    );
-    assert_eq!(decision["rv_max_source_age_ms"], serde_json::json!(500_u64));
-    assert_eq!(
-        evaluation["rv_max_source_age_ms"],
-        serde_json::json!(500_u64)
-    );
-    assert_eq!(
-        decision["rv_snapshot_has_ready_realized_vol"],
-        serde_json::json!(true)
-    );
-    assert_eq!(decision["realized_vol"], serde_json::json!("1.5"));
-    assert_eq!(evaluation["rv_ready"], serde_json::json!(true));
-    assert_eq!(
-        decision["rv_future_dating_delta_ms"],
-        serde_json::json!(250_u64)
-    );
-    assert_eq!(
-        evaluation["rv_as_of_minus_now_ms"],
-        serde_json::json!(250_i64)
-    );
+    assert_eq!(decision.rv_max_source_age_ms, Some(500));
+    assert_eq!(evaluation.rv_max_source_age_ms, Some(500));
+    assert_eq!(decision.rv_snapshot_has_ready_realized_vol, Some(true));
+    assert_eq!(decision.realized_vol.as_deref(), Some("1.5"));
+    assert!(evaluation.rv_ready);
+    assert_eq!(decision.rv_future_dating_delta_ms, Some(250));
+    assert_eq!(evaluation.rv_as_of_minus_now_ms, Some(250));
 }
 
 #[test]
@@ -3759,7 +3895,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
         Some(RV_RECEIPT_WATERMARK_MS),
     );
     let trigger = ExitEvaluationTriggerContext::new(
-        crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+        crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
         RV_RECEIPT_TRIGGER_EVENT_MS,
         Some(RV_RECEIPT_TRIGGER_RECEIVE_MS),
     );
@@ -3774,11 +3910,11 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     // dynamic branch-coverage harness.
     let mut decisions = Vec::new();
     for blocked_reason in [
-        EXIT_BLOCK_REASON_NO_OPEN_POSITION,
-        EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING,
-        EXIT_BLOCK_REASON_POSITION_INTERVAL_ENDED,
-        EXIT_BLOCK_REASON_POSITION_INTERVAL_UNKNOWN,
-        EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING,
+        EvidenceExitBlockedReason::NoOpenPosition,
+        EvidenceExitBlockedReason::ExitAlreadyPending,
+        EvidenceExitBlockedReason::PositionIntervalEnded,
+        EvidenceExitBlockedReason::PositionIntervalUnknown,
+        EvidenceExitBlockedReason::EntryOrderStillWorking,
     ] {
         let mut evaluation = base.clone();
         evaluation.forced_flat_reasons.clear();
@@ -3817,19 +3953,9 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     decisions.push(strategy.exit_submission_decision_from_evaluation(base.clone()));
     strategy.config.exit_order = saved_exit_order;
 
-    let saved_exposure = strategy.exposure.clone();
-    strategy
-        .exposure
-        .managed_position_mut()
-        .expect("fixture should retain a managed position")
-        .position
-        .quantity = Quantity::zero(2);
-    decisions.push(strategy.exit_submission_decision_from_evaluation(base));
-    strategy.exposure = saved_exposure;
-
     for decision in &decisions {
         let receipt = &decision.evaluation.realized_volatility_receipt;
-        assert_eq!(receipt.gate_result, BoltV3RvGateResult::Accepted);
+        assert_eq!(receipt.gate_result, RvGateResult::Accepted);
         assert_eq!(
             receipt.snapshot_as_of_ms,
             Some(RV_RECEIPT_SNAPSHOT_AS_OF_MS)
@@ -3851,20 +3977,20 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
 
     assert_eq!(
         decisions.len(),
-        12,
-        "the fixture must retain all twelve named submission shapes"
+        11,
+        "the fixture must retain every constructible submission shape"
     );
     let intentionally_non_recordable = &decisions[0];
     assert_eq!(
         intentionally_non_recordable.blocked_reason,
-        Some(EXIT_BLOCK_REASON_NO_OPEN_POSITION)
+        Some(EvidenceExitBlockedReason::NoOpenPosition)
     );
     assert!(intentionally_non_recordable.forced_flat_reasons.is_empty());
     assert_eq!(
         decisions
             .iter()
             .filter(|decision| {
-                decision.blocked_reason == Some(EXIT_BLOCK_REASON_NO_OPEN_POSITION)
+                decision.blocked_reason == Some(EvidenceExitBlockedReason::NoOpenPosition)
                     && decision.forced_flat_reasons.is_empty()
             })
             .count(),
@@ -3888,52 +4014,45 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
         .iter()
         .map(|record| {
             record
-                .blocked_reason
+                .blocked_reason()
                 .expect("every recordable submission shape must persist its blocked reason")
         })
         .collect::<Vec<_>>();
     let expected_blocked_reasons = vec![
-        BoltV3ExitBlockedReason::ExitAlreadyPending,
-        BoltV3ExitBlockedReason::PositionIntervalEnded,
-        BoltV3ExitBlockedReason::PositionIntervalUnknown,
-        BoltV3ExitBlockedReason::EntryOrderStillWorking,
-        BoltV3ExitBlockedReason::ExitDecisionUnavailable,
-        BoltV3ExitBlockedReason::ExitHold,
-        BoltV3ExitBlockedReason::OpenPositionMissing,
-        BoltV3ExitBlockedReason::ExitOrderConfigInvalid,
-        BoltV3ExitBlockedReason::ExitQuoteQuantityUnsupported,
-        BoltV3ExitBlockedReason::ExitPriceMissing,
-        BoltV3ExitBlockedReason::ExitQuantityNotPositive,
+        ExitBlockedReason::ExitAlreadyPending,
+        ExitBlockedReason::PositionIntervalEnded,
+        ExitBlockedReason::PositionIntervalUnknown,
+        ExitBlockedReason::EntryOrderStillWorking,
+        ExitBlockedReason::ExitDecisionUnavailable,
+        ExitBlockedReason::ExitHold,
+        ExitBlockedReason::OpenPositionMissing,
+        ExitBlockedReason::ExitOrderConfigInvalid,
+        ExitBlockedReason::ExitQuoteQuantityUnsupported,
+        ExitBlockedReason::ExitPriceMissing,
     ];
     assert_eq!(persisted_blocked_reasons, expected_blocked_reasons);
     for (index, record) in records.into_iter().enumerate() {
-        let value = serde_json::to_value(record).unwrap();
+        let details = record.details();
         assert_eq!(
-            value["exit_eval_now_ms"],
-            serde_json::json!(RV_RECEIPT_LIFECYCLE_NOW_MS + index as u64 + 1)
+            details.exit_eval_now_ms,
+            RV_RECEIPT_LIFECYCLE_NOW_MS + index as u64 + 1
+        );
+        assert_eq!(details.trigger_ts_event_ms, RV_RECEIPT_TRIGGER_EVENT_MS);
+        assert_eq!(
+            details.rv_snapshot_as_of_ms,
+            Some(RV_RECEIPT_SNAPSHOT_AS_OF_MS)
         );
         assert_eq!(
-            value["trigger_ts_event_ms"],
-            serde_json::json!(RV_RECEIPT_TRIGGER_EVENT_MS)
+            details.trigger_ts_init_ms,
+            Some(RV_RECEIPT_TRIGGER_RECEIVE_MS)
         );
         assert_eq!(
-            value["rv_snapshot_as_of_ms"],
-            serde_json::json!(RV_RECEIPT_SNAPSHOT_AS_OF_MS)
-        );
-        assert_eq!(
-            value["trigger_ts_init_ms"],
-            serde_json::json!(RV_RECEIPT_TRIGGER_RECEIVE_MS)
-        );
-        assert_eq!(
-            value["rv_snapshot_receive_watermark_ms"],
-            serde_json::json!(RV_RECEIPT_WATERMARK_MS),
+            details.rv_snapshot_receive_watermark_ms,
+            Some(RV_RECEIPT_WATERMARK_MS),
             "every persisted submission shape must retain the captured watermark"
         );
-        assert_eq!(value["rv_max_source_age_ms"], serde_json::json!(500_u64));
-        assert_eq!(
-            value["rv_snapshot_has_ready_realized_vol"],
-            serde_json::json!(true)
-        );
+        assert_eq!(details.rv_max_source_age_ms, Some(500));
+        assert_eq!(details.rv_snapshot_has_ready_realized_vol, Some(true));
     }
 }
 
@@ -3946,7 +4065,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_repl
         Some(RV_RECEIPT_WATERMARK_MS),
     );
     let trigger = ExitEvaluationTriggerContext::new(
-        crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+        crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
         RV_RECEIPT_TRIGGER_EVENT_MS,
         Some(RV_RECEIPT_TRIGGER_RECEIVE_MS),
     );
@@ -3981,133 +4100,122 @@ fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_repl
     assert_eq!(evaluations.len(), 2);
 
     let expected_decision_blockers = vec![
-        crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::InvalidConfig,
-        crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::QuorumNotReady,
-        crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::SourceStale,
-        crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::CoverageBelowMinimum,
-        crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::InterSampleGapExceeded,
-        crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::SourceClassMismatch,
-        crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::SampleKindMismatch,
-        crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::CrossSourceDispersion,
-        crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::AnnualizationBasisInvalid,
-        crate::bolt_v3_decision_evidence::BoltV3ExitRvSnapshotBlocker::NotWarm,
+        crate::bolt_v3_current_evidence::RealizedVolBlockReason::InvalidConfig,
+        crate::bolt_v3_current_evidence::RealizedVolBlockReason::QuorumNotReady,
+        crate::bolt_v3_current_evidence::RealizedVolBlockReason::SourceStale,
+        crate::bolt_v3_current_evidence::RealizedVolBlockReason::CoverageBelowMinimum,
+        crate::bolt_v3_current_evidence::RealizedVolBlockReason::InterSampleGapExceeded,
+        crate::bolt_v3_current_evidence::RealizedVolBlockReason::SourceClassMismatch,
+        crate::bolt_v3_current_evidence::RealizedVolBlockReason::SampleKindMismatch,
+        crate::bolt_v3_current_evidence::RealizedVolBlockReason::CrossSourceDispersion,
+        crate::bolt_v3_current_evidence::RealizedVolBlockReason::AnnualizationBasisInvalid,
+        crate::bolt_v3_current_evidence::RealizedVolBlockReason::NotWarm,
     ];
-    let expected_evaluation_blockers = [
-        "invalid_config",
-        "quorum_not_ready",
-        "source_stale",
-        "coverage_below_minimum",
-        "inter_sample_gap_exceeded",
-        "source_class_mismatch",
-        "sample_kind_mismatch",
-        "cross_source_dispersion",
-        "annualization_basis_invalid",
-        "not_warm",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect::<Vec<_>>();
     assert_eq!(
-        decisions[0].rv_snapshot_blockers,
+        decisions[0].details().rv_snapshot_blockers,
         expected_decision_blockers
     );
     assert_eq!(
-        decisions[1].rv_snapshot_blockers,
+        decisions[1].details().rv_snapshot_blockers,
         expected_decision_blockers
     );
-    assert_eq!(evaluations[0].rv_blockers, expected_evaluation_blockers);
-    assert_eq!(evaluations[1].rv_blockers, expected_evaluation_blockers);
+    assert_eq!(evaluations[0].rv_blockers, expected_decision_blockers);
+    assert_eq!(evaluations[1].rv_blockers, expected_decision_blockers);
     assert!(
-        decisions[0].rv_snapshot_ready,
+        decisions[0].details().rv_snapshot_ready,
         "raw readiness must stay true"
     );
     assert_eq!(
-        decisions[0].realized_vol, None,
+        decisions[0].details().realized_vol,
+        None,
         "gate-filtered RV stays absent"
     );
     assert!(!evaluations[0].rv_ready, "usable readiness must stay false");
     assert_eq!(
-        decisions[0].rv_gate_result,
-        crate::bolt_v3_decision_evidence::BoltV3ExitRvGateResult::RejectedNotReady
+        decisions[0].details().rv_gate_result,
+        RvGateResult::RejectedNotReady
     );
     assert_eq!(
         evaluations[0].rv_gate_result,
-        BoltV3RvGateResult::RejectedNotReady
+        RvGateResult::RejectedNotReady
     );
-    assert_eq!(decisions[0].exit_eval_now_ms, RV_RECEIPT_LIFECYCLE_NOW_MS);
+    assert_eq!(
+        decisions[0].details().exit_eval_now_ms,
+        RV_RECEIPT_LIFECYCLE_NOW_MS
+    );
     assert_eq!(evaluations[0].exit_eval_now_ms, 1_260);
     assert_eq!(
-        decisions[0].trigger_ts_event_ms,
+        decisions[0].details().trigger_ts_event_ms,
         RV_RECEIPT_TRIGGER_EVENT_MS
     );
     assert_eq!(evaluations[0].trigger_ts_event_ms, Some(1_100));
     assert_eq!(
-        decisions[0].rv_snapshot_as_of_ms,
+        decisions[0].details().rv_snapshot_as_of_ms,
         Some(RV_RECEIPT_SNAPSHOT_AS_OF_MS)
     );
     assert_eq!(
-        decisions[0].rv_snapshot_receive_watermark_ms,
+        decisions[0].details().rv_snapshot_receive_watermark_ms,
         Some(RV_RECEIPT_WATERMARK_MS)
     );
     assert_eq!(
-        decisions[0].trigger_ts_init_ms,
+        decisions[0].details().trigger_ts_init_ms,
         Some(RV_RECEIPT_TRIGGER_RECEIVE_MS)
     );
     assert_eq!(evaluations[0].rv_as_of_ms, Some(1_350));
     assert_eq!(evaluations[0].rv_snapshot_receive_watermark_ms, Some(1_180));
     assert_eq!(evaluations[0].trigger_ts_init_ms, Some(1_220));
-    assert_eq!(decisions[0].rv_future_dating_delta_ms, Some(250));
+    assert_eq!(decisions[0].details().rv_future_dating_delta_ms, Some(250));
     assert_eq!(evaluations[0].rv_as_of_minus_now_ms, Some(250));
 
-    const DECISION_FIELDS: &[&str] = &[
-        "trigger_ts_init_ms",
-        "rv_surface_id",
-        "rv_snapshot_as_of_ms",
-        "rv_snapshot_receive_watermark_ms",
-        "rv_max_source_age_ms",
-        "rv_snapshot_ready",
-        "rv_snapshot_has_ready_realized_vol",
-        "realized_vol",
-        "realized_vol_source_venue",
-        "realized_vol_source_ts_ms",
-        "rv_snapshot_blockers",
-        "rv_source_diagnostics",
-        "rv_gate_result",
-        "rv_future_dating_delta_ms",
-        "fair_probability_up",
-        "fair_probability_down",
-        "uncertainty_band_probability",
-    ];
-    const EVALUATION_FIELDS: &[&str] = &[
-        "trigger_ts_init_ms",
-        "rv_surface_id",
-        "rv_as_of_ms",
-        "rv_snapshot_receive_watermark_ms",
-        "rv_max_source_age_ms",
-        "rv_ready",
-        "rv_blockers",
-        "rv_source_diagnostics",
-        "rv_gate_result",
-        "rv_as_of_minus_now_ms",
-        "fair_probability_up",
-        "fair_probability_down",
-        "uncertainty_band_probability",
-    ];
-    let decision_before = rv_clock_domain_amendment_json_projection(&decisions[0], DECISION_FIELDS);
-    let decision_after = rv_clock_domain_amendment_json_projection(&decisions[1], DECISION_FIELDS);
-    let evaluation_before =
-        rv_clock_domain_amendment_json_projection(&evaluations[0], EVALUATION_FIELDS);
-    let evaluation_after =
-        rv_clock_domain_amendment_json_projection(&evaluations[1], EVALUATION_FIELDS);
-    assert_eq!(
-        serde_json::to_vec(&decision_before).unwrap(),
-        serde_json::to_vec(&decision_after).unwrap(),
-        "decision RV projection must remain byte-identical after snapshot replacement"
+    macro_rules! assert_fields_equal {
+        ($before:expr, $after:expr, $($field:ident),+ $(,)?) => {
+            $(assert_eq!(
+                $before.$field,
+                $after.$field,
+                "`{}` must remain immutable after snapshot replacement",
+                stringify!($field)
+            );)+
+        };
+    }
+    let decision_before = decisions[0].details();
+    let decision_after = decisions[1].details();
+    assert_fields_equal!(
+        decision_before,
+        decision_after,
+        trigger_ts_init_ms,
+        rv_surface_id,
+        rv_snapshot_as_of_ms,
+        rv_snapshot_receive_watermark_ms,
+        rv_max_source_age_ms,
+        rv_snapshot_ready,
+        rv_snapshot_has_ready_realized_vol,
+        realized_vol,
+        realized_vol_source_venue,
+        realized_vol_source_ts_ms,
+        rv_snapshot_blockers,
+        rv_source_diagnostics,
+        rv_gate_result,
+        rv_future_dating_delta_ms,
+        fair_probability_up,
+        fair_probability_down,
+        uncertainty_band_probability,
     );
-    assert_eq!(
-        serde_json::to_vec(&evaluation_before).unwrap(),
-        serde_json::to_vec(&evaluation_after).unwrap(),
-        "evaluation RV projection must remain byte-identical after snapshot replacement"
+    assert_fields_equal!(
+        evaluations[0],
+        evaluations[1],
+        trigger_ts_init_ms,
+        rv_surface_id,
+        rv_as_of_ms,
+        rv_snapshot_receive_watermark_ms,
+        rv_max_source_age_ms,
+        rv_ready,
+        rv_blockers,
+        rv_source_diagnostics,
+        rv_gate_result,
+        rv_as_of_minus_now_ms,
+        fair_probability_up,
+        fair_probability_down,
+        uncertainty_band_probability,
     );
 }
 
@@ -4117,7 +4225,7 @@ fn rv_clock_domain_amendment_valid_surface_without_snapshot_keeps_forced_flat_ex
     strategy.pricing.clear_latest_realized_vol_snapshot();
     strategy.active.phase = SelectionPhase::Freeze;
     let trigger = ExitEvaluationTriggerContext::new(
-        crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+        crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
         1_200,
         Some(1_200),
     );
@@ -4129,33 +4237,17 @@ fn rv_clock_domain_amendment_valid_surface_without_snapshot_keeps_forced_flat_ex
         .expect("forced-flat decision should record without an RV snapshot");
     strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
 
-    let decision = serde_json::to_value(&recorded_exit_decisions(&evidence)[0]).unwrap();
-    let evaluation = serde_json::to_value(&recorded_exit_evaluations(&evidence)[0]).unwrap();
-    assert_eq!(
-        decision["rv_gate_result"],
-        serde_json::json!("missing_snapshot")
-    );
-    assert_eq!(
-        evaluation["rv_gate_result"],
-        serde_json::json!("missing_snapshot")
-    );
-    assert_eq!(decision["rv_max_source_age_ms"], serde_json::json!(500_u64));
-    assert_eq!(
-        evaluation["rv_max_source_age_ms"],
-        serde_json::json!(500_u64)
-    );
-    assert_eq!(
-        decision["rv_snapshot_has_ready_realized_vol"],
-        serde_json::json!(false)
-    );
-    assert_eq!(
-        decision["rv_snapshot_receive_watermark_ms"],
-        serde_json::Value::Null
-    );
-    assert_eq!(
-        evaluation["rv_snapshot_receive_watermark_ms"],
-        serde_json::Value::Null
-    );
+    let decisions = recorded_exit_decisions(&evidence);
+    let evaluations = recorded_exit_evaluations(&evidence);
+    let decision = decisions[0].details();
+    let evaluation = &evaluations[0];
+    assert_eq!(decision.rv_gate_result, RvGateResult::MissingSnapshot);
+    assert_eq!(evaluation.rv_gate_result, RvGateResult::MissingSnapshot);
+    assert_eq!(decision.rv_max_source_age_ms, Some(500));
+    assert_eq!(evaluation.rv_max_source_age_ms, Some(500));
+    assert_eq!(decision.rv_snapshot_has_ready_realized_vol, Some(false));
+    assert_eq!(decision.rv_snapshot_receive_watermark_ms, None);
+    assert_eq!(evaluation.rv_snapshot_receive_watermark_ms, None);
 }
 
 fn rv_clock_domain_amendment_assert_one_field_error(
@@ -4220,7 +4312,7 @@ fn rv_clock_domain_amendment_exit_evaluation_conversion_failure_skips_record() {
     };
     rv_clock_domain_amendment_set_snapshot_times(&mut strategy, as_of_ms, watermark_ms);
     let trigger = ExitEvaluationTriggerContext::new(
-        crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+        crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
         if mode == "conversion-trigger-event" {
             u64::MAX
         } else {
@@ -4275,11 +4367,10 @@ fn rv_clock_domain_amendment_exit_evidence_failure_is_non_aborting() {
 
     if mode == "evidence-builder" {
         let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-        let strategy_id = unique_log_capture_strategy_id("evidence-builder");
-        strategy.config.strategy_id = strategy_id.clone();
+        let strategy_id = strategy.config.strategy_id.clone();
         rv_clock_domain_amendment_set_snapshot_times(&mut strategy, 1_200, Some(1_200));
         let trigger = ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
             u64::MAX,
             Some(1_200),
         );
@@ -4303,13 +4394,12 @@ fn rv_clock_domain_amendment_exit_evidence_failure_is_non_aborting() {
         return;
     }
 
-    let writer = Arc::new(ExitEvaluationFailingDecisionEvidenceWriter::default());
+    let writer = failing_observation_evidence();
     let mut strategy = exit_evidence_strategy_with_open_position_using_writer(writer.clone());
-    let strategy_id = unique_log_capture_strategy_id("evidence-writer");
-    strategy.config.strategy_id = strategy_id.clone();
+    let strategy_id = strategy.config.strategy_id.clone();
     rv_clock_domain_amendment_set_snapshot_times(&mut strategy, 1_200, Some(1_200));
     let trigger = ExitEvaluationTriggerContext::new(
-        crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+        crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
         1_200,
         Some(1_200),
     );
@@ -4321,7 +4411,9 @@ fn rv_clock_domain_amendment_exit_evidence_failure_is_non_aborting() {
     });
     assert_eq!(strategy.exposure, exposure_before);
     assert_eq!(
-        writer.exit_evaluation_attempts(),
+        writer.attempts_for(
+            crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::ExitEvaluation
+        ),
         1,
         "writer failure must remain mark-before-failure and non-retrying"
     );
@@ -4354,7 +4446,7 @@ fn rv_clock_domain_amendment_extreme_exit_deltas_are_lossless() {
             Some(watermark_ms),
         );
         let trigger = ExitEvaluationTriggerContext::new(
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
             trigger_event_ms,
             Some(trigger_receive_ms),
         );
@@ -4384,7 +4476,8 @@ fn rv_clock_domain_amendment_extreme_exit_deltas_are_lossless() {
         let decisions = recorded_exit_decisions(&evidence);
         assert_eq!(decisions.len(), 1, "{label} decision record should exist");
         assert_eq!(
-            decisions[0].rv_future_dating_delta_ms, expected_positive,
+            decisions[0].details().rv_future_dating_delta_ms,
+            expected_positive,
             "{label} decision delta must not wrap or invert sign"
         );
         assert!(
@@ -4403,57 +4496,70 @@ fn rv_clock_domain_amendment_extreme_exit_deltas_are_lossless() {
     }
 }
 
-fn rv_clock_domain_amendment_rv_states() -> [(BoltV3RvGateResult, Option<LocalReceiveMs>); 12] {
+fn rv_clock_domain_amendment_rv_states() -> [(RvGateResult, Option<LocalReceiveMs>); 12] {
     [
-        (BoltV3RvGateResult::Accepted, None),
+        (RvGateResult::Accepted, None),
+        (RvGateResult::Accepted, Some(LocalReceiveMs::new(1_200))),
+        (RvGateResult::MissingSnapshot, None),
         (
-            BoltV3RvGateResult::Accepted,
+            RvGateResult::MissingSnapshot,
             Some(LocalReceiveMs::new(1_200)),
         ),
-        (BoltV3RvGateResult::MissingSnapshot, None),
+        (RvGateResult::MissingEvaluationEventTime, None),
         (
-            BoltV3RvGateResult::MissingSnapshot,
+            RvGateResult::MissingEvaluationEventTime,
             Some(LocalReceiveMs::new(1_200)),
         ),
-        (BoltV3RvGateResult::MissingEvaluationEventTime, None),
+        (RvGateResult::RejectedFutureDated, None),
         (
-            BoltV3RvGateResult::MissingEvaluationEventTime,
+            RvGateResult::RejectedFutureDated,
             Some(LocalReceiveMs::new(1_200)),
         ),
-        (BoltV3RvGateResult::RejectedFutureDated, None),
+        (RvGateResult::RejectedStale, None),
         (
-            BoltV3RvGateResult::RejectedFutureDated,
+            RvGateResult::RejectedStale,
             Some(LocalReceiveMs::new(1_200)),
         ),
-        (BoltV3RvGateResult::RejectedStale, None),
+        (RvGateResult::RejectedNotReady, None),
         (
-            BoltV3RvGateResult::RejectedStale,
-            Some(LocalReceiveMs::new(1_200)),
-        ),
-        (BoltV3RvGateResult::RejectedNotReady, None),
-        (
-            BoltV3RvGateResult::RejectedNotReady,
+            RvGateResult::RejectedNotReady,
             Some(LocalReceiveMs::new(1_200)),
         ),
     ]
 }
 
-fn rv_clock_domain_amendment_rv_bit(gate: BoltV3RvGateResult, watermark_present: bool) -> u16 {
+fn rv_clock_domain_amendment_rv_bit(gate: RvGateResult, watermark_present: bool) -> u16 {
     let gate_index = match gate {
-        BoltV3RvGateResult::Accepted => 0,
-        BoltV3RvGateResult::MissingSnapshot => 1,
-        BoltV3RvGateResult::MissingEvaluationEventTime => 2,
-        BoltV3RvGateResult::RejectedFutureDated => 3,
-        BoltV3RvGateResult::RejectedStale => 4,
-        BoltV3RvGateResult::RejectedNotReady => 5,
+        RvGateResult::Accepted => 0,
+        RvGateResult::MissingSnapshot => 1,
+        RvGateResult::MissingEvaluationEventTime => 2,
+        RvGateResult::RejectedFutureDated => 3,
+        RvGateResult::RejectedStale => 4,
+        RvGateResult::RejectedNotReady => 5,
     };
     let watermark_index = if watermark_present { 1 } else { 0 };
     1_u16 << (gate_index * 2 + watermark_index)
 }
 
-fn rv_clock_domain_amendment_entry_mask(events: &[RecordedDecisionEvidenceEvent]) -> u16 {
+fn blocked_rv_metadata(
+    record: &crate::bolt_v3_current_evidence::BlockedStrategyInputObservationFact,
+) -> (RvGateResult, Option<u64>) {
+    match &record.details.realized_volatility {
+        StrategyInputRvState::Absent {
+            gate_result,
+            receive_watermark_ms,
+        } => (*gate_result, *receive_watermark_ms),
+        StrategyInputRvState::Present {
+            gate_result,
+            receive_watermark_ms,
+            ..
+        } => (*gate_result, *receive_watermark_ms),
+    }
+}
+
+fn rv_clock_domain_amendment_entry_mask(events: &[CurrentFact]) -> u16 {
     events.iter().fold(0_u16, |mask, event| match event {
-        RecordedDecisionEvidenceEvent::EntrySkip(skip) => {
+        CurrentFact::EntrySkipObservation(skip) => {
             skip.realized_vol_gate_result.map_or(mask, |gate| {
                 mask | rv_clock_domain_amendment_rv_bit(
                     gate,
@@ -4465,26 +4571,28 @@ fn rv_clock_domain_amendment_entry_mask(events: &[RecordedDecisionEvidenceEvent]
     })
 }
 
-fn rv_clock_domain_amendment_blocked_mask(events: &[RecordedDecisionEvidenceEvent]) -> u16 {
+fn rv_clock_domain_amendment_blocked_mask(events: &[CurrentFact]) -> u16 {
     events.iter().fold(0_u16, |mask, event| match event {
-        RecordedDecisionEvidenceEvent::StrategyInput(snapshot)
-            if snapshot.client_order_id.is_empty() =>
-        {
-            snapshot
-                .realized_volatility_gate_result
-                .map_or(mask, |gate| {
-                    mask | rv_clock_domain_amendment_rv_bit(
-                        gate,
-                        snapshot.realized_volatility_receive_watermark_ms.is_some(),
-                    )
-                })
+        CurrentFact::BlockedStrategyInputObservation(snapshot) => {
+            let (gate, watermark_present) = match &snapshot.details.realized_volatility {
+                StrategyInputRvState::Absent {
+                    gate_result,
+                    receive_watermark_ms,
+                } => (*gate_result, receive_watermark_ms.is_some()),
+                StrategyInputRvState::Present {
+                    gate_result,
+                    receive_watermark_ms,
+                    ..
+                } => (*gate_result, receive_watermark_ms.is_some()),
+            };
+            mask | rv_clock_domain_amendment_rv_bit(gate, watermark_present)
         }
         _ => mask,
     })
 }
 
 fn rv_clock_domain_amendment_dedupe_strategy(
-    evidence: Arc<RecordingSequencedDecisionEvidenceWriter>,
+    evidence: Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
 ) -> BinaryOracleEdgeTaker {
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
@@ -4509,13 +4617,13 @@ fn rv_clock_domain_amendment_blocked_decision() -> EntrySubmissionDecision {
         .evaluation
         .realized_volatility_receipt
         .evidence
-        .blockers = vec!["quorum_not_ready".to_string()];
+        .blockers = vec![crate::bolt_v3_current_evidence::RealizedVolBlockReason::QuorumNotReady];
     decision
 }
 
 fn rv_clock_domain_amendment_apply_state(
     decision: &mut EntrySubmissionDecision,
-    gate: BoltV3RvGateResult,
+    gate: RvGateResult,
     watermark: Option<LocalReceiveMs>,
 ) {
     decision.evaluation.realized_volatility_receipt.gate_result = gate;
@@ -4527,7 +4635,7 @@ fn rv_clock_domain_amendment_apply_state(
 
 #[test]
 fn rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     let mut decision = minimal_entry_submission_decision();
 
@@ -4540,13 +4648,14 @@ fn rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits() {
             .record_entry_skip_once(
                 1_200 + index as u64,
                 &decision,
-                BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
+                EntrySkipReason::EntryPricingBlocked,
             )
             .expect("each unseen RV category/presence bit should record");
     }
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let mask = rv_clock_domain_amendment_entry_mask(&events);
     assert_eq!(
         mask.count_ones(),
@@ -4556,7 +4665,7 @@ fn rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
+            .filter(|event| matches!(event, CurrentFact::EntrySkipObservation(_)))
             .count(),
         12
     );
@@ -4564,7 +4673,7 @@ fn rv_clock_domain_amendment_entry_skip_current_key_tracks_twelve_rv_bits() {
 
 #[test]
 fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     let mut decision = rv_clock_domain_amendment_blocked_decision();
 
@@ -4578,7 +4687,9 @@ fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits(
             .expect("each unseen blocked-snapshot RV category/presence bit should record");
     }
 
-    let events = evidence.events();
+    let events = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     let mask = rv_clock_domain_amendment_blocked_mask(&events);
     assert_eq!(
         mask.count_ones(),
@@ -4588,7 +4699,7 @@ fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits(
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::StrategyInput(_)))
+            .filter(|event| matches!(event, CurrentFact::BlockedStrategyInputObservation(_)))
             .count(),
         12
     );
@@ -4596,48 +4707,46 @@ fn rv_clock_domain_amendment_blocked_snapshot_current_key_tracks_twelve_rv_bits(
 
 #[test]
 fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
-    const EXPECTED_STATES: [(BoltV3RvGateResult, bool); 6] = [
-        (BoltV3RvGateResult::Accepted, true),
-        (BoltV3RvGateResult::RejectedStale, true),
-        (BoltV3RvGateResult::Accepted, true),
-        (BoltV3RvGateResult::RejectedStale, true),
-        (BoltV3RvGateResult::Accepted, true),
-        (BoltV3RvGateResult::RejectedStale, true),
+    const EXPECTED_STATES: [(RvGateResult, bool); 6] = [
+        (RvGateResult::Accepted, true),
+        (RvGateResult::RejectedStale, true),
+        (RvGateResult::Accepted, true),
+        (RvGateResult::RejectedStale, true),
+        (RvGateResult::Accepted, true),
+        (RvGateResult::RejectedStale, true),
     ];
     let rv_states = [
+        (RvGateResult::Accepted, Some(LocalReceiveMs::new(1_200))),
         (
-            BoltV3RvGateResult::Accepted,
-            Some(LocalReceiveMs::new(1_200)),
-        ),
-        (
-            BoltV3RvGateResult::RejectedStale,
+            RvGateResult::RejectedStale,
             Some(LocalReceiveMs::new(1_200)),
         ),
     ];
 
-    let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let entry_evidence = recording_decision_evidence();
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
     let mut now_ms = 1_200_u64;
     // A -> B -> A must start a fresh two-bit novelty mask at every key transition.
     for category in [
-        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-        BoltV3EntrySkipReasonCategory::NoSideSelected,
-        BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+        EntrySkipReason::EntryPricingBlocked,
+        EntrySkipReason::NoSideSelected,
+        EntrySkipReason::EntryPricingBlocked,
     ] {
         for (gate, watermark) in rv_states {
             rv_clock_domain_amendment_apply_state(&mut entry, gate, watermark);
             entry_strategy
-                .record_entry_skip_once(now_ms, &entry, category, None)
+                .record_entry_skip_once(now_ms, &entry, category)
                 .expect("each previously seen RV bit must emit after an entry-key change");
             now_ms += 1;
         }
     }
     let entry_states = entry_evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some((
+            CurrentFact::EntrySkipObservation(skip) => Some((
                 skip.realized_vol_gate_result
                     .expect("RV gate result must be present"),
                 skip.realized_vol_receive_watermark_ms.is_some(),
@@ -4647,7 +4756,7 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
         .collect::<Vec<_>>();
     assert_eq!(entry_states.as_slice(), &EXPECTED_STATES[..]);
 
-    let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let blocked_evidence = recording_decision_evidence();
     let mut blocked_strategy = rv_clock_domain_amendment_dedupe_strategy(blocked_evidence.clone());
     let mut blocked = rv_clock_domain_amendment_blocked_decision();
     let original_market_id = blocked_strategy.active.market_id.clone();
@@ -4667,15 +4776,24 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
         }
     }
     let blocked_states = blocked_evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some((
-                snapshot
-                    .realized_volatility_gate_result
-                    .expect("RV gate result must be present"),
-                snapshot.realized_volatility_receive_watermark_ms.is_some(),
-            )),
+            CurrentFact::BlockedStrategyInputObservation(snapshot) => {
+                let (gate, watermark_present) = match snapshot.details.realized_volatility {
+                    StrategyInputRvState::Absent {
+                        gate_result,
+                        receive_watermark_ms,
+                    } => (gate_result, receive_watermark_ms.is_some()),
+                    StrategyInputRvState::Present {
+                        gate_result,
+                        receive_watermark_ms,
+                        ..
+                    } => (gate_result, receive_watermark_ms.is_some()),
+                };
+                Some((gate, watermark_present))
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -4684,8 +4802,8 @@ fn rv_clock_domain_amendment_key_change_resets_every_seen_rv_bit() {
 
 #[test]
 fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
-    let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-    let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let entry_evidence = recording_decision_evidence();
+    let blocked_evidence = recording_decision_evidence();
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut blocked_strategy = rv_clock_domain_amendment_dedupe_strategy(blocked_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
@@ -4701,8 +4819,7 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
             .record_entry_skip_once(
                 1_200 + index as u64,
                 &entry,
-                BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
+                EntrySkipReason::EntryPricingBlocked,
             )
             .unwrap();
         blocked_strategy
@@ -4712,30 +4829,26 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
 
     for index in 0..128_u64 {
         let (gate, watermark) = if index % 2 == 0 {
-            (
-                BoltV3RvGateResult::Accepted,
-                Some(LocalReceiveMs::new(1_201)),
-            )
+            (RvGateResult::Accepted, Some(LocalReceiveMs::new(1_201)))
         } else {
-            (BoltV3RvGateResult::RejectedNotReady, None)
+            (RvGateResult::RejectedNotReady, None)
         };
         rv_clock_domain_amendment_apply_state(&mut entry, gate, watermark);
         rv_clock_domain_amendment_apply_state(&mut blocked, gate, watermark);
         entry_strategy
-            .record_entry_skip_once(
-                1_300 + index,
-                &entry,
-                BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
-            )
+            .record_entry_skip_once(1_300 + index, &entry, EntrySkipReason::EntryPricingBlocked)
             .unwrap();
         blocked_strategy
             .record_blocked_entry_strategy_input_snapshot_once(1_300 + index, &blocked)
             .unwrap();
     }
 
-    let entry_events = entry_evidence.events();
-    let blocked_events = blocked_evidence.events();
+    let entry_events = entry_evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
+    let blocked_events = blocked_evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode");
     assert_eq!(
         rv_clock_domain_amendment_entry_mask(&entry_events).count_ones(),
         12
@@ -4747,7 +4860,7 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
     assert_eq!(
         entry_events
             .iter()
-            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
+            .filter(|event| matches!(event, CurrentFact::EntrySkipObservation(_)))
             .count(),
         12,
         "100+ repeats and A-B-A oscillations must remain bounded to twelve entry records"
@@ -4755,24 +4868,24 @@ fn rv_clock_domain_amendment_current_key_rv_mask_suppresses_repeats() {
     assert_eq!(
         blocked_events
             .iter()
-            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::StrategyInput(_)))
+            .filter(|event| matches!(event, CurrentFact::BlockedStrategyInputObservation(_)))
             .count(),
         12,
         "100+ repeats and A-B-A oscillations must remain bounded to twelve blocked records"
     );
     assert!(entry_events.iter().all(|event| {
         match event {
-            RecordedDecisionEvidenceEvent::EntrySkip(skip) => skip
+            CurrentFact::EntrySkipObservation(skip) => skip
                 .realized_vol_receive_watermark_ms
-                .is_none_or(|watermark| watermark.value() == 1_200),
+                .is_none_or(|watermark| watermark == 1_200),
             _ => true,
         }
     }));
     assert!(blocked_events.iter().all(|event| {
         match event {
-            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => snapshot
-                .realized_volatility_receive_watermark_ms
-                .is_none_or(|watermark| watermark.value() == 1_200),
+            CurrentFact::BlockedStrategyInputObservation(snapshot) => blocked_rv_metadata(snapshot)
+                .1
+                .is_none_or(|watermark| watermark == 1_200),
             _ => true,
         }
     }));
@@ -4958,9 +5071,11 @@ impl RvClockDomainBlockedKeyField {
                     .realized_volatility_receipt
                     .evidence
                     .blockers;
-                *blockers = vec!["quorum_not_ready".to_string()];
+                *blockers =
+                    vec![crate::bolt_v3_current_evidence::RealizedVolBlockReason::QuorumNotReady];
                 if changed {
-                    blockers.push("source_stale".to_string());
+                    blockers
+                        .push(crate::bolt_v3_current_evidence::RealizedVolBlockReason::SourceStale);
                 }
             }
             Self::SourceId => {
@@ -4993,7 +5108,11 @@ impl RvClockDomainBlockedKeyField {
                     .realized_volatility_receipt
                     .evidence
                     .source_diagnostics[0]
-                    .status = if changed { "ready" } else { "blocked" }.to_string();
+                    .status = if changed {
+                    crate::bolt_v3_current_evidence::RealizedVolSourceStatus::Ready
+                } else {
+                    crate::bolt_v3_current_evidence::RealizedVolSourceStatus::Blocked
+                };
             }
             Self::SourceBlockReason => {
                 decision
@@ -5001,14 +5120,11 @@ impl RvClockDomainBlockedKeyField {
                     .realized_volatility_receipt
                     .evidence
                     .source_diagnostics[0]
-                    .block_reason = Some(
-                    if changed {
-                        "source_stale"
-                    } else {
-                        "quorum_not_ready"
-                    }
-                    .to_string(),
-                );
+                    .block_reason = Some(if changed {
+                    crate::bolt_v3_current_evidence::RealizedVolBlockReason::SourceStale
+                } else {
+                    crate::bolt_v3_current_evidence::RealizedVolBlockReason::QuorumNotReady
+                });
             }
             Self::SourceLastRejectedReason => {
                 decision
@@ -5016,7 +5132,9 @@ impl RvClockDomainBlockedKeyField {
                     .realized_volatility_receipt
                     .evidence
                     .source_diagnostics[0]
-                    .last_rejected_reason = changed.then(|| "out_of_order".to_string());
+                    .last_rejected_reason = changed.then_some(
+                    crate::bolt_v3_current_evidence::RealizedVolSourceRejectReason::EventTimeRegression,
+                );
             }
             Self::UnknownSourceIds => {
                 let rejections = &mut decision
@@ -5037,7 +5155,7 @@ impl RvClockDomainBlockedKeyField {
 fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
     field: RvClockDomainBlockedKeyField,
 ) {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy, 1_200, Some(1_200));
     let mut decision = rv_clock_domain_amendment_blocked_decision();
@@ -5045,7 +5163,7 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
         strategy.realized_volatility_evidence_fields();
     rv_clock_domain_amendment_apply_state(
         &mut decision,
-        BoltV3RvGateResult::RejectedNotReady,
+        RvGateResult::RejectedNotReady,
         Some(LocalReceiveMs::new(1_200)),
     );
 
@@ -5063,15 +5181,16 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
         .unwrap();
 
     assert_eq!(
-        evidence.strategy_input_attempts(),
+        evidence.attempts_for(crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::BlockedStrategyInputObservation),
         3,
         "{field:?} must reach the writer for A, B, and restored A"
     );
     let records = evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some(snapshot),
+            CurrentFact::BlockedStrategyInputObservation(snapshot) => Some(snapshot),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -5081,15 +5200,12 @@ fn rv_clock_domain_amendment_assert_blocked_key_field_resets_rv_mask(
         "{field:?} must emit after A-to-B and again after B-to-A"
     );
     assert!(records.iter().all(|record| {
-        record.realized_volatility_gate_result == Some(BoltV3RvGateResult::RejectedNotReady)
-            && record
-                .realized_volatility_receive_watermark_ms
-                .is_some_and(|watermark| watermark.value() == 1_200)
+        blocked_rv_metadata(record) == (RvGateResult::RejectedNotReady, Some(1_200))
     }));
 }
 
 fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let evidence = recording_decision_evidence();
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence);
     rv_clock_domain_amendment_install_raw_ready_blocked_snapshot(&mut strategy, 1_200, Some(1_200));
     let mut decision = rv_clock_domain_amendment_blocked_decision();
@@ -5106,11 +5222,14 @@ fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent()
     // that dropping either field from the key would still be detected.
     let mut configured_target_changed = baseline.clone();
     configured_target_changed
+        .details
         .configured_target_id
         .push_str("-changed");
     assert_eq!(
-        configured_target_changed.market_selection_ruleset_id,
-        baseline.market_selection_ruleset_id
+        configured_target_changed
+            .details
+            .market_selection_ruleset_id,
+        baseline.details.market_selection_ruleset_id
     );
     assert_ne!(
         BlockedStrategyInputDedupeKey::from_snapshot(&configured_target_changed),
@@ -5120,11 +5239,12 @@ fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent()
 
     let mut ruleset_changed = baseline.clone();
     ruleset_changed
+        .details
         .market_selection_ruleset_id
         .push_str("-changed");
     assert_eq!(
-        ruleset_changed.configured_target_id,
-        baseline.configured_target_id
+        ruleset_changed.details.configured_target_id,
+        baseline.details.configured_target_id
     );
     assert_ne!(
         BlockedStrategyInputDedupeKey::from_snapshot(&ruleset_changed),
@@ -5135,35 +5255,31 @@ fn rv_clock_domain_amendment_assert_aliased_blocked_key_fields_are_independent()
 
 #[test]
 fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
-    let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let entry_evidence = recording_decision_evidence();
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut entry = minimal_entry_submission_decision();
     rv_clock_domain_amendment_apply_state(
         &mut entry,
-        BoltV3RvGateResult::Accepted,
+        RvGateResult::Accepted,
         Some(LocalReceiveMs::new(1_200)),
     );
-    let baseline_category = BoltV3EntrySkipReasonCategory::EntryPricingBlocked;
+    let baseline_category = EntrySkipReason::EntryPricingBlocked;
     entry_strategy
-        .record_entry_skip_once(1_200, &entry, baseline_category, None)
+        .record_entry_skip_once(1_200, &entry, baseline_category)
         .unwrap();
 
     let mut next_ms = 1_201_u64;
     let mut record_entry = |strategy: &mut BinaryOracleEdgeTaker,
                             decision: &EntrySubmissionDecision,
-                            category: BoltV3EntrySkipReasonCategory| {
+                            category: EntrySkipReason| {
         let now_ms = next_ms;
         next_ms += 1;
         strategy
-            .record_entry_skip_once(now_ms, decision, category, None)
+            .record_entry_skip_once(now_ms, decision, category)
             .unwrap();
     };
 
-    record_entry(
-        &mut entry_strategy,
-        &entry,
-        BoltV3EntrySkipReasonCategory::NoSideSelected,
-    );
+    record_entry(&mut entry_strategy, &entry, EntrySkipReason::NoSideSelected);
     record_entry(&mut entry_strategy, &entry, baseline_category);
 
     entry
@@ -5225,9 +5341,10 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
 
     assert_eq!(
         entry_evidence
-            .events()
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
             .iter()
-            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
+            .filter(|event| matches!(event, CurrentFact::EntrySkipObservation(_)))
             .count(),
         17,
         "each of eight current entry-key fields must emit on change and returning to the prior key must emit again"
@@ -5241,21 +5358,16 @@ fn rv_clock_domain_amendment_existing_key_changes_reset_rv_mask() {
 
 #[test]
 fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
-    let entry_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let entry_evidence = recording_decision_evidence();
     let mut entry_strategy = rv_clock_domain_amendment_dedupe_strategy(entry_evidence.clone());
     let mut skip = minimal_entry_submission_decision();
     rv_clock_domain_amendment_apply_state(
         &mut skip,
-        BoltV3RvGateResult::Accepted,
+        RvGateResult::Accepted,
         Some(LocalReceiveMs::new(1_200)),
     );
     entry_strategy
-        .record_entry_skip_once(
-            1_200,
-            &skip,
-            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
-        )
+        .record_entry_skip_once(1_200, &skip, EntrySkipReason::EntryPricingBlocked)
         .unwrap();
     entry_strategy
         .pricing
@@ -5267,24 +5379,20 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
     );
     let _ = entry_strategy.submit_admitted_entry_decision(1_200, admitted);
     entry_strategy
-        .record_entry_skip_once(
-            1_201,
-            &skip,
-            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-            None,
-        )
+        .record_entry_skip_once(1_201, &skip, EntrySkipReason::EntryPricingBlocked)
         .unwrap();
     assert_eq!(
         entry_evidence
-            .events()
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
             .iter()
-            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::EntrySkip(_)))
+            .filter(|event| matches!(event, CurrentFact::EntrySkipObservation(_)))
             .count(),
         2,
         "the admitted-entry reset site must clear both current key and RV novelty"
     );
 
-    let blocked_evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let blocked_evidence = recording_decision_evidence();
     let mut blocked_strategy = rv_clock_domain_amendment_dedupe_strategy(blocked_evidence.clone());
     let blocked = rv_clock_domain_amendment_blocked_decision();
     blocked_strategy
@@ -5298,9 +5406,10 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
         .unwrap();
     assert_eq!(
         blocked_evidence
-            .events()
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
             .iter()
-            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::StrategyInput(_)))
+            .filter(|event| matches!(event, CurrentFact::BlockedStrategyInputObservation(_)))
             .count(),
         2,
         "the left-RV-not-ready reset site must clear both current key and RV novelty"
@@ -5311,39 +5420,28 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
 fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
     let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
         RecordingFeeProvider::cold(),
-        Arc::new(FailingDecisionEvidenceWriter),
+        failing_decision_evidence(),
     );
     let decision = minimal_entry_submission_decision();
     assert!(
         strategy
-            .record_entry_skip_once(
-                1_200,
-                &decision,
-                BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
-            )
+            .record_entry_skip_once(1_200, &decision, EntrySkipReason::EntryPricingBlocked)
             .expect("entry writer errors are swallowed")
     );
     assert!(
         !strategy
-            .record_entry_skip_once(
-                1_201,
-                &decision,
-                BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
-                None,
-            )
+            .record_entry_skip_once(1_201, &decision, EntrySkipReason::EntryPricingBlocked)
             .expect("seen entry state should remain suppressed after the swallowed error"),
         "entry-skip failure must preserve mark-before-swallowed-error behavior"
     );
 }
 
 #[test]
-fn rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries() {
-    let evidence =
-        Arc::new(RecordingSequencedDecisionEvidenceWriter::with_failing_strategy_input_attempt(2));
+fn rv_clock_domain_amendment_blocked_snapshot_poisoning_refuses_followup_key_transitions() {
+    let evidence = recording_evidence_failing_blocked_attempt(2);
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     let mut a = rv_clock_domain_amendment_blocked_decision();
-    rv_clock_domain_amendment_apply_state(&mut a, BoltV3RvGateResult::Accepted, None);
+    rv_clock_domain_amendment_apply_state(&mut a, RvGateResult::Accepted, None);
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_200, &a)
         .expect("A should record");
@@ -5353,65 +5451,57 @@ fn rv_clock_domain_amendment_blocked_snapshot_writer_failure_retries() {
     let mut b = a.clone();
     rv_clock_domain_amendment_apply_state(
         &mut b,
-        BoltV3RvGateResult::RejectedStale,
+        RvGateResult::RejectedStale,
         Some(LocalReceiveMs::new(1_234)),
     );
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_201, &b)
-        .expect_err("B's configured writer attempt must fail");
+        .expect("observation commit failure must remain bounded");
 
     strategy.active.market_id = original_market_id.clone();
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_202, &a)
-        .expect("A must remain suppressed after failed B");
+        .expect("a new key transition must remain non-aborting after sink poisoning");
     assert_eq!(
-        evidence.strategy_input_attempts(),
-        2,
-        "failed B must not replace A or clear A's mask"
+        evidence.attempts_for(crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::BlockedStrategyInputObservation),
+        3,
+        "A -> failed B -> A is a new semantic transition, but the poisoned sink must refuse its append"
     );
 
     strategy.active.market_id = Some("<KEY_B>".to_string());
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_203, &b)
-        .expect("B must retry and emit after its failed atomic write");
-    assert_eq!(evidence.strategy_input_attempts(), 3);
+        .expect("another key transition must remain non-aborting after sink poisoning");
+    assert_eq!(evidence.attempts_for(crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::BlockedStrategyInputObservation), 4);
     let records = evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some(snapshot),
+            CurrentFact::BlockedStrategyInputObservation(snapshot) => Some(snapshot),
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(records.len(), 2);
     assert_eq!(
-        records[0].realized_volatility_gate_result,
-        Some(BoltV3RvGateResult::Accepted)
-    );
-    assert_eq!(records[0].realized_volatility_receive_watermark_ms, None);
-    assert_eq!(
-        records[1].realized_volatility_gate_result,
-        Some(BoltV3RvGateResult::RejectedStale)
+        records.len(),
+        1,
+        "the first commit-indeterminate attempt poisons the sink, so no later transition may append"
     );
     assert_eq!(
-        records[1]
-            .realized_volatility_receive_watermark_ms
-            .map(LocalReceiveMs::value),
-        Some(1_234),
-        "emitted record must retain the exact raw watermark even though novelty uses presence"
+        blocked_rv_metadata(&records[0]),
+        (RvGateResult::Accepted, None)
     );
 }
 
 #[test]
-fn rv_clock_domain_amendment_blocked_snapshot_same_key_new_bit_failure_retries() {
-    let evidence =
-        Arc::new(RecordingSequencedDecisionEvidenceWriter::with_failing_strategy_input_attempt(2));
+fn rv_clock_domain_amendment_blocked_snapshot_same_key_failure_marks_bit_seen_without_retry() {
+    let evidence = recording_evidence_failing_blocked_attempt(2);
     let mut strategy = rv_clock_domain_amendment_dedupe_strategy(evidence.clone());
     let mut decision = rv_clock_domain_amendment_blocked_decision();
 
     rv_clock_domain_amendment_apply_state(
         &mut decision,
-        BoltV3RvGateResult::Accepted,
+        RvGateResult::Accepted,
         Some(LocalReceiveMs::new(1_200)),
     );
     strategy
@@ -5420,56 +5510,55 @@ fn rv_clock_domain_amendment_blocked_snapshot_same_key_new_bit_failure_retries()
 
     rv_clock_domain_amendment_apply_state(
         &mut decision,
-        BoltV3RvGateResult::RejectedStale,
+        RvGateResult::RejectedStale,
         Some(LocalReceiveMs::new(1_234)),
     );
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_201, &decision)
-        .expect_err("the new bit's configured writer attempt must fail");
+        .expect("observation commit failure must remain bounded");
 
     rv_clock_domain_amendment_apply_state(
         &mut decision,
-        BoltV3RvGateResult::Accepted,
+        RvGateResult::Accepted,
         Some(LocalReceiveMs::new(1_200)),
     );
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_202, &decision)
         .expect("the committed bit should remain suppressed");
     assert_eq!(
-        evidence.strategy_input_attempts(),
+        evidence.attempts_for(crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::BlockedStrategyInputObservation),
         2,
         "a failed new bit must neither clear the committed bit nor reach the writer again"
     );
 
     rv_clock_domain_amendment_apply_state(
         &mut decision,
-        BoltV3RvGateResult::RejectedStale,
+        RvGateResult::RejectedStale,
         Some(LocalReceiveMs::new(1_234)),
     );
     strategy
         .record_blocked_entry_strategy_input_snapshot_once(1_203, &decision)
-        .expect("the failed new bit must remain unseen and retry on the same key");
-    assert_eq!(evidence.strategy_input_attempts(), 3);
+        .expect("the failed new bit must remain seen and suppressed on the same key");
+    assert_eq!(
+        evidence.attempts_for(crate::bolt_v3_current_evidence::generated_contract::KnownPurpose::BlockedStrategyInputObservation),
+        2,
+        "an indeterminate observation fact must never be retried"
+    );
 
     let recorded_states = evidence
-        .events()
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            RecordedDecisionEvidenceEvent::StrategyInput(snapshot) => Some((
-                snapshot.realized_volatility_gate_result,
-                snapshot
-                    .realized_volatility_receive_watermark_ms
-                    .map(LocalReceiveMs::value),
-            )),
+            CurrentFact::BlockedStrategyInputObservation(snapshot) => {
+                Some(blocked_rv_metadata(&snapshot))
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(
         recorded_states,
-        vec![
-            (Some(BoltV3RvGateResult::Accepted), Some(1_200)),
-            (Some(BoltV3RvGateResult::RejectedStale), Some(1_234)),
-        ],
-        "only the committed bit and the successful retry may persist"
+        vec![(RvGateResult::Accepted, Some(1_200))],
+        "only the fact committed before poisoning may be readable"
     );
 }

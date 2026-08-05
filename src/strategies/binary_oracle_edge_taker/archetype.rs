@@ -62,9 +62,9 @@ use crate::{
     },
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, PreparedRealizedVolatilitySurface,
-        PreparedStrategyClientRoutes, PreparedStrategyRegistration, StrategyPreparationConfig,
-        StrategyRegistrationContext, StrategyRuntimeBinding, StrategyRuntimeCapabilities,
-        assemble_strategy_build_context, execution_account_id,
+        PreparedStrategyClientRoutes, PreparedStrategyRegistration, StrategyEvidenceCapability,
+        StrategyPreparationConfig, StrategyRegistrationContext, StrategyRuntimeBinding,
+        StrategyRuntimeCapabilities, assemble_strategy_build_context, execution_account_id,
         settlement_currency_for_execution_account, venue_for_client,
     },
     strategies::{
@@ -94,6 +94,7 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
         realized_volatility: true,
         settlement: true,
     },
+    evidence_capability: StrategyEvidenceCapability::EdgeTaker,
     prepare: prepare_runtime_strategy,
 };
 

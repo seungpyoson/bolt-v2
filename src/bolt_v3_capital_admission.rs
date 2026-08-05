@@ -5,9 +5,7 @@ use crate::bolt_v3_capital_admission_state::{
     NtDerivedCapitalAdmissionState, validate_nt_derived_capital_admission_state,
 };
 use crate::bolt_v3_capital_reservation::{
-    CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationReleaseDecision,
-    ReservationReleaseRequest, ReservationRequest, ReservationRevalueDecision,
-    ReservationRevalueRequest,
+    CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationRequest,
 };
 use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, evaluate_loss_admission};
 
@@ -75,7 +73,6 @@ pub struct PredictionMarketAdmissionSnapshot {
     pub yes_position: Decimal,
     pub no_position: Decimal,
     pub collateral_allowance: Decimal,
-    pub conditional_token_allowance: Decimal,
     pub collateral_coupled_group_id: String,
 }
 
@@ -122,41 +119,6 @@ pub struct CapitalAdmissionGateInputs<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapitalAdmissionLifecycleUpdate {
-    pub intent_id: String,
-    pub pool_id: String,
-    pub collateral_group_id: String,
-    pub remaining_liability: Decimal,
-    pub observed_at_ns: u64,
-    pub evidence_label: String,
-    pub kind: CapitalAdmissionLifecycleKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CapitalAdmissionLifecycleKind {
-    LiveResidual,
-    Terminal,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CapitalAdmissionLifecycleAction {
-    Revalued,
-    Released,
-    None,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapitalAdmissionLifecycleDecision {
-    pub accepted: bool,
-    pub kind: CapitalAdmissionLifecycleKind,
-    pub action: CapitalAdmissionLifecycleAction,
-    pub reason: Option<ReservationRejectionReason>,
-    pub previous_liability: Option<Decimal>,
-    pub revalued_liability: Option<Decimal>,
-    pub released_liability: Option<Decimal>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapitalAdmissionRebuildDecision {
     pub accepted: bool,
     pub reason: Option<ReservationRejectionReason>,
@@ -186,6 +148,10 @@ impl CapitalAdmissionGate {
 
     pub fn is_reconciled(&self) -> bool {
         self.reservation_ledger.is_reconciled()
+    }
+
+    pub fn invalidate_reconciliation(&mut self) {
+        self.reservation_ledger.invalidate_reconciliation();
     }
 
     pub fn rebuild_open_order_reservations(
@@ -249,102 +215,6 @@ impl CapitalAdmissionGate {
         })
     }
 
-    pub fn release_pending_reservation(
-        &mut self,
-        pool: &CapitalPoolSnapshot,
-        request: &ReservationReleaseRequest,
-        now_ns: u64,
-    ) -> ReservationReleaseDecision {
-        self.reservation_ledger.release(pool, request, now_ns)
-    }
-
-    /// Uses the capital-pool snapshot freshness bound for both pool and revalue evidence.
-    pub fn revalue_pending_reservation(
-        &mut self,
-        pool: &CapitalPoolSnapshot,
-        request: &ReservationRevalueRequest,
-        now_ns: u64,
-        min_remaining_pool_balance: Option<Decimal>,
-    ) -> ReservationRevalueDecision {
-        self.reservation_ledger
-            .revalue(pool, request, now_ns, min_remaining_pool_balance)
-    }
-
-    pub fn apply_lifecycle_update(
-        &mut self,
-        pool: &CapitalPoolSnapshot,
-        update: &CapitalAdmissionLifecycleUpdate,
-        now_ns: u64,
-        min_remaining_pool_balance: Option<Decimal>,
-    ) -> CapitalAdmissionLifecycleDecision {
-        match update.kind {
-            CapitalAdmissionLifecycleKind::Terminal => {
-                if update.remaining_liability != Decimal::ZERO {
-                    return rejected_lifecycle(
-                        update.kind,
-                        ReservationRejectionReason::InvalidRequest,
-                    );
-                }
-                let request = ReservationReleaseRequest {
-                    request_id: update.intent_id.clone(),
-                    pool_id: update.pool_id.clone(),
-                    collateral_group_id: update.collateral_group_id.clone(),
-                    observed_at_ns: update.observed_at_ns,
-                    evidence_label: update.evidence_label.clone(),
-                };
-                let decision = self.release_pending_reservation(pool, &request, now_ns);
-                CapitalAdmissionLifecycleDecision {
-                    accepted: decision.accepted,
-                    kind: update.kind,
-                    action: if decision.accepted {
-                        CapitalAdmissionLifecycleAction::Released
-                    } else {
-                        CapitalAdmissionLifecycleAction::None
-                    },
-                    reason: decision.reason,
-                    previous_liability: None,
-                    revalued_liability: None,
-                    released_liability: decision.released_liability,
-                }
-            }
-            CapitalAdmissionLifecycleKind::LiveResidual => {
-                if update.remaining_liability <= Decimal::ZERO {
-                    return rejected_lifecycle(
-                        update.kind,
-                        ReservationRejectionReason::InvalidRequest,
-                    );
-                }
-                let request = ReservationRevalueRequest {
-                    request_id: update.intent_id.clone(),
-                    pool_id: update.pool_id.clone(),
-                    collateral_group_id: update.collateral_group_id.clone(),
-                    liability: update.remaining_liability,
-                    observed_at_ns: update.observed_at_ns,
-                    evidence_label: update.evidence_label.clone(),
-                };
-                let decision = self.revalue_pending_reservation(
-                    pool,
-                    &request,
-                    now_ns,
-                    min_remaining_pool_balance,
-                );
-                CapitalAdmissionLifecycleDecision {
-                    accepted: decision.accepted,
-                    kind: update.kind,
-                    action: if decision.accepted {
-                        CapitalAdmissionLifecycleAction::Revalued
-                    } else {
-                        CapitalAdmissionLifecycleAction::None
-                    },
-                    reason: decision.reason,
-                    previous_liability: decision.previous_liability,
-                    revalued_liability: decision.revalued_liability,
-                    released_liability: None,
-                }
-            }
-        }
-    }
-
     pub fn live_reserved_liability(&self, pool_id: &str) -> Decimal {
         self.reservation_ledger.live_reserved_liability(pool_id)
     }
@@ -356,21 +226,6 @@ impl CapitalAdmissionGate {
     ) -> Option<Decimal> {
         self.reservation_ledger
             .rollback_uncommitted(pool_id, request_id)
-    }
-}
-
-fn rejected_lifecycle(
-    kind: CapitalAdmissionLifecycleKind,
-    reason: ReservationRejectionReason,
-) -> CapitalAdmissionLifecycleDecision {
-    CapitalAdmissionLifecycleDecision {
-        accepted: false,
-        kind,
-        action: CapitalAdmissionLifecycleAction::None,
-        reason: Some(reason),
-        previous_liability: None,
-        revalued_liability: None,
-        released_liability: None,
     }
 }
 
@@ -399,7 +254,7 @@ pub struct CapitalAdmissionDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapitalAdmissionEvidenceKind {
     Portfolio,
-    VenueSpendability,
+    ProviderCollateralAllowance,
     OrderLifecycle,
     ProductState,
     ReservationLedger,
@@ -623,8 +478,8 @@ fn capital_admission_evidence_kind(
         CapitalAdmissionStateEvidenceKind::Portfolio => {
             Some(CapitalAdmissionEvidenceKind::Portfolio)
         }
-        CapitalAdmissionStateEvidenceKind::VenueSpendability => {
-            Some(CapitalAdmissionEvidenceKind::VenueSpendability)
+        CapitalAdmissionStateEvidenceKind::ProviderCollateralAllowance => {
+            Some(CapitalAdmissionEvidenceKind::ProviderCollateralAllowance)
         }
         CapitalAdmissionStateEvidenceKind::OrderLifecycle => {
             Some(CapitalAdmissionEvidenceKind::OrderLifecycle)
@@ -696,9 +551,6 @@ impl PredictionMarketBinaryLiabilityCalculator {
                 }
             }
             IntentSide::Sell => {
-                if snapshot.conditional_token_allowance < request.quantity {
-                    return Err(LiabilityError::InsufficientAllowance);
-                }
                 let outcome_position = if request.instrument_id == snapshot.yes_instrument_id {
                     snapshot.yes_position
                 } else if request.instrument_id == snapshot.no_instrument_id {
@@ -758,20 +610,19 @@ mod tests {
     use crate::bolt_v3_capital_admission_state::{
         CapitalAdmissionStateEvidenceKind, NtDerivedCapitalAdmissionState,
         OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
-        ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
+        ProviderCollateralAllowanceSnapshot, ReservationLedgerSnapshot,
     };
     use crate::bolt_v3_capital_reservation::{
-        CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason,
-        ReservationReleaseRequest, ReservationRequest, ReservationRevalueRequest,
+        CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationRequest,
     };
     use crate::bolt_v3_loss_governor::{
-        LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
+        LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSnapshotSource,
+        LossSourceObservationTimestamps,
     };
 
     use super::{
         CapitalAdmissionEvidenceKind, CapitalAdmissionGate, CapitalAdmissionGateInputs,
-        CapitalAdmissionInputs, CapitalAdmissionLifecycleAction, CapitalAdmissionLifecycleKind,
-        CapitalAdmissionLifecycleUpdate, CapitalAdmissionPolicy, CapitalAdmissionReason,
+        CapitalAdmissionInputs, CapitalAdmissionPolicy, CapitalAdmissionReason,
         CapitalAdmissionRequest, FeeSlippagePolicy, IntentLiquidity, IntentOrderKind, IntentSide,
         LiabilityError, PredictionMarketAdmissionSnapshot,
         PredictionMarketBinaryLiabilityCalculator, ProductAdmissionSnapshot, ProductKind,
@@ -814,7 +665,6 @@ mod tests {
             yes_position: Decimal::new(10, 0),
             no_position: Decimal::ZERO,
             collateral_allowance: Decimal::new(100, 0),
-            conditional_token_allowance: Decimal::new(10, 0),
             collateral_coupled_group_id: "group-1".to_string(),
         })
     }
@@ -832,13 +682,12 @@ mod tests {
                 free_collateral: Decimal::new(100, 0),
                 total_equity: Decimal::new(100, 0),
             },
-            venue_spendability: VenueSpendabilitySnapshot {
-                source: "operator-venue-spendability".to_string(),
+            provider_collateral_allowance: ProviderCollateralAllowanceSnapshot {
+                source: "operator-venue-allowance".to_string(),
                 observed_at_ns: 1_000,
                 venue_id: "venue-a".to_string(),
                 account_id: "account-1".to_string(),
                 collateral_currency: "USD".to_string(),
-                spendable_collateral: Decimal::new(100, 0),
                 collateral_allowance: Decimal::new(100, 0),
             },
             order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
@@ -914,62 +763,6 @@ mod tests {
         ReservationRequest {
             evidence_label: String::new(),
             ..rebuilt_open_order_reservation(intent_id)
-        }
-    }
-
-    fn open_order_revalue(
-        intent_id: &str,
-        liability: Decimal,
-        observed_at_ns: u64,
-    ) -> ReservationRevalueRequest {
-        ReservationRevalueRequest {
-            request_id: intent_id.to_string(),
-            pool_id: "pool-1".to_string(),
-            collateral_group_id: "group-1".to_string(),
-            liability,
-            observed_at_ns,
-            evidence_label: "nt_open_order_revalue".to_string(),
-        }
-    }
-
-    fn open_order_release(intent_id: &str, observed_at_ns: u64) -> ReservationReleaseRequest {
-        ReservationReleaseRequest {
-            request_id: intent_id.to_string(),
-            pool_id: "pool-1".to_string(),
-            collateral_group_id: "group-1".to_string(),
-            observed_at_ns,
-            evidence_label: "nt_order_terminal".to_string(),
-        }
-    }
-
-    fn terminal_lifecycle_update(
-        intent_id: &str,
-        observed_at_ns: u64,
-    ) -> CapitalAdmissionLifecycleUpdate {
-        CapitalAdmissionLifecycleUpdate {
-            intent_id: intent_id.to_string(),
-            pool_id: "pool-1".to_string(),
-            collateral_group_id: "group-1".to_string(),
-            remaining_liability: Decimal::ZERO,
-            observed_at_ns,
-            evidence_label: "nt_order_terminal".to_string(),
-            kind: CapitalAdmissionLifecycleKind::Terminal,
-        }
-    }
-
-    fn live_residual_lifecycle_update(
-        intent_id: &str,
-        liability: Decimal,
-        observed_at_ns: u64,
-    ) -> CapitalAdmissionLifecycleUpdate {
-        CapitalAdmissionLifecycleUpdate {
-            intent_id: intent_id.to_string(),
-            pool_id: "pool-1".to_string(),
-            collateral_group_id: "group-1".to_string(),
-            remaining_liability: liability,
-            observed_at_ns,
-            evidence_label: "nt_order_live_residual".to_string(),
-            kind: CapitalAdmissionLifecycleKind::LiveResidual,
         }
     }
 
@@ -1051,7 +844,7 @@ mod tests {
     #[test]
     fn sizer_rejects_when_loss_governor_rejects() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-10, 0)),
             daily_pnl: None,
@@ -1086,7 +879,7 @@ mod tests {
     #[test]
     fn sizer_rejects_when_capital_reservation_rejects() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1122,7 +915,7 @@ mod tests {
     #[test]
     fn sizer_accepts_when_loss_liability_and_reservation_pass() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1158,7 +951,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 CapitalAdmissionEvidenceKind::Portfolio,
-                CapitalAdmissionEvidenceKind::VenueSpendability,
+                CapitalAdmissionEvidenceKind::ProviderCollateralAllowance,
                 CapitalAdmissionEvidenceKind::OrderLifecycle,
                 CapitalAdmissionEvidenceKind::ProductState,
                 CapitalAdmissionEvidenceKind::ReservationLedger,
@@ -1200,7 +993,7 @@ mod tests {
     #[test]
     fn sizer_rejects_when_min_remaining_pool_balance_would_be_breached() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1263,7 +1056,7 @@ mod tests {
     #[test]
     fn restart_requires_rebuilt_open_order_reservations_before_admission() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1298,9 +1091,9 @@ mod tests {
     }
 
     #[test]
-    fn reserve_to_submit_is_single_serialized_critical_section() {
+    fn concurrent_reservations_share_one_serialized_budget() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1340,26 +1133,6 @@ mod tests {
             )]
         );
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
-
-        let release = gate.release_pending_reservation(
-            &capital_pool,
-            &open_order_release("intent-1", 1_050),
-            1_060,
-        );
-        assert!(release.accepted);
-        assert_eq!(release.released_liability, Some(Decimal::new(430, 2)));
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
-
-        let retry = gate.evaluate_and_reserve(CapitalAdmissionGateInputs {
-            request: &second_request,
-            state: Some(&state),
-            policy: &policy,
-            loss_policy: Some(&loss_policy()),
-            capital_pool: &capital_pool,
-        });
-
-        assert!(retry.accepted);
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
     }
 
     #[test]
@@ -1390,295 +1163,9 @@ mod tests {
     }
 
     #[test]
-    fn admission_gate_revalues_live_reservation_from_order_lifecycle_evidence() {
-        let capital_pool = single_order_capital_pool();
-        let mut gate = CapitalAdmissionGate::unreconciled();
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[rebuilt_open_order_reservation("intent-open")],
-            1_000,
-            None,
-        );
-        assert!(rebuild.accepted);
-
-        let revalue = gate.revalue_pending_reservation(
-            &capital_pool,
-            &open_order_revalue("intent-open", Decimal::new(250, 2), 1_050),
-            1_060,
-            None,
-        );
-
-        assert!(revalue.accepted);
-        assert_eq!(revalue.previous_liability, Some(Decimal::new(430, 2)));
-        assert_eq!(revalue.revalued_liability, Some(Decimal::new(250, 2)));
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(250, 2));
-    }
-
-    #[test]
-    fn admission_gate_rejects_stale_revalue_without_mutating_live_reservation() {
-        let capital_pool = single_order_capital_pool();
-        let mut gate = CapitalAdmissionGate::unreconciled();
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[rebuilt_open_order_reservation("intent-open")],
-            1_000,
-            None,
-        );
-        assert!(rebuild.accepted);
-
-        let first = gate.revalue_pending_reservation(
-            &capital_pool,
-            &open_order_revalue("intent-open", Decimal::new(250, 2), 1_050),
-            1_060,
-            None,
-        );
-        assert!(first.accepted);
-
-        let stale = gate.revalue_pending_reservation(
-            &capital_pool,
-            &open_order_revalue("intent-open", Decimal::new(300, 2), 1_025),
-            1_060,
-            None,
-        );
-
-        assert!(!stale.accepted);
-        assert_eq!(stale.reason, Some(ReservationRejectionReason::StaleRequest));
-        assert_eq!(stale.revalued_liability, None);
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(250, 2));
-    }
-
-    #[test]
-    fn admission_gate_forwards_min_remaining_balance_to_revalue() {
-        let capital_pool = single_order_capital_pool();
-        let mut gate = CapitalAdmissionGate::unreconciled();
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[rebuilt_open_order_reservation("intent-open")],
-            1_000,
-            None,
-        );
-        assert!(rebuild.accepted);
-
-        let revalue = gate.revalue_pending_reservation(
-            &capital_pool,
-            &open_order_revalue("intent-open", Decimal::new(250, 2), 1_050),
-            1_060,
-            Some(Decimal::new(6, 0)),
-        );
-
-        assert!(!revalue.accepted);
-        assert_eq!(revalue.reason, Some(ReservationRejectionReason::OverBudget));
-        assert_eq!(revalue.revalued_liability, None);
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
-    }
-
-    #[test]
-    fn lifecycle_terminal_zero_liability_releases_live_reservation() {
-        let capital_pool = single_order_capital_pool();
-        let mut gate = CapitalAdmissionGate::unreconciled();
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[rebuilt_open_order_reservation("intent-open")],
-            1_000,
-            None,
-        );
-        assert!(rebuild.accepted);
-
-        let decision = gate.apply_lifecycle_update(
-            &capital_pool,
-            &terminal_lifecycle_update("intent-open", 1_050),
-            1_060,
-            None,
-        );
-
-        assert!(decision.accepted);
-        assert_eq!(decision.kind, CapitalAdmissionLifecycleKind::Terminal);
-        assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
-        assert_eq!(decision.released_liability, Some(Decimal::new(430, 2)));
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
-    }
-
-    #[test]
-    fn lifecycle_live_residual_revalues_live_reservation() {
-        let capital_pool = single_order_capital_pool();
-        let mut gate = CapitalAdmissionGate::unreconciled();
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[rebuilt_open_order_reservation("intent-open")],
-            1_000,
-            None,
-        );
-        assert!(rebuild.accepted);
-
-        let decision = gate.apply_lifecycle_update(
-            &capital_pool,
-            &live_residual_lifecycle_update("intent-open", Decimal::new(250, 2), 1_050),
-            1_060,
-            None,
-        );
-
-        assert!(decision.accepted);
-        assert_eq!(decision.kind, CapitalAdmissionLifecycleKind::LiveResidual);
-        assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Revalued);
-        assert_eq!(decision.previous_liability, Some(Decimal::new(430, 2)));
-        assert_eq!(decision.revalued_liability, Some(Decimal::new(250, 2)));
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(250, 2));
-    }
-
-    #[test]
-    fn lifecycle_terminal_rejects_unreconciled_gate_without_mutation() {
-        let capital_pool = single_order_capital_pool();
-        let mut gate = CapitalAdmissionGate::unreconciled();
-
-        let decision = gate.apply_lifecycle_update(
-            &capital_pool,
-            &terminal_lifecycle_update("intent-open", 1_050),
-            1_060,
-            None,
-        );
-
-        assert!(!decision.accepted);
-        assert_eq!(decision.kind, CapitalAdmissionLifecycleKind::Terminal);
-        assert_eq!(decision.action, CapitalAdmissionLifecycleAction::None);
-        assert_eq!(
-            decision.reason,
-            Some(ReservationRejectionReason::ReconciliationRequired)
-        );
-        assert_eq!(decision.released_liability, None);
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
-    }
-
-    #[test]
-    fn lifecycle_terminal_stale_or_equal_timestamp_rejects_without_mutation() {
-        let capital_pool = single_order_capital_pool();
-        let mut gate = CapitalAdmissionGate::unreconciled();
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[rebuilt_open_order_reservation("intent-open")],
-            1_000,
-            None,
-        );
-        assert!(rebuild.accepted);
-
-        let stale = gate.apply_lifecycle_update(
-            &capital_pool,
-            &terminal_lifecycle_update("intent-open", 1_000),
-            1_060,
-            None,
-        );
-
-        assert!(!stale.accepted);
-        assert_eq!(stale.reason, Some(ReservationRejectionReason::StaleRequest));
-        assert_eq!(stale.released_liability, None);
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
-    }
-
-    #[test]
-    fn lifecycle_live_residual_min_remaining_balance_rejects_without_mutation() {
-        let capital_pool = single_order_capital_pool();
-        let mut gate = CapitalAdmissionGate::unreconciled();
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[rebuilt_open_order_reservation("intent-open")],
-            1_000,
-            None,
-        );
-        assert!(rebuild.accepted);
-
-        let decision = gate.apply_lifecycle_update(
-            &capital_pool,
-            &live_residual_lifecycle_update("intent-open", Decimal::new(250, 2), 1_050),
-            1_060,
-            Some(Decimal::new(6, 0)),
-        );
-
-        assert!(!decision.accepted);
-        assert_eq!(decision.kind, CapitalAdmissionLifecycleKind::LiveResidual);
-        assert_eq!(decision.action, CapitalAdmissionLifecycleAction::None);
-        assert_eq!(
-            decision.reason,
-            Some(ReservationRejectionReason::OverBudget)
-        );
-        assert_eq!(decision.revalued_liability, None);
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
-    }
-
-    #[test]
-    fn lifecycle_invalid_residual_shapes_reject_before_mutation() {
-        let capital_pool = single_order_capital_pool();
-        let mut gate = CapitalAdmissionGate::unreconciled();
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[rebuilt_open_order_reservation("intent-open")],
-            1_000,
-            None,
-        );
-        assert!(rebuild.accepted);
-
-        let cases = [
-            live_residual_lifecycle_update("intent-open", Decimal::ZERO, 1_050),
-            live_residual_lifecycle_update("intent-open", Decimal::new(-1, 0), 1_050),
-            CapitalAdmissionLifecycleUpdate {
-                remaining_liability: Decimal::new(1, 0),
-                ..terminal_lifecycle_update("intent-open", 1_050)
-            },
-            CapitalAdmissionLifecycleUpdate {
-                remaining_liability: Decimal::new(-1, 0),
-                ..terminal_lifecycle_update("intent-open", 1_050)
-            },
-        ];
-
-        for update in cases {
-            let decision = gate.apply_lifecycle_update(&capital_pool, &update, 1_060, None);
-            assert!(!decision.accepted);
-            assert_eq!(decision.action, CapitalAdmissionLifecycleAction::None);
-            assert_eq!(
-                decision.reason,
-                Some(ReservationRejectionReason::InvalidRequest)
-            );
-            assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
-        }
-    }
-
-    #[test]
-    fn lifecycle_terminal_then_live_residual_rejects_unknown_without_mutation() {
-        let capital_pool = single_order_capital_pool();
-        let mut gate = CapitalAdmissionGate::unreconciled();
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[rebuilt_open_order_reservation("intent-open")],
-            1_000,
-            None,
-        );
-        assert!(rebuild.accepted);
-
-        let terminal = gate.apply_lifecycle_update(
-            &capital_pool,
-            &terminal_lifecycle_update("intent-open", 1_050),
-            1_060,
-            None,
-        );
-        assert!(terminal.accepted);
-
-        let residual = gate.apply_lifecycle_update(
-            &capital_pool,
-            &live_residual_lifecycle_update("intent-open", Decimal::new(250, 2), 1_070),
-            1_080,
-            None,
-        );
-
-        assert!(!residual.accepted);
-        assert_eq!(
-            residual.reason,
-            Some(ReservationRejectionReason::UnknownReservation)
-        );
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
-    }
-
-    #[test]
-    fn admission_gate_fails_closed_until_reconciled_and_rejects_release() {
+    fn admission_gate_fails_closed_until_reconciled() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1708,24 +1195,12 @@ mod tests {
             )]
         );
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
-
-        let release = gate.release_pending_reservation(
-            &capital_pool(),
-            &open_order_release("intent-1", 1_050),
-            1_060,
-        );
-        assert!(!release.accepted);
-        assert_eq!(
-            release.reason,
-            Some(ReservationRejectionReason::ReconciliationRequired)
-        );
-        assert_eq!(release.released_liability, None);
     }
 
     #[test]
     fn restart_rebuilds_open_order_reservations_before_reopening_gate() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1768,7 +1243,7 @@ mod tests {
     #[test]
     fn restart_rebuild_with_no_open_orders_reopens_gate_with_zero_reservations() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1804,7 +1279,7 @@ mod tests {
     #[test]
     fn failed_restart_rebuild_keeps_gate_closed_without_partial_reservations() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1856,7 +1331,7 @@ mod tests {
     #[test]
     fn failed_restart_rebuild_discards_reservations_staged_before_later_failure() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,
@@ -1909,7 +1384,7 @@ mod tests {
     #[test]
     fn failed_restart_rebuild_after_prior_success_clears_stale_reservations() {
         let loss_snapshot = LossSnapshot {
-            source: "nt_portfolio_snapshot".to_string(),
+            source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
             per_trade_pnl: Some(Decimal::new(-5, 0)),
             daily_pnl: None,

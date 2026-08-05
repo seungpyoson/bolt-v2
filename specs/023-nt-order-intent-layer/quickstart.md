@@ -1,5 +1,9 @@
 # Quickstart: NT Order Intent Layer
 
+> **Historical feature artifact — do not execute as current verification.**
+> Current `main`, `AGENTS.md`, `.github/workflows/`, and the `justfile` are
+> authoritative.
+
 ## Evidence Commands
 
 ```bash

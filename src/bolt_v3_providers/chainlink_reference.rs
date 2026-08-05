@@ -2101,25 +2101,6 @@ mod tests {
         has_user_agent: bool,
     }
 
-    fn reference_price_update(
-        asset: &str,
-        source_id: &str,
-        provider_instrument: &str,
-    ) -> ReferencePriceUpdate {
-        ReferencePriceUpdate::try_new(
-            asset,
-            source_id,
-            REFERENCE_PRICE_PROVIDER_KEY,
-            provider_instrument,
-            TEST_BENCHMARK_PRICE,
-            Some(TEST_BID_PRICE),
-            Some(TEST_ASK_PRICE),
-            TEST_OBSERVATIONS_SECONDS.into(),
-            TEST_OBSERVATIONS_SECONDS.into(),
-        )
-        .expect("test reference price update should be valid")
-    }
-
     #[test]
     fn map_data_rejects_empty_root_feed_bindings() {
         let mut root = fixture_root_config();

@@ -1,5 +1,9 @@
 # T119 Static Operator Artifacts Plan
 
+> **Historical implementation record — not an active plan.** Do not execute
+> commands or tasks from this file. Current `main`, `AGENTS.md`, and tracked
+> issues are authoritative.
+
 Date: 2026-05-22
 Branch: `codex/production-readiness-evidence-audit`
 PR: #388

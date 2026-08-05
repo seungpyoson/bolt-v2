@@ -1,5 +1,9 @@
 # Tasks: NT Order Intent Layer
 
+> **Historical task record — not an active work queue.** Unchecked boxes below
+> preserve the former feature history; do not execute them. Current `main`,
+> `AGENTS.md`, and tracked issues are authoritative.
+
 **Input**: Design documents from `specs/023-nt-order-intent-layer/`
 **Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/order-intent-layer.md`, `quickstart.md`
 

@@ -105,12 +105,13 @@ async fn startup_watchdog_capture_failure_after_running_still_awaits_runner_resu
         || NodeState::Running,
         || true,
         || stop_called.set(true),
+        || Ok(()),
         LiveNodeStartupWatchdogBounds {
             startup_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(25),
             trader_invariant_poll: Duration::from_millis(50),
+            registered_client_labels: vec!["data:chainlink_reference".to_string()],
         },
-        vec!["data:chainlink_reference".to_string()],
     )
     .await;
 
@@ -148,12 +149,13 @@ async fn startup_watchdog_capture_failure_during_shutdown_preserves_runner_resul
         || NodeState::ShuttingDown,
         || true,
         || stop_called.set(true),
+        || Ok(()),
         LiveNodeStartupWatchdogBounds {
             startup_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(25),
             trader_invariant_poll: Duration::from_millis(50),
+            registered_client_labels: vec!["data:chainlink_reference".to_string()],
         },
-        vec!["data:chainlink_reference".to_string()],
     )
     .await;
 
@@ -190,12 +192,13 @@ async fn startup_watchdog_capture_failure_during_hung_startup_returns_within_shu
             || NodeState::Starting,
             || true,
             || stop_called.set(true),
+            || Ok(()),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_secs(1),
                 shutdown_grace,
                 trader_invariant_poll: Duration::from_millis(50),
+                registered_client_labels: vec!["data:chainlink_reference".to_string()],
             },
-            vec!["data:chainlink_reference".to_string()],
         ),
     )
     .await
@@ -248,12 +251,13 @@ async fn startup_watchdog_deadline_during_shutdown_preserves_runner_result() {
         || NodeState::ShuttingDown,
         || true,
         || stop_called.set(true),
+        || Ok(()),
         LiveNodeStartupWatchdogBounds {
             startup_timeout: Duration::from_millis(1),
             shutdown_grace: Duration::from_millis(100),
             trader_invariant_poll: Duration::from_millis(50),
+            registered_client_labels: vec!["data:chainlink_reference".to_string()],
         },
-        vec!["data:chainlink_reference".to_string()],
     )
     .await;
 
@@ -286,12 +290,13 @@ async fn startup_watchdog_deadline_during_hung_startup_timeout_names_shutdown_gr
             || NodeState::Starting,
             || true,
             || stop_called.set(true),
+            || Ok(()),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_millis(1),
                 shutdown_grace,
                 trader_invariant_poll: Duration::from_millis(50),
+                registered_client_labels: vec!["data:chainlink_reference".to_string()],
             },
-            vec!["data:chainlink_reference".to_string()],
         ),
     )
     .await
@@ -347,12 +352,13 @@ async fn startup_watchdog_deadline_during_shutdown_timeout_names_shutdown_grace(
             || NodeState::ShuttingDown,
             || true,
             || stop_called.set(true),
+            || Ok(()),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_millis(1),
                 shutdown_grace,
                 trader_invariant_poll: Duration::from_millis(50),
+                registered_client_labels: vec!["data:chainlink_reference".to_string()],
             },
-            vec!["data:chainlink_reference".to_string()],
         ),
     )
     .await
@@ -389,6 +395,76 @@ async fn startup_watchdog_deadline_during_shutdown_timeout_names_shutdown_grace(
             panic!("deadline during shutdown should name shutdown-grace timeout, got {other:?}")
         }
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_watchdog_runs_post_reconciliation_guard_once_before_remaining_live() {
+    let run_future = async {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        Ok(())
+    };
+    tokio::pin!(run_future);
+    let mut capture_failure_receiver = None;
+    let guard_calls = Cell::new(0_u32);
+
+    let outcome = live_node_run_startup_watchdog(
+        run_future.as_mut(),
+        &mut capture_failure_receiver,
+        || NodeState::Running,
+        || true,
+        || {},
+        || {
+            guard_calls.set(guard_calls.get() + 1);
+            Ok(())
+        },
+        LiveNodeStartupWatchdogBounds {
+            startup_timeout: Duration::from_secs(1),
+            shutdown_grace: Duration::from_millis(25),
+            trader_invariant_poll: Duration::from_millis(1),
+            registered_client_labels: Vec::new(),
+        },
+    )
+    .await;
+
+    assert!(matches!(
+        outcome,
+        LiveNodeRunStartupOutcome::Finished(Ok(()))
+    ));
+    assert_eq!(guard_calls.get(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_watchdog_stops_when_post_reconciliation_guard_fails() {
+    let run_future = std::future::pending::<Result<(), anyhow::Error>>();
+    tokio::pin!(run_future);
+    let mut capture_failure_receiver = None;
+    let stop_called = Cell::new(false);
+
+    let outcome = live_node_run_startup_watchdog(
+        run_future.as_mut(),
+        &mut capture_failure_receiver,
+        || NodeState::Running,
+        || true,
+        || stop_called.set(true),
+        || {
+            Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
+                "post-reconciliation guard failed"
+            )))
+        },
+        LiveNodeStartupWatchdogBounds {
+            startup_timeout: Duration::from_secs(1),
+            shutdown_grace: Duration::from_millis(1),
+            trader_invariant_poll: Duration::from_millis(1),
+            registered_client_labels: Vec::new(),
+        },
+    )
+    .await;
+
+    assert!(stop_called.get());
+    assert!(matches!(
+        outcome,
+        LiveNodeRunStartupOutcome::StartupGuardFailed(BoltV3LiveNodeError::Build(_))
+    ));
 }
 
 #[test]
@@ -439,15 +515,16 @@ async fn startup_watchdog_aborts_when_node_running_without_trader() {
             || NodeState::Running,
             || false,
             || stop_called.set(true),
+            || Ok(()),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_secs(10),
                 shutdown_grace,
                 trader_invariant_poll: Duration::from_millis(50),
+                registered_client_labels: vec![
+                    "data:binance_reference".to_string(),
+                    "data:polymarket_main".to_string(),
+                ],
             },
-            vec![
-                "data:binance_reference".to_string(),
-                "data:polymarket_main".to_string(),
-            ],
         ),
     )
     .await
@@ -498,12 +575,13 @@ async fn startup_watchdog_grace_timeout_still_names_trader_not_started() {
             || NodeState::Running,
             || false,
             || stop_called.set(true),
+            || Ok(()),
             LiveNodeStartupWatchdogBounds {
                 startup_timeout: Duration::from_secs(10),
                 shutdown_grace,
                 trader_invariant_poll: Duration::from_millis(50),
+                registered_client_labels: vec!["data:binance_reference".to_string()],
             },
-            vec!["data:binance_reference".to_string()],
         ),
     )
     .await
@@ -679,14 +757,14 @@ fn live_node_config_maps_explicit_nt_runtime_defaults_from_v3_root() {
     assert_eq!(cfg.exec_engine.inflight_check_interval_ms, 2_000);
     assert_eq!(cfg.exec_engine.inflight_check_threshold_ms, 5_000);
     assert_eq!(cfg.exec_engine.inflight_check_retries, 5);
-    assert_eq!(cfg.exec_engine.open_check_interval_secs, None);
-    assert_eq!(cfg.exec_engine.open_check_lookback_mins, Some(60));
+    assert_eq!(cfg.exec_engine.open_check_interval_secs, Some(30.0));
+    assert_eq!(cfg.exec_engine.open_check_lookback_mins, None);
     assert_eq!(cfg.exec_engine.open_check_threshold_ms, 5_000);
     assert_eq!(cfg.exec_engine.open_check_missing_retries, 5);
     assert!(cfg.exec_engine.open_check_open_only);
     assert_eq!(cfg.exec_engine.max_single_order_queries_per_cycle, 10);
     assert_eq!(cfg.exec_engine.single_order_query_delay_ms, 100);
-    assert_eq!(cfg.exec_engine.position_check_interval_secs, None);
+    assert_eq!(cfg.exec_engine.position_check_interval_secs, Some(30.0));
     assert_eq!(cfg.exec_engine.position_check_lookback_mins, 60);
     assert_eq!(cfg.exec_engine.position_check_threshold_ms, 5_000);
     assert_eq!(cfg.exec_engine.position_check_retries, 3);
@@ -757,99 +835,6 @@ fn live_node_config_maps_non_empty_nt_max_notional_per_order() {
             .max_notional_per_order
             .get("SECONDARY.SOURCE"),
         Some(&"25000.50".to_string())
-    );
-}
-
-#[test]
-fn venue_spendability_source_config_reads_configured_capital_pool_source() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let mut loaded = fixture_loaded_config();
-    write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
-    let config = capital_admission_venue_spendability_source_config_from_loaded(&loaded)
-        .expect("source config should build")
-        .expect("fixture should configure source");
-
-    let snapshot = capital_admission_venue_spendability_snapshot_from_source_config(&config)
-        .expect("configured source should be accepted");
-
-    assert_eq!(snapshot.source, "operator_venue_spendability");
-    assert_eq!(snapshot.spendable_collateral, Decimal::from(20));
-    assert_eq!(snapshot.collateral_allowance, Decimal::from(12));
-}
-
-#[test]
-#[should_panic(expected = "capital admission venue spendability feed lock poisoned")]
-fn venue_spendability_refresh_panics_on_poisoned_capital_admission_feed_lock() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let mut loaded = fixture_loaded_config();
-    write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
-    let config = capital_admission_venue_spendability_source_config_from_loaded(&loaded)
-        .expect("source config should build")
-        .expect("fixture should configure source");
-    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
-        .expect("fixture v3 LiveNode should build");
-    let feed = runtime
-        .capital_admission_runtime_feed
-        .as_ref()
-        .expect("fixture should configure capital-admission runtime feed");
-    poison_mutex(feed);
-
-    let _ = refresh_capital_admission_venue_spendability_from_source(feed, &config);
-}
-
-#[test]
-fn venue_spendability_source_config_fails_closed_on_sha_mismatch() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let mut loaded = fixture_loaded_config();
-    write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
-    let mut config = capital_admission_venue_spendability_source_config_from_loaded(&loaded)
-        .expect("source config should build")
-        .expect("fixture should configure source");
-    config.expected_sha256 =
-        "0000000000000000000000000000000000000000000000000000000000000000".to_string();
-
-    let error = capital_admission_venue_spendability_snapshot_from_source_config(&config)
-        .expect_err("hash mismatch must fail closed");
-    let rendered = error.to_string();
-
-    assert!(
-        rendered.contains("capital admission venue spendability source rejected")
-            && rendered.contains("Sha256Mismatch"),
-        "startup error should name rejected spendability evidence, got: {rendered}"
-    );
-}
-
-#[test]
-fn settlement_recovery_config_uses_decision_evidence_store_when_settlement_sink_exists() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let mut loaded = fixture_loaded_config();
-    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
-    loaded
-        .root
-        .persistence
-        .decision_evidence
-        .recovery_evidence_max_bytes = Some(123_456);
-
-    let config = settlement_recovery_config_from_loaded(&loaded, true)
-        .expect("settlement recovery config should build")
-        .expect("settlement sink plus decision-evidence bound should enable recovery");
-
-    assert_eq!(
-        config.path,
-        temp.path().join(
-            loaded
-                .root
-                .persistence
-                .decision_evidence
-                .order_intents_relative_path
-                .trim()
-        )
-    );
-    assert_eq!(config.max_bytes, 123_456);
-    assert_eq!(
-        settlement_recovery_config_from_loaded(&loaded, false)
-            .expect("disabled settlement sink should still parse cleanly"),
-        None
     );
 }
 

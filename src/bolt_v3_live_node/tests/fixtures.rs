@@ -10,7 +10,7 @@ pub(super) fn loaded_config_with_submit_sizer_recovery(
     ))
     .expect("fixture config should load");
     loaded.strategies.clear();
-    enable_fixture_kill_switch_for_enforced_venue_truth(&mut loaded, temp_path);
+    enable_fixture_kill_switch_for_enforced_provider_collateral_allowance(&mut loaded, temp_path);
     loaded
         .root
         .risk
@@ -18,16 +18,20 @@ pub(super) fn loaded_config_with_submit_sizer_recovery(
         .as_mut()
         .expect("fixture should configure capital pools")[0]
         .enforce_submit_admission = true;
-    loaded.root.persistence.catalog_directory = temp_path.to_string_lossy().to_string();
+    loaded.root.persistence.catalog_directory = std::fs::canonicalize(temp_path)
+        .expect("temporary catalog must canonicalize")
+        .to_string_lossy()
+        .to_string();
     loaded
         .root
         .persistence
         .decision_evidence
-        .recovery_evidence_max_bytes = Some(100_000);
+        .recovery_evidence_max_bytes = 100_000;
+    crate::bolt_v3_current_evidence::prepare_test_generation(&loaded);
     loaded
 }
 
-pub(super) fn enable_fixture_kill_switch_for_enforced_venue_truth(
+pub(super) fn enable_fixture_kill_switch_for_enforced_provider_collateral_allowance(
     loaded: &mut LoadedBoltV3Config,
     temp_path: &std::path::Path,
 ) {
@@ -49,7 +53,7 @@ pub(super) fn enable_fixture_kill_switch_for_enforced_venue_truth(
         .expect("fixture kill switch state should bootstrap armed");
 }
 
-pub(super) fn fixture_submit_reservation_metadata(
+pub(super) fn fixture_reservation_attribution(
     client_order_id: &str,
     instrument_id: &str,
     side: &str,
@@ -57,36 +61,113 @@ pub(super) fn fixture_submit_reservation_metadata(
     liability_factor: &str,
     additive_liability: &str,
     reserved_liability: &str,
-) -> BoltV3SubmitReservationMetadataEvidence {
-    BoltV3SubmitReservationMetadataEvidence {
+) -> crate::bolt_v3_current_evidence::ReservationAttribution {
+    crate::bolt_v3_current_evidence::ReservationAttribution {
         client_order_id: client_order_id.to_string(),
         submit_reservation_id: format!("{client_order_id}#submit"),
         venue_id: "POLYMARKET".to_string(),
         account_id: "POLYMARKET-001".to_string(),
-        product_kind: "prediction_market_binary".to_string(),
+        product_kind:
+            crate::bolt_v3_current_evidence::ReservationProductKind::PredictionMarketBinary,
         collateral_currency: "PUSD".to_string(),
         capital_pool_id: "polymarket-prediction-live".to_string(),
         collateral_group_id: "condition-fixture".to_string(),
         instrument_id: instrument_id.to_string(),
-        side: side.to_string(),
+        side: match side {
+            "buy" => crate::bolt_v3_current_evidence::EvidenceOrderSide::Buy,
+            "sell" => crate::bolt_v3_current_evidence::EvidenceOrderSide::Sell,
+            _ => panic!("fixture reservation side must be buy or sell"),
+        },
         submitted_quantity: submitted_quantity.to_string(),
         liability_factor: liability_factor.to_string(),
         additive_liability: additive_liability.to_string(),
         reserved_liability: reserved_liability.to_string(),
         observed_at_ns: 1_000,
-        source: "submit_admission".to_string(),
     }
 }
 
-pub(super) fn write_submit_reservation_metadata(
+pub(super) fn write_admitted_entry_reservation(
     loaded: &LoadedBoltV3Config,
-    metadata: &BoltV3SubmitReservationMetadataEvidence,
+    reservation: &crate::bolt_v3_current_evidence::ReservationAttribution,
 ) {
-    let writer = JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded)
-        .expect("decision evidence writer should open");
-    writer
-        .record_submit_reservation_metadata(metadata)
-        .expect("submit reservation metadata should write");
+    let _committed = crate::bolt_v3_current_evidence::DecisionEvidenceRuntime::open(loaded)
+        .expect("current decision evidence runtime should open")
+        .recorder()
+        .record_admitted_entry_admission(
+            crate::bolt_v3_current_evidence::AdmittedEntryAdmissionFact {
+                details: crate::bolt_v3_current_evidence::AdmissionDetails {
+                    strategy_id: "strategy-1".to_string(),
+                    execution_client_id: "execution-1".to_string(),
+                    client_order_id: reservation.client_order_id.clone(),
+                    instrument_id: reservation.instrument_id.clone(),
+                    notional: reservation.reserved_liability.clone(),
+                    loss_halt_reasons: Vec::new(),
+                    snapshot_present: false,
+                    snapshot_observed_at_ns: None,
+                    admission_now_ns: reservation.observed_at_ns,
+                    snapshot_age_ns: None,
+                    max_snapshot_age_ns: None,
+                    snapshot_source: None,
+                    per_trade_pnl_present: false,
+                    daily_pnl_present: false,
+                    rolling_pnl_present: false,
+                    current_equity_present: false,
+                    peak_equity_present: false,
+                    last_account_state_observed_at_ns: None,
+                    last_portfolio_snapshot_observed_at_ns: None,
+                    last_position_event_observed_at_ns: None,
+                    stale_reason: None,
+                    loss_snapshot_observed_at_ns: None,
+                    loss_eval_now_ns: None,
+                },
+                reservation: Some(reservation.clone()),
+            },
+        )
+        .expect("admitted reservation attribution should write");
+}
+
+pub(super) fn write_admitted_forced_reduction(
+    loaded: &LoadedBoltV3Config,
+    client_order_id: &str,
+    instrument_id: &str,
+) {
+    let outcome = crate::bolt_v3_current_evidence::DecisionEvidenceRuntime::open(loaded)
+        .expect("current decision evidence runtime should open")
+        .recorder()
+        .record_forced_reduction_admission(
+            crate::bolt_v3_current_evidence::ForcedReductionAdmissionFact {
+                details: crate::bolt_v3_current_evidence::AdmissionDetails {
+                    strategy_id: "strategy-1".to_string(),
+                    execution_client_id: "execution-1".to_string(),
+                    client_order_id: client_order_id.to_string(),
+                    instrument_id: instrument_id.to_string(),
+                    notional: "1".to_string(),
+                    loss_halt_reasons: Vec::new(),
+                    snapshot_present: false,
+                    snapshot_observed_at_ns: None,
+                    admission_now_ns: 1_000,
+                    snapshot_age_ns: None,
+                    max_snapshot_age_ns: None,
+                    snapshot_source: None,
+                    per_trade_pnl_present: false,
+                    daily_pnl_present: false,
+                    rolling_pnl_present: false,
+                    current_equity_present: false,
+                    peak_equity_present: false,
+                    last_account_state_observed_at_ns: None,
+                    last_portfolio_snapshot_observed_at_ns: None,
+                    last_position_event_observed_at_ns: None,
+                    stale_reason: None,
+                    loss_snapshot_observed_at_ns: None,
+                    loss_eval_now_ns: None,
+                },
+                outcome: crate::bolt_v3_current_evidence::AdmissionDecisionOutcome::Admitted,
+            },
+        );
+    assert!(matches!(
+        outcome,
+        crate::bolt_v3_current_evidence::NonBlockingRecordOutcome::Appended(_)
+    ));
 }
 
 pub(super) fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
@@ -291,19 +372,23 @@ pub(super) fn fixture_loaded_config() -> LoadedBoltV3Config {
     let root_text = include_str!("../../../tests/fixtures/bolt_v3/root.toml");
     let mut root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
     let catalog_id = NEXT_TEST_CATALOG_ID.fetch_add(1, Ordering::Relaxed);
-    root.persistence.catalog_directory = std::env::temp_dir()
-        .join(format!(
-            "bolt-v3-live-node-test-catalog-{}-{catalog_id}",
-            std::process::id()
-        ))
+    let catalog_directory = std::env::temp_dir().join(format!(
+        "bolt-v3-live-node-test-catalog-{}-{catalog_id}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&catalog_directory).expect("test catalog should create");
+    root.persistence.catalog_directory = std::fs::canonicalize(catalog_directory)
+        .expect("test catalog should canonicalize")
         .to_string_lossy()
         .to_string();
-    LoadedBoltV3Config {
+    let loaded = LoadedBoltV3Config {
         root_path: std::path::PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
         config_bundle_checksum: String::new(),
         root,
         strategies: Vec::new(),
-    }
+    };
+    crate::bolt_v3_current_evidence::prepare_test_generation(&loaded);
+    loaded
 }
 
 pub(super) fn fixture_loaded_config_with_hyperliquid_standard_perps_route() -> LoadedBoltV3Config {
@@ -327,48 +412,6 @@ pub(super) fn fixture_loaded_config_with_hyperliquid_standard_perps_route() -> L
     }
     .into();
     loaded
-}
-
-pub(super) fn write_venue_spendability_source(
-    loaded: &mut LoadedBoltV3Config,
-    temp_path: &std::path::Path,
-    observed_at_ns: u64,
-    spendable_collateral: &str,
-    collateral_allowance: &str,
-) {
-    let path = temp_path.join("venue-spendability-source.json");
-    enable_fixture_kill_switch_for_enforced_venue_truth(loaded, temp_path);
-    let pool = loaded
-        .root
-        .risk
-        .capital_pools
-        .as_mut()
-        .and_then(|pools| pools.first_mut())
-        .expect("fixture should configure a capital pool");
-    pool.enforce_submit_admission = true;
-    let payload = format!(
-        r#"{{
-  "schema_version": {schema_version},
-  "record_kind": "{record_kind}",
-  "source": "operator_venue_spendability",
-  "observed_at_ns": {observed_at_ns},
-  "venue_id": "{venue_id}",
-  "account_id": "{account_id}",
-  "collateral_currency": "{collateral_currency}",
-  "spendable_collateral": "{spendable_collateral}",
-  "collateral_allowance": "{collateral_allowance}"
-}}"#,
-        schema_version =
-            crate::bolt_v3_capital_admission_state::VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION,
-        record_kind = crate::bolt_v3_capital_admission_state::VENUE_SPENDABILITY_SOURCE_RECORD_KIND,
-        venue_id = pool.venue_id,
-        account_id = pool.account_id,
-        collateral_currency = pool.collateral_currency,
-    );
-    std::fs::write(&path, payload.as_bytes()).expect("spendability source should write");
-    pool.venue_spendability_source_path = Some(path.to_string_lossy().to_string());
-    pool.venue_spendability_source_sha256 = Some(hex::encode(Sha256::digest(payload.as_bytes())));
-    pool.venue_spendability_source_max_bytes = Some(16_384);
 }
 
 pub(super) fn insert_configured_data_client(loaded: &mut LoadedBoltV3Config) {
@@ -489,13 +532,14 @@ pub(super) fn loaded_config_with_rv_only_source() -> LoadedBoltV3Config {
 }
 
 pub(super) fn test_registration_controls(
-    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    writer: Arc<DecisionEvidenceRecorder>,
 ) -> BoltV3StrategyExecutionControls {
     BoltV3StrategyExecutionControls {
         submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         order_execution_policy: crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         settlement_runtime_sink: None,
         settlement_recovery: None,
+        booking_recovery: None,
         settlement_health_transition_emitter: None,
     }
 }

@@ -5,6 +5,7 @@ use super::{chainlink_reference, polymarket, polyresearch};
 pub const AWS_SSM_SECRET_SOURCE_ADAPTER_ID: &str = stringify!(AwsSsmSecretSource);
 pub const IMDS_METADATA_ADAPTER_ID: &str = stringify!(Imdsv2HostFactsSource);
 pub const BINANCE_SPOT_SBE_ADAPTER_ID: &str = stringify!(BinanceSpotDataClient);
+pub const POLYMARKET_EXECUTION_ADAPTER_ID: &str = stringify!(PolymarketExecutionClient);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundaryEvidenceClass {
@@ -22,7 +23,8 @@ pub enum BoundaryFeeder {
     StrategySignalObservation,
     DeployTargetHostFacts,
     SecretResolution,
-    PolymarketVenueTruthRuntime,
+    PolymarketProviderCollateralAllowanceRuntime,
+    PolymarketNtExecutionReconciliation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +78,11 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
     BoundaryRegistryEntry {
         adapter_id: polymarket::KEY,
         class: BoundaryEvidenceClass::HttpResponseBody,
-        feeder: BoundaryFeeder::PolymarketVenueTruthRuntime,
+        feeder: BoundaryFeeder::PolymarketProviderCollateralAllowanceRuntime,
+    },
+    BoundaryRegistryEntry {
+        adapter_id: POLYMARKET_EXECUTION_ADAPTER_ID,
+        class: BoundaryEvidenceClass::HttpResponseBody,
+        feeder: BoundaryFeeder::PolymarketNtExecutionReconciliation,
     },
 ];

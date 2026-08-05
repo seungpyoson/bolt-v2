@@ -14,11 +14,10 @@
 //! layer and takes these lists as parameters — there is no second registry.
 use crate::bolt_v3_archetypes::ArchetypeValidationBinding;
 use crate::bolt_v3_strategy_registration::StrategyRuntimeBinding;
-use crate::strategies::{binary_oracle_edge_taker, binary_oracle_maker, complete_set_arbitrage};
+use crate::strategies::{binary_oracle_edge_taker, binary_oracle_maker};
 
 const RUNTIME_BINDINGS: &[StrategyRuntimeBinding] = &[
     binary_oracle_edge_taker::archetype::RUNTIME_BINDING,
-    complete_set_arbitrage::archetype::RUNTIME_BINDING,
     binary_oracle_maker::archetype::RUNTIME_BINDING,
 ];
 
@@ -26,10 +25,6 @@ const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[
     ArchetypeValidationBinding {
         key: binary_oracle_edge_taker::archetype::KEY,
         validate_strategy: binary_oracle_edge_taker::archetype::validate_strategy,
-    },
-    ArchetypeValidationBinding {
-        key: complete_set_arbitrage::archetype::KEY,
-        validate_strategy: complete_set_arbitrage::archetype::validate_strategy,
     },
     ArchetypeValidationBinding {
         key: binary_oracle_maker::KEY,
@@ -59,9 +54,10 @@ mod tests {
             .iter()
             .map(|binding| binding.key)
             .collect();
-        assert!(keys.contains(&"binary_oracle_edge_taker"), "{keys:?}");
-        assert!(keys.contains(&"complete_set_arbitrage"), "{keys:?}");
-        assert!(keys.contains(&"binary_oracle_maker"), "{keys:?}");
+        assert_eq!(
+            keys,
+            vec!["binary_oracle_edge_taker", "binary_oracle_maker"]
+        );
     }
 
     #[test]
@@ -78,16 +74,13 @@ mod tests {
                 settlement: true,
             }
         );
-        for key in ["binary_oracle_maker", "complete_set_arbitrage"] {
-            assert_eq!(
-                capabilities[key],
-                crate::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
-                    realized_volatility: true,
-                    settlement: false,
-                },
-                "{key} capability declaration drifted"
-            );
-        }
+        assert_eq!(
+            capabilities["binary_oracle_maker"],
+            crate::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
+                realized_volatility: true,
+                settlement: false,
+            }
+        );
     }
 
     #[test]
@@ -96,8 +89,9 @@ mod tests {
             .iter()
             .map(|binding| binding.key)
             .collect();
-        assert!(keys.contains(&"binary_oracle_edge_taker"), "{keys:?}");
-        assert!(keys.contains(&"complete_set_arbitrage"), "{keys:?}");
-        assert!(keys.contains(&"binary_oracle_maker"), "{keys:?}");
+        assert_eq!(
+            keys,
+            vec!["binary_oracle_edge_taker", "binary_oracle_maker"]
+        );
     }
 }

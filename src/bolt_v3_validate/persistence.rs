@@ -45,57 +45,127 @@ pub(super) fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String
         errors
             .push("persistence.streaming.flush_interval_ms must be a positive integer".to_string());
     }
-    if let Err(message) = validate_decision_evidence_relative_path(
-        &block.decision_evidence.order_intents_relative_path,
-    ) {
-        errors.push(message);
+    let evidence = &block.decision_evidence;
+    let mut configured_paths = Vec::new();
+    for (field, relative_path) in [
+        (
+            "machine_relative_path",
+            evidence.machine_relative_path.as_str(),
+        ),
+        (
+            "observation_relative_path",
+            evidence.observation_relative_path.as_str(),
+        ),
+    ] {
+        match CanonicalRelativeEvidencePath::parse(field, relative_path) {
+            Ok(path) => configured_paths.push(path),
+            Err(message) => errors.push(message),
+        }
     }
-    if block
-        .decision_evidence
-        .recovery_evidence_max_bytes
-        .is_some_and(|max_bytes| max_bytes == 0)
-    {
+    if evidence.retired_relative_paths.is_empty() {
         errors.push(
-            "persistence.decision_evidence.recovery_evidence_max_bytes must be a positive integer"
+            "persistence.decision_evidence.retired_relative_paths must register at least one retired path"
                 .to_string(),
         );
+    }
+    if evidence.reject_episode_max_count == 0 {
+        errors.push(
+            "persistence.decision_evidence.reject_episode_max_count must be a positive integer"
+                .to_string(),
+        );
+    }
+    for retired in &evidence.retired_relative_paths {
+        match CanonicalRelativeEvidencePath::parse("retired_relative_paths", retired) {
+            Ok(path) => configured_paths.push(path),
+            Err(message) => errors.push(message),
+        }
+    }
+    for (index, left) in configured_paths.iter().enumerate() {
+        for right in &configured_paths[index + 1..] {
+            if left == right {
+                errors.push(format!(
+                    "persistence.decision_evidence paths must be distinct: `{}`",
+                    left.as_str()
+                ));
+            } else if left.is_ancestor_of(right) || right.is_ancestor_of(left) {
+                errors.push(format!(
+                    "persistence.decision_evidence paths must not be ancestors of one another: `{}` and `{}`",
+                    left.as_str(),
+                    right.as_str()
+                ));
+            }
+        }
+    }
+    if let Err(message) =
+        PositiveFiniteEvidenceReadCap::new(block.decision_evidence.recovery_evidence_max_bytes)
+    {
+        errors.push(format!(
+            "persistence.decision_evidence.recovery_evidence_max_bytes {message}"
+        ));
     }
     errors
 }
 
-pub(super) fn validate_capital_admission_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
+pub(super) fn validate_nt_reconciliation_authority(root: &BoltV3RootConfig) -> Vec<String> {
+    let execution = &root.nautilus.exec_engine;
     let mut errors = Vec::new();
-    let enforced_submit_admission =
-        crate::bolt_v3_settlement_runtime::capital_admission_runtime_feed_pool(root).is_some();
-    if enforced_submit_admission
-        && root
-            .persistence
-            .decision_evidence
-            .recovery_evidence_max_bytes
-            .is_none()
-    {
+    if !execution.reconciliation {
         errors.push(
-            "persistence.decision_evidence.recovery_evidence_max_bytes must be configured when risk.capital_pools enables submit admission enforcement"
+            "nautilus.exec_engine.reconciliation must be true; Bolt requires unbounded, unfiltered NT startup reconciliation"
+                .to_string()
+        );
+    }
+    if execution.reconciliation_lookback_mins != 0 {
+        errors.push(
+            "nautilus.exec_engine.reconciliation_lookback_mins must be 0 (unbounded); Bolt must not narrow the NT reconciliation universe"
                 .to_string(),
         );
     }
-    errors
-}
-
-pub(super) fn validate_settlement_sink_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
-    let mut errors = Vec::new();
-    let settlement_sink_configured =
-        crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkBackends::from_root(root)
-            .will_configure_runtime_sink();
-    if settlement_sink_configured
-        && root
-            .persistence
-            .decision_evidence
-            .recovery_evidence_max_bytes
-            .is_none()
-    {
+    if !execution.reconciliation_instrument_ids.is_empty() {
         errors.push(
-            "persistence.decision_evidence.recovery_evidence_max_bytes must be configured when a settlement runtime sink is configured"
+            "nautilus.exec_engine.reconciliation_instrument_ids must be empty; Bolt does not permit a filtered NT reconciliation universe"
+                .to_string(),
+        );
+    }
+    if execution.filter_unclaimed_external_orders {
+        errors.push(
+            "nautilus.exec_engine.filter_unclaimed_external_orders must be false; Bolt requires NT to retain unattributed venue orders"
+                .to_string(),
+        );
+    }
+    if execution.filter_position_reports {
+        errors.push(
+            "nautilus.exec_engine.filter_position_reports must be false; Bolt must not filter NT position reports"
+                .to_string(),
+        );
+    }
+    if !execution.filtered_client_order_ids.is_empty() {
+        errors.push(
+            "nautilus.exec_engine.filtered_client_order_ids must be empty; Bolt does not permit client-order reconciliation exclusions"
+                .to_string(),
+        );
+    }
+    if !execution.generate_missing_orders {
+        errors.push(
+            "nautilus.exec_engine.generate_missing_orders must be true; NT must materialize missing venue orders"
+                .to_string(),
+        );
+    }
+    if execution.open_check_interval_secs == 0 {
+        errors.push(
+            "nautilus.exec_engine.open_check_interval_secs must be positive; Bolt requires continuous NT open-order reconciliation"
+                .to_string(),
+        );
+    }
+    if execution.open_check_lookback_mins != 0 {
+        errors.push(
+            "nautilus.exec_engine.open_check_lookback_mins must be 0 (unbounded); Bolt requires complete continuous NT order coverage"
+                .to_string(),
+        );
+    }
+    if execution.position_check_interval_secs == 0 {
+        errors.push(
+            "nautilus.exec_engine.position_check_interval_secs must be positive; Bolt requires continuous NT position reconciliation"
                 .to_string(),
         );
     }

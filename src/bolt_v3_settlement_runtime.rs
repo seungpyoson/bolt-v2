@@ -1,23 +1,15 @@
-use std::{path::PathBuf, rc::Rc};
+use std::rc::Rc;
 
 use anyhow::Result;
 
 use crate::{
     bolt_v3_config::{BoltV3RootConfig, CapitalPoolBlock},
     bolt_v3_loss_protection::PositionRealizedPnlObservation,
-    bolt_v3_venue_truth::VenueTruthSettlementExplanation,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3SettlementRecoveryConfig {
-    pub path: PathBuf,
-    pub max_bytes: u64,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BoltV3SettlementRuntimeSinkBackends {
     loss_protection: bool,
-    capital_admission_runtime_feed: bool,
 }
 
 impl BoltV3SettlementRuntimeSinkBackends {
@@ -27,23 +19,15 @@ impl BoltV3SettlementRuntimeSinkBackends {
             .kill_switch
             .as_ref()
             .is_some_and(|kill_switch| kill_switch.enabled);
-        let capital_admission_runtime_feed = capital_admission_runtime_feed_pool(root).is_some();
-        Self {
-            loss_protection,
-            capital_admission_runtime_feed,
-        }
+        Self { loss_protection }
     }
 
     pub(crate) fn will_configure_runtime_sink(self) -> bool {
-        self.loss_protection || self.capital_admission_runtime_feed
+        self.loss_protection
     }
 
     pub(crate) fn loss_protection(self) -> bool {
         self.loss_protection
-    }
-
-    pub(crate) fn capital_admission_runtime_feed(self) -> bool {
-        self.capital_admission_runtime_feed
     }
 }
 
@@ -59,11 +43,6 @@ pub trait BoltV3SettlementRuntimeSink: std::fmt::Debug {
     fn record_loss_governor_position_realized_pnl(
         &self,
         observation: PositionRealizedPnlObservation,
-    ) -> Result<()>;
-
-    fn record_venue_truth_settlement(
-        &self,
-        explanation: VenueTruthSettlementExplanation,
     ) -> Result<()>;
 }
 

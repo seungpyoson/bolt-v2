@@ -7,7 +7,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 target := "aarch64-apple-darwin"
 
 clippy:
-    cargo clippy --locked -- -D warnings
+    cargo clippy --locked --lib --bins -- -D warnings
 
 test *args:
     cargo nextest run --locked {{args}}

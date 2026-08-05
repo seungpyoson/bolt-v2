@@ -221,6 +221,7 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     let mut loaded = fixture_loaded_config_with_binance_reference();
     let temp = support::TempCaseDir::new("bolt-v3-client-registration-build-path");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
 
     let (node, summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
@@ -328,6 +329,7 @@ fn live_node_registration_can_load_all_requested_data_clients_without_extra_exec
     add_all_requested_data_clients(&mut loaded);
     let temp = support::TempCaseDir::new("bolt-v3-all-requested-data-client-registration");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
 
     let (node, summary) = build_bolt_v3_all_configured_client_mapping_live_node_with_summary(
         &loaded,
@@ -466,6 +468,7 @@ fn empty_clients_root_config_registers_zero_clients() {
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-empty-client-registration");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    support::current_evidence::prepare_current_evidence_generation(&loaded);
     let empty_root = BoltV3RootConfig {
         clients: BTreeMap::new(),
         reference_live_probe: None,

@@ -98,11 +98,13 @@ fn ungoverned_submit_capable_loaded_config() -> LoadedBoltV3Config {
         "fixture must include submit-capable strategies for this boot invariant"
     );
     let catalog_id = NEXT_TEST_CATALOG_ID.fetch_add(1, Ordering::Relaxed);
-    loaded.root.persistence.catalog_directory = std::env::temp_dir()
-        .join(format!(
-            "bolt-v3-governance-mode-test-catalog-{}-{catalog_id}",
-            std::process::id()
-        ))
+    let catalog_directory = std::env::temp_dir().join(format!(
+        "bolt-v3-governance-mode-test-catalog-{}-{catalog_id}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&catalog_directory).expect("test catalog should create");
+    loaded.root.persistence.catalog_directory = std::fs::canonicalize(catalog_directory)
+        .expect("test catalog should canonicalize")
         .to_string_lossy()
         .to_string();
     loaded.root.risk.loss_governor = None;
@@ -112,6 +114,7 @@ fn ungoverned_submit_capable_loaded_config() -> LoadedBoltV3Config {
             pool.enforce_submit_admission = false;
         }
     }
+    crate::bolt_v3_current_evidence::prepare_test_generation(&loaded);
     loaded
 }
 

@@ -13,12 +13,10 @@ use crate::{
     bolt_v3_binary_settlement_runtime::{
         BinaryRuntimeSettlementInput, settle_binary_runtime_reference_prices,
     },
-    bolt_v3_decision_evidence::{
-        BoltV3OrderLifecycleOutcome, BoltV3OrderLifecycleTransition,
-        BoltV3SettlementBookingErrorReason, BoltV3SettlementEvidence,
-        read_settlement_booking_error_keys_for_recovery_scope,
-        read_settlement_evidence_for_recovery_scope, read_settlement_keys_for_recovery_scope,
-        read_terminal_settlement_keys_for_recovery_scope,
+    bolt_v3_current_evidence::{
+        BookingRecoveryFacts, OrderLifecycleOutcome, OrderLifecycleTransition,
+        RecoveredSettlementOutcome, SettlementBookingErrorReason, SettlementFact,
+        SettlementRecoveryFacts, TerminalSettlementFact,
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_strategy_context::SettlementCapability,
@@ -117,7 +115,7 @@ pub struct SettlementTerminalKeyDelta {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettlementBookingErrorTransition {
     pub eligibility: TerminalSettlementEligibility,
-    pub reason: BoltV3SettlementBookingErrorReason,
+    pub reason: SettlementBookingErrorReason,
     pub detail: String,
     pub key_delta: SettlementTerminalKeyDelta,
 }
@@ -125,7 +123,7 @@ pub struct SettlementBookingErrorTransition {
 pub fn record_settlement_booking_error(
     position: &SettlementPositionKey,
     origin: SettlementPositionOrigin,
-    reason: BoltV3SettlementBookingErrorReason,
+    reason: SettlementBookingErrorReason,
     detail: String,
     observed_at_ns: u64,
     existing_booking_error_keys: &BTreeSet<String>,
@@ -178,7 +176,7 @@ pub struct ResolutionSettlementBooking {
 pub enum ResolutionSettlementDecision {
     Skip(SettlementBookingSkipReason),
     BookingError {
-        reason: BoltV3SettlementBookingErrorReason,
+        reason: SettlementBookingErrorReason,
         detail: String,
     },
     Book(ResolutionSettlementBooking),
@@ -193,7 +191,7 @@ pub fn try_book_resolution_settlement(
     let resolution_ts_ms = input.resolution_ts_ns / NANOS_PER_MILLI_U64;
     let Some(interval_end_ms) = input.position.interval_end_ms else {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing interval end",
         );
     };
@@ -209,13 +207,13 @@ pub fn try_book_resolution_settlement(
     }
     let Some(lot) = input.lot else {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing outcome side",
         );
     };
     let Some(strike_price) = input.strike_price else {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing strike price",
         );
     };
@@ -227,13 +225,13 @@ pub fn try_book_resolution_settlement(
     });
     let Some(result) = decision.result else {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementBlocked,
+            SettlementBookingErrorReason::SettlementBlocked,
             format!("settlement blocked by {:?}", decision.blocked_by),
         );
     };
     let Some(payout) = decision.payout else {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementBlocked,
+            SettlementBookingErrorReason::SettlementBlocked,
             "settlement output missing payout",
         );
     };
@@ -243,13 +241,13 @@ pub fn try_book_resolution_settlement(
         .is_none()
     {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing configured settlement currency",
         );
     }
     if !input.market_id_present {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing market id",
         );
     }
@@ -263,7 +261,7 @@ pub fn try_book_resolution_settlement(
             .is_none()
     {
         return booking_error(
-            BoltV3SettlementBookingErrorReason::SettlementInputInvalid,
+            SettlementBookingErrorReason::SettlementInputInvalid,
             "settlement input missing configured settlement account id",
         );
     }
@@ -282,7 +280,7 @@ pub fn try_book_resolution_settlement(
 }
 
 fn booking_error(
-    reason: BoltV3SettlementBookingErrorReason,
+    reason: SettlementBookingErrorReason,
     detail: impl Into<String>,
 ) -> ResolutionSettlementDecision {
     ResolutionSettlementDecision::BookingError {
@@ -294,45 +292,100 @@ fn booking_error(
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettlementRecoveryDelta {
     pub settled_position_keys: BTreeSet<String>,
-    pub booking_error_keys: BTreeSet<String>,
     pub terminal_settlement_keys: BTreeSet<String>,
-    pub settled_evidence: Vec<BoltV3SettlementEvidence>,
+    pub settled_evidence: Vec<SettlementFact>,
+    pub terminal_evidence: Vec<TerminalSettlementFact>,
 }
 
-pub fn recover_settlement_bootstrap(
-    capability: Option<&SettlementCapability>,
+pub fn recover_settlement_facts(
+    recovery: Option<&SettlementRecoveryFacts>,
+    strategy_id: &str,
     recovery_scope_settlement_keys: &BTreeSet<String>,
 ) -> Result<SettlementRecoveryDelta> {
-    let Some(recovery) = capability.and_then(SettlementCapability::recovery) else {
+    let Some(recovery) = recovery else {
         return Ok(SettlementRecoveryDelta {
             settled_position_keys: BTreeSet::new(),
-            booking_error_keys: BTreeSet::new(),
             terminal_settlement_keys: BTreeSet::new(),
             settled_evidence: Vec::new(),
+            terminal_evidence: Vec::new(),
         });
     };
+    for (key, outcome) in recovery.outcomes() {
+        let outcome_strategy_id = match outcome {
+            RecoveredSettlementOutcome::Successful(fact) => &fact.strategy_id,
+            RecoveredSettlementOutcome::BookingTerminal(fact) => &fact.booking_error.strategy_id,
+        };
+        if outcome_strategy_id == strategy_id && !recovery_scope_settlement_keys.contains(key) {
+            anyhow::bail!(
+                "durable settlement outcome `{key}` for strategy `{strategy_id}` is absent from the authoritative NT recovery scope"
+            );
+        }
+    }
+    let scoped_outcomes = recovery.outcomes().iter().filter(|(key, outcome)| {
+        let outcome_strategy_id = match outcome {
+            RecoveredSettlementOutcome::Successful(fact) => &fact.strategy_id,
+            RecoveredSettlementOutcome::BookingTerminal(fact) => &fact.booking_error.strategy_id,
+        };
+        outcome_strategy_id == strategy_id && recovery_scope_settlement_keys.contains(*key)
+    });
     Ok(SettlementRecoveryDelta {
-        settled_position_keys: read_settlement_keys_for_recovery_scope(
-            &recovery.path,
-            recovery.max_bytes,
-            recovery_scope_settlement_keys,
-        )?,
-        booking_error_keys: read_settlement_booking_error_keys_for_recovery_scope(
-            &recovery.path,
-            recovery.max_bytes,
-            recovery_scope_settlement_keys,
-        )?,
-        terminal_settlement_keys: read_terminal_settlement_keys_for_recovery_scope(
-            &recovery.path,
-            recovery.max_bytes,
-            recovery_scope_settlement_keys,
-        )?,
-        settled_evidence: read_settlement_evidence_for_recovery_scope(
-            &recovery.path,
-            recovery.max_bytes,
-            recovery_scope_settlement_keys,
-        )?,
+        settled_position_keys: scoped_outcomes
+            .clone()
+            .filter(|(_, outcome)| matches!(outcome, RecoveredSettlementOutcome::Successful(_)))
+            .map(|(key, _)| key.clone())
+            .collect(),
+        terminal_settlement_keys: scoped_outcomes
+            .clone()
+            .filter(|(_, outcome)| {
+                matches!(outcome, RecoveredSettlementOutcome::BookingTerminal(_))
+            })
+            .map(|(key, _)| key.clone())
+            .collect(),
+        settled_evidence: scoped_outcomes
+            .clone()
+            .filter_map(|(_, outcome)| match outcome {
+                RecoveredSettlementOutcome::Successful(fact) => Some(fact.clone()),
+                RecoveredSettlementOutcome::BookingTerminal(_) => None,
+            })
+            .collect(),
+        terminal_evidence: scoped_outcomes
+            .filter_map(|(_, outcome)| match outcome {
+                RecoveredSettlementOutcome::Successful(_) => None,
+                RecoveredSettlementOutcome::BookingTerminal(fact) => Some(fact.clone()),
+            })
+            .collect(),
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookingRecoveryDelta {
+    pub booking_error_keys: BTreeSet<String>,
+    pub terminal_settlement_keys: BTreeSet<String>,
+}
+
+#[must_use]
+pub fn recover_booking_facts(
+    recovery: Option<&BookingRecoveryFacts>,
+    recovery_scope_settlement_keys: &BTreeSet<String>,
+) -> BookingRecoveryDelta {
+    let Some(recovery) = recovery else {
+        return BookingRecoveryDelta {
+            booking_error_keys: BTreeSet::new(),
+            terminal_settlement_keys: BTreeSet::new(),
+        };
+    };
+    BookingRecoveryDelta {
+        booking_error_keys: recovery
+            .booking_error_keys()
+            .intersection(recovery_scope_settlement_keys)
+            .cloned()
+            .collect(),
+        terminal_settlement_keys: recovery
+            .terminal_settlement_keys()
+            .intersection(recovery_scope_settlement_keys)
+            .cloned()
+            .collect(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,8 +401,8 @@ pub enum SettlementRecoveryEntryDecision {
         canonical_evidence_already_durable: bool,
     },
     EnterBlindSettlementRecovery {
-        transition: BoltV3OrderLifecycleTransition,
-        outcome: BoltV3OrderLifecycleOutcome,
+        transition: OrderLifecycleTransition,
+        outcome: OrderLifecycleOutcome,
         detail: String,
     },
 }
@@ -393,8 +446,8 @@ pub fn enter_blind_settlement_recovery(
     error: impl std::fmt::Display,
 ) -> SettlementRecoveryEntryDecision {
     SettlementRecoveryEntryDecision::EnterBlindSettlementRecovery {
-        transition: BoltV3OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
-        outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+        transition: OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
+        outcome: OrderLifecycleOutcome::BlindRecovery,
         detail: error.to_string(),
     }
 }
@@ -402,6 +455,31 @@ pub fn enter_blind_settlement_recovery(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_current_evidence::{EvidenceOrderSide, OutcomeSide};
+
+    fn settlement_fact(strategy_id: &str, settlement_key: &str) -> SettlementFact {
+        SettlementFact {
+            strategy_id: strategy_id.to_string(),
+            settlement_key: settlement_key.to_string(),
+            market_id: "market-1".to_string(),
+            position_id: "position-1".to_string(),
+            instrument_id: "YES-USD.POLYMARKET".to_string(),
+            product_id: "product-1".to_string(),
+            outcome_side: OutcomeSide::Up,
+            entry_order_side: EvidenceOrderSide::Buy,
+            quantity: "1".to_string(),
+            entry_price: "0.4".to_string(),
+            family_key: "family-1".to_string(),
+            strike_price: "100".to_string(),
+            resolution_instrument_id: "resolution-1".to_string(),
+            resolution_ts_event_ns: 1,
+            reference_close_price: "101".to_string(),
+            payout_per_share: "1".to_string(),
+            terminal_value: "1".to_string(),
+            realized_pnl: "0.6".to_string(),
+            settlement_currency: "USD".to_string(),
+        }
+    }
 
     #[test]
     fn booking_error_transition_is_terminal_and_idempotent() {
@@ -413,7 +491,7 @@ mod tests {
         let transition = record_settlement_booking_error(
             &position,
             SettlementPositionOrigin::Live,
-            BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+            SettlementBookingErrorReason::ResolutionFeedMissing,
             "missing".to_string(),
             20 * NANOS_PER_MILLI_U64,
             &BTreeSet::new(),
@@ -432,7 +510,7 @@ mod tests {
             record_settlement_booking_error(
                 &position,
                 SettlementPositionOrigin::Live,
-                BoltV3SettlementBookingErrorReason::ResolutionFeedMissing,
+                SettlementBookingErrorReason::ResolutionFeedMissing,
                 "duplicate".to_string(),
                 20 * NANOS_PER_MILLI_U64,
                 &existing,
@@ -451,10 +529,41 @@ mod tests {
         assert!(matches!(
             enter_blind_settlement_recovery("durable evidence unreadable"),
             SettlementRecoveryEntryDecision::EnterBlindSettlementRecovery {
-                transition: BoltV3OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
-                outcome: BoltV3OrderLifecycleOutcome::BlindRecovery,
+                transition: OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
+                outcome: OrderLifecycleOutcome::BlindRecovery,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn durable_strategy_settlement_outside_nt_scope_fails_closed() {
+        let recovery = SettlementRecoveryFacts::from_settlement_for_test(settlement_fact(
+            "strategy-1",
+            "settlement-1",
+        ));
+
+        let error = recover_settlement_facts(Some(&recovery), "strategy-1", &BTreeSet::new())
+            .expect_err("a durable strategy outcome missing from NT scope must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("absent from the authoritative NT recovery scope")
+        );
+    }
+
+    #[test]
+    fn foreign_strategy_settlement_outside_nt_scope_is_ignored() {
+        let recovery = SettlementRecoveryFacts::from_settlement_for_test(settlement_fact(
+            "strategy-2",
+            "settlement-1",
+        ));
+
+        let delta = recover_settlement_facts(Some(&recovery), "strategy-1", &BTreeSet::new())
+            .expect("foreign strategy evidence is outside this strategy's authority");
+
+        assert!(delta.settled_evidence.is_empty());
+        assert!(delta.terminal_evidence.is_empty());
     }
 }

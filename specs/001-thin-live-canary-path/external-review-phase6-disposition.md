@@ -1,5 +1,9 @@
 # Phase 6 External Review Disposition
 
+> **Historical review record — not current work direction.** Do not execute
+> actions from this file. Current `main`, `AGENTS.md`, and tracked issues are
+> authoritative.
+
 Date: 2026-05-13
 Head reviewed: `main` / `origin/main` at `a5c60f2b6a4fe67fc80cf9d234f1512af09bec03`
 

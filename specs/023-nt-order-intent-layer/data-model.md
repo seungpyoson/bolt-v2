@@ -1,5 +1,8 @@
 # Data Model: NT Order Intent Layer
 
+> **Historical feature artifact — not current authority.** This model records
+> the retired feature design. Current `main` and `AGENTS.md` are authoritative.
+
 ## StrategyPositionContract
 
 Bolt-owned strategy semantics for how an entry and exit relate to a position.

@@ -1,5 +1,8 @@
 # Realized Volatility Surfaces Specification
 
+**Status**: Historical — implemented feature record; current `main`, `AGENTS.md`,
+and `config/root.toml` are authoritative
+
 ## Goal
 
 Build an RV-specific, strategy-agnostic realized-volatility engine that can

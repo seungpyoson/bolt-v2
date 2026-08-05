@@ -7,6 +7,8 @@ use std::{
     process::Command,
 };
 
+use sha2::{Digest, Sha256};
+
 /// Repo-root manifest that is the single owner of the gated source-root list;
 /// this build script is its sole enforcing parser.
 const GATED_SOURCE_ROOTS_MANIFEST: &str = "gated_source_roots.manifest";
@@ -60,6 +62,7 @@ struct NautilusSourceCapabilityEvidence {
     capability: String,
     cargo_test_target: String,
     path: String,
+    sha256: String,
 }
 
 /// Generate immutable Nautilus source-capability facts from the governed CI
@@ -163,6 +166,7 @@ fn parse_nautilus_source_capabilities(text: &str, path: &Path) -> NautilusSource
                 capability: required_toml_string(table, "capability", path, &owner),
                 cargo_test_target: required_toml_string(table, "cargo_test_target", path, &owner),
                 path: artifact_path,
+                sha256,
             }
         })
         .collect::<Vec<_>>();
@@ -271,13 +275,23 @@ fn validate_nautilus_manifest_binding(
             evidence.cargo_test_target,
             evidence.path
         );
-        assert!(
-            cargo_path
-                .parent()
-                .expect("Cargo.toml must have a parent")
-                .join(&evidence.path)
-                .is_file(),
-            "{}: capability {} evidence artifact {} must exist",
+        let evidence_path = cargo_path
+            .parent()
+            .expect("Cargo.toml must have a parent")
+            .join(&evidence.path);
+        let evidence_bytes = fs::read(&evidence_path).unwrap_or_else(|error| {
+            panic!(
+                "{}: capability {} evidence artifact {} must be readable: {error}",
+                cargo_path.display(),
+                evidence.capability,
+                evidence.path
+            )
+        });
+        let actual_sha256 = format!("{:x}", Sha256::digest(&evidence_bytes));
+        assert_eq!(
+            actual_sha256,
+            evidence.sha256,
+            "{}: capability {} evidence artifact {} hash must match the governed manifest",
             cargo_path.display(),
             evidence.capability,
             evidence.path

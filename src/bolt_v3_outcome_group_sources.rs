@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Component, Path},
     str::FromStr,
 };
 
@@ -9,11 +8,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bolt_v3_basket_store::BASKET_STORE_SCHEMA_VERSION,
-    bolt_v3_complete_set_contract::{
-        COMPLETE_SET_ARBITRAGE_KEY, CompleteSetArbitrageParametersBlock, CompleteSetSubmitMode,
-    },
-    bolt_v3_config::{BoltV3RootConfig, ClientBlock, GateProviderFreshnessBlock, LoadedStrategy},
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock, GateProviderFreshnessBlock},
     bolt_v3_operator_artifacts::is_lowercase_sha256,
 };
 
@@ -192,35 +187,6 @@ pub struct OutcomeGroupNonStandardPayoutLegBlock {
     pub payout_per_unit: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct BasketExecutionRiskBlock {
-    pub enabled: bool,
-    pub state_path: String,
-    pub schema_version: u32,
-    pub max_state_file_bytes: u64,
-    pub recovery_policy: BasketExecutionRecoveryPolicy,
-    pub max_recovery_age_ms: u64,
-    pub max_metadata_age_ms: u64,
-    pub repair: Option<BasketExecutionBoundedPolicyBlock>,
-    pub unwind: Option<BasketExecutionBoundedPolicyBlock>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BasketExecutionRecoveryPolicy {
-    FailClosedReconcileBeforeNewBaskets,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct BasketExecutionBoundedPolicyBlock {
-    pub max_retries: u32,
-    pub max_book_age_ms: u64,
-    pub max_slippage_bps: u32,
-    pub max_depth_levels: u32,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutcomeGroupFreshnessEvidence {
     pub local_receive_unix_ms: u64,
@@ -265,143 +231,6 @@ pub fn validate_root_sources(root: &BoltV3RootConfig) -> Vec<String> {
         let context = format!("outcome_group_sources.{source_id}");
         errors.extend(validate_source(root, &context, source));
     }
-    errors
-}
-
-pub fn validate_basket_execution(block: &BasketExecutionRiskBlock) -> Vec<String> {
-    if !block.enabled {
-        return Vec::new();
-    }
-    let mut errors = Vec::new();
-    let state_path = Path::new(block.state_path.trim());
-    if state_path.as_os_str().is_empty()
-        || state_path.is_absolute()
-        || state_path
-            .components()
-            .any(|component| matches!(component, Component::ParentDir))
-        || block.state_path.trim() != block.state_path
-    {
-        errors.push(
-            "risk.basket_execution.state_path must be a non-empty relative path under the configured root"
-                .to_string(),
-        );
-    }
-    if block.schema_version != BASKET_STORE_SCHEMA_VERSION {
-        errors.push(format!(
-            "risk.basket_execution.schema_version={} is unsupported by this build",
-            block.schema_version
-        ));
-    }
-    if block.max_state_file_bytes == 0 {
-        errors.push("risk.basket_execution.max_state_file_bytes must be positive".to_string());
-    }
-    if block.max_recovery_age_ms == 0 {
-        errors.push("risk.basket_execution.max_recovery_age_ms must be positive".to_string());
-    }
-    if block.max_metadata_age_ms == 0 {
-        errors.push("risk.basket_execution.max_metadata_age_ms must be positive".to_string());
-    }
-    validate_basket_execution_bounded_policy(
-        block.repair.as_ref(),
-        "risk.basket_execution.repair",
-        &mut errors,
-    );
-    validate_basket_execution_bounded_policy(
-        block.unwind.as_ref(),
-        "risk.basket_execution.unwind",
-        &mut errors,
-    );
-    errors
-}
-
-fn validate_basket_execution_bounded_policy(
-    block: Option<&BasketExecutionBoundedPolicyBlock>,
-    context: &str,
-    errors: &mut Vec<String>,
-) {
-    let Some(block) = block else {
-        errors.push(format!(
-            "{context} must be configured before live basket execution"
-        ));
-        return;
-    };
-    if block.max_retries == 0 {
-        errors.push(format!("{context}.max_retries must be positive"));
-    }
-    if block.max_book_age_ms == 0 {
-        errors.push(format!("{context}.max_book_age_ms must be positive"));
-    }
-    if block.max_slippage_bps == 0 {
-        errors.push(format!("{context}.max_slippage_bps must be positive"));
-    }
-    if block.max_depth_levels == 0 {
-        errors.push(format!("{context}.max_depth_levels must be positive"));
-    }
-}
-
-pub fn validate_outcome_group_strategy_links(
-    root: &BoltV3RootConfig,
-    strategies: &[LoadedStrategy],
-) -> Vec<String> {
-    let mut errors = Vec::new();
-    let sources_by_id: BTreeMap<&str, &OutcomeGroupSourceConfig> = configured_sources(root)
-        .iter()
-        .map(|source| (source.source_id.as_str(), source))
-        .collect();
-
-    for loaded in strategies {
-        let strategy = &loaded.config;
-        let context = format!("strategy `{}`", loaded.relative_path);
-        let Ok(target) = crate::bolt_v3_market_families::outcome_group::deserialize_target_block(
-            &strategy.target,
-        ) else {
-            continue;
-        };
-
-        if root
-            .risk
-            .basket_execution
-            .as_ref()
-            .is_none_or(|basket| !basket.enabled)
-        {
-            errors.push(format!(
-                "risk.basket_execution is required when {context} uses outcome_group basket execution"
-            ));
-        }
-
-        let runtime = if strategy.strategy_archetype.as_str() == COMPLETE_SET_ARBITRAGE_KEY {
-            validate_complete_set_runtime_parameters(&context, &strategy.parameters, &mut errors)
-        } else {
-            None
-        };
-        for source_id in &target.group_sources {
-            let Some(source) = sources_by_id.get(source_id.as_str()) else {
-                errors.push(format!(
-                    "{context}: target.group_sources references unknown outcome_group_sources source_id `{source_id}`"
-                ));
-                continue;
-            };
-            if !source.enabled {
-                errors.push(format!(
-                    "{context}: target.group_sources[`{source_id}`] references a disabled outcome_group_sources block"
-                ));
-            }
-            if source.client_id != strategy.execution_client_id {
-                errors.push(format!(
-                    "{context}: target.group_sources[`{source_id}`] client_id `{}` must match execution_client_id `{}`",
-                    source.client_id, strategy.execution_client_id
-                ));
-            }
-            if matches!(runtime, Some(CompleteSetSubmitMode::Ioc)) {
-                errors.extend(validate_min_notional_required_for_submit_mode(
-                    source,
-                    CompleteSetSubmitMode::Ioc.as_config(),
-                    &format!("{context}: outcome_group_sources.{source_id}"),
-                ));
-            }
-        }
-    }
-
     errors
 }
 
@@ -457,7 +286,6 @@ fn validate_source_client(
                 crate::bolt_v3_providers::OUTCOME_GROUP_POLYMARKET_VENUE_KEY,
             ));
             errors.extend(validate_metadata_refresh(
-                root,
                 context,
                 "polymarket data",
                 client,
@@ -470,7 +298,6 @@ fn validate_source_client(
                 crate::bolt_v3_providers::OUTCOME_GROUP_HIP4_VENUE_KEY,
             ));
             errors.extend(validate_metadata_refresh(
-                root,
                 context,
                 "hyperliquid data",
                 client,
@@ -492,7 +319,6 @@ fn validate_client_venue(context: &str, client: &ClientBlock, expected: &str) ->
 }
 
 fn validate_metadata_refresh(
-    root: &BoltV3RootConfig,
     context: &str,
     provider_label: &str,
     client: &ClientBlock,
@@ -518,21 +344,6 @@ fn validate_metadata_refresh(
             "{context}.client_id data.update_instruments_interval_mins must be positive for outcome-group metadata refresh"
         ));
         return errors;
-    }
-    let Some(refresh_ms) = update_mins.checked_mul(60_000) else {
-        errors.push(format!(
-            "{context}.client_id data.update_instruments_interval_mins overflows metadata refresh milliseconds"
-        ));
-        return errors;
-    };
-    if let Some(basket) = &root.risk.basket_execution
-        && basket.enabled
-        && basket.max_metadata_age_ms < refresh_ms
-    {
-        errors.push(format!(
-            "{context}.client_id metadata refresh interval {refresh_ms}ms exceeds risk.basket_execution.max_metadata_age_ms {}",
-            basket.max_metadata_age_ms
-        ));
     }
     errors
 }
@@ -881,128 +692,6 @@ fn validate_settlement_rules(
         }
     }
     errors
-}
-
-fn validate_complete_set_runtime_parameters(
-    context: &str,
-    parameters: &toml::Value,
-    errors: &mut Vec<String>,
-) -> Option<CompleteSetSubmitMode> {
-    let Some(runtime) = parameters.get("runtime").and_then(toml::Value::as_table) else {
-        errors.push(format!("{context}: parameters.runtime is required"));
-        return None;
-    };
-    for field in [
-        "min_edge_bps",
-        "max_basket_notional",
-        "max_open_baskets",
-        "submit_mode",
-        "vwap_depth_limit_bps",
-        "slippage_buffer_bps",
-        "max_repair_attempts",
-        "max_unwind_attempts",
-    ] {
-        if !runtime.contains_key(field) {
-            errors.push(format!("{context}: parameters.runtime.{field} is required"));
-        }
-    }
-    let parsed = match parameters
-        .clone()
-        .try_into::<CompleteSetArbitrageParametersBlock>()
-    {
-        Ok(value) => value,
-        Err(error) => {
-            if let Some(submit_mode) = runtime.get("submit_mode").and_then(toml::Value::as_str)
-                && CompleteSetSubmitMode::from_config(submit_mode).is_none()
-            {
-                errors.push(format!(
-                    "{context}: parameters.runtime.submit_mode `{submit_mode}` is not supported"
-                ));
-                return None;
-            }
-            errors.push(format!(
-                "{context}: parameters block is not a valid `{COMPLETE_SET_ARBITRAGE_KEY}` [parameters] block: {error}"
-            ));
-            return None;
-        }
-    };
-    let runtime = parsed.runtime;
-    if runtime.min_edge_bps <= 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.min_edge_bps must be positive"
-        ));
-    }
-    validate_positive_decimal_string(
-        errors,
-        &format!("{context}: parameters.runtime.max_basket_notional"),
-        &runtime.max_basket_notional,
-    );
-    if runtime.max_open_baskets == 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.max_open_baskets must be positive"
-        ));
-    }
-    if runtime.vwap_depth_limit_bps == 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.vwap_depth_limit_bps must be positive"
-        ));
-    }
-    if runtime.slippage_buffer_bps == 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.slippage_buffer_bps must be positive"
-        ));
-    }
-    match CompleteSetSubmitMode::from_config(runtime.submit_mode.as_str()) {
-        Some(mode) => Some(mode),
-        None => {
-            errors.push(format!(
-                "{context}: parameters.runtime.submit_mode `{}` is not supported",
-                runtime.submit_mode
-            ));
-            None
-        }
-    }
-}
-
-fn validate_min_notional_required_for_submit_mode(
-    source: &OutcomeGroupSourceConfig,
-    submit_mode: &str,
-    context: &str,
-) -> Vec<String> {
-    let mut errors = Vec::new();
-    let Some(constraints) = source.order_constraints.as_ref() else {
-        return errors;
-    };
-    if match constraints
-        .default_min_notional
-        .as_deref()
-        .map(parse_decimal)
-    {
-        Some(Ok(decimal)) => decimal > Decimal::ZERO,
-        Some(Err(_)) | None => false,
-    } {
-        return errors;
-    }
-    let per_leg = constraints.per_leg.as_deref().unwrap_or(&[]);
-    if per_leg.is_empty()
-        || per_leg
-            .iter()
-            .any(per_leg_min_notional_missing_or_non_positive)
-    {
-        errors.push(format!(
-            "{context}.order_constraints.default_min_notional is required for submit_mode `{submit_mode}` unless every per-leg min_notional is positive"
-        ));
-    }
-    errors
-}
-
-fn per_leg_min_notional_missing_or_non_positive(
-    leg: &OutcomeGroupPerLegOrderConstraintsBlock,
-) -> bool {
-    match leg.min_notional.as_deref().map(parse_decimal) {
-        Some(Ok(decimal)) => decimal <= Decimal::ZERO,
-        Some(Err(_)) | None => true,
-    }
 }
 
 fn validate_positive_decimal_string(errors: &mut Vec<String>, field: &str, value: &str) -> bool {

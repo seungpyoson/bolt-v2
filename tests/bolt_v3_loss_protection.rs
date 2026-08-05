@@ -19,7 +19,7 @@ use bolt_v2::{
     },
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
-        BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+        BoltV3SubmitIntentKind,
     },
 };
 use nautilus_core::UUID4;
@@ -44,9 +44,9 @@ fn realized_loss_breach_latches_persists_and_emits_flatten_actions() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(50, 0)),
@@ -121,9 +121,9 @@ fn startup_recovery_blocks_entries_from_halting_and_missing_store_files() {
         .write_state(&halting)
         .expect("halting state should persist");
 
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let recovered = seed_admission_from_kill_switch_store(&admission, &halting_store)
         .expect("halting recovery should seed admission");
 
@@ -137,9 +137,9 @@ fn startup_recovery_blocks_entries_from_halting_and_missing_store_files() {
 
     let missing_store =
         KillSwitchStore::new(temp.path().join("missing.json"), TEST_MAX_STATE_FILE_BYTES);
-    let missing_admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let missing_admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let recovered_missing =
         seed_admission_from_kill_switch_store(&missing_admission, &missing_store)
             .expect("missing store should fail closed into admission state");
@@ -163,9 +163,9 @@ fn position_event_filter_requires_configured_account_and_instrument() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(1, 0)),
@@ -210,9 +210,9 @@ fn mixed_settlement_currency_realized_pnl_fails_closed() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     // A high daily limit so neither single realized loss can breach on its own:
     // this isolates the mixed-currency integrity guard from the loss-breach path.
@@ -260,8 +260,10 @@ fn mixed_settlement_currency_realized_pnl_fails_closed() {
     );
     // Admission is latched into FailedManualIntervention: an integrity failure is
     // not a recoverable loss breach, it requires manual operator intervention.
+    let mut post_failure_request = entry_request();
+    post_failure_request.client_order_id = "client-order-2".to_string();
     assert!(matches!(
-        admission.admit(&entry_request()),
+        admission.admit(&post_failure_request),
         Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
             state: KillSwitchStateKind::FailedManualIntervention
         })
@@ -280,9 +282,9 @@ fn persistence_failure_fails_closed_before_returning_error() {
         parent_path.join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(1, 0)),
@@ -322,9 +324,9 @@ fn cumulative_position_pnl_keeps_prior_baseline_across_utc_day_rollover() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(12, 0)),
@@ -379,9 +381,9 @@ fn record_realized_pnl_resets_accumulator_on_utc_day_rollover() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(50, 0)),
@@ -445,9 +447,9 @@ fn failed_halt_actions_retry_after_configured_interval_until_success() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(FlakyLossActionSink::new(1));
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(1, 0)),
@@ -506,9 +508,9 @@ fn daily_realized_pnl_survives_restart_until_utc_bucket_rolls_forward() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut first = KillSwitchLossProtection::new(
         loss_config(Decimal::new(50, 0)),
@@ -527,9 +529,9 @@ fn daily_realized_pnl_survives_restart_until_utc_bucket_rolls_forward() {
         })
         .expect("below-limit loss should persist the runtime accumulator");
 
-    let restart_admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let restart_admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let restart_store = KillSwitchStore::new(
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
@@ -574,9 +576,9 @@ fn recovered_armed_loss_snapshot_rechecks_lowered_daily_limit() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut first = KillSwitchLossProtection::new(
         loss_config(Decimal::new(100, 0)),
@@ -595,9 +597,9 @@ fn recovered_armed_loss_snapshot_rechecks_lowered_daily_limit() {
         ))
         .expect("below old limit loss should persist an armed snapshot");
 
-    let restart_admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let restart_admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let restart_store = KillSwitchStore::new(
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
@@ -630,9 +632,9 @@ fn cumulative_position_baseline_survives_restart_without_current_day_false_posit
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut first = KillSwitchLossProtection::new(
         loss_config(Decimal::new(50, 0)),
@@ -651,9 +653,9 @@ fn cumulative_position_baseline_survives_restart_without_current_day_false_posit
         ))
         .expect("prior-day cumulative event should persist the baseline");
 
-    let restart_admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let restart_admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let restart_store = KillSwitchStore::new(
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
@@ -691,9 +693,9 @@ fn stale_utc_bucket_events_do_not_clear_current_day_loss_accumulator() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(50, 0)),
@@ -740,9 +742,9 @@ fn utc_day_rollover_prunes_completed_position_dedup_snapshots() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection =
         KillSwitchLossProtection::new(loss_config(Decimal::new(100, 0)), admission, store, actions)
@@ -817,9 +819,9 @@ fn closed_position_prunes_cumulative_baseline_before_position_id_reuse() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(30, 0)),
@@ -866,9 +868,9 @@ fn duplicate_closed_position_event_still_prunes_cumulative_baseline() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(25, 0)),
@@ -915,9 +917,9 @@ fn same_timestamp_reopen_with_distinct_pnl_counts_fresh_cycle() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(25, 0)),
@@ -964,9 +966,9 @@ fn pending_halt_actions_retry_from_timer_without_new_position_events() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(FlakyLossActionSink::new(1));
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(1, 0)),
@@ -1020,9 +1022,9 @@ fn recovered_pending_halt_actions_retry_from_persisted_schedule() {
         .write_state_with_loss_snapshot(&halting, Some(&snapshot))
         .expect("halting state with pending halt actions should persist");
 
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut restarted = KillSwitchLossProtection::new(
         loss_config(Decimal::new(1, 0)),
@@ -1064,9 +1066,9 @@ fn pending_halt_action_timeout_persists_failed_manual_intervention() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(FlakyLossActionSink::new(usize::MAX));
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(1, 0)),
@@ -1117,9 +1119,9 @@ fn halt_persistence_failure_invalidates_preexisting_permissive_store() {
         .write_state(&KillSwitchState::Armed)
         .expect("preexisting permissive state should persist");
     let constrained_store = KillSwitchStore::new(path, 96);
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(1, 0)),
@@ -1154,9 +1156,9 @@ fn duplicate_closed_position_replay_after_prune_counts_once() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(30, 0)),
@@ -1208,9 +1210,9 @@ fn duplicate_adjusted_position_replay_counts_delta_once() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(15, 0)),
@@ -1262,9 +1264,9 @@ fn settlement_position_pnl_dedupes_by_settlement_key_before_daily_accumulation()
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(10, 0)),
@@ -1314,9 +1316,9 @@ fn mixed_settlement_currency_adjusted_pnl_fails_closed() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(1_000, 0)),
@@ -1365,9 +1367,9 @@ fn late_distinct_adjusted_position_event_is_counted_by_event_id() {
         temp.path().join("kill-switch.json"),
         TEST_MAX_STATE_FILE_BYTES,
     );
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(15, 0)),
@@ -1418,9 +1420,9 @@ fn halting_recovery_without_pending_snapshot_reissues_flatten() {
         })
         .expect("halting state without loss snapshot should persist");
 
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    )));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        support::current_evidence::recording_evidence(),
+    ));
     let actions = Rc::new(RecordingLossActionSink::default());
     let mut protection = KillSwitchLossProtection::new(
         loss_config(Decimal::new(50, 0)),
@@ -1533,7 +1535,6 @@ fn entry_request() -> BoltV3SubmitAdmissionRequest {
         order_side: OrderSide::Buy,
         order_quantity: Decimal::new(1, 0),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
         admission_evidence: None,

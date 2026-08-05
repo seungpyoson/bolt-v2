@@ -463,6 +463,7 @@ fn map_data(
         spot_market_data_mode: nt_spot_market_data_mode(cfg.spot_market_data_mode),
         instrument_status_poll_secs: cfg.instrument_status_poll_secs,
         transport_backend: cfg.transport_backend,
+        ..BinanceDataClientConfig::default()
     })
 }
 

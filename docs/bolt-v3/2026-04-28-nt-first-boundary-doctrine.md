@@ -5,8 +5,8 @@ Status: approved doctrine
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
 Last full NT doctrine audit rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last full NT doctrine audit date: 2026-04-28
-Last NT pin compatibility verified rev: `d81be0bcc7a473c45d2dc8a8885638336073a218`
-Last NT pin compatibility verified date: 2026-07-17
+Last NT pin compatibility verified rev: `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
+Last NT pin compatibility verified date: 2026-07-26
 Owner: Bolt-v3 maintainers
 
 This artifact records the current Bolt-v3 boundary doctrine for
@@ -123,15 +123,59 @@ Decision to repo-rule mapping:
 The following source anchors were verified for this doctrine or a later
 compatibility slice:
 
-- `Cargo.toml` pins the official NT repository at merge commit
-  `d81be0bcc7a473c45d2dc8a8885638336073a218`. The 2026-07-17 source-correction
-  slice's declared compatibility scope is the NT 0.61 migration, the governed Binance
-  boundary evidence, and required exact-head tests. It does not re-audit all
-  NT-owned behaviors cited by this doctrine.
+- `Cargo.toml` pins the official NT repository at the exact official
+  merged commit `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`. It contains upstream PR #4474. The
+  2026-07-26 compatibility scope covers the governed Binance boundary required
+  by the thin-NT decision-evidence slice. It does not re-audit all NT-owned
+  behaviors cited by this doctrine.
 - `ci/nautilus-source-capabilities.toml` binds the selected official revision
-  to its Binance Spot schema 3:5 and adapter receive-timestamp facts. `build.rs`
-  generates the immutable Rust registry and rejects revision drift or a false
-  fact; operator TOML cannot override either capability.
+  to its Binance Spot schema 3:5 and adapter receive-timestamp behavior.
+  `build.rs` verifies the bound behavior-test
+  hashes, generates the immutable Rust registry, and rejects a false recorded
+  fact or a mismatch between the manifest revision and the `nautilus-binance`
+  pin; operator TOML cannot override any capability. `build.rs` cannot prove
+  mergedness, because a fork-only revision is fetchable through the official
+  repository URL; the `nautilus-pin` CI lane asserts it instead. That lane
+  discovers every tracked manifest and lockfile rather than listing them, and
+  registers both halves of each lockfile git entry -- the commit after `#`,
+  which is what cargo checks out, and the `?rev=` that requested it -- so an
+  entry whose halves disagree fails as two revisions. Every reference must name
+  one revision, written in the canonical lowercase form, that is an ancestor of
+  the official upstream default branch. The two readings are both required: a
+  path-substituted dependency resolves with no lockfile source at all, which the
+  lane fails on rather than skips, and any tracked path with a `.cargo`
+  component is refused whatever it contains, because a cargo config can redirect
+  a source or redefine the subcommands CI runs. The lane does not try to
+  recognize which references are NautilusTrader's, because nine bypasses proved
+  that question has no closed answer -- a name can be cased, percent-encoded,
+  hidden behind a `[patch]` selector, or made opaque entirely. It instead
+  requires every source in the resolved build to be one this repository allows:
+  crates.io, the official repository at an exact revision, or a crate the owning
+  workspace reaches by path within this repository. An unrecognized shape is
+  therefore a rejection naming what it could not place, never a silent skip.
+  Reachability rather than name is what admits the third kind, and that is a
+  correction: an allowlist keyed on names carried the denylist's failure mode
+  inside it, since any manifest tracked anywhere minted a name that a dependency
+  substituted from outside the repository could then claim.
+- Bolt requires unbounded, unfiltered NT startup reconciliation in every live
+  configuration. At the pinned revision the Polymarket adapter drops venue
+  orders and positions it cannot map or represent rather than rejecting the
+  report, and reports those drops unevenly -- an unmappable order is counted but
+  not logged, an unrepresentable position is logged but not counted, and no
+  count reaches the mass status itself -- so startup reconciliation completeness
+  is not guaranteed by NT at this pin. That is one condition of several, and not
+  all of them are in the adapter: the pinned execution engine also discards
+  position reports whose instrument never loaded, so completeness cannot be
+  established by fixing the adapter alone. `ProviderBinding::reconciliation_unmet`
+  is where the current list lives, and the gate refuses enforced admission while
+  it is non-empty. This compatibility slice does not add or claim a separate
+  post-startup authority-revocation mode.
+- Bolt strategy state retains intent correlation and strategy-local decision
+  context only. It projects current position side, quantity, average entry
+  price, and open/closed state from NT's cache and does not maintain a second
+  order, fill, or position reducer. A position-close callback releases Bolt
+  strategy context only after a scoped NT projection proves no open position
+  remains.
 - The NT pin-change audit and compatibility probe are recorded under
   `docs/bolt-v3/research/nt-pin-change/`; the CLOB V2 live-readiness gate
   remains open until live signing, order, fill, collateral, and fee behavior are

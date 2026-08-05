@@ -1059,8 +1059,12 @@ mod tests {
             "bolt-v3-reference-price-health-{suffix}-{}",
             std::process::id()
         ));
-        loaded.root.persistence.catalog_directory =
-            catalog_directory.to_string_lossy().into_owned();
+        std::fs::create_dir_all(&catalog_directory).expect("test catalog should create");
+        loaded.root.persistence.catalog_directory = std::fs::canonicalize(catalog_directory)
+            .expect("test catalog should canonicalize")
+            .to_string_lossy()
+            .into_owned();
+        crate::bolt_v3_current_evidence::prepare_test_generation(loaded);
     }
 
     fn out_of_plan_iv_root() -> crate::bolt_v3_iv::config::IvRootConfig {
@@ -1476,12 +1480,7 @@ configured_source_param = "configured-value"
     fn reference_current_price_health_prepares_strategy_free_transport_runtime() {
         let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
             .expect("fixture config should load");
-        let catalog_directory = std::env::temp_dir().join(format!(
-            "bolt-v3-reference-price-health-{}",
-            std::process::id()
-        ));
-        loaded.root.persistence.catalog_directory =
-            catalog_directory.to_string_lossy().into_owned();
+        set_unique_reference_health_catalog(&mut loaded, "transport-runtime");
         let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
             .expect("fixture secrets should resolve through the fake SSM resolver");
         let health_run =
@@ -1515,15 +1514,13 @@ configured_source_param = "configured-value"
                 .runtime
                 .capital_admission_runtime_feed_configured()
         );
-        assert!(!health_run.runtime.venue_truth_runtime_configured());
-        assert!(!health_run.runtime.order_reject_observer_feed_configured());
-        assert!(!health_run.runtime.kill_switch_loss_protection_configured());
         assert!(
             !health_run
                 .runtime
-                .capital_admission_venue_spendability_source_configured()
+                .provider_collateral_allowance_runtime_configured()
         );
-        assert!(!health_run.runtime.submit_reservation_recovery_configured());
+        assert!(!health_run.runtime.order_reject_observer_feed_configured());
+        assert!(!health_run.runtime.kill_switch_loss_protection_configured());
     }
 
     #[test]
@@ -1688,12 +1685,7 @@ configured_source_param = "configured-value"
     fn reference_current_price_health_resolves_only_plan_scoped_data_client_secrets() {
         let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
             .expect("fixture config should load");
-        let catalog_directory = std::env::temp_dir().join(format!(
-            "bolt-v3-reference-price-health-secret-scope-{}",
-            std::process::id()
-        ));
-        loaded.root.persistence.catalog_directory =
-            catalog_directory.to_string_lossy().into_owned();
+        set_unique_reference_health_catalog(&mut loaded, "secret-scope");
         let plan = reference_current_price_health_plan(&loaded)
             .expect("reference_current_price health plan should build");
         let mut requested_paths = Vec::new();
@@ -1733,12 +1725,7 @@ configured_source_param = "configured-value"
     fn strategy_free_data_client_scope_drops_execution_only_secrets_for_selected_data_clients() {
         let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
             .expect("fixture config should load");
-        let catalog_directory = std::env::temp_dir().join(format!(
-            "bolt-v3-data-client-secret-scope-{}",
-            std::process::id()
-        ));
-        loaded.root.persistence.catalog_directory =
-            catalog_directory.to_string_lossy().into_owned();
+        set_unique_reference_health_catalog(&mut loaded, "data-client-secret-scope");
         let data_client_keys = vec!["polymarket_main".to_string()];
         let mut requested_paths = Vec::new();
 
@@ -1773,12 +1760,7 @@ configured_source_param = "configured-value"
     fn strategy_free_data_client_scope_drops_pre_resolved_execution_only_secrets() {
         let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
             .expect("fixture config should load");
-        let catalog_directory = std::env::temp_dir().join(format!(
-            "bolt-v3-data-client-resolved-secret-scope-{}",
-            std::process::id()
-        ));
-        loaded.root.persistence.catalog_directory =
-            catalog_directory.to_string_lossy().into_owned();
+        set_unique_reference_health_catalog(&mut loaded, "data-client-resolved-secret-scope");
         let resolved = resolve_bolt_v3_secrets_with(&loaded, fake_bolt_v3_health_resolver)
             .expect("fixture secrets should resolve through the fake SSM resolver");
         let data_client_keys = vec!["polymarket_main".to_string()];
@@ -1890,12 +1872,7 @@ configured_source_param = "configured-value"
         loaded.root.nautilus.timeout_disconnection_secs = 1;
         loaded.root.nautilus.delay_post_stop_secs = 0;
         loaded.root.nautilus.timeout_shutdown_secs = 1;
-        let catalog_directory = std::env::temp_dir().join(format!(
-            "bolt-v3-chainlink-health-loopback-{}",
-            std::process::id()
-        ));
-        loaded.root.persistence.catalog_directory =
-            catalog_directory.to_string_lossy().into_owned();
+        set_unique_reference_health_catalog(loaded, &format!("chainlink-health-loopback-{port}"));
 
         let reference = loaded.strategies[0]
             .config

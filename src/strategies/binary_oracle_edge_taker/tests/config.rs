@@ -127,11 +127,11 @@ fn strategy_core_accepts_nt_hedging_oms_type() {
         BinaryOracleEdgeTakerBuilder::parse_config(&raw).expect("Hedging OMS should parse");
     let context = StrategyBuildContext::new(
         RecordingFeeProvider::cold(),
-        Arc::new(RecordingDecisionEvidenceWriter),
+        recording_decision_evidence(),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-                RecordingDecisionEvidenceWriter,
-            )),
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(
+                recording_decision_evidence(),
+            ),
         ),
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
@@ -518,11 +518,11 @@ fn strategy_core_uses_explicit_configured_nt_strategy_fields() {
         config,
         StrategyBuildContext::new(
             RecordingFeeProvider::cold(),
-            Arc::new(RecordingDecisionEvidenceWriter),
+            recording_decision_evidence(),
             Arc::new(
-                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
-                    RecordingDecisionEvidenceWriter,
-                )),
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(
+                    recording_decision_evidence(),
+                ),
             ),
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),

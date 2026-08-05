@@ -1,5 +1,9 @@
 # Phase 6 Requirements Checklist: Thin Bolt-v3 Live Canary Path
 
+> **Historical feature artifact — not an active checklist.** Do not execute or
+> complete items from this file. Current `main`, `AGENTS.md`, and tracked issues
+> are authoritative.
+
 **Purpose**: Validate Phase 6 submit-admission requirements quality before implementation planning and review.
 **Created**: 2026-05-13
 **Feature**: [spec.md](../spec.md)

@@ -493,9 +493,8 @@ fn try_assembly_context<'a>(
     resolved: &'a ResolvedBoltV3Secrets,
     capabilities: StrategyRuntimeCapabilities,
 ) -> Result<StrategyRegistrationContext<'a>, BoltV3StrategyRegistrationError> {
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let decision_evidence = writer.recorder();
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
     let realized_volatility_runtime = Arc::new(Mutex::new(
         bolt_v2::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_loaded_config(
@@ -506,15 +505,19 @@ fn try_assembly_context<'a>(
     StrategyRegistrationContext::new(
         loaded,
         &loaded.strategies[0],
-        "test_strategy",
-        capabilities,
+        bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContract {
+            strategy_kind: "test_strategy",
+            capabilities,
+            evidence_capability:
+                bolt_v2::bolt_v3_strategy_registration::StrategyEvidenceCapability::EdgeTaker,
+        },
         resolved,
         Arc::new(
             bolt_v2::bolt_v3_strategy_registration::StrategyPreparationConfig::from_root(
                 &loaded.root,
             ),
         ),
-        StrategyRegistrationRuntimeResources::new(
+        &StrategyRegistrationRuntimeResources::new(
             decision_evidence,
             Arc::new(BoltV3IvQueryHandleRegistry::empty()),
             realized_volatility_runtime,
@@ -524,6 +527,7 @@ fn try_assembly_context<'a>(
                     bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
                 settlement_runtime_sink: None,
                 settlement_recovery: None,
+                booking_recovery: None,
                 settlement_health_transition_emitter: None,
             },
         ),
@@ -745,7 +749,7 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
     assert_field_type(
         context_tokens,
         "decision_evidence",
-        &["Arc", "<", "dyn", "BoltV3DecisionEvidenceWriter", ">"],
+        &["StrategyDecisionEvidence"],
     );
     assert_field_type(
         context_tokens,
@@ -847,7 +851,7 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
     assert_field_type(
         runtime_resources,
         "decision_evidence",
-        &["Arc", "<", "dyn", "BoltV3DecisionEvidenceWriter", ">"],
+        &["StrategyEvidenceHandles"],
     );
     assert_field_type(
         runtime_resources,
@@ -883,7 +887,7 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
             .iter()
             .filter(|token| token.text == ":")
             .count(),
-        5
+        6
     );
     assert_field_type(
         execution_controls,
@@ -903,7 +907,20 @@ fn strategy_registration_context_does_not_expose_unconditional_capability_resour
     assert_field_type(
         execution_controls,
         "settlement_recovery",
-        &["Option", "<", "BoltV3SettlementRecoveryConfig", ">"],
+        &[
+            "Option",
+            "<",
+            "Arc",
+            "<",
+            "SettlementRecoveryFacts",
+            ">",
+            ">",
+        ],
+    );
+    assert_field_type(
+        execution_controls,
+        "booking_recovery",
+        &["Option", "<", "Arc", "<", "BookingRecoveryFacts", ">", ">"],
     );
     assert_field_type(
         execution_controls,
@@ -962,8 +979,21 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
     );
     assert_field_type(
         settlement_resource_tokens,
-        "recovery",
-        &["Option", "<", "BoltV3SettlementRecoveryConfig", ">"],
+        "settlement_recovery",
+        &[
+            "Option",
+            "<",
+            "Arc",
+            "<",
+            "SettlementRecoveryFacts",
+            ">",
+            ">",
+        ],
+    );
+    assert_field_type(
+        settlement_resource_tokens,
+        "booking_recovery",
+        &["Option", "<", "Arc", "<", "BookingRecoveryFacts", ">", ">"],
     );
     assert_field_type(
         settlement_resource_tokens,
@@ -1292,20 +1322,6 @@ fn strategy_registration_resolves_settlement_identity_once_and_assembly_uses_cac
     );
     assert_eq!(
         count_sequence(&resolution_binding_tokens, &["root", ".", "clients"]),
-        0
-    );
-
-    let complete = support::repo_text("src/strategies/complete_set_arbitrage/archetype.rs");
-    let complete_tokens = tokenize(&complete);
-    let raw_complete_tokens =
-        item_body_tokens(&complete_tokens, &["pub", "fn", "raw_complete_set_config"])
-            .expect("raw complete-set config should remain inspectable");
-    assert_eq!(
-        count_sequence(&raw_complete_tokens, &["venue_for_client", "("]),
-        0
-    );
-    assert_eq!(
-        count_sequence(&raw_complete_tokens, &["LoadedBoltV3Config"]),
         0
     );
 }
@@ -3952,8 +3968,11 @@ fn provider_binding_projects_bounded_polymarket_gamma_query_source() {
     let params = data.filters[0]
         .query_params()
         .expect("Gamma query source should use NT GammaQueryFilter");
-    assert_eq!(params.tag_id, Some("sports-tag".to_string()));
-    assert_eq!(params.sports_market_types, Some("moneyline".to_string()));
+    assert_eq!(params.tag_id, Some(vec![42]));
+    assert_eq!(
+        params.sports_market_types,
+        Some(vec!["moneyline".to_string()])
+    );
     assert_eq!(params.max_markets, Some(3));
     assert!(
         data.new_market_filter.is_none(),
@@ -3999,7 +4018,7 @@ fn provider_binding_accepts_polymarket_gamma_event_query_without_tag() {
     assert_eq!(event_queries[0].1.tag_id, None);
     assert_eq!(
         event_queries[0].1.sports_market_types,
-        Some("moneyline".to_string())
+        Some(vec!["moneyline".to_string()])
     );
     assert_eq!(event_queries[0].1.max_markets, Some(3));
     assert!(
@@ -4151,12 +4170,12 @@ fn configure_outcome_group_strategy(
     group_sources: Vec<String>,
 ) {
     let strategy = &mut loaded.strategies[0];
-    strategy.config.strategy_archetype = toml::Value::String("complete_set_arbitrage".to_string())
+    strategy.config.strategy_archetype = toml::Value::String("outcome_group_probe".to_string())
         .try_into()
-        .expect("complete-set archetype key should parse");
+        .expect("outcome-group probe archetype key should parse");
     strategy.config.execution_client_id = ClientId::from("polymarket_main");
     strategy.config.target = toml::toml! {
-        configured_target_id = "complete_set_target"
+        configured_target_id = "outcome_group_probe_target"
         kind = "static_outcome_group"
         rotating_market_family = "outcome_group"
         group_sources = group_sources
@@ -4187,7 +4206,7 @@ fn outcome_gamma_query_source(source_id: &str) -> OutcomeGroupSourceConfig {
         search: None,
         event_query: None,
         market_query: None,
-        tag_id: Some("sports-tag".to_string()),
+        tag_id: Some("42".to_string()),
         sports_market_types: Some(vec!["moneyline".to_string()]),
         max_events: None,
         max_markets: 3,

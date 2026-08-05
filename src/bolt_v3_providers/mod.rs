@@ -44,7 +44,7 @@ pub use chainlink_reference::KEY as REFERENCE_CATALOG_VENUE_KEY;
 pub use hyperliquid::KEY as OUTCOME_GROUP_HIP4_VENUE_KEY;
 pub use polymarket::KEY as OUTCOME_GROUP_POLYMARKET_VENUE_KEY;
 
-use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, sync::Arc};
+use std::{any::Any, collections::BTreeMap, fmt, path::Path, sync::Arc};
 
 use nautilus_model::{
     enums::TimeInForce,
@@ -53,9 +53,6 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 use serde::Serialize;
-
-const EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES: u64 = 0;
-const EXTERNAL_SNAPSHOT_RETRY_DECREMENT: u64 = 1;
 
 use crate::{
     bolt_v3_adapters::{
@@ -66,8 +63,8 @@ use crate::{
     bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, WrittenOperatorArtifact},
     bolt_v3_operator_health::{BoltV3InputHealthTransitionEmitter, BoltV3MissingInputSource},
+    bolt_v3_provider_collateral_allowance::ProviderCollateralAllowanceSnapshotSource,
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
-    bolt_v3_venue_truth::{VenueTruthOrderEventMapper, VenueTruthSnapshotSource},
 };
 
 pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
@@ -140,7 +137,7 @@ pub struct ProviderAdapterMapContext<'a> {
     pub runtime_approvals: ProviderRuntimeApprovals<'a>,
 }
 
-pub struct ProviderVenueTruthSourceContext<'a> {
+pub struct ProviderCollateralAllowanceSourceContext<'a> {
     pub client_key: &'a str,
     pub client: &'a ClientBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
@@ -148,9 +145,8 @@ pub struct ProviderVenueTruthSourceContext<'a> {
 }
 
 #[derive(Clone)]
-pub struct ProviderVenueTruthRuntimeSource {
-    pub source: Arc<dyn VenueTruthSnapshotSource>,
-    pub order_event_mapper: Arc<dyn VenueTruthOrderEventMapper>,
+pub struct ProviderCollateralAllowanceRuntimeSource {
+    pub source: Arc<dyn ProviderCollateralAllowanceSnapshotSource>,
     pub poll_interval_ms: u64,
 }
 
@@ -324,10 +320,10 @@ type ProductSubmitProofArtifactWriter =
     ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
 
 type MetadataRefreshIntervalLoader = fn(&ClientBlock) -> Result<Option<u64>, String>;
-type VenueTruthRuntimeSourceBuilder =
+type ProviderCollateralAllowanceRuntimeSourceBuilder =
     for<'a> fn(
-        ProviderVenueTruthSourceContext<'a>,
-    ) -> Result<ProviderVenueTruthRuntimeSource, anyhow::Error>;
+        ProviderCollateralAllowanceSourceContext<'a>,
+    ) -> Result<ProviderCollateralAllowanceRuntimeSource, anyhow::Error>;
 
 // PROVIDER-SPECIFIC (Polymarket CLOB v2). Every `ClobV2*` type and
 // `*_clob_v2_*` below materializes Polymarket CLOB v2 signing, fee, and collateral
@@ -368,22 +364,6 @@ pub struct ClobV2FeeBehaviorSourceMaterialization {
     pub fee_assumptions_sha256: String,
 }
 
-#[derive(Clone, Copy)]
-pub struct ClobV2CollateralAccountingSourceMaterializationRequest<'a> {
-    pub schema_version: u32,
-    pub balance_allowance_record_kind: &'static str,
-    pub on_chain_balance_allowance_record_kind: &'static str,
-    pub loaded: &'a LoadedBoltV3Config,
-    pub strategy_instance_id: &'a str,
-    pub resolved: Option<&'a ResolvedBoltV3Secrets>,
-}
-
-pub struct ClobV2CollateralAccountingSourceMaterialization {
-    pub p_usd_balance: String,
-    pub p_usd_allowance: String,
-    pub collateral_accounting_source_sha256: String,
-}
-
 pub struct ClobV2BalanceAllowanceCacheSyncRequest<'a> {
     pub loaded: &'a LoadedBoltV3Config,
     pub strategy_instance_id: &'a str,
@@ -394,152 +374,6 @@ pub struct ClobV2BalanceAllowanceCacheSync {
     pub execution_client_id: String,
     pub request_path: &'static str,
     pub base_url_http_sha256: String,
-}
-
-pub struct VenueAccountStateSourceMaterializationRequest<'a> {
-    pub schema_version: u32,
-    pub account_state_snapshot_record_kind: &'static str,
-    pub loaded: &'a LoadedBoltV3Config,
-    pub strategy_instance_id: &'a str,
-    pub configured_target_id: &'a str,
-    pub resolved: &'a ResolvedBoltV3Secrets,
-}
-
-pub struct VenueAccountStateSourceMaterialization {
-    pub open_order_count: u64,
-    pub open_position_count: u64,
-    pub account_state_snapshot_sha256: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ExternalSnapshotConfirmationPolicy {
-    pub max_retries: u64,
-    pub retry_delay_initial_ms: u64,
-    pub retry_delay_max_ms: u64,
-}
-
-impl ExternalSnapshotConfirmationPolicy {
-    pub(crate) fn from_retry_fields(
-        max_retries: u64,
-        retry_delay_initial_ms: u64,
-        retry_delay_max_ms: u64,
-    ) -> Self {
-        Self {
-            max_retries,
-            retry_delay_initial_ms,
-            retry_delay_max_ms,
-        }
-    }
-
-    fn retry_delay_ms(self) -> u64 {
-        self.retry_delay_initial_ms.min(self.retry_delay_max_ms)
-    }
-
-    /// Number of consecutive non-blocking confirmation reads the hard-stop
-    /// loop must observe before it may declare a previously-blocking snapshot
-    /// cleared. Sourced from the configured retry budget (`max_retries`) so the
-    /// confirmation count is config-driven, floored at a single confirmation
-    /// (`EXTERNAL_SNAPSHOT_RETRY_DECREMENT`, the one-read step) so that even a
-    /// zero-retry budget never lets the helper clear an observed exposure
-    /// without at least one corroborating read.
-    fn required_clear_confirmations(self) -> u64 {
-        self.max_retries.max(EXTERNAL_SNAPSHOT_RETRY_DECREMENT)
-    }
-}
-
-pub(crate) async fn fetch_external_snapshot_with_retries<T, E, Fetch, Fut>(
-    policy: ExternalSnapshotConfirmationPolicy,
-    mut fetch: Fetch,
-) -> Result<T, E>
-where
-    Fetch: FnMut() -> Fut,
-    Fut: Future<Output = Result<T, E>>,
-{
-    let mut result = fetch().await;
-    let mut remaining_retries = policy.max_retries;
-    while result.is_err() && remaining_retries != EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES {
-        sleep_external_snapshot_confirmation_delay(policy).await;
-        result = fetch().await;
-        remaining_retries -= EXTERNAL_SNAPSHOT_RETRY_DECREMENT;
-    }
-    result
-}
-
-/// Confirm whether an account-state snapshot may be treated as cleared (flat)
-/// before a safety hard-stop trusts it. This is the single source of truth used
-/// by every pre-run hard-stop call site (open orders, positions, collateral).
-///
-/// The loop is MONOTONIC and FAIL-CLOSED: once `is_blocking` has been observed
-/// true for any read, a later empty/non-blocking read does NOT clear it. The
-/// cleared state is declared only when the configured number of consecutive
-/// non-blocking confirmations (`required_clear_confirmations`) is observed with
-/// no blocking read and no fetch error interrupting the run. Any fetch `Err`
-/// inside the confirmation window retains the conservative (blocking) snapshot
-/// rather than returning the latest read, so a transient empty venue response
-/// can never defeat the hard-stop.
-///
-/// If the initial snapshot is already non-blocking the cleared state is declared
-/// immediately — there is no observed exposure to confirm away.
-pub(crate) async fn confirm_external_snapshot_before_hard_stop<T, E, Fetch, Fut, IsBlocking>(
-    snapshot: T,
-    policy: ExternalSnapshotConfirmationPolicy,
-    mut fetch: Fetch,
-    is_blocking: IsBlocking,
-) -> T
-where
-    Fetch: FnMut() -> Fut,
-    Fut: Future<Output = Result<T, E>>,
-    IsBlocking: Fn(&T) -> bool,
-{
-    if !is_blocking(&snapshot) {
-        return snapshot;
-    }
-    // Exposure observed: retain this conservative snapshot and only release it
-    // after a run of consecutive non-blocking confirmations long enough to
-    // satisfy the configured count. A blocking read or a fetch error resets the
-    // run, so the cleared state is declared only when no exposure is observed
-    // throughout the confirming window.
-    let blocking_snapshot = snapshot;
-    let required_clear_confirmations = policy.required_clear_confirmations();
-    // Countdown of consecutive non-blocking reads still required to declare the
-    // snapshot cleared. It is reset back to the full requirement on any blocking
-    // read or fetch error, and decremented by one per consecutive clear read;
-    // reaching `EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES` (zero) means the full run
-    // was observed without interruption. Tracking the requirement as a countdown
-    // keeps every counter value sourced from named loop-control constants.
-    let mut remaining_required_clears = required_clear_confirmations;
-    let mut remaining_retries = policy.max_retries;
-    while remaining_retries != EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES {
-        sleep_external_snapshot_confirmation_delay(policy).await;
-        match fetch().await {
-            Ok(confirmed_snapshot) if !is_blocking(&confirmed_snapshot) => {
-                remaining_required_clears -= EXTERNAL_SNAPSHOT_RETRY_DECREMENT;
-                if remaining_required_clears == EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES {
-                    // A long-enough run of consecutive non-blocking reads with
-                    // no interruption: the exposure is genuinely cleared.
-                    return confirmed_snapshot;
-                }
-            }
-            // A still-blocking read shows the exposure persists, and a failed
-            // read tells us nothing about clearance. Either way, any non-blocking
-            // reads observed so far were transient: reset the requirement and keep
-            // the conservative blocking snapshot.
-            _ => {
-                remaining_required_clears = required_clear_confirmations;
-            }
-        }
-        remaining_retries -= EXTERNAL_SNAPSHOT_RETRY_DECREMENT;
-    }
-    // The confirmation window closed without a long-enough run of consecutive
-    // non-blocking reads: fail closed by retaining the blocking snapshot.
-    blocking_snapshot
-}
-
-async fn sleep_external_snapshot_confirmation_delay(policy: ExternalSnapshotConfirmationPolicy) {
-    let retry_delay_ms = policy.retry_delay_ms();
-    if retry_delay_ms != 0 {
-        tokio::time::sleep(std::time::Duration::from_millis(retry_delay_ms)).await;
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -624,7 +458,17 @@ pub struct ProviderBinding {
     pub write_live_submit_approval_artifact: Option<LiveSubmitApprovalArtifactWriter>,
     pub write_product_submit_proof_artifact: Option<ProductSubmitProofArtifactWriter>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
-    pub build_venue_truth_runtime_source: Option<VenueTruthRuntimeSourceBuilder>,
+    pub build_provider_collateral_allowance_runtime_source:
+        Option<ProviderCollateralAllowanceRuntimeSourceBuilder>,
+    /// Conditions that must be closed before enforced capital admission can
+    /// trust this provider's reconciled order state. Empty means every known
+    /// condition is closed; a non-empty list blocks
+    /// `enforce_submit_admission = true` and each entry is reported verbatim.
+    ///
+    /// These are properties of the pinned NautilusTrader adapter, not of Bolt
+    /// policy, so emptying this list asserts a verdict about one NT revision and
+    /// must be re-established when the pin moves.
+    pub reconciliation_unmet: &'static [&'static str],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -769,6 +613,45 @@ fn validate_reference_live_probe_client(
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
+        reconciliation_unmet: &[
+            "the pinned Polymarket adapter omits venue orders and positions from the mass status \
+it returns -- those it cannot represent, and holdings it filters as dust -- and still reports \
+success, with no count of either omission reaching that report, so a mass-status report can be \
+silently partial",
+            "the pinned Polymarket adapter caps order filled quantity against confirmed \
+fills with a zero local-filled floor, so a matched-but-unconfirmed trade understates filled \
+quantity and overstates remaining quantity",
+            "the pinned Polymarket adapter discards non-confirmed trades with no fill report, no \
+counter and no log entry, so a settlement-pending fill's quantity, price and fee never reach the \
+projection as a trade. Bolt runs the engine with no cache database, so at startup every venue \
+order is unknown to it and its report is projected as an external order rather than reconciled \
+against a cached one. That projection recovers nothing today only because the cap above has \
+already driven the report's filled quantity to zero, and no fill is inferred from a zero \
+quantity, so the quantity stays understated. The zero is what prevents it, not the terminal \
+status: the same path given a non-zero filled quantity infers a fill identified by the order's \
+own fields rather than by the venue trade id the adapter never supplied, which the venue's later \
+confirmation of that same trade does not match and is applied on top of. Closing the cap \
+condition on its own therefore converts a permanent understatement into a double count, on the \
+route where that confirmation is reconciled by itself: applied on top of the inferred fill, with \
+no order status report in the same pass to measure the result against, it leaves twice the \
+executed quantity standing. A same-pass batch reconciliation is not that route and does not \
+double count by quantity -- it applies the fill to a working copy and then projects the order \
+snapshot against the report, which still carries the smaller quantity, so the LIFO void removes \
+the venue-confirmed fill and leaves the inferred fill standing. A fix supplying the status report \
+and its fill reports together therefore restores quantity but still loses the venue trade id, \
+venue price and venue fee",
+            "the pinned Polymarket adapter builds no fill report for a confirmed maker trade \
+holding none of the account's own maker orders, incrementing no counter and logging nothing, so a \
+confirmed fill can be missing from a mass status that reports success; ownership is decided by \
+exact string comparison against either the configured account address or the configured API key, \
+so a funder configured in the checksummed form block explorers display fails the address test for \
+every one of the account's own orders, leaving the API-key comparison as the only thing \
+establishing ownership",
+            "the pinned NautilusTrader execution manager drops a venue position report whose \
+instrument is absent from its cache: the netting path returns `None` and the caller discards it \
+with no else branch, no counter and no log, so a mass status the adapter built completely can \
+still lose positions inside the engine",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: polymarket::validate_client,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
@@ -786,10 +669,15 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: Some(polymarket::build_fee_provider),
-        build_venue_truth_runtime_source: Some(polymarket::build_venue_truth_runtime_source),
+        build_provider_collateral_allowance_runtime_source: Some(
+            polymarket::build_provider_collateral_allowance_runtime_source,
+        ),
     },
     ProviderBinding {
         key: binance::KEY,
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: binance::validate_client,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
@@ -807,10 +695,13 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: hyperliquid::KEY,
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: hyperliquid::validate_client,
         supported_market_families: hyperliquid::SUPPORTED_MARKET_FAMILIES,
@@ -830,10 +721,13 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         ),
         write_product_submit_proof_artifact: Some(hyperliquid::write_product_submit_proof_artifact),
         build_fee_provider: Some(hyperliquid::build_fee_provider),
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bitmex_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -851,10 +745,13 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::BYBIT_KEY,
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_bybit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -872,10 +769,13 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::COINBASE_KEY,
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_coinbase_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -893,10 +793,13 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::DERIBIT_KEY,
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_deribit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -914,10 +817,13 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::OKX_KEY,
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_okx_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -935,10 +841,13 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::KRAKEN_KEY,
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: market_data::validate_kraken_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
@@ -956,10 +865,13 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: chainlink::KEY,
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: chainlink::validate_client,
         supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
@@ -977,10 +889,13 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: chainlink_reference::KEY,
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::Required(
             chainlink_reference::reconnect_timeout_ms_for_nt_connect_budget,
         ),
@@ -1000,10 +915,13 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: polyresearch::KEY,
+        reconciliation_unmet: &[
+            "no submit-admission reconciliation path is verified for this provider",
+        ],
         nt_reconnect_budget: NtReconnectBudgetCapability::Required(
             polyresearch::reconnect_timeout_ms_for_nt_connect_budget,
         ),
@@ -1023,7 +941,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        build_venue_truth_runtime_source: None,
+        build_provider_collateral_allowance_runtime_source: None,
     },
 ];
 
@@ -1110,26 +1028,10 @@ pub fn materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(
     polymarket::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(request)
 }
 
-pub async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
-    request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
-) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
-    polymarket::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
-        request,
-    )
-    .await
-}
-
 pub async fn sync_clob_v2_balance_allowance_cache_from_configured_account(
     request: ClobV2BalanceAllowanceCacheSyncRequest<'_>,
 ) -> Result<ClobV2BalanceAllowanceCacheSync, BoltV3OperatorArtifactError> {
     polymarket::sync_clob_v2_balance_allowance_cache_from_configured_account(request).await
-}
-
-pub async fn materialize_venue_account_state_source_from_configured_account_queries(
-    request: VenueAccountStateSourceMaterializationRequest<'_>,
-) -> Result<VenueAccountStateSourceMaterialization, BoltV3OperatorArtifactError> {
-    polymarket::materialize_venue_account_state_source_from_configured_account_queries(request)
-        .await
 }
 
 /// Provider-owned NT adapter modules whose info logs can expose
@@ -1831,284 +1733,5 @@ mod tests {
         ));
         assert!(!display.contains(sentinel), "{display}");
         assert!(!debug.contains(sentinel), "{debug}");
-    }
-
-    mod confirm_external_snapshot_before_hard_stop {
-        use super::*;
-        use std::{cell::RefCell, collections::VecDeque};
-
-        /// A "blocking" snapshot models an account that still has exposure
-        /// (non-empty open orders / active positions); the cleared/flat state is
-        /// the empty snapshot. This mirrors the production `is_blocking`
-        /// predicates at the open-orders and positions call sites.
-        type Snapshot = Vec<u32>;
-
-        const BLOCKING_SNAPSHOT: &[u32] = &[1];
-        const CLEARED_SNAPSHOT: &[u32] = &[];
-
-        fn is_blocking(snapshot: &Snapshot) -> bool {
-            !snapshot.is_empty()
-        }
-
-        /// Confirmation policy with zero retry delays so the helper's sleep
-        /// short-circuits and the test runs without touching the wall clock.
-        /// `max_retries` drives both the read budget and (via
-        /// `required_clear_confirmations`) the consecutive-clear count, exactly
-        /// as the production config does — nothing about the count is hardcoded
-        /// in the test.
-        fn policy_with_max_retries(max_retries: u64) -> ExternalSnapshotConfirmationPolicy {
-            ExternalSnapshotConfirmationPolicy::from_retry_fields(max_retries, 0, 0)
-        }
-
-        /// Drives the confirmation fetch from a fixed sequence of outcomes. A
-        /// fetch beyond the scripted sequence panics, so each test asserts the
-        /// helper consumes exactly the reads it should.
-        struct ScriptedFetch {
-            outcomes: RefCell<VecDeque<Result<Snapshot, ()>>>,
-        }
-
-        impl ScriptedFetch {
-            fn new(outcomes: Vec<Result<Snapshot, ()>>) -> Self {
-                Self {
-                    outcomes: RefCell::new(outcomes.into_iter().collect()),
-                }
-            }
-
-            async fn next(&self) -> Result<Snapshot, ()> {
-                self.outcomes
-                    .borrow_mut()
-                    .pop_front()
-                    .expect("confirmation loop fetched more times than the test scripted")
-            }
-
-            fn remaining(&self) -> usize {
-                self.outcomes.borrow().len()
-            }
-        }
-
-        #[tokio::test]
-        async fn blocking_initial_snapshot_with_zero_retries_stays_blocking() {
-            // No retry budget: the observed exposure can never be confirmed away.
-            let scripted = ScriptedFetch::new(vec![]);
-            let result = confirm_external_snapshot_before_hard_stop(
-                BLOCKING_SNAPSHOT.to_vec(),
-                policy_with_max_retries(0),
-                || scripted.next(),
-                is_blocking,
-            )
-            .await;
-
-            assert!(
-                is_blocking(&result),
-                "exposure must not clear with no retry budget"
-            );
-            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
-            assert_eq!(
-                scripted.remaining(),
-                0,
-                "no confirmation reads should occur"
-            );
-        }
-
-        #[tokio::test]
-        async fn isolated_empty_reads_between_blocking_reads_never_clear() {
-            // The core blocker scenario, generalized: scattered transient empty
-            // venue responses inside the confirmation window must NOT clear an
-            // already-observed exposure. Across a three-read budget the clears
-            // never form a consecutive run long enough to satisfy the required
-            // count, so each isolated empty read is discarded and the hard-stop
-            // is retained. A naive "return the last fetch" helper would have
-            // surfaced the trailing empty read as a false flat.
-            let scripted = ScriptedFetch::new(vec![
-                Ok(CLEARED_SNAPSHOT.to_vec()),
-                Ok(BLOCKING_SNAPSHOT.to_vec()),
-                Ok(CLEARED_SNAPSHOT.to_vec()),
-            ]);
-            let result = confirm_external_snapshot_before_hard_stop(
-                BLOCKING_SNAPSHOT.to_vec(),
-                policy_with_max_retries(3),
-                || scripted.next(),
-                is_blocking,
-            )
-            .await;
-
-            assert!(
-                is_blocking(&result),
-                "isolated transient empty reads must not defeat the hard-stop"
-            );
-            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
-            assert_eq!(
-                scripted.remaining(),
-                0,
-                "the helper must consume the full budget without short-circuiting to clear"
-            );
-        }
-
-        #[tokio::test]
-        async fn blocking_then_empty_then_blocking_resets_and_stays_blocking() {
-            // An empty read followed by a still-blocking read proves the clear
-            // was transient: the consecutive-clear run resets and the budget is
-            // exhausted, so the conservative blocking snapshot is retained.
-            let scripted = ScriptedFetch::new(vec![
-                Ok(CLEARED_SNAPSHOT.to_vec()),
-                Ok(BLOCKING_SNAPSHOT.to_vec()),
-            ]);
-            let result = confirm_external_snapshot_before_hard_stop(
-                BLOCKING_SNAPSHOT.to_vec(),
-                policy_with_max_retries(2),
-                || scripted.next(),
-                is_blocking,
-            )
-            .await;
-
-            assert!(
-                is_blocking(&result),
-                "exposure observed mid-window must keep the hard-stop blocking"
-            );
-            assert_eq!(
-                scripted.remaining(),
-                0,
-                "both scripted reads should be consumed"
-            );
-        }
-
-        #[tokio::test]
-        async fn fetch_error_mid_window_retains_blocking_snapshot() {
-            // A fetch Err inside the confirmation window tells us nothing about
-            // clearance: the helper must retain the conservative blocking
-            // snapshot rather than return the latest read.
-            let scripted = ScriptedFetch::new(vec![Ok(CLEARED_SNAPSHOT.to_vec()), Err(())]);
-            let result = confirm_external_snapshot_before_hard_stop(
-                BLOCKING_SNAPSHOT.to_vec(),
-                policy_with_max_retries(2),
-                || scripted.next(),
-                is_blocking,
-            )
-            .await;
-
-            assert!(
-                is_blocking(&result),
-                "a fetch error must not clear an observed exposure"
-            );
-            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
-            assert_eq!(scripted.remaining(), 0, "the error read should be consumed");
-        }
-
-        #[tokio::test]
-        async fn fetch_error_immediately_retains_blocking_snapshot() {
-            // The very first confirmation read failing must keep blocking, never
-            // surface a non-snapshot/empty result.
-            let scripted = ScriptedFetch::new(vec![Err(()), Err(())]);
-            let result = confirm_external_snapshot_before_hard_stop(
-                BLOCKING_SNAPSHOT.to_vec(),
-                policy_with_max_retries(2),
-                || scripted.next(),
-                is_blocking,
-            )
-            .await;
-
-            assert!(
-                is_blocking(&result),
-                "repeated fetch errors must stay blocking"
-            );
-            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
-        }
-
-        #[tokio::test]
-        async fn blocking_then_consecutive_empty_confirmations_clears() {
-            // The whole confirmation window observes no exposure: every read is
-            // empty, satisfying the configured consecutive-clear count, so the
-            // cleared (flat) snapshot is genuinely declared.
-            let scripted = ScriptedFetch::new(vec![
-                Ok(CLEARED_SNAPSHOT.to_vec()),
-                Ok(CLEARED_SNAPSHOT.to_vec()),
-            ]);
-            let result = confirm_external_snapshot_before_hard_stop(
-                BLOCKING_SNAPSHOT.to_vec(),
-                policy_with_max_retries(2),
-                || scripted.next(),
-                is_blocking,
-            )
-            .await;
-
-            assert!(
-                !is_blocking(&result),
-                "consecutive empty confirmations throughout must clear the snapshot"
-            );
-            assert_eq!(result, CLEARED_SNAPSHOT.to_vec());
-            assert_eq!(
-                scripted.remaining(),
-                0,
-                "exactly two confirmations consumed"
-            );
-        }
-
-        #[tokio::test]
-        async fn genuinely_flat_initial_snapshot_clears_without_reads() {
-            // No exposure observed at all: the cleared state is declared
-            // immediately and no confirmation read is performed.
-            let scripted = ScriptedFetch::new(vec![]);
-            let result = confirm_external_snapshot_before_hard_stop(
-                CLEARED_SNAPSHOT.to_vec(),
-                policy_with_max_retries(3),
-                || scripted.next(),
-                is_blocking,
-            )
-            .await;
-
-            assert!(
-                !is_blocking(&result),
-                "an initially-flat snapshot stays flat"
-            );
-            assert_eq!(result, CLEARED_SNAPSHOT.to_vec());
-            assert_eq!(
-                scripted.remaining(),
-                0,
-                "no confirmation reads for a flat snapshot"
-            );
-        }
-
-        #[tokio::test]
-        async fn single_retry_requires_one_clear_confirmation_to_clear() {
-            // max_retries = 1 floors required_clear_confirmations at 1, so a
-            // single empty confirmation read is enough to clear — but only
-            // because the entire window observed no exposure.
-            let scripted = ScriptedFetch::new(vec![Ok(CLEARED_SNAPSHOT.to_vec())]);
-            let result = confirm_external_snapshot_before_hard_stop(
-                BLOCKING_SNAPSHOT.to_vec(),
-                policy_with_max_retries(1),
-                || scripted.next(),
-                is_blocking,
-            )
-            .await;
-
-            assert!(
-                !is_blocking(&result),
-                "one clear read satisfies a one-retry budget"
-            );
-            assert_eq!(result, CLEARED_SNAPSHOT.to_vec());
-            assert_eq!(scripted.remaining(), 0);
-        }
-
-        #[tokio::test]
-        async fn single_retry_blocking_confirmation_stays_blocking() {
-            // max_retries = 1: a still-blocking confirmation read exhausts the
-            // budget without a clear, so the hard-stop is retained.
-            let scripted = ScriptedFetch::new(vec![Ok(BLOCKING_SNAPSHOT.to_vec())]);
-            let result = confirm_external_snapshot_before_hard_stop(
-                BLOCKING_SNAPSHOT.to_vec(),
-                policy_with_max_retries(1),
-                || scripted.next(),
-                is_blocking,
-            )
-            .await;
-
-            assert!(
-                is_blocking(&result),
-                "a persistent exposure must stay blocking"
-            );
-            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
-            assert_eq!(scripted.remaining(), 0);
-        }
     }
 }

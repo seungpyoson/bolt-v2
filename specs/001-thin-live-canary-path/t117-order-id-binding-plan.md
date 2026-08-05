@@ -1,5 +1,9 @@
 # T117 Order-ID Binding Plan
 
+> **Historical implementation record — not an active plan.** Do not execute
+> commands or tasks from this file. Current `main`, `AGENTS.md`, and tracked
+> issues are authoritative.
+
 ## Pre-Change Evidence
 
 - `src/strategies/binary_oracle_edge_taker.rs:50` exposes `order_id_tag`, `use_uuid_client_order_ids`, and `use_hyphens_in_client_order_ids`, but no fixed canary `client_order_id` value.

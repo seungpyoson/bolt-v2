@@ -59,7 +59,9 @@ use crate::bolt_v3_config::{
     RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceClassBlock, RiskBlock,
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
-use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
+use crate::bolt_v3_current_evidence::{
+    CanonicalRelativeEvidencePath, PositiveFiniteEvidenceReadCap,
+};
 use crate::bolt_v3_kill_switch_cancel::BoltV3KillSwitchOutstandingOrderRiskSurface;
 use crate::bolt_v3_loss_halt_actions::LossGovernorTradingStateAction;
 use crate::bolt_v3_numeric::{
@@ -94,15 +96,11 @@ use clients::{validate_aws_block, validate_clients_block};
 use gate_providers::validate_gate_providers;
 use kill_switch::validate_kill_switch_block;
 use nt_blocks::validate_nautilus_block;
-use persistence::{
-    validate_capital_admission_recovery_evidence, validate_persistence_block,
-    validate_settlement_sink_recovery_evidence,
-};
+use persistence::{validate_nt_reconciliation_authority, validate_persistence_block};
 use rate_limit::validate_order_rate_within_venue_egress;
 use reference_price::validate_reference_current_price;
 use risk::validate_risk_block;
 use strategy_envelope::{
-    validate_complete_set_activation_is_shadow_only,
     validate_shadow_order_execution_mode_forbids_managed_venue_actions,
     validate_target_gate_provider_references,
 };
@@ -187,9 +185,8 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_order_rate_within_venue_egress(root));
     errors.extend(validate_persistence_block(&root.persistence));
+    errors.extend(validate_nt_reconciliation_authority(root));
     errors.extend(crate::bolt_v3_providers::validate_reference_live_probe_block(root));
-    errors.extend(validate_capital_admission_recovery_evidence(root));
-    errors.extend(validate_settlement_sink_recovery_evidence(root));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(root));
     errors.extend(validate_realized_volatility_surfaces(root));
@@ -247,10 +244,6 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                 &context, root, strategy,
             ),
         );
-        errors.extend(validate_complete_set_activation_is_shadow_only(
-            &context, root, strategy,
-        ));
-
         if let Some(surface_id) = &strategy.realized_volatility_surface_id
             && !root
                 .realized_volatility_surfaces
@@ -320,12 +313,6 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
     }
     errors.extend(validate_target_gate_provider_references(root, strategies));
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
-    errors.extend(
-        crate::bolt_v3_outcome_group_sources::validate_outcome_group_strategy_links(
-            root, strategies,
-        ),
-    );
-
     errors
 }
 

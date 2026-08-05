@@ -248,7 +248,7 @@ fn prod_strategy_build_context(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let decision_evidence = Arc::new(RecordingDecisionEvidenceWriter);
+    let decision_evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(decision_evidence.clone()),
     );

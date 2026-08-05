@@ -41,7 +41,10 @@ use std::{
     time::Duration,
 };
 
-use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
+use nautilus_model::{
+    identifiers::InstrumentId,
+    instruments::{Instrument, InstrumentAny},
+};
 use serde::{Deserialize, Serialize};
 
 use super::OutcomeSide;
@@ -57,10 +60,10 @@ use crate::{
     bolt_v3_market_families::{
         FairProbabilityInputs, MarketIdentityPlan, MarketIdentityTarget,
         MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget,
-        SelectedBinaryOptionMarket, SelectedMarketRequirement, SelectedMarketRequirementParts,
-        SelectedMarketSourceIdentity, TargetRuntimeFields,
-        selected_market_metadata_provenance_fields, selected_market_requirement_error,
-        selected_market_requirement_from_parts,
+        SelectedBinaryOptionMarket, SelectedMarketEvidenceIdentity, SelectedMarketEvidenceOutcome,
+        SelectedMarketRequirement, SelectedMarketRequirementParts, SelectedMarketSourceIdentity,
+        TargetRuntimeFields, selected_market_metadata_provenance_fields,
+        selected_market_requirement_error, selected_market_requirement_from_parts,
     },
     bolt_v3_numeric::{
         HALF_F64, MILLIS_PER_SECOND_U64, POWER_OF_TWO, Probability, SECONDS_PER_YEAR_F64, UNIT_F64,
@@ -589,6 +592,7 @@ pub struct SelectedUpdownMarket {
     pub expiration_timestamp_milliseconds: u64,
     pub seconds_to_end: u64,
     pub source_identity: SelectedMarketSourceIdentity,
+    pub evidence_identity: SelectedMarketEvidenceIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -606,9 +610,27 @@ struct UpdownOutcomeInstrument {
     condition_id: String,
     market_slug: String,
     question_id: String,
+    /// The evidence-identity half, absent when the venue's metadata cannot
+    /// complete it.
+    ///
+    /// Optional because this parse has two consumers with different needs.
+    /// Selection requires a complete identity and refuses a market without one.
+    /// Position-context recovery does not: it needs the market and side of an
+    /// instrument the account already holds, and failing that because an
+    /// evidence field is missing would make a recovery path depend on a
+    /// requirement introduced for telemetry. Each consumer states its own
+    /// requirement rather than one parse imposing the stricter of the two.
+    evidence: Option<UpdownOutcomeEvidence>,
     instrument_id: InstrumentId,
     activation_milliseconds: u64,
     expiration_milliseconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdownOutcomeEvidence {
+    negative_risk: bool,
+    normalized_outcome: String,
+    clob_token_id: String,
 }
 
 #[derive(Debug)]
@@ -1088,6 +1110,7 @@ pub fn select_binary_option_market(
         instrument_id: market.instrument_id,
         up_instrument_id: market.up_instrument_id,
         down_instrument_id: market.down_instrument_id,
+        evidence_identity: market.evidence_identity,
         selection_outcome: market.selection_outcome,
         start_timestamp_milliseconds: market.start_timestamp_milliseconds,
         expiration_timestamp_milliseconds: market.expiration_timestamp_milliseconds,
@@ -1395,10 +1418,21 @@ fn candidate_market_for_slug(
 
     let up = pair.up?;
     let down = pair.down?;
+    // Selection requires a complete evidence identity, and refuses the market
+    // without one: a market this strategy cannot identify is not one it may
+    // trade while #1354's episode contract is in force.
+    let up_evidence = up.evidence?;
+    let down_evidence = down.evidence?;
     if up.market_id != down.market_id
         || up.condition_id != down.condition_id
         || up.market_slug != down.market_slug
         || up.question_id != down.question_id
+        || up_evidence.negative_risk != down_evidence.negative_risk
+        // The two legs must be distinguishable, because the ordered outcome pair
+        // is part of the episode identity: two legs sharing an outcome label or
+        // a token id would make the pair ambiguous rather than ordered.
+        || up_evidence.normalized_outcome == down_evidence.normalized_outcome
+        || up_evidence.clob_token_id == down_evidence.clob_token_id
     {
         return None;
     }
@@ -1425,6 +1459,24 @@ fn candidate_market_for_slug(
         return None;
     }
 
+    let evidence_identity = SelectedMarketEvidenceIdentity::try_new(
+        up.market_id.clone(),
+        up.condition_id.clone(),
+        up.question_id.clone(),
+        up_evidence.negative_risk,
+        [
+            SelectedMarketEvidenceOutcome {
+                index: 0,
+                normalized_outcome: up_evidence.normalized_outcome,
+                clob_token_id: up_evidence.clob_token_id,
+            },
+            SelectedMarketEvidenceOutcome {
+                index: 1,
+                normalized_outcome: down_evidence.normalized_outcome,
+                clob_token_id: down_evidence.clob_token_id,
+            },
+        ],
+    )?;
     Some(SelectedUpdownMarket {
         market_id: up.market_id,
         source_identity: SelectedMarketSourceIdentity {
@@ -1432,6 +1484,7 @@ fn candidate_market_for_slug(
             market_slug: up.market_slug,
             question_id: up.question_id,
         },
+        evidence_identity,
         instrument_id: up.instrument_id,
         up_instrument_id: up.instrument_id,
         down_instrument_id: down.instrument_id,
@@ -1467,6 +1520,19 @@ fn updown_outcome_instrument(
         condition_id: info.get_str("condition_id")?.to_string(),
         market_slug: info.get_str("market_slug")?.to_string(),
         question_id: info.get_str("question_id")?.to_string(),
+        // Never defaulted. A missing negative-risk flag makes the identity
+        // incomplete, and guessing it would let two structurally different
+        // markets share one identity; absent is recorded as absent so the
+        // consumer that requires it can refuse.
+        evidence: info
+            .get_bool("neg_risk")
+            .map(|negative_risk| UpdownOutcomeEvidence {
+                negative_risk,
+                normalized_outcome: binary.outcome.as_ref().map_or_else(String::new, |outcome| {
+                    outcome.as_str().trim().to_ascii_lowercase()
+                }),
+                clob_token_id: binary.raw_symbol().as_str().to_string(),
+            }),
         instrument_id: binary.id,
         activation_milliseconds: u64::try_from(
             Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),
@@ -1522,6 +1588,25 @@ mod tests {
             instrument_id: InstrumentId::from(TEST_UP_INSTRUMENT_ID),
             up_instrument_id: InstrumentId::from(TEST_UP_INSTRUMENT_ID),
             down_instrument_id: InstrumentId::from(TEST_DOWN_INSTRUMENT_ID),
+            evidence_identity: SelectedMarketEvidenceIdentity::try_new(
+                "market-1".to_string(),
+                TEST_CONDITION_ID.to_string(),
+                "question-1".to_string(),
+                false,
+                [
+                    SelectedMarketEvidenceOutcome {
+                        index: 0,
+                        normalized_outcome: "up".to_string(),
+                        clob_token_id: "configured-condition-UP".to_string(),
+                    },
+                    SelectedMarketEvidenceOutcome {
+                        index: 1,
+                        normalized_outcome: "down".to_string(),
+                        clob_token_id: "configured-condition-DOWN".to_string(),
+                    },
+                ],
+            )
+            .expect("fixture evidence identity must be valid"),
             selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 600_000,
             expiration_timestamp_milliseconds: 900_000,
@@ -1812,6 +1897,99 @@ mod tests {
     }
 
     #[test]
+    fn selected_updown_market_rejects_unconstructible_evidence_identity() {
+        let market_slug = updown_market_slug(TEST_UNDERLYING_ASSET, TEST_CADENCE_SLUG_TOKEN, 600);
+        let instruments = vec![
+            test_binary_option(
+                "configured-condition-up.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "",
+                "Up",
+                100_000,
+                900_000,
+            ),
+            test_binary_option(
+                "configured-condition-down.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "",
+                "Down",
+                100_000,
+                900_000,
+            ),
+        ];
+
+        assert!(
+            select_market_from_instruments(
+                UpdownSelectionTarget {
+                    underlying_asset: TEST_UNDERLYING_ASSET,
+                    cadence_secs: 300,
+                    cadence_slug_token: TEST_CADENCE_SLUG_TOKEN,
+                },
+                &instruments,
+                600_001,
+            )
+            .is_none(),
+            "selection must fail closed before trading when the episode identity is invalid"
+        );
+    }
+
+    #[test]
+    fn selected_updown_market_rejects_missing_negative_risk_metadata() {
+        let mut instruments = selectable_updown_instruments();
+        let InstrumentAny::BinaryOption(up) = &mut instruments[0] else {
+            panic!("fixture must be a binary option");
+        };
+        up.info
+            .as_mut()
+            .expect("fixture must carry metadata")
+            .shift_remove("neg_risk");
+
+        assert!(
+            select_market_from_instruments(
+                UpdownSelectionTarget {
+                    underlying_asset: TEST_UNDERLYING_ASSET,
+                    cadence_secs: 300,
+                    cadence_slug_token: TEST_CADENCE_SLUG_TOKEN,
+                },
+                &instruments,
+                600_001,
+            )
+            .is_none(),
+            "selection must not default an absent negative-risk flag"
+        );
+    }
+
+    #[test]
+    fn selected_updown_market_rejects_mismatched_negative_risk_metadata() {
+        let mut instruments = selectable_updown_instruments();
+        let InstrumentAny::BinaryOption(down) = &mut instruments[1] else {
+            panic!("fixture must be a binary option");
+        };
+        down.info
+            .as_mut()
+            .expect("fixture must carry metadata")
+            .insert("neg_risk".to_string(), serde_json::Value::Bool(true));
+
+        assert!(
+            select_market_from_instruments(
+                UpdownSelectionTarget {
+                    underlying_asset: TEST_UNDERLYING_ASSET,
+                    cadence_secs: 300,
+                    cadence_slug_token: TEST_CADENCE_SLUG_TOKEN,
+                },
+                &instruments,
+                600_001,
+            )
+            .is_none(),
+            "selection must refuse legs that disagree on negative-risk mode"
+        );
+    }
+
+    #[test]
     fn selected_updown_market_start_preserves_later_instrument_activation() {
         let market_slug = updown_market_slug(TEST_UNDERLYING_ASSET, TEST_CADENCE_SLUG_TOKEN, 600);
         let instruments = vec![
@@ -1996,6 +2174,7 @@ mod tests {
             "question_id".to_string(),
             serde_json::Value::String(question_id.to_string()),
         );
+        info.insert("neg_risk".to_string(), serde_json::Value::Bool(false));
         InstrumentAny::BinaryOption(BinaryOption::new(
             InstrumentId::from(instrument_id),
             Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),
@@ -2024,6 +2203,32 @@ mod tests {
             1.into(),
             1.into(),
         ))
+    }
+
+    fn selectable_updown_instruments() -> Vec<InstrumentAny> {
+        let market_slug = updown_market_slug(TEST_UNDERLYING_ASSET, TEST_CADENCE_SLUG_TOKEN, 600);
+        vec![
+            test_binary_option(
+                "configured-condition-up.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Up",
+                600_000,
+                900_000,
+            ),
+            test_binary_option(
+                "configured-condition-down.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Down",
+                600_000,
+                900_000,
+            ),
+        ]
     }
 
     #[test]

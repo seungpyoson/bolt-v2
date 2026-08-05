@@ -413,8 +413,8 @@ classification = "state-observation"
 runtime_wiring = "wired"
 reviewed_runtime_triggers = ["book"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_blocked_entry_strategy_input_snapshot_once"]
-repeat_semantics = "the current last-key mask suppresses the twelve RV-result-by-watermark states only while its full observation key remains adjacent and therefore re-emits A-B-A; the stacked episode-suppression slice replaces that key with a stable episode identity and a monotone twelve-state mask"
-dedupe_key_evidence = "at this revision the full snapshot-derived key contains volatile observation fields; the required target is stable strategy, target, venue and ordered market identity plus the exact twelve-state enumeration -- six RV gate results by watermark presence"
+repeat_semantics = "finite per-episode monotone suppression over the exact twelve registered states -- six RV gate results by watermark presence"
+dedupe_key_evidence = "EvidenceEpisodeId binds stable strategy, target, venue and ordered market identity; config/evidence-novelty.toml enumerates the twelve canonical states, and payload churn or writer failure cannot reclaim a claimed state"
 census_ancestor = "strategy_input_snapshot_blocked_rv"
 
 [[producers]]
@@ -555,8 +555,8 @@ classification = "already-deduped"
 runtime_wiring = "wired"
 reviewed_runtime_triggers = ["book"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_entry_skip_once"]
-repeat_semantics = "the current last-key mask suppresses the twenty entry-skip reasons only while its full observation key remains adjacent and therefore re-emits A-B-A; the stacked episode-suppression slice replaces that key with a stable episode identity and a monotone twenty-state mask"
-dedupe_key_evidence = "at this revision the full entry-evaluation key contains volatile observation fields; the required target is stable strategy, target, venue and ordered market identity plus the exact twenty-state entry-skip enumeration"
+repeat_semantics = "finite per-episode monotone suppression over the exact twenty registered entry-skip states"
+dedupe_key_evidence = "EvidenceEpisodeId binds stable strategy, target, venue and ordered market identity; config/evidence-novelty.toml enumerates the twenty canonical states, and payload churn or writer failure cannot reclaim a claimed state"
 census_ancestor = "entry_skip"
 
 [[producers]]

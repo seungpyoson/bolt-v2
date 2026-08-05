@@ -1,3 +1,27 @@
+/// Defines a finite production enum and its complete variant inventory from one
+/// declaration. Tests that compare a production domain with a generated
+/// registry must iterate `ALL`; adding a variant therefore cannot silently
+/// leave the reverse mapping check unchanged.
+macro_rules! define_closed_enum {
+    (
+        $(#[$enum_meta:meta])*
+        $visibility:vis enum $name:ident {
+            $($variant:ident),+ $(,)?
+        }
+    ) => {
+        $(#[$enum_meta])*
+        $visibility enum $name {
+            $($variant),+
+        }
+
+        impl $name {
+            pub const ALL: &'static [Self] = &[
+                $(Self::$variant),+
+            ];
+        }
+    };
+}
+
 pub mod bolt_v3_adapters;
 pub mod bolt_v3_application_resource_ledger;
 pub mod bolt_v3_archetypes;
@@ -14,6 +38,7 @@ pub mod bolt_v3_client_registration;
 pub mod bolt_v3_config;
 pub mod bolt_v3_current_evidence;
 pub mod bolt_v3_deploy_target;
+pub mod bolt_v3_evidence_novelty;
 mod bolt_v3_evidence_sampling;
 mod bolt_v3_evidence_values;
 pub mod bolt_v3_executable_cost;
@@ -96,6 +121,7 @@ pub mod bolt_v3_strategy_registration;
 pub mod bolt_v3_submit_admission;
 pub mod bolt_v3_taker_pricing;
 pub mod bolt_v3_taker_updown_signal;
+pub mod bolt_v3_target_identity;
 pub mod bolt_v3_timestamp_domain;
 pub mod bolt_v3_trade_flow;
 pub mod bolt_v3_validate;

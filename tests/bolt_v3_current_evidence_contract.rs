@@ -14,6 +14,59 @@ fn replace_once(input: &str, from: &str, to: &str) -> String {
     input.replacen(from, to, 1)
 }
 
+/// The whole `[[producers]]` block for one id.
+///
+/// Spelling the block out as a literal made the anchor break whenever a field
+/// was added to every producer, which is a mutation test failing for a reason
+/// that has nothing to do with what it tests.
+fn producer_block(input: &str, id: &str) -> String {
+    let anchor = format!("[[producers]]\nid = \"{id}\"\n");
+    let start = input.find(&anchor).expect("producer must exist");
+    let rest = &input[start + anchor.len()..];
+    let end = rest
+        .find("\n[[")
+        .map_or(input.len(), |at| start + anchor.len() + at + 1);
+    input[start..end].to_string()
+}
+
+fn census_disposition_block(input: &str, ancestor: &str) -> String {
+    let anchor = format!("[[census_dispositions]]\nancestor = \"{ancestor}\"\n");
+    let start = input.find(&anchor).expect("census disposition must exist");
+    let rest = &input[start + anchor.len()..];
+    let end = rest
+        .find("\n[[")
+        .map_or(input.len(), |at| start + anchor.len() + at + 1);
+    input[start..end].to_string()
+}
+
+/// Replace one field in one producer without coupling the mutation to the
+/// field's current reviewed prose.
+///
+/// Child slices legitimately update that prose. A negative-control test must
+/// continue to exercise the validator after such an update instead of failing
+/// because its old text is no longer present.
+fn replace_producer_field(
+    input: &str,
+    producer_id: &str,
+    field: &str,
+    replacement_value: &str,
+) -> String {
+    let block = producer_block(input, producer_id);
+    let prefix = format!("{field} = ");
+    let current = block
+        .lines()
+        .filter(|line| line.starts_with(&prefix))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        current.len(),
+        1,
+        "producer {producer_id} must contain exactly one {field} field"
+    );
+    let replacement = format!("{field} = {replacement_value}");
+    let mutated_block = replace_once(&block, current[0], &replacement);
+    replace_once(input, &block, &mutated_block)
+}
+
 #[test]
 fn current_contract_is_closed_and_deterministic() {
     let contract = parse_contract_registry(REGISTRY).expect("current contract must parse");
@@ -22,6 +75,26 @@ fn current_contract_is_closed_and_deterministic() {
     assert_eq!(contract.purpose_count(), 23);
     assert_eq!(contract.identity_count(), 23);
     assert_eq!(contract.fact_count(), 23);
+    assert_eq!(contract.census_disposition_count(), 20);
+    let (disposition, current_producers) = contract
+        .census_disposition("submit_reservation_metadata")
+        .expect("reservation metadata must be historically accounted for");
+    assert_eq!(disposition, "folded");
+    assert_eq!(
+        current_producers,
+        [
+            "submit_admission_admitted_entry".to_string(),
+            "basket_admission_granted".to_string(),
+        ]
+    );
+    let (disposition, current_producers) = contract
+        .census_disposition("venue_truth_capture_failure")
+        .expect("capture failure must be historically accounted for");
+    assert_eq!(disposition, "inherited");
+    assert_eq!(
+        current_producers,
+        ["submit_admission_provider_collateral_allowance_capture_failure".to_string()]
+    );
 
     let first = render_contract(&contract);
     let second = render_contract(&contract);
@@ -30,10 +103,67 @@ fn current_contract_is_closed_and_deterministic() {
 }
 
 #[test]
+fn every_retired_producer_requires_one_typed_disposition() {
+    let mutated = replace_once(
+        REGISTRY,
+        &census_disposition_block(REGISTRY, "submit_reservation_metadata"),
+        "",
+    );
+    let error =
+        parse_contract_registry(&mutated).expect_err("an unaccounted retired producer must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("account for every retired producer exactly once")
+    );
+}
+
+#[test]
+fn inherited_census_dispositions_must_exactly_name_their_descendants() {
+    let block = census_disposition_block(REGISTRY, "admission_decision");
+    let mutated_block = replace_once(
+        &block,
+        "current_producers = [\"submit_admission_admitted_entry\", \"submit_admission_rejected_entry\", \"submit_admission_exit\", \"submit_admission_forced_reduction\"]",
+        "current_producers = [\"submit_admission_admitted_entry\"]",
+    );
+    let mutated = replace_once(REGISTRY, &block, &mutated_block);
+    let error =
+        parse_contract_registry(&mutated).expect_err("an incomplete inherited mapping must fail");
+    assert!(error.to_string().contains("must exactly name"));
+}
+
+#[test]
+fn folded_and_deleted_census_dispositions_have_closed_shapes() {
+    let folded = census_disposition_block(REGISTRY, "submit_reservation_metadata");
+    let empty_fold = replace_once(
+        &folded,
+        "current_producers = [\"submit_admission_admitted_entry\", \"basket_admission_granted\"]",
+        "current_producers = []",
+    );
+    let error = parse_contract_registry(&replace_once(REGISTRY, &folded, &empty_fold))
+        .expect_err("a fold without live targets must fail");
+    assert!(error.to_string().contains("must name live fold targets"));
+
+    let deleted = census_disposition_block(REGISTRY, "venue_truth_divergence");
+    let surviving_delete = replace_once(
+        &deleted,
+        "current_producers = []",
+        "current_producers = [\"edge_taker_terminal_settlement\"]",
+    );
+    let error = parse_contract_registry(&replace_once(REGISTRY, &deleted, &surviving_delete))
+        .expect_err("a deletion with a live target must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot name surviving producers")
+    );
+}
+
+#[test]
 fn every_purpose_requires_at_least_one_structural_producer() {
     let mutated = replace_once(
         REGISTRY,
-        "[[producers]]\nid = \"edge_taker_blocked_strategy_input\"\npurpose = \"blocked_strategy_input_observation\"\n",
+        &producer_block(REGISTRY, "edge_taker_blocked_strategy_input"),
         "",
     );
     let error = parse_contract_registry(&mutated)
@@ -185,4 +315,185 @@ fn at_least_one_startup_recovery_consumer_is_required() {
             .to_string()
             .contains("missing startup recovery consumer")
     );
+}
+
+/// A classification outside the closed set is refused.
+#[test]
+fn an_unknown_producer_classification_is_rejected() {
+    let mutated = replace_once(
+        REGISTRY,
+        "classification = \"state-observation\"",
+        "classification = \"probably-fine\"",
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("a classification outside the closed set must fail");
+    assert!(
+        error.to_string().contains("unknown classification"),
+        "unexpected error: {error}"
+    );
+}
+
+/// A producer that names no append path has classified nothing.
+#[test]
+fn a_producer_without_a_call_site_is_rejected() {
+    let block = producer_block(REGISTRY, "edge_taker_entry_skip");
+    let stripped = block
+        .lines()
+        .map(|line| {
+            if line.starts_with("call_sites = ") {
+                "call_sites = []".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let error = parse_contract_registry(&replace_once(REGISTRY, &block, &stripped))
+        .expect_err("a producer naming no call site must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("names no reviewed call-site provenance"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn a_call_site_without_a_rust_path_and_function_is_rejected() {
+    let mutated = replace_once(
+        REGISTRY,
+        "call_sites = [\"src/strategies/binary_oracle_edge_taker/mod.rs::record_entry_skip_once\"]",
+        "call_sites = [\"record_entry_skip_once\"]",
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("reviewed call-site provenance without its stable shape must fail");
+    assert!(
+        error.to_string().contains("is not `<path>.rs::<function>`"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn empty_repeat_semantics_are_rejected() {
+    let mutated = replace_producer_field(
+        REGISTRY,
+        "edge_taker_entry_skip",
+        "repeat_semantics",
+        "\"\"",
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("a producer without reviewed repeat semantics must fail");
+    assert!(
+        error.to_string().contains("states no repeat semantics"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn empty_dedupe_key_evidence_is_rejected() {
+    let mutated = replace_producer_field(
+        REGISTRY,
+        "edge_taker_entry_skip",
+        "dedupe_key_evidence",
+        "\"\"",
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("a producer without reviewed dedupe-key evidence must fail");
+    assert!(
+        error.to_string().contains("states no dedupe-key evidence"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn an_unknown_census_ancestor_is_rejected() {
+    let mutated = replace_once(
+        REGISTRY,
+        "census_ancestor = \"entry_skip\"",
+        "census_ancestor = \"unknown_retired_row\"",
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("an unknown retired-census ancestor must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("is not a row of the retired census"),
+        "unexpected error: {error}"
+    );
+}
+
+fn replace_runtime_provenance(block: &str, wiring: &str, triggers: &str) -> String {
+    block
+        .lines()
+        .map(|line| {
+            if line.starts_with("runtime_wiring = ") {
+                format!("runtime_wiring = \"{wiring}\"")
+            } else if line.starts_with("reviewed_runtime_triggers = ") {
+                format!("reviewed_runtime_triggers = [{triggers}]")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Reviewed runtime provenance uses a closed trigger vocabulary.
+#[test]
+fn an_unknown_reviewed_runtime_trigger_is_rejected() {
+    let block = producer_block(REGISTRY, "edge_taker_entry_skip");
+    let mutated = replace_once(
+        REGISTRY,
+        &block,
+        &replace_runtime_provenance(&block, "wired", "\"cron\""),
+    );
+    let error = parse_contract_registry(&mutated).expect_err("an unknown trigger must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown reviewed runtime trigger `cron`"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn a_wired_producer_requires_a_reviewed_runtime_trigger() {
+    let block = producer_block(REGISTRY, "edge_taker_entry_skip");
+    let mutated = replace_once(
+        REGISTRY,
+        &block,
+        &replace_runtime_provenance(&block, "wired", ""),
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("wired producer without a reviewed trigger must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("is wired but names no reviewed runtime trigger"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn an_unwired_producer_refuses_reviewed_runtime_triggers() {
+    let block = producer_block(REGISTRY, "edge_taker_entry_skip");
+    let mutated = replace_once(
+        REGISTRY,
+        &block,
+        &replace_runtime_provenance(&block, "unwired", "\"book\""),
+    );
+    let error = parse_contract_registry(&mutated)
+        .expect_err("unwired producer with reviewed triggers must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("is unwired but names reviewed runtime triggers"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn an_unwired_producer_accepts_no_reviewed_runtime_triggers() {
+    parse_contract_registry(REGISTRY)
+        .expect("an unwired producer with no reviewed runtime triggers must parse");
 }

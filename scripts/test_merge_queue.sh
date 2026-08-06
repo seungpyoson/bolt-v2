@@ -189,6 +189,9 @@ fixture() {
         lookup_failure:1501)
             pull_json 1501 OPEN false main feature-1501 seungpyoson/bolt-v2 ""
             ;;
+        missing_predecessor:1602)
+            pull_json 1602 OPEN false stack-1601 stack-1602 seungpyoson/bolt-v2 'Depends-On: #1601'
+            ;;
         *)
             return 1
             ;;
@@ -232,6 +235,17 @@ case "$1 $2" in
         render_query "$repository_json" "${@:3}"
         ;;
     "pr view")
+        if (( $# != 9 )) \
+            || [[ "$4" != "--repo" ]] \
+            || [[ "$5" != "github.com/seungpyoson/bolt-v2" ]] \
+            || [[ "$6" != "--json" ]] \
+            || [[ "$7" != "number,state,isDraft,baseRefName,headRefName,headRepository,body" ]] \
+            || [[ "$8" != "--jq" ]]; then
+            printf 'unexpected pull request lookup arguments:' >&2
+            printf ' %q' "$@" >&2
+            printf '\n' >&2
+            exit 98
+        fi
         if ! pr_json="$(fixture "$3")"; then
             exit 1
         fi
@@ -358,6 +372,12 @@ expect_comment_targets 1401
 run_case lookup_failure 1501
 expect_status 2
 expect_output "could not confirm open successors"
+expect_output "No queue requests were submitted."
+expect_comment_targets
+
+run_case missing_predecessor 1602
+expect_status 2
+expect_output "could not confirm pull request #1601"
 expect_output "No queue requests were submitted."
 expect_comment_targets
 

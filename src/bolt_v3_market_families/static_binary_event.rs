@@ -2,7 +2,10 @@
 
 use std::{sync::Arc, time::Duration};
 
-use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
+use nautilus_model::{
+    identifiers::InstrumentId,
+    instruments::{Instrument, InstrumentAny},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -17,8 +20,9 @@ use crate::{
 use super::{
     FairProbabilityInputs, MarketIdentityPlan, MarketIdentityTarget,
     MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget, OutcomeSide,
-    SelectedBinaryOptionMarket, SelectedMarketRequirement, SelectedMarketRequirementParts,
-    SelectedMarketSourceIdentity, TargetRuntimeFields, selected_market_metadata_provenance_fields,
+    SelectedBinaryOptionMarket, SelectedMarketEvidenceIdentity, SelectedMarketEvidenceOutcome,
+    SelectedMarketRequirement, SelectedMarketRequirementParts, SelectedMarketSourceIdentity,
+    TargetRuntimeFields, selected_market_metadata_provenance_fields,
     selected_market_requirement_error, selected_market_requirement_from_parts,
 };
 
@@ -30,6 +34,7 @@ const REQUIRED_STATIC_OUTCOME_INSTRUMENT_COUNT: usize = 2;
 const TARGET_ENUM_SERIALIZE_FAILURE_MESSAGE: &str =
     "static_binary_event target discriminator enum could not serialize to a string token";
 const METADATA_CONDITION_ID_FIELD: &str = "condition_id";
+const METADATA_NEGATIVE_RISK_FIELD: &str = "neg_risk";
 const METADATA_FAMILY_KEY_FIELD: &str = "family_key";
 const METADATA_INSTRUMENT_IDS_FIELD: &str = "instrument_ids";
 const METADATA_MARKET_CLASS_FIELD: &str = "market_class";
@@ -140,9 +145,19 @@ struct StaticOutcomeInstrument {
     condition_id: String,
     market_slug: String,
     question_id: String,
+    /// The evidence-identity half -- see the matching field in `updown.rs` for
+    /// why selection requires this and recovery does not.
+    evidence: Option<StaticOutcomeEvidence>,
     instrument_id: InstrumentId,
     activation_milliseconds: u64,
     expiration_milliseconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StaticOutcomeEvidence {
+    negative_risk: bool,
+    normalized_outcome: String,
+    clob_token_id: String,
 }
 
 #[derive(Debug)]
@@ -262,6 +277,7 @@ pub fn select_binary_option_market(
         instrument_id: market.instrument_id,
         up_instrument_id: market.up_instrument_id,
         down_instrument_id: market.down_instrument_id,
+        evidence_identity: market.evidence_identity,
         selection_outcome: market.selection_outcome,
         start_timestamp_milliseconds: market.start_timestamp_milliseconds,
         expiration_timestamp_milliseconds: market.expiration_timestamp_milliseconds,
@@ -535,6 +551,7 @@ struct SelectedStaticBinaryEventMarket {
     expiration_timestamp_milliseconds: u64,
     seconds_to_end: u64,
     source_identity: SelectedMarketSourceIdentity,
+    evidence_identity: SelectedMarketEvidenceIdentity,
 }
 
 fn select_static_market_from_instruments(
@@ -564,10 +581,18 @@ fn select_static_market_from_instruments(
 
     let yes = pair.yes?;
     let no = pair.no?;
+    // Selection requires a complete evidence identity -- see `updown.rs`.
+    let yes_evidence = yes.evidence?;
+    let no_evidence = no.evidence?;
     if yes.market_id != no.market_id
         || yes.condition_id != no.condition_id
         || yes.market_slug != no.market_slug
         || yes.question_id != no.question_id
+        || yes_evidence.negative_risk != no_evidence.negative_risk
+        // The two legs must be distinguishable -- see the matching note in
+        // `updown.rs`.
+        || yes_evidence.normalized_outcome == no_evidence.normalized_outcome
+        || yes_evidence.clob_token_id == no_evidence.clob_token_id
     {
         return None;
     }
@@ -578,6 +603,24 @@ fn select_static_market_from_instruments(
     }
     let start_timestamp_milliseconds = yes.activation_milliseconds.max(no.activation_milliseconds);
 
+    let evidence_identity = SelectedMarketEvidenceIdentity::try_new(
+        yes.market_id.clone(),
+        yes.condition_id.clone(),
+        yes.question_id.clone(),
+        yes_evidence.negative_risk,
+        [
+            SelectedMarketEvidenceOutcome {
+                index: 0,
+                normalized_outcome: yes_evidence.normalized_outcome,
+                clob_token_id: yes_evidence.clob_token_id,
+            },
+            SelectedMarketEvidenceOutcome {
+                index: 1,
+                normalized_outcome: no_evidence.normalized_outcome,
+                clob_token_id: no_evidence.clob_token_id,
+            },
+        ],
+    )?;
     Some(SelectedStaticBinaryEventMarket {
         market_id: yes.market_id,
         source_identity: SelectedMarketSourceIdentity {
@@ -585,6 +628,7 @@ fn select_static_market_from_instruments(
             market_slug: yes.market_slug,
             question_id: yes.question_id,
         },
+        evidence_identity,
         instrument_id: yes.instrument_id,
         up_instrument_id: yes.instrument_id,
         down_instrument_id: no.instrument_id,
@@ -628,6 +672,16 @@ fn static_outcome_instrument(
         condition_id: info.get_str(METADATA_CONDITION_ID_FIELD)?.to_string(),
         market_slug: info.get_str(METADATA_MARKET_SLUG_FIELD)?.to_string(),
         question_id: info.get_str(METADATA_QUESTION_ID_FIELD)?.to_string(),
+        // Never defaulted -- see the matching note in `updown.rs`.
+        evidence: info
+            .get_bool(METADATA_NEGATIVE_RISK_FIELD)
+            .map(|negative_risk| StaticOutcomeEvidence {
+                negative_risk,
+                normalized_outcome: binary.outcome.as_ref().map_or_else(String::new, |outcome| {
+                    outcome.as_str().trim().to_ascii_lowercase()
+                }),
+                clob_token_id: binary.raw_symbol().as_str().to_string(),
+            }),
         instrument_id: binary.id,
         activation_milliseconds: u64::try_from(
             Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),
@@ -774,6 +828,74 @@ mod tests {
         assert_eq!(selected.start_timestamp_milliseconds, 1_000);
         assert_eq!(selected.expiration_timestamp_milliseconds, 30_000);
         assert_eq!(selected.seconds_to_end, 20);
+    }
+
+    #[test]
+    fn rejects_static_event_with_unconstructible_evidence_identity() {
+        let instruments = vec![
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                "",
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                "",
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ];
+
+        assert!(
+            select_binary_option_market(static_selection_target(), &instruments, 10_000).is_none(),
+            "selection must fail closed before trading when the episode identity is invalid"
+        );
+    }
+
+    #[test]
+    fn rejects_static_event_with_missing_negative_risk_metadata() {
+        let mut instruments = selectable_static_instruments();
+        let InstrumentAny::BinaryOption(no) = &mut instruments[0] else {
+            panic!("fixture must be a binary option");
+        };
+        no.info
+            .as_mut()
+            .expect("fixture must carry metadata")
+            .shift_remove(METADATA_NEGATIVE_RISK_FIELD);
+
+        assert!(
+            select_binary_option_market(static_selection_target(), &instruments, 10_000).is_none(),
+            "selection must not default an absent negative-risk flag"
+        );
+    }
+
+    #[test]
+    fn rejects_static_event_with_mismatched_negative_risk_metadata() {
+        let mut instruments = selectable_static_instruments();
+        let InstrumentAny::BinaryOption(yes) = &mut instruments[1] else {
+            panic!("fixture must be a binary option");
+        };
+        yes.info
+            .as_mut()
+            .expect("fixture must carry metadata")
+            .insert(
+                METADATA_NEGATIVE_RISK_FIELD.to_string(),
+                serde_json::Value::Bool(true),
+            );
+
+        assert!(
+            select_binary_option_market(static_selection_target(), &instruments, 10_000).is_none(),
+            "selection must refuse legs that disagree on negative-risk mode"
+        );
     }
 
     #[test]
@@ -1205,6 +1327,25 @@ mod tests {
             instrument_id: InstrumentId::from("SAMPLE-EVENT-YES.POLYMARKET"),
             up_instrument_id: InstrumentId::from("SAMPLE-EVENT-YES.POLYMARKET"),
             down_instrument_id: InstrumentId::from("SAMPLE-EVENT-NO.POLYMARKET"),
+            evidence_identity: SelectedMarketEvidenceIdentity::try_new(
+                TEST_MARKET_ID.to_string(),
+                TEST_CONDITION_ID.to_string(),
+                TEST_QUESTION_ID.to_string(),
+                false,
+                [
+                    SelectedMarketEvidenceOutcome {
+                        index: 0,
+                        normalized_outcome: "yes".to_string(),
+                        clob_token_id: "SAMPLE-EVENT-YES".to_string(),
+                    },
+                    SelectedMarketEvidenceOutcome {
+                        index: 1,
+                        normalized_outcome: "no".to_string(),
+                        clob_token_id: "SAMPLE-EVENT-NO".to_string(),
+                    },
+                ],
+            )
+            .expect("fixture evidence identity must be valid"),
             selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 1_000,
             expiration_timestamp_milliseconds: 30_000,
@@ -1259,6 +1400,10 @@ mod tests {
             "question_id".to_string(),
             serde_json::Value::String(question_id.to_string()),
         );
+        info.insert(
+            METADATA_NEGATIVE_RISK_FIELD.to_string(),
+            serde_json::Value::Bool(false),
+        );
         InstrumentAny::BinaryOption(BinaryOption::new(
             InstrumentId::from(instrument_id),
             Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),
@@ -1287,5 +1432,30 @@ mod tests {
             1.into(),
             1.into(),
         ))
+    }
+
+    fn selectable_static_instruments() -> Vec<InstrumentAny> {
+        vec![
+            test_binary_option(
+                "SAMPLE-EVENT-NO.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_NO_OUTCOME,
+                1_000,
+                30_000,
+            ),
+            test_binary_option(
+                "SAMPLE-EVENT-YES.POLYMARKET",
+                TEST_MARKET_SLUG,
+                TEST_MARKET_ID,
+                TEST_CONDITION_ID,
+                TEST_QUESTION_ID,
+                TEST_YES_OUTCOME,
+                1_000,
+                30_000,
+            ),
+        ]
     }
 }

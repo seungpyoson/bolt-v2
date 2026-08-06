@@ -5,21 +5,19 @@ use nautilus_model::{
     identifiers::{ClientOrderId, InstrumentId},
 };
 
+use crate::bolt_v3_evidence_novelty::EvidenceCanonicalState;
 use crate::{
     bolt_v3_binary_outcome_edge::{BinaryOutcomeEdgeBlockReason, BinaryOutcomeEdgeResult},
     bolt_v3_current_evidence::{
         BinaryOutcomeEdgeBlockReason as EvidenceBinaryOutcomeEdgeBlockReason,
-        BlockedStrategyInputObservationFact, EntryBlockReason as EvidenceEntryBlockReason,
+        EntryBlockReason as EvidenceEntryBlockReason,
         EntryPricingBlockReason as EvidenceEntryPricingBlockReason,
         EntryRealizedVolatilitySnapshotFact, EntrySkipFact,
         EntrySkipReason as EvidenceEntrySkipReason, EvidenceSelectionPhase,
         RealizedVolAggregation as EvidenceRealizedVolAggregation,
         RealizedVolBlockReason as EvidenceRealizedVolBlockReason,
         RealizedVolPricingComponent as EvidenceRealizedVolPricingComponent,
-        RealizedVolSourceRejectReason as EvidenceRealizedVolSourceRejectReason,
-        RealizedVolSourceStatus as EvidenceRealizedVolSourceStatus,
         RealizedVolatilitySourceDiagnosticFact, RvGateResult as EvidenceRvGateResult,
-        StrategyInputMarketSelectionOutcome, StrategyInputRvState,
     },
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::Probability,
@@ -312,133 +310,121 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) submission_blocked_reason: Option<EvidenceEntrySkipReason>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct EntrySkipDedupeKey {
-    pub(super) reason_category: EvidenceEntrySkipReason,
-    pub(super) gate_blocked_by: Vec<EvidenceEntryBlockReason>,
-    pub(super) pricing_blocked_by: Vec<EvidenceEntryPricingBlockReason>,
-    pub(super) market_id: Option<String>,
-    pub(super) interval_open: Option<String>,
-    pub(super) fast_venue_available: bool,
-    pub(super) reference_current_price_available: bool,
-    pub(super) fast_venue_incoherent: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct EntrySkipDedupeState {
-    pub(super) current_key: EntrySkipDedupeKey,
-    pub(super) rv_seen_mask: u16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BlockedStrategyInputSourceStateKey {
-    source_id: String,
-    enabled: bool,
-    counts_toward_quorum: bool,
-    status: EvidenceRealizedVolSourceStatus,
-    block_reason: Option<EvidenceRealizedVolBlockReason>,
-    last_rejected_reason: Option<EvidenceRealizedVolSourceRejectReason>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BlockedStrategyInputDedupeKey {
-    configured_target_id: String,
-    market_selection_ruleset_id: String,
-    market_selection_outcome: StrategyInputMarketSelectionOutcome,
-    market_id: Option<String>,
-    up_instrument_id: Option<String>,
-    down_instrument_id: Option<String>,
-    price_to_beat_source: String,
-    gate_blocked_by: Vec<EvidenceEntryBlockReason>,
-    pricing_blocked_by: Vec<EvidenceEntryPricingBlockReason>,
-    selected_side: Option<String>,
-    fast_venue_name: Option<String>,
-    fast_venue_available: bool,
-    reference_current_price_source_id: Option<String>,
-    reference_current_price_available: bool,
-    reference_current_price_failed_over: Option<bool>,
-    fast_venue_incoherent: bool,
-    realized_volatility_surface_id: String,
-    realized_volatility_blockers: Vec<EvidenceRealizedVolBlockReason>,
-    realized_volatility_source_states: Vec<BlockedStrategyInputSourceStateKey>,
-    realized_volatility_unknown_source_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BlockedStrategyInputDedupeState {
-    pub(super) current_key: BlockedStrategyInputDedupeKey,
-    pub(super) rv_seen_mask: u16,
-}
-
-pub(super) const fn rv_gate_novelty_bit(
+/// The blocked-snapshot producer's semantic state, from the closed registry.
+///
+/// Named rather than computed from an index: the registry is the sole authority
+/// for this domain, so a state that is not in it must not be expressible here.
+/// The match is exhaustive, so adding an RV gate result fails this build until
+/// the registry gains the matching pair.
+pub(super) const fn blocked_strategy_input_canonical_state(
     gate_result: EvidenceRvGateResult,
     watermark_present: bool,
-) -> u16 {
-    let gate_index: u32 = match gate_result {
-        EvidenceRvGateResult::Accepted => 0,
-        EvidenceRvGateResult::MissingSnapshot => 1,
-        EvidenceRvGateResult::MissingEvaluationEventTime => 2,
-        EvidenceRvGateResult::RejectedFutureDated => 3,
-        EvidenceRvGateResult::RejectedStale => 4,
-        EvidenceRvGateResult::RejectedNotReady => 5,
-    };
-    let watermark_index = if watermark_present { 1 } else { 0 };
-    let bit_index = gate_index * 2 + watermark_index;
-    1_u16 << bit_index
+) -> EvidenceCanonicalState {
+    match (gate_result, watermark_present) {
+        (EvidenceRvGateResult::Accepted, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputAcceptedWatermarkAbsent
+        }
+        (EvidenceRvGateResult::Accepted, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputAcceptedWatermarkPresent
+        }
+        (EvidenceRvGateResult::MissingSnapshot, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputMissingSnapshotWatermarkAbsent
+        }
+        (EvidenceRvGateResult::MissingSnapshot, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputMissingSnapshotWatermarkPresent
+        }
+        (EvidenceRvGateResult::MissingEvaluationEventTime, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputMissingEvaluationEventTimeWatermarkAbsent
+        }
+        (EvidenceRvGateResult::MissingEvaluationEventTime, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputMissingEvaluationEventTimeWatermarkPresent
+        }
+        (EvidenceRvGateResult::RejectedFutureDated, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedFutureDatedWatermarkAbsent
+        }
+        (EvidenceRvGateResult::RejectedFutureDated, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedFutureDatedWatermarkPresent
+        }
+        (EvidenceRvGateResult::RejectedStale, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedStaleWatermarkAbsent
+        }
+        (EvidenceRvGateResult::RejectedStale, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedStaleWatermarkPresent
+        }
+        (EvidenceRvGateResult::RejectedNotReady, false) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedNotReadyWatermarkAbsent
+        }
+        (EvidenceRvGateResult::RejectedNotReady, true) => {
+            EvidenceCanonicalState::BlockedStrategyInputRejectedNotReadyWatermarkPresent
+        }
+    }
 }
 
-impl BlockedStrategyInputDedupeKey {
-    pub(super) fn from_snapshot(snapshot: &BlockedStrategyInputObservationFact) -> Self {
-        let details = &snapshot.details;
-        let realized_volatility_snapshot = match &details.realized_volatility {
-            StrategyInputRvState::Absent { .. } => None,
-            StrategyInputRvState::Present { snapshot, .. } => Some(snapshot),
-        };
-        let mut realized_volatility_source_states = realized_volatility_snapshot
-            .into_iter()
-            .flat_map(|snapshot| &snapshot.source_diagnostics)
-            .map(|diagnostic| BlockedStrategyInputSourceStateKey {
-                source_id: diagnostic.source_id.clone(),
-                enabled: diagnostic.enabled,
-                counts_toward_quorum: diagnostic.counts_toward_quorum,
-                status: diagnostic.status,
-                block_reason: diagnostic.block_reason,
-                last_rejected_reason: diagnostic.last_rejected_reason,
-            })
-            .collect::<Vec<_>>();
-        realized_volatility_source_states
-            .sort_by(|left, right| left.source_id.cmp(&right.source_id));
-
-        Self {
-            configured_target_id: details.configured_target_id.clone(),
-            market_selection_ruleset_id: details.market_selection_ruleset_id.clone(),
-            market_selection_outcome: details.market_selection_outcome,
-            market_id: details.market_id.clone(),
-            up_instrument_id: details.up_instrument_id.clone(),
-            down_instrument_id: details.down_instrument_id.clone(),
-            price_to_beat_source: details.price_to_beat_source.clone(),
-            gate_blocked_by: details.gate_blocked_by.clone(),
-            pricing_blocked_by: details.pricing_blocked_by.clone(),
-            selected_side: details.selected_side.map(|side| match side {
-                crate::bolt_v3_current_evidence::OutcomeSide::Up => "up".to_string(),
-                crate::bolt_v3_current_evidence::OutcomeSide::Down => "down".to_string(),
-            }),
-            fast_venue_name: details.fast_venue_name.clone(),
-            fast_venue_available: details.fast_venue_available,
-            reference_current_price_source_id: details.reference_current_price_source_id.clone(),
-            reference_current_price_available: details.reference_current_price_available,
-            reference_current_price_failed_over: details.reference_current_price_failed_over,
-            fast_venue_incoherent: details.fast_venue_incoherent,
-            realized_volatility_surface_id: realized_volatility_snapshot
-                .map_or_else(String::new, |snapshot| snapshot.surface_id.clone()),
-            realized_volatility_blockers: realized_volatility_snapshot
-                .map_or_else(Vec::new, |snapshot| snapshot.blockers.clone()),
-            realized_volatility_source_states,
-            realized_volatility_unknown_source_ids: realized_volatility_snapshot
-                .into_iter()
-                .flat_map(|snapshot| snapshot.unknown_source_rejections.keys())
-                .cloned()
-                .collect(),
+/// The entry-skip producer's semantic state, from the closed registry.
+///
+/// The novelty axis is the skip reason itself, which is what the registry's
+/// twenty-state domain enumerates. Exhaustive for the same reason as above.
+pub(super) const fn entry_skip_canonical_state(
+    reason: EvidenceEntrySkipReason,
+) -> EvidenceCanonicalState {
+    match reason {
+        EvidenceEntrySkipReason::StrategyCoreNotRegistered => {
+            EvidenceCanonicalState::EntrySkipStrategyCoreNotRegistered
+        }
+        EvidenceEntrySkipReason::EntryGateBlocked => {
+            EvidenceCanonicalState::EntrySkipEntryGateBlocked
+        }
+        EvidenceEntrySkipReason::EntryPricingBlocked => {
+            EvidenceCanonicalState::EntrySkipEntryPricingBlocked
+        }
+        EvidenceEntrySkipReason::NoSideSelected => EvidenceCanonicalState::EntrySkipNoSideSelected,
+        EvidenceEntrySkipReason::SizedNotionalNotPositive => {
+            EvidenceCanonicalState::EntrySkipSizedNotionalNotPositive
+        }
+        EvidenceEntrySkipReason::InstrumentIdMissing => {
+            EvidenceCanonicalState::EntrySkipInstrumentIdMissing
+        }
+        EvidenceEntrySkipReason::InstrumentMissingFromCache => {
+            EvidenceCanonicalState::EntrySkipInstrumentMissingFromCache
+        }
+        EvidenceEntrySkipReason::EntryPriceMissing => {
+            EvidenceCanonicalState::EntrySkipEntryPriceMissing
+        }
+        EvidenceEntrySkipReason::QuantityRoundingFailed => {
+            EvidenceCanonicalState::EntrySkipQuantityRoundingFailed
+        }
+        EvidenceEntrySkipReason::LimitNotionalExceedsSizedNotional => {
+            EvidenceCanonicalState::EntrySkipLimitNotionalExceedsSizedNotional
+        }
+        EvidenceEntrySkipReason::EntryQuoteNotionalBelowVenueMinimum => {
+            EvidenceCanonicalState::EntrySkipEntryQuoteNotionalBelowVenueMinimum
+        }
+        EvidenceEntrySkipReason::EntryQuoteNotionalMinimumUnmodeled => {
+            EvidenceCanonicalState::EntrySkipEntryQuoteNotionalMinimumUnmodeled
+        }
+        EvidenceEntrySkipReason::QuantityNotPositive => {
+            EvidenceCanonicalState::EntrySkipQuantityNotPositive
+        }
+        EvidenceEntrySkipReason::PositionContractInvalid => {
+            EvidenceCanonicalState::EntrySkipPositionContractInvalid
+        }
+        EvidenceEntrySkipReason::EntryPositionContractUnsupported => {
+            EvidenceCanonicalState::EntrySkipEntryPositionContractUnsupported
+        }
+        EvidenceEntrySkipReason::HistoricalEntryFeeUnavailable => {
+            EvidenceCanonicalState::EntrySkipHistoricalEntryFeeUnavailable
+        }
+        EvidenceEntrySkipReason::OnePositionInvariantViolation => {
+            EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation
+        }
+        EvidenceEntrySkipReason::EntryMalformedRejected => {
+            EvidenceCanonicalState::EntrySkipEntryMalformedRejected
+        }
+        EvidenceEntrySkipReason::EntryBalanceRejected => {
+            EvidenceCanonicalState::EntrySkipEntryBalanceRejected
+        }
+        EvidenceEntrySkipReason::EntryUnfillableRejectedUnchangedBook => {
+            EvidenceCanonicalState::EntrySkipEntryUnfillableRejectedUnchangedBook
         }
     }
 }

@@ -311,6 +311,10 @@ mod tests {
                 serde_json::Value::String(value.to_string()),
             );
         }
+        // Production instruments carry this -- the pinned adapter always writes
+        // it (`http/parse.rs`), so a fixture without it is not a real
+        // instrument.
+        info.insert("neg_risk".to_string(), serde_json::Value::Bool(false));
         InstrumentAny::BinaryOption(BinaryOption::new(
             InstrumentId::from(instrument_id),
             Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),

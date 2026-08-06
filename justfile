@@ -102,6 +102,7 @@ check-aarch64: check-workspace
     cargo check --target {{target}} --locked
 
 # Submit explicit pull requests to Mergify after validating the complete list.
+# A stacked PR must be the physical top; the one default queue preserves original commit ancestry.
 [positional-arguments]
 merge-queue *pr_numbers:
     #!/usr/bin/env bash
@@ -246,7 +247,11 @@ merge-queue *pr_numbers:
                 return 1
                 ;;
         esac
-        if [[ -n "$expected" && ( "$head_repository" != "$queue_repository_name" || "$head_ref" != "$expected" ) ]]; then
+        if [[ "$head_repository" != "$queue_repository_name" ]]; then
+            reject_chain "pull request #$current head repository $head_repository does not match the queue repository $queue_repository_name"
+            return 1
+        fi
+        if [[ -n "$expected" && "$head_ref" != "$expected" ]]; then
             reject_chain "pull request #$current head $head_repository:$head_ref does not match pull request #$dependent base $expected"
             return 1
         fi
@@ -261,12 +266,16 @@ merge-queue *pr_numbers:
         current_pr="$requested_pr"
         dependent_pr=""
         expected_head=""
+        requested_head_ref=""
         chain_complete=0
 
         while :; do
             claim_chain_member "$current_pr" "$requested_pr" || break
             load_pull_metadata "$current_pr" || break
             validate_pull_metadata "$current_pr" "$dependent_pr" "$expected_head" || break
+            if [[ "$current_pr" == "$requested_pr" ]]; then
+                requested_head_ref="$head_ref"
+            fi
 
             if [[ "$base_ref" == "$default_branch" && "$dependency" == none ]]; then
                 chain_complete=1
@@ -276,19 +285,25 @@ merge-queue *pr_numbers:
                 reject_chain "pull request #$current_pr lacks one exact Depends-On: #<number> marker; run mergify stack push"
                 break
             fi
+            if [[ "$base_ref" == "$default_branch" ]]; then
+                reject_chain "pull request #$current_pr targets $default_branch while declaring Depends-On; run mergify stack push"
+                break
+            fi
 
             dependent_pr="$current_pr"
-            expected_head=""
-            if [[ "$base_ref" != "$default_branch" ]]; then
-                expected_head="$base_ref"
-            fi
+            expected_head="$base_ref"
             current_pr="${dependency#valid:}"
         done
 
-        if (( chain_complete != 0 && ${#chain_prs[@]} > 1 )); then
-            bottom_index=$(( ${#chain_prs[@]} - 1 ))
-            bottom_pr="${chain_prs[$bottom_index]}"
-            reject_chain "pull request #$requested_pr has open dependencies; queue bottom pull request #$bottom_pr first, then sync and reapprove each successor"
+        if (( chain_complete != 0 )); then
+            successor_output=""
+            if ! successor_output="$(gh pr list --repo "$queue_repository" --state open \
+                --base "$requested_head_ref" --limit 2 --json number --jq '.[].number')"; then
+                reject_chain "could not confirm open successors for pull request #$requested_pr"
+            elif [[ -n "$successor_output" ]]; then
+                first_successor="${successor_output%%$'\n'*}"
+                reject_chain "pull request #$requested_pr has open successor #$first_successor; queue the stack top instead"
+            fi
         fi
 
         if (( ${#chain_prs[@]} > 0 )); then
@@ -308,7 +323,8 @@ merge-queue *pr_numbers:
     submitted=()
     for (( index=0; index<${#pr_numbers[@]}; index++ )); do
         pr_number="${pr_numbers[$index]}"
-        if gh pr comment "$pr_number" --repo "$queue_repository" --body '@mergifyio queue'; then
+        queue_command='@mergifyio queue'
+        if gh pr comment "$pr_number" --repo "$queue_repository" --body "$queue_command"; then
             submitted+=("$pr_number")
             continue
         fi

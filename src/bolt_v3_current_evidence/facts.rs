@@ -507,28 +507,30 @@ pub struct OrderRejectFact {
     pub elapsed_ns: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntrySkipReason {
-    StrategyCoreNotRegistered,
-    EntryGateBlocked,
-    EntryPricingBlocked,
-    NoSideSelected,
-    SizedNotionalNotPositive,
-    InstrumentIdMissing,
-    InstrumentMissingFromCache,
-    EntryPriceMissing,
-    QuantityRoundingFailed,
-    LimitNotionalExceedsSizedNotional,
-    EntryQuoteNotionalBelowVenueMinimum,
-    EntryQuoteNotionalMinimumUnmodeled,
-    QuantityNotPositive,
-    PositionContractInvalid,
-    EntryPositionContractUnsupported,
-    HistoricalEntryFeeUnavailable,
-    OnePositionInvariantViolation,
-    EntryMalformedRejected,
-    EntryBalanceRejected,
-    EntryUnfillableRejectedUnchangedBook,
+define_closed_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum EntrySkipReason {
+        StrategyCoreNotRegistered,
+        EntryGateBlocked,
+        EntryPricingBlocked,
+        NoSideSelected,
+        SizedNotionalNotPositive,
+        InstrumentIdMissing,
+        InstrumentMissingFromCache,
+        EntryPriceMissing,
+        QuantityRoundingFailed,
+        LimitNotionalExceedsSizedNotional,
+        EntryQuoteNotionalBelowVenueMinimum,
+        EntryQuoteNotionalMinimumUnmodeled,
+        QuantityNotPositive,
+        PositionContractInvalid,
+        EntryPositionContractUnsupported,
+        HistoricalEntryFeeUnavailable,
+        OnePositionInvariantViolation,
+        EntryMalformedRejected,
+        EntryBalanceRejected,
+        EntryUnfillableRejectedUnchangedBook,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,10 +1,8 @@
 name: Advisory Check
 
-# Rust evidence for pull requests. These lanes carry no authority in GitHub's own
-# ruleset -- it declares no required status contexts, so a direct merge evaluates
-# none of them -- but `.mergify.yml` requires every lane below to succeed before
-# either queue merges. Deleting a lane, or making one `continue-on-error`,
-# removes a merge gate.
+# Rust evidence for pull requests. These lanes are advisory only: neither queue
+# admission nor merging depends on their status. A red lane informs review but
+# does not grant or veto merge authority.
 #
 # Parallel jobs each surface one ✓/✗ line
 # per PR. Every Rust lane runs its cargo command directly; the test lane also

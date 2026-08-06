@@ -124,6 +124,9 @@ fixture() {
         foreign_head:612)
             pull_json 612 OPEN false expected-head stack-612 seungpyoson/bolt-v2 'Depends-On: #611'
             ;;
+        foreign_top:621)
+            pull_json 621 OPEN false main feature-621 someone/fork ""
+            ;;
         closed:701)
             pull_json 701 CLOSED false main stack-701 seungpyoson/bolt-v2 ""
             ;;
@@ -142,7 +145,7 @@ fixture() {
         cycle:802)
             pull_json 802 OPEN false branch-801 branch-802 seungpyoson/bolt-v2 'Depends-On: #801'
             ;;
-        excessive:9??)
+        excessive:9??|maximum:9??)
             if (( number == 901 )); then
                 pull_json 901 OPEN false main stack-901 seungpyoson/bolt-v2 ""
             else
@@ -183,8 +186,38 @@ fixture() {
         nonmain:1401)
             pull_json 1401 OPEN false trunk feature-1401 seungpyoson/bolt-v2 ""
             ;;
+        lookup_failure:1501)
+            pull_json 1501 OPEN false main feature-1501 seungpyoson/bolt-v2 ""
+            ;;
+        missing_predecessor:1602)
+            pull_json 1602 OPEN false stack-1601 stack-1602 seungpyoson/bolt-v2 'Depends-On: #1601'
+            ;;
         *)
             return 1
+            ;;
+    esac
+}
+
+successors() {
+    local base="$1"
+    case "$FAKE_GH_SCENARIO:$base" in
+        two:stack-201) printf '202\n' ;;
+        three:stack-301) printf '302\n' ;;
+        three:stack-302) printf '303\n' ;;
+        crlf:stack-540) printf '541\n' ;;
+        overlap:stack-1101) printf '1102\n' ;;
+        overlap:stack-1102) printf '1103\n' ;;
+        excessive:stack-9??)
+            number="${base#stack-}"
+            if (( number < 921 )); then
+                printf '%s\n' "$((number + 1))"
+            fi
+            ;;
+        maximum:stack-9??)
+            number="${base#stack-}"
+            if (( number < 920 )); then
+                printf '%s\n' "$((number + 1))"
+            fi
             ;;
     esac
 }
@@ -202,10 +235,44 @@ case "$1 $2" in
         render_query "$repository_json" "${@:3}"
         ;;
     "pr view")
+        if (( $# != 9 )) \
+            || [[ "$4" != "--repo" ]] \
+            || [[ "$5" != "github.com/seungpyoson/bolt-v2" ]] \
+            || [[ "$6" != "--json" ]] \
+            || [[ "$7" != "number,state,isDraft,baseRefName,headRefName,headRepository,body" ]] \
+            || [[ "$8" != "--jq" ]]; then
+            printf 'unexpected pull request lookup arguments:' >&2
+            printf ' %q' "$@" >&2
+            printf '\n' >&2
+            exit 98
+        fi
         if ! pr_json="$(fixture "$3")"; then
             exit 1
         fi
         render_query "$pr_json" "${@:4}"
+        ;;
+    "pr list")
+        if (( $# != 14 )) \
+            || [[ "$3" != "--repo" ]] \
+            || [[ "$4" != "github.com/seungpyoson/bolt-v2" ]] \
+            || [[ "$5" != "--state" ]] \
+            || [[ "$6" != "open" ]] \
+            || [[ "$7" != "--base" ]] \
+            || [[ "$9" != "--limit" ]] \
+            || [[ "${10}" != "2" ]] \
+            || [[ "${11}" != "--json" ]] \
+            || [[ "${12}" != "number" ]] \
+            || [[ "${13}" != "--jq" ]] \
+            || [[ "${14}" != ".[].number" ]]; then
+            printf 'unexpected successor lookup arguments:' >&2
+            printf ' %q' "$@" >&2
+            printf '\n' >&2
+            exit 98
+        fi
+        if [[ "$FAKE_GH_SCENARIO" == lookup_failure ]]; then
+            exit 1
+        fi
+        successors "$8"
         ;;
     "pr comment")
         if (( $# != 7 )) \
@@ -275,34 +342,65 @@ expect_comment_targets() {
     fi
 }
 
+expect_comment_commands() {
+    local actual
+    actual="$(awk '
+        $1 == "pr" && $2 == "comment" {
+            command = $7 " " $8
+            if (NF == 9) {
+                command = command " " $9
+            }
+            print $3 "=" command
+        }
+    ' "$case_log" | paste -sd ';' -)"
+    local expected="$1"
+    if [[ "$actual" != "$expected" ]]; then
+        printf 'expected queue commands [%s], got [%s]\n%s\n' "$expected" "$actual" "$case_output" >&2
+        exit 1
+    fi
+}
+
 run_case standalone 101
 expect_status 0
 expect_comment_targets 101
+expect_comment_commands "101=@mergifyio queue"
 
 run_case nonmain 1401
 expect_status 0
 expect_comment_targets 1401
 
-run_case two 201
-expect_status 0
-expect_comment_targets 201
-
-run_case two 101 202
+run_case lookup_failure 1501
 expect_status 2
-expect_output "queue bottom pull request #201 first"
+expect_output "could not confirm open successors"
 expect_output "No queue requests were submitted."
 expect_comment_targets
+
+run_case missing_predecessor 1602
+expect_status 2
+expect_output "could not confirm pull request #1601"
+expect_output "No queue requests were submitted."
+expect_comment_targets
+
+run_case two 201
+expect_status 2
+expect_output "has open successor #202; queue the stack top instead"
+expect_comment_targets
+
+run_case two 101 202
+expect_status 0
+expect_comment_targets 101 202
+expect_comment_commands "101=@mergifyio queue;202=@mergifyio queue"
 
 for retargeted_pr in 202 203; do
     run_case retargeted "$retargeted_pr"
     expect_status 2
-    expect_output "queue bottom pull request #201 first"
+    expect_output "targets main while declaring Depends-On"
     expect_comment_targets
 done
 
 run_case retargeted 201 202
 expect_status 2
-expect_output "overlap at #201"
+expect_output "targets main while declaring Depends-On"
 expect_output "No queue requests were submitted."
 expect_comment_targets
 
@@ -312,14 +410,19 @@ expect_output "run mergify stack push"
 expect_comment_targets
 
 run_case three 303
+expect_status 0
+expect_comment_targets 303
+expect_comment_commands "303=@mergifyio queue"
+
+run_case three 302
 expect_status 2
-expect_output "queue bottom pull request #301 first"
+expect_output "has open successor #303; queue the stack top instead"
 expect_comment_targets
 
 run_case crlf 541
-expect_status 2
-expect_output "queue bottom pull request #540 first"
-expect_comment_targets
+expect_status 0
+expect_comment_targets 541
+expect_comment_commands "541=@mergifyio queue"
 
 for scenario_and_pr in \
     missing:401 \
@@ -346,6 +449,11 @@ expect_status 2
 expect_output "does not match"
 expect_comment_targets
 
+run_case foreign_top 621
+expect_status 2
+expect_output "does not match the queue repository"
+expect_comment_targets
+
 run_case closed 702
 expect_status 2
 expect_output "is not open"
@@ -361,9 +469,14 @@ expect_status 2
 expect_output "cycle"
 expect_comment_targets
 
+run_case maximum 920
+expect_status 0
+expect_comment_targets 920
+expect_comment_commands "920=@mergifyio queue"
+
 run_case excessive 920
 expect_status 2
-expect_output "queue bottom pull request #901 first"
+expect_output "has open successor #921; queue the stack top instead"
 expect_comment_targets
 
 run_case excessive 921

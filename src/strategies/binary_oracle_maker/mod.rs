@@ -43,7 +43,7 @@ use crate::{
     },
     bolt_v3_maker_quote_control::QuoteControlBlockReason,
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
-    bolt_v3_maker_quote_set::{QuoteSetBlockReason, QuoteSetLegDecision},
+    bolt_v3_maker_quote_set::QuoteSetLegDecision,
     bolt_v3_maker_risk::{
         MakerLossRiskPolicy, MakerRiskDecision, apply_maker_risk_mode,
         maker_risk_mode_for_loss_decision,
@@ -347,7 +347,7 @@ impl BinaryOracleMaker {
     /// emitted nothing -- the mirror of the flooding this dedupe exists to stop.
     fn update_requote_throttle_edge(
         &mut self,
-        market: ThrottledMarket<'_>,
+        market_key: &str,
         quote_state: &MarketQuote,
         budget: &RequoteBudgetPair,
         leg: Leg,
@@ -360,9 +360,29 @@ impl BinaryOracleMaker {
             // The leg is no longer blocked: the episode is over, so forget it.
             // This is what keeps the accumulated set bounded, and it is what
             // lets a leg that becomes blocked again record that as new.
-            self.runtime
-                .clear_throttle_episode(market.key, market.concrete_identity, leg);
+            if let Some(concrete_identity) = self
+                .runtime
+                .market(market_key)
+                .map(|market| market.concrete_identity())
+            {
+                self.runtime
+                    .clear_throttle_episode(market_key, &concrete_identity, leg);
+            }
             return Ok(());
+        };
+        let Some((concrete_identity, family_key)) = self
+            .runtime
+            .market(market_key)
+            .map(|market| (market.concrete_identity(), market.family_key().to_string()))
+        else {
+            anyhow::bail!(
+                "binary_oracle_maker cannot record requote throttle for inactive market: market_key={market_key}"
+            );
+        };
+        let market = ThrottledMarket {
+            key: market_key,
+            family_key: &family_key,
+            concrete_identity: &concrete_identity,
         };
         let bound_by = requote_throttle_bound(action_cost_class, budget, now_ms);
         let episode = RequoteThrottleEpisodeId {
@@ -403,14 +423,12 @@ impl BinaryOracleMaker {
         Ok(())
     }
 
-    /// `market_key` identifies which of the portfolio's markets this cycle is
-    /// quoting. `MarketQuote` is leg lifecycle state and carries no key, and the
-    /// family key in the plan names a category several markets can share, so
-    /// without this the throttle evidence cannot say which market it describes.
+    /// `market_key` selects the active runtime market this cycle is quoting.
+    /// `MarketQuote` is leg lifecycle state and carries no key; the runtime binding
+    /// supplies the authoritative concrete identity and family for evidence.
     pub fn route_maker_runtime_quote(
         &mut self,
         market_key: &str,
-        market_identity: MakerConcreteMarketIdentity,
         market: &mut MarketQuote,
         budget: &mut RequoteBudgetPair,
         input: BinaryOracleMakerRuntimeQuoteRouteInput<'_>,
@@ -424,7 +442,6 @@ impl BinaryOracleMaker {
             max_fee_bps,
         } = input;
 
-        let family_key = quote.quote_plan.family_key.to_string();
         let now_ms = quote.quote_set.now_ms;
         let quote_decision = plan_maker_runtime_quote(market, budget, quote);
         let planned = quote_decision.quote_set.as_ref();
@@ -432,18 +449,7 @@ impl BinaryOracleMaker {
             (Leg::Yes, planned.map(|set| &set.yes)),
             (Leg::No, planned.map(|set| &set.no)),
         ] {
-            self.update_requote_throttle_edge(
-                ThrottledMarket {
-                    key: market_key,
-                    family_key: family_key.as_str(),
-                    concrete_identity: &market_identity,
-                },
-                market,
-                budget,
-                leg,
-                decision,
-                now_ms,
-            )?;
+            self.update_requote_throttle_edge(market_key, market, budget, leg, decision, now_ms)?;
         }
         let orders = if let Some(order_plan) = quote_decision.order_plan.as_ref() {
             let mut route_command =
@@ -473,7 +479,6 @@ impl BinaryOracleMaker {
     pub fn route_maker_runtime_reference_quote(
         &mut self,
         market_key: &str,
-        market_identity: MakerConcreteMarketIdentity,
         market: &mut MarketQuote,
         budget: &mut RequoteBudgetPair,
         reference_selector: &mut ReferencePriceSelector,
@@ -504,11 +509,7 @@ impl BinaryOracleMaker {
             // reference price stayed unavailable.
             for leg in [Leg::Yes, Leg::No] {
                 self.update_requote_throttle_edge(
-                    ThrottledMarket {
-                        key: market_key,
-                        family_key: reference_fair_value.family_key,
-                        concrete_identity: &market_identity,
-                    },
+                    market_key,
                     market,
                     budget,
                     leg,
@@ -528,7 +529,6 @@ impl BinaryOracleMaker {
         let oracle_fair_probability_up = reference_fair_value_result.fair_probability_up;
         let quote_route = self.route_maker_runtime_quote(
             market_key,
-            market_identity,
             market,
             budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
@@ -695,12 +695,6 @@ fn requote_throttle_block(
     if decision.control.blocked_by == Some(QuoteControlBlockReason::RequoteBudgetExhausted) {
         return requote_action_cost_class(market, leg)
             .map(|class| (class, RequoteThrottleBlockReason::RequoteBudgetExhausted));
-    }
-    if decision.blocked_by == Some(QuoteSetBlockReason::ReservationRejected) {
-        return Some((
-            RequoteActionCostClass::FreshSubmit,
-            RequoteThrottleBlockReason::RequoteBudgetExhausted,
-        ));
     }
     None
 }
@@ -922,10 +916,9 @@ impl BinaryOracleMaker {
         budget: &mut RequoteBudgetPair,
         input: BinaryOracleMakerQuoteCycleInput<'_>,
     ) -> Result<Option<BinaryOracleMakerRuntimeQuoteRouteOutcome>> {
-        let Some(active_market) = self.runtime.market(market_key) else {
+        if self.runtime.market(market_key).is_none() {
             return Ok(None);
-        };
-        let market_identity = active_market.concrete_identity();
+        }
         let order_id_tag = self.config.order_id_tag.clone();
         self.runtime.mint_next_identities(market_key, &order_id_tag);
         let order_plan = self
@@ -944,7 +937,6 @@ impl BinaryOracleMaker {
         } = input;
         let outcome = self.route_maker_runtime_quote(
             market_key,
-            market_identity,
             market,
             budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
@@ -1386,6 +1378,16 @@ mod tests {
             ),
             RequoteThrottleBound::SubmitCommandWindow,
             "same-millisecond budget exhaustion must be labeled by the window cap"
+        );
+
+        assert_eq!(
+            requote_throttle_bound(
+                RequoteActionCostClass::CancelResubmit,
+                &exhausted_budget,
+                500,
+            ),
+            RequoteThrottleBound::OutOfOrderTs,
+            "an earlier observation must expose the diagnostic bound oscillation"
         );
 
         // A strictly later tick inside the interval still matches the gate's

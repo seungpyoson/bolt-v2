@@ -191,6 +191,12 @@ impl MakerMarketRuntime {
         &self.binding.market_key
     }
 
+    /// The configured family that owns this active market.
+    #[must_use]
+    pub fn family_key(&self) -> &str {
+        &self.binding.family_key
+    }
+
     /// The concrete venue `market_id` this slot resolved to. Retained as a plain
     /// diagnostics accessor; it is **not** the cadence-window discriminator (that is
     /// `start_timestamp_milliseconds`), because venue metadata is not guaranteed to
@@ -488,15 +494,19 @@ impl MakerRuntime {
                 .unwrap_or(LegGenerations::ZERO);
             let runtime = match self.markets.remove(&market_key) {
                 // Same cadence window AND same resolved leg instruments (`same_window`
-                // compares both): retain assigned identities + live counters and refresh
-                // only the allocation. A changed leg instrument under an unchanged window
-                // start is NOT retained — `same_window` treats it as a roll, so the live
-                // trade-subscription differ never strands on a re-issued instrument. The
-                // prior binding's remaining metadata (expiration, selection outcome) IS
-                // intentionally left un-refreshed here: no consumer reads those fields
-                // until settlement, so a stale value is latent at the foundation. The X3
-                // settlement slice refreshes that metadata on retain — tracked in #866.
+                // compares both): retain assigned order identities + live counters. A
+                // changed leg instrument under an unchanged window start is NOT retained —
+                // `same_window` treats it as a roll, so the live trade-subscription differ
+                // never strands on a re-issued instrument. Evidence identity is refreshed
+                // independently: it may receive a metadata correction without changing the
+                // order-lifecycle identity, and throttle pruning must see the correction
+                // without discarding handles for resting orders.
                 Some(mut prior) if same_window(&prior.binding, binding) => {
+                    prior.binding.market_id.clone_from(&binding.market_id);
+                    prior
+                        .binding
+                        .evidence_identity
+                        .clone_from(&binding.evidence_identity);
                     prior.allocation_notional = allocation_notional;
                     prior
                 }
@@ -573,23 +583,21 @@ impl MakerRuntime {
     }
 }
 
-/// Whether two bindings of the same declared market describe the same cadence
-/// window *and* resolved to the same leg instruments. The window start
+/// Whether two bindings of the same declared market share one order-lifecycle
+/// window: the same cadence start and the same leg instruments. The window start
 /// (`start_timestamp_milliseconds`) — not the venue `market_id`, which is metadata
 /// not guaranteed to change on a roll — is the primary discriminator, so a genuine
 /// roll (a new `start_timestamp_milliseconds`) always rebuilds the runtime with
-/// fresh identities even when the venue reuses the same `market_id`. The leg
-/// instrument ids and validated evidence identity are compared too, so a venue
-/// reissue or corrected stable metadata at an unchanged window start is treated
-/// as a roll (fail-closed). The leg instrument id is read live by the
-/// trade-subscription differ ([`MakerRuntime::instrument_id_set`]), while the
-/// evidence identity keys throttle episodes; retaining either predecessor would
-/// strand the maker on stale market state.
+/// fresh identities even when the venue reuses the same `market_id`. Leg instrument
+/// ids are compared too, so a venue reissue at an unchanged window start is treated
+/// as a roll (fail-closed): the trade-subscription differ reads them live. Validated
+/// evidence identity is deliberately not part of this predicate. A metadata-only
+/// correction is refreshed on the retained binding, which lets throttle pruning
+/// retire the predecessor episode without losing active or pending order handles.
 fn same_window(prior: &MakerResolvedMarketBinding, current: &MakerResolvedMarketBinding) -> bool {
     prior.start_timestamp_milliseconds == current.start_timestamp_milliseconds
         && prior.yes.instrument_id == current.yes.instrument_id
         && prior.no.instrument_id == current.no.instrument_id
-        && prior.evidence_identity == current.evidence_identity
 }
 
 /// Apply one leg's dispatched intent to its identity slots. See
@@ -708,13 +716,89 @@ mod tests {
     }
 
     #[test]
-    fn same_window_rejects_a_changed_evidence_identity() {
-        let prior = resolved_binding("question-1");
+    fn metadata_only_identity_refresh_preserves_order_handles_and_updates_evidence_identity() {
+        let policy = MakerMarketPortfolioPolicy {
+            max_active_markets: 1,
+            total_bankroll_notional: 100.0,
+            min_slot_notional: 100.0,
+        };
+        let mut runtime = MakerRuntime::empty();
+        runtime.apply_resolution(
+            MakerMarketResolution {
+                bindings: vec![resolved_binding("question-1")],
+                misses: Vec::new(),
+            },
+            policy,
+        );
+        assert!(runtime.mint_next_identities("configured-market", "001"));
+        let yes_next = runtime
+            .market("configured-market")
+            .expect("market is active")
+            .leg_binding(Leg::Yes)
+            .next_order
+            .clone()
+            .expect("YES next identity was minted");
+        let no_next = runtime
+            .market("configured-market")
+            .expect("market is active")
+            .leg_binding(Leg::No)
+            .next_order
+            .clone()
+            .expect("NO next identity was minted");
+        assert!(runtime.apply_dispatch_outcome(
+            "configured-market",
+            &MakerRuntimeOrderDispatchOutcome {
+                yes: crate::bolt_v3_maker_runtime_order::MakerRuntimeLegOrderDispatchOutcome {
+                    dispatch: Some(MakerOrderDispatchOutcome::Submitted {
+                        leg: Leg::Yes,
+                        instrument_id: InstrumentId::from("yes-token.POLYMARKET"),
+                        client_order_id: ClientOrderId::from("001-configured-market-1000-yes-1",),
+                        price: Price::new(0.40, 2),
+                        quantity: Quantity::new(1.0, 0),
+                    }),
+                    blocked_by: None,
+                    routing_error: None,
+                },
+                no: crate::bolt_v3_maker_runtime_order::MakerRuntimeLegOrderDispatchOutcome {
+                    dispatch: None,
+                    blocked_by: None,
+                    routing_error: None,
+                },
+            },
+        ));
+        let prior_identity = runtime
+            .market("configured-market")
+            .expect("market is active")
+            .concrete_identity();
         let corrected = resolved_binding("question-1-corrected");
+        let corrected_identity = corrected.concrete_identity();
 
-        assert!(
-            !same_window(&prior, &corrected),
-            "a valid evidence-identity successor must rebuild even when its window and leg instruments are unchanged"
+        runtime.apply_resolution(
+            MakerMarketResolution {
+                bindings: vec![corrected],
+                misses: Vec::new(),
+            },
+            policy,
+        );
+
+        let retained = runtime
+            .market("configured-market")
+            .expect("metadata correction keeps the market active");
+        assert_eq!(
+            retained.leg_binding(Leg::Yes).active_order,
+            Some(yes_next),
+            "metadata correction must not lose the resting order handle"
+        );
+        assert_eq!(
+            retained.leg_binding(Leg::No).next_order,
+            Some(no_next),
+            "metadata correction must not lose a pending order handle"
+        );
+        assert_ne!(retained.concrete_identity(), prior_identity);
+        assert_eq!(
+            retained.concrete_identity(),
+            corrected_identity,
+            "the retained runtime must expose the corrected evidence identity"
         );
     }
 

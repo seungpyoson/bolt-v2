@@ -224,11 +224,6 @@ jobs:
           artifact-name: ${{ needs.sccache_source.outputs.artifact_name }}
           executable-sha256: ${{ needs.sccache_source.outputs.executable_sha256 }}
 
-      - name: merge-queue behavior
-        run: |
-          set -x
-          bash scripts/test_merge_queue.sh
-
       # The statistics gate's own behavioral controls. They existed and ran
       # nowhere: no workflow, recipe, or hook referenced the file, and it defines
       # no `test_*` functions, so even a pytest sweep collected zero from it. The

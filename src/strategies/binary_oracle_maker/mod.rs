@@ -307,6 +307,17 @@ impl BinaryOracleMaker {
         &self.runtime
     }
 
+    fn active_market_family_key(&self, market_key: &str) -> Result<&str> {
+        self.runtime
+            .market(market_key)
+            .map(|market| market.family_key())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "binary_oracle_maker cannot route quote for inactive market: market_key={market_key}"
+                )
+            })
+    }
+
     pub fn route_maker_order_command(
         &mut self,
         command: &MakerCompiledOrderCommand,
@@ -442,6 +453,13 @@ impl BinaryOracleMaker {
             max_fee_bps,
         } = input;
 
+        let runtime_family_key = self.active_market_family_key(market_key)?;
+        anyhow::ensure!(
+            quote.quote_plan.family_key == runtime_family_key,
+            "binary_oracle_maker quote family does not match active runtime binding: market_key={market_key} runtime_family_key={runtime_family_key} input_family_key={}",
+            quote.quote_plan.family_key
+        );
+
         let now_ms = quote.quote_set.now_ms;
         let quote_decision = plan_maker_runtime_quote(market, budget, quote);
         let planned = quote_decision.quote_set.as_ref();
@@ -495,6 +513,18 @@ impl BinaryOracleMaker {
             submit_order_prefix,
             max_fee_bps,
         } = input;
+
+        let runtime_family_key = self.active_market_family_key(market_key)?;
+        anyhow::ensure!(
+            reference_fair_value.family_key == runtime_family_key,
+            "binary_oracle_maker reference fair-value family does not match active runtime binding: market_key={market_key} runtime_family_key={runtime_family_key} input_family_key={}",
+            reference_fair_value.family_key
+        );
+        anyhow::ensure!(
+            quote_plan.family_key == runtime_family_key,
+            "binary_oracle_maker reference quote-plan family does not match active runtime binding: market_key={market_key} runtime_family_key={runtime_family_key} input_family_key={}",
+            quote_plan.family_key
+        );
 
         let fair_value = maker_reference_current_price_fair_value_decision(
             reference_selector,
@@ -904,6 +934,7 @@ impl BinaryOracleMaker {
     /// outcome. Returns `None` if the market is not active. INTENT ONLY: the
     /// dispatch routes through the global execution-policy chokepoint, which
     /// suppresses every venue mutation in shadow.
+    /// The supplied family must match the active binding before any identity mint.
     ///
     /// The fair-value + quote-math inputs are caller-supplied because the
     /// reference/realized-volatility feed that resolves them lands in a later slice
@@ -916,16 +947,13 @@ impl BinaryOracleMaker {
         budget: &mut RequoteBudgetPair,
         input: BinaryOracleMakerQuoteCycleInput<'_>,
     ) -> Result<Option<BinaryOracleMakerRuntimeQuoteRouteOutcome>> {
-        if self.runtime.market(market_key).is_none() {
-            return Ok(None);
-        }
-        let order_id_tag = self.config.order_id_tag.clone();
-        self.runtime.mint_next_identities(market_key, &order_id_tag);
-        let order_plan = self
+        let Some(runtime_family_key) = self
             .runtime
             .market(market_key)
-            .expect("market presence checked above")
-            .order_plan_input();
+            .map(|market| market.family_key())
+        else {
+            return Ok(None);
+        };
         let BinaryOracleMakerQuoteCycleInput {
             quote_plan,
             quote_set,
@@ -935,6 +963,18 @@ impl BinaryOracleMaker {
             submit_order_prefix,
             max_fee_bps,
         } = input;
+        anyhow::ensure!(
+            quote_plan.family_key == runtime_family_key,
+            "binary_oracle_maker quote-cycle family does not match active runtime binding: market_key={market_key} runtime_family_key={runtime_family_key} input_family_key={}",
+            quote_plan.family_key
+        );
+        let order_id_tag = self.config.order_id_tag.clone();
+        self.runtime.mint_next_identities(market_key, &order_id_tag);
+        let order_plan = self
+            .runtime
+            .market(market_key)
+            .expect("market presence checked above")
+            .order_plan_input();
         let outcome = self.route_maker_runtime_quote(
             market_key,
             market,

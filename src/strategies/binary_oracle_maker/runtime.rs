@@ -500,7 +500,10 @@ impl MakerRuntime {
                 // never strands on a re-issued instrument. Evidence identity is refreshed
                 // independently: it may receive a metadata correction without changing the
                 // order-lifecycle identity, and throttle pruning must see the correction
-                // without discarding handles for resting orders.
+                // without discarding handles for resting orders. The predecessor's
+                // expiration, seconds-to-end, selection outcome, and source identity stay
+                // unchanged on this retain path; no maker runtime consumer reads them at
+                // this foundation.
                 Some(mut prior) if same_window(&prior.binding, binding) => {
                     prior.binding.market_id.clone_from(&binding.market_id);
                     prior

@@ -58,6 +58,9 @@ All three are one immutable integration pull request.
   from that identity instead of claiming the workflow cannot run.
 - Making Mergify's undocumented dashboard or browser-extension behavior authoritative.
 - Making advisory CI a merge veto.
+- Automatically cleaning up, closing, reopening, retargeting, editing, or deleting
+  source pull requests or source branches after an integration merge. Source lifecycle
+  is not admission state.
 
 ## Decision summary
 
@@ -72,6 +75,10 @@ The source pull requests remain the development and slice-review records. They s
 draft and are never queued individually. Draft status is a strong procedural default,
 not an unforgeable control. A ready or directly merged source is a policy violation
 that pauses integration admission and requires operator reconciliation.
+
+Admission automation never mutates those source records. After an integration merge,
+the immutable Git graph proves what landed; future compilation interprets an already
+landed predecessor as a consumed dependency instead of rewriting GitHub metadata.
 
 ### One Mergify queue
 
@@ -147,13 +154,16 @@ It does not create, approve, queue, merge, close, or delete a pull request.
 ### Main-owned reconciler
 
 The reconciler is loaded from `main` on a protected-`main` push and is also manually
-rerunnable from `main` for repair. It re-derives the merged manifest and may comment on
-or close only exact-head source pull requests and delete only exact-head source
-branches after the dependency checks in this design.
+rerunnable from `main` for repair. It re-derives the merged manifest, verifies the
+protected merge, and classifies the snapshot as landed from the immutable integration
+commit, merged pull request, and protected-`main` merge commit. It is read-only: it
+never comments on, closes, reopens, retargets, edits, or deletes any pull request or
+Git ref.
 
-Its token permissions are `contents: write` and `pull-requests: write`; all others are
+Its token permissions are `contents: read` and `pull-requests: read`; all others are
 `none`. It never creates or approves an integration pull request, posts a Mergify
-command, mutates a review, or calls a merge endpoint.
+command, mutates a review, calls a merge endpoint, or mutates a pull request or Git
+ref.
 
 ### Operator
 
@@ -181,22 +191,39 @@ incomplete.
 
 ## Source contract
 
-A source is a human-authored draft pull request. A valid standalone source or stack
-must satisfy all of the following at compilation:
+A source is a human-authored draft pull request. The compiler pins the current `main`
+SHA as `M` and walks `Depends-On` edges from the requested top. An edge whose
+predecessor's current exact head is reachable from `M` is a consumed edge: that
+predecessor is already landed, is not an active source, and is not reserved again. The
+first unlanded pull request above a consumed edge is the logical root. No GitHub
+pull-request metadata is rewritten to express this logical boundary.
 
-1. every source pull request is open and draft;
-2. every source belongs to this repository and has an exact pinned head SHA;
-3. the root targets `main` and declares no `Depends-On` marker;
-4. every successor targets its predecessor's head branch;
-5. every successor contains exactly one full-line `Depends-On: #<number>` marker that
-   names that predecessor;
-6. every pinned predecessor head is an ancestor of the pinned successor head;
-7. the requested top has no open successor at the snapshot time;
-8. the chain contains no duplicate, cycle, fork, retargeted edge, or foreign PR;
-9. the chain length is one through twenty;
-10. source review threads are resolved;
-11. no source is already reserved by another reserving integration object; and
-12. the exact commit ownership and scope checks below pass.
+A valid standalone source or active stack must satisfy all of the following at
+compilation:
+
+1. every active source pull request is open and draft;
+2. every referenced pull request belongs to this repository and has an exact pinned
+   head SHA;
+3. the logical root either targets `main` and declares no `Depends-On` marker, or has
+   exactly one marker naming a consumed predecessor whose current exact head is both
+   reachable from `M` and an ancestor of the logical-root head;
+4. the logical root above a consumed edge may still target the consumed predecessor's
+   branch or may already have been retargeted to `main`; neither form is mutated by
+   admission automation;
+5. every active successor targets its active predecessor's head branch;
+6. every active successor contains exactly one full-line
+   `Depends-On: #<number>` marker that names that predecessor;
+7. every pinned active-predecessor head is an ancestor of its pinned successor head;
+8. a referenced predecessor whose current head is not reachable from `M` remains an
+   active dependency; if that head is not an ancestor of its successor, validation
+   rejects until the author repairs the physical stack;
+9. the requested top has no open successor at the snapshot time;
+10. the active chain contains no duplicate, cycle, fork, retargeted edge, or foreign
+    pull request;
+11. the active chain length is one through twenty;
+12. active-source review threads are resolved;
+13. no active source is already reserved by another reserving integration object; and
+14. the exact commit ownership and scope checks below pass.
 
 Let source `i` have pinned base SHA `Bi` and head SHA `Hi`. Define its Git slice as:
 
@@ -204,14 +231,17 @@ Let source `i` have pinned base SHA `Bi` and head SHA `Hi`. Define its Git slice
 
 The compiler reads GitHub's complete pull-request commit list `Pi`, paginating and
 failing closed at GitHub's documented 250-commit limit. It requires `Pi = Si` for
-every source. It also requires:
+every active source. It also requires:
 
-- the union of all `Si` equals `Reach(Htop) - Reach(Broot)`;
+- the union of all active `Si` equals `Reach(Htop) - Reach(M)`;
 - the source slices are pairwise disjoint; and
 - no commit in that union is reserved by another reserving integration object.
 
 These checks prevent a branch-name-only stack, stale predecessor history, undeclared
-side history, partial ownership, and overlapping integration objects.
+side history, partial ownership, and overlapping integration objects. A consumed
+predecessor is routing history only: it is excluded from the new manifest's active
+source list, ownership sets, and reservations, but its exact boundary identity is
+recorded in the manifest for audit and prequeue revalidation.
 
 ## Deterministic integration object
 
@@ -223,7 +253,8 @@ The integration commit message contains a versioned canonical manifest with:
 - target branch;
 - pinned `main` base SHA;
 - root-to-top source PR numbers, base branches, base SHAs, head branches, and head SHAs;
-- physical dependency edges;
+- the optional consumed-boundary PR number, head branch, head SHA, and dependency edge;
+- active physical dependency edges;
 - each source commit set;
 - the union commit set;
 - construction-profile version; and
@@ -334,7 +365,7 @@ queue-mechanics invariant that in-place integration-head updates remain impossib
 The dashboard and browser extension are unsupported admission surfaces. Their use by
 an administrator cannot bypass native approval. A resulting merge of a valid exact
 integration head is content-safe but operationally unsupported; a non-manifest head
-causes reconciliation to refuse source retirement and pause further admission.
+causes reconciliation to refuse snapshot verification and pause further admission.
 
 ## Lifecycle
 
@@ -378,17 +409,16 @@ inferred from another. The only supported states and transitions are:
    closed-unmerged as determined by fresh pull-request and queue reads; otherwise the
    object is closed and abandoned. A replacement head or replacement pull request is
    forbidden.
-8. **Merged, reconciling:** the protected `main` merge commit is the oracle. Reservations
-   remain until manifested-snapshot retirement and required successor normalization
-   finish, then transition to snapshot-retired. Mutable source-pull-request closure is
-   not a prerequisite; contradictory merge or source evidence pauses reconciliation.
-9. **Snapshot retired:** every manifested head is confirmed reachable from `main` and
-   durably recorded. Each source is either exact-head retired or explicitly recorded as
-   follow-up-open at an advanced head, all required successor normalization is complete,
-   and a durable snapshot-retired record is confirmed on the integration pull request.
-   The old manifest's PR-number and commit reservations are then released. An advanced
-   source is eligible for fresh compilation and acquires new reservations only when its
-   new exact integration branch is published.
+8. **Merged, verifying:** the protected `main` merge commit is the oracle. Reservations
+   remain until the exact integration head and every manifested source head are
+   confirmed reachable from `main`. Current source-pull-request state is observational
+   and cannot block or authorize this transition.
+9. **Snapshot landed:** the merged integration pull request, its immutable manifested
+   head, and the protected-`main` merge commit are the durable record. Once their exact
+   identities and source-head reachability agree, the object no longer reserves the old
+   manifest's PR numbers or commits. Any advanced source is eligible for fresh
+   compilation and acquires new reservations only when its new exact integration branch
+   is published.
 10. **Abandoned:** the pull request is closed if it exists, queue membership is absent,
    the integration branch is absent, and reservations are released. A later identical
    dispatch may restore the same content-addressed branch and reopen the same pull
@@ -449,7 +479,8 @@ Before queueing, the operator dispatches the read-only validation operation from
 
 - integration PR author, base, draft/open state, and exact head;
 - manifest bytes, parents, tree, and expected SHA;
-- source PR heads, topology, completeness, and reservations;
+- active-source heads, topology, completeness, and reservations, plus any consumed
+  boundary's exact head and reachability from the pinned `main` snapshot;
 - native review decision, latest-push approval, and unresolved threads; and
 - whether the integration head remains outside `main`.
 
@@ -487,72 +518,52 @@ GitHub performs the normal protected merge. The expected result is one new
 first-parent transition on `main`, whose merge commit has the prior `main` tip as
 parent one and the unchanged exact approved integration head as parent two.
 
-### 7. Reconcile and retire sources
+### 7. Verify the merged snapshot
 
 After observing the protected merge commit on `main`, the reconciler:
 
 1. verifies the exact integration head is its second parent and reachable from main;
 2. verifies every manifested source head is reachable from main;
-3. writes a durable source-PR comment containing the integration PR and merge SHA;
-4. leaves a source open if its live head advanced after compilation and records the
-   manifested head as landed with the current head as follow-up work;
-5. otherwise accepts GitHub's indirect merged state or closes the exact-head draft as
-   landed; and
-6. deletes a source branch only when its remote tip still equals the manifested head
-   and no open dependent PR still targets it.
+3. rereads the merged integration pull request, immutable manifest, and protected
+   `main` merge commit; and
+4. classifies the object as snapshot-landed, so it no longer contributes reservations.
 
-Retirement applies to the immutable manifested snapshot, not necessarily to the mutable
-source pull request. Before releasing the old manifest's reservations, every manifested
-source must have one durable disposition: exact-head retired, or snapshot-landed with an
-advanced head left follow-up-open. An advanced non-root source is normalized with the
-same guarded base-and-marker transaction described below only when its consumed
-predecessor has no advanced live follow-up. If that predecessor also advanced, the
-dependency is preserved as fresh stack topology. Predecessor branches remain until all
-dependent advanced or late successors have been normalized or confirmed as part of
-that fresh topology. Immediately before terminalization, the reconciler rereads every
-live source head and reruns any disposition whose recorded advanced head changed. Once
-every disposition and required normalization is current and confirmed, the reconciler
-writes and rereads the integration pull request's durable
-snapshot-retired record, enters that terminal state, and releases only the old
-manifest's reservations, allowing every advanced source to compile again.
+The reconciler does not use the mutable source pull requests as completion state. It
+does not comment on, close, reopen, retarget, edit, or delete a source pull request or
+source branch. GitHub may independently mark an unchanged source merged or retarget a
+dependent pull request; those provider effects are observed as future compiler input
+and are never required for reservation release. Source and branch cleanup is outside
+admission correctness and is not performed by automation.
 
-Retirement is idempotent. Ambiguous comment, close, branch-delete, disposition, or
-reservation-release responses are resolved by rereading GitHub state before retry.
-Transport failure is never treated as success.
+Verification is idempotent and read-only. Contradictory or unavailable merge evidence
+retains reservations and pauses admission. Transport failure is never treated as
+success.
 
 ## Concurrency and snapshot semantics
 
-Every integration object other than absent, snapshot-retired, or abandoned reserves
+Every integration object other than absent, snapshot-landed, or abandoned reserves
 its source PR numbers and exact commit IDs from branch publication until its terminal
-record is confirmed. Compilation rejects overlap. The compiler and reconciler use the
-same repository-wide non-cancelling Actions concurrency group so only one admission
-mutation runs at a time. GitHub may replace an older pending run with a newer pending
-run; a cancelled or coalesced run is therefore recorded as incomplete and must be
-rerun, never treated as successful compilation or retirement.
+merge evidence is confirmed. Compilation rejects overlap. The compiler and reconciler
+use the same repository-wide non-cancelling Actions concurrency group so only one
+admission decision or mutation runs at a time. GitHub may replace an older pending run
+with a newer pending run; a cancelled or coalesced run is therefore recorded as
+incomplete and must be rerun, never treated as successful compilation or snapshot
+verification.
 
 The manifest is a snapshot. Source changes after compilation cannot change the
 approved integration object. Prequeue revalidation normally supersedes an object when
 its source heads or topology changed. If a source change races after revalidation and
 the merge wins, `main` still receives exactly the reviewed integration snapshot; the
-advanced source pull request is not closed. The manifested snapshot is retired under
-the guarded disposition and normalization rules above, its old reservation is
-released, and the advanced head remains eligible follow-up work.
+source pull request remains untouched. The exact merge evidence releases the old
+reservation, and the advanced head remains eligible follow-up work.
 
-A newly opened successor after compilation is not part of the manifested stack and
-remains open. The same recovery class includes an advanced manifested successor whose
-consumed predecessor has no advanced live follow-up. After the manifested predecessor
-lands, reconciliation normalizes either successor as one guarded, idempotent transaction
-only when its head is unchanged, its base and single canonical `Depends-On` marker still
-name that predecessor, no live manifest other than the merged object being retired
-reserves it, and the consumed predecessor head is reachable from `main`.
-
-The transaction makes the successor a new root by setting its base to `main` and
-removing that exact dependency marker. After each provider write it rereads both base
-and body. A partial update enters normalization-pending state, pauses admission, and
-reruns only the missing half after all guards are rechecked. The predecessor branch is
-retained until both fields and the unchanged successor head are confirmed. Any
-different body, base, head, reservation, or reachability result pauses for operator
-repair without deleting the predecessor branch.
+A newly opened or advanced successor after compilation is not part of the merged
+manifest and remains untouched. On a later compilation, a predecessor whose current
+exact head is already reachable from pinned `main` is a consumed edge under the source
+contract, so the successor becomes the logical root without changing its GitHub base,
+body, or branch. If the predecessor has advanced beyond what landed, it remains an
+active dependency and the physical ancestry rules must hold. The compiler rejects an
+ambiguous or stale physical stack; it never repairs one by mutating provider state.
 
 ## Failure and recovery
 
@@ -570,10 +581,13 @@ repair without deleting the predecessor branch.
   revalidation and one operator requeue operation, or abandon it deterministically.
 - **Ambiguous merge response:** Git reachability and the protected `main` merge commit
   are the oracle, not the transport response.
-- **Partial retirement:** resume idempotently; never close or delete an advanced head.
+- **Ambiguous snapshot verification:** reread the merged integration pull request,
+  manifest, and protected `main`; retain reservations until all agree, and never mutate
+  a source object.
 - **Coalesced Actions run:** report incomplete work and rerun the exact operation after
   the active writer exits.
-- **Invalid direct merge:** pause admission and refuse retirement until reconciled.
+- **Invalid direct merge:** pause admission and refuse snapshot verification until
+  reconciled.
 
 No recovery uses `--admin`, a bypass actor, a required CI context, an alternate token,
 or restoration of the retired sequential source-PR route.
@@ -700,15 +714,20 @@ Before implementation review, evidence must include:
   requeue, and deterministic abandonment;
 - appended, amended, wrong-parent, wrong-tree, and wrong-message head rejection;
 - ambiguous push, PR, and queue-comment state reconciliation;
-- source drift, including a merge-winning advanced source whose manifested snapshot is
-  retired, whose old reservation is released, and whose advanced head compiles again,
-  plus a second advance during reconciliation that forces disposition reread;
-- successor race and partial base/body normalization behavior, including preservation
-  of a fresh advanced stack when its predecessor also advanced;
+- source drift, including a merge-winning advanced source whose landed snapshot is
+  recorded, whose old reservation is released, and whose advanced head compiles again
+  without any source-pull-request or source-ref mutation;
+- consumed-edge compilation with the successor still based on the predecessor branch
+  and after provider retargeting to `main`, exclusion of the consumed predecessor from
+  reservations, and rejection when an unlanded predecessor advanced without the
+  required ancestry;
+- fake-provider verification that reconciliation never calls a source comment, close,
+  reopen, base/body update, or Git-ref mutation endpoint for exact-head, advanced-head,
+  and late-successor cases;
 - compiler rejection before any branch write for every change touching
   `.github/workflows/**`, `.mergify.yml`, `.github/CODEOWNERS`, or any path in the
   privileged control-plane closure, including nested paths, renames, and copies; and
-- exact-head, idempotent source retirement and branch deletion ordering.
+- idempotent landed-snapshot verification and terminal reservation release.
 
 Tests verify behavior through fixtures and fake provider responses; they do not scan
 implementation source text.
@@ -718,7 +737,10 @@ implementation source text.
 - workflow syntax and permissions;
 - supported operator dispatch pins the reviewed workflow definition to `main`, and a
   non-main invocation cannot create, approve, or queue an integration pull request;
-- no review-mutating or merge API call in automation;
+- reconciler permissions are exactly `contents: read` and `pull-requests: read`, and
+  the reconciler contains no pull-request/ref mutation, issue-comment,
+  review-mutating, or merge API call; the compiler's only write is the exact
+  content-addressed integration-ref publication;
 - no alternate GitHub token or required status context;
 - exact implementation `.mergify.yml` live validation, semantic confirmation that
   in-place checks are impossible, and confirmation that no repository file mirrors,
@@ -730,15 +752,18 @@ implementation source text.
 Repeat the proven provider gate with the exact implemented workflow and candidate
 configuration. Add one standalone and one two-member physical stack. Record source
 heads, manifest bytes, integration heads, native approvals, queue comments, Mergify
-events, merge commits, first-parent counts, retirement states, and final queue state.
+events, merge commits, first-parent counts, landed-snapshot evidence, reservations, and
+final queue state.
 Add two negative/edge arms: a governance-surface source is rejected before any
 integration branch write, and an approved integration pull request deliberately made
 behind `main` reaches merge without its head SHA changing between approval and merge.
 Also exercise both new lifecycle boundaries: one provider-driven dequeue is observed,
 with reservations retained while dequeued, then revalidated and either requeued or
-abandoned with terminal release; and one source advance that wins the merge race
-reaches snapshot retirement, releases the old reservation, and successfully compiles
-the advanced head as new follow-up work.
+abandoned with terminal release; and one source advance that wins the merge race is
+recorded without an automation-authored source mutation, releases the old reservation,
+and successfully compiles the advanced head as new follow-up work. Compile a successor
+through a consumed landed edge without changing its GitHub base or dependency marker,
+and publish the automation API trace proving no source mutation call occurred.
 
 All evidence is published before disposable-state deletion. A failed provider fact
 blocks activation; it is not patched with a bypass or fallback route.
@@ -766,7 +791,8 @@ Controlled activation is standalone first, then one two-member stack. Each must 
 4. accepted operator queue command;
 5. an integration head unchanged from exact-head approval through merge;
 6. one protected-main first-parent transition;
-7. exact source-head reachability and retirement; and
+7. exact source-head reachability, durable landed-snapshot merge evidence, terminal
+   reservation release, and no automation-authored source mutation; and
 8. an empty final Mergify queue.
 
 ## Implementation scope and governance
@@ -777,7 +803,7 @@ One implementation issue and pull request may contain only this admission slice:
 - deterministic manifest/Git construction;
 - the closed `tools/merge-admission/**` implementation subtree,
   `config/merge-admission.toml`, and fixed operator command documentation;
-- source retirement reconciler;
+- read-only source-state and merged-snapshot verifier;
 - behavior tests;
 - replacement of the legacy direct source-queue helper and its fake-`gh` harness;
 - the one-queue `.mergify.yml` change; and

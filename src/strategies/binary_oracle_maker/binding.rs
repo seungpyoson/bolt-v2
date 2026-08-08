@@ -80,6 +80,7 @@ pub struct MakerMarketDeclaration {
 pub struct MakerResolvedMarketBinding {
     pub market_key: String,
     pub family_key: String,
+    pub underlying_asset: String,
     pub market_id: String,
     pub evidence_identity: EvidenceMarketIdentity,
     pub yes: MakerLegBinding,
@@ -123,6 +124,13 @@ impl MakerConcreteMarketIdentity {
     #[must_use]
     pub fn gamma_market_id(&self) -> &str {
         self.evidence_identity.gamma_market_id()
+    }
+
+    /// The validated venue identity, excluding cadence and internal instrument
+    /// discriminators that complete this concrete maker-market identity.
+    #[must_use]
+    pub fn evidence_identity(&self) -> &EvidenceMarketIdentity {
+        &self.evidence_identity
     }
 }
 
@@ -203,6 +211,7 @@ pub fn resolve_declared_market(
     Ok(MakerResolvedMarketBinding {
         market_key: declaration.market_key.clone(),
         family_key: declaration.family_key.clone(),
+        underlying_asset: declaration.underlying_asset.clone(),
         market_id: market.market_id,
         evidence_identity,
         yes: leg_binding(market.up_instrument_id),

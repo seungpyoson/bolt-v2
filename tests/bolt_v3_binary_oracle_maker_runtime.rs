@@ -23,8 +23,7 @@ use bolt_v2::{
     bolt_v3_maker_risk::{MakerLossRiskPolicy, MakerRiskBlockReason, MakerRiskMode},
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeOrderPlanInput, MakerRuntimeQuoteInput, MakerRuntimeQuoteSetInput,
-        MakerRuntimeReferenceFairValueBlockReason, MakerRuntimeReferenceFairValueInput,
-        plan_maker_runtime_quote,
+        MakerRuntimeReferenceFairValueBlockReason, plan_maker_runtime_quote,
     },
     bolt_v3_market_families::{
         FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget,
@@ -47,9 +46,10 @@ use bolt_v2::{
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::{
         BinaryOracleMaker, BinaryOracleMakerConfig, BinaryOracleMakerMarketActionRouteInput,
-        BinaryOracleMakerRiskRouteInput, BinaryOracleMakerRuntimeQuoteRouteInput,
-        BinaryOracleMakerRuntimeReferenceQuoteBlockReason,
-        BinaryOracleMakerRuntimeReferenceQuoteRouteInput, mu::MakerMuState,
+        BinaryOracleMakerReferenceFairValueInput, BinaryOracleMakerRiskRouteInput,
+        BinaryOracleMakerRuntimeQuoteRouteInput, BinaryOracleMakerRuntimeReferenceQuoteBlockReason,
+        BinaryOracleMakerRuntimeReferenceQuoteRouteInput, BinaryOracleMakerStrikePrice,
+        mu::MakerMuState,
     },
 };
 use futures_util::{FutureExt, future::BoxFuture};
@@ -71,9 +71,19 @@ use nautilus_trading::StrategyNative;
 use rust_decimal::Decimal;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
-const TEST_REFERENCE_ASSET: &str = "reference_asset";
+const TEST_REFERENCE_ASSET: &str = "ETH";
 const TEST_REALIZED_VOL_SURFACE_ID: &str = "maker_reference_surface";
 const TEST_REALIZED_VOL_SOURCE_ID: &str = "maker_reference_rv";
+
+fn bound_strike<'a>(
+    market_key: &'a str,
+    underlying_asset: &'a str,
+    interval_start_ms: u64,
+    price: f64,
+) -> BinaryOracleMakerStrikePrice<'a> {
+    BinaryOracleMakerStrikePrice::try_new(market_key, underlying_asset, interval_start_ms, price)
+        .expect("strike fixture should be valid")
+}
 
 fn ready_realized_vol_snapshot(as_of_ms: u64, realized_vol: f64) -> RealizedVolSnapshot {
     RealizedVolSnapshot {
@@ -162,11 +172,8 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
             &mut market,
             &mut budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
-                quote: MakerRuntimeQuoteInput {
-                    quote_plan: quote_plan_inputs(static_binary_event::KEY),
-                    quote_set: quote_set_inputs(),
-                    order_plan: order_plan_inputs(),
-                },
+                quote_plan: quote_plan_inputs(static_binary_event::KEY),
+                quote_set: quote_set_inputs(),
                 submit_template: &maker_limit_post_only_template(),
                 price_precision: 2,
                 quantity_precision: 2,
@@ -185,25 +192,64 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
     let orders = outcome
         .orders
         .expect("maker quote tick should dispatch both leg order commands");
-    assert_eq!(
-        orders.yes.dispatch,
-        Some(MakerOrderDispatchOutcome::Submitted {
-            leg: Leg::Yes,
-            instrument_id: InstrumentId::from("YES.RUNTIME"),
-            client_order_id: ClientOrderId::from("MAKER-YES-1"),
-            price: Price::new(quote_plan.targets.leg_a.price, 2),
-            quantity: Quantity::new(2.0, 2),
-        })
+    let yes_dispatch = orders
+        .yes
+        .dispatch
+        .as_ref()
+        .expect("the active YES leg should dispatch");
+    let no_dispatch = orders
+        .no
+        .dispatch
+        .as_ref()
+        .expect("the active NO leg should dispatch");
+    let runtime_market = maker
+        .runtime()
+        .market(MARKET_KEY)
+        .expect("the routed market remains active");
+    let assert_runtime_submit = |dispatch: &MakerOrderDispatchOutcome,
+                                 leg: Leg,
+                                 price: Price,
+                                 quantity: Quantity| {
+        let MakerOrderDispatchOutcome::Submitted {
+            leg: dispatched_leg,
+            instrument_id,
+            client_order_id,
+            price: dispatched_price,
+            quantity: dispatched_quantity,
+        } = dispatch
+        else {
+            panic!("expected a submitted runtime leg, got {dispatch:?}");
+        };
+        assert_eq!(*dispatched_leg, leg);
+        assert_eq!(
+            *instrument_id,
+            runtime_market.leg_binding(leg).instrument_id,
+            "the route must target the active runtime binding, never a caller-supplied instrument"
+        );
+        assert_eq!(
+            runtime_market
+                .leg_binding(leg)
+                .active_order
+                .as_ref()
+                .expect("the dispatched identity must be reconciled into the runtime")
+                .client_order_id()
+                .as_str(),
+            client_order_id.as_str()
+        );
+        assert_eq!(*dispatched_price, price);
+        assert_eq!(*dispatched_quantity, quantity);
+    };
+    assert_runtime_submit(
+        yes_dispatch,
+        Leg::Yes,
+        Price::new(quote_plan.targets.leg_a.price, 2),
+        Quantity::new(2.0, 2),
     );
-    assert_eq!(
-        orders.no.dispatch,
-        Some(MakerOrderDispatchOutcome::Submitted {
-            leg: Leg::No,
-            instrument_id: InstrumentId::from("NO.RUNTIME"),
-            client_order_id: ClientOrderId::from("MAKER-NO-1"),
-            price: Price::new(quote_plan.targets.leg_b.price, 2),
-            quantity: Quantity::new(3.0, 2),
-        })
+    assert_runtime_submit(
+        no_dispatch,
+        Leg::No,
+        Price::new(quote_plan.targets.leg_b.price, 2),
+        Quantity::new(3.0, 2),
     );
     assert_eq!(market.market_state(), MarketState::Quoting);
     assert_eq!(budget.submit_commands_in_window(), 2);
@@ -213,9 +259,9 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
     let records = writer.records();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].strategy_id, "maker-strategy");
-    assert_eq!(records[0].instrument_id, "YES.RUNTIME");
+    assert_eq!(records[0].instrument_id, RUNTIME_YES_INSTRUMENT);
     assert_eq!(records[1].strategy_id, "maker-strategy");
-    assert_eq!(records[1].instrument_id, "NO.RUNTIME");
+    assert_eq!(records[1].instrument_id, RUNTIME_NO_INSTRUMENT);
     assert_eq!(writer.admission_decisions().len(), 2);
 }
 
@@ -230,11 +276,8 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
     let submit_template = maker_limit_post_only_template();
 
     let route_input = || BinaryOracleMakerRuntimeQuoteRouteInput {
-        quote: MakerRuntimeQuoteInput {
-            quote_plan: quote_plan_inputs(static_binary_event::KEY),
-            quote_set: quote_set_inputs(),
-            order_plan: order_plan_inputs(),
-        },
+        quote_plan: quote_plan_inputs(static_binary_event::KEY),
+        quote_set: quote_set_inputs(),
         submit_template: &submit_template,
         price_precision: 2,
         quantity_precision: 2,
@@ -298,11 +341,8 @@ fn maker_runtime_quote_does_not_misreport_collateral_rejection_as_requote_thrott
             &mut market,
             &mut budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
-                quote: MakerRuntimeQuoteInput {
-                    quote_plan: quote_plan_inputs(static_binary_event::KEY),
-                    quote_set,
-                    order_plan: order_plan_inputs(),
-                },
+                quote_plan: quote_plan_inputs(static_binary_event::KEY),
+                quote_set,
                 submit_template: &maker_limit_post_only_template(),
                 price_precision: 2,
                 quantity_precision: 2,
@@ -353,11 +393,8 @@ fn maker_runtime_quote_rejects_an_inactive_market_before_planning() {
         &mut market,
         &mut budget,
         BinaryOracleMakerRuntimeQuoteRouteInput {
-            quote: MakerRuntimeQuoteInput {
-                quote_plan: quote_plan_inputs(static_binary_event::KEY),
-                quote_set: quote_set_inputs(),
-                order_plan: order_plan_inputs(),
-            },
+            quote_plan: quote_plan_inputs(static_binary_event::KEY),
+            quote_set: quote_set_inputs(),
             submit_template: &maker_limit_post_only_template(),
             price_precision: 2,
             quantity_precision: 2,
@@ -409,11 +446,8 @@ fn maker_runtime_quote_rejects_a_family_mismatch_before_planning() {
         &mut market,
         &mut budget,
         BinaryOracleMakerRuntimeQuoteRouteInput {
-            quote: MakerRuntimeQuoteInput {
-                quote_plan: quote_plan_inputs(updown::KEY),
-                quote_set: quote_set_inputs(),
-                order_plan: order_plan_inputs(),
-            },
+            quote_plan: quote_plan_inputs(updown::KEY),
+            quote_set: quote_set_inputs(),
             submit_template: &maker_limit_post_only_template(),
             price_precision: 2,
             quantity_precision: 2,
@@ -500,13 +534,9 @@ fn maker_runtime_reference_quote_rejects_an_inactive_market_before_fair_value() 
         &mut budget,
         &mut selector,
         BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-            reference_fair_value: MakerRuntimeReferenceFairValueInput {
-                family_key: updown::KEY,
-                interval_start_ms: 1_000,
-                interval_end_ms: 2_000,
+            reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
                 reference_quotes: &[],
-                strike_price: Some(100.0),
-                seconds_to_market_end: Some(300),
+                strike: Some(bound_strike(MARKET_KEY, TEST_REFERENCE_ASSET, 1_000, 100.0)),
                 realized_volatility_snapshot: &realized_volatility_snapshot,
                 realized_volatility_max_source_age_ms: None,
                 pricing_kurtosis: 0.25,
@@ -514,7 +544,6 @@ fn maker_runtime_reference_quote_rejects_an_inactive_market_before_fair_value() 
             },
             quote_plan: quote_plan_inputs(updown::KEY),
             quote_set: quote_set_inputs(),
-            order_plan: order_plan_inputs(),
             submit_template: &maker_limit_post_only_template(),
             price_precision: 2,
             quantity_precision: 2,
@@ -564,13 +593,9 @@ fn maker_runtime_reference_quote_rejects_a_family_mismatch_before_fair_value() {
         &mut budget,
         &mut selector,
         BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-            reference_fair_value: MakerRuntimeReferenceFairValueInput {
-                family_key: updown::KEY,
-                interval_start_ms: 1_000,
-                interval_end_ms: 2_000,
+            reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
                 reference_quotes: &quotes,
-                strike_price: Some(100.0),
-                seconds_to_market_end: Some(300),
+                strike: Some(bound_strike(MARKET_KEY, TEST_REFERENCE_ASSET, 1_000, 100.0)),
                 realized_volatility_snapshot: &realized_volatility_snapshot,
                 realized_volatility_max_source_age_ms: None,
                 pricing_kurtosis: 0.25,
@@ -578,7 +603,6 @@ fn maker_runtime_reference_quote_rejects_a_family_mismatch_before_fair_value() {
             },
             quote_plan: quote_plan_inputs(updown::KEY),
             quote_set: quote_set_inputs(),
-            order_plan: order_plan_inputs(),
             submit_template: &maker_limit_post_only_template(),
             price_precision: 2,
             quantity_precision: 2,
@@ -596,6 +620,234 @@ fn maker_runtime_reference_quote_rejects_a_family_mismatch_before_fair_value() {
     assert_eq!(budget.rest_cost_in_window(), 0);
     assert!(writer.records().is_empty());
     assert!(writer.requote_throttles().is_empty());
+}
+
+#[test]
+fn maker_runtime_reference_quote_rejects_a_selector_for_another_asset() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let (mut maker, _cache) = maker_with_active_updown_market(writer.recorder(), admission);
+    let interval_start_ms = maker
+        .runtime()
+        .market(MARKET_KEY)
+        .expect("the updown runtime market is active")
+        .start_timestamp_milliseconds();
+    let quotes = [reference_quote(
+        "BTC",
+        "primary",
+        100.05,
+        RUNTIME_NOW_MS - 10,
+    )];
+    let realized_volatility_snapshot = ready_realized_vol_snapshot(RUNTIME_NOW_MS - 100, 1.5);
+    let mut selector = ReferencePriceSelector::new("BTC", vec!["primary".to_string()], 1, 100, 25)
+        .expect("foreign selector fixture should be valid");
+    let mut market = MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("ample requote budget fixture builds");
+    let mut quote_set = quote_set_inputs();
+    quote_set.now_ms = RUNTIME_NOW_MS;
+
+    let result = maker.route_maker_runtime_reference_quote(
+        MARKET_KEY,
+        &mut market,
+        &mut budget,
+        &mut selector,
+        BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+            reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
+                reference_quotes: &quotes,
+                strike: Some(bound_strike(
+                    MARKET_KEY,
+                    RUNTIME_UPDOWN_ASSET,
+                    interval_start_ms,
+                    100.0,
+                )),
+                realized_volatility_snapshot: &realized_volatility_snapshot,
+                realized_volatility_max_source_age_ms: None,
+                pricing_kurtosis: 0.25,
+                evaluation_receive_ms: LocalReceiveMs::new(RUNTIME_NOW_MS),
+            },
+            quote_plan: quote_plan_inputs(updown::KEY),
+            quote_set,
+            submit_template: &maker_limit_post_only_template(),
+            price_precision: 2,
+            quantity_precision: 2,
+            submit_order_prefix: "maker_submit",
+            max_fee_bps: Decimal::ZERO,
+        },
+    );
+
+    assert!(
+        result.is_err(),
+        "reference selector asset must match the active runtime market"
+    );
+    assert_eq!(market.market_state(), MarketState::Idle);
+    assert_eq!(budget.submit_commands_in_window(), 0);
+    assert_eq!(budget.rest_cost_in_window(), 0);
+    assert!(writer.records().is_empty());
+    assert!(writer.requote_throttles().is_empty());
+}
+
+#[test]
+fn maker_runtime_reference_quote_rejects_a_strike_from_another_market_asset_or_window() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let (mut maker, _cache) = maker_with_active_updown_market(writer.recorder(), admission);
+    let runtime_market = maker
+        .runtime()
+        .market(MARKET_KEY)
+        .expect("the updown runtime market is active");
+    let interval_start_ms = runtime_market.start_timestamp_milliseconds();
+    let quotes = [reference_quote(
+        TEST_REFERENCE_ASSET,
+        "primary",
+        100.05,
+        RUNTIME_NOW_MS - 10,
+    )];
+    let foreign_strikes = [
+        (
+            "market",
+            bound_strike(
+                "other-market",
+                RUNTIME_UPDOWN_ASSET,
+                interval_start_ms,
+                100.0,
+            ),
+        ),
+        (
+            "asset",
+            bound_strike(MARKET_KEY, "BTC", interval_start_ms, 100.0),
+        ),
+        (
+            "window",
+            bound_strike(
+                MARKET_KEY,
+                RUNTIME_UPDOWN_ASSET,
+                interval_start_ms + 1,
+                100.0,
+            ),
+        ),
+    ];
+    let realized_volatility_snapshot = ready_realized_vol_snapshot(RUNTIME_NOW_MS - 100, 1.5);
+    let mut selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let mut market = MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("ample requote budget fixture builds");
+    for (mismatch, foreign_strike) in foreign_strikes {
+        let mut quote_set = quote_set_inputs();
+        quote_set.now_ms = RUNTIME_NOW_MS;
+        let error = maker
+            .route_maker_runtime_reference_quote(
+                MARKET_KEY,
+                &mut market,
+                &mut budget,
+                &mut selector,
+                BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+                    reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
+                        reference_quotes: &quotes,
+                        strike: Some(foreign_strike),
+                        realized_volatility_snapshot: &realized_volatility_snapshot,
+                        realized_volatility_max_source_age_ms: None,
+                        pricing_kurtosis: 0.25,
+                        evaluation_receive_ms: LocalReceiveMs::new(RUNTIME_NOW_MS),
+                    },
+                    quote_plan: quote_plan_inputs(updown::KEY),
+                    quote_set,
+                    submit_template: &maker_limit_post_only_template(),
+                    price_precision: 2,
+                    quantity_precision: 2,
+                    submit_order_prefix: "maker_submit",
+                    max_fee_bps: Decimal::ZERO,
+                },
+            )
+            .expect_err("a foreign strike must fail before fair-value pricing");
+        assert!(
+            error.to_string().contains(mismatch),
+            "the failure must identify the mismatched strike field: {error:#}"
+        );
+    }
+
+    assert_eq!(market.market_state(), MarketState::Idle);
+    assert_eq!(budget.submit_commands_in_window(), 0);
+    assert_eq!(budget.rest_cost_in_window(), 0);
+    assert!(writer.records().is_empty());
+    assert!(writer.requote_throttles().is_empty());
+}
+
+#[test]
+fn maker_runtime_reference_quote_does_not_price_a_foreign_same_family_window() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let (mut maker, _cache) = maker_with_active_updown_market(writer.recorder(), admission);
+    let interval_start_ms = maker
+        .runtime()
+        .market(MARKET_KEY)
+        .expect("the updown runtime market is active")
+        .start_timestamp_milliseconds();
+    let quotes = [reference_quote(
+        TEST_REFERENCE_ASSET,
+        "primary",
+        100.05,
+        1_490,
+    )];
+    let realized_volatility_snapshot = ready_realized_vol_snapshot(1_400, 1.5);
+    let mut selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let mut market = MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("ample requote budget fixture builds");
+    let mut quote_set = quote_set_inputs();
+    quote_set.now_ms = 1_500;
+
+    let result = maker.route_maker_runtime_reference_quote(
+        MARKET_KEY,
+        &mut market,
+        &mut budget,
+        &mut selector,
+        BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+            reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
+                reference_quotes: &quotes,
+                strike: Some(bound_strike(
+                    MARKET_KEY,
+                    RUNTIME_UPDOWN_ASSET,
+                    interval_start_ms,
+                    100.0,
+                )),
+                realized_volatility_snapshot: &realized_volatility_snapshot,
+                realized_volatility_max_source_age_ms: None,
+                pricing_kurtosis: 0.25,
+                evaluation_receive_ms: LocalReceiveMs::new(1_500),
+            },
+            quote_plan: quote_plan_inputs(updown::KEY),
+            quote_set,
+            submit_template: &maker_limit_post_only_template(),
+            price_precision: 2,
+            quantity_precision: 2,
+            submit_order_prefix: "maker_submit",
+            max_fee_bps: Decimal::ZERO,
+        },
+    );
+
+    assert!(
+        result.is_err(),
+        "an evaluation timestamp outside the active runtime window must fail before fair-value pricing"
+    );
+    assert_eq!(market.market_state(), MarketState::Idle);
+    assert_eq!(budget.submit_commands_in_window(), 0);
+    assert_eq!(budget.rest_cost_in_window(), 0);
+    assert!(writer.records().is_empty());
 }
 
 /// A blocked leg whose *observation* alternates while its blocked state does not
@@ -622,11 +874,8 @@ fn maker_runtime_quote_records_one_throttle_while_the_bound_oscillates() {
         let mut quote_set = quote_set_inputs();
         quote_set.now_ms = now_ms;
         BinaryOracleMakerRuntimeQuoteRouteInput {
-            quote: MakerRuntimeQuoteInput {
-                quote_plan: quote_plan_inputs(static_binary_event::KEY),
-                quote_set,
-                order_plan: order_plan_inputs(),
-            },
+            quote_plan: quote_plan_inputs(static_binary_event::KEY),
+            quote_set,
             submit_template: &submit_template,
             price_precision: 2,
             quantity_precision: 2,
@@ -691,11 +940,8 @@ fn maker_runtime_quote_records_each_market_in_a_shared_family() {
                 &mut market,
                 &mut budget,
                 BinaryOracleMakerRuntimeQuoteRouteInput {
-                    quote: MakerRuntimeQuoteInput {
-                        quote_plan: quote_plan_inputs(static_binary_event::KEY),
-                        quote_set: quote_set_inputs(),
-                        order_plan: order_plan_inputs(),
-                    },
+                    quote_plan: quote_plan_inputs(static_binary_event::KEY),
+                    quote_set: quote_set_inputs(),
                     submit_template: &submit_template,
                     price_precision: 2,
                     quantity_precision: 2,
@@ -757,6 +1003,11 @@ fn maker_runtime_quote_records_a_cadence_only_successor_after_refresh() {
     );
     assert_eq!(successor.leg_binding(Leg::No).instrument_id, predecessor_no);
     assert_eq!(
+        successor_identity.evidence_identity(),
+        predecessor_identity.evidence_identity(),
+        "the venue evidence identity must stay fixed while only the cadence start changes"
+    );
+    assert_eq!(
         successor_identity.gamma_market_id(),
         predecessor_identity.gamma_market_id(),
         "the cadence start is the only concrete-identity discriminator in this fixture"
@@ -801,6 +1052,11 @@ fn maker_runtime_quote_records_an_instrument_only_successor_after_refresh() {
         predecessor_yes
     );
     assert_eq!(successor.leg_binding(Leg::No).instrument_id, predecessor_no);
+    assert_eq!(
+        successor_identity.evidence_identity(),
+        predecessor_identity.evidence_identity(),
+        "the venue evidence identity must stay fixed while only the internal YES instrument changes"
+    );
     assert_eq!(
         successor_identity.gamma_market_id(),
         predecessor_identity.gamma_market_id(),
@@ -892,8 +1148,30 @@ fn maker_runtime_metadata_identity_round_trip_prunes_each_predecessor_episode() 
             .next_order,
         Some(no_next.clone())
     );
-    record_one_budget_block(&mut maker, RUNTIME_MARKET_KEY);
+    maker
+        .run_quote_cycle(
+            RUNTIME_MARKET_KEY,
+            &mut market,
+            &mut budget,
+            BinaryOracleMakerQuoteCycleInput {
+                quote_plan: quote_plan_inputs(RUNTIME_STATIC_FAMILY),
+                quote_set: quote_set_inputs(),
+                submit_template: &submit_template,
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+                max_fee_bps: Decimal::ZERO,
+            },
+        )
+        .expect("the corrected identity routes with the retained quote state")
+        .expect("the corrected identity remains active");
     assert_eq!(writer.requote_throttles().len(), 2);
+    let after_b = maker
+        .runtime()
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the corrected identity remains active");
+    let yes_after_b = after_b.leg_binding(Leg::Yes).active_order.clone();
+    let no_after_b = after_b.leg_binding(Leg::No).next_order.clone();
 
     refresh_maker_instruments(&mut maker, &cache, runtime_static_instruments());
     let reverted = maker
@@ -901,12 +1179,25 @@ fn maker_runtime_metadata_identity_round_trip_prunes_each_predecessor_episode() 
         .market(RUNTIME_MARKET_KEY)
         .expect("the original metadata identity is active again");
     assert_eq!(reverted.concrete_identity(), identity_a);
-    assert_eq!(
-        reverted.leg_binding(Leg::Yes).active_order,
-        Some(yes_active)
-    );
-    assert_eq!(reverted.leg_binding(Leg::No).next_order, Some(no_next));
-    record_one_budget_block(&mut maker, RUNTIME_MARKET_KEY);
+    assert_eq!(reverted.leg_binding(Leg::Yes).active_order, yes_after_b);
+    assert_eq!(reverted.leg_binding(Leg::No).next_order, no_after_b);
+    maker
+        .run_quote_cycle(
+            RUNTIME_MARKET_KEY,
+            &mut market,
+            &mut budget,
+            BinaryOracleMakerQuoteCycleInput {
+                quote_plan: quote_plan_inputs(RUNTIME_STATIC_FAMILY),
+                quote_set: quote_set_inputs(),
+                submit_template: &submit_template,
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+                max_fee_bps: Decimal::ZERO,
+            },
+        )
+        .expect("the reverted identity routes with the retained quote state")
+        .expect("the reverted identity remains active");
     assert_eq!(
         writer.requote_throttles().len(),
         3,
@@ -938,11 +1229,8 @@ fn maker_runtime_quote_records_a_second_block_across_a_cycle_with_no_quote_set()
             quote_plan.net_position = quote_plan.position_cap;
         }
         BinaryOracleMakerRuntimeQuoteRouteInput {
-            quote: MakerRuntimeQuoteInput {
-                quote_plan,
-                quote_set: quote_set_inputs(),
-                order_plan: order_plan_inputs(),
-            },
+            quote_plan,
+            quote_set: quote_set_inputs(),
             submit_template: &submit_template,
             price_precision: 2,
             quantity_precision: 2,
@@ -987,11 +1275,18 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let (mut maker, _cache) = maker_with_active_updown_market(writer.recorder(), admission.clone());
+    let runtime_market = maker
+        .runtime()
+        .market(MARKET_KEY)
+        .expect("the updown runtime market is active");
+    let interval_start_ms = runtime_market.start_timestamp_milliseconds();
+    let interval_end_ms = runtime_market.expiration_timestamp_milliseconds();
+    let expected_seconds_to_market_end = interval_end_ms.saturating_sub(RUNTIME_NOW_MS) / 1_000;
     let quotes = vec![
-        reference_quote(TEST_REFERENCE_ASSET, "primary", 99.0, 1_000),
-        reference_quote(TEST_REFERENCE_ASSET, "backup", 100.05, 1_490),
+        reference_quote(TEST_REFERENCE_ASSET, "primary", 99.0, interval_start_ms),
+        reference_quote(TEST_REFERENCE_ASSET, "backup", 100.05, RUNTIME_NOW_MS - 10),
     ];
-    let realized_volatility_snapshot = ready_realized_vol_snapshot(1_400, 1.5);
+    let realized_volatility_snapshot = ready_realized_vol_snapshot(RUNTIME_NOW_MS - 100, 1.5);
     let mut selector = ReferencePriceSelector::new(
         TEST_REFERENCE_ASSET,
         vec!["primary".to_string(), "backup".to_string()],
@@ -1000,27 +1295,28 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         25,
     )
     .expect("selector fixture should be valid");
-    let fair_input = MakerRuntimeReferenceFairValueInput {
-        family_key: updown::KEY,
-        interval_start_ms: 1_000,
-        interval_end_ms: 2_000,
+    let fair_input = BinaryOracleMakerReferenceFairValueInput {
         reference_quotes: &quotes,
-        strike_price: Some(100.0),
-        seconds_to_market_end: Some(300),
+        strike: Some(bound_strike(
+            MARKET_KEY,
+            RUNTIME_UPDOWN_ASSET,
+            interval_start_ms,
+            100.0,
+        )),
         realized_volatility_snapshot: &realized_volatility_snapshot,
         realized_volatility_max_source_age_ms: None,
         pricing_kurtosis: 0.25,
-        evaluation_receive_ms: LocalReceiveMs::new(1_500),
+        evaluation_receive_ms: LocalReceiveMs::new(RUNTIME_NOW_MS),
     };
     let quote_set_at_reference_evaluation = || {
         let mut quote_set = quote_set_inputs();
-        quote_set.now_ms = 1_500;
+        quote_set.now_ms = RUNTIME_NOW_MS;
         quote_set
     };
     let expected_fair_probability_up = updown::fair_probability_up(&FairProbabilityInputs {
         spot_price: 100.05,
-        strike_price: fair_input.strike_price.expect("fixture strike"),
-        seconds_to_market_end: fair_input.seconds_to_market_end.expect("fixture expiry"),
+        strike_price: fair_input.strike.expect("fixture strike").price(),
+        seconds_to_market_end: expected_seconds_to_market_end,
         realized_vol: 1.5,
         pricing_kurtosis: fair_input.pricing_kurtosis,
     })
@@ -1040,7 +1336,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 reference_fair_value: fair_input,
                 quote_plan: quote_plan_inputs(updown::KEY),
                 quote_set: quote_set_at_reference_evaluation(),
-                order_plan: order_plan_inputs(),
                 submit_template: &maker_limit_post_only_template(),
                 price_precision: 2,
                 quantity_precision: 2,
@@ -1060,18 +1355,18 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
     assert_eq!(fair.spot_price, 100.05);
     assert_eq!(
         fair.strike_price,
-        fair_input.strike_price.expect("fixture strike")
+        fair_input.strike.expect("fixture strike").price()
     );
-    assert_eq!(
-        fair.seconds_to_market_end,
-        fair_input.seconds_to_market_end.expect("fixture expiry")
-    );
+    assert_eq!(fair.seconds_to_market_end, expected_seconds_to_market_end);
     assert_eq!(fair.realized_vol, 1.5);
     assert_eq!(fair.pricing_kurtosis, fair_input.pricing_kurtosis);
     assert_eq!(fair.reference_current_price, 100.05);
     assert_eq!(fair.source_id, "backup");
     assert_eq!(fair.reference_current_price_source_id, "backup");
-    assert_eq!(fair.reference_current_price_observed_ts_ms, 1_490);
+    assert_eq!(
+        fair.reference_current_price_observed_ts_ms,
+        RUNTIME_NOW_MS - 10
+    );
     assert!(fair.failed_over);
     assert!(fair.reference_current_price_failed_over);
     assert_eq!(
@@ -1082,7 +1377,7 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         fair.realized_vol_source_venue.as_deref(),
         Some(TEST_REALIZED_VOL_SOURCE_ID)
     );
-    assert_eq!(fair.realized_vol_source_ts_ms, Some(1_400));
+    assert_eq!(fair.realized_vol_source_ts_ms, Some(RUNTIME_NOW_MS - 100));
     assert_eq!(fair.fair_probability_up, expected_fair_probability_up);
     let quote_plan = outcome
         .quote
@@ -1120,13 +1415,12 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
             &mut blocked_budget,
             &mut blocked_selector,
             BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-                reference_fair_value: MakerRuntimeReferenceFairValueInput {
+                reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
                     reference_quotes: &[],
                     ..fair_input
                 },
                 quote_plan: quote_plan_inputs(updown::KEY),
                 quote_set: quote_set_at_reference_evaluation(),
-                order_plan: order_plan_inputs(),
                 submit_template: &maker_limit_post_only_template(),
                 price_precision: 2,
                 quantity_precision: 2,
@@ -1156,76 +1450,60 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
     assert_eq!(blocked_budget.rest_cost_in_window(), 0);
     assert_eq!(blocked_writer.records().len(), 0);
 
-    for (reference_fair_value, expected_blocker) in [
-        (
-            MakerRuntimeReferenceFairValueInput {
-                strike_price: None,
-                ..fair_input
-            },
-            MakerRuntimeReferenceFairValueBlockReason::StrikePriceMissing,
-        ),
-        (
-            MakerRuntimeReferenceFairValueInput {
-                seconds_to_market_end: None,
-                ..fair_input
-            },
-            MakerRuntimeReferenceFairValueBlockReason::SecondsToExpiryMissing,
-        ),
-    ] {
-        let missing_input_writer =
-            support::current_evidence::RecordingDecisionEvidenceWriter::default();
-        let missing_input_admission = Arc::new(BoltV3SubmitAdmissionState::new(
-            missing_input_writer.recorder(),
-        ));
-        let (mut missing_input_maker, _cache) = maker_with_active_updown_market(
-            missing_input_writer.recorder(),
-            missing_input_admission,
-        );
-        let mut missing_input_selector = ReferencePriceSelector::new(
-            TEST_REFERENCE_ASSET,
-            vec!["primary".to_string(), "backup".to_string()],
-            1,
-            100,
-            25,
-        )
-        .expect("selector fixture should be valid");
-        let mut missing_input_market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
-        let mut missing_input_budget = build_requote_budget_pair("40/00:01:00", 100, 500)
-            .expect("well-formed rate config builds a budget");
+    let missing_input_writer =
+        support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let missing_input_admission = Arc::new(BoltV3SubmitAdmissionState::new(
+        missing_input_writer.recorder(),
+    ));
+    let (mut missing_input_maker, _cache) =
+        maker_with_active_updown_market(missing_input_writer.recorder(), missing_input_admission);
+    let mut missing_input_selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string(), "backup".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let mut missing_input_market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut missing_input_budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    let expected_blocker = MakerRuntimeReferenceFairValueBlockReason::StrikePriceMissing;
 
-        let missing_input = missing_input_maker
-            .route_maker_runtime_reference_quote(
-                MARKET_KEY,
-                &mut missing_input_market,
-                &mut missing_input_budget,
-                &mut missing_input_selector,
-                BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-                    reference_fair_value,
-                    quote_plan: quote_plan_inputs(reference_fair_value.family_key),
-                    quote_set: quote_set_at_reference_evaluation(),
-                    order_plan: order_plan_inputs(),
-                    submit_template: &maker_limit_post_only_template(),
-                    price_precision: 2,
-                    quantity_precision: 2,
-                    submit_order_prefix: "maker_submit",
-                    max_fee_bps: Decimal::ZERO,
+    let missing_input = missing_input_maker
+        .route_maker_runtime_reference_quote(
+            MARKET_KEY,
+            &mut missing_input_market,
+            &mut missing_input_budget,
+            &mut missing_input_selector,
+            BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+                reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
+                    strike: None,
+                    ..fair_input
                 },
-            )
-            .expect("maker reference quote shared fair-value blocker should be a route outcome");
+                quote_plan: quote_plan_inputs(updown::KEY),
+                quote_set: quote_set_at_reference_evaluation(),
+                submit_template: &maker_limit_post_only_template(),
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+                max_fee_bps: Decimal::ZERO,
+            },
+        )
+        .expect("maker reference quote shared fair-value blocker should be a route outcome");
 
-        assert_eq!(missing_input.fair_value.fair_value, None);
-        assert_eq!(missing_input.fair_value.blocked_by, Some(expected_blocker));
-        assert_eq!(
-            missing_input.blocked_by,
-            Some(BinaryOracleMakerRuntimeReferenceQuoteBlockReason::FairValue(expected_blocker))
-        );
-        assert_eq!(missing_input.quote, None);
-        assert_eq!(missing_input.orders, None);
-        assert_eq!(missing_input_market.market_state(), MarketState::Idle);
-        assert_eq!(missing_input_budget.submit_commands_in_window(), 0);
-        assert_eq!(missing_input_budget.rest_cost_in_window(), 0);
-        assert_eq!(missing_input_writer.records().len(), 0);
-    }
+    assert_eq!(missing_input.fair_value.fair_value, None);
+    assert_eq!(missing_input.fair_value.blocked_by, Some(expected_blocker));
+    assert_eq!(
+        missing_input.blocked_by,
+        Some(BinaryOracleMakerRuntimeReferenceQuoteBlockReason::FairValue(expected_blocker))
+    );
+    assert_eq!(missing_input.quote, None);
+    assert_eq!(missing_input.orders, None);
+    assert_eq!(missing_input_market.market_state(), MarketState::Idle);
+    assert_eq!(missing_input_budget.submit_commands_in_window(), 0);
+    assert_eq!(missing_input_budget.rest_cost_in_window(), 0);
+    assert_eq!(missing_input_writer.records().len(), 0);
 }
 
 #[test]
@@ -2435,11 +2713,8 @@ fn record_one_budget_block(maker: &mut BinaryOracleMaker, market_key: &str) {
             &mut market,
             &mut budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
-                quote: MakerRuntimeQuoteInput {
-                    quote_plan: quote_plan_inputs(RUNTIME_STATIC_FAMILY),
-                    quote_set: quote_set_inputs(),
-                    order_plan: order_plan_inputs(),
-                },
+                quote_plan: quote_plan_inputs(RUNTIME_STATIC_FAMILY),
+                quote_set: quote_set_inputs(),
                 submit_template: &submit_template,
                 price_precision: 2,
                 quantity_precision: 2,
@@ -2568,11 +2843,8 @@ fn maker_lifecycle_retires_throttle_episodes_from_the_runtime_owned_store() {
                 &mut quote,
                 &mut budget,
                 BinaryOracleMakerRuntimeQuoteRouteInput {
-                    quote: MakerRuntimeQuoteInput {
-                        quote_plan: quote_plan_inputs(RUNTIME_STATIC_FAMILY),
-                        quote_set: quote_set_inputs(),
-                        order_plan: order_plan_inputs(),
-                    },
+                    quote_plan: quote_plan_inputs(RUNTIME_STATIC_FAMILY),
+                    quote_set: quote_set_inputs(),
                     submit_template: &submit_template,
                     price_precision: 2,
                     quantity_precision: 2,

@@ -197,6 +197,25 @@ impl MakerMarketRuntime {
         &self.binding.family_key
     }
 
+    /// The configured asset that owns reference prices and the opening strike.
+    #[must_use]
+    pub fn underlying_asset(&self) -> &str {
+        &self.binding.underlying_asset
+    }
+
+    /// Start of the active cadence window used for reference-price selection.
+    #[must_use]
+    pub fn start_timestamp_milliseconds(&self) -> u64 {
+        self.binding.start_timestamp_milliseconds
+    }
+
+    /// End of the active cadence window used for reference-price selection and
+    /// time-to-expiry pricing.
+    #[must_use]
+    pub fn expiration_timestamp_milliseconds(&self) -> u64 {
+        self.binding.expiration_timestamp_milliseconds
+    }
+
     /// The concrete venue `market_id` this slot resolved to. Retained as a plain
     /// diagnostics accessor; it is **not** the cadence-window discriminator (that is
     /// `start_timestamp_milliseconds`), because venue metadata is not guaranteed to
@@ -294,10 +313,11 @@ pub struct MakerRuntime {
     /// define its lifetime. Keeping it in the shell made it possible to pass a
     /// different vector to refresh or stop, silently retaining dead episodes.
     ///
-    /// It accumulates all currently blocked identities rather than replacing the
-    /// latest one per leg. Replacement becomes last-write-wins when a second
-    /// block reason exists and re-emits on reason alternation. Unblock removes the
-    /// leg's entries; refresh and deactivation remove retired market entries.
+    /// It accumulates all currently blocked episode identities rather than
+    /// replacing the latest observation per leg. `block_reason` remains part of
+    /// that identity so independently emitted semantic blockers cannot alias one
+    /// another. Unblock removes the leg's entries; refresh and deactivation remove
+    /// retired market entries.
     throttle_episodes: Vec<super::RequoteThrottleEpisodeId>,
     /// Per-(market_key, leg) generation high-water marks — the single source of
     /// truth for the next generation each leg mints. Persists independently of
@@ -499,17 +519,30 @@ impl MakerRuntime {
                 // `same_window` treats it as a roll, so the live trade-subscription differ
                 // never strands on a re-issued instrument. Evidence identity is refreshed
                 // independently: it may receive a metadata correction without changing the
-                // order-lifecycle identity, and throttle pruning must see the correction
-                // without discarding handles for resting orders. The predecessor's
-                // expiration, seconds-to-end, selection outcome, and source identity stay
-                // unchanged on this retain path; no maker runtime consumer reads them at
-                // this foundation.
+                // order-lifecycle identity, and throttle pruning and reference pricing must
+                // see the corrected metadata without discarding handles for resting orders.
+                // NautilusTrader's `InstrumentId` is the sole Bolt order-lifecycle key;
+                // venue token strings inside evidence identity remain NT-owned translation
+                // metadata and must not make Bolt forget a cancel/modify handle.
                 Some(mut prior) if same_window(&prior.binding, binding) => {
+                    prior.binding.family_key.clone_from(&binding.family_key);
+                    prior
+                        .binding
+                        .underlying_asset
+                        .clone_from(&binding.underlying_asset);
                     prior.binding.market_id.clone_from(&binding.market_id);
                     prior
                         .binding
                         .evidence_identity
                         .clone_from(&binding.evidence_identity);
+                    prior.binding.selection_outcome = binding.selection_outcome;
+                    prior
+                        .binding
+                        .source_identity
+                        .clone_from(&binding.source_identity);
+                    prior.binding.expiration_timestamp_milliseconds =
+                        binding.expiration_timestamp_milliseconds;
+                    prior.binding.seconds_to_end = binding.seconds_to_end;
                     prior.allocation_notional = allocation_notional;
                     prior
                 }
@@ -685,6 +718,7 @@ mod tests {
         MakerResolvedMarketBinding {
             market_key: "configured-market".to_string(),
             family_key: "static_binary_event".to_string(),
+            underlying_asset: "ETH".to_string(),
             market_id: "gamma-market".to_string(),
             evidence_identity: EvidenceMarketIdentity::try_new(
                 "gamma-market".to_string(),
@@ -773,7 +807,12 @@ mod tests {
             .market("configured-market")
             .expect("market is active")
             .concrete_identity();
-        let corrected = resolved_binding("question-1-corrected");
+        let mut corrected = resolved_binding("question-1-corrected");
+        corrected.underlying_asset = "BTC".to_string();
+        corrected.expiration_timestamp_milliseconds = 302_000;
+        corrected.seconds_to_end = 299;
+        corrected.selection_outcome = MarketSelectionOutcome::Next;
+        corrected.source_identity.market_slug = "market-slug-corrected".to_string();
         let corrected_identity = corrected.concrete_identity();
 
         runtime.apply_resolution(
@@ -802,6 +841,17 @@ mod tests {
             retained.concrete_identity(),
             corrected_identity,
             "the retained runtime must expose the corrected evidence identity"
+        );
+        assert_eq!(retained.expiration_timestamp_milliseconds(), 302_000);
+        assert_eq!(retained.underlying_asset(), "BTC");
+        assert_eq!(retained.binding.seconds_to_end, 299);
+        assert_eq!(
+            retained.binding.selection_outcome,
+            MarketSelectionOutcome::Next
+        );
+        assert_eq!(
+            retained.binding.source_identity.market_slug,
+            "market-slug-corrected"
         );
     }
 

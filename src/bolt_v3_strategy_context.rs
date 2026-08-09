@@ -14,7 +14,7 @@ use crate::{
         SettlementRecoveryFacts,
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter,
-    bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
+    bolt_v3_order_execution::{BoltV3OrderEconomicsHandle, BoltV3OrderExecutionPolicy},
     bolt_v3_providers::FeeProvider,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
@@ -73,6 +73,7 @@ impl SettlementCapability {
 #[derive(Clone)]
 pub struct StrategyBuildContext {
     fee_provider: Arc<dyn FeeProvider>,
+    order_economics: Option<BoltV3OrderEconomicsHandle>,
     decision_evidence: StrategyDecisionEvidence,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     order_execution_policy: BoltV3OrderExecutionPolicy,
@@ -164,6 +165,7 @@ impl StrategyBuildContext {
     ) -> Self {
         Self {
             fee_provider,
+            order_economics: None,
             decision_evidence: decision_evidence.into(),
             submit_admission,
             order_execution_policy,
@@ -171,6 +173,17 @@ impl StrategyBuildContext {
             realized_volatility: None,
             settlement: None,
         }
+    }
+
+    pub fn with_order_economics(mut self, handle: BoltV3OrderEconomicsHandle) -> Self {
+        self.order_economics = Some(handle);
+        self
+    }
+
+    pub fn order_economics(&self) -> anyhow::Result<BoltV3OrderEconomicsHandle> {
+        self.order_economics
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("strategy order economics authority is unavailable"))
     }
 
     #[cfg(test)]

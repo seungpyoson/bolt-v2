@@ -562,6 +562,7 @@ fn shared_strategy_assembly_installs_polymarket_rv_and_settlement_capabilities()
         .expect("configured Polymarket client should assemble a strategy build context");
 
     assert_eq!(assembled.execution_venue(), Venue::from("POLYMARKET"));
+    assert!(assembled.order_economics().is_ok());
     assert!(assembled.realized_volatility_capability().is_some());
     assert!(assembled.settlement_capability().is_some());
     assert_eq!(assembled.settlement_account_id(), Some("POLYMARKET-001"));
@@ -572,7 +573,7 @@ fn shared_strategy_assembly_installs_polymarket_rv_and_settlement_capabilities()
 }
 
 #[test]
-fn shared_strategy_assembly_supports_inline_hyperliquid_without_settlement_capability() {
+fn shared_strategy_assembly_rejects_inline_hyperliquid_without_economics_authority() {
     let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("bolt-v3 fixture should load");
     loaded.root.clients.insert(
@@ -584,23 +585,18 @@ fn shared_strategy_assembly_supports_inline_hyperliquid_without_settlement_capab
     );
     loaded.strategies[0].config.execution_client_id = "hyperliquid_perps".into();
     let resolved = fixture_resolved_secrets();
-    let context = assembly_context(
+    let error = try_assembly_context(
         &loaded,
         &resolved,
         StrategyRuntimeCapabilities {
             realized_volatility: true,
             settlement: false,
         },
-    );
+    )
+    .err()
+    .expect("an execution client without matching economics authority must fail closed");
 
-    let assembled = assemble_strategy_build_context(&context)
-        .expect("inline Hyperliquid client should assemble through the shared boundary");
-
-    assert_eq!(assembled.execution_venue(), Venue::from("HYPERLIQUID"));
-    assert!(assembled.realized_volatility_capability().is_some());
-    assert!(assembled.settlement_capability().is_none());
-    assert_eq!(assembled.settlement_account_id(), None);
-    assert_eq!(assembled.settlement_currency(), None);
+    assert!(error.to_string().contains("authoritative economics input"));
 }
 
 #[test]

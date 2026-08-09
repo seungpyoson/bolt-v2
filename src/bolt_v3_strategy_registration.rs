@@ -11,7 +11,7 @@ use crate::bolt_v3_current_evidence::{
     BookingRecoveryFacts, SettlementRecoveryFacts, StrategyEvidenceHandles,
 };
 use crate::bolt_v3_economics_runtime::{
-    AuthoritativeEconomicsInputStore, BoundExecutionEconomics, bind_execution_economics,
+    AuthoritativeEconomicsInputStore, bind_execution_economics,
 };
 use crate::bolt_v3_iv::{
     config::IvProfile,
@@ -20,7 +20,7 @@ use crate::bolt_v3_iv::{
     store::{IvRetentionPolicy, IvStore},
 };
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
-use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
+use crate::bolt_v3_order_execution::{BoltV3OrderEconomicsHandle, BoltV3OrderExecutionPolicy};
 use crate::bolt_v3_providers::{FeeProvider, resolve_fee_provider};
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle;
@@ -264,7 +264,7 @@ pub struct StrategyRegistrationContext<'a> {
     client_routes: PreparedStrategyClientRoutes,
     execution_venue: Venue,
     fee_provider: Arc<dyn FeeProvider>,
-    _execution_economics: BoundExecutionEconomics,
+    order_economics: BoltV3OrderEconomicsHandle,
     settlement: Option<StrategyRegistrationSettlementResources>,
 }
 
@@ -494,7 +494,7 @@ impl<'a> StrategyRegistrationContext<'a> {
             client_routes,
             execution_venue,
             fee_provider,
-            _execution_economics: execution_economics,
+            order_economics: BoltV3OrderEconomicsHandle::new(execution_economics),
             settlement,
         })
     }
@@ -626,7 +626,8 @@ pub fn assemble_strategy_build_context(
         context.submit_admission.clone(),
         context.order_execution_policy,
         execution_venue,
-    );
+    )
+    .with_order_economics(context.order_economics.clone());
     if let Some(realized_volatility_runtime) = &context.realized_volatility_runtime {
         build_context =
             build_context.with_realized_volatility_runtime(realized_volatility_runtime.clone());

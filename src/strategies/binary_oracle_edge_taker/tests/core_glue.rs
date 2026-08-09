@@ -395,7 +395,8 @@ fn book_delta_refreshes_fee_readiness_after_warm_populates_provider() {
         ),
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
-    );
+    )
+    .with_order_economics(fixture_order_economics());
     strategy.active.outcome_fees.up_ready = false;
     strategy.active.outcome_fees.down_ready = false;
     register_test_strategy_with_active_instruments(&mut strategy);

@@ -135,7 +135,8 @@ fn strategy_core_accepts_nt_hedging_oms_type() {
         ),
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
-    );
+    )
+    .with_order_economics(fixture_order_economics());
 
     let strategy = BinaryOracleEdgeTaker::new(config, context);
 
@@ -526,7 +527,8 @@ fn strategy_core_uses_explicit_configured_nt_strategy_fields() {
             ),
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
-        ),
+        )
+        .with_order_economics(fixture_order_economics()),
     );
 
     assert!(strategy.core.config.use_uuid_client_order_ids);

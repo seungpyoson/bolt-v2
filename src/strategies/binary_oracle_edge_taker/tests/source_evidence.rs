@@ -257,6 +257,7 @@ fn test_strategy_with_realized_volatility_surface(
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     )
+    .with_order_economics(fixture_order_economics())
     .with_realized_volatility_surfaces(surfaces);
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     register_test_strategy(&mut strategy);
@@ -2865,6 +2866,7 @@ fn minimal_entry_submission_decision() -> EntrySubmissionDecision {
         order_side: None,
         price: None,
         quantity_value: None,
+        planned_fill_legs: Vec::new(),
         client_order_id: None,
         blocked_reason: None,
     }

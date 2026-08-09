@@ -108,10 +108,6 @@ impl BoltV3OrderEconomicsHandle {
                 anyhow::anyhow!("carry economics requires a position and holding horizon")
             })?)
         } else {
-            anyhow::ensure!(
-                intent.position.is_none(),
-                "non-carry economics rejects position holding context"
-            );
             None
         };
         let planned_fill_legs =

@@ -259,6 +259,7 @@ fn prod_strategy_build_context(
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         execution_venue,
     )
+    .with_order_economics(fixture_order_economics())
     .with_realized_volatility_surfaces(surfaces)
 }
 

@@ -407,6 +407,105 @@ fn fixture_settlement_identity() -> (String, Currency) {
     )
 }
 
+pub(super) fn fixture_order_economics() -> crate::bolt_v3_order_execution::BoltV3OrderEconomicsHandle
+{
+    static HANDLE: std::sync::OnceLock<crate::bolt_v3_order_execution::BoltV3OrderEconomicsHandle> =
+        std::sync::OnceLock::new();
+
+    HANDLE
+        .get_or_init(|| {
+            use crate::{
+                bolt_v3_economics_runtime::{
+                    AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
+                    bind_execution_economics,
+                },
+                bolt_v3_providers::polymarket::{
+                    PolymarketMarketInfoSnapshot, PolymarketSnapshotMetadata,
+                    authoritative_economics_input,
+                },
+                economics::{CurrencyId, SnapshotId, SourceIdentity},
+            };
+
+            let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+                "tests/fixtures/bolt_v3/root.toml",
+            ))
+            .expect("bolt-v3 fixture root should load for economics authority");
+            let client = loaded
+                .root
+                .clients
+                .get("polymarket_main")
+                .cloned()
+                .expect("fixture should declare the Polymarket execution client");
+            loaded.root.clients.insert("POLYMARKET".to_string(), client);
+
+            let snapshot = PolymarketMarketInfoSnapshot::from_json(
+                PolymarketSnapshotMetadata {
+                    snapshot_id: SnapshotId::try_new("edge-taker-fixture-market-info".to_string())
+                        .expect("fixture snapshot id should be canonical"),
+                    source_at_ns: 0,
+                    fetched_at_ns: 0,
+                    valid_until_ns: u64::MAX,
+                    builder_attachment_id: None,
+                },
+                r#"{
+                    "r": {},
+                    "t": [
+                        { "t": "condition-MKT-1-MKT-1-UP", "o": "Up" },
+                        { "t": "condition-MKT-1-MKT-1-DOWN", "o": "Down" },
+                        { "t": "condition-MKT-2-MKT-2-UP", "o": "Up" },
+                        { "t": "condition-MKT-2-MKT-2-DOWN", "o": "Down" }
+                    ],
+                    "c": "fixture-condition",
+                    "mos": 5,
+                    "mts": 0.01,
+                    "mbf": 50,
+                    "tbf": 100,
+                    "fd": { "r": 0.03, "e": 1, "to": true }
+                }"#,
+            )
+            .expect("fixture market-info snapshot should parse");
+
+            let valuation = || AuthoritativeValuationObservation::ProviderExactConversion {
+                source_id: SourceIdentity::try_new("fixture-collateral".to_string())
+                    .expect("fixture valuation source should be canonical"),
+                from_unit: CurrencyId::try_new("pUSD".to_string())
+                    .expect("fixture collateral currency should be canonical"),
+                to_unit: CurrencyId::try_new("USD".to_string())
+                    .expect("fixture reporting currency should be canonical"),
+                snapshot_id: SnapshotId::try_new(
+                    "edge-taker-fixture-collateral-conversion".to_string(),
+                )
+                .expect("fixture valuation snapshot should be canonical"),
+                observed_at_ns: 0,
+                fetched_at_ns: 0,
+                valid_until_ns: u64::MAX,
+            };
+            let instruments = [
+                "condition-MKT-1-MKT-1-UP",
+                "condition-MKT-1-MKT-1-DOWN",
+                "condition-MKT-2-MKT-2-UP",
+                "condition-MKT-2-MKT-2-DOWN",
+            ];
+            let inputs = instruments.into_iter().map(|provider_instrument_id| {
+                authoritative_economics_input(
+                    "POLYMARKET",
+                    format!("{provider_instrument_id}.POLYMARKET"),
+                    "binary_outcome",
+                    provider_instrument_id,
+                    snapshot.clone(),
+                )
+                .expect("fixture economics scope should match its market-info snapshot")
+                .with_valuation_observations([valuation()])
+            });
+            let inputs = AuthoritativeEconomicsInputStore::try_new(inputs)
+                .expect("fixture economics scopes should be unique");
+            let bound = bind_execution_economics(&loaded, "POLYMARKET", &inputs)
+                .expect("fixture execution economics should bind");
+            crate::bolt_v3_order_execution::BoltV3OrderEconomicsHandle::new(bound)
+        })
+        .clone()
+}
+
 pub(super) fn test_strategy() -> BinaryOracleEdgeTaker {
     test_strategy_with_fee_provider(RecordingFeeProvider::cold())
 }
@@ -727,6 +826,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         )
+        .with_order_economics(fixture_order_economics())
         .with_settlement_account_id(Some(fixture_settlement_account_id()))
         .with_settlement_currency(Some(fixture_settlement_currency()))
         .with_settlement_health_transition_emitter(Some(
@@ -1059,6 +1159,7 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     )
+    .with_order_economics(fixture_order_economics())
     .with_settlement_account_id(Some(fixture_settlement_account_id()))
     .with_settlement_currency(Some(fixture_settlement_currency()))
     .with_settlement_health_transition_emitter(Some(noop_settlement_health_transition_emitter()));

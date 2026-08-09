@@ -295,8 +295,7 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
     let submit_admission =
         submit_admission_with_provider_cap(Decimal::new(1, 0), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    // Zero fee isolates the assertion to "compiled order price drives the
-    // notional": the compiled 2.0 notional still exceeds the 1.0 cap, while
+    // The compiled 1.5 notional still exceeds the 1.0 cap, while
     // the understated intent price (0.50) must NOT be what is checked.
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
@@ -304,8 +303,8 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
-    let quantity = Quantity::new(1.0, 2);
-    let price = Price::new(2.0, 2);
+    let quantity = Quantity::new(2.0, 2);
+    let price = Price::new(0.75, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
     let order = nautilus_model::orders::OrderAny::Limit(
         nautilus_model::orders::LimitOrder::new_checked(
@@ -906,7 +905,7 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
 
 #[test]
 fn over_notional_submit_admission_rejects_before_nt_submit() {
-    // Coarse over-cap rejection: raw notional = price*qty = 2.0*1.0 = 2.0
+    // Coarse over-cap rejection: raw notional = price*qty = 0.75*2.0 = 1.5
     // already exceeds the 1.0 cap, so this rejects with OR without the
     // fee-inclusive scaling and is NOT a discriminating test of the
     // fee multiplier at `binary_oracle_edge_taker.rs:3972`. The fee
@@ -924,8 +923,8 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
-    let quantity = Quantity::new(1.0, 2);
-    let price = Price::new(2.0, 2);
+    let quantity = Quantity::new(2.0, 2);
+    let price = Price::new(0.75, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
     let order = nautilus_model::orders::OrderAny::Limit(
         nautilus_model::orders::LimitOrder::new_checked(
@@ -980,23 +979,16 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
 }
 
 #[test]
-fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
-    // Strict-inequality boundary: raw notional = price*qty = 1.0*1.0 = 1.0;
-    // at 25 bps the fee-inclusive admission notional is
-    // 1.0 * (1 + 25/10000) = 1.0025, set EXACTLY equal to the cap. The
+fn bound_economics_liability_passes_at_cap_boundary() {
+    // The TOML-bound Polymarket schedule prices a 0.50 x 1.00 taker fill at
+    // 0.50 gross plus 0.00750 protocol cost. Set the 0.50750 full liability
+    // EXACTLY equal to the cap. The
     // admission gate rejects only when notional STRICTLY exceeds the cap
     // (`request.notional > report.max_notional_per_order()`), so this must
     // be ADMITTED and reach NT submit.
     //
-    // NOTE: this is NOT a fee-discrimination test — with the cap set to the
-    // fee-inclusive value, the raw 1.0 notional admits with OR without the
-    // fee multiplier (1.0 <= 1.0025 either way). It only pins the strict
-    // `>` boundary. Fee discrimination at
-    // `binary_oracle_edge_taker.rs:3972` is pinned by the
-    // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`
-    // / `zero_fee_submit_admission_admits_at_same_cap` pair below.
     let submit_admission =
-        submit_admission_with_provider_cap(Decimal::new(10025, 4), recording_decision_evidence());
+        submit_admission_with_provider_cap(Decimal::new(50750, 5), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
@@ -1005,7 +997,7 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
-    let price = Price::new(1.0, 2);
+    let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
     let order = nautilus_model::orders::OrderAny::Limit(
         nautilus_model::orders::LimitOrder::new_checked(
@@ -1050,41 +1042,30 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect("fee-inclusive notional exactly at the cap must reach NT submit");
+        .expect("bound economics liability exactly at the cap must reach NT submit");
     assert_eq!(
         submit_admission.admitted_order_count(),
         1,
-        "fee-inclusive notional exactly at the cap must be admitted"
+        "bound economics liability exactly at the cap must be admitted"
     );
 }
 
 #[test]
-fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
-    // DISCRIMINATING test for the fee-inclusive scaling at
-    // `binary_oracle_edge_taker.rs:3972`. The cap is set STRICTLY BETWEEN the
-    // raw notional and the fee-inclusive notional so the rejection is caused
-    // by the fee multiplier specifically, not by the raw notional:
-    //   raw notional      = price*qty = 1.00 * 1.00 = 1.0000
-    //   cap               = 1.001  (Decimal::new(1001, 3))
-    //   fee-inclusive     = 1.00 * (1 + 25/10000) = 1.0025
-    // Since 1.0000 <= 1.001 < 1.0025, the order is admitted with the raw
-    // notional but rejected with the fee-inclusive notional. This test must
-    // FAIL if line 3972 is deleted: without the fee scaling the cap sees the
-    // raw 1.0000 (<= 1.001) and admits, so the expected reject never fires.
-    // The zero-fee CONTROL `zero_fee_submit_admission_admits_at_same_cap`
-    // below uses the SAME raw 1.00 notional and SAME 1.001 cap and ADMITS,
-    // proving the rejection here is caused by the fee scaling.
+fn bound_economics_liability_rejects_between_raw_and_full_cost() {
+    // The 0.501 cap sits strictly between the 0.50 raw reservation and the
+    // TOML/provider-derived 0.50750 full liability. The legacy fee provider
+    // says zero, proving it cannot bypass the bound economics authority.
     let submit_admission =
-        submit_admission_with_provider_cap(Decimal::new(1001, 3), recording_decision_evidence());
+        submit_admission_with_provider_cap(Decimal::new(501, 3), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
+        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
         recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
-    let price = Price::new(1.0, 2);
+    let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
     let order = nautilus_model::orders::OrderAny::Limit(
         nautilus_model::orders::LimitOrder::new_checked(
@@ -1129,9 +1110,7 @@ fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect_err(
-            "fee-inclusive notional pushed strictly over the cap by fee scaling must reject before NT submit",
-        );
+        .expect_err("bound economics full liability must reject before NT submit");
 
     assert!(
         error.to_string().contains("notional cap is exceeded"),
@@ -1141,18 +1120,11 @@ fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
 }
 
 #[test]
-fn zero_fee_submit_admission_admits_at_same_cap() {
-    // Zero-fee CONTROL for
-    // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`.
-    // SAME raw notional (price*qty = 1.00 * 1.00 = 1.0000) and SAME cap
-    // (1.001) as the reject test, but the fee is ZERO so no scaling is
-    // applied:
-    //   admission notional = 1.0000 * (1 + 0/10000) = 1.0000 <= 1.001
-    // and the order is ADMITTED. Together with the reject test this pair proves the
-    // rejection there is caused by the fee scaling specifically, not by the
-    // raw notional (which admits at this cap when the fee is zero).
+fn legacy_fee_provider_value_cannot_reduce_bound_economics_liability() {
+    // A legacy zero-fee answer cannot lower the TOML/provider-derived 0.50750
+    // liability to the 0.50 raw reservation.
     let submit_admission =
-        submit_admission_with_provider_cap(Decimal::new(1001, 3), recording_decision_evidence());
+        submit_admission_with_provider_cap(Decimal::new(501, 3), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
@@ -1161,7 +1133,7 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
-    let price = Price::new(1.0, 2);
+    let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
     let order = nautilus_model::orders::OrderAny::Limit(
         nautilus_model::orders::LimitOrder::new_checked(
@@ -1199,18 +1171,22 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
         &order,
     );
 
-    strategy
+    let error = strategy
         .submit_order_with_decision_evidence(
             intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect("zero-fee notional below the cap must reach NT submit");
+        .expect_err("legacy fee provider must not reduce bound economics liability");
+    assert!(
+        error.to_string().contains("notional cap is exceeded"),
+        "{error:#}"
+    );
     assert_eq!(
         submit_admission.admitted_order_count(),
-        1,
-        "zero-fee notional below the cap must be admitted at the same cap the fee-scaled order is rejected at"
+        0,
+        "legacy fee provider must not authorize the order"
     );
 }
 
@@ -1542,6 +1518,8 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
 fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.config.exit_order.is_quote_quantity = true;
+    strategy.config.forced_exit_order.is_quote_quantity = true;
+    strategy.active.phase = SelectionPhase::Freeze;
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));
@@ -1960,7 +1938,8 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
         ),
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
-    );
+    )
+    .with_order_economics(fixture_order_economics());
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     let _cache = register_test_strategy(&mut strategy);
     let trigger_instrument_id = InstrumentId::from("TRIGGER.SOURCE");
@@ -2008,7 +1987,8 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
         ),
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
-    );
+    )
+    .with_order_economics(fixture_order_economics());
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     let _cache = register_test_strategy(&mut strategy);
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());

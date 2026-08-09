@@ -441,6 +441,48 @@ fn maker_runtime_quote_rejects_an_inactive_market_before_planning() {
 }
 
 #[test]
+fn maker_run_quote_cycle_rejects_an_inactive_market_without_mutation() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config(),
+        maker_context(writer.recorder(), admission.clone()),
+    );
+    register_maker_for_order_factory(&mut maker);
+    let mut market = MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("ample requote budget fixture builds");
+    let submit_template = maker_limit_post_only_template();
+
+    let result = maker.run_quote_cycle(
+        MARKET_KEY,
+        &mut market,
+        &mut budget,
+        BinaryOracleMakerQuoteCycleInput {
+            quote_plan: quote_plan_inputs(static_binary_event::KEY),
+            quote_set: quote_set_inputs(),
+            submit_template: &submit_template,
+            price_precision: 2,
+            quantity_precision: 2,
+            submit_order_prefix: "maker_submit",
+            max_fee_bps: Decimal::ZERO,
+        },
+    );
+
+    assert!(
+        result.is_err(),
+        "an inactive market key must remain an authority error at the quote-cycle boundary"
+    );
+    assert_eq!(maker.runtime().active_market_count(), 0);
+    assert_eq!(market.market_state(), MarketState::Idle);
+    assert_eq!(budget.submit_commands_in_window(), 0);
+    assert_eq!(budget.rest_cost_in_window(), 0);
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert!(writer.records().is_empty());
+    assert!(writer.requote_throttles().is_empty());
+}
+
+#[test]
 fn maker_runtime_quote_rejects_a_family_mismatch_before_planning() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));

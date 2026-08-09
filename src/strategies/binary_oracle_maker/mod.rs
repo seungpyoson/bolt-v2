@@ -1105,8 +1105,9 @@ impl BinaryOracleMaker {
     /// Run one intent-only quote cycle for an active market: mint fresh leg order
     /// identities, drive the existing quote/order pipeline with the caller-supplied
     /// fair-value-resolved inputs, and reconcile the dispatched leg identities.
-    /// Returns `None` if the market is inactive or its cadence window is not
-    /// currently quotable. INTENT ONLY: the dispatch routes through the global
+    /// Returns `None` only when the active market's cadence window is not currently
+    /// quotable. Inactive market keys and authority mismatches remain errors from
+    /// the shared route. INTENT ONLY: the dispatch routes through the global
     /// execution-policy chokepoint, which suppresses every venue mutation in
     /// shadow. The shared route validates the supplied family against the active
     /// binding and checks window availability before any identity mint.
@@ -1122,9 +1123,6 @@ impl BinaryOracleMaker {
         budget: &mut RequoteBudgetPair,
         input: BinaryOracleMakerQuoteCycleInput<'_>,
     ) -> Result<Option<BinaryOracleMakerRuntimeQuoteRouteOutcome>> {
-        if self.runtime.market(market_key).is_none() {
-            return Ok(None);
-        }
         let BinaryOracleMakerQuoteCycleInput {
             quote_plan,
             quote_set,

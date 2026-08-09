@@ -1,4 +1,5 @@
 /target
+crates/economics-core/Cargo.lock
 config/live.toml
 config/live.local.toml
 config/strategies/*.local.toml

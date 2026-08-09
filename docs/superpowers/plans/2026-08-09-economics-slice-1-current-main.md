@@ -39,12 +39,12 @@
 - Produces: `CurrencyId`, `EconomicsInstrumentId`, `EconomicsQuoteRequest`, `EconomicsQuote`, `EstimatedEffect`, `EffectGuarantee`, `QuoteHealth`, `ValuationRate`, `DebitRiskBound`, and `fold_core_edge`.
 - Consumes: only neutral decimal/value libraries.
 
-- [ ] Add behavior tests for identifier validation, signed native effects, health precedence, required valuation, debit bounds, and edge folding.
-- [ ] Implement validated neutral identifiers with private storage and fallible constructors.
-- [ ] Implement quote validation so required unknown or unvalued effects return a typed `EconomicsError`.
-- [ ] Implement edge folding that subtracts guaranteed costs and debit bounds and excludes forecast incentives from authorization.
-- [ ] Export the crate through `src/economics/mod.rs` and register the workspace dependency.
-- [ ] Run `cargo fmt --check` with the T9 target and `git diff --check`; rely on advisory CI for compilation.
+- [x] Add behavior tests for identifier validation, signed native effects, health precedence, required valuation, debit bounds, and edge folding.
+- [x] Implement validated neutral identifiers with private storage and fallible constructors.
+- [x] Implement quote validation so required unknown or unvalued effects return a typed `EconomicsError`.
+- [x] Implement edge folding that subtracts guaranteed costs and debit bounds and excludes forecast incentives from authorization.
+- [x] Export the crate through `src/economics/mod.rs` and register the workspace dependency.
+- [x] Run `cargo fmt --check` with the T9 target and `git diff --check`; rely on advisory CI for compilation.
 
 ### Task 2: NautilusTrader and replay request adapters
 

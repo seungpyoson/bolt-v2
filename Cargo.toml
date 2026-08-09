@@ -93,6 +93,7 @@ async-trait = "0.1"
 aws-config = "1.8.17"
 aws-sdk-ssm = { version = "1.111.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 base64 = "0.22"
+bolt-economics-core = { path = "crates/economics-core" }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3.32"

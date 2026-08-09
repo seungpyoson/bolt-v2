@@ -127,6 +127,7 @@ pub mod bolt_v3_trade_flow;
 pub mod bolt_v3_validate;
 pub mod bolt_v3_wire_boundary;
 mod bounded_config_read;
+pub mod economics;
 pub mod execution_state;
 pub mod lake_batch;
 pub mod log_sweep;

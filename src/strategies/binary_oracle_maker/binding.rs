@@ -27,9 +27,10 @@
 //! and the declared-set bounds (non-empty, within the concurrency cap, registered
 //! family) are enforced in the archetype's go-live gate before this code runs.
 
-use nautilus_model::instruments::InstrumentAny;
+use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 use serde::Deserialize;
 
+use crate::bolt_v3_evidence_novelty::EvidenceMarketIdentity;
 use crate::bolt_v3_maker_market_selection::{
     MakerMarketCandidate, MakerMarketPortfolioDecision, MakerMarketPortfolioPolicy,
     MakerMarketSlotState, plan_maker_market_portfolio,
@@ -79,7 +80,8 @@ pub struct MakerMarketDeclaration {
 pub struct MakerResolvedMarketBinding {
     pub market_key: String,
     pub family_key: String,
-    pub market_id: String,
+    pub underlying_asset: String,
+    pub evidence_identity: EvidenceMarketIdentity,
     pub yes: MakerLegBinding,
     pub no: MakerLegBinding,
     pub selection_outcome: MarketSelectionOutcome,
@@ -87,6 +89,60 @@ pub struct MakerResolvedMarketBinding {
     pub start_timestamp_milliseconds: u64,
     pub expiration_timestamp_milliseconds: u64,
     pub seconds_to_end: u64,
+}
+
+/// The concrete selected market instance that owns maker throttle episodes.
+///
+/// The validated venue identity is shared with the registered evidence domains.
+/// Window start and leg instruments additionally distinguish cadence successors
+/// and venue reissues that resolve under the same configured `market_key`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MakerConcreteMarketIdentity {
+    evidence_identity: EvidenceMarketIdentity,
+    start_timestamp_milliseconds: u64,
+    yes_instrument_id: InstrumentId,
+    no_instrument_id: InstrumentId,
+}
+
+impl MakerConcreteMarketIdentity {
+    #[must_use]
+    pub fn new(
+        evidence_identity: EvidenceMarketIdentity,
+        start_timestamp_milliseconds: u64,
+        yes_instrument_id: InstrumentId,
+        no_instrument_id: InstrumentId,
+    ) -> Self {
+        Self {
+            evidence_identity,
+            start_timestamp_milliseconds,
+            yes_instrument_id,
+            no_instrument_id,
+        }
+    }
+
+    #[must_use]
+    pub fn gamma_market_id(&self) -> &str {
+        self.evidence_identity.gamma_market_id()
+    }
+
+    /// The validated venue identity, excluding cadence and internal instrument
+    /// discriminators that complete this concrete maker-market identity.
+    #[must_use]
+    pub fn evidence_identity(&self) -> &EvidenceMarketIdentity {
+        &self.evidence_identity
+    }
+}
+
+impl MakerResolvedMarketBinding {
+    #[must_use]
+    pub fn concrete_identity(&self) -> MakerConcreteMarketIdentity {
+        MakerConcreteMarketIdentity::new(
+            self.evidence_identity.clone(),
+            self.start_timestamp_milliseconds,
+            self.yes.instrument_id,
+            self.no.instrument_id,
+        )
+    }
 }
 
 /// Why a declared market did not produce a binding this resolution pass.
@@ -150,10 +206,12 @@ pub fn resolve_declared_market(
             market_key: declaration.market_key.clone(),
         });
     };
+    let evidence_identity = market.evidence_identity.market().clone();
     Ok(MakerResolvedMarketBinding {
         market_key: declaration.market_key.clone(),
         family_key: declaration.family_key.clone(),
-        market_id: market.market_id,
+        underlying_asset: declaration.underlying_asset.clone(),
+        evidence_identity,
         yes: leg_binding(market.up_instrument_id),
         no: leg_binding(market.down_instrument_id),
         selection_outcome: market.selection_outcome,
@@ -627,7 +685,10 @@ mod tests {
         let btc_binding = resolve_declared_market(&btc, &instruments, NOW_MS).expect(
             "underlying_asset is not a static selection key; a different asset still resolves",
         );
-        assert_eq!(btc_binding.market_id, eth_binding.market_id);
+        assert_eq!(
+            btc_binding.evidence_identity.gamma_market_id(),
+            eth_binding.evidence_identity.gamma_market_id()
+        );
         assert_eq!(btc_binding.yes.instrument_id, eth_binding.yes.instrument_id);
         assert_eq!(btc_binding.no.instrument_id, eth_binding.no.instrument_id);
     }

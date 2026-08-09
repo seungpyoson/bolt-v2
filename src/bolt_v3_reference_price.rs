@@ -589,6 +589,12 @@ impl ReferencePriceSelector {
         })
     }
 
+    /// The configured asset all quotes selected by this instance must match.
+    #[must_use]
+    pub fn asset(&self) -> &str {
+        self.asset.as_str()
+    }
+
     pub fn select(
         &mut self,
         interval_start_ms: u64,

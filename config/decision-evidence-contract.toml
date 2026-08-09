@@ -643,8 +643,8 @@ classification = "already-deduped"
 runtime_wiring = "unwired"
 reviewed_runtime_triggers = []
 call_sites = ["src/strategies/binary_oracle_maker/mod.rs::update_requote_throttle_edge"]
-repeat_semantics = "the current last-key guard suppresses only adjacent repeats and re-emits A-B-A; the requote-throttle slice replaces it with an explicit blocked-episode lifecycle"
-dedupe_key_evidence = "current key includes family, leg, action-cost class, block reason and throttle bound; action cost, bound, timestamps and budget counters are diagnostics rather than episode identity. The requote-throttle slice replaces the family key with concrete market identity and keys the episode on market, leg and block reason"
+repeat_semantics = "one record per explicit blocked episode for each concrete market, leg and block reason; unblock ends the episode, and refresh or deactivation drops episodes whose exact concrete market is no longer active"
+dedupe_key_evidence = "the concrete market identity combines the validated selected-market identity with cadence-window start and both leg instruments; the configured market key owns the active slot but cannot alias a cadence or instrument successor. Action-cost class, throttle bound, timestamps and budget counters remain diagnostics rather than episode identity"
 census_ancestor = "requote_throttle"
 
 [[producers]]

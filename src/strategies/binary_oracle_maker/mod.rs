@@ -13,6 +13,8 @@
 //! `StrategyBuilder` impl) mirrors `binary_oracle_edge_taker` *structurally* —
 //! it does not copy taker behaviour.
 
+use std::time::Duration;
+
 use anyhow::Result;
 use nautilus_common::{actor::DataActor, timer::TimeEvent};
 use nautilus_model::{
@@ -26,6 +28,7 @@ use rust_decimal::Decimal;
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
+use binding::MakerConcreteMarketIdentity;
 
 use crate::{
     bolt_v3_current_evidence::{
@@ -42,7 +45,7 @@ use crate::{
     },
     bolt_v3_maker_quote_control::QuoteControlBlockReason,
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
-    bolt_v3_maker_quote_set::{QuoteSetBlockReason, QuoteSetLegDecision},
+    bolt_v3_maker_quote_set::QuoteSetLegDecision,
     bolt_v3_maker_risk::{
         MakerLossRiskPolicy, MakerRiskDecision, apply_maker_risk_mode,
         maker_risk_mode_for_loss_decision,
@@ -52,11 +55,11 @@ use crate::{
         MakerRuntimeOrderDispatchOutcome, dispatch_maker_runtime_order_plan_with_command_router,
     },
     bolt_v3_maker_runtime_quote::{
-        MakerRuntimeOrderPlanInput, MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteDecision,
-        MakerRuntimeQuoteInput, MakerRuntimeQuoteSetInput,
-        MakerRuntimeReferenceFairValueBlockReason, MakerRuntimeReferenceFairValueDecision,
-        MakerRuntimeReferenceFairValueInput, maker_reference_current_price_fair_value_decision,
-        plan_maker_runtime_quote,
+        MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteDecision, MakerRuntimeQuoteInput,
+        MakerRuntimeQuoteSetInput, MakerRuntimeReferenceFairValueBlockReason,
+        MakerRuntimeReferenceFairValueDecision, MakerRuntimeReferenceFairValueInput,
+        blocked_runtime_quote_decision, maker_reference_current_price_fair_value_decision,
+        plan_maker_runtime_quote, runtime_window_contains,
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
@@ -66,8 +69,11 @@ use crate::{
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_quote_lifecycle::{Leg, LegState, MarketAction, MarketQuote},
     bolt_v3_quoting::QuoteTargets,
-    bolt_v3_reference_price::ReferencePriceSelector,
+    bolt_v3_realized_volatility::RealizedVolSnapshot,
+    bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_requote_budget::RequoteBudgetPair,
+    bolt_v3_target_identity::stable_identity_field_is_canonical,
+    bolt_v3_timestamp_domain::LocalReceiveMs,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::mu::MakerMuState,
     strategies::binary_oracle_maker::runtime::MakerRuntime,
@@ -106,12 +112,12 @@ pub struct BinaryOracleMaker {
     context: StrategyBuildContext,
     mu: MakerMuState,
     runtime: MakerRuntime,
-    last_requote_throttle_blocks: Vec<RequoteThrottleDedupeKey>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerRuntimeQuoteRouteInput<'a> {
-    pub quote: MakerRuntimeQuoteInput<'a>,
+    pub quote_plan: MakerQuotePlanInputs<'a>,
+    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
     pub submit_template: &'a NtOrderTemplate,
     pub price_precision: u8,
     pub quantity_precision: u8,
@@ -125,19 +131,65 @@ pub struct BinaryOracleMakerRuntimeQuoteRouteOutcome {
     pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
 }
 
+/// The identity of a throttled-requote episode, which is what decides whether a
+/// record is new -- not the observation attached to it.
+///
+/// `action_cost_class` and `bound_by` are deliberately absent. Both vary while
+/// the blocked state does not: `action_cost_class` follows whatever the strategy
+/// was attempting this tick, and `bound_by` is computed from `now_ms` against the
+/// budget window, so together they give one blocked leg seventeen reachable
+/// spellings. They remain on the emitted evidence, where they are diagnostics;
+/// they are not identity.
+///
+/// `block_reason` stays. It is the blocker category, which is semantic state, and
+/// it is what a second reason would have to differ in to deserve its own record.
+///
+/// The configured market key remains for active-set ownership, but is not the
+/// concrete identity: a cadence successor or reissued instrument can resolve
+/// under the same key. The validated venue identity, window start, and leg
+/// instruments distinguish those successors.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RequoteThrottleDedupeKey {
-    family_key: String,
+struct RequoteThrottleEpisodeId {
+    market_key: String,
+    market: MakerConcreteMarketIdentity,
     leg: Leg,
-    action_cost_class: RequoteActionCostClass,
     block_reason: RequoteThrottleBlockReason,
-    bound_by: RequoteThrottleBound,
+}
+
+/// Which market a throttle record is about: the unique key, and the family it was
+/// selected from.
+///
+/// They travel together because a record needs both -- the key to be identifiable
+/// and the family to be groupable -- and they are one type because substituting
+/// one for the other is exactly the mistake this replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ThrottledMarket<'a> {
+    key: &'a str,
+    family_key: &'a str,
+    concrete_identity: &'a MakerConcreteMarketIdentity,
+}
+
+/// Runtime-owned coordinates that authorize a caller to address one active
+/// market. Being authorized does not imply that the market is quotable at this
+/// instant: rotating families deliberately preload a future window so its market
+/// data can be subscribed before the window opens.
+struct ActiveQuoteAuthority {
+    family_key: String,
+    underlying_asset: String,
+    interval_start_ms: u64,
+    interval_end_ms: u64,
+}
+
+impl ActiveQuoteAuthority {
+    fn window_contains(&self, evaluation_ms: u64) -> bool {
+        runtime_window_contains(self.interval_start_ms, self.interval_end_ms, evaluation_ms)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn requote_throttle_observation(
     strategy_id: String,
-    family_key: &str,
+    market: ThrottledMarket<'_>,
     leg: Leg,
     now_ms: u64,
     action_cost_class: RequoteActionCostClass,
@@ -147,8 +199,8 @@ fn requote_throttle_observation(
 ) -> RequoteThrottleObservationFact {
     RequoteThrottleObservationFact {
         strategy_id,
-        family_key: family_key.to_string(),
-        market_id: Some(family_key.to_string()),
+        family_key: market.family_key.to_string(),
+        market_id: Some(market.concrete_identity.gamma_market_id().to_string()),
         leg: match leg {
             Leg::Yes => EvidenceRequoteLeg::Yes,
             Leg::No => EvidenceRequoteLeg::No,
@@ -170,15 +222,90 @@ fn requote_throttle_observation(
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'a> {
-    pub reference_fair_value: MakerRuntimeReferenceFairValueInput<'a>,
+    pub reference_fair_value: BinaryOracleMakerReferenceFairValueInput<'a>,
     pub quote_plan: MakerQuotePlanInputs<'a>,
     pub quote_set: MakerRuntimeQuoteSetInput<'a>,
-    pub order_plan: MakerRuntimeOrderPlanInput,
     pub submit_template: &'a NtOrderTemplate,
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
     pub max_fee_bps: Decimal,
+}
+
+/// A validated opening strike bound to one configured market, asset, and window.
+///
+/// The route compares all three identity fields with the active runtime binding
+/// before fair-value evaluation. This prevents a numerically valid strike from a
+/// sibling market or cadence window from being reused accidentally.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BinaryOracleMakerStrikePrice<'a> {
+    market_key: &'a str,
+    underlying_asset: &'a str,
+    interval_start_ms: u64,
+    price: f64,
+}
+
+impl<'a> BinaryOracleMakerStrikePrice<'a> {
+    pub fn try_new(
+        market_key: &'a str,
+        underlying_asset: &'a str,
+        interval_start_ms: u64,
+        price: f64,
+    ) -> std::result::Result<Self, String> {
+        if !stable_identity_field_is_canonical(market_key) {
+            return Err("binary oracle maker strike market_key is invalid".to_string());
+        }
+        if underlying_asset.is_empty() || underlying_asset.chars().any(char::is_whitespace) {
+            return Err("binary oracle maker strike underlying_asset is invalid".to_string());
+        }
+        if interval_start_ms == 0 {
+            return Err(
+                "binary oracle maker strike interval_start_ms must be positive".to_string(),
+            );
+        }
+        if !price.is_finite() || price <= 0.0 {
+            return Err("binary oracle maker strike price must be positive and finite".to_string());
+        }
+        Ok(Self {
+            market_key,
+            underlying_asset,
+            interval_start_ms,
+            price,
+        })
+    }
+
+    #[must_use]
+    pub const fn market_key(&self) -> &str {
+        self.market_key
+    }
+
+    #[must_use]
+    pub const fn underlying_asset(&self) -> &str {
+        self.underlying_asset
+    }
+
+    #[must_use]
+    pub const fn interval_start_ms(&self) -> u64 {
+        self.interval_start_ms
+    }
+
+    #[must_use]
+    pub const fn price(&self) -> f64 {
+        self.price
+    }
+}
+
+/// Reference observations and pricing parameters whose market identity is
+/// validated against the active runtime binding inside the route. Family,
+/// cadence window, asset, and time to expiry come from that binding.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BinaryOracleMakerReferenceFairValueInput<'a> {
+    pub reference_quotes: &'a [ReferenceQuote],
+    pub strike: Option<BinaryOracleMakerStrikePrice<'a>>,
+    pub realized_volatility_snapshot: &'a RealizedVolSnapshot,
+    pub realized_volatility_max_source_age_ms: Option<u64>,
+    pub pricing_kurtosis: f64,
+    pub evaluation_receive_ms: LocalReceiveMs,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -264,7 +391,6 @@ impl BinaryOracleMaker {
             context,
             mu,
             runtime: MakerRuntime::empty(),
-            last_requote_throttle_blocks: Vec::new(),
         }
     }
 
@@ -277,6 +403,33 @@ impl BinaryOracleMaker {
     /// identities). Read by the integration tests and later runtime slices.
     pub fn runtime(&self) -> &MakerRuntime {
         &self.runtime
+    }
+
+    /// Validate the caller's market ownership against the active runtime before
+    /// pricing, identity minting, or quote planning can mutate state. The returned
+    /// window is availability, not authority: a valid preloaded future market is
+    /// authorized but must wait until its half-open cadence window begins.
+    fn ensure_active_quote_authority(
+        &self,
+        market_key: &str,
+        input_family_key: &str,
+    ) -> Result<ActiveQuoteAuthority> {
+        let runtime_market = self.runtime.market(market_key).ok_or_else(|| {
+            anyhow::anyhow!(
+                "binary_oracle_maker cannot route quote for inactive market: market_key={market_key}"
+            )
+        })?;
+        let runtime_family_key = runtime_market.family_key();
+        anyhow::ensure!(
+            input_family_key == runtime_family_key,
+            "binary_oracle_maker quote family does not match active runtime binding: market_key={market_key} runtime_family_key={runtime_family_key} input_family_key={input_family_key}"
+        );
+        Ok(ActiveQuoteAuthority {
+            family_key: runtime_family_key.to_string(),
+            underlying_asset: runtime_market.underlying_asset().to_string(),
+            interval_start_ms: runtime_market.start_timestamp_milliseconds(),
+            interval_end_ms: runtime_market.expiration_timestamp_milliseconds(),
+        })
     }
 
     pub fn route_maker_order_command(
@@ -310,35 +463,65 @@ impl BinaryOracleMaker {
         )
     }
 
+    /// `decision` is absent when the cycle produced no quote set at all -- at the
+    /// position cap, or with no fair value to quote against. A leg that was never
+    /// evaluated for a throttle is not throttled, so absence clears exactly as an
+    /// unblocked decision does. Gating this call on the quote set instead left the
+    /// clear unreachable on those paths, and a leg that blocked, hit the cap, and
+    /// blocked again recorded the second episode as a duplicate of the first and
+    /// emitted nothing -- the mirror of the flooding this dedupe exists to stop.
     fn update_requote_throttle_edge(
         &mut self,
-        family_key: &str,
-        market: &MarketQuote,
+        market_key: &str,
+        quote_state: &MarketQuote,
         budget: &RequoteBudgetPair,
         leg: Leg,
-        decision: &QuoteSetLegDecision,
+        decision: Option<&QuoteSetLegDecision>,
         now_ms: u64,
     ) -> Result<()> {
-        let Some((action_cost_class, block_reason)) = requote_throttle_block(market, leg, decision)
-        else {
-            self.last_requote_throttle_blocks
-                .retain(|key| !(key.family_key == family_key && key.leg == leg));
+        let block =
+            decision.and_then(|decision| requote_throttle_block(quote_state, leg, decision));
+        let Some((action_cost_class, block_reason)) = block else {
+            // The leg is no longer blocked: the episode is over, so forget it.
+            // This is what keeps the accumulated set bounded, and it is what
+            // lets a leg that becomes blocked again record that as new.
+            if let Some(concrete_identity) = self
+                .runtime
+                .market(market_key)
+                .map(|market| market.concrete_identity())
+            {
+                self.runtime
+                    .clear_throttle_episode(market_key, &concrete_identity, leg);
+            }
             return Ok(());
         };
-        let bound_by = requote_throttle_bound(action_cost_class, budget, now_ms);
-        let key = RequoteThrottleDedupeKey {
-            family_key: family_key.to_string(),
-            leg,
-            action_cost_class,
-            block_reason,
-            bound_by,
+        let Some((concrete_identity, family_key)) = self
+            .runtime
+            .market(market_key)
+            .map(|market| (market.concrete_identity(), market.family_key().to_string()))
+        else {
+            anyhow::bail!(
+                "binary_oracle_maker cannot record requote throttle for inactive market: market_key={market_key}"
+            );
         };
-        if self.last_requote_throttle_blocks.contains(&key) {
+        let market = ThrottledMarket {
+            key: market_key,
+            family_key: &family_key,
+            concrete_identity: &concrete_identity,
+        };
+        let bound_by = requote_throttle_bound(action_cost_class, budget, now_ms);
+        let episode = RequoteThrottleEpisodeId {
+            market_key: market.key.to_string(),
+            market: market.concrete_identity.clone(),
+            leg,
+            block_reason,
+        };
+        if self.runtime.contains_throttle_episode(&episode) {
             return Ok(());
         }
         let evidence = requote_throttle_observation(
             self.config.strategy_id.clone(),
-            family_key,
+            market,
             leg,
             now_ms,
             action_cost_class,
@@ -361,20 +544,25 @@ impl BinaryOracleMaker {
                 self.config.strategy_id
             );
         }
-        self.last_requote_throttle_blocks
-            .retain(|existing| !(existing.family_key == family_key && existing.leg == leg));
-        self.last_requote_throttle_blocks.push(key);
+        self.runtime.record_throttle_episode(episode);
         Ok(())
     }
 
+    /// `market_key` selects the active runtime market this cycle is quoting.
+    /// `MarketQuote` is leg lifecycle state and carries no key; the runtime binding
+    /// supplies the authoritative family, cadence, instruments, and order handles.
+    /// This route validates that authority before minting identities, then applies
+    /// each dispatch outcome back to the same runtime binding.
     pub fn route_maker_runtime_quote(
         &mut self,
+        market_key: &str,
         market: &mut MarketQuote,
         budget: &mut RequoteBudgetPair,
         input: BinaryOracleMakerRuntimeQuoteRouteInput<'_>,
     ) -> Result<BinaryOracleMakerRuntimeQuoteRouteOutcome> {
         let BinaryOracleMakerRuntimeQuoteRouteInput {
-            quote,
+            quote_plan,
+            quote_set,
             submit_template,
             price_precision,
             quantity_precision,
@@ -382,26 +570,40 @@ impl BinaryOracleMaker {
             max_fee_bps,
         } = input;
 
-        let family_key = quote.quote_plan.family_key.to_string();
-        let now_ms = quote.quote_set.now_ms;
-        let quote_decision = plan_maker_runtime_quote(market, budget, quote);
-        if let Some(quote_set) = quote_decision.quote_set.as_ref() {
-            self.update_requote_throttle_edge(
-                family_key.as_str(),
-                market,
-                budget,
-                Leg::Yes,
-                &quote_set.yes,
-                now_ms,
-            )?;
-            self.update_requote_throttle_edge(
-                family_key.as_str(),
-                market,
-                budget,
-                Leg::No,
-                &quote_set.no,
-                now_ms,
-            )?;
+        let authority = self.ensure_active_quote_authority(market_key, quote_plan.family_key)?;
+        if !authority.window_contains(quote_set.now_ms) {
+            return Ok(BinaryOracleMakerRuntimeQuoteRouteOutcome {
+                quote: blocked_runtime_quote_decision(
+                    MakerRuntimeQuoteBlockReason::RuntimeWindowUnavailable,
+                ),
+                orders: None,
+            });
+        }
+
+        let order_id_tag = self.config.order_id_tag.clone();
+        let minted = self.runtime.mint_next_identities(market_key, &order_id_tag);
+        debug_assert!(minted, "active market must accept identity minting");
+        let order_plan = self
+            .runtime
+            .market(market_key)
+            .expect("market presence checked before identity mint")
+            .order_plan_input();
+        let now_ms = quote_set.now_ms;
+        let quote_decision = plan_maker_runtime_quote(
+            market,
+            budget,
+            MakerRuntimeQuoteInput {
+                quote_plan,
+                quote_set,
+                order_plan,
+            },
+        );
+        let planned = quote_decision.quote_set.as_ref();
+        for (leg, decision) in [
+            (Leg::Yes, planned.map(|set| &set.yes)),
+            (Leg::No, planned.map(|set| &set.no)),
+        ] {
+            self.update_requote_throttle_edge(market_key, market, budget, leg, decision, now_ms)?;
         }
         let orders = if let Some(order_plan) = quote_decision.order_plan.as_ref() {
             let mut route_command =
@@ -421,6 +623,9 @@ impl BinaryOracleMaker {
         } else {
             None
         };
+        if let Some(orders) = orders.as_ref() {
+            self.runtime.apply_dispatch_outcome(market_key, orders);
+        }
 
         Ok(BinaryOracleMakerRuntimeQuoteRouteOutcome {
             quote: quote_decision,
@@ -430,6 +635,7 @@ impl BinaryOracleMaker {
 
     pub fn route_maker_runtime_reference_quote(
         &mut self,
+        market_key: &str,
         market: &mut MarketQuote,
         budget: &mut RequoteBudgetPair,
         reference_selector: &mut ReferencePriceSelector,
@@ -439,7 +645,6 @@ impl BinaryOracleMaker {
             reference_fair_value,
             quote_plan,
             quote_set,
-            order_plan,
             submit_template,
             price_precision,
             quantity_precision,
@@ -447,12 +652,78 @@ impl BinaryOracleMaker {
             max_fee_bps,
         } = input;
 
+        let authority = self.ensure_active_quote_authority(market_key, quote_plan.family_key)?;
+        anyhow::ensure!(
+            reference_selector.asset() == authority.underlying_asset,
+            "binary_oracle_maker reference selector asset does not match active runtime binding: market_key={market_key} runtime_underlying_asset={} selector_asset={}",
+            authority.underlying_asset,
+            reference_selector.asset()
+        );
+        let strike_price = match reference_fair_value.strike {
+            Some(strike) => {
+                anyhow::ensure!(
+                    strike.market_key() == market_key,
+                    "binary_oracle_maker strike market does not match active runtime binding: market_key={market_key} strike_market_key={}",
+                    strike.market_key()
+                );
+                anyhow::ensure!(
+                    strike.underlying_asset() == authority.underlying_asset,
+                    "binary_oracle_maker strike asset does not match active runtime binding: market_key={market_key} runtime_underlying_asset={} strike_underlying_asset={}",
+                    authority.underlying_asset,
+                    strike.underlying_asset()
+                );
+                anyhow::ensure!(
+                    strike.interval_start_ms() == authority.interval_start_ms,
+                    "binary_oracle_maker strike window does not match active runtime binding: market_key={market_key} runtime_interval_start_ms={} strike_interval_start_ms={}",
+                    authority.interval_start_ms,
+                    strike.interval_start_ms()
+                );
+                Some(strike.price())
+            }
+            None => None,
+        };
+
         let fair_value = maker_reference_current_price_fair_value_decision(
             reference_selector,
             quote_set.now_ms,
-            reference_fair_value,
+            MakerRuntimeReferenceFairValueInput {
+                family_key: &authority.family_key,
+                interval_start_ms: authority.interval_start_ms,
+                interval_end_ms: authority.interval_end_ms,
+                reference_quotes: reference_fair_value.reference_quotes,
+                strike_price,
+                seconds_to_market_end: Some(
+                    Duration::from_millis(
+                        authority.interval_end_ms.saturating_sub(quote_set.now_ms),
+                    )
+                    .as_secs(),
+                ),
+                realized_volatility_snapshot: reference_fair_value.realized_volatility_snapshot,
+                realized_volatility_max_source_age_ms: reference_fair_value
+                    .realized_volatility_max_source_age_ms,
+                pricing_kurtosis: reference_fair_value.pricing_kurtosis,
+                evaluation_receive_ms: reference_fair_value.evaluation_receive_ms,
+            },
         );
         let Some(reference_fair_value_result) = fair_value.fair_value.as_ref() else {
+            // A missing reference price ends any prior throttle episode because
+            // the legs were considered but not throttled. Window unavailability
+            // is different: no quote cycle occurred, so it must not manufacture
+            // an episode edge; cadence rollover or market retirement owns cleanup.
+            if fair_value.blocked_by
+                != Some(MakerRuntimeReferenceFairValueBlockReason::RuntimeWindowUnavailable)
+            {
+                for leg in [Leg::Yes, Leg::No] {
+                    self.update_requote_throttle_edge(
+                        market_key,
+                        market,
+                        budget,
+                        leg,
+                        None,
+                        quote_set.now_ms,
+                    )?;
+                }
+            }
             return Ok(BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome {
                 blocked_by: fair_value
                     .blocked_by
@@ -464,18 +735,16 @@ impl BinaryOracleMaker {
         };
         let oracle_fair_probability_up = reference_fair_value_result.fair_probability_up;
         let quote_route = self.route_maker_runtime_quote(
+            market_key,
             market,
             budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
-                quote: MakerRuntimeQuoteInput {
-                    quote_plan: MakerQuotePlanInputs {
-                        family_key: reference_fair_value.family_key,
-                        oracle_fair_probability_up,
-                        ..quote_plan
-                    },
-                    quote_set,
-                    order_plan,
+                quote_plan: MakerQuotePlanInputs {
+                    family_key: &authority.family_key,
+                    oracle_fair_probability_up,
+                    ..quote_plan
                 },
+                quote_set,
                 submit_template,
                 price_precision,
                 quantity_precision,
@@ -630,12 +899,6 @@ fn requote_throttle_block(
     if decision.control.blocked_by == Some(QuoteControlBlockReason::RequoteBudgetExhausted) {
         return requote_action_cost_class(market, leg)
             .map(|class| (class, RequoteThrottleBlockReason::RequoteBudgetExhausted));
-    }
-    if decision.blocked_by == Some(QuoteSetBlockReason::ReservationRejected) {
-        return Some((
-            RequoteActionCostClass::FreshSubmit,
-            RequoteThrottleBlockReason::RequoteBudgetExhausted,
-        ));
     }
     None
 }
@@ -841,10 +1104,13 @@ impl BinaryOracleMaker {
 
     /// Run one intent-only quote cycle for an active market: mint fresh leg order
     /// identities, drive the existing quote/order pipeline with the caller-supplied
-    /// fair-value-resolved inputs, and rotate the leg identities from the dispatched
-    /// outcome. Returns `None` if the market is not active. INTENT ONLY: the
-    /// dispatch routes through the global execution-policy chokepoint, which
-    /// suppresses every venue mutation in shadow.
+    /// fair-value-resolved inputs, and reconcile the dispatched leg identities.
+    /// Returns `None` only when the active market's cadence window is not currently
+    /// quotable. Inactive market keys and authority mismatches remain errors from
+    /// the shared route. INTENT ONLY: the dispatch routes through the global
+    /// execution-policy chokepoint, which suppresses every venue mutation in
+    /// shadow. The shared route validates the supplied family against the active
+    /// binding and checks window availability before any identity mint.
     ///
     /// The fair-value + quote-math inputs are caller-supplied because the
     /// reference/realized-volatility feed that resolves them lands in a later slice
@@ -857,16 +1123,6 @@ impl BinaryOracleMaker {
         budget: &mut RequoteBudgetPair,
         input: BinaryOracleMakerQuoteCycleInput<'_>,
     ) -> Result<Option<BinaryOracleMakerRuntimeQuoteRouteOutcome>> {
-        if self.runtime.market(market_key).is_none() {
-            return Ok(None);
-        }
-        let order_id_tag = self.config.order_id_tag.clone();
-        self.runtime.mint_next_identities(market_key, &order_id_tag);
-        let order_plan = self
-            .runtime
-            .market(market_key)
-            .expect("market presence checked above")
-            .order_plan_input();
         let BinaryOracleMakerQuoteCycleInput {
             quote_plan,
             quote_set,
@@ -877,14 +1133,12 @@ impl BinaryOracleMaker {
             max_fee_bps,
         } = input;
         let outcome = self.route_maker_runtime_quote(
+            market_key,
             market,
             budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
-                quote: MakerRuntimeQuoteInput {
-                    quote_plan,
-                    quote_set,
-                    order_plan,
-                },
+                quote_plan,
+                quote_set,
                 submit_template,
                 price_precision,
                 quantity_precision,
@@ -892,17 +1146,15 @@ impl BinaryOracleMaker {
                 max_fee_bps,
             },
         )?;
+        if outcome.quote.blocked_by == Some(MakerRuntimeQuoteBlockReason::RuntimeWindowUnavailable)
+        {
+            return Ok(None);
+        }
         if let Some(orders) = outcome.orders.as_ref() {
-            // Reconcile the identity of whichever legs dispatched BEFORE failing loud
-            // on a leg routing error, so a partial two-leg dispatch never orphans the
+            // `route_maker_runtime_quote` reconciles whichever legs dispatched before
+            // this fail-loud check, so a partial two-leg dispatch never orphans the
             // sibling leg's assigned identity from the runtime's view. The MarketQuote
-            // FSM and requote budget that plan_maker_runtime_quote already advanced are
-            // deliberately NOT rolled back: the dispatched leg's identity is bookkept
-            // active, so the FSM state and charged budget consistently reflect the leg
-            // that rested, and a rollback would desync them from the reconciled active
-            // identity. Recovering the partial (pulling the orphaned leg / reduce-only)
-            // is the pull-on-cannot-defend + active-flatten work tracked in #869 (X2/X4).
-            self.runtime.apply_dispatch_outcome(market_key, orders);
+            // FSM and requote budget remain advanced consistently with that outcome.
             if let Some(error) = orders.routing_error() {
                 anyhow::bail!(
                     "binary_oracle_maker leg order routing failed after identity reconcile: market_key={market_key} error={error}"
@@ -1318,6 +1570,16 @@ mod tests {
             ),
             RequoteThrottleBound::SubmitCommandWindow,
             "same-millisecond budget exhaustion must be labeled by the window cap"
+        );
+
+        assert_eq!(
+            requote_throttle_bound(
+                RequoteActionCostClass::CancelResubmit,
+                &exhausted_budget,
+                500,
+            ),
+            RequoteThrottleBound::OutOfOrderTs,
+            "an earlier observation must expose the diagnostic bound oscillation"
         );
 
         // A strictly later tick inside the interval still matches the gate's

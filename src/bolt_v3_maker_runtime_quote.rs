@@ -92,6 +92,7 @@ pub struct MakerRuntimeReferenceFairValueDecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MakerRuntimeReferenceFairValueBlockReason {
+    RuntimeWindowUnavailable,
     ReferenceCurrentPriceUnavailable,
     SpotPriceMissing,
     StrikePriceMissing,
@@ -110,6 +111,7 @@ pub struct MakerRuntimeQuoteDecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MakerRuntimeQuoteBlockReason {
+    RuntimeWindowUnavailable,
     QuotePlanUnavailable,
 }
 
@@ -126,6 +128,12 @@ pub fn maker_reference_current_price_fair_value_decision(
     now_ms: u64,
     input: MakerRuntimeReferenceFairValueInput<'_>,
 ) -> MakerRuntimeReferenceFairValueDecision {
+    if !runtime_window_contains(input.interval_start_ms, input.interval_end_ms, now_ms) {
+        return fair_value_blocked(
+            MakerRuntimeReferenceFairValueBlockReason::RuntimeWindowUnavailable,
+        );
+    }
+
     let Some(selection) = selector.select(
         input.interval_start_ms,
         input.interval_end_ms,
@@ -251,13 +259,21 @@ fn fair_value_blocked(
     }
 }
 
+pub(crate) fn runtime_window_contains(
+    interval_start_ms: u64,
+    interval_end_ms: u64,
+    evaluation_ms: u64,
+) -> bool {
+    (interval_start_ms..interval_end_ms).contains(&evaluation_ms)
+}
+
 pub fn plan_maker_runtime_quote(
     market: &mut MarketQuote,
     budget: &mut RequoteBudgetPair,
     input: MakerRuntimeQuoteInput<'_>,
 ) -> MakerRuntimeQuoteDecision {
     let Some(quote_plan) = plan_maker_quote_targets(input.quote_plan) else {
-        return blocked(MakerRuntimeQuoteBlockReason::QuotePlanUnavailable);
+        return blocked_runtime_quote_decision(MakerRuntimeQuoteBlockReason::QuotePlanUnavailable);
     };
 
     let quote_set = drive_binary_quote_set(
@@ -294,7 +310,9 @@ pub fn plan_maker_runtime_quote(
     }
 }
 
-fn blocked(reason: MakerRuntimeQuoteBlockReason) -> MakerRuntimeQuoteDecision {
+pub(crate) fn blocked_runtime_quote_decision(
+    reason: MakerRuntimeQuoteBlockReason,
+) -> MakerRuntimeQuoteDecision {
     MakerRuntimeQuoteDecision {
         quote_plan: None,
         quote_set: None,

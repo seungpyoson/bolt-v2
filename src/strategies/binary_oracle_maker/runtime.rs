@@ -104,6 +104,19 @@ fn make_leg_identity(
     )
 }
 
+/// Keep the episodes of active markets, drop the rest.
+///
+/// Takes the active-set test rather than reading it, so both directions can be
+/// asserted in one call: that a departed market's episode goes, and -- the half
+/// that matters -- that a live market's episode beside it stays. A test that only
+/// proved removal would pass on a prune that removed everything.
+fn retain_episodes_of_active_markets(
+    episodes: &mut Vec<super::RequoteThrottleEpisodeId>,
+    is_active: impl Fn(&str, &super::binding::MakerConcreteMarketIdentity) -> bool,
+) {
+    episodes.retain(|episode| is_active(&episode.market_key, &episode.market));
+}
+
 /// The per-leg generation high-water marks for one declared market — the highest
 /// generation its YES and NO legs have minted. Held by [`MakerRuntime`] keyed by
 /// `market_key` (not by the per-refresh [`MakerMarketRuntime`]) so the next
@@ -137,6 +150,11 @@ pub struct MakerMarketRuntime {
 }
 
 impl MakerMarketRuntime {
+    #[must_use]
+    pub fn concrete_identity(&self) -> super::binding::MakerConcreteMarketIdentity {
+        self.binding.concrete_identity()
+    }
+
     /// Build a per-market runtime, **seeding the per-leg generation counters from
     /// the persistent [`MakerRuntime`] high-water** for this `market_key`. A
     /// brand-new (market_key, leg) seeds at [`LegGenerations::ZERO`]; a roll or a
@@ -173,13 +191,29 @@ impl MakerMarketRuntime {
         &self.binding.market_key
     }
 
-    /// The concrete venue `market_id` this slot resolved to. Retained as a plain
-    /// diagnostics accessor; it is **not** the cadence-window discriminator (that is
-    /// `start_timestamp_milliseconds`), because venue metadata is not guaranteed to
-    /// change when the window rolls.
+    /// The configured family that owns this active market.
     #[must_use]
-    pub fn market_id(&self) -> &str {
-        &self.binding.market_id
+    pub fn family_key(&self) -> &str {
+        &self.binding.family_key
+    }
+
+    /// The configured asset that owns reference prices and the opening strike.
+    #[must_use]
+    pub fn underlying_asset(&self) -> &str {
+        &self.binding.underlying_asset
+    }
+
+    /// Start of the active cadence window used for reference-price selection.
+    #[must_use]
+    pub fn start_timestamp_milliseconds(&self) -> u64 {
+        self.binding.start_timestamp_milliseconds
+    }
+
+    /// End of the active cadence window used for reference-price selection and
+    /// time-to-expiry pricing.
+    #[must_use]
+    pub fn expiration_timestamp_milliseconds(&self) -> u64 {
+        self.binding.expiration_timestamp_milliseconds
     }
 
     /// The bankroll notional the planner allocated this market this cycle.
@@ -264,6 +298,18 @@ pub struct MakerRuntimeRefresh {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MakerRuntime {
     markets: BTreeMap<String, MakerMarketRuntime>,
+    /// Episodes already recorded for currently-blocked legs.
+    ///
+    /// This state belongs to the runtime because market refresh and deactivation
+    /// define its lifetime. Keeping it in the shell made it possible to pass a
+    /// different vector to refresh or stop, silently retaining dead episodes.
+    ///
+    /// It accumulates all currently blocked episode identities rather than
+    /// replacing the latest observation per leg. `block_reason` remains part of
+    /// that identity so independently emitted semantic blockers cannot alias one
+    /// another. Unblock removes the leg's entries; refresh and deactivation remove
+    /// retired market entries.
+    throttle_episodes: Vec<super::RequoteThrottleEpisodeId>,
     /// Per-(market_key, leg) generation high-water marks — the single source of
     /// truth for the next generation each leg mints. Persists independently of
     /// `markets`: a market that drops out of the active set (planner block,
@@ -285,6 +331,7 @@ impl MakerRuntime {
     pub fn empty() -> Self {
         Self {
             markets: BTreeMap::new(),
+            throttle_episodes: Vec::new(),
             generations: BTreeMap::new(),
         }
     }
@@ -296,7 +343,10 @@ impl MakerRuntime {
     /// any drop/refill) cannot re-mint a `ClientOrderId` a prior active period
     /// already consumed. Durability across a full process restart still needs a
     /// persisted high-water (arming-time work, #869).
+    /// A stop leaves no later refresh to prune blocked episodes, so clear the
+    /// runtime-owned store here before a same-market restart.
     pub fn deactivate_all(&mut self) {
+        self.throttle_episodes.clear();
         self.markets = BTreeMap::new();
     }
 
@@ -346,6 +396,9 @@ impl MakerRuntime {
     /// the persistent per-(market_key, leg) high-water ([`MakerRuntime::generations`]),
     /// so re-minted ids stay unique across a roll AND across a drop/refill. Returns
     /// the trade-subscription delta plus any resolution misses.
+    /// The runtime-owned throttle store is pruned against the resulting active
+    /// set. Ownership makes passing a decoy store unrepresentable: the same object
+    /// that changes market lifetime also changes episode lifetime.
     pub fn refresh_active_markets(
         &mut self,
         declarations: &[MakerMarketDeclaration],
@@ -354,7 +407,44 @@ impl MakerRuntime {
         policy: MakerMarketPortfolioPolicy,
     ) -> MakerRuntimeRefresh {
         let resolution = resolve_declared_markets(declarations, instruments, now_milliseconds);
-        self.apply_resolution(resolution, policy)
+        let refresh = self.apply_resolution(resolution, policy);
+        // The active set is the authority, rather than the unsubscribe list: a
+        // market can leave for reasons that produce no unsubscribe, and one
+        // authority cannot disagree with itself.
+        self.prune_throttle_episodes();
+        refresh
+    }
+
+    /// Drop the episodes of markets that are no longer active, keep the rest.
+    fn prune_throttle_episodes(&mut self) {
+        let markets = &self.markets;
+        retain_episodes_of_active_markets(&mut self.throttle_episodes, |key, identity| {
+            markets
+                .get(key)
+                .is_some_and(|market| market.binding.concrete_identity() == *identity)
+        });
+    }
+
+    pub(super) fn clear_throttle_episode(
+        &mut self,
+        market_key: &str,
+        market: &super::binding::MakerConcreteMarketIdentity,
+        leg: Leg,
+    ) {
+        self.throttle_episodes.retain(|episode| {
+            !(episode.market_key == market_key && episode.market == *market && episode.leg == leg)
+        });
+    }
+
+    pub(super) fn contains_throttle_episode(
+        &self,
+        episode: &super::RequoteThrottleEpisodeId,
+    ) -> bool {
+        self.throttle_episodes.contains(episode)
+    }
+
+    pub(super) fn record_throttle_episode(&mut self, episode: super::RequoteThrottleEpisodeId) {
+        self.throttle_episodes.push(episode);
     }
 
     fn apply_resolution(
@@ -415,15 +505,37 @@ impl MakerRuntime {
                 .unwrap_or(LegGenerations::ZERO);
             let runtime = match self.markets.remove(&market_key) {
                 // Same cadence window AND same resolved leg instruments (`same_window`
-                // compares both): retain assigned identities + live counters and refresh
-                // only the allocation. A changed leg instrument under an unchanged window
-                // start is NOT retained — `same_window` treats it as a roll, so the live
-                // trade-subscription differ never strands on a re-issued instrument. The
-                // prior binding's remaining metadata (expiration, selection outcome) IS
-                // intentionally left un-refreshed here: no consumer reads those fields
-                // until settlement, so a stale value is latent at the foundation. The X3
-                // settlement slice refreshes that metadata on retain — tracked in #866.
+                // compares both): retain assigned order identities + live counters. A
+                // changed leg instrument under an unchanged window start is NOT retained —
+                // `same_window` treats it as a roll, so the live trade-subscription differ
+                // never strands on a re-issued instrument. Evidence identity is refreshed
+                // independently: it may receive a metadata correction without changing the
+                // order-lifecycle identity, and throttle pruning and reference pricing must
+                // see the corrected metadata without discarding handles for resting orders.
+                // NautilusTrader's `InstrumentId` is the sole Bolt order-lifecycle key;
+                // venue token strings inside evidence identity remain NT-owned translation
+                // metadata and must not make Bolt forget a cancel/modify handle.
                 Some(mut prior) if same_window(&prior.binding, binding) => {
+                    // Refresh the whole resolved binding so a future metadata field
+                    // cannot be omitted from this retain path. Only the NT-backed leg
+                    // handles belong to the predecessor; `same_window` proves their
+                    // instrument ids are unchanged.
+                    let mut refreshed = binding.clone();
+                    let MakerLegBinding {
+                        instrument_id: _,
+                        active_order: prior_yes_active,
+                        next_order: prior_yes_next,
+                    } = &prior.binding.yes;
+                    let MakerLegBinding {
+                        instrument_id: _,
+                        active_order: prior_no_active,
+                        next_order: prior_no_next,
+                    } = &prior.binding.no;
+                    refreshed.yes.active_order.clone_from(prior_yes_active);
+                    refreshed.yes.next_order.clone_from(prior_yes_next);
+                    refreshed.no.active_order.clone_from(prior_no_active);
+                    refreshed.no.next_order.clone_from(prior_no_next);
+                    prior.binding = refreshed;
                     prior.allocation_notional = allocation_notional;
                     prior
                 }
@@ -437,7 +549,6 @@ impl MakerRuntime {
                 // would re-mint a client order id a prior generation already consumed
                 // (NautilusTrader never reuses a `ClientOrderId`). Seeding from the
                 // high-water keeps every minted id unique regardless of transition kind.
-                // Clone the binding only here, never on the common retain path.
                 _ => MakerMarketRuntime::seeded(binding.clone(), allocation_notional, seed),
             };
             next.insert(market_key, runtime);
@@ -500,20 +611,17 @@ impl MakerRuntime {
     }
 }
 
-/// Whether two bindings of the same declared market describe the same cadence
-/// window *and* resolved to the same leg instruments. The window start
+/// Whether two bindings of the same declared market share one order-lifecycle
+/// window: the same cadence start and the same leg instruments. The window start
 /// (`start_timestamp_milliseconds`) — not the venue `market_id`, which is metadata
 /// not guaranteed to change on a roll — is the primary discriminator, so a genuine
 /// roll (a new `start_timestamp_milliseconds`) always rebuilds the runtime with
-/// fresh identities even when the venue reuses the same `market_id`. The leg
-/// instrument ids are compared too, so a venue that re-issues the period's market
-/// under new instrument ids at an unchanged window start is treated as a roll
-/// (fail-closed): the leg instrument id is read live by the trade-subscription
-/// differ ([`MakerRuntime::instrument_id_set`]), so a window-start-only retain would
-/// strand the maker on the gone instrument's feed. The discovery engine resolves a
-/// period to stable instruments, so in practice the instrument ids match whenever
-/// the window start does; comparing them makes that trusted invariant fail-closed
-/// rather than merely assumed.
+/// fresh identities even when the venue reuses the same `market_id`. Leg instrument
+/// ids are compared too, so a venue reissue at an unchanged window start is treated
+/// as a roll (fail-closed): the trade-subscription differ reads them live. Validated
+/// evidence identity is deliberately not part of this predicate. A metadata-only
+/// correction is refreshed on the retained binding, which lets throttle pruning
+/// retire the predecessor episode without losing active or pending order handles.
 fn same_window(prior: &MakerResolvedMarketBinding, current: &MakerResolvedMarketBinding) -> bool {
     prior.start_timestamp_milliseconds == current.start_timestamp_milliseconds
         && prior.yes.instrument_id == current.yes.instrument_id
@@ -553,6 +661,8 @@ fn rotate_leg_identity(
 mod tests {
     use super::*;
 
+    use crate::bolt_v3_evidence_novelty::{EvidenceMarketIdentity, EvidenceOutcomeIdentity};
+    use crate::bolt_v3_market_families::{MarketSelectionOutcome, SelectedMarketSourceIdentity};
     use nautilus_model::identifiers::{ClientOrderId, InstrumentId};
     use nautilus_model::{
         enums::OrderSide,
@@ -565,6 +675,175 @@ mod tests {
             active_order: None,
             next_order: None,
         }
+    }
+
+    fn concrete_market_identity(
+        market_id: &str,
+    ) -> super::super::binding::MakerConcreteMarketIdentity {
+        let evidence_identity = crate::bolt_v3_evidence_novelty::EvidenceMarketIdentity::try_new(
+            market_id.to_string(),
+            format!("condition-{market_id}"),
+            format!("question-{market_id}"),
+            [
+                crate::bolt_v3_evidence_novelty::EvidenceOutcomeIdentity {
+                    index: 0,
+                    normalized_outcome: "yes".to_string(),
+                    clob_token_id: format!("{market_id}-yes"),
+                },
+                crate::bolt_v3_evidence_novelty::EvidenceOutcomeIdentity {
+                    index: 1,
+                    normalized_outcome: "no".to_string(),
+                    clob_token_id: format!("{market_id}-no"),
+                },
+            ],
+        )
+        .expect("runtime fixture identity must be valid");
+        super::super::binding::MakerConcreteMarketIdentity::new(
+            evidence_identity,
+            1_000,
+            InstrumentId::from(format!("{market_id}-yes.SIM")),
+            InstrumentId::from(format!("{market_id}-no.SIM")),
+        )
+    }
+
+    fn resolved_binding(question_id: &str) -> MakerResolvedMarketBinding {
+        MakerResolvedMarketBinding {
+            market_key: "configured-market".to_string(),
+            family_key: "static_binary_event".to_string(),
+            underlying_asset: "ETH".to_string(),
+            evidence_identity: EvidenceMarketIdentity::try_new(
+                "gamma-market".to_string(),
+                "condition-1".to_string(),
+                question_id.to_string(),
+                [
+                    EvidenceOutcomeIdentity {
+                        index: 0,
+                        normalized_outcome: "yes".to_string(),
+                        clob_token_id: "yes-token".to_string(),
+                    },
+                    EvidenceOutcomeIdentity {
+                        index: 1,
+                        normalized_outcome: "no".to_string(),
+                        clob_token_id: "no-token".to_string(),
+                    },
+                ],
+            )
+            .expect("binding fixture evidence identity must be valid"),
+            yes: leg_binding("yes-token.POLYMARKET"),
+            no: leg_binding("no-token.POLYMARKET"),
+            selection_outcome: MarketSelectionOutcome::Current,
+            source_identity: SelectedMarketSourceIdentity {
+                condition_id: "condition-1".to_string(),
+                market_slug: "market-slug".to_string(),
+                question_id: question_id.to_string(),
+            },
+            start_timestamp_milliseconds: 1_000,
+            expiration_timestamp_milliseconds: 301_000,
+            seconds_to_end: 300,
+        }
+    }
+
+    #[test]
+    fn metadata_only_identity_refresh_preserves_order_handles_and_updates_evidence_identity() {
+        let policy = MakerMarketPortfolioPolicy {
+            max_active_markets: 1,
+            total_bankroll_notional: 100.0,
+            min_slot_notional: 100.0,
+        };
+        let mut runtime = MakerRuntime::empty();
+        runtime.apply_resolution(
+            MakerMarketResolution {
+                bindings: vec![resolved_binding("question-1")],
+                misses: Vec::new(),
+            },
+            policy,
+        );
+        assert!(runtime.mint_next_identities("configured-market", "001"));
+        let yes_next = runtime
+            .market("configured-market")
+            .expect("market is active")
+            .leg_binding(Leg::Yes)
+            .next_order
+            .clone()
+            .expect("YES next identity was minted");
+        let no_next = runtime
+            .market("configured-market")
+            .expect("market is active")
+            .leg_binding(Leg::No)
+            .next_order
+            .clone()
+            .expect("NO next identity was minted");
+        assert!(runtime.apply_dispatch_outcome(
+            "configured-market",
+            &MakerRuntimeOrderDispatchOutcome {
+                yes: crate::bolt_v3_maker_runtime_order::MakerRuntimeLegOrderDispatchOutcome {
+                    dispatch: Some(MakerOrderDispatchOutcome::Submitted {
+                        leg: Leg::Yes,
+                        instrument_id: InstrumentId::from("yes-token.POLYMARKET"),
+                        client_order_id: ClientOrderId::from("001-configured-market-1000-yes-1",),
+                        price: Price::new(0.40, 2),
+                        quantity: Quantity::new(1.0, 0),
+                    }),
+                    blocked_by: None,
+                    routing_error: None,
+                },
+                no: crate::bolt_v3_maker_runtime_order::MakerRuntimeLegOrderDispatchOutcome {
+                    dispatch: None,
+                    blocked_by: None,
+                    routing_error: None,
+                },
+            },
+        ));
+        let prior_identity = runtime
+            .market("configured-market")
+            .expect("market is active")
+            .concrete_identity();
+        let mut corrected = resolved_binding("question-1-corrected");
+        corrected.underlying_asset = "BTC".to_string();
+        corrected.expiration_timestamp_milliseconds = 302_000;
+        corrected.seconds_to_end = 299;
+        corrected.selection_outcome = MarketSelectionOutcome::Next;
+        corrected.source_identity.market_slug = "market-slug-corrected".to_string();
+        let corrected_identity = corrected.concrete_identity();
+
+        runtime.apply_resolution(
+            MakerMarketResolution {
+                bindings: vec![corrected],
+                misses: Vec::new(),
+            },
+            policy,
+        );
+
+        let retained = runtime
+            .market("configured-market")
+            .expect("metadata correction keeps the market active");
+        assert_eq!(
+            retained.leg_binding(Leg::Yes).active_order,
+            Some(yes_next),
+            "metadata correction must not lose the resting order handle"
+        );
+        assert_eq!(
+            retained.leg_binding(Leg::No).next_order,
+            Some(no_next),
+            "metadata correction must not lose a pending order handle"
+        );
+        assert_ne!(retained.concrete_identity(), prior_identity);
+        assert_eq!(
+            retained.concrete_identity(),
+            corrected_identity,
+            "the retained runtime must expose the corrected evidence identity"
+        );
+        assert_eq!(retained.expiration_timestamp_milliseconds(), 302_000);
+        assert_eq!(retained.underlying_asset(), "BTC");
+        assert_eq!(retained.binding.seconds_to_end, 299);
+        assert_eq!(
+            retained.binding.selection_outcome,
+            MarketSelectionOutcome::Next
+        );
+        assert_eq!(
+            retained.binding.source_identity.market_slug,
+            "market-slug-corrected"
+        );
     }
 
     #[test]
@@ -732,5 +1011,92 @@ mod tests {
         rotate_leg_identity(&mut binding, None);
         assert_eq!(binding.next_order, Some(next));
         assert_eq!(binding.active_order, None);
+    }
+
+    /// A blocked leg whose market leaves the active set never reaches the clear
+    /// on unblock, so without this its episode outlives the market: if that key
+    /// resolves again later, its first block is suppressed as one already
+    /// recorded -- silence exactly where a fresh block belongs.
+    ///
+    /// Lives beside the prune rather than at the strategy call site, because the
+    /// refresh now takes the episode list and prunes it unconditionally: the
+    /// previous shape put the call in `mod.rs`, where deleting it left every test
+    /// in the crate green.
+    #[test]
+    fn a_departed_markets_throttle_episode_is_dropped_and_a_live_ones_is_kept() {
+        let episode = |market_key: &str| super::super::RequoteThrottleEpisodeId {
+            market_key: market_key.to_string(),
+            market: concrete_market_identity(market_key),
+            leg: Leg::Yes,
+            block_reason:
+                crate::bolt_v3_current_evidence::RequoteThrottleBlockReason::RequoteBudgetExhausted,
+        };
+        let mut episodes = vec![
+            episode("departed"),
+            episode("live"),
+            episode("also-departed"),
+        ];
+
+        retain_episodes_of_active_markets(&mut episodes, |key, _| key == "live");
+
+        assert_eq!(
+            episodes,
+            vec![episode("live")],
+            "only the episodes of markets still in the active set survive a refresh"
+        );
+    }
+
+    /// Teeth for the prune *call*, not just the predicate. This drives the real
+    /// refresh with no declarations, which resolves to an empty active set, and
+    /// fails if the runtime-owned episode survives.
+    #[test]
+    fn refreshing_active_markets_prunes_episodes_of_markets_that_are_gone() {
+        let mut runtime = MakerRuntime::empty();
+        runtime.throttle_episodes = vec![super::super::RequoteThrottleEpisodeId {
+            market_key: "gone".to_string(),
+            market: concrete_market_identity("gone"),
+            leg: Leg::Yes,
+            block_reason:
+                crate::bolt_v3_current_evidence::RequoteThrottleBlockReason::RequoteBudgetExhausted,
+        }];
+
+        runtime.refresh_active_markets(
+            &[],
+            &[],
+            0,
+            MakerMarketPortfolioPolicy {
+                max_active_markets: 3,
+                total_bankroll_notional: 1_500.0,
+                min_slot_notional: 100.0,
+            },
+        );
+
+        assert!(
+            runtime.throttle_episodes.is_empty(),
+            "a refresh that leaves no market active must leave no episode behind"
+        );
+    }
+
+    /// A stop drops every market, so it must drop every episode with them: nothing
+    /// else prunes across a stop/start, and the next `on_start` refresh prunes
+    /// against the repopulated set -- which would keep the episode of a market
+    /// active on both sides and suppress its first block after restart.
+    #[test]
+    fn deactivating_every_market_drops_every_throttle_episode() {
+        let mut runtime = MakerRuntime::empty();
+        runtime.throttle_episodes = vec![super::super::RequoteThrottleEpisodeId {
+            market_key: "still-declared".to_string(),
+            market: concrete_market_identity("still-declared"),
+            leg: Leg::Yes,
+            block_reason:
+                crate::bolt_v3_current_evidence::RequoteThrottleBlockReason::RequoteBudgetExhausted,
+        }];
+
+        runtime.deactivate_all();
+
+        assert!(
+            runtime.throttle_episodes.is_empty(),
+            "a market that is declared again after a restart must record its first block as new"
+        );
     }
 }

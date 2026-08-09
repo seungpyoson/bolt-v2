@@ -1,10 +1,12 @@
 use bolt_v2::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore,
+    bolt_v3_economics_runtime::{
+        AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
+    },
     bolt_v3_providers::polymarket::{
         PolymarketMarketInfoSnapshot, PolymarketSnapshotMetadata, authoritative_economics_input,
     },
-    economics::SnapshotId,
+    economics::{CurrencyId, SnapshotId, SourceIdentity},
 };
 
 pub fn polymarket_inputs(loaded: &LoadedBoltV3Config) -> AuthoritativeEconomicsInputStore {
@@ -35,6 +37,19 @@ pub fn polymarket_inputs(loaded: &LoadedBoltV3Config) -> AuthoritativeEconomicsI
         "binary_outcome",
         snapshot,
     )
-    .expect("fixture authority should match its token scope")])
+    .expect("fixture authority should match its token scope")
+    .with_valuation_observations([
+        AuthoritativeValuationObservation::ProviderExactConversion {
+            source_id: SourceIdentity::try_new("fixture-collateral")
+                .expect("fixture source should be valid"),
+            from_unit: CurrencyId::try_new("pUSD").expect("fixture currency should be valid"),
+            to_unit: CurrencyId::try_new("USD").expect("fixture currency should be valid"),
+            snapshot_id: SnapshotId::try_new("fixture-collateral-conversion")
+                .expect("fixture snapshot should be valid"),
+            observed_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns: 2_000,
+        },
+    ])])
     .expect("one fixture economics input should construct")
 }

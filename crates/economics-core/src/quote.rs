@@ -143,6 +143,17 @@ impl EconomicsQuote {
     pub fn capability_health(&self) -> EconomicsCapabilityHealth {
         EconomicsCapabilityHealth::quote_only(self.valid_until_ns, self.forecast_valid_until_ns)
     }
+
+    pub fn cap_valid_until_ns(&mut self, valid_until_ns: u64) -> Result<(), EconomicsError> {
+        if valid_until_ns < self.requested_at_ns {
+            return Err(EconomicsError::RequiredCapabilityStale { valid_until_ns });
+        }
+        self.valid_until_ns = self.valid_until_ns.min(valid_until_ns);
+        self.forecast_valid_until_ns = self
+            .forecast_valid_until_ns
+            .map(|deadline| deadline.min(valid_until_ns));
+        Ok(())
+    }
 }
 
 pub fn validate_and_aggregate_quote(

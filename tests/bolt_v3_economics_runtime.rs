@@ -3,7 +3,8 @@ use crate::support;
 use bolt_v2::{
     bolt_v3_config::{ClientBlock, ExecutionEconomicsConfig, load_bolt_v3_config},
     bolt_v3_economics_runtime::{
-        AuthoritativeEconomicsInputStore, AuthoritativeVenueEconomicsInput,
+        AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
+        AuthoritativeVenueEconomicsInput, EconomicsAdmissionIntent, EconomicsAdmissionPurpose,
         EconomicsRuntimeBindingError, bind_execution_economics,
     },
     bolt_v3_providers::{
@@ -21,7 +22,7 @@ use bolt_v2::{
         AccountId, CurrencyId, DecisionCorrelationId, EconomicsInstrumentId, EconomicsQuoteRequest,
         EdgeBasisPolicyId, ExecutionClientId, LifecyclePath, LiquidityRole, OrderSide,
         PlannedFillLeg, PlannedFillNotional, ProductSurfaceId, ReportingPolicyId, RoutingContext,
-        SnapshotId,
+        SnapshotId, SourceIdentity,
     },
 };
 use rust_decimal::Decimal;
@@ -77,6 +78,26 @@ fn configured_economics(
 }
 
 fn authoritative_input() -> AuthoritativeVenueEconomicsInput {
+    authoritative_input_with_valuation_deadline(2_000)
+}
+
+fn authoritative_input_with_valuation_deadline(
+    valid_until_ns: u64,
+) -> AuthoritativeVenueEconomicsInput {
+    authoritative_input_without_valuation().with_valuation_observations([
+        AuthoritativeValuationObservation::ProviderExactConversion {
+            source_id: id("fixture-collateral", SourceIdentity::try_new),
+            from_unit: id("pUSD", CurrencyId::try_new),
+            to_unit: id("USD", CurrencyId::try_new),
+            snapshot_id: id("collateral-conversion-1", SnapshotId::try_new),
+            observed_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns,
+        },
+    ])
+}
+
+fn authoritative_input_without_valuation() -> AuthoritativeVenueEconomicsInput {
     let snapshot = PolymarketMarketInfoSnapshot::from_json(
         PolymarketSnapshotMetadata {
             snapshot_id: id("market-info-1", SnapshotId::try_new),
@@ -146,6 +167,17 @@ fn hyperliquid_input_for(
         None,
     )
     .expect("Hyperliquid authority scope should match its product snapshot")
+    .with_valuation_observations([
+        AuthoritativeValuationObservation::ProviderExactConversion {
+            source_id: id("fixture-settlement", SourceIdentity::try_new),
+            from_unit: id("hUSD", CurrencyId::try_new),
+            to_unit: id("USD", CurrencyId::try_new),
+            snapshot_id: id("settlement-conversion-1", SnapshotId::try_new),
+            observed_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns: 2_000,
+        },
+    ])
 }
 
 fn hyperliquid_loaded() -> bolt_v2::bolt_v3_config::LoadedBoltV3Config {
@@ -211,6 +243,116 @@ fn bound_execution_economics_routes_edge_basis_by_exact_product_scope() {
         basis.product_metadata_source.as_str(),
         "polymarket-market-info"
     );
+}
+
+#[test]
+fn bound_execution_economics_quotes_and_folds_admission_from_one_authority() {
+    let loaded = loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([authoritative_input()])
+        .expect("one input should construct");
+    let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
+        .expect("matching authority should bind");
+
+    let admission = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request: quote_request("token-yes", "binary_outcome"),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect("fresh valued economics should authorize positive net edge");
+
+    assert!(admission.quote().core_total().is_sign_negative());
+    assert!(admission.net_edge().core_net_edge > Decimal::ZERO);
+    assert!(admission.full_reservation_liability() > Decimal::from(5));
+    assert_eq!(
+        admission.quote().valuations()[0].source_snapshot_ids,
+        vec![id("collateral-conversion-1", SnapshotId::try_new)]
+    );
+}
+
+#[test]
+fn bound_execution_economics_rejects_stale_required_valuation() {
+    let loaded = loaded();
+    let inputs =
+        AuthoritativeEconomicsInputStore::try_new([authoritative_input_with_valuation_deadline(
+            999,
+        )])
+        .expect("one input should construct");
+    let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
+        .expect("authority shape should bind before quote-time freshness evaluation");
+
+    let error = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request: quote_request("token-yes", "binary_outcome"),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect_err("stale required valuation must fail before admission");
+
+    assert!(error.to_string().contains("stale"));
+}
+
+#[test]
+fn execution_economics_rejects_missing_required_valuation_authority() {
+    let loaded = loaded();
+    let inputs =
+        AuthoritativeEconomicsInputStore::try_new([authoritative_input_without_valuation()])
+            .expect("one input should construct");
+
+    let error = bind_execution_economics(&loaded, "polymarket_main", &inputs)
+        .err()
+        .expect("missing configured valuation authority must fail binding");
+
+    assert!(matches!(
+        error,
+        EconomicsRuntimeBindingError::AuthoritativeValuationBuildFailed { .. }
+    ));
+}
+
+#[test]
+fn bound_execution_economics_rejects_foreign_reporting_policy() {
+    let loaded = loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([authoritative_input()])
+        .expect("one input should construct");
+    let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
+        .expect("matching authority should bind");
+    let mut request = quote_request("token-yes", "binary_outcome");
+    request.reporting_policy_id = id("foreign-reporting-policy", ReportingPolicyId::try_new);
+
+    let error = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request,
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect_err("the request cannot select a foreign reporting policy");
+
+    assert!(error.to_string().contains("reporting"));
+}
+
+#[test]
+fn bound_execution_economics_rejects_foreign_product_edge_policy() {
+    let loaded = loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([authoritative_input()])
+        .expect("one input should construct");
+    let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
+        .expect("matching authority should bind");
+    let mut request = quote_request("token-yes", "binary_outcome");
+    request.edge_basis_policy_id = id("foreign-edge-policy", EdgeBasisPolicyId::try_new);
+
+    let error = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request,
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect_err("the request cannot select a foreign edge policy");
+
+    assert!(error.to_string().contains("edge-basis"));
 }
 
 #[test]

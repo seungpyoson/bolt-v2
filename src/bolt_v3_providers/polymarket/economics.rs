@@ -1,11 +1,14 @@
+use std::collections::BTreeSet;
+
 use rust_decimal::{Decimal, RoundingStrategy, prelude::ToPrimitive};
 use serde::Deserialize;
 
 use crate::economics::{
     AdmissionTreatment, CalculationFactor, CurrencyId, EconomicClass, EconomicComponentId,
-    EconomicKind, EconomicScope, EconomicsError, EconomicsQuoteRequest, EstimatedEffect,
-    ExecutionKind, FormulaId, LiquidityRole, PointEstimate, SignedNativeEffect, SnapshotId,
-    SourceIdentity, SourceValidity, VenueQuoteEstimate,
+    EconomicKind, EconomicScope, EconomicsError, EconomicsInstrumentId, EconomicsQuoteRequest,
+    EstimatedEffect, ExecutionKind, FormulaId, LiquidityRole, PointEstimate, ProductSurfaceId,
+    RoutingAttachmentId, SignedNativeEffect, SnapshotId, SourceIdentity, SourceValidity,
+    VenueQuoteEstimate,
 };
 
 const BASIS_POINTS_PER_UNIT: i64 = 10_000;
@@ -35,6 +38,7 @@ pub struct PolymarketEconomicsConfig {
     pub builder_component_id: EconomicComponentId,
     pub builder_formula_id: FormulaId,
     pub builder_rate_factor_id: FormulaId,
+    pub builder_attachment_id: RoutingAttachmentId,
     pub fee_round_decimal_places: u32,
     pub fee_rounding_mode: FeeRoundingMode,
 }
@@ -45,11 +49,14 @@ pub struct PolymarketSnapshotMetadata {
     pub source_at_ns: u64,
     pub fetched_at_ns: u64,
     pub valid_until_ns: u64,
+    pub builder_attachment_id: RoutingAttachmentId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolymarketMarketInfoSnapshot {
     metadata: PolymarketSnapshotMetadata,
+    condition_id: ProductSurfaceId,
+    token_ids: BTreeSet<EconomicsInstrumentId>,
     platform: PolymarketPlatformPlan,
     builder_maker_fee_bps: Decimal,
     builder_taker_fee_bps: Decimal,
@@ -73,7 +80,7 @@ struct PolymarketMarketInfoWire {
     r: serde_json::Value,
     t: Vec<PolymarketTokenWire>,
     #[serde(default, rename = "c")]
-    _condition_id: Option<String>,
+    condition_id: Option<String>,
     mos: Decimal,
     mts: Decimal,
     mbf: Option<Decimal>,
@@ -115,6 +122,7 @@ struct PolymarketFeeDescriptorWire {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolymarketEconomicsError {
     InvalidMarketInfo,
+    InvalidRequestScope,
     UnsupportedExponent,
     InvalidRate,
     InvalidFillLeg,
@@ -126,6 +134,9 @@ impl std::fmt::Display for PolymarketEconomicsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidMarketInfo => f.write_str("Polymarket market-info is invalid"),
+            Self::InvalidRequestScope => {
+                f.write_str("Polymarket quote request does not match its market authority")
+            }
             Self::UnsupportedExponent => {
                 f.write_str("Polymarket fee exponent is not fixture-supported")
             }
@@ -165,6 +176,19 @@ impl PolymarketMarketInfoSnapshot {
         {
             return Err(PolymarketEconomicsError::InvalidMarketInfo);
         }
+        let condition_id = wire
+            .condition_id
+            .and_then(|value| ProductSurfaceId::try_new(value).ok())
+            .ok_or(PolymarketEconomicsError::InvalidMarketInfo)?;
+        let token_ids = wire
+            .t
+            .iter()
+            .map(|token| EconomicsInstrumentId::try_new(token.t.clone()))
+            .collect::<Result<BTreeSet<_>, _>>()
+            .map_err(|_| PolymarketEconomicsError::InvalidMarketInfo)?;
+        if token_ids.len() != wire.t.len() {
+            return Err(PolymarketEconomicsError::InvalidMarketInfo);
+        }
         let (platform, builder_maker_fee_bps, builder_taker_fee_bps) =
             match (wire.fd, wire.mbf, wire.tbf) {
                 (None, None, None) => (
@@ -198,6 +222,8 @@ impl PolymarketMarketInfoSnapshot {
             };
         Ok(Self {
             metadata,
+            condition_id,
+            token_ids,
             platform,
             builder_maker_fee_bps,
             builder_taker_fee_bps,
@@ -216,6 +242,9 @@ impl PolymarketEconomicsAdapter {
         config: PolymarketEconomicsConfig,
         snapshot: PolymarketMarketInfoSnapshot,
     ) -> Result<Self, PolymarketEconomicsError> {
+        if config.builder_attachment_id != snapshot.metadata.builder_attachment_id {
+            return Err(PolymarketEconomicsError::InvalidRequestScope);
+        }
         if matches!(
             snapshot.platform,
             PolymarketPlatformPlan::PriceShaped {
@@ -236,6 +265,7 @@ impl PolymarketEconomicsAdapter {
         request: &EconomicsQuoteRequest,
     ) -> Result<VenueQuoteEstimate, PolymarketEconomicsError> {
         request.validate()?;
+        self.validate_request_authority(request)?;
         let authority = self.authority();
         let mut components = Vec::new();
         if let PolymarketPlatformPlan::PriceShaped {
@@ -283,6 +313,23 @@ impl PolymarketEconomicsAdapter {
             dependency_sources: Vec::new(),
             components,
         })
+    }
+
+    fn validate_request_authority(
+        &self,
+        request: &EconomicsQuoteRequest,
+    ) -> Result<(), PolymarketEconomicsError> {
+        if request.product_surface_id != self.snapshot.condition_id
+            || !self.snapshot.token_ids.contains(&request.instrument_id)
+            || request
+                .routing
+                .attached_charge
+                .as_ref()
+                .is_some_and(|attached| attached != &self.config.builder_attachment_id)
+        {
+            return Err(PolymarketEconomicsError::InvalidRequestScope);
+        }
+        Ok(())
     }
 
     fn authority(&self) -> SourceValidity {
@@ -420,6 +467,7 @@ mod tests {
             builder_component_id: id("builder", EconomicComponentId::try_new),
             builder_formula_id: id("builder-v2", FormulaId::try_new),
             builder_rate_factor_id: id("builder-rate", FormulaId::try_new),
+            builder_attachment_id: id("builder-code", RoutingAttachmentId::try_new),
             fee_round_decimal_places: 5,
             fee_rounding_mode: FeeRoundingMode::MidpointAwayFromZero,
         }
@@ -431,15 +479,25 @@ mod tests {
             source_at_ns: 900,
             fetched_at_ns: 950,
             valid_until_ns: 1_100,
+            builder_attachment_id: id("builder-code", RoutingAttachmentId::try_new),
         }
     }
 
     fn request(role: LiquidityRole, routed: bool) -> EconomicsQuoteRequest {
+        request_for("token-yes", "condition", role, routed)
+    }
+
+    fn request_for(
+        instrument_id: &str,
+        product_surface_id: &str,
+        role: LiquidityRole,
+        routed: bool,
+    ) -> EconomicsQuoteRequest {
         EconomicsQuoteRequest {
             execution_client_id: id("execution", ExecutionClientId::try_new),
             account_id: id("account", AccountId::try_new),
-            instrument_id: id("condition-token", EconomicsInstrumentId::try_new),
-            product_surface_id: id("binary", ProductSurfaceId::try_new),
+            instrument_id: id(instrument_id, EconomicsInstrumentId::try_new),
+            product_surface_id: id(product_surface_id, ProductSurfaceId::try_new),
             order_side: OrderSide::Buy,
             liquidity_role: role,
             planned_fill_legs: vec![
@@ -507,6 +565,49 @@ mod tests {
     }
 
     #[test]
+    fn quote_rejects_foreign_market_token_surface_and_builder_attachment() {
+        let adapter = adapter(include_str!(
+            "../../../tests/fixtures/economics/polymarket/fee_enabled.json"
+        ))
+        .expect("fee-enabled fixture should construct");
+
+        let mut foreign_token = request(LiquidityRole::Taker, false);
+        foreign_token.instrument_id = id("foreign-token", EconomicsInstrumentId::try_new);
+        assert_eq!(
+            adapter.quote(&foreign_token),
+            Err(PolymarketEconomicsError::InvalidRequestScope)
+        );
+
+        let mut foreign_surface = request(LiquidityRole::Taker, false);
+        foreign_surface.product_surface_id = id("foreign-condition", ProductSurfaceId::try_new);
+        assert_eq!(
+            adapter.quote(&foreign_surface),
+            Err(PolymarketEconomicsError::InvalidRequestScope)
+        );
+
+        let mut foreign_builder = request(LiquidityRole::Taker, true);
+        foreign_builder.routing.attached_charge =
+            Some(id("foreign-builder-code", RoutingAttachmentId::try_new));
+        assert_eq!(
+            adapter.quote(&foreign_builder),
+            Err(PolymarketEconomicsError::InvalidRequestScope)
+        );
+
+        let mut foreign_builder_metadata = metadata();
+        foreign_builder_metadata.builder_attachment_id =
+            id("foreign-builder-code", RoutingAttachmentId::try_new);
+        let snapshot = PolymarketMarketInfoSnapshot::from_json(
+            foreign_builder_metadata,
+            include_str!("../../../tests/fixtures/economics/polymarket/fee_enabled.json"),
+        )
+        .expect("foreign-builder snapshot should remain structurally valid");
+        assert_eq!(
+            PolymarketEconomicsAdapter::try_new(config(), snapshot),
+            Err(PolymarketEconomicsError::InvalidRequestScope)
+        );
+    }
+
+    #[test]
     fn authoritative_fee_free_schedule_produces_no_component() {
         let adapter = adapter(include_str!(
             "../../../tests/fixtures/economics/polymarket/fee_free.json"
@@ -528,7 +629,12 @@ mod tests {
             "../../../tests/fixtures/economics/polymarket/captured_fee_bearing.json"
         ))
         .expect("captured fee-bearing market info should construct");
-        let request = request(LiquidityRole::Taker, false);
+        let request = request_for(
+            "43187333641922996188398060383389814287787647811837308994701068387397271207198",
+            "0x0e7b7cc2649466ce6dfed9cf49611630fe986b31fba84ec01107e0a50f1534bb",
+            LiquidityRole::Taker,
+            false,
+        );
         let quote = validate_and_aggregate_quote(
             &request,
             adapter

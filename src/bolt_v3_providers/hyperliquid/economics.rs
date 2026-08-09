@@ -295,9 +295,9 @@ impl HyperliquidProductEconomicsSnapshot {
         base_asset: AssetId,
         quote_currency: CurrencyId,
         stable_pair: bool,
-        aligned_metadata: HyperliquidSnapshotMetadata,
-        aligned_quote_json: &str,
+        aligned_quote_json: (&HyperliquidSnapshotMetadata, &str),
     ) -> Result<Self, HyperliquidEconomicsError> {
+        let (aligned_metadata, aligned_quote_json) = aligned_quote_json;
         let snapshot = Self {
             metadata,
             instrument_id,
@@ -308,7 +308,7 @@ impl HyperliquidProductEconomicsSnapshot {
                 stable_pair,
             },
             alignment: Some(HyperliquidAlignedQuoteSnapshot::from_json(
-                aligned_metadata,
+                aligned_metadata.clone(),
                 aligned_quote_json,
             )?),
             perp_context: None,
@@ -528,10 +528,10 @@ impl HyperliquidEconomicsAdapter {
             dependencies.push(approval.metadata.validity());
             components.push(self.builder_effect(request, approval)?);
         }
-        if matches!(self.product.kind, HyperliquidProductKind::Perpetual { .. }) {
-            if let Some(carry) = self.carry_effect(request)? {
-                components.push(carry);
-            }
+        if matches!(self.product.kind, HyperliquidProductKind::Perpetual { .. })
+            && let Some(carry) = self.carry_effect(request)?
+        {
+            components.push(carry);
         }
         Ok(VenueQuoteEstimate {
             authority: self.user_fees.metadata.validity(),
@@ -978,8 +978,10 @@ mod tests {
             id("HYPE", AssetId::try_new),
             id("hUSD", CurrencyId::try_new),
             false,
-            metadata("aligned-quote", "aligned-1"),
-            include_str!("../../../tests/fixtures/economics/hyperliquid/aligned_quote.json"),
+            (
+                &metadata("aligned-quote", "aligned-1"),
+                include_str!("../../../tests/fixtures/economics/hyperliquid/aligned_quote.json"),
+            ),
         )
         .expect("spot fixture should parse")
     }

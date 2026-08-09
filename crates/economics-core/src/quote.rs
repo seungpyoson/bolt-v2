@@ -4,10 +4,11 @@ use rust_decimal::Decimal;
 
 use crate::{
     AccountId, AdmissionTreatment, CurrencyId, DecisionCorrelationId, EconomicClass,
-    EconomicComponentId, EconomicsError, EconomicsInstrumentId, EdgeBasisPolicyId, EstimatedEffect,
-    ExecutionClientId, LifecyclePath, LiquidityRole, OrderSide, PlannedFillLeg, PointEstimate,
-    PositionContext, ProductSurfaceId, ReportingPolicyId, RoutingContext, SourceValidity,
-    ValuationEvidence, ValuationRoute, value_with_routes,
+    EconomicComponentId, EconomicScope, EconomicsCapabilityHealth, EconomicsError,
+    EconomicsInstrumentId, EdgeBasisPolicyId, EstimatedEffect, ExecutionClientId, LifecyclePath,
+    LiquidityRole, OrderSide, PlannedFillLeg, PointEstimate, PositionContext, ProductSurfaceId,
+    ReportingPolicyId, RoutingContext, SourceValidity, ValuationEvidence, ValuationRoute,
+    value_with_routes,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +88,7 @@ pub struct EconomicsQuote {
     missing_forecast_component_ids: Vec<EconomicComponentId>,
     reporting_currency: CurrencyId,
     valid_until_ns: u64,
+    forecast_valid_until_ns: Option<u64>,
 }
 
 impl EconomicsQuote {
@@ -133,6 +135,17 @@ impl EconomicsQuote {
     pub fn valid_until_ns(&self) -> u64 {
         self.valid_until_ns
     }
+
+    pub fn forecast_valid_until_ns(&self) -> Option<u64> {
+        self.forecast_valid_until_ns
+    }
+
+    pub fn capability_health(&self) -> EconomicsCapabilityHealth {
+        EconomicsCapabilityHealth::quote_only(
+            self.valid_until_ns,
+            self.forecast_valid_until_ns,
+        )
+    }
 }
 
 pub fn validate_and_aggregate_quote(
@@ -159,6 +172,7 @@ pub fn validate_and_aggregate_quote(
         .fold(estimate.authority.valid_until_ns, |deadline, source| {
             deadline.min(source.valid_until_ns)
         });
+    let mut forecast_valid_until_ns = Some(valid_until_ns);
 
     for component in estimate.components {
         if !component_ids.insert(component.component_id.clone()) {
@@ -166,6 +180,7 @@ pub fn validate_and_aggregate_quote(
                 component_id: component.component_id,
             });
         }
+        validate_component_scope(request, &component)?;
         validate_factors(&component)?;
         validate_component_sign(&component)?;
 
@@ -173,6 +188,7 @@ pub fn validate_and_aggregate_quote(
         if let Err(error) = source_is_fresh {
             if component.admission_treatment == AdmissionTreatment::ForecastOnly {
                 forecast_complete = false;
+                forecast_valid_until_ns = None;
                 missing_forecast_component_ids.push(component.component_id.clone());
                 components.push(component);
                 continue;
@@ -192,6 +208,7 @@ pub fn validate_and_aggregate_quote(
                     EconomicsError::MissingValuation { .. } | EconomicsError::StaleValuation { .. },
                 ) if component.admission_treatment == AdmissionTreatment::ForecastOnly => {
                     forecast_complete = false;
+                    forecast_valid_until_ns = None;
                     missing_forecast_component_ids.push(component.component_id.clone());
                     components.push(component);
                     continue;
@@ -205,14 +222,17 @@ pub fn validate_and_aggregate_quote(
             forecast_total = forecast_total
                 .checked_add(point_valuation.normalized_amount)
                 .ok_or(EconomicsError::ArithmeticOverflow)?;
-            if let Some(deadline) = point_valuation.valid_until_ns {
-                valid_until_ns = valid_until_ns.min(deadline);
-            }
             valuations.push(point_valuation.clone());
         }
 
         match component.admission_treatment {
             AdmissionTreatment::GuaranteedConditionalOnAction => {
+                if let Some(deadline) = point_valuation
+                    .as_ref()
+                    .and_then(|valuation| valuation.valid_until_ns)
+                {
+                    valid_until_ns = valid_until_ns.min(deadline);
+                }
                 let normalized = point_valuation
                     .as_ref()
                     .map(|valuation| valuation.normalized_amount)
@@ -223,6 +243,12 @@ pub fn validate_and_aggregate_quote(
                 valid_until_ns = valid_until_ns.min(component.source.valid_until_ns);
             }
             AdmissionTreatment::RiskBound { .. } => {
+                if let Some(deadline) = point_valuation
+                    .as_ref()
+                    .and_then(|valuation| valuation.valid_until_ns)
+                {
+                    valid_until_ns = valid_until_ns.min(deadline);
+                }
                 let bound = component.debit_risk_bound.as_ref().ok_or_else(|| {
                     EconomicsError::MissingDebitRiskBound {
                         component_id: component.component_id.clone(),
@@ -253,9 +279,25 @@ pub fn validate_and_aggregate_quote(
                 valuations.push(bound_valuation);
                 valid_until_ns = valid_until_ns.min(component.source.valid_until_ns);
             }
-            AdmissionTreatment::ForecastOnly => {}
+            AdmissionTreatment::ForecastOnly => {
+                if let Some(deadline) = forecast_valid_until_ns.as_mut() {
+                    *deadline = (*deadline).min(component.source.valid_until_ns);
+                    if let Some(valuation_deadline) = point_valuation
+                        .as_ref()
+                        .and_then(|valuation| valuation.valid_until_ns)
+                    {
+                        *deadline = (*deadline).min(valuation_deadline);
+                    }
+                }
+            }
         }
         components.push(component);
+    }
+
+    if forecast_complete {
+        forecast_valid_until_ns = forecast_valid_until_ns.map(|deadline| deadline.min(valid_until_ns));
+    } else {
+        forecast_valid_until_ns = None;
     }
 
     Ok(EconomicsQuote {
@@ -270,7 +312,43 @@ pub fn validate_and_aggregate_quote(
         missing_forecast_component_ids,
         reporting_currency: request.reporting_currency.clone(),
         valid_until_ns,
+        forecast_valid_until_ns,
     })
+}
+
+fn validate_component_scope(
+    request: &EconomicsQuoteRequest,
+    component: &EstimatedEffect,
+) -> Result<(), EconomicsError> {
+    let matches_request = match &component.scope {
+        EconomicScope::Decision {
+            decision_correlation_id,
+        } => decision_correlation_id == &request.decision_correlation_id,
+        EconomicScope::PositionInterval {
+            position_id,
+            starts_at_ns,
+            ends_at_ns,
+        } => request.position.as_ref().is_some_and(|position| {
+            position_id == &position.position_id
+                && *starts_at_ns == request.requested_at_ns
+                && request
+                    .requested_at_ns
+                    .checked_add(position.holding_horizon_ns)
+                    .is_some_and(|expected_end| *ends_at_ns == expected_end)
+        }),
+        EconomicScope::Action { action_id } => matches!(
+            &request.lifecycle_path,
+            LifecyclePath::Transfer {
+                action_id: request_action_id,
+            } if action_id == request_action_id
+        ),
+    };
+    if !matches_request {
+        return Err(EconomicsError::EffectScopeMismatch {
+            component_id: component.component_id.clone(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_required_source(
@@ -464,6 +542,110 @@ mod tests {
 
         assert_eq!(quote.core_total(), Decimal::new(-5, 0));
         assert_eq!(quote.forecast_total(), Decimal::new(50, 0));
+    }
+
+    #[test]
+    fn component_scope_must_belong_to_the_quote_request() {
+        let mut foreign_decision = component(
+            "foreign-decision",
+            Decimal::new(-1, 0),
+            AdmissionTreatment::GuaranteedConditionalOnAction,
+        );
+        foreign_decision.scope = EconomicScope::Decision {
+            decision_correlation_id: id("other-decision", DecisionCorrelationId::try_new),
+        };
+        assert!(matches!(
+            validate_and_aggregate_quote(
+                &request(),
+                VenueQuoteEstimate {
+                    authority: source(1_100),
+                    dependency_sources: Vec::new(),
+                    components: vec![foreign_decision],
+                },
+                &[],
+            ),
+            Err(EconomicsError::EffectScopeMismatch { .. })
+        ));
+
+        let mut position_request = request();
+        position_request.position = Some(PositionContext {
+            position_id: id("position", crate::PositionId::try_new),
+            side: crate::PositionSide::Long,
+            quantity: Decimal::ONE,
+            holding_horizon_ns: 100,
+        });
+        let mut foreign_position = component(
+            "foreign-position",
+            Decimal::new(-1, 0),
+            AdmissionTreatment::GuaranteedConditionalOnAction,
+        );
+        foreign_position.scope = EconomicScope::PositionInterval {
+            position_id: id("other-position", crate::PositionId::try_new),
+            starts_at_ns: 1_000,
+            ends_at_ns: 1_100,
+        };
+        assert!(matches!(
+            validate_and_aggregate_quote(
+                &position_request,
+                VenueQuoteEstimate {
+                    authority: source(1_100),
+                    dependency_sources: Vec::new(),
+                    components: vec![foreign_position],
+                },
+                &[],
+            ),
+            Err(EconomicsError::EffectScopeMismatch { .. })
+        ));
+
+        let mut action_request = request();
+        action_request.lifecycle_path = LifecyclePath::Transfer {
+            action_id: id("action", crate::ActionId::try_new),
+        };
+        let mut foreign_action = component(
+            "foreign-action",
+            Decimal::new(-1, 0),
+            AdmissionTreatment::GuaranteedConditionalOnAction,
+        );
+        foreign_action.scope = EconomicScope::Action {
+            action_id: id("other-action", crate::ActionId::try_new),
+        };
+        assert!(matches!(
+            validate_and_aggregate_quote(
+                &action_request,
+                VenueQuoteEstimate {
+                    authority: source(1_100),
+                    dependency_sources: Vec::new(),
+                    components: vec![foreign_action],
+                },
+                &[],
+            ),
+            Err(EconomicsError::EffectScopeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn forecast_expiry_is_separate_from_required_quote_health() {
+        let mut forecast = component(
+            "forecast",
+            Decimal::new(5, 0),
+            AdmissionTreatment::ForecastOnly,
+        );
+        forecast.source.valid_until_ns = 1_050;
+        let quote = validate_and_aggregate_quote(
+            &request(),
+            VenueQuoteEstimate {
+                authority: source(1_100),
+                dependency_sources: Vec::new(),
+                components: vec![forecast],
+            },
+            &[],
+        )
+        .expect("a fresh supplemental forecast should aggregate");
+
+        assert_eq!(quote.valid_until_ns(), 1_100);
+        assert_eq!(quote.forecast_valid_until_ns(), Some(1_050));
+        assert!(quote.capability_health().allows_admission(1_075).is_ok());
+        assert!(!quote.capability_health().forecast_available(1_075));
     }
 
     #[test]

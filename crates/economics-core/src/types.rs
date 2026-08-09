@@ -13,6 +13,7 @@ pub enum EconomicsError {
     DuplicateComponent { component_id: EconomicComponentId },
     DuplicateCalculationFactor { factor_id: FormulaId },
     EconomicClassSignMismatch { component_id: EconomicComponentId },
+    EffectScopeMismatch { component_id: EconomicComponentId },
     InvalidSourceTimeline { source_id: SourceIdentity },
     StaleSource { source_id: SourceIdentity },
     MissingValuation { from: NativeUnitId, to: CurrencyId },
@@ -20,6 +21,7 @@ pub enum EconomicsError {
     InvalidValuationRoute { route_id: ValuationRouteId },
     StaleValuation { route_id: ValuationRouteId },
     EdgeBasisPolicyMismatch,
+    EdgeBasisScopeMismatch,
     StaleEdgeBasis,
     RequiredCapabilityStale { valid_until_ns: u64 },
     ArithmeticOverflow,
@@ -62,6 +64,10 @@ impl std::fmt::Display for EconomicsError {
                 f,
                 "economics component {component_id} class contradicts its signed effect"
             ),
+            Self::EffectScopeMismatch { component_id } => write!(
+                f,
+                "economics component {component_id} scope does not match the quote request"
+            ),
             Self::InvalidSourceTimeline { source_id } => {
                 write!(f, "economics source {source_id} has an invalid timeline")
             }
@@ -82,6 +88,9 @@ impl std::fmt::Display for EconomicsError {
             }
             Self::EdgeBasisPolicyMismatch => {
                 f.write_str("economics edge-basis policy does not match the quote")
+            }
+            Self::EdgeBasisScopeMismatch => {
+                f.write_str("economics edge-basis scope does not match the quote")
             }
             Self::StaleEdgeBasis => f.write_str("economics edge basis is stale"),
             Self::RequiredCapabilityStale { valid_until_ns } => write!(

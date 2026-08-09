@@ -53,6 +53,14 @@ pub fn fold_net_edge(
     if basis.policy_id != *quote.edge_basis_policy_id() {
         return Err(EconomicsError::EdgeBasisPolicyMismatch);
     }
+    if !matches!(
+        &basis.scope,
+        EconomicScope::Decision {
+            decision_correlation_id,
+        } if decision_correlation_id == quote.decision_correlation_id()
+    ) {
+        return Err(EconomicsError::EdgeBasisScopeMismatch);
+    }
     if basis.valid_until_ns < quote.requested_at_ns() {
         return Err(EconomicsError::StaleEdgeBasis);
     }
@@ -153,11 +161,22 @@ mod tests {
 
         let mismatched = EdgeBasisEvidence {
             policy_id: id("other", EdgeBasisPolicyId::try_new),
-            ..basis
+            ..basis.clone()
         };
         assert_eq!(
             fold_net_edge(Decimal::ONE, &quote, mismatched),
             Err(EconomicsError::EdgeBasisPolicyMismatch)
+        );
+
+        let foreign_scope = EdgeBasisEvidence {
+            scope: EconomicScope::Decision {
+                decision_correlation_id: id("other-decision", DecisionCorrelationId::try_new),
+            },
+            ..basis
+        };
+        assert_eq!(
+            fold_net_edge(Decimal::ONE, &quote, foreign_scope),
+            Err(EconomicsError::EdgeBasisScopeMismatch)
         );
     }
 }

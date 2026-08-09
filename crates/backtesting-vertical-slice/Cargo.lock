@@ -1828,6 +1828,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bolt-economics-core"
+version = "0.1.0"
+dependencies = [
+ "rust_decimal",
+]
+
+[[package]]
 name = "bolt-v2"
 version = "0.1.0"
 dependencies = [
@@ -1842,6 +1849,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-ssm",
  "base64",
+ "bolt-economics-core",
  "chrono",
  "clap",
  "futures-util",

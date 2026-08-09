@@ -586,6 +586,69 @@ fn basket_grant_evidence_failure_rolls_back_every_leg_before_submit() {
 }
 
 #[test]
+fn pure_risk_reducing_basket_continues_when_grant_evidence_fails() {
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = submit_state(writer.recorder(), 2, dec!(10));
+    let group = fixture_group();
+    let claims = group
+        .tradable_legs
+        .values()
+        .take(2)
+        .map(|leg| risk_reducing_claim(leg, valid_exit_proof(leg)))
+        .collect::<Vec<_>>();
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::BasketAdmissionGranted,
+        1,
+    );
+
+    let permit = submit_gate
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &claims,
+            &basket_slot_evidence("risk-reducing-evidence-failure", &group),
+        )
+        .expect("evidence failure must not block a purely risk-reducing basket");
+
+    assert_eq!(submit_gate.admitted_order_count(), 2);
+    assert!(writer.basket_admission_decisions().is_empty());
+    drop(permit);
+    assert_eq!(submit_gate.admitted_order_count(), 0);
+}
+
+#[test]
+fn mixed_risk_basket_fails_closed_when_grant_evidence_fails() {
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = submit_state(writer.recorder(), 2, dec!(10));
+    let group = fixture_group();
+    let first_leg = group
+        .tradable_legs
+        .values()
+        .next()
+        .expect("fixture should have at least one leg");
+    let mut claims = entry_claims(&group, dec!(0.9));
+    claims[0] = risk_reducing_claim(first_leg, valid_exit_proof(first_leg));
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::BasketAdmissionGranted,
+        1,
+    );
+
+    let error = submit_gate
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &claims,
+            &basket_slot_evidence("mixed-risk-evidence-failure", &group),
+        )
+        .expect_err("any new-risk leg must fail closed when grant evidence is unavailable");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::EvidenceWriteFailed { .. }
+    ));
+    assert_eq!(submit_gate.admitted_order_count(), 0);
+    assert!(writer.basket_admission_decisions().is_empty());
+}
+
+#[test]
 fn basket_submit_slots_reject_capital_admission_that_does_not_match_order_shape() {
     let writer = RecordingBasketDecisionWriter::default();
     let submit_gate = capital_admission_submit_state(writer.recorder());
@@ -593,7 +656,7 @@ fn basket_submit_slots_reject_capital_admission_that_does_not_match_order_shape(
     let mut claims = entry_claims(&group, dec!(0.9));
     attach_capital_admission(&mut claims);
     seed_capital_admission_for_claims(&submit_gate, &claims);
-    claims[0]
+    claims[1]
         .admission_evidence
         .as_mut()
         .expect("fixture should carry capital admission")
@@ -605,7 +668,7 @@ fn basket_submit_slots_reject_capital_admission_that_does_not_match_order_shape(
             &claims,
             &basket_slot_evidence("shape-mismatch", &group),
         )
-        .expect_err("capital admission evidence must bind to submitted order shape");
+        .expect_err("a later basket leg must reject mismatched capital admission evidence");
 
     assert_eq!(
         rejected,

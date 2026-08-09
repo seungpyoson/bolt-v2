@@ -47,6 +47,7 @@ pub mod conversion_boundary;
 pub mod dashboard_contract;
 pub mod domain_metrics;
 pub mod execution_contract;
+pub mod economics;
 #[cfg(test)]
 pub(crate) mod execution_evidence;
 pub mod first_proof_selector;

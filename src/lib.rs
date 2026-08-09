@@ -129,6 +129,7 @@ pub mod bolt_v3_wire_boundary;
 mod bounded_config_read;
 pub mod economics;
 pub mod execution_state;
+pub mod integrations;
 pub mod lake_batch;
 pub mod log_sweep;
 pub mod nautilus_source_capabilities;

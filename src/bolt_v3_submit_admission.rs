@@ -4336,8 +4336,7 @@ fn rollback_admission_counters(
         );
         return;
     };
-    let mut remove_execution_client = false;
-    if let Some(count) = inner
+    let remove_execution_client = if let Some(count) = inner
         .admitted_order_count_by_execution_client
         .get_mut(&rollback.execution_client_id)
     {
@@ -4348,13 +4347,13 @@ fn rollback_admission_counters(
             return;
         };
         *count = next_count;
-        remove_execution_client = *count == 0;
+        *count == 0
     } else {
         log::error!(
             "bolt-v3 submit admission counter rollback found no execution-client total; preserving the higher fail-closed admitted count"
         );
         return;
-    }
+    };
     inner.admitted_order_count = next_admitted_order_count;
     if remove_execution_client {
         inner

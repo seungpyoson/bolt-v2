@@ -1661,21 +1661,23 @@ fn reconcile_forced_reduction_liveness(
     admission: &BoltV3SubmitAdmissionState,
     client_order_ids: impl IntoIterator<Item = &'static str>,
 ) {
-    let decision = admission.rebuild_capital_admission_open_order_snapshot_for_test(
-        BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
-            observed_at_ns: 1,
-            evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
-            observed_open_order_count: 0,
-            all_open_orders_attributed: true,
-            reservations: Vec::new(),
-            live_non_reservation_client_order_ids: BTreeSet::new(),
-            live_forced_reduction_client_order_ids: client_order_ids
-                .into_iter()
-                .map(str::to_string)
-                .collect::<BTreeSet<_>>(),
-        },
-        1,
-    );
+    let decision = admission
+        .rebuild_capital_admission_open_order_snapshot_for_test(
+            BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
+                observed_at_ns: 1,
+                evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+                observed_open_order_count: 0,
+                all_open_orders_attributed: true,
+                reservations: Vec::new(),
+                live_non_reservation_client_order_ids: BTreeSet::new(),
+                live_forced_reduction_client_order_ids: client_order_ids
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<BTreeSet<_>>(),
+            },
+            1,
+        )
+        .expect("forced-reduction liveness rebuild should preserve invariants");
     assert!(decision.accepted);
 }
 

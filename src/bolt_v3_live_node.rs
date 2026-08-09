@@ -244,8 +244,8 @@ use crate::{
         register_bolt_v3_strategies_on_node_with_iv_runtime_bindings,
     },
     bolt_v3_submit_admission::{
-        BoltV3CompiledOrderSide, BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState,
-        BoltV3SubmitCapitalAdmissionConfig,
+        BoltV3CompiledOrderSide, BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionError,
+        BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
         BoltV3SubmitCapitalAdmissionMissingNtAccountCacheBalance,
         BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
         BoltV3SubmitCapitalAdmissionOpenOrderSnapshot, BoltV3SubmitCapitalAdmissionRebuildDecision,
@@ -1520,7 +1520,7 @@ impl BoltV3LiveNodeRuntime {
     pub fn rebuild_capital_admission_from_nt_cache(
         &self,
         now_ns: u64,
-    ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
+    ) -> Result<BoltV3SubmitCapitalAdmissionRebuildDecision, BoltV3SubmitAdmissionError> {
         Self::rebuild_capital_admission_from_nt_cache_parts(
             &self.node.kernel().cache(),
             self.capital_admission_runtime_feed.as_ref(),
@@ -1536,7 +1536,7 @@ impl BoltV3LiveNodeRuntime {
         reconciliation_account_ids: &BTreeSet<AccountId>,
         submit_admission: &BoltV3SubmitAdmissionState,
         now_ns: u64,
-    ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
+    ) -> Result<BoltV3SubmitCapitalAdmissionRebuildDecision, BoltV3SubmitAdmissionError> {
         let (
             account_id,
             binary_instrument_ids,
@@ -1702,14 +1702,14 @@ impl BoltV3LiveNodeRuntime {
                 live_forced_reduction_client_order_ids,
             },
             now_ns,
-        );
+        )?;
         if let Some(missing) = missing_nt_account_cache_balance {
             rebuild = rebuild.with_missing_nt_account_cache_balance(
                 missing.account_id,
                 missing.collateral_currency,
             );
         }
-        rebuild
+        Ok(rebuild)
     }
 }
 
@@ -1986,6 +1986,7 @@ pub enum BoltV3LiveNodeError {
     /// gate: it is a fail-closed reconciliation guard, not the live-canary
     /// arm gate, so it never reintroduces a gate-report/arm sequence.
     StartupCapitalAdmissionRebuild(BoltV3SubmitCapitalAdmissionRebuildDecision),
+    StartupCapitalAdmissionInvariant(BoltV3SubmitAdmissionError),
 }
 
 impl std::fmt::Display for BoltV3LiveNodeError {
@@ -2199,6 +2200,10 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 f,
                 "bolt-v3 startup capital-admission rebuild rejected runtime start: {decision:?}"
             ),
+            BoltV3LiveNodeError::StartupCapitalAdmissionInvariant(error) => write!(
+                f,
+                "bolt-v3 startup capital-admission rebuild violated an internal invariant: {error}"
+            ),
         }
     }
 }
@@ -2245,6 +2250,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::StrategyFreeStopTimeout { .. }
             | BoltV3LiveNodeError::StrategyFreeStopTimeoutOverflow
             | BoltV3LiveNodeError::StartupCapitalAdmissionRebuild(..) => None,
+            BoltV3LiveNodeError::StartupCapitalAdmissionInvariant(error) => Some(error),
             BoltV3LiveNodeError::DisconnectFailed(error)
             | BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(error)
             | BoltV3LiveNodeError::StrategyFreeStartFailed(error)
@@ -2666,7 +2672,8 @@ pub async fn run_bolt_v3_live_node(
             &reconciliation_account_ids,
             reconciliation_admission.as_ref(),
             observed_at_ns,
-        );
+        )
+        .map_err(BoltV3LiveNodeError::StartupCapitalAdmissionInvariant)?;
         fail_closed_on_unreconciled_startup_rebuild(decision)
     };
 
@@ -3249,13 +3256,24 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                         }
                     };
                     let decision =
-                        BoltV3LiveNodeRuntime::rebuild_capital_admission_from_nt_cache_parts(
+                        match BoltV3LiveNodeRuntime::rebuild_capital_admission_from_nt_cache_parts(
                             &projection_cache,
                             projection_feed.as_ref(),
                             &projection_account_ids,
                             projection_admission.as_ref(),
                             observed_at_ns,
-                        );
+                        ) {
+                            Ok(decision) => decision,
+                            Err(error) => {
+                                log::error!(
+                                    "capital-admission NT projection violated an internal invariant after canonical NT event: {error}"
+                                );
+                                projection_health_emitter(
+                                    OPERATOR_HEALTH_REASON_SUBMIT_ADMISSION_NT_PROJECTION,
+                                );
+                                return;
+                            }
+                        };
                     if !decision.accepted {
                         log::warn!(
                             "capital-admission NT projection remained unreconciled after canonical NT event: {:?}",

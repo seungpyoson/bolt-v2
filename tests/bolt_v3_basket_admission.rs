@@ -899,7 +899,8 @@ fn seed_capital_admission_for_claims(
         observed_at_ns,
     ));
     let rebuild = submit_gate
-        .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), observed_at_ns);
+        .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), observed_at_ns)
+        .expect("basket fixture rebuild should preserve capital-admission invariants");
     assert!(
         rebuild.accepted,
         "empty open-order rebuild should reconcile the test capital admission"

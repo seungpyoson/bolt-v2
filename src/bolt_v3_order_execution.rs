@@ -1712,8 +1712,9 @@ mod tests {
             capital_admission_config(),
         ));
         admission.update_capital_admission_nt_components(capital_admission_components());
-        let rebuild =
-            admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1);
+        let rebuild = admission
+            .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1)
+            .expect("capital admission fixture rebuild should preserve invariants");
         assert!(rebuild.accepted);
 
         let mut sink = RecordingVenueMutationSink {
@@ -2823,8 +2824,9 @@ mod tests {
         product.source = POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string();
         product.yes_position = yes_position;
         admission.update_capital_admission_nt_components(components);
-        let rebuild =
-            admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1);
+        let rebuild = admission
+            .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1)
+            .expect("capital admission fixture rebuild should preserve invariants");
         assert!(rebuild.accepted);
         admission
     }
@@ -2834,7 +2836,8 @@ mod tests {
         observed_at_ns: u64,
     ) {
         let rebuild = admission
-            .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), observed_at_ns);
+            .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), observed_at_ns)
+            .expect("capital admission fixture rebuild should preserve invariants");
         assert!(
             rebuild.accepted,
             "canonical NT open-order projection should reconcile forced-reduction liveness"

@@ -412,6 +412,12 @@ pub enum AdmissionDecisionOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmissionEconomicsDetails {
+    pub core_total: String,
+    pub core_edge_ratio: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmissionDetails {
     pub strategy_id: String,
     pub execution_client_id: String,
@@ -436,6 +442,7 @@ pub struct AdmissionDetails {
     pub stale_reason: Option<LossSnapshotStaleReason>,
     pub loss_snapshot_observed_at_ns: Option<u64>,
     pub loss_eval_now_ns: Option<u64>,
+    pub economics: Option<AdmissionEconomicsDetails>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -811,7 +818,7 @@ pub struct StrategyInputDetails<PurposeNumeric> {
     pub fast_venue_jitter_ms: Option<u64>,
     pub fast_venue_incoherent: bool,
     pub lead_agreement_corr: Option<String>,
-    pub fee_rate_basis_points: PurposeNumeric,
+    pub fee_rate_basis_points: Option<String>,
     pub selected_side: Option<OutcomeSide>,
 }
 

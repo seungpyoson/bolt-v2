@@ -132,18 +132,6 @@ pub(super) fn same_market_transition(
         && current.interval_end_ms == next.interval_end_ms
 }
 
-pub(super) fn same_market_interval_rollover(
-    current: &ActiveMarketState,
-    next: &ActiveMarketState,
-) -> bool {
-    current.market_id.is_some()
-        && current.market_id == next.market_id
-        && current.evidence_identity == next.evidence_identity
-        && current.instrument_id == next.instrument_id
-        && current.same_outcome_instruments(next)
-        && current.interval_start_ms != next.interval_start_ms
-}
-
 pub(super) fn selection_book_subscriptions(
     snapshot: &RuntimeSelectionSnapshot,
 ) -> OutcomeBookSubscriptions {

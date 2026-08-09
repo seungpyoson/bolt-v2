@@ -1489,8 +1489,6 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     strategy.active.price_to_beat = Some(replay.reference.price);
     strategy.active.interval_open = Some(replay.reference.price);
     strategy.active.warmup_count = strategy.config.warmup_tick_count;
-    strategy.active.outcome_fees.up_ready = true;
-    strategy.active.outcome_fees.down_ready = true;
     strategy.active.books.up.last_observed_instrument_id = strategy.active.books.up.instrument_id;
     strategy
         .active
@@ -2055,14 +2053,8 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
     assert_eq!(details.fair_probability_up, None);
     assert_eq!(details.fair_probability_down, None);
     assert_eq!(details.uncertainty_band_probability, None);
-    assert!(
-        details.up_fee_bps.is_some(),
-        "exit decision evidence must preserve the up-side fee input"
-    );
-    assert!(
-        details.down_fee_bps.is_some(),
-        "exit decision evidence must preserve the down-side fee input"
-    );
+    assert_eq!(details.up_fee_bps, None);
+    assert_eq!(details.down_fee_bps, None);
     assert!(
         decision.submission.order_side != EvidenceOrderSide::Unspecified,
         "exit decision evidence must preserve the submitted order side"
@@ -3425,14 +3417,8 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
         record.uncertainty_band_probability.is_some(),
         "exit evaluation evidence must preserve the computed uncertainty band"
     );
-    assert!(
-        record.up_fee_bps.is_some(),
-        "exit evaluation evidence must preserve the up-side fee input"
-    );
-    assert!(
-        record.down_fee_bps.is_some(),
-        "exit evaluation evidence must preserve the down-side fee input"
-    );
+    assert_eq!(record.up_fee_bps, None);
+    assert_eq!(record.down_fee_bps, None);
 }
 
 #[test]

@@ -207,6 +207,7 @@ fn admission_details(client_order_id: &str) -> AdmissionDetails {
         stale_reason: None,
         loss_snapshot_observed_at_ns: None,
         loss_eval_now_ns: None,
+        economics: None,
     }
 }
 

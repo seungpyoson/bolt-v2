@@ -1,5 +1,7 @@
 use std::process::Command;
 
+use rust_decimal::Decimal;
+
 #[test]
 fn shadow_pnl_report_joins_fixture_evidence_to_settlements() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -848,8 +850,9 @@ fn push_trade_lines_with_snapshot_market_id(
         serde_json::json!(trade.selected_side);
     snapshot_record["snapshot"]["details"]["expected_edge_basis_points"] =
         serde_json::json!(trade.expected_edge_basis_points);
-    snapshot_record["snapshot"]["details"]["fee_rate_basis_points"] =
-        serde_json::json!(trade.fee_rate_basis_points);
+    // This legacy strategy field is intentionally contradictory. Shadow PnL must
+    // use the economics result sealed to admission, never this strategy estimate.
+    snapshot_record["snapshot"]["details"]["fee_rate_basis_points"] = serde_json::json!("9999");
     snapshot_record["snapshot"]["submission"]["client_order_id"] =
         serde_json::json!(trade.client_order_id);
     snapshot_record["snapshot"]["submission"]["instrument_id"] =
@@ -885,6 +888,26 @@ fn push_trade_lines_with_snapshot_market_id(
     admission_record["decision"]["client_order_id"] = serde_json::json!(trade.client_order_id);
     admission_record["decision"]["instrument_id"] = serde_json::json!(trade.instrument_id);
     admission_record["decision"]["reservation"] = serde_json::Value::Null;
+    let price = trade
+        .price
+        .parse::<Decimal>()
+        .expect("fixture price must be decimal");
+    let quantity = trade
+        .quantity
+        .parse::<Decimal>()
+        .expect("fixture quantity must be decimal");
+    let fee_bps = trade
+        .fee_rate_basis_points
+        .parse::<Decimal>()
+        .expect("fixture fee rate must be decimal");
+    let expected_edge_bps = trade
+        .expected_edge_basis_points
+        .parse::<Decimal>()
+        .expect("fixture edge must be decimal");
+    admission_record["decision"]["economics"] = serde_json::json!({
+        "core_total": (Decimal::ZERO - price * quantity * fee_bps / Decimal::from(10_000)).to_string(),
+        "core_edge_ratio": (expected_edge_bps / Decimal::from(10_000)).to_string(),
+    });
     lines.push(
         serde_json::to_string(&admission_record).expect("admission fixture should serialize"),
     );

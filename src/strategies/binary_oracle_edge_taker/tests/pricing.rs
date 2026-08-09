@@ -1903,8 +1903,6 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     assert!(fields.down_entry_limit_price.is_some());
     assert!(fields.up_gross_cost_cents.is_some());
     assert!(fields.down_gross_cost_cents.is_some());
-    assert_eq!(fields.up_fee_cost_cents, None);
-    assert_eq!(fields.down_fee_cost_cents, None);
     assert!(fields.up_slippage_buffer_cents.is_some());
     assert!(fields.down_slippage_buffer_cents.is_some());
     assert!(fields.up_total_adjusted_cost_cents.is_some());
@@ -1949,7 +1947,6 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
             .is_some_and(|value| value > 0.0)
     );
     assert!(fields.sized_notional.is_some_and(|value| value > 0.0));
-    assert!(!fields.final_fee_amount_known);
 }
 
 #[test]
@@ -1967,8 +1964,6 @@ fn exit_hold_ev_does_not_require_uncertainty_band_components() {
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-MISSING-UNCERTAINTY"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -2010,8 +2005,6 @@ fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-SYMMETRIC-HOLD"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -2060,8 +2053,6 @@ fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatili
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-ZERO-RV"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),

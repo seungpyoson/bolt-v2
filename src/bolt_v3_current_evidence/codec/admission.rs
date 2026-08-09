@@ -1,13 +1,15 @@
 use anyhow::{Context, Result};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
     facts::{
-        AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason,
-        AdmittedEntryAdmissionFact, CapitalAdmissionRebuildFact, CapitalAdmissionRebuildOutcome,
-        CapitalAdmissionRebuildSource, CapitalAdmissionRejectionReason,
-        ForcedReductionAdmissionFact, LossHaltReason, LossSnapshotSource, LossSnapshotStaleReason,
-        RejectedEntryAdmissionFact, ReservationAttribution, RiskReducingExitAdmissionFact,
+        AdmissionDecisionOutcome, AdmissionDetails, AdmissionEconomicsDetails,
+        AdmissionRejectionReason, AdmittedEntryAdmissionFact, CapitalAdmissionRebuildFact,
+        CapitalAdmissionRebuildOutcome, CapitalAdmissionRebuildSource,
+        CapitalAdmissionRejectionReason, ForcedReductionAdmissionFact, LossHaltReason,
+        LossSnapshotSource, LossSnapshotStaleReason, RejectedEntryAdmissionFact,
+        ReservationAttribution, RiskReducingExitAdmissionFact,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -463,6 +465,10 @@ fn validate_admission_details(details: &AdmissionDetails) -> Result<(), RecordFa
             || details.rolling_pnl_present
             || details.current_equity_present
             || details.peak_equity_present);
+    let economics_invalid = details.economics.as_ref().is_some_and(|economics| {
+        economics.core_total.parse::<Decimal>().is_err()
+            || economics.core_edge_ratio.parse::<Decimal>().is_err()
+    });
     if details.strategy_id.trim().is_empty()
         || details.execution_client_id.trim().is_empty()
         || details.client_order_id.trim().is_empty()
@@ -474,6 +480,7 @@ fn validate_admission_details(details: &AdmissionDetails) -> Result<(), RecordFa
             .flatten()
             .any(|timestamp| timestamp == 0)
         || absent_snapshot_has_values
+        || economics_invalid
     {
         return Err(RecordFailure::Rejected(anyhow::anyhow!(
             "admission decision contains an empty, invalid, or contradictory field"
@@ -486,6 +493,29 @@ macro_rules! reservation_fact_type {
     ($field:ident) => {
         Option<ReservationAttribution>
     };
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdmissionEconomicsDetailsV1 {
+    core_total: String,
+    core_edge_ratio: String,
+}
+
+impl AdmissionEconomicsDetailsV1 {
+    fn from_fact(value: AdmissionEconomicsDetails) -> Self {
+        Self {
+            core_total: value.core_total,
+            core_edge_ratio: value.core_edge_ratio,
+        }
+    }
+
+    fn into_fact(self) -> AdmissionEconomicsDetails {
+        AdmissionEconomicsDetails {
+            core_total: self.core_total,
+            core_edge_ratio: self.core_edge_ratio,
+        }
+    }
 }
 
 macro_rules! define_admission_wire {
@@ -536,6 +566,8 @@ macro_rules! define_admission_wire {
             stale_reason: Option<$stale>,
             loss_snapshot_observed_at_ns: Option<u64>,
             loss_eval_now_ns: Option<u64>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            economics: Option<AdmissionEconomicsDetailsV1>,
             $(
                 #[serde(default)]
                 $reservation: Option<ReservationAttributionV1>,
@@ -578,6 +610,9 @@ macro_rules! define_admission_wire {
                     stale_reason: details.stale_reason.map($stale::from_fact),
                     loss_snapshot_observed_at_ns: details.loss_snapshot_observed_at_ns,
                     loss_eval_now_ns: details.loss_eval_now_ns,
+                    economics: details
+                        .economics
+                        .map(AdmissionEconomicsDetailsV1::from_fact),
                     $(
                         $reservation: $reservation.map(ReservationAttributionV1::from_fact),
                     )?
@@ -621,6 +656,7 @@ macro_rules! define_admission_wire {
                         stale_reason: self.stale_reason.map($stale::into_fact),
                         loss_snapshot_observed_at_ns: self.loss_snapshot_observed_at_ns,
                         loss_eval_now_ns: self.loss_eval_now_ns,
+                        economics: self.economics.map(AdmissionEconomicsDetailsV1::into_fact),
                     },
                     self.outcome,
                     $(

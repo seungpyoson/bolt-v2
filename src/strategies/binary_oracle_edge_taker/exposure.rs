@@ -13,15 +13,11 @@ use crate::{
     },
 };
 
-use super::OutcomeFeeState;
-
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct OpenPositionState {
     pub(super) lifecycle: BoltV3PositionMarketLifecycle,
     pub(super) instrument_id: InstrumentId,
     pub(super) position_id: PositionId,
-    pub(super) outcome_fees: OutcomeFeeState,
-    pub(super) historical_entry_fee_bps: Option<f64>,
     pub(super) entry_order_side: OrderSide,
     pub(super) side: PositionSide,
     pub(super) quantity: Quantity,
@@ -35,8 +31,6 @@ pub(super) struct PendingEntryState {
     pub(super) submitted_at_ms: Option<u64>,
     pub(super) lifecycle: BoltV3PositionMarketLifecycle,
     pub(super) instrument_id: InstrumentId,
-    pub(super) outcome_fees: OutcomeFeeState,
-    pub(super) historical_entry_fee_bps: Option<f64>,
     pub(super) book: OutcomeBookState,
 }
 
@@ -59,8 +53,6 @@ pub(super) struct ManagedPositionContext {
     pub(super) lifecycle: BoltV3PositionMarketLifecycle,
     pub(super) instrument_id: InstrumentId,
     pub(super) position_id: PositionId,
-    pub(super) outcome_fees: OutcomeFeeState,
-    pub(super) historical_entry_fee_bps: Option<f64>,
     pub(super) book: OutcomeBookState,
     pub(super) origin: ManagedPositionOrigin,
     pub(super) pending_entry: Option<PendingEntryState>,

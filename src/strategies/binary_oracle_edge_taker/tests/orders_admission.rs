@@ -987,12 +987,13 @@ fn bound_economics_liability_passes_at_cap_boundary() {
     // (`request.notional > report.max_notional_per_order()`), so this must
     // be ADMITTED and reach NT submit.
     //
+    let evidence = recording_decision_evidence();
     let submit_admission =
-        submit_admission_with_provider_cap(Decimal::new(50750, 5), recording_decision_evidence());
+        submit_admission_with_provider_cap(Decimal::new(50750, 5), evidence.clone());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
-        recording_decision_evidence(),
+        evidence.clone(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -1048,6 +1049,26 @@ fn bound_economics_liability_passes_at_cap_boundary() {
         1,
         "bound economics liability exactly at the cap must be admitted"
     );
+    let economics = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
+        .into_iter()
+        .find_map(|fact| match fact {
+            CurrentFact::AdmittedEntryAdmission(fact) => fact.details.economics,
+            _ => None,
+        })
+        .expect("bound economics admission must record the authoritative quote");
+    assert_eq!(
+        economics
+            .core_total
+            .parse::<Decimal>()
+            .expect("recorded core total must be decimal"),
+        Decimal::new(-750, 5)
+    );
+    economics
+        .core_edge_ratio
+        .parse::<Decimal>()
+        .expect("recorded core edge ratio must be decimal");
 }
 
 #[test]
@@ -2774,7 +2795,7 @@ fn task5_forced_flat_predicates_cover_current_strategy_visible_triggers() {
 }
 
 #[test]
-fn historical_entry_fee_rate_exit_ev_uses_entry_fee_from_submission_time() {
+fn legacy_fee_provider_changes_do_not_change_strategy_exit_ev() {
     let (mut strategy, fee_provider) =
         ready_to_trade_strategy_with_recording_fees(Decimal::new(100, 2), Decimal::ZERO);
     let client_order_id = ClientOrderId::from("ENTRY-HIST-FEE-001");
@@ -2806,50 +2827,9 @@ fn historical_entry_fee_rate_exit_ev_uses_entry_fee_from_submission_time() {
     let exit_ev_bps = strategy
         .current_exit_ev_bps_at(outcome_side, &order_config)
         .expect("historical entry fee test should produce exit EV");
-    let total_entry_cost = 0.450 * (1.0 + 1.0 / BPS_DENOMINATOR);
-    let net_exit_value = 0.500 * (1.0 - 3.0 / BPS_DENOMINATOR);
-    let expected_exit_ev_bps =
-        ((net_exit_value - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR;
+    let expected_exit_ev_bps = ((0.500 - 0.450) / 0.450) * BPS_DENOMINATOR;
 
     assert!((exit_ev_bps - expected_exit_ev_bps).abs() < 1e-9);
-}
-
-#[test]
-fn historical_entry_fee_rate_logs_known_for_strategy_managed_positions() {
-    let (mut strategy, fee_provider) =
-        ready_to_trade_strategy_with_recording_fees(Decimal::new(100, 2), Decimal::ZERO);
-    let client_order_id = ClientOrderId::from("ENTRY-HIST-LOG-001");
-    let pending = pending_entry_state(&mut strategy, client_order_id);
-    let instrument_id = pending.instrument_id;
-    set_pending_entry(&mut strategy, pending);
-
-    fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
-    let position_id = PositionId::from("P-HIST-LOG-001");
-    seed_nt_open_position(
-        &mut strategy,
-        instrument_id,
-        position_id,
-        Quantity::new(10.0, 2),
-        0.450,
-    );
-    strategy.on_order_filled(&order_filled_event(
-        client_order_id,
-        instrument_id,
-        position_id,
-    ));
-
-    let decision = strategy.exit_submission_decision_at(1_200);
-    let fields = strategy.exit_evaluation_log_fields_at(
-        1_200,
-        ExitEvaluationTriggerContext::unknown(1_200),
-        &decision,
-    );
-
-    assert!(fields.historical_entry_fee_rate_known);
-    assert_eq!(
-        fields.historical_entry_fee_rate_reason,
-        "captured_from_strategy_entry_state"
-    );
 }
 
 #[test]
@@ -2867,8 +2847,6 @@ fn quarantined_legacy_short_position_blocks_exit_submission() {
             lifecycle: BoltV3PositionMarketLifecycle::missing(),
             instrument_id,
             position_id: PositionId::from("P-LEGACY-SHORT-001"),
-            outcome_fees: OutcomeFeeState::empty(),
-            historical_entry_fee_bps: None,
             entry_order_side: OrderSide::Sell,
             side: PositionSide::Short,
             quantity: Quantity::new(5.0, 2),
@@ -2911,8 +2889,6 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_up_position() {
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-001"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -2953,8 +2929,6 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
         ),
         instrument_id: strategy.active.books.down.instrument_id.unwrap(),
         position_id: PositionId::from("P-DOWN-001"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(12.0, 2),
@@ -2994,8 +2968,6 @@ fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-002"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),

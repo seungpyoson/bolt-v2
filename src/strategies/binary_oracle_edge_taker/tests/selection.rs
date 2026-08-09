@@ -40,8 +40,6 @@ fn switch_resets_only_active_market_state() {
     assert_eq!(active.market_id.as_deref(), Some("B"));
     assert!(active.interval_open.is_none());
     assert_eq!(active.warmup_count, 0);
-    assert!(!active.outcome_fees.up_ready);
-    assert!(!active.outcome_fees.down_ready);
     assert_eq!(
         strategy.pricing.selected_pricing_spot().cloned(),
         Some(fast_spot("bybit", 3_100.5, 1_200))
@@ -201,48 +199,6 @@ fn authoritative_position_close_cools_the_closed_market_before_delayed_exit_fill
     assert!(pending_exit_ref(&strategy).is_none());
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn same_market_freeze_to_active_reactivation_warms_fees_again() {
-    let fee_provider = RecordingFeeProvider::cold();
-    let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
-
-    strategy.apply_selection_snapshot(freeze_snapshot_with_start("MKT-1", 0));
-    tokio::task::yield_now().await;
-    strategy.apply_selection_snapshot(active_snapshot("MKT-1"));
-    tokio::task::yield_now().await;
-
-    assert_eq!(
-        fee_provider.warm_calls(),
-        vec![
-            "condition-MKT-1-MKT-1-UP.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-DOWN.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-UP.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-DOWN.POLYMARKET".to_string(),
-        ]
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn same_market_new_interval_rollover_warms_fees_again() {
-    let fee_provider = RecordingFeeProvider::cold();
-    let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
-
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
-    tokio::task::yield_now().await;
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 2_000));
-    tokio::task::yield_now().await;
-
-    assert_eq!(
-        fee_provider.warm_calls(),
-        vec![
-            "condition-MKT-1-MKT-1-UP.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-DOWN.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-UP.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-DOWN.POLYMARKET".to_string(),
-        ]
-    );
-}
-
 #[test]
 fn same_market_active_to_freeze_updates_forced_flat_without_resetting_shell_state() {
     let mut strategy = test_strategy();
@@ -251,8 +207,6 @@ fn same_market_active_to_freeze_updates_forced_flat_without_resetting_shell_stat
         let active = &mut strategy.active;
         active.interval_open = Some(3_100.0);
         active.warmup_count = 2;
-        active.outcome_fees.up_ready = true;
-        active.outcome_fees.down_ready = true;
         active.forced_flat = false;
     }
 
@@ -263,24 +217,6 @@ fn same_market_active_to_freeze_updates_forced_flat_without_resetting_shell_stat
     assert!(active.forced_flat);
     assert_eq!(active.interval_open, Some(3_100.0));
     assert_eq!(active.warmup_count, 2);
-    assert!(active.outcome_fees.up_ready);
-    assert!(active.outcome_fees.down_ready);
-    assert_eq!(
-        active
-            .outcome_fees
-            .up_instrument_id
-            .map(|instrument_id| instrument_id.to_string())
-            .as_deref(),
-        Some("condition-MKT-1-MKT-1-UP.POLYMARKET")
-    );
-    assert_eq!(
-        active
-            .outcome_fees
-            .down_instrument_id
-            .map(|instrument_id| instrument_id.to_string())
-            .as_deref(),
-        Some("condition-MKT-1-MKT-1-DOWN.POLYMARKET")
-    );
 }
 
 #[test]
@@ -735,8 +671,6 @@ fn tracked_market_lifecycle_is_retained_after_cooldown_expiry() {
         ),
         instrument_id: tracked_instrument,
         position_id: PositionId::from("P-LIFECYCLE-001"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),

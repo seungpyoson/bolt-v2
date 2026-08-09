@@ -14,15 +14,15 @@ use crate::bolt_v3_capital_reservation::{
 #[cfg(test)]
 use crate::bolt_v3_current_evidence::DecisionEvidenceRecorder;
 use crate::bolt_v3_current_evidence::{
-    AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason,
-    AdmittedEntryAdmissionFact, BasketAdmissionDetails, BasketAdmissionGrantedFact,
-    BasketAdmissionIntentKind, BasketAdmittedLeg, CapitalAdmissionRebuildFact,
-    CapitalAdmissionRebuildOutcome, CapitalAdmissionRebuildSource, CapitalAdmissionRejectionReason,
-    CommittedAdmission, EvidenceOrderSide, ForcedReductionAdmissionFact, LossGovernorHaltFact,
-    LossHaltReason as EvidenceLossHaltReason, LossSnapshotSource,
-    LossSnapshotStaleReason as EvidenceLossSnapshotStaleReason, NonBlockingRecordOutcome,
-    OrderIntentDetails, OrderRejectFact, OrderRejectReason, OrderRejectSource,
-    ProviderCollateralAllowanceCaptureEndpoint as EvidenceCaptureEndpoint,
+    AdmissionDecisionOutcome, AdmissionDetails, AdmissionEconomicsDetails,
+    AdmissionRejectionReason, AdmittedEntryAdmissionFact, BasketAdmissionDetails,
+    BasketAdmissionGrantedFact, BasketAdmissionIntentKind, BasketAdmittedLeg,
+    CapitalAdmissionRebuildFact, CapitalAdmissionRebuildOutcome, CapitalAdmissionRebuildSource,
+    CapitalAdmissionRejectionReason, CommittedAdmission, EvidenceOrderSide,
+    ForcedReductionAdmissionFact, LossGovernorHaltFact, LossHaltReason as EvidenceLossHaltReason,
+    LossSnapshotSource, LossSnapshotStaleReason as EvidenceLossSnapshotStaleReason,
+    NonBlockingRecordOutcome, OrderIntentDetails, OrderRejectFact, OrderRejectReason,
+    OrderRejectSource, ProviderCollateralAllowanceCaptureEndpoint as EvidenceCaptureEndpoint,
     ProviderCollateralAllowanceCaptureErrorClass as EvidenceCaptureErrorClass,
     ProviderCollateralAllowanceCaptureFailureFact, RecordFailure, RejectedEntryAdmissionFact,
     ReservationAttribution, ReservationProductKind, ReservationRecoveryEvent,
@@ -1588,12 +1588,29 @@ impl BoltV3SubmitAdmissionState {
         &self,
         request: &BoltV3SubmitAdmissionRequest,
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
-        self.admit_at(request, current_unix_ns()?)
+        self.admit_at_with_economics(request, None, current_unix_ns()?)
+    }
+
+    pub fn admit_with_economics(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        economics: &EconomicsAdmission,
+    ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
+        self.admit_at_with_economics(request, Some(economics), current_unix_ns()?)
     }
 
     pub fn admit_at(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
+        now_ns: u64,
+    ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
+        self.admit_at_with_economics(request, None, now_ns)
+    }
+
+    fn admit_at_with_economics(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        economics: Option<&EconomicsAdmission>,
         now_ns: u64,
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
         let mut inner = self
@@ -1610,9 +1627,13 @@ impl BoltV3SubmitAdmissionState {
                 }
                 evaluation.outcome =
                     AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CountCapExhausted);
-                if let Err(err) =
-                    self.record_admission_decision(&mut inner, request, &evaluation, now_ns)
-                {
+                if let Err(err) = self.record_admission_decision(
+                    &mut inner,
+                    request,
+                    &evaluation,
+                    economics,
+                    now_ns,
+                ) {
                     return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                         reason: format!("{err:#}"),
                     });
@@ -1631,9 +1652,13 @@ impl BoltV3SubmitAdmissionState {
                 }
                 evaluation.outcome =
                     AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CountCapExhausted);
-                if let Err(err) =
-                    self.record_admission_decision(&mut inner, request, &evaluation, now_ns)
-                {
+                if let Err(err) = self.record_admission_decision(
+                    &mut inner,
+                    request,
+                    &evaluation,
+                    economics,
+                    now_ns,
+                ) {
                     return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                         reason: format!("{err:#}"),
                     });
@@ -1655,18 +1680,23 @@ impl BoltV3SubmitAdmissionState {
                 counter_rollback,
             ));
         }
-        let evidence_authority =
-            match self.record_admission_decision(&mut inner, request, &evaluation, now_ns) {
-                Ok(authority) => authority,
-                Err(err) => {
-                    if let Some(rollback) = evaluation.rollback.as_ref() {
-                        rollback_capital_admission_reservation(&mut inner, rollback);
-                    }
-                    return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                        reason: format!("{err:#}"),
-                    });
+        let evidence_authority = match self.record_admission_decision(
+            &mut inner,
+            request,
+            &evaluation,
+            economics,
+            now_ns,
+        ) {
+            Ok(authority) => authority,
+            Err(err) => {
+                if let Some(rollback) = evaluation.rollback.as_ref() {
+                    rollback_capital_admission_reservation(&mut inner, rollback);
                 }
-            };
+                return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                    reason: format!("{err:#}"),
+                });
+            }
+        };
         match evaluation.outcome {
             AdmissionDecisionOutcome::Admitted => {
                 let Some((
@@ -1748,14 +1778,34 @@ impl BoltV3SubmitAdmissionState {
         &self,
         request: &BoltV3SubmitAdmissionRequest,
     ) -> Result<(), BoltV3SubmitAdmissionError> {
+        self.evaluate_and_record_without_consuming_capacity_at(request, None, current_unix_ns()?)
+    }
+
+    pub fn evaluate_and_record_without_consuming_capacity_with_economics(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        economics: &EconomicsAdmission,
+    ) -> Result<(), BoltV3SubmitAdmissionError> {
+        self.evaluate_and_record_without_consuming_capacity_at(
+            request,
+            Some(economics),
+            current_unix_ns()?,
+        )
+    }
+
+    fn evaluate_and_record_without_consuming_capacity_at(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        economics: Option<&EconomicsAdmission>,
+        now_ns: u64,
+    ) -> Result<(), BoltV3SubmitAdmissionError> {
         let mut inner = self
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        let now_ns = current_unix_ns()?;
         let evaluation = self.evaluate(&mut inner, request, now_ns);
         let record_result =
-            self.record_admission_decision(&mut inner, request, &evaluation, now_ns);
+            self.record_admission_decision(&mut inner, request, &evaluation, economics, now_ns);
         if let Some(rollback) = evaluation.rollback.as_ref() {
             rollback_capital_admission_reservation(&mut inner, rollback);
         }
@@ -1772,6 +1822,7 @@ impl BoltV3SubmitAdmissionState {
         inner: &mut BoltV3SubmitAdmissionInner,
         request: &BoltV3SubmitAdmissionRequest,
         evaluation: &BoltV3SubmitAdmissionEvaluation,
+        economics: Option<&EconomicsAdmission>,
         now_ns: u64,
     ) -> Result<RecordedAdmissionAuthority, anyhow::Error> {
         let details = AdmissionDetails {
@@ -1857,6 +1908,10 @@ impl BoltV3SubmitAdmissionState {
                 .loss_snapshot_diagnostics
                 .as_ref()
                 .map(|diagnostics| diagnostics.admission_now_ns),
+            economics: economics.map(|economics| AdmissionEconomicsDetails {
+                core_total: economics.quote().core_total().to_string(),
+                core_edge_ratio: economics.net_edge().core_edge_ratio.to_string(),
+            }),
         };
         let result = match (request.intent_kind, evaluation.outcome) {
             (BoltV3SubmitIntentKind::Entry, AdmissionDecisionOutcome::Admitted) => {

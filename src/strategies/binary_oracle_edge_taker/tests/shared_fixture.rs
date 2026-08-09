@@ -198,7 +198,6 @@ pub(super) fn valid_raw_config() -> Value {
 pub(super) struct RecordingFeeProvider {
     fees: Mutex<HashMap<String, Decimal>>,
     entry_fees: Mutex<HashMap<String, Decimal>>,
-    warm_calls: Mutex<Vec<String>>,
 }
 
 impl RecordingFeeProvider {
@@ -224,13 +223,6 @@ impl RecordingFeeProvider {
             .expect("recording fee provider mutex poisoned")
             .insert(instrument_id.to_string(), fee_bps);
     }
-
-    pub(super) fn warm_calls(&self) -> Vec<String> {
-        self.warm_calls
-            .lock()
-            .expect("recording fee provider mutex poisoned")
-            .clone()
-    }
 }
 
 impl FeeProvider for RecordingFeeProvider {
@@ -251,11 +243,7 @@ impl FeeProvider for RecordingFeeProvider {
             .or_else(|| self.fee_bps(instrument.id()))
     }
 
-    fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        self.warm_calls
-            .lock()
-            .expect("recording fee provider mutex poisoned")
-            .push(instrument_id.to_string());
+    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         async { Ok(()) }.boxed()
     }
 }
@@ -1030,8 +1018,6 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     strategy.active.interval_open = Some(3_100.0);
     strategy.active.warmup_count = 2;
     strategy.active.last_reference_ts_ms = Some(1_200);
-    strategy.active.outcome_fees.up_ready = true;
-    strategy.active.outcome_fees.down_ready = true;
     strategy.active.books.up.last_observed_instrument_id = strategy.active.books.up.instrument_id;
     strategy
         .active
@@ -1100,7 +1086,6 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
     strategy.active.interval_open = Some(3_100.0);
     strategy.active.warmup_count = 2;
     strategy.active.last_reference_ts_ms = Some(1_200);
-    strategy.refresh_fee_readiness();
     strategy.active.books.up.last_observed_instrument_id = strategy.active.books.up.instrument_id;
     strategy
         .active
@@ -1198,12 +1183,6 @@ pub(super) fn configured_position_probe(
         lifecycle: active_fixture_lifecycle_for_instrument(strategy, instrument_id),
         instrument_id,
         position_id: PositionId::from("P-SIDE-PROBE"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: strategy
-            .context
-            .fee_provider()
-            .fee_bps(instrument_id)
-            .and_then(|value| value.to_f64()),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(1.0, 2),
@@ -1327,13 +1306,6 @@ pub(super) fn pending_entry_state(
             Some(300),
         ),
         instrument_id,
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: strategy
-            .context
-            .fee_provider()
-            .fee_bps(instrument_id)
-            .and_then(|value| value.to_f64())
-            .or(Some(0.0)),
         book,
     }
 }
@@ -1483,16 +1455,21 @@ pub(super) fn materialize_configured_position(
         0,
     );
     seed_managed_position_lifecycle_from_active_fixture(strategy, instrument_id);
-    let mut position = managed_position_snapshot(strategy)
+    let position = managed_position_snapshot(strategy)
         .expect("configured position should materialize as managed exposure");
-    position.historical_entry_fee_bps.get_or_insert(0.0);
     position
 }
 
 pub(super) fn configured_outcome_instruments(
     strategy: &BinaryOracleEdgeTaker,
 ) -> Vec<InstrumentId> {
-    let instrument_ids = strategy.active.outcome_fees.instrument_ids();
+    let instrument_ids = [
+        strategy.active.books.up.instrument_id,
+        strategy.active.books.down.instrument_id,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
     assert!(
         !instrument_ids.is_empty(),
         "ready-to-trade fixture should expose configured outcome instruments"
@@ -1576,12 +1553,6 @@ pub(super) fn materialize_managed_position_with_resting_pending_entry(
             Some(300),
         ),
         instrument_id,
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: strategy
-            .context
-            .fee_provider()
-            .fee_bps(instrument_id)
-            .and_then(|value| value.to_f64()),
         book: book.clone(),
     };
     let avg_px_open = book

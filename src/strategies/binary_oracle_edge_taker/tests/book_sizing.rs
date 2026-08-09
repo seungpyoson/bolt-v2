@@ -162,8 +162,6 @@ fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
         ),
         instrument_id: position_instrument,
         position_id: PositionId::from("P-THIN-001"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(5.0, 2),

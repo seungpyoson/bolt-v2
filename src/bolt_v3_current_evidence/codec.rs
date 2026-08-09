@@ -2737,6 +2737,7 @@ mod tests {
         details.fast_venue_age_ms = None;
         details.fast_venue_jitter_ms = None;
         details.lead_agreement_corr = None;
+        details.fee_rate_basis_points = None;
         details.selected_side = None;
         details.realized_volatility = StrategyInputRvState::Absent {
             gate_result: RvGateResult::MissingSnapshot,
@@ -3048,6 +3049,7 @@ mod tests {
             stale_reason: None,
             loss_snapshot_observed_at_ns: Some(10),
             loss_eval_now_ns: Some(12),
+            economics: None,
         }
     }
 
@@ -3172,7 +3174,7 @@ mod tests {
             fast_venue_jitter_ms: Some(1),
             fast_venue_incoherent: false,
             lead_agreement_corr: Some("1".to_string()),
-            fee_rate_basis_points: purpose_numeric("0"),
+            fee_rate_basis_points: Some("0".to_string()),
             selected_side: None,
         }
     }

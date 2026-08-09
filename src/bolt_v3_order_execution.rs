@@ -349,7 +349,7 @@ impl BoltV3OrderExecutionPolicy {
             }
         };
         record_order_intent(decision_evidence, intent_kind, intent.clone())?;
-        if let Some(economics) = economics {
+        if let Some(economics) = economics.as_ref() {
             let execution_client_id = context
                 .client_id
                 .as_ref()
@@ -359,13 +359,26 @@ impl BoltV3OrderExecutionPolicy {
         }
         match self.mode {
             BoltV3OrderExecutionMode::Live => {
-                let permit = submit_admission.admit(&request)?;
+                let permit = match economics.as_ref() {
+                    Some(economics) => {
+                        submit_admission.admit_with_economics(&request, economics)?
+                    }
+                    None => submit_admission.admit(&request)?,
+                };
                 sink.submit_order_via_nt(order, context)?;
                 permit.commit_submitted();
                 Ok(BoltV3SubmitRoutingOutcome::Submitted)
             }
             BoltV3OrderExecutionMode::Shadow => {
-                submit_admission.evaluate_and_record_without_consuming_capacity(&request)?;
+                match economics.as_ref() {
+                    Some(economics) => submit_admission
+                        .evaluate_and_record_without_consuming_capacity_with_economics(
+                            &request, economics,
+                        )?,
+                    None => {
+                        submit_admission.evaluate_and_record_without_consuming_capacity(&request)?
+                    }
+                }
                 log::info!(
                     "bolt-v3 submit skipped by execution policy: mode=shadow strategy_id={} client_order_id={}",
                     request.strategy_id,

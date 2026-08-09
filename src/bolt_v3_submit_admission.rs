@@ -1685,7 +1685,7 @@ impl BoltV3SubmitAdmissionState {
                     next_admitted_order_count,
                     next_execution_client_count,
                     forced_reduction_client_order_id,
-                    counter_rollback,
+                    mut counter_rollback,
                 )) = admitted_counter_update
                 else {
                     return Err(BoltV3SubmitAdmissionError::InvariantViolation {
@@ -1698,11 +1698,16 @@ impl BoltV3SubmitAdmissionState {
                     next_execution_client_count,
                 );
                 if evaluation.reservation_attribution.is_none()
-                    && evidence_authority.committed_open_order_authorization()
+                    && evidence_authority.requires_live_non_reservation_tracking()
                 {
                     inner
                         .live_non_reservation_client_order_ids
                         .insert(request.client_order_id.clone());
+                    if !evidence_authority.committed_open_order_authorization() {
+                        counter_rollback
+                            .uncommitted_non_reservation_client_order_ids
+                            .push(request.client_order_id.clone());
+                    }
                 }
                 if let Some(client_order_id) = forced_reduction_client_order_id {
                     inner
@@ -2405,6 +2410,9 @@ impl BoltV3SubmitAdmissionState {
         if inner
             .committed_admission_authority
             .authorizes_order(&request.client_order_id)
+            || inner
+                .live_non_reservation_client_order_ids
+                .contains(&request.client_order_id)
         {
             return Ok(BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 AdmissionDecisionOutcome::Rejected(
@@ -2744,6 +2752,13 @@ enum RecordedAdmissionAuthority {
 }
 
 impl RecordedAdmissionAuthority {
+    fn requires_live_non_reservation_tracking(&self) -> bool {
+        matches!(
+            self,
+            Self::CommittedEntry(_) | Self::RiskReducing { .. } | Self::ForcedReduction { .. }
+        )
+    }
+
     fn committed_open_order_authorization(&self) -> bool {
         match self {
             Self::CommittedEntry(_) => true,
@@ -3809,7 +3824,7 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             }
             Self::ClientOrderAlreadyAuthorized => write!(
                 f,
-                "bolt-v3 submit admission client-order identity is already durably authorized"
+                "bolt-v3 submit admission client-order identity is already live or durably authorized"
             ),
             Self::NotionalArithmeticOverflow => {
                 write!(f, "bolt-v3 submit admission notional arithmetic overflowed")

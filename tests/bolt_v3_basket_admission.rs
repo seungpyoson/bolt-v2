@@ -611,8 +611,63 @@ fn pure_risk_reducing_basket_continues_when_grant_evidence_fails() {
 
     assert_eq!(submit_gate.admitted_order_count(), 2);
     assert!(writer.basket_admission_decisions().is_empty());
+    assert_eq!(
+        submit_gate
+            .reserve_basket_submit_slots(
+                "polymarket_main",
+                &claims,
+                &basket_slot_evidence("risk-reducing-live-retry", &group),
+            )
+            .expect_err("a live evidence-free basket permit must reject duplicate legs"),
+        BoltV3SubmitAdmissionError::ClientOrderAlreadyAuthorized
+    );
     drop(permit);
     assert_eq!(submit_gate.admitted_order_count(), 0);
+    submit_gate
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &claims,
+            &basket_slot_evidence("risk-reducing-after-drop", &group),
+        )
+        .expect("dropping the unsubmitted permit must release transient basket authority")
+        .commit_submitted();
+}
+
+#[test]
+fn submitted_risk_reducing_basket_stays_unique_when_grant_evidence_fails() {
+    let writer = RecordingBasketDecisionWriter::default();
+    let submit_gate = submit_state(writer.recorder(), 4, dec!(10));
+    let group = fixture_group();
+    let claims = group
+        .tradable_legs
+        .values()
+        .take(2)
+        .map(|leg| risk_reducing_claim(leg, valid_exit_proof(leg)))
+        .collect::<Vec<_>>();
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::BasketAdmissionGranted,
+        1,
+    );
+
+    submit_gate
+        .reserve_basket_submit_slots(
+            "polymarket_main",
+            &claims,
+            &basket_slot_evidence("risk-reducing-committed", &group),
+        )
+        .expect("evidence failure must not block a purely risk-reducing basket")
+        .commit_submitted();
+
+    assert_eq!(
+        submit_gate
+            .reserve_basket_submit_slots(
+                "polymarket_main",
+                &claims,
+                &basket_slot_evidence("risk-reducing-committed-retry", &group),
+            )
+            .expect_err("a submitted evidence-free basket must reject duplicate legs"),
+        BoltV3SubmitAdmissionError::ClientOrderAlreadyAuthorized
+    );
 }
 
 #[test]

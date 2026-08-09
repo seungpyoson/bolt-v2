@@ -82,9 +82,9 @@
 
 - [x] Add Polymarket fixtures for fee-free schedules, maker/taker applicability, per-level rounding, unsupported exponents, routing charges, missing source, and stale source.
 - [x] Implement Polymarket estimates without treating NautilusTrader projection as authority.
-- [ ] Add Hyperliquid fixtures for spot/perp maker/taker schedules, discounts, negative maker rates, side-dependent units, builder approval, carry bounds, aligned products, missing source, and schema divergence.
-- [ ] Implement Hyperliquid estimates and block unrecognized `alignedQuoteTokenInfo` shapes.
-- [ ] Prove both adapters use neutral identifiers and values at their public boundary.
+- [x] Add Hyperliquid fixtures for spot/perp maker/taker schedules, discounts, negative maker rates, side-dependent units, builder approval, carry bounds, aligned products, missing source, and schema divergence.
+- [x] Implement Hyperliquid estimates and block unrecognized `alignedQuoteTokenInfo` shapes.
+- [x] Prove both adapters use neutral identifiers and values at their public boundary.
 
 ### Task 4: Single TOML-backed composition route
 

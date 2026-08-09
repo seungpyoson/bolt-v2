@@ -4,6 +4,14 @@
 //! mapping stays gated behind SSM-resolved credentials, explicit TOML runtime
 //! fields, and a consumed surface-bound live-submit approval.
 
+mod economics;
+
+pub use economics::{
+    HyperliquidBuilderApprovalSnapshot, HyperliquidCarryPolicy, HyperliquidEconomicsAdapter,
+    HyperliquidEconomicsConfig, HyperliquidEconomicsError, HyperliquidProductEconomicsSnapshot,
+    HyperliquidProductKind, HyperliquidSnapshotMetadata, HyperliquidUserFeesSnapshot,
+};
+
 use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},

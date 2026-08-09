@@ -81,7 +81,6 @@ pub struct MakerResolvedMarketBinding {
     pub market_key: String,
     pub family_key: String,
     pub underlying_asset: String,
-    pub market_id: String,
     pub evidence_identity: EvidenceMarketIdentity,
     pub yes: MakerLegBinding,
     pub no: MakerLegBinding,
@@ -212,7 +211,6 @@ pub fn resolve_declared_market(
         market_key: declaration.market_key.clone(),
         family_key: declaration.family_key.clone(),
         underlying_asset: declaration.underlying_asset.clone(),
-        market_id: market.market_id,
         evidence_identity,
         yes: leg_binding(market.up_instrument_id),
         no: leg_binding(market.down_instrument_id),
@@ -687,7 +685,10 @@ mod tests {
         let btc_binding = resolve_declared_market(&btc, &instruments, NOW_MS).expect(
             "underlying_asset is not a static selection key; a different asset still resolves",
         );
-        assert_eq!(btc_binding.market_id, eth_binding.market_id);
+        assert_eq!(
+            btc_binding.evidence_identity.gamma_market_id(),
+            eth_binding.evidence_identity.gamma_market_id()
+        );
         assert_eq!(btc_binding.yes.instrument_id, eth_binding.yes.instrument_id);
         assert_eq!(btc_binding.no.instrument_id, eth_binding.no.instrument_id);
     }

@@ -561,9 +561,8 @@ fn market_portfolio_declaration_blocker_error(
 /// - an `family_key` not registered in the shared market-family registry can
 ///   never resolve a market, so it is rejected at load — the same registered-family
 ///   policy the runtime selection engine fails loud on;
-/// - an empty or duplicated `market_key` breaks the portfolio planner's per-market
-///   slot/rotation keying (it requires non-empty unique keys), so it is rejected
-///   at load.
+/// - an empty, padded, or duplicated `market_key` breaks canonical portfolio
+///   slot/rotation keying, so it is rejected at load.
 fn validate_market_declarations(
     context: &str,
     markets: &[MarketBindingParametersBlock],
@@ -571,9 +570,11 @@ fn validate_market_declarations(
 ) {
     let mut seen_keys = std::collections::BTreeSet::new();
     for market in markets {
-        if market.market_key.trim().is_empty() {
+        if !crate::bolt_v3_target_identity::stable_identity_field_is_canonical(
+            market.market_key.as_str(),
+        ) {
             errors.push(format!(
-                "{context}: parameters.markets entry market_key must be a non-empty string (the portfolio planner requires a non-empty market_key to key slots and rotation)"
+                "{context}: parameters.markets entry market_key must be a non-empty string without leading or trailing whitespace (the portfolio planner requires a canonical market_key to key slots and rotation)"
             ));
         } else if !seen_keys.insert(market.market_key.as_str()) {
             errors.push(format!(
@@ -2053,6 +2054,23 @@ mod tests {
             errors
                 .iter()
                 .any(|error| error.contains("market_key must be a non-empty string")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_padded_market_key() {
+        let markets = vec![MarketBindingParametersBlock {
+            market_key: " eth-hourly".to_string(),
+            ..market_declaration("placeholder")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors.iter().any(|error| {
+                error.contains(
+                    "market_key must be a non-empty string without leading or trailing whitespace",
+                )
+            }),
             "{errors:?}"
         );
     }

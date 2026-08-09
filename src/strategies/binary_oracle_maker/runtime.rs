@@ -216,15 +216,6 @@ impl MakerMarketRuntime {
         self.binding.expiration_timestamp_milliseconds
     }
 
-    /// The concrete venue `market_id` this slot resolved to. Retained as a plain
-    /// diagnostics accessor; it is **not** the cadence-window discriminator (that is
-    /// `start_timestamp_milliseconds`), because venue metadata is not guaranteed to
-    /// change when the window rolls.
-    #[must_use]
-    pub fn market_id(&self) -> &str {
-        &self.binding.market_id
-    }
-
     /// The bankroll notional the planner allocated this market this cycle.
     #[must_use]
     pub fn allocation_notional(&self) -> f64 {
@@ -525,24 +516,26 @@ impl MakerRuntime {
                 // venue token strings inside evidence identity remain NT-owned translation
                 // metadata and must not make Bolt forget a cancel/modify handle.
                 Some(mut prior) if same_window(&prior.binding, binding) => {
-                    prior.binding.family_key.clone_from(&binding.family_key);
-                    prior
-                        .binding
-                        .underlying_asset
-                        .clone_from(&binding.underlying_asset);
-                    prior.binding.market_id.clone_from(&binding.market_id);
-                    prior
-                        .binding
-                        .evidence_identity
-                        .clone_from(&binding.evidence_identity);
-                    prior.binding.selection_outcome = binding.selection_outcome;
-                    prior
-                        .binding
-                        .source_identity
-                        .clone_from(&binding.source_identity);
-                    prior.binding.expiration_timestamp_milliseconds =
-                        binding.expiration_timestamp_milliseconds;
-                    prior.binding.seconds_to_end = binding.seconds_to_end;
+                    // Refresh the whole resolved binding so a future metadata field
+                    // cannot be omitted from this retain path. Only the NT-backed leg
+                    // handles belong to the predecessor; `same_window` proves their
+                    // instrument ids are unchanged.
+                    let mut refreshed = binding.clone();
+                    let MakerLegBinding {
+                        instrument_id: _,
+                        active_order: prior_yes_active,
+                        next_order: prior_yes_next,
+                    } = &prior.binding.yes;
+                    let MakerLegBinding {
+                        instrument_id: _,
+                        active_order: prior_no_active,
+                        next_order: prior_no_next,
+                    } = &prior.binding.no;
+                    refreshed.yes.active_order.clone_from(prior_yes_active);
+                    refreshed.yes.next_order.clone_from(prior_yes_next);
+                    refreshed.no.active_order.clone_from(prior_no_active);
+                    refreshed.no.next_order.clone_from(prior_no_next);
+                    prior.binding = refreshed;
                     prior.allocation_notional = allocation_notional;
                     prior
                 }
@@ -556,7 +549,6 @@ impl MakerRuntime {
                 // would re-mint a client order id a prior generation already consumed
                 // (NautilusTrader never reuses a `ClientOrderId`). Seeding from the
                 // high-water keeps every minted id unique regardless of transition kind.
-                // Clone the binding only here, never on the common retain path.
                 _ => MakerMarketRuntime::seeded(binding.clone(), allocation_notional, seed),
             };
             next.insert(market_key, runtime);
@@ -719,7 +711,6 @@ mod tests {
             market_key: "configured-market".to_string(),
             family_key: "static_binary_event".to_string(),
             underlying_asset: "ETH".to_string(),
-            market_id: "gamma-market".to_string(),
             evidence_identity: EvidenceMarketIdentity::try_new(
                 "gamma-market".to_string(),
                 "condition-1".to_string(),

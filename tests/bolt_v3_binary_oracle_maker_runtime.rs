@@ -85,6 +85,13 @@ fn bound_strike<'a>(
         .expect("strike fixture should be valid")
 }
 
+#[test]
+fn maker_strike_accepts_a_canonical_market_key_with_internal_whitespace() {
+    let strike = BinaryOracleMakerStrikePrice::try_new("eth 1h", "ETH", 1_000, 100.0)
+        .expect("stable market identities permit internal whitespace");
+    assert_eq!(strike.market_key(), "eth 1h");
+}
+
 fn ready_realized_vol_snapshot(as_of_ms: u64, realized_vol: f64) -> RealizedVolSnapshot {
     RealizedVolSnapshot {
         surface_id: TEST_REALIZED_VOL_SURFACE_ID.to_string(),
@@ -509,6 +516,141 @@ fn maker_run_quote_cycle_rejects_a_family_mismatch_before_minting_identities() {
 }
 
 #[test]
+fn maker_runtime_quote_rejects_timestamps_outside_the_active_window_before_mutation() {
+    for at_or_after_end in [false, true] {
+        let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+        let (mut maker, _cache) =
+            maker_with_active_static_market(writer.recorder(), admission.clone());
+        let (interval_start_ms, interval_end_ms) = {
+            let runtime_market = maker
+                .runtime()
+                .market(MARKET_KEY)
+                .expect("the static runtime market is active");
+            (
+                runtime_market.start_timestamp_milliseconds(),
+                runtime_market.expiration_timestamp_milliseconds(),
+            )
+        };
+        assert!(
+            interval_start_ms > 0,
+            "fixture supports a pre-window timestamp"
+        );
+        let mut quote_set = quote_set_inputs();
+        quote_set.now_ms = if at_or_after_end {
+            interval_end_ms
+        } else {
+            interval_start_ms - 1
+        };
+        let mut market = MarketQuote::new(false);
+        let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+            .expect("ample requote budget fixture builds");
+
+        let result = maker.route_maker_runtime_quote(
+            MARKET_KEY,
+            &mut market,
+            &mut budget,
+            BinaryOracleMakerRuntimeQuoteRouteInput {
+                quote_plan: quote_plan_inputs(static_binary_event::KEY),
+                quote_set,
+                submit_template: &maker_limit_post_only_template(),
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+                max_fee_bps: Decimal::ZERO,
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "a stale cadence timestamp must fail closed"
+        );
+        let runtime_market = maker
+            .runtime()
+            .market(MARKET_KEY)
+            .expect("the rejected market remains active");
+        for leg in [Leg::Yes, Leg::No] {
+            assert_eq!(runtime_market.leg_binding(leg).active_order, None);
+            assert_eq!(runtime_market.leg_binding(leg).next_order, None);
+        }
+        assert_eq!(market.market_state(), MarketState::Idle);
+        assert_eq!(budget.submit_commands_in_window(), 0);
+        assert_eq!(budget.rest_cost_in_window(), 0);
+        assert_eq!(admission.admitted_order_count(), 0);
+        assert!(writer.records().is_empty());
+        assert!(writer.requote_throttles().is_empty());
+    }
+}
+
+#[test]
+fn maker_run_quote_cycle_rejects_timestamps_outside_the_active_window_before_mutation() {
+    for at_or_after_end in [false, true] {
+        let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+        let (mut maker, _cache) =
+            maker_with_active_static_market(writer.recorder(), admission.clone());
+        let (interval_start_ms, interval_end_ms) = {
+            let runtime_market = maker
+                .runtime()
+                .market(MARKET_KEY)
+                .expect("the static runtime market is active");
+            (
+                runtime_market.start_timestamp_milliseconds(),
+                runtime_market.expiration_timestamp_milliseconds(),
+            )
+        };
+        assert!(
+            interval_start_ms > 0,
+            "fixture supports a pre-window timestamp"
+        );
+        let mut quote_set = quote_set_inputs();
+        quote_set.now_ms = if at_or_after_end {
+            interval_end_ms
+        } else {
+            interval_start_ms - 1
+        };
+        let mut market = MarketQuote::new(false);
+        let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+            .expect("ample requote budget fixture builds");
+        let submit_template = maker_limit_post_only_template();
+
+        let result = maker.run_quote_cycle(
+            MARKET_KEY,
+            &mut market,
+            &mut budget,
+            BinaryOracleMakerQuoteCycleInput {
+                quote_plan: quote_plan_inputs(static_binary_event::KEY),
+                quote_set,
+                submit_template: &submit_template,
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+                max_fee_bps: Decimal::ZERO,
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "a stale cadence timestamp must fail closed"
+        );
+        let runtime_market = maker
+            .runtime()
+            .market(MARKET_KEY)
+            .expect("the rejected market remains active");
+        for leg in [Leg::Yes, Leg::No] {
+            assert_eq!(runtime_market.leg_binding(leg).active_order, None);
+            assert_eq!(runtime_market.leg_binding(leg).next_order, None);
+        }
+        assert_eq!(market.market_state(), MarketState::Idle);
+        assert_eq!(budget.submit_commands_in_window(), 0);
+        assert_eq!(budget.rest_cost_in_window(), 0);
+        assert_eq!(admission.admitted_order_count(), 0);
+        assert!(writer.records().is_empty());
+        assert!(writer.requote_throttles().is_empty());
+    }
+}
+
+#[test]
 fn maker_runtime_reference_quote_rejects_an_inactive_market_before_fair_value() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
@@ -848,6 +990,7 @@ fn maker_runtime_reference_quote_does_not_price_a_foreign_same_family_window() {
     assert_eq!(budget.submit_commands_in_window(), 0);
     assert_eq!(budget.rest_cost_in_window(), 0);
     assert!(writer.records().is_empty());
+    assert!(writer.requote_throttles().is_empty());
 }
 
 /// A blocked leg whose *observation* alternates while its blocked state does not
@@ -886,7 +1029,12 @@ fn maker_runtime_quote_records_one_throttle_while_the_bound_oscillates() {
 
     // Forward, backward, forward, backward: four evaluations of one unchanged
     // blocked leg, alternating only in what the clock says.
-    for now_ms in [1_000, 500, 1_000, 500] {
+    for now_ms in [
+        RUNTIME_NOW_MS,
+        RUNTIME_NOW_MS - 500,
+        RUNTIME_NOW_MS,
+        RUNTIME_NOW_MS - 500,
+    ] {
         maker
             .route_maker_runtime_quote(MARKET_KEY, &mut market, &mut budget, route_input(now_ms))
             .expect("an oscillating bound must not fail the quote route");
@@ -1945,7 +2093,7 @@ fn quote_set_inputs() -> MakerRuntimeQuoteSetInput<'static> {
         available_collateral: 100.0,
         requote_threshold: 0.001,
         eps: 0.001,
-        now_ms: 1_000,
+        now_ms: RUNTIME_NOW_MS,
     }
 }
 

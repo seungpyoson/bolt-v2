@@ -71,6 +71,7 @@ use crate::{
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_requote_budget::RequoteBudgetPair,
+    bolt_v3_target_identity::stable_identity_field_is_canonical,
     bolt_v3_timestamp_domain::LocalReceiveMs,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::mu::MakerMuState,
@@ -233,16 +234,11 @@ impl<'a> BinaryOracleMakerStrikePrice<'a> {
         interval_start_ms: u64,
         price: f64,
     ) -> std::result::Result<Self, String> {
-        for (field, value) in [
-            ("market_key", market_key),
-            ("underlying_asset", underlying_asset),
-        ] {
-            if value.trim().is_empty()
-                || value.trim() != value
-                || value.chars().any(char::is_whitespace)
-            {
-                return Err(format!("binary oracle maker strike {field} is invalid"));
-            }
+        if !stable_identity_field_is_canonical(market_key) {
+            return Err("binary oracle maker strike market_key is invalid".to_string());
+        }
+        if underlying_asset.is_empty() || underlying_asset.chars().any(char::is_whitespace) {
+            return Err("binary oracle maker strike underlying_asset is invalid".to_string());
         }
         if interval_start_ms == 0 {
             return Err(
@@ -391,15 +387,31 @@ impl BinaryOracleMaker {
         &self.runtime
     }
 
-    fn active_market_family_key(&self, market_key: &str) -> Result<&str> {
-        self.runtime
-            .market(market_key)
-            .map(|market| market.family_key())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "binary_oracle_maker cannot route quote for inactive market: market_key={market_key}"
-                )
-            })
+    /// Validate the caller's evaluation coordinates against the active runtime
+    /// before pricing, identity minting, or quote planning can mutate state.
+    fn ensure_active_quote_authority(
+        &self,
+        market_key: &str,
+        input_family_key: &str,
+        evaluation_ms: u64,
+    ) -> Result<()> {
+        let runtime_market = self.runtime.market(market_key).ok_or_else(|| {
+            anyhow::anyhow!(
+                "binary_oracle_maker cannot route quote for inactive market: market_key={market_key}"
+            )
+        })?;
+        let runtime_family_key = runtime_market.family_key();
+        anyhow::ensure!(
+            input_family_key == runtime_family_key,
+            "binary_oracle_maker quote family does not match active runtime binding: market_key={market_key} runtime_family_key={runtime_family_key} input_family_key={input_family_key}"
+        );
+        let interval_start_ms = runtime_market.start_timestamp_milliseconds();
+        let interval_end_ms = runtime_market.expiration_timestamp_milliseconds();
+        anyhow::ensure!(
+            (interval_start_ms..interval_end_ms).contains(&evaluation_ms),
+            "binary_oracle_maker quote evaluation is outside the active runtime window: market_key={market_key} interval_start_ms={interval_start_ms} interval_end_ms={interval_end_ms} evaluation_ms={evaluation_ms}"
+        );
+        Ok(())
     }
 
     pub fn route_maker_order_command(
@@ -520,7 +532,9 @@ impl BinaryOracleMaker {
 
     /// `market_key` selects the active runtime market this cycle is quoting.
     /// `MarketQuote` is leg lifecycle state and carries no key; the runtime binding
-    /// supplies the authoritative concrete identity and family for evidence.
+    /// supplies the authoritative family, cadence, instruments, and order handles.
+    /// This route validates that authority before minting identities, then applies
+    /// each dispatch outcome back to the same runtime binding.
     pub fn route_maker_runtime_quote(
         &mut self,
         market_key: &str,
@@ -538,12 +552,7 @@ impl BinaryOracleMaker {
             max_fee_bps,
         } = input;
 
-        let runtime_family_key = self.active_market_family_key(market_key)?;
-        anyhow::ensure!(
-            quote_plan.family_key == runtime_family_key,
-            "binary_oracle_maker quote family does not match active runtime binding: market_key={market_key} runtime_family_key={runtime_family_key} input_family_key={}",
-            quote_plan.family_key
-        );
+        self.ensure_active_quote_authority(market_key, quote_plan.family_key, quote_set.now_ms)?;
 
         let order_id_tag = self.config.order_id_tag.clone();
         let minted = self.runtime.mint_next_identities(market_key, &order_id_tag);
@@ -617,29 +626,19 @@ impl BinaryOracleMaker {
             max_fee_bps,
         } = input;
 
-        let runtime_market = self.runtime.market(market_key).ok_or_else(|| {
-            anyhow::anyhow!(
-                "binary_oracle_maker cannot route quote for inactive market: market_key={market_key}"
-            )
-        })?;
+        self.ensure_active_quote_authority(market_key, quote_plan.family_key, quote_set.now_ms)?;
+        let runtime_market = self
+            .runtime
+            .market(market_key)
+            .expect("active quote authority checked runtime market presence");
         let runtime_family_key = runtime_market.family_key().to_string();
         let runtime_underlying_asset = runtime_market.underlying_asset().to_string();
         let interval_start_ms = runtime_market.start_timestamp_milliseconds();
         let interval_end_ms = runtime_market.expiration_timestamp_milliseconds();
         anyhow::ensure!(
-            quote_plan.family_key == runtime_family_key.as_str(),
-            "binary_oracle_maker reference quote-plan family does not match active runtime binding: market_key={market_key} runtime_family_key={runtime_family_key} input_family_key={}",
-            quote_plan.family_key
-        );
-        anyhow::ensure!(
             reference_selector.asset() == runtime_underlying_asset,
             "binary_oracle_maker reference selector asset does not match active runtime binding: market_key={market_key} runtime_underlying_asset={runtime_underlying_asset} selector_asset={}",
             reference_selector.asset()
-        );
-        anyhow::ensure!(
-            (interval_start_ms..interval_end_ms).contains(&quote_set.now_ms),
-            "binary_oracle_maker reference evaluation is outside the active runtime window: market_key={market_key} interval_start_ms={interval_start_ms} interval_end_ms={interval_end_ms} evaluation_ms={}",
-            quote_set.now_ms
         );
         let strike_price = match reference_fair_value.strike {
             Some(strike) => {
@@ -1083,8 +1082,8 @@ impl BinaryOracleMaker {
     /// Returns `None` if the market is not active. INTENT ONLY: the
     /// dispatch routes through the global execution-policy chokepoint, which
     /// suppresses every venue mutation in shadow.
-    /// The shared route validates the supplied family against the active binding
-    /// before any identity mint.
+    /// The shared route validates the supplied family and evaluation timestamp
+    /// against the active binding before any identity mint.
     ///
     /// The fair-value + quote-math inputs are caller-supplied because the
     /// reference/realized-volatility feed that resolves them lands in a later slice

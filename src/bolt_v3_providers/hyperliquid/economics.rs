@@ -1,16 +1,27 @@
+use std::sync::Arc;
+
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use crate::economics::{
-    AccountId, AdmissionTreatment, AssetId, CalculationFactor, CarryKind, CurrencyId,
-    EconomicClass, EconomicComponentId, EconomicKind, EconomicScope, EconomicsError,
-    EconomicsInstrumentId, EconomicsQuoteRequest, EstimatedEffect, ExecutionKind, FormulaId,
-    IncentiveKind, InventoryApplication, LiquidityRole, OrderSide, PlannedFillNotional,
-    PointEstimate, PositionSide, ProductSurfaceId, RiskBoundAuthority, RoutingAttachmentId,
-    SignedNativeEffect, SnapshotId, SourceIdentity, SourceValidity, VenueEconomicsAdapter,
-    VenueEconomicsUnavailable, VenueEdgeBasisEstimate, VenueQuoteEstimate,
+use crate::{
+    bolt_v3_config::{EconomicsRoutingAttachmentPolicy, ExecutionEconomicsConfig},
+    bolt_v3_economics_runtime::AuthoritativeVenueEconomicsInput,
+    bolt_v3_providers::ProviderEconomicsAdapterBuildContext,
+    economics::{
+        AccountId, AdmissionTreatment, AssetId, CalculationFactor, CarryKind, CurrencyId,
+        EconomicClass, EconomicComponentId, EconomicKind, EconomicScope, EconomicsError,
+        EconomicsInstrumentId, EconomicsQuoteRequest, EstimatedEffect, ExecutionClientId,
+        ExecutionKind, FormulaId, IncentiveKind, InventoryApplication, LiquidityRole, OrderSide,
+        PlannedFillNotional, PointEstimate, PositionSide, ProductSurfaceId, RiskBoundAuthority,
+        RoutingAttachmentId, SignedNativeEffect, SnapshotId, SourceIdentity, SourceValidity,
+        VenueEconomicsAdapter, VenueEconomicsUnavailable, VenueEdgeBasisEstimate,
+        VenueQuoteEstimate,
+    },
 };
 
+const BASIS_POINTS_PER_UNIT: i64 = 10_000;
+const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
+const SECONDS_PER_HOUR: u64 = 3_600;
 const TENTHS_OF_BASIS_POINTS_PER_UNIT: i64 = 100_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -361,6 +372,236 @@ impl HyperliquidBuilderApprovalSnapshot {
     }
 }
 
+#[derive(Clone)]
+struct HyperliquidAuthoritativeEconomics {
+    user_fees: HyperliquidUserFeesSnapshot,
+    product: HyperliquidProductEconomicsSnapshot,
+    builder_approval: Option<HyperliquidBuilderApprovalSnapshot>,
+}
+
+pub fn authoritative_economics_input(
+    execution_client_id: impl Into<String>,
+    instrument_id: impl Into<String>,
+    product_surface_id: impl Into<String>,
+    user_fees: HyperliquidUserFeesSnapshot,
+    product: HyperliquidProductEconomicsSnapshot,
+    builder_approval: Option<HyperliquidBuilderApprovalSnapshot>,
+) -> Result<AuthoritativeVenueEconomicsInput, HyperliquidEconomicsError> {
+    let execution_client_id = execution_client_id.into();
+    let instrument_id = EconomicsInstrumentId::try_new(instrument_id.into())?;
+    let product_surface_id = ProductSurfaceId::try_new(product_surface_id.into())?;
+    ExecutionClientId::try_new(execution_client_id.clone())?;
+    if product.instrument_id != instrument_id || product.product_surface_id != product_surface_id {
+        return Err(HyperliquidEconomicsError::InvalidRequestScope);
+    }
+    Ok(AuthoritativeVenueEconomicsInput::from_provider_authority(
+        execution_client_id,
+        instrument_id.as_str(),
+        product_surface_id.as_str(),
+        super::KEY,
+        Arc::new(HyperliquidAuthoritativeEconomics {
+            user_fees,
+            product,
+            builder_approval,
+        }),
+    ))
+}
+
+pub(crate) fn build_execution_economics_adapter(
+    context: ProviderEconomicsAdapterBuildContext<'_>,
+) -> Result<Arc<dyn VenueEconomicsAdapter>, String> {
+    let authority = context
+        .authority
+        .downcast_ref::<HyperliquidAuthoritativeEconomics>()
+        .ok_or_else(|| "Hyperliquid economics authority has the wrong snapshot type".to_string())?;
+    let execution = context
+        .execution
+        .clone()
+        .try_into::<super::HyperliquidExecutionConfig>()
+        .map_err(|error| error.to_string())?;
+    if execution.account_id.to_string() != authority.user_fees.account_id.as_str() {
+        return Err("Hyperliquid user-fees authority belongs to another account".to_string());
+    }
+    let config = adapter_config_from_toml(
+        context.config,
+        context.product_surface_id,
+        &authority.user_fees,
+        &authority.product,
+    )?;
+    HyperliquidEconomicsAdapter::try_new(
+        config,
+        authority.user_fees.clone(),
+        authority.product.clone(),
+        authority.builder_approval.clone(),
+    )
+    .map(|adapter| Arc::new(adapter) as Arc<dyn VenueEconomicsAdapter>)
+    .map_err(|error| error.to_string())
+}
+
+fn adapter_config_from_toml(
+    config: &ExecutionEconomicsConfig,
+    product_surface_id: &str,
+    user_fees: &HyperliquidUserFeesSnapshot,
+    product: &HyperliquidProductEconomicsSnapshot,
+) -> Result<HyperliquidEconomicsConfig, String> {
+    if config.routing_attachment_policy != EconomicsRoutingAttachmentPolicy::Forbidden {
+        return Err("Hyperliquid Slice 1 requires routing attachments to be forbidden".to_string());
+    }
+    let expected_sources = if config.carry_surfaces.contains(product_surface_id) {
+        ["account_fees", "funding", "product_metadata"].as_slice()
+    } else {
+        ["account_fees", "product_metadata"].as_slice()
+    };
+    if config
+        .sources
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        != expected_sources
+        || config
+            .formula
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            != [
+                "growth_mode_scale",
+                "hip3_at_or_above_deployer_share",
+                "hip3_at_or_above_threshold_multiplier",
+                "hip3_below_threshold_base",
+                "hip3_scale_threshold",
+                "stable_pair_scale",
+            ]
+        || config
+            .quote_components
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            != ["protocol"]
+        || config.assets.keys().map(String::as_str).collect::<Vec<_>>() != ["settlement"]
+    {
+        return Err("Hyperliquid economics contains unsupported authority keys".to_string());
+    }
+    let policy_id = config
+        .product_surface_policies
+        .get(product_surface_id)
+        .ok_or_else(|| {
+            format!("Hyperliquid product surface `{product_surface_id}` has no edge-basis policy")
+        })?;
+    let edge_basis = config
+        .edge_basis
+        .get(policy_id)
+        .ok_or_else(|| format!("Hyperliquid edge-basis policy `{policy_id}` is not configured"))?;
+    if product.product_surface_id.as_str() != product_surface_id
+        || user_fees.metadata.source.as_str() != config.sources["account_fees"]
+        || product.metadata.source.as_str() != config.sources["product_metadata"]
+        || edge_basis.product_metadata_source != config.sources["product_metadata"]
+    {
+        return Err("Hyperliquid authoritative source identity does not match TOML".to_string());
+    }
+    let carry = if config.carry_surfaces.contains(product_surface_id) {
+        let carry = config
+            .carry
+            .as_ref()
+            .ok_or_else(|| "Hyperliquid carry surface has no carry policy".to_string())?;
+        let context = product
+            .perp_context
+            .as_ref()
+            .ok_or_else(|| "Hyperliquid carry surface has no funding context".to_string())?;
+        if context.metadata.source.as_str() != config.sources["funding"] {
+            return Err("Hyperliquid funding authority does not match TOML".to_string());
+        }
+        Some(carry_policy_from_toml(carry)?)
+    } else {
+        None
+    };
+    let protocol = &config.quote_components["protocol"];
+    let settlement = &config.assets["settlement"];
+    Ok(HyperliquidEconomicsConfig {
+        settlement_currency: config_id(&settlement.currency, CurrencyId::try_new)?,
+        protocol_component_id: config_id(&protocol.component_id, EconomicComponentId::try_new)?,
+        protocol_formula_id: config_id(&protocol.formula_id, FormulaId::try_new)?,
+        protocol_rate_factor_id: config_id(&protocol.rate_factor_id, FormulaId::try_new)?,
+        routing: None,
+        stable_pair_scale: config_decimal(config, "stable_pair_scale")?,
+        growth_mode_scale: config_decimal(config, "growth_mode_scale")?,
+        hip3_scale_threshold: config_decimal(config, "hip3_scale_threshold")?,
+        hip3_below_threshold_base: config_decimal(config, "hip3_below_threshold_base")?,
+        hip3_at_or_above_threshold_multiplier: config_decimal(
+            config,
+            "hip3_at_or_above_threshold_multiplier",
+        )?,
+        hip3_at_or_above_deployer_share: config_decimal(config, "hip3_at_or_above_deployer_share")?,
+        edge_basis_resolver_id: config_id(&edge_basis.resolver_id, FormulaId::try_new)?,
+        edge_basis_product_metadata_source: config_id(
+            &edge_basis.product_metadata_source,
+            SourceIdentity::try_new,
+        )?,
+        edge_basis_policy_version: edge_basis.policy_version,
+        carry,
+    })
+}
+
+fn carry_policy_from_toml(
+    carry: &crate::bolt_v3_config::EconomicsCarryPolicyConfig,
+) -> Result<HyperliquidCarryPolicy, String> {
+    let funding_interval_ns = carry
+        .funding_interval_secs
+        .checked_mul(NANOSECONDS_PER_SECOND)
+        .ok_or_else(|| "Hyperliquid funding interval overflows nanoseconds".to_string())?;
+    let funding_schedule_phase_ns = carry
+        .funding_schedule_phase_secs
+        .checked_mul(NANOSECONDS_PER_SECOND)
+        .ok_or_else(|| "Hyperliquid funding phase overflows nanoseconds".to_string())?;
+    let hourly_bps = carry
+        .standard_stress
+        .venue_rate_cap_bps_per_hour
+        .parse::<Decimal>()
+        .map_err(|_| "Hyperliquid funding rate cap is invalid".to_string())?;
+    let debit_rate_bound_per_interval = hourly_bps
+        .checked_div(Decimal::from(BASIS_POINTS_PER_UNIT))
+        .and_then(|value| value.checked_mul(Decimal::from(carry.funding_interval_secs)))
+        .and_then(|value| value.checked_div(Decimal::from(SECONDS_PER_HOUR)))
+        .ok_or_else(|| "Hyperliquid funding rate cap overflows".to_string())?;
+    let stress = &carry.standard_stress;
+    Ok(HyperliquidCarryPolicy {
+        component_id: config_id(&carry.component_id, EconomicComponentId::try_new)?,
+        formula_id: config_id(&carry.formula_id, FormulaId::try_new)?,
+        point_rate_factor_id: config_id(&carry.point_rate_factor_id, FormulaId::try_new)?,
+        debit_bound_rate_factor_id: config_id(&carry.bound_rate_factor_id, FormulaId::try_new)?,
+        oracle_price_factor_id: config_id(&carry.oracle_price_factor_id, FormulaId::try_new)?,
+        event_count_factor_id: config_id(&carry.event_count_factor_id, FormulaId::try_new)?,
+        price_stress_factor_id: config_id(&stress.price_multiplier_factor_id, FormulaId::try_new)?,
+        risk_policy_id: config_id(&carry.risk_policy_id, FormulaId::try_new)?,
+        next_funding_at_factor_id: config_id(&carry.next_funding_at_factor_id, FormulaId::try_new)?,
+        stress_artifact_id: config_id(&stress.artifact_id, SourceIdentity::try_new)?,
+        stress_artifact_version: stress.artifact_version.get(),
+        stress_artifact_version_factor_id: config_id(
+            &stress.artifact_version_factor_id,
+            FormulaId::try_new,
+        )?,
+        funding_interval_ns,
+        funding_schedule_phase_ns,
+        debit_rate_bound_per_interval,
+        price_stress_multiplier: stress
+            .price_multiplier
+            .parse()
+            .map_err(|_| "Hyperliquid funding price multiplier is invalid".to_string())?,
+    })
+}
+
+fn config_decimal(config: &ExecutionEconomicsConfig, key: &str) -> Result<Decimal, String> {
+    config.formula[key]
+        .parse()
+        .map_err(|_| format!("Hyperliquid formula `{key}` is invalid"))
+}
+
+fn config_id<T>(
+    value: &str,
+    constructor: impl FnOnce(String) -> Result<T, EconomicsError>,
+) -> Result<T, String> {
+    constructor(value.to_string()).map_err(|error| error.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HyperliquidCarryPolicy {
     pub component_id: EconomicComponentId,
@@ -370,6 +611,11 @@ pub struct HyperliquidCarryPolicy {
     pub oracle_price_factor_id: FormulaId,
     pub event_count_factor_id: FormulaId,
     pub price_stress_factor_id: FormulaId,
+    pub risk_policy_id: FormulaId,
+    pub next_funding_at_factor_id: FormulaId,
+    pub stress_artifact_id: SourceIdentity,
+    pub stress_artifact_version: u64,
+    pub stress_artifact_version_factor_id: FormulaId,
     pub funding_interval_ns: u64,
     pub funding_schedule_phase_ns: u64,
     pub debit_rate_bound_per_interval: Decimal,
@@ -392,7 +638,7 @@ pub struct HyperliquidEconomicsConfig {
     pub edge_basis_resolver_id: FormulaId,
     pub edge_basis_product_metadata_source: SourceIdentity,
     pub edge_basis_policy_version: u64,
-    pub carry: HyperliquidCarryPolicy,
+    pub carry: Option<HyperliquidCarryPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -485,10 +731,15 @@ impl HyperliquidEconomicsAdapter {
             || config.hip3_at_or_above_threshold_multiplier < Decimal::ZERO
             || config.hip3_at_or_above_deployer_share < Decimal::ZERO
             || config.hip3_at_or_above_deployer_share > Decimal::ONE
-            || config.carry.funding_interval_ns == 0
-            || config.carry.funding_schedule_phase_ns >= config.carry.funding_interval_ns
-            || config.carry.debit_rate_bound_per_interval <= Decimal::ZERO
-            || config.carry.price_stress_multiplier < Decimal::ONE
+            || config.carry.as_ref().is_some_and(|carry| {
+                carry.funding_interval_ns == 0
+                    || carry.funding_schedule_phase_ns >= carry.funding_interval_ns
+                    || carry.debit_rate_bound_per_interval <= Decimal::ZERO
+                    || carry.price_stress_multiplier < Decimal::ONE
+                    || carry.stress_artifact_version == 0
+            })
+            || (matches!(product.kind, HyperliquidProductKind::Perpetual { .. })
+                && config.carry.is_none())
             || match (config.routing.as_ref(), builder_approval.as_ref()) {
                 (_, None) => false,
                 (Some(routing), Some(approval)) => {
@@ -760,7 +1011,11 @@ impl HyperliquidEconomicsAdapter {
             .requested_at_ns
             .checked_add(position.holding_horizon_ns)
             .ok_or(HyperliquidEconomicsError::InvalidCarryBound)?;
-        let policy = &self.config.carry;
+        let policy = self
+            .config
+            .carry
+            .as_ref()
+            .ok_or(HyperliquidEconomicsError::InvalidProductMetadata)?;
         let next_funding_at_ns = next_funding_at(
             request.requested_at_ns,
             policy.funding_interval_ns,
@@ -848,8 +1103,16 @@ impl HyperliquidEconomicsAdapter {
                     value: event_count_decimal,
                 },
                 CalculationFactor {
+                    factor_id: policy.next_funding_at_factor_id.clone(),
+                    value: Decimal::from(next_funding_at_ns),
+                },
+                CalculationFactor {
                     factor_id: policy.price_stress_factor_id.clone(),
                     value: policy.price_stress_multiplier,
+                },
+                CalculationFactor {
+                    factor_id: policy.stress_artifact_version_factor_id.clone(),
+                    value: Decimal::from(policy.stress_artifact_version),
                 },
             ],
             formula_id: policy.formula_id.clone(),
@@ -1014,7 +1277,7 @@ mod tests {
                 SourceIdentity::try_new,
             ),
             edge_basis_policy_version: 1,
-            carry: HyperliquidCarryPolicy {
+            carry: Some(HyperliquidCarryPolicy {
                 component_id: id("funding", EconomicComponentId::try_new),
                 formula_id: id("funding-v1", FormulaId::try_new),
                 point_rate_factor_id: id("funding-point-rate", FormulaId::try_new),
@@ -1022,11 +1285,16 @@ mod tests {
                 oracle_price_factor_id: id("funding-oracle", FormulaId::try_new),
                 event_count_factor_id: id("funding-events", FormulaId::try_new),
                 price_stress_factor_id: id("funding-stress", FormulaId::try_new),
+                risk_policy_id: id("funding-risk-policy", FormulaId::try_new),
+                next_funding_at_factor_id: id("funding-next-event", FormulaId::try_new),
+                stress_artifact_id: id("funding-stress-artifact", SourceIdentity::try_new),
+                stress_artifact_version: 1,
+                stress_artifact_version_factor_id: id("funding-stress-version", FormulaId::try_new),
                 funding_interval_ns: 100,
                 funding_schedule_phase_ns: 0,
                 debit_rate_bound_per_interval: Decimal::new(1, 3),
                 price_stress_multiplier: Decimal::new(12, 1),
-            },
+            }),
         }
     }
 
@@ -1428,7 +1696,11 @@ mod tests {
     #[test]
     fn funding_point_cannot_exceed_its_configured_debit_bound() {
         let mut config = config();
-        config.carry.debit_rate_bound_per_interval = Decimal::new(1, 5);
+        config
+            .carry
+            .as_mut()
+            .expect("fixture should configure carry")
+            .debit_rate_bound_per_interval = Decimal::new(1, 5);
         let adapter = HyperliquidEconomicsAdapter::try_new(
             config,
             user_fees(metadata("user-fees", "fees-1")),

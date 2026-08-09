@@ -1,14 +1,21 @@
 use crate::support;
 
 use bolt_v2::{
-    bolt_v3_config::{ExecutionEconomicsConfig, load_bolt_v3_config},
+    bolt_v3_config::{ClientBlock, ExecutionEconomicsConfig, load_bolt_v3_config},
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeVenueEconomicsInput,
         EconomicsRuntimeBindingError, bind_execution_economics,
     },
-    bolt_v3_providers::polymarket::{
-        PolymarketExecutionConfig, PolymarketMarketInfoSnapshot, PolymarketSnapshotMetadata,
-        authoritative_economics_input,
+    bolt_v3_providers::{
+        hyperliquid::{
+            HyperliquidProductEconomicsSnapshot, HyperliquidSnapshotMetadata,
+            HyperliquidUserFeesSnapshot,
+            authoritative_economics_input as hyperliquid_authoritative_economics_input,
+        },
+        polymarket::{
+            PolymarketExecutionConfig, PolymarketMarketInfoSnapshot, PolymarketSnapshotMetadata,
+            authoritative_economics_input as polymarket_authoritative_economics_input,
+        },
     },
     economics::{
         AccountId, CurrencyId, DecisionCorrelationId, EconomicsInstrumentId, EconomicsQuoteRequest,
@@ -81,8 +88,90 @@ fn authoritative_input() -> AuthoritativeVenueEconomicsInput {
         include_str!("fixtures/economics/polymarket/fee_enabled.json"),
     )
     .expect("test market-info snapshot should parse");
-    authoritative_economics_input("polymarket_main", "token-yes", "binary_outcome", snapshot)
-        .expect("Polymarket authority scope should match its market snapshot")
+    polymarket_authoritative_economics_input(
+        "polymarket_main",
+        "token-yes",
+        "binary_outcome",
+        snapshot,
+    )
+    .expect("Polymarket authority scope should match its market snapshot")
+}
+
+fn hyperliquid_metadata(source: &str, snapshot_id: &str) -> HyperliquidSnapshotMetadata {
+    HyperliquidSnapshotMetadata {
+        source: id(source, bolt_v2::economics::SourceIdentity::try_new),
+        snapshot_id: id(snapshot_id, SnapshotId::try_new),
+        source_at_ns: 900,
+        fetched_at_ns: 950,
+        valid_until_ns: 2_000,
+    }
+}
+
+fn hyperliquid_input() -> AuthoritativeVenueEconomicsInput {
+    hyperliquid_input_for(
+        "HYPERLIQUID-001",
+        "meta-and-asset-contexts",
+        "funding-context",
+    )
+}
+
+fn hyperliquid_input_for(
+    account_id: &str,
+    product_metadata_source: &str,
+    funding_source: &str,
+) -> AuthoritativeVenueEconomicsInput {
+    let user_fees = HyperliquidUserFeesSnapshot::from_json(
+        hyperliquid_metadata("user-fees", "fees-1"),
+        id(account_id, AccountId::try_new),
+        include_str!("fixtures/economics/hyperliquid/user_fees_discounted.json"),
+    )
+    .expect("test user-fees authority should parse");
+    let product = HyperliquidProductEconomicsSnapshot::perp_from_json(
+        hyperliquid_metadata(product_metadata_source, "perp-1"),
+        id("BTC-PERP.HYPERLIQUID", EconomicsInstrumentId::try_new),
+        id("standard_perps", ProductSurfaceId::try_new),
+        Decimal::ZERO,
+        false,
+        None,
+        hyperliquid_metadata(funding_source, "funding-1"),
+        include_str!("fixtures/economics/hyperliquid/perp_context.json"),
+    )
+    .expect("test product authority should parse");
+    hyperliquid_authoritative_economics_input(
+        "hyperliquid_offline",
+        "BTC-PERP.HYPERLIQUID",
+        "standard_perps",
+        user_fees,
+        product,
+        None,
+    )
+    .expect("Hyperliquid authority scope should match its product snapshot")
+}
+
+fn hyperliquid_loaded() -> bolt_v2::bolt_v3_config::LoadedBoltV3Config {
+    let mut loaded = loaded();
+    let execution = toml::from_str::<toml::Value>(include_str!(
+        "fixtures/economics/hyperliquid/execution.toml"
+    ))
+    .expect("test Hyperliquid execution TOML should parse");
+    loaded.root.clients.insert(
+        "hyperliquid_offline".to_string(),
+        ClientBlock {
+            venue: nautilus_model::identifiers::Venue::from("HYPERLIQUID"),
+            data: None,
+            execution: Some(execution),
+            secrets: None,
+            readiness_probe: None,
+        },
+    );
+    loaded
+}
+
+fn hyperliquid_quote_request() -> EconomicsQuoteRequest {
+    let mut request = quote_request("BTC-PERP.HYPERLIQUID", "standard_perps");
+    request.execution_client_id = id("hyperliquid_offline", ExecutionClientId::try_new);
+    request.account_id = id("HYPERLIQUID-001", AccountId::try_new);
+    request
 }
 
 #[test]
@@ -233,4 +322,88 @@ fn execution_economics_builds_the_adapter_from_the_loaded_toml() {
         estimate.components[0].component_id.as_str(),
         "configured-platform"
     );
+}
+
+#[test]
+fn hyperliquid_execution_economics_binds_from_offline_toml_and_raw_authority() {
+    let loaded = hyperliquid_loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([hyperliquid_input()])
+        .expect("one Hyperliquid input should construct");
+
+    let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
+        .expect("offline Hyperliquid TOML and raw authority should bind");
+    let request = hyperliquid_quote_request();
+    let notional = PlannedFillNotional::from_legs(&request.planned_fill_legs)
+        .expect("test fill should have positive notional");
+    let basis = bound
+        .adapter()
+        .resolve_edge_basis(&request, notional)
+        .expect("exact Hyperliquid scope should resolve its edge basis");
+
+    assert_eq!(bound.provider_key(), "HYPERLIQUID");
+    assert_eq!(basis.normalized_amount.amount(), Decimal::from(5));
+    assert_eq!(
+        basis.product_metadata_source.as_str(),
+        "meta-and-asset-contexts"
+    );
+}
+
+#[test]
+fn hyperliquid_execution_economics_rejects_foreign_account_authority() {
+    let loaded = hyperliquid_loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([hyperliquid_input_for(
+        "FOREIGN-001",
+        "meta-and-asset-contexts",
+        "funding-context",
+    )])
+    .expect("one Hyperliquid input should construct");
+
+    let error = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
+        .err()
+        .expect("foreign account authority must fail closed");
+
+    assert!(matches!(
+        error,
+        EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed { .. }
+    ));
+}
+
+#[test]
+fn hyperliquid_execution_economics_rejects_mismatched_product_source() {
+    let loaded = hyperliquid_loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([hyperliquid_input_for(
+        "HYPERLIQUID-001",
+        "foreign-product-source",
+        "funding-context",
+    )])
+    .expect("one Hyperliquid input should construct");
+
+    let error = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
+        .err()
+        .expect("mismatched product authority must fail closed");
+
+    assert!(matches!(
+        error,
+        EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed { .. }
+    ));
+}
+
+#[test]
+fn hyperliquid_execution_economics_rejects_mismatched_funding_source() {
+    let loaded = hyperliquid_loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([hyperliquid_input_for(
+        "HYPERLIQUID-001",
+        "meta-and-asset-contexts",
+        "foreign-funding-source",
+    )])
+    .expect("one Hyperliquid input should construct");
+
+    let error = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
+        .err()
+        .expect("mismatched funding authority must fail closed");
+
+    assert!(matches!(
+        error,
+        EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed { .. }
+    ));
 }

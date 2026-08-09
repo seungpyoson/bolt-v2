@@ -1,0 +1,84 @@
+account_id = "HYPERLIQUID-001"
+environment = "mainnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+base_url_ws = "wss://api.hyperliquid.xyz/ws"
+base_url_http = "https://api.hyperliquid.xyz/info"
+base_url_exchange = "https://api.hyperliquid.xyz/exchange"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+include_builder_attribution = false
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 30
+
+[economics]
+economics_slice = "quote_only"
+routing_attachment_policy = "forbidden"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+carry_surfaces = ["standard_perps"]
+
+[economics.sources]
+account_fees = "user-fees"
+funding = "funding-context"
+product_metadata = "meta-and-asset-contexts"
+
+[economics.formula]
+stable_pair_scale = "0.2"
+growth_mode_scale = "0.1"
+hip3_scale_threshold = "1"
+hip3_below_threshold_base = "1"
+hip3_at_or_above_threshold_multiplier = "2"
+hip3_at_or_above_deployer_share = "0.5"
+
+[economics.quote_components.protocol]
+component_id = "hyperliquid-protocol-execution"
+formula_id = "hyperliquid-effective-account-rate"
+rate_factor_id = "hyperliquid-live-effective-rate"
+
+[economics.assets.settlement]
+currency = "hUSD"
+evidence_fixture_id = "hyperliquid-husd-settlement-v1"
+
+[economics.edge_basis.primary]
+resolver_id = "product-metadata"
+policy_version = 1
+product_metadata_source = "meta-and-asset-contexts"
+
+[economics.product_surface_policies]
+standard_perps = "primary"
+
+[economics.valuation.routes.husd_usd]
+from_unit = "hUSD"
+to_currency = "USD"
+legs = [
+  { authority = "provider_exact_conversion", from_unit = "hUSD", to_unit = "USD", source_id = "fixture-settlement", max_age_ms = 60000 },
+]
+
+[economics.carry]
+funding_interval_secs = 3600
+funding_schedule_phase_secs = 0
+component_id = "funding-carry"
+formula_id = "funding-rate-bound"
+point_rate_factor_id = "funding-point-rate"
+bound_rate_factor_id = "funding-bound-rate"
+risk_policy_id = "funding-risk-policy"
+oracle_price_factor_id = "funding-oracle-price"
+next_funding_at_factor_id = "funding-next-event-at"
+event_count_factor_id = "funding-event-count"
+
+[economics.carry.standard_stress]
+artifact_id = "funding-standard-stress"
+artifact_version = 1
+artifact_version_factor_id = "funding-standard-stress-version"
+venue_rate_cap_bps_per_hour = "10"
+price_multiplier = "1.2"
+price_multiplier_factor_id = "funding-price-stress"

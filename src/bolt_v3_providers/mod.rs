@@ -440,6 +440,7 @@ pub(crate) struct ProviderExecutionEconomicsBinding {
 }
 
 pub(crate) struct ProviderEconomicsAdapterBuildContext<'a> {
+    pub execution: &'a toml::Value,
     pub config: &'a ExecutionEconomicsConfig,
     pub product_surface_id: &'a str,
     pub authority: &'a (dyn Any + Send + Sync),
@@ -741,7 +742,10 @@ still lose positions inside the engine",
             hyperliquid::write_configured_live_submit_approval_artifact,
         ),
         write_product_submit_proof_artifact: Some(hyperliquid::write_product_submit_proof_artifact),
-        execution_economics: None,
+        execution_economics: Some(ProviderExecutionEconomicsBinding {
+            load_config: hyperliquid::execution_economics_config,
+            build_adapter: hyperliquid::build_execution_economics_adapter,
+        }),
         build_fee_provider: Some(hyperliquid::build_fee_provider),
         build_provider_collateral_allowance_runtime_source: None,
     },

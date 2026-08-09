@@ -6,11 +6,12 @@
 
 mod economics;
 
+pub(crate) use economics::build_execution_economics_adapter;
 pub use economics::{
     HyperliquidBuilderApprovalSnapshot, HyperliquidCarryPolicy, HyperliquidEconomicsAdapter,
     HyperliquidEconomicsConfig, HyperliquidEconomicsError, HyperliquidProductEconomicsSnapshot,
     HyperliquidProductKind, HyperliquidRoutingEconomicsConfig, HyperliquidSnapshotMetadata,
-    HyperliquidUserFeesSnapshot,
+    HyperliquidUserFeesSnapshot, authoritative_economics_input,
 };
 
 use std::{

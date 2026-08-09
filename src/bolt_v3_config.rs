@@ -691,6 +691,7 @@ pub struct EconomicsCarryPolicyConfig {
     pub risk_policy_id: String,
     pub oracle_price_factor_id: String,
     pub next_funding_at_factor_id: String,
+    pub event_count_factor_id: String,
     pub standard_stress: EconomicsCarryStressConfig,
 }
 
@@ -702,6 +703,7 @@ pub struct EconomicsCarryStressConfig {
     pub artifact_version_factor_id: String,
     pub venue_rate_cap_bps_per_hour: String,
     pub price_multiplier: String,
+    pub price_multiplier_factor_id: String,
 }
 
 impl ExecutionEconomicsConfig {

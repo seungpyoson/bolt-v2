@@ -358,6 +358,7 @@ pub fn bind_execution_economics(
     let mut by_scope = BTreeMap::new();
     for input in resolved_inputs {
         let adapter = (economics_binding.build_adapter)(ProviderEconomicsAdapterBuildContext {
+            execution,
             config: &config,
             product_surface_id: &input.key.product_surface_id,
             authority: input.authority.as_ref(),
@@ -370,6 +371,19 @@ pub fn bind_execution_economics(
                 message,
             }
         })?;
+        if adapter.provider_key() != provider_key {
+            return Err(
+                EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
+                    execution_client_id: execution_client_id.to_string(),
+                    instrument_id: input.key.instrument_id.clone(),
+                    product_surface_id: input.key.product_surface_id.clone(),
+                    message: format!(
+                        "provider builder returned `{}` instead of `{provider_key}`",
+                        adapter.provider_key()
+                    ),
+                },
+            );
+        }
         by_scope.insert(
             (
                 input.key.instrument_id.clone(),

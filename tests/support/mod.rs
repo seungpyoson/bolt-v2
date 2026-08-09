@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod current_evidence;
+pub(crate) mod economics;
 pub(crate) mod stub_runtime_strategy;
 
 use std::{

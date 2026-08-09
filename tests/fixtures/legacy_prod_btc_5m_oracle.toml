@@ -38,6 +38,9 @@
 # - 2026-07-10 (#1349): absorbed the non-enforcing Polymarket settlement-currency
 #   capital pool inherited from `config/root.toml`. It supplies pUSD identity for
 #   load-time settlement validation without arming submit admission.
+# - 2026-08-10 (#1445): deliberately re-baselined the quote-only economics
+#   reporting and Polymarket execution authority added to root and the production
+#   execution overlay. This adds no live-submit authority.
 #
 # Non-secret only: every credential is an SSM parameter reference; the Polymarket
 # `funder` is a public on-chain Safe address.
@@ -47,6 +50,10 @@ trader_id = "BOLT-001"
 strategy_files = [
   "strategies/binary_oracle_btc.toml",
 ]
+
+[economics.reporting]
+policy_id = "primary-pnl"
+pnl_currency = "USD"
 
 [realized_volatility_surfaces.btc_usdt_midpoint_rv]
 canonical_base_asset = "BTC"
@@ -340,6 +347,53 @@ retry_delay_max_ms = 2000
 fee_cache_ttl_secs = 300
 provider_collateral_allowance_poll_interval_ms = 1000
 transport_backend = "sockudo"
+
+[clients.polymarket_main.execution.economics]
+economics_slice = "quote_only"
+routing_attachment_policy = "forbidden"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+carry_surfaces = []
+
+[clients.polymarket_main.execution.economics.sources]
+schedule = "clob_market_info"
+
+[clients.polymarket_main.execution.economics.formula]
+fee_round_decimal_places = "5"
+fee_rounding_mode = "midpoint_away_from_zero"
+sub_fee_quantum_behavior = "round_to_zero"
+
+[clients.polymarket_main.execution.economics.quote_components.platform]
+component_id = "polymarket-platform-execution"
+formula_id = "polymarket-price-shaped-fee"
+rate_factor_id = "polymarket-live-fee-rate"
+
+[clients.polymarket_main.execution.economics.assets.collateral]
+currency = "pUSD"
+evidence_fixture_id = "polymarket-v2-collateral-pusd"
+
+[clients.polymarket_main.execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+policy_version = 1
+product_metadata_source = "polymarket-market-info"
+
+[clients.polymarket_main.execution.economics.product_surface_policies]
+binary_outcome = "primary"
+
+[clients.polymarket_main.execution.economics.valuation.exact_currency_identities.usdc_e_usdc]
+from_unit = "USDC.e"
+source_currency = "USDC"
+
+[clients.polymarket_main.execution.economics.valuation.routes.pusd_usd]
+from_unit = "pUSD"
+to_currency = "USD"
+legs = [
+  { authority = "provider_exact_conversion", from_unit = "pUSD", to_unit = "USDC.e", source_id = "collateral", max_age_ms = 300000 },
+  { authority = "market_quote", from_unit = "USDC.e", source_currency = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
+]
 
 
 [clients.polymarket_main.secrets]

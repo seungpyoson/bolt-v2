@@ -3318,6 +3318,8 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let strategy_execution_controls = BoltV3StrategyExecutionControls {
         submit_admission: submit_admission.clone(),
         order_execution_policy,
+        economics_inputs:
+            crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default(),
         settlement_runtime_sink,
         settlement_recovery,
         booking_recovery,

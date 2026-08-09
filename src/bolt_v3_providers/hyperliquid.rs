@@ -167,6 +167,17 @@ pub struct HyperliquidExecutionConfig {
     pub ws_post_timeout_secs: u64,
     pub outcome_settlement_poll_secs: u64,
     pub latency_profile: Option<HyperliquidLatencyProfileConfig>,
+    pub economics: Option<crate::bolt_v3_config::ExecutionEconomicsConfig>,
+}
+
+pub fn execution_economics_config(
+    execution: &toml::Value,
+) -> Result<Option<crate::bolt_v3_config::ExecutionEconomicsConfig>, String> {
+    execution
+        .clone()
+        .try_into::<HyperliquidExecutionConfig>()
+        .map(|config| config.economics)
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

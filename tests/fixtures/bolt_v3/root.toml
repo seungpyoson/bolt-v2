@@ -5,6 +5,10 @@ strategy_files = [
   "strategies/binary_oracle.toml",
 ]
 
+[economics.reporting]
+policy_id = "primary-pnl"
+pnl_currency = "USD"
+
 [reference_live_probe]
 chainlink_client_id = "chainlink_reference"
 polyresearch_client_id = "polyresearch_reference"
@@ -274,6 +278,48 @@ retry_delay_max_ms = 2000
 fee_cache_ttl_secs = 300
 provider_collateral_allowance_poll_interval_ms = 1000
 transport_backend = "sockudo"
+
+[clients.polymarket_main.execution.economics]
+economics_slice = "quote_only"
+routing_attachment_policy = "forbidden"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+carry_surfaces = []
+
+[clients.polymarket_main.execution.economics.sources]
+schedule = "clob_market_info"
+
+[clients.polymarket_main.execution.economics.formula]
+fee_round_decimal_places = "5"
+fee_rounding_mode = "midpoint_away_from_zero"
+sub_fee_quantum_behavior = "round_to_zero"
+
+[clients.polymarket_main.execution.economics.quote_components.platform]
+component_id = "polymarket-platform-execution"
+formula_id = "polymarket-price-shaped-fee"
+rate_factor_id = "polymarket-live-fee-rate"
+
+[clients.polymarket_main.execution.economics.assets.collateral]
+currency = "pUSD"
+evidence_fixture_id = "polymarket-v2-collateral-pusd"
+
+[clients.polymarket_main.execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+policy_version = 1
+product_metadata_source = "polymarket-market-info"
+
+[clients.polymarket_main.execution.economics.product_surface_policies]
+binary_outcome = "primary"
+
+[clients.polymarket_main.execution.economics.valuation.routes.pusd_usd]
+from_unit = "pUSD"
+to_currency = "USD"
+legs = [
+  { authority = "provider_exact_conversion", from_unit = "pUSD", to_unit = "USD", source_id = "fixture-collateral", max_age_ms = 60000 },
+]
 
 [clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket/private-key"

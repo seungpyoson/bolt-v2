@@ -8,7 +8,8 @@
 //! adapters, perform market selection, or construct orders.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
+    num::NonZeroU64,
     path::{Path, PathBuf},
 };
 
@@ -72,6 +73,7 @@ pub struct BoltV3RootConfig {
     pub schema_version: u32,
     pub trader_id: TraderId,
     pub strategy_files: Vec<String>,
+    pub economics: Option<EconomicsRootConfig>,
     pub runtime: RuntimeBlock,
     pub nautilus: NautilusBlock,
     pub risk: RiskBlock,
@@ -549,6 +551,208 @@ pub struct ClientBlock {
     pub execution: Option<toml::Value>,
     pub secrets: Option<toml::Value>,
     pub readiness_probe: Option<DataClientReadinessProbeBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EconomicsRootConfig {
+    pub reporting: EconomicsReportingConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EconomicsReportingConfig {
+    pub policy_id: String,
+    pub pnl_currency: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EconomicsSliceConfig {
+    QuoteOnly,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EconomicsRoutingAttachmentPolicy {
+    Forbidden,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionEconomicsConfig {
+    pub economics_slice: EconomicsSliceConfig,
+    pub routing_attachment_policy: EconomicsRoutingAttachmentPolicy,
+    pub reporting_policy: String,
+    pub quote_refresh_secs: u64,
+    pub quote_max_age_secs: u64,
+    pub quote_validity_ms: u64,
+    pub resting_order_refresh_margin_ms: u64,
+    pub sources: BTreeMap<String, String>,
+    pub formula: BTreeMap<String, String>,
+    pub quote_components: BTreeMap<String, EconomicsQuoteComponentConfig>,
+    pub assets: BTreeMap<String, EconomicsAssetIdentityConfig>,
+    pub edge_basis: BTreeMap<String, EdgeBasisResolverConfig>,
+    pub product_surface_policies: BTreeMap<String, String>,
+    pub carry_surfaces: BTreeSet<String>,
+    pub valuation: EconomicsValuationConfig,
+    pub carry: Option<EconomicsCarryPolicyConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EconomicsQuoteComponentConfig {
+    pub component_id: String,
+    pub formula_id: String,
+    pub rate_factor_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EconomicsAssetIdentityConfig {
+    pub currency: String,
+    pub evidence_fixture_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EdgeBasisResolverConfig {
+    pub resolver_id: String,
+    pub policy_version: u64,
+    pub product_metadata_source: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EconomicsValuationConfig {
+    #[serde(default)]
+    pub exact_currency_identities: BTreeMap<String, EconomicsExactCurrencyIdentityConfig>,
+    pub routes: BTreeMap<String, EconomicsValuationRouteConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EconomicsExactCurrencyIdentityConfig {
+    pub from_unit: String,
+    pub source_currency: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EconomicsValuationRouteConfig {
+    pub from_unit: String,
+    pub to_currency: String,
+    pub legs: Vec<EconomicsValuationLegConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "authority", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EconomicsValuationLegConfig {
+    MarketQuote {
+        from_unit: String,
+        source_currency: String,
+        to_unit: String,
+        valuation_policy: EconomicsValuationPolicy,
+        client_id: String,
+        instrument_id: String,
+        orientation: EconomicsValuationOrientation,
+        max_age_ms: u64,
+    },
+    ProviderExactConversion {
+        from_unit: String,
+        to_unit: String,
+        source_id: String,
+        max_age_ms: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EconomicsValuationPolicy {
+    TopOfBookMidpoint,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EconomicsValuationOrientation {
+    BaseToQuote,
+    QuoteToBase,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EconomicsCarryPolicyConfig {
+    pub funding_interval_secs: u64,
+    pub funding_schedule_phase_secs: u64,
+    pub component_id: String,
+    pub formula_id: String,
+    pub point_rate_factor_id: String,
+    pub bound_rate_factor_id: String,
+    pub risk_policy_id: String,
+    pub oracle_price_factor_id: String,
+    pub next_funding_at_factor_id: String,
+    pub standard_stress: EconomicsCarryStressConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EconomicsCarryStressConfig {
+    pub artifact_id: String,
+    pub artifact_version: NonZeroU64,
+    pub artifact_version_factor_id: String,
+    pub venue_rate_cap_bps_per_hour: String,
+    pub price_multiplier: String,
+}
+
+impl ExecutionEconomicsConfig {
+    pub fn validate_common(&self, reporting: &EconomicsReportingConfig) -> Vec<String> {
+        let mut errors = Vec::new();
+        let quote_max_age_ms = self.quote_max_age_secs.checked_mul(1_000);
+        if self.reporting_policy.trim().is_empty() || self.reporting_policy != reporting.policy_id {
+            errors.push("reporting_policy must match economics.reporting.policy_id".to_string());
+        }
+        if self.quote_refresh_secs == 0
+            || self.quote_max_age_secs < self.quote_refresh_secs
+            || quote_max_age_ms.is_none_or(|max_age| self.quote_validity_ms > max_age)
+        {
+            errors.push("quote refresh, maximum age, and validity are inconsistent".to_string());
+        }
+        if self.resting_order_refresh_margin_ms == 0
+            || self.resting_order_refresh_margin_ms >= self.quote_validity_ms
+        {
+            errors
+                .push("resting_order_refresh_margin_ms must be inside quote validity".to_string());
+        }
+        if self.sources.is_empty()
+            || self.formula.is_empty()
+            || self.quote_components.is_empty()
+            || self.assets.is_empty()
+            || self.edge_basis.is_empty()
+            || self.product_surface_policies.is_empty()
+            || self.valuation.routes.is_empty()
+        {
+            errors.push("economics authority maps must all be non-empty".to_string());
+        }
+        for (surface, policy_id) in &self.product_surface_policies {
+            if surface.trim().is_empty()
+                || policy_id.trim().is_empty()
+                || !self.edge_basis.contains_key(policy_id)
+            {
+                errors.push(format!(
+                    "product surface `{surface}` must reference one configured edge-basis policy"
+                ));
+            }
+        }
+        if self
+            .carry_surfaces
+            .iter()
+            .any(|surface| !self.product_surface_policies.contains_key(surface))
+            || (!self.carry_surfaces.is_empty() && self.carry.is_none())
+        {
+            errors.push("carry surfaces must have product and carry policies".to_string());
+        }
+        errors
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

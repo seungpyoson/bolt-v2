@@ -141,10 +141,7 @@ impl EconomicsQuote {
     }
 
     pub fn capability_health(&self) -> EconomicsCapabilityHealth {
-        EconomicsCapabilityHealth::quote_only(
-            self.valid_until_ns,
-            self.forecast_valid_until_ns,
-        )
+        EconomicsCapabilityHealth::quote_only(self.valid_until_ns, self.forecast_valid_until_ns)
     }
 }
 
@@ -295,7 +292,8 @@ pub fn validate_and_aggregate_quote(
     }
 
     if forecast_complete {
-        forecast_valid_until_ns = forecast_valid_until_ns.map(|deadline| deadline.min(valid_until_ns));
+        forecast_valid_until_ns =
+            forecast_valid_until_ns.map(|deadline| deadline.min(valid_until_ns));
     } else {
         forecast_valid_until_ns = None;
     }

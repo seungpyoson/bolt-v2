@@ -33,9 +33,11 @@ mod provider_collateral_allowance_runtime_source;
 
 pub use adapter_signing_source::materialize_clob_v2_adapter_signing_source_from_nt_signing_source;
 pub use balance_allowance_cache::sync_clob_v2_balance_allowance_cache_from_configured_account;
+pub(crate) use economics::build_execution_economics_adapter;
 pub use economics::{
     FeeRoundingMode, PolymarketEconomicsAdapter, PolymarketEconomicsConfig,
-    PolymarketEconomicsError, PolymarketMarketInfoSnapshot, PolymarketSnapshotMetadata,
+    PolymarketEconomicsError, PolymarketMarketInfoSnapshot, PolymarketRoutingEconomicsConfig,
+    PolymarketSnapshotMetadata, authoritative_economics_input,
 };
 pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
 pub use provider_collateral_allowance_runtime_source::{
@@ -247,6 +249,17 @@ pub struct PolymarketExecutionConfig {
     pub provider_collateral_allowance_poll_interval_ms: Option<u64>,
     pub transport_backend: TransportBackend,
     pub on_chain_collateral: Option<PolymarketOnChainCollateralConfig>,
+    pub economics: Option<crate::bolt_v3_config::ExecutionEconomicsConfig>,
+}
+
+pub fn execution_economics_config(
+    execution: &toml::Value,
+) -> Result<Option<crate::bolt_v3_config::ExecutionEconomicsConfig>, String> {
+    execution
+        .clone()
+        .try_into::<PolymarketExecutionConfig>()
+        .map(|config| config.economics)
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

@@ -537,6 +537,8 @@ pub(super) fn test_registration_controls(
     BoltV3StrategyExecutionControls {
         submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         order_execution_policy: crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+        economics_inputs:
+            crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default(),
         settlement_runtime_sink: None,
         settlement_recovery: None,
         booking_recovery: None,

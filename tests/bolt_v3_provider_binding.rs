@@ -525,6 +525,7 @@ fn try_assembly_context<'a>(
                 submit_admission,
                 order_execution_policy:
                     bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+                economics_inputs: support::economics::polymarket_inputs(loaded),
                 settlement_runtime_sink: None,
                 settlement_recovery: None,
                 booking_recovery: None,

@@ -75,6 +75,7 @@ fn strategy_registration_test_runtime(
             submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            economics_inputs: support::economics::polymarket_inputs(loaded),
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,
@@ -836,6 +837,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
             submit_admission: admission.clone(),
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            economics_inputs: support::economics::polymarket_inputs(&loaded),
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,
@@ -1013,6 +1015,7 @@ fn assert_invalid_second_execution_route_fails_before_binding_preparation(
             submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            economics_inputs: support::economics::polymarket_inputs(&loaded),
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,
@@ -1425,6 +1428,7 @@ fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
             submit_admission: admission,
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            economics_inputs: support::economics::polymarket_inputs(&loaded),
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,

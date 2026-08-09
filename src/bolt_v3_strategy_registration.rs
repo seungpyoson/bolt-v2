@@ -10,6 +10,9 @@ use crate::bolt_v3_config::{
 use crate::bolt_v3_current_evidence::{
     BookingRecoveryFacts, SettlementRecoveryFacts, StrategyEvidenceHandles,
 };
+use crate::bolt_v3_economics_runtime::{
+    AuthoritativeEconomicsInputStore, BoundExecutionEconomics, bind_execution_economics,
+};
 use crate::bolt_v3_iv::{
     config::IvProfile,
     query::{IvQueryHandle, IvStrategyQueryHandle},
@@ -217,6 +220,7 @@ pub struct StrategyRuntimeCapabilities {
 pub struct BoltV3StrategyExecutionControls {
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
+    pub economics_inputs: AuthoritativeEconomicsInputStore,
     pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
     pub settlement_recovery: Option<Arc<SettlementRecoveryFacts>>,
     pub booking_recovery: Option<Arc<BookingRecoveryFacts>>,
@@ -260,6 +264,7 @@ pub struct StrategyRegistrationContext<'a> {
     client_routes: PreparedStrategyClientRoutes,
     execution_venue: Venue,
     fee_provider: Arc<dyn FeeProvider>,
+    _execution_economics: BoundExecutionEconomics,
     settlement: Option<StrategyRegistrationSettlementResources>,
 }
 
@@ -423,6 +428,7 @@ impl<'a> StrategyRegistrationContext<'a> {
         let BoltV3StrategyExecutionControls {
             submit_admission,
             order_execution_policy,
+            economics_inputs,
             settlement_runtime_sink,
             settlement_recovery,
             booking_recovery,
@@ -471,6 +477,9 @@ impl<'a> StrategyRegistrationContext<'a> {
             resolved,
         )
         .map_err(|error| binding_error(strategy, error.to_string()))?;
+        let execution_economics =
+            bind_execution_economics(loaded, execution_client_id, &economics_inputs)
+                .map_err(|error| binding_error(strategy, error.to_string()))?;
 
         Ok(Self {
             strategy,
@@ -485,6 +494,7 @@ impl<'a> StrategyRegistrationContext<'a> {
             client_routes,
             execution_venue,
             fee_provider,
+            _execution_economics: execution_economics,
             settlement,
         })
     }

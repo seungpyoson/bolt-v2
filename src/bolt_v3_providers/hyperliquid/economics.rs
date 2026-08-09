@@ -7,30 +7,11 @@ use crate::economics::{
     EconomicsInstrumentId, EconomicsQuoteRequest, EstimatedEffect, ExecutionKind, FormulaId,
     IncentiveKind, InventoryApplication, LiquidityRole, OrderSide, PlannedFillNotional,
     PointEstimate, PositionSide, ProductSurfaceId, RiskBoundAuthority, RoutingAttachmentId,
-    SignedNativeEffect, SnapshotId, SourceIdentity, SourceValidity, VenueQuoteEstimate,
+    SignedNativeEffect, SnapshotId, SourceIdentity, SourceValidity, VenueEconomicsAdapter,
+    VenueEconomicsUnavailable, VenueEdgeBasisEstimate, VenueQuoteEstimate,
 };
 
 const TENTHS_OF_BASIS_POINTS_PER_UNIT: i64 = 100_000;
-
-fn stable_pair_scale() -> Decimal {
-    Decimal::new(2, 1)
-}
-
-fn aligned_taker_scale() -> Decimal {
-    Decimal::new(8, 1)
-}
-
-fn aligned_maker_rebate_scale() -> Decimal {
-    Decimal::new(15, 1)
-}
-
-fn growth_mode_scale() -> Decimal {
-    Decimal::new(1, 1)
-}
-
-fn max_deployer_fee_scale() -> Decimal {
-    Decimal::new(3, 0)
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HyperliquidSnapshotMetadata {
@@ -325,11 +306,7 @@ impl HyperliquidProductEconomicsSnapshot {
             HyperliquidProductKind::Perpetual {
                 deployer_fee_scale,
                 growth_mode,
-            } if *deployer_fee_scale < Decimal::ZERO
-                || *deployer_fee_scale > max_deployer_fee_scale()
-                || (*growth_mode && *deployer_fee_scale > Decimal::ONE)
-                || self.perp_context.is_none() =>
-            {
+            } if *deployer_fee_scale < Decimal::ZERO || self.perp_context.is_none() => {
                 Err(HyperliquidEconomicsError::InvalidProductMetadata)
             }
             HyperliquidProductKind::Spot { .. }
@@ -400,6 +377,15 @@ pub struct HyperliquidEconomicsConfig {
     pub builder_rate_factor_id: FormulaId,
     pub builder_attachment_id: RoutingAttachmentId,
     pub builder_fee_tenths_bps: u32,
+    pub stable_pair_scale: Decimal,
+    pub growth_mode_scale: Decimal,
+    pub hip3_scale_threshold: Decimal,
+    pub hip3_below_threshold_base: Decimal,
+    pub hip3_at_or_above_threshold_multiplier: Decimal,
+    pub hip3_at_or_above_deployer_share: Decimal,
+    pub edge_basis_resolver_id: FormulaId,
+    pub edge_basis_product_metadata_source: SourceIdentity,
+    pub edge_basis_policy_version: u64,
     pub carry: HyperliquidCarryPolicy,
 }
 
@@ -474,6 +460,13 @@ impl HyperliquidEconomicsAdapter {
         product.validate()?;
         if !user_fees.metadata.timeline_is_valid()
             || config.builder_fee_tenths_bps == 0
+            || config.stable_pair_scale < Decimal::ZERO
+            || config.growth_mode_scale < Decimal::ZERO
+            || config.hip3_scale_threshold <= Decimal::ZERO
+            || config.hip3_below_threshold_base < Decimal::ZERO
+            || config.hip3_at_or_above_threshold_multiplier < Decimal::ZERO
+            || config.hip3_at_or_above_deployer_share < Decimal::ZERO
+            || config.hip3_at_or_above_deployer_share > Decimal::ONE
             || config.carry.funding_interval_ns == 0
             || config.carry.funding_schedule_phase_ns >= config.carry.funding_interval_ns
             || config.carry.debit_rate_bound_per_interval <= Decimal::ZERO
@@ -484,6 +477,9 @@ impl HyperliquidEconomicsAdapter {
             })
         {
             return Err(HyperliquidEconomicsError::InvalidProductMetadata);
+        }
+        if product.is_aligned() {
+            return Err(HyperliquidEconomicsError::UnsupportedAlignedQuoteShape);
         }
         Ok(Self {
             config,
@@ -552,7 +548,7 @@ impl HyperliquidEconomicsAdapter {
                     Decimal::ONE,
                     *deployer_fee_scale,
                     if *growth_mode {
-                        growth_mode_scale()
+                        self.config.growth_mode_scale
                     } else {
                         Decimal::ONE
                     },
@@ -561,7 +557,7 @@ impl HyperliquidEconomicsAdapter {
                     self.user_fees.spot_maker_rate,
                     self.user_fees.spot_taker_rate,
                     if *stable_pair {
-                        stable_pair_scale()
+                        self.config.stable_pair_scale
                     } else {
                         Decimal::ONE
                     },
@@ -569,22 +565,15 @@ impl HyperliquidEconomicsAdapter {
                     Decimal::ONE,
                 ),
             };
-        let (hip3_scale, deployer_share) = if deployer_scale < Decimal::ONE {
-            (
-                Decimal::ONE
-                    .checked_add(deployer_scale)
-                    .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?,
-                deployer_scale
-                    .checked_div(Decimal::ONE + deployer_scale)
-                    .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?,
-            )
+        let hip3_scale = if deployer_scale < self.config.hip3_scale_threshold {
+            self.config
+                .hip3_below_threshold_base
+                .checked_add(deployer_scale)
+                .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?
         } else {
-            (
-                deployer_scale
-                    .checked_mul(Decimal::from(2))
-                    .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?,
-                Decimal::new(5, 1),
-            )
+            deployer_scale
+                .checked_mul(self.config.hip3_at_or_above_threshold_multiplier)
+                .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?
         };
         maker = maker
             .checked_mul(stable_scale)
@@ -597,14 +586,6 @@ impl HyperliquidEconomicsAdapter {
                     value.checked_mul(Decimal::ONE - self.user_fees.active_referral_discount)
                 })
                 .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?;
-        } else if self.product.is_aligned() {
-            let aligned_scale = (Decimal::ONE - deployer_share)
-                .checked_mul(aligned_maker_rebate_scale())
-                .and_then(|value| value.checked_add(deployer_share))
-                .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?;
-            maker = maker
-                .checked_mul(aligned_scale)
-                .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?;
         }
         taker = taker
             .checked_mul(stable_scale)
@@ -614,15 +595,6 @@ impl HyperliquidEconomicsAdapter {
                 value.checked_mul(Decimal::ONE - self.user_fees.active_referral_discount)
             })
             .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?;
-        if self.product.is_aligned() {
-            let aligned_scale = (Decimal::ONE - deployer_share)
-                .checked_mul(aligned_taker_scale())
-                .and_then(|value| value.checked_add(deployer_share))
-                .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?;
-            taker = taker
-                .checked_mul(aligned_scale)
-                .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?;
-        }
         Ok((maker, taker))
     }
 
@@ -846,6 +818,62 @@ impl HyperliquidEconomicsAdapter {
     }
 }
 
+impl VenueEconomicsAdapter for HyperliquidEconomicsAdapter {
+    fn provider_key(&self) -> &str {
+        super::KEY
+    }
+
+    fn resolve_edge_basis(
+        &self,
+        request: &EconomicsQuoteRequest,
+        planned_fill_notional: PlannedFillNotional,
+    ) -> Result<VenueEdgeBasisEstimate, VenueEconomicsUnavailable> {
+        if request.account_id != self.user_fees.account_id
+            || request.instrument_id != self.product.instrument_id
+            || request.product_surface_id != self.product.product_surface_id
+        {
+            return Err(VenueEconomicsUnavailable::RequestScopeMismatch);
+        }
+        Ok(VenueEdgeBasisEstimate {
+            resolver_id: self.config.edge_basis_resolver_id.clone(),
+            product_metadata_source: self.config.edge_basis_product_metadata_source.clone(),
+            policy_version: self.config.edge_basis_policy_version,
+            normalized_amount: crate::economics::EdgeBasisAmount::try_new(
+                planned_fill_notional.amount(),
+            )?,
+            source_snapshot_ids: vec![self.product.metadata.snapshot_id.clone()],
+            valid_until_ns: self.product.metadata.valid_until_ns,
+        })
+    }
+
+    fn quote(
+        &self,
+        request: &EconomicsQuoteRequest,
+    ) -> Result<VenueQuoteEstimate, VenueEconomicsUnavailable> {
+        HyperliquidEconomicsAdapter::quote(self, request).map_err(|error| match error {
+            HyperliquidEconomicsError::InvalidRequestScope => {
+                VenueEconomicsUnavailable::RequestScopeMismatch
+            }
+            HyperliquidEconomicsError::UnsupportedAlignedQuoteShape => {
+                VenueEconomicsUnavailable::UnsupportedProductEconomics
+            }
+            HyperliquidEconomicsError::MissingBuilderApproval => {
+                VenueEconomicsUnavailable::MissingAuthoritativeSnapshot
+            }
+            HyperliquidEconomicsError::InvalidEffect(error) => error.into(),
+            HyperliquidEconomicsError::InvalidUserFees
+            | HyperliquidEconomicsError::InvalidProductMetadata
+            | HyperliquidEconomicsError::InvalidBuilderApproval
+            | HyperliquidEconomicsError::MissingCarryContext
+            | HyperliquidEconomicsError::InvalidCarryBound
+            | HyperliquidEconomicsError::BuilderApprovalInsufficient
+            | HyperliquidEconomicsError::ArithmeticOverflow => {
+                VenueEconomicsUnavailable::InvalidAuthoritativeSnapshot
+            }
+        })
+    }
+}
+
 fn product_decimal(value: &str) -> Result<Decimal, HyperliquidEconomicsError> {
     value
         .parse()
@@ -932,6 +960,18 @@ mod tests {
             builder_rate_factor_id: id("builder-rate", FormulaId::try_new),
             builder_attachment_id: id("builder-code", RoutingAttachmentId::try_new),
             builder_fee_tenths_bps: 10,
+            stable_pair_scale: Decimal::new(2, 1),
+            growth_mode_scale: Decimal::new(1, 1),
+            hip3_scale_threshold: Decimal::ONE,
+            hip3_below_threshold_base: Decimal::ONE,
+            hip3_at_or_above_threshold_multiplier: Decimal::from(2),
+            hip3_at_or_above_deployer_share: Decimal::new(5, 1),
+            edge_basis_resolver_id: id("product-metadata", FormulaId::try_new),
+            edge_basis_product_metadata_source: id(
+                "hyperliquid-product-metadata",
+                SourceIdentity::try_new,
+            ),
+            edge_basis_policy_version: 1,
             carry: HyperliquidCarryPolicy {
                 component_id: id("funding", EconomicComponentId::try_new),
                 formula_id: id("funding-v1", FormulaId::try_new),
@@ -971,6 +1011,9 @@ mod tests {
     }
 
     fn spot_product() -> HyperliquidProductEconomicsSnapshot {
+        let unaligned =
+            include_str!("../../../tests/fixtures/economics/hyperliquid/aligned_quote.json")
+                .replacen("\"isAligned\": true", "\"isAligned\": false", 1);
         HyperliquidProductEconomicsSnapshot::spot_from_json(
             metadata("spot-meta", "spot-1"),
             id("HYPE-hUSD", EconomicsInstrumentId::try_new),
@@ -978,10 +1021,7 @@ mod tests {
             id("HYPE", AssetId::try_new),
             id("hUSD", CurrencyId::try_new),
             false,
-            (
-                &metadata("aligned-quote", "aligned-1"),
-                include_str!("../../../tests/fixtures/economics/hyperliquid/aligned_quote.json"),
-            ),
+            (&metadata("aligned-quote", "aligned-1"), &unaligned),
         )
         .expect("spot fixture should parse")
     }
@@ -1120,7 +1160,7 @@ mod tests {
     }
 
     #[test]
-    fn aligned_spot_fee_uses_base_on_buy_and_quote_on_sell() {
+    fn spot_fee_uses_base_on_buy_and_quote_on_sell() {
         let adapter = HyperliquidEconomicsAdapter::try_new(
             config(),
             user_fees(metadata("user-fees", "fees-1")),
@@ -1145,7 +1185,7 @@ mod tests {
             buy_effect.unit(),
             NativeUnitId::Asset(id("HYPE", AssetId::try_new))
         );
-        assert_eq!(buy_effect.amount(), Decimal::new(-112896, 7));
+        assert_eq!(buy_effect.amount(), Decimal::new(-14112, 6));
 
         let sell = request(
             "HYPE-hUSD",
@@ -1164,7 +1204,34 @@ mod tests {
             sell_effect.unit(),
             NativeUnitId::Currency(id("hUSD", CurrencyId::try_new))
         );
-        assert_eq!(sell_effect.amount(), Decimal::new(-526848, 7));
+        assert_eq!(sell_effect.amount(), Decimal::new(-65856, 6));
+    }
+
+    #[test]
+    fn aligned_product_is_blocked_without_authoritative_benefit_version() {
+        let product = HyperliquidProductEconomicsSnapshot::spot_from_json(
+            metadata("spot-meta", "spot-1"),
+            id("HYPE-hUSD", EconomicsInstrumentId::try_new),
+            id("spot", ProductSurfaceId::try_new),
+            id("HYPE", AssetId::try_new),
+            id("hUSD", CurrencyId::try_new),
+            false,
+            (
+                &metadata("aligned-quote", "aligned-1"),
+                include_str!("../../../tests/fixtures/economics/hyperliquid/aligned_quote.json"),
+            ),
+        )
+        .expect("captured aligned-status fixture should parse");
+
+        assert_eq!(
+            HyperliquidEconomicsAdapter::try_new(
+                config(),
+                user_fees(metadata("user-fees", "fees-1")),
+                product,
+                None,
+            ),
+            Err(HyperliquidEconomicsError::UnsupportedAlignedQuoteShape)
+        );
     }
 
     #[test]

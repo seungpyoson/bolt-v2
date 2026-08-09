@@ -1,16 +1,25 @@
-use nautilus_model::{enums::OrderSide as NautilusOrderSide, identifiers::InstrumentId};
+use nautilus_model::{
+    enums::OrderSide as NautilusOrderSide, events::OrderInitialized, identifiers::InstrumentId,
+    orders::OrderAny,
+};
 use rust_decimal::Decimal;
+use sha2::{Digest, Sha256};
 
-use crate::economics::{
-    AccountId, DecisionCorrelationId, EconomicsError, EconomicsInstrumentId, EconomicsQuoteRequest,
-    EdgeBasisPolicyId, ExecutionClientId, LifecyclePath, LiquidityRole, OrderSide, PlannedFillLeg,
-    PositionContext, ProductSurfaceId, ReportingPolicyId, RoutingAttachmentId, RoutingContext,
+use crate::{
+    bolt_v3_economics_runtime::EconomicsOrderBinding,
+    economics::{
+        AccountId, DecisionCorrelationId, EconomicsError, EconomicsInstrumentId,
+        EconomicsQuoteRequest, EdgeBasisPolicyId, ExecutionClientId, LifecyclePath, LiquidityRole,
+        OrderSide, PlannedFillLeg, PositionContext, ProductSurfaceId, ReportingPolicyId,
+        RoutingAttachmentId, RoutingContext,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NautilusEconomicsAdapterError {
     MissingOrderSide,
     MissingLiquiditySide,
+    OrderBindingSerialization,
     InvalidEconomics(EconomicsError),
 }
 
@@ -19,9 +28,23 @@ impl std::fmt::Display for NautilusEconomicsAdapterError {
         match self {
             Self::MissingOrderSide => f.write_str("Nautilus order side is unspecified"),
             Self::MissingLiquiditySide => f.write_str("Nautilus liquidity side is unspecified"),
+            Self::OrderBindingSerialization => {
+                f.write_str("Nautilus order binding could not be serialized")
+            }
             Self::InvalidEconomics(error) => error.fmt(f),
         }
     }
+}
+
+pub fn economics_order_binding(
+    order: &OrderAny,
+) -> Result<EconomicsOrderBinding, NautilusEconomicsAdapterError> {
+    let canonical_order = OrderInitialized::from(order);
+    let bytes = serde_json::to_vec(&canonical_order)
+        .map_err(|_| NautilusEconomicsAdapterError::OrderBindingSerialization)?;
+    Ok(EconomicsOrderBinding::from_sha256(
+        Sha256::digest(bytes).into(),
+    ))
 }
 
 impl std::error::Error for NautilusEconomicsAdapterError {}

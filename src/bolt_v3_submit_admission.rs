@@ -33,6 +33,7 @@ use crate::bolt_v3_current_evidence::{
 use crate::bolt_v3_current_evidence::{
     BasketAdmissionRejectedFact, BasketAdmissionRejectionReason,
 };
+use crate::bolt_v3_economics_runtime::{EconomicsAdmission, EconomicsAdmissionPurpose};
 use crate::bolt_v3_evidence_sampling::{EpisodeFirstNs, evict_oldest_episodes_over_cap};
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_loss_governor::{
@@ -42,6 +43,7 @@ use crate::bolt_v3_loss_governor::{
 };
 use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
 use crate::bolt_v3_provider_collateral_allowance::ProviderCollateralAllowanceCaptureFailureEvidence;
+use crate::integrations::nautilus::economics::economics_order_binding;
 use anyhow::Context;
 use nautilus_model::{
     data::{QuoteTick, TradeTick},
@@ -3270,6 +3272,102 @@ where
     Ok(submit_admission_request_from_facts(input, facts, notional))
 }
 
+#[derive(Debug)]
+pub struct BoltV3EconomicsSubmitAdmission {
+    request: BoltV3SubmitAdmissionRequest,
+    economics: EconomicsAdmission,
+}
+
+impl BoltV3EconomicsSubmitAdmission {
+    pub const fn request(&self) -> &BoltV3SubmitAdmissionRequest {
+        &self.request
+    }
+
+    pub const fn economics(&self) -> &EconomicsAdmission {
+        &self.economics
+    }
+
+    pub fn validate_final_order(
+        &self,
+        order: &OrderAny,
+        execution_client_id: &str,
+    ) -> Result<(), BoltV3SubmitAdmissionError> {
+        validate_economics_submit_authority(
+            &self.request,
+            &self.economics,
+            order,
+            execution_client_id,
+        )
+    }
+
+    pub(crate) fn into_parts(self) -> (BoltV3SubmitAdmissionRequest, EconomicsAdmission) {
+        (self.request, self.economics)
+    }
+}
+
+pub(crate) fn validate_economics_submit_authority(
+    request: &BoltV3SubmitAdmissionRequest,
+    economics: &EconomicsAdmission,
+    order: &OrderAny,
+    execution_client_id: &str,
+) -> Result<(), BoltV3SubmitAdmissionError> {
+    if economics_order_binding(order).ok().as_ref() != Some(economics.order_binding())
+        || request.notional != economics.full_reservation_liability()
+        || request.execution_client_id != execution_client_id
+        || economics.request().execution_client_id.as_str() != execution_client_id
+    {
+        return Err(BoltV3SubmitAdmissionError::EconomicsOrderMismatch);
+    }
+    Ok(())
+}
+
+pub fn build_submit_admission_request_from_economics(
+    input: BoltV3SubmitAdmissionRequestInput<'_>,
+    economics: EconomicsAdmission,
+) -> anyhow::Result<BoltV3EconomicsSubmitAdmission> {
+    let facts = order_admission_facts(&input)?;
+    let expected_purpose = match input.intent_kind {
+        BoltV3SubmitIntentKind::Entry => EconomicsAdmissionPurpose::TradingEdge,
+        BoltV3SubmitIntentKind::RiskReducingExit
+        | BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+            EconomicsAdmissionPurpose::RiskReduction
+        }
+    };
+    anyhow::ensure!(
+        economics.purpose() == expected_purpose,
+        "economics admission purpose does not match the final order intent"
+    );
+    anyhow::ensure!(
+        economics.order_binding()
+            == &economics_order_binding(input.order).map_err(|error| anyhow::anyhow!(error))?,
+        "economics admission does not bind the final order"
+    );
+    anyhow::ensure!(
+        economics.request().execution_client_id.as_str() == input.execution_client_id,
+        "economics admission execution client does not match the final order route"
+    );
+    anyhow::ensure!(
+        economics.request().instrument_id.as_str() == input.order.instrument_id().to_string(),
+        "economics admission instrument does not match the final order"
+    );
+    let expected_side = match input.order.order_side() {
+        OrderSide::Buy => crate::economics::OrderSide::Buy,
+        OrderSide::Sell => crate::economics::OrderSide::Sell,
+        OrderSide::NoOrderSide => anyhow::bail!("economics admission requires a sided order"),
+    };
+    anyhow::ensure!(
+        economics.request().order_side == expected_side,
+        "economics admission side does not match the final order"
+    );
+    anyhow::ensure!(
+        economics.reservation_basis() == facts.reservation_basis,
+        "economics admission reservation basis does not match the final order"
+    );
+    let notional = economics.full_reservation_liability();
+    let request = submit_admission_request_from_facts(input, facts, notional);
+    Ok(BoltV3EconomicsSubmitAdmission { request, economics })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BoltV3OrderAdmissionFacts {
     pub price: Decimal,
@@ -3708,6 +3806,7 @@ pub enum BoltV3SubmitAdmissionError {
         mutation_count: u64,
     },
     InvalidRiskReducingExitProof,
+    EconomicsOrderMismatch,
     CapitalAdmissionRejected {
         reason: BoltV3CapitalAdmissionRejectReason,
     },
@@ -3779,6 +3878,10 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             Self::InvalidRiskReducingExitProof => write!(
                 f,
                 "bolt-v3 submit admission risk-reducing exit proof is invalid"
+            ),
+            Self::EconomicsOrderMismatch => write!(
+                f,
+                "bolt-v3 submit admission final order does not match its economics authority"
             ),
             Self::CapitalAdmissionRejected { reason } => {
                 write!(

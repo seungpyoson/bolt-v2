@@ -328,6 +328,7 @@ impl BoundExecutionEconomics {
             .ok_or(EconomicsError::ArithmeticOverflow)?;
         Ok(EconomicsAdmission {
             request: intent.request,
+            order_binding: intent.order_binding,
             purpose: intent.purpose,
             quote,
             net_edge,
@@ -355,6 +356,7 @@ pub enum EconomicsAdmissionPurpose {
 
 pub struct EconomicsAdmissionIntent {
     pub request: EconomicsQuoteRequest,
+    pub order_binding: EconomicsOrderBinding,
     pub purpose: EconomicsAdmissionPurpose,
     pub gross_expected_value: Decimal,
     pub reservation_basis: Decimal,
@@ -363,6 +365,7 @@ pub struct EconomicsAdmissionIntent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EconomicsAdmission {
     request: EconomicsQuoteRequest,
+    order_binding: EconomicsOrderBinding,
     purpose: EconomicsAdmissionPurpose,
     quote: EconomicsQuote,
     net_edge: NetEdgeQuote,
@@ -373,6 +376,10 @@ pub struct EconomicsAdmission {
 impl EconomicsAdmission {
     pub fn request(&self) -> &EconomicsQuoteRequest {
         &self.request
+    }
+
+    pub const fn order_binding(&self) -> &EconomicsOrderBinding {
+        &self.order_binding
     }
 
     pub const fn purpose(&self) -> EconomicsAdmissionPurpose {
@@ -393,6 +400,15 @@ impl EconomicsAdmission {
 
     pub const fn full_reservation_liability(&self) -> Decimal {
         self.full_reservation_liability
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EconomicsOrderBinding([u8; 32]);
+
+impl EconomicsOrderBinding {
+    pub const fn from_sha256(value: [u8; 32]) -> Self {
+        Self(value)
     }
 }
 

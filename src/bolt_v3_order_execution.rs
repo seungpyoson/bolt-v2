@@ -39,14 +39,15 @@ use crate::{
     bolt_v3_order_intent::{NtOrderBuildInputs, build_nt_order},
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_submit_admission::{
-        BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
-        BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
+        BoltV3EconomicsSubmitAdmission, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
+        BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
         build_submit_admission_request_from_order, order_admission_facts,
+        validate_economics_submit_authority,
     },
     economics::{LifecyclePath, PositionContext},
     integrations::nautilus::economics::{
         NautilusEconomicsIntent, NautilusEstimateLiquidityRole, NautilusPlannedFillLeg,
-        economics_request_from_nautilus,
+        economics_order_binding, economics_request_from_nautilus,
     },
 };
 
@@ -136,6 +137,8 @@ impl BoltV3OrderEconomicsHandle {
         self.economics
             .quote_admission(EconomicsAdmissionIntent {
                 request,
+                order_binding: economics_order_binding(intent.request.order)
+                    .map_err(|error| anyhow::anyhow!(error))?,
                 purpose: match intent.request.intent_kind {
                     BoltV3SubmitIntentKind::Entry => EconomicsAdmissionPurpose::TradingEdge,
                     BoltV3SubmitIntentKind::RiskReducingExit
@@ -334,6 +337,7 @@ impl BoltV3OrderExecutionPolicy {
             submit_admission,
             intent,
             request,
+            economics,
         } = routing;
         let intent_kind = request.intent_kind;
         let (intent, request, order) = match clamp_risk_reducing_exit_to_venue_position(
@@ -349,6 +353,14 @@ impl BoltV3OrderExecutionPolicy {
             }
         };
         record_order_intent(decision_evidence, intent_kind, intent.clone())?;
+        if let Some(economics) = economics {
+            let execution_client_id = context
+                .client_id
+                .as_ref()
+                .map(ClientId::as_str)
+                .ok_or(BoltV3SubmitAdmissionError::EconomicsOrderMismatch)?;
+            validate_economics_submit_authority(&request, &economics, &order, execution_client_id)?;
+        }
         match self.mode {
             BoltV3OrderExecutionMode::Live => {
                 let permit = submit_admission.admit(&request)?;
@@ -819,6 +831,7 @@ pub struct BoltV3SubmitRoutingRequest<'a> {
     submit_admission: &'a BoltV3SubmitAdmissionState,
     intent: OrderIntentDetails,
     request: BoltV3SubmitAdmissionRequest,
+    economics: Option<EconomicsAdmission>,
 }
 
 impl<'a> BoltV3SubmitRoutingRequest<'a> {
@@ -833,6 +846,23 @@ impl<'a> BoltV3SubmitRoutingRequest<'a> {
             submit_admission,
             intent,
             request,
+            economics: None,
+        }
+    }
+
+    pub fn with_economics(
+        decision_evidence: &'a dyn OrderIntentEvidence,
+        submit_admission: &'a BoltV3SubmitAdmissionState,
+        intent: OrderIntentDetails,
+        sealed: BoltV3EconomicsSubmitAdmission,
+    ) -> Self {
+        let (request, economics) = sealed.into_parts();
+        Self {
+            decision_evidence,
+            submit_admission,
+            intent,
+            request,
+            economics: Some(economics),
         }
     }
 }
@@ -1407,9 +1437,9 @@ mod tests {
         BoltV3MakerOrderRuntime, BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink,
         BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy, BoltV3PlannedFillLeg,
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
-        clamp_risk_reducing_exit_to_venue_position, normalize_economics_fill_legs,
-        order_intent_details_from_compiled_order, route_kill_switch_flatten_command_with_sink,
-        route_maker_order_command_with_runtime,
+        clamp_risk_reducing_exit_to_venue_position, economics_order_binding,
+        normalize_economics_fill_legs, order_intent_details_from_compiled_order,
+        route_kill_switch_flatten_command_with_sink, route_maker_order_command_with_runtime,
     };
     use crate::{
         bolt_v3_capital_admission::{
@@ -3265,5 +3295,21 @@ mod tests {
         .expect_err("a buy fill above the final limit must fail closed");
 
         assert!(error.to_string().contains("exceeds the final order limit"));
+    }
+
+    #[test]
+    fn economics_order_binding_changes_when_the_final_quantity_changes() {
+        let original = limit_order("economics-binding");
+        let original_binding = economics_order_binding(&original)
+            .expect("the original order should have a canonical binding");
+        let mut changed = original.clone();
+        changed.set_quantity(Quantity::new(0.5, 2));
+        changed.set_leaves_qty(Quantity::new(0.5, 2));
+
+        assert_ne!(
+            economics_order_binding(&changed)
+                .expect("the changed order should have a canonical binding"),
+            original_binding
+        );
     }
 }

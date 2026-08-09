@@ -5,7 +5,7 @@ use bolt_v2::{
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
         AuthoritativeVenueEconomicsInput, EconomicsAdmissionIntent, EconomicsAdmissionPurpose,
-        EconomicsRuntimeBindingError, bind_execution_economics,
+        EconomicsOrderBinding, EconomicsRuntimeBindingError, bind_execution_economics,
     },
     bolt_v3_order_execution::{
         BoltV3OrderEconomicsHandle, BoltV3OrderEconomicsIntent, BoltV3PlannedFillLeg,
@@ -24,6 +24,7 @@ use bolt_v2::{
     },
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequestInput, BoltV3SubmitIntentKind, OrderValuationContext,
+        build_submit_admission_request_from_economics,
     },
     economics::{
         AccountId, CurrencyId, DecisionCorrelationId, EconomicsInstrumentId, EconomicsQuoteRequest,
@@ -36,7 +37,7 @@ use bolt_v2::{
 use nautilus_model::{
     enums::{OrderSide as NautilusOrderSide, TimeInForce},
     identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId},
-    orders::{LimitOrder, OrderAny},
+    orders::{LimitOrder, Order, OrderAny},
     types::{Price, Quantity},
 };
 use rust_decimal::Decimal;
@@ -46,6 +47,10 @@ fn id<T>(
     constructor: impl FnOnce(String) -> Result<T, bolt_v2::economics::EconomicsError>,
 ) -> T {
     constructor(value.to_string()).expect("test identifier should be canonical")
+}
+
+fn order_binding() -> EconomicsOrderBinding {
+    EconomicsOrderBinding::from_sha256([1; 32])
 }
 
 fn quote_request(instrument_id: &str, product_surface_id: &str) -> EconomicsQuoteRequest {
@@ -309,14 +314,34 @@ fn final_nautilus_order_routes_through_its_exact_provider_authority() {
         })
         .expect("the exact final order identity should reach its provider quote");
 
+    let sealed = build_submit_admission_request_from_economics(admission_input, admission)
+        .expect("shared admission should consume the exact economics result");
+
     assert_eq!(
-        admission.request().instrument_id.as_str(),
+        sealed.economics().request().instrument_id.as_str(),
         "token-yes.POLYMARKET"
     );
-    assert_eq!(admission.request().account_id.as_str(), "POLYMARKET-001");
-    assert_eq!(admission.request().planned_fill_legs.len(), 1);
-    assert_eq!(admission.reservation_basis(), Decimal::from(5));
-    assert!(admission.full_reservation_liability() > Decimal::from(5));
+    assert_eq!(
+        sealed.economics().request().account_id.as_str(),
+        "POLYMARKET-001"
+    );
+    assert_eq!(sealed.economics().request().planned_fill_legs.len(), 1);
+    assert_eq!(sealed.economics().reservation_basis(), Decimal::from(5));
+    assert_eq!(
+        sealed.request().notional,
+        sealed.economics().full_reservation_liability()
+    );
+    assert!(sealed.request().notional > Decimal::from(5));
+
+    let mut changed = order.clone();
+    changed.set_quantity(Quantity::new(5.0, 2));
+    changed.set_leaves_qty(Quantity::new(5.0, 2));
+    assert!(
+        sealed
+            .validate_final_order(&changed, "polymarket_main")
+            .is_err(),
+        "an order mutation after quoting must invalidate the sealed authority"
+    );
 }
 
 #[test]
@@ -354,6 +379,7 @@ fn bound_execution_economics_quotes_and_folds_admission_from_one_authority() {
     let admission = bound
         .quote_admission(EconomicsAdmissionIntent {
             request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
+            order_binding: order_binding(),
             purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
@@ -383,6 +409,7 @@ fn bound_execution_economics_rejects_stale_required_valuation() {
     let error = bound
         .quote_admission(EconomicsAdmissionIntent {
             request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
+            order_binding: order_binding(),
             purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
@@ -422,6 +449,7 @@ fn bound_execution_economics_rejects_foreign_reporting_policy() {
     let error = bound
         .quote_admission(EconomicsAdmissionIntent {
             request,
+            order_binding: order_binding(),
             purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
@@ -444,6 +472,7 @@ fn bound_execution_economics_rejects_foreign_product_edge_policy() {
     let error = bound
         .quote_admission(EconomicsAdmissionIntent {
             request,
+            order_binding: order_binding(),
             purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),

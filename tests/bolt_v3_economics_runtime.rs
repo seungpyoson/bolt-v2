@@ -5,7 +5,8 @@ use bolt_v2::{
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
         AuthoritativeVenueEconomicsInput, EconomicsAdmissionIntent, EconomicsAdmissionPurpose,
-        EconomicsOrderBinding, EconomicsRuntimeBindingError, bind_execution_economics,
+        EconomicsOrderBinding, EconomicsRuntimeBindingError, RestingOrderEconomicsCancelReason,
+        RestingOrderEconomicsRefresh, bind_execution_economics, refresh_resting_order_economics,
     },
     bolt_v3_order_execution::{
         BoltV3OrderEconomicsHandle, BoltV3OrderEconomicsIntent, BoltV3PlannedFillLeg,
@@ -13,8 +14,8 @@ use bolt_v2::{
     },
     bolt_v3_providers::{
         hyperliquid::{
-            HyperliquidProductEconomicsSnapshot, HyperliquidSnapshotMetadata,
-            HyperliquidUserFeesSnapshot,
+            HyperliquidPerpetualSnapshotInput, HyperliquidProductEconomicsSnapshot,
+            HyperliquidSnapshotMetadata, HyperliquidUserFeesSnapshot,
             authoritative_economics_input as hyperliquid_authoritative_economics_input,
         },
         polymarket::{
@@ -29,8 +30,8 @@ use bolt_v2::{
     economics::{
         AccountId, CurrencyId, DecisionCorrelationId, EconomicsInstrumentId, EconomicsQuoteRequest,
         EdgeBasisPolicyId, ExecutionClientId, LifecyclePath, LiquidityRole, OrderSide,
-        PlannedFillLeg, PlannedFillNotional, ProductSurfaceId, ReportingPolicyId, RoutingContext,
-        SnapshotId, SourceIdentity,
+        PlannedFillLeg, PositionContext, PositionId, PositionSide, ProductSurfaceId,
+        ReportingPolicyId, RoutingContext, SnapshotId, SourceIdentity, VenueEconomicsUnavailable,
     },
     integrations::nautilus::economics::NautilusEstimateLiquidityRole,
 };
@@ -56,7 +57,7 @@ fn order_binding() -> EconomicsOrderBinding {
 fn quote_request(instrument_id: &str, product_surface_id: &str) -> EconomicsQuoteRequest {
     EconomicsQuoteRequest {
         execution_client_id: id("polymarket_main", ExecutionClientId::try_new),
-        account_id: id("account", AccountId::try_new),
+        account_id: id("POLYMARKET-001", AccountId::try_new),
         instrument_id: id(instrument_id, EconomicsInstrumentId::try_new),
         product_surface_id: id(product_surface_id, ProductSurfaceId::try_new),
         order_side: OrderSide::Buy,
@@ -117,6 +118,13 @@ fn authoritative_input_with_valuation_deadline(
 }
 
 fn authoritative_input_without_valuation() -> AuthoritativeVenueEconomicsInput {
+    authoritative_input_without_valuation_for("token-yes.POLYMARKET", "token-yes")
+}
+
+fn authoritative_input_without_valuation_for(
+    instrument_id: &str,
+    provider_instrument_id: &str,
+) -> AuthoritativeVenueEconomicsInput {
     let snapshot = PolymarketMarketInfoSnapshot::from_json(
         PolymarketSnapshotMetadata {
             snapshot_id: id("market-info-1", SnapshotId::try_new),
@@ -130,12 +138,66 @@ fn authoritative_input_without_valuation() -> AuthoritativeVenueEconomicsInput {
     .expect("test market-info snapshot should parse");
     polymarket_authoritative_economics_input(
         "polymarket_main",
+        instrument_id,
+        "binary_outcome",
+        provider_instrument_id,
+        snapshot,
+    )
+    .expect("Polymarket authority scope should match its market snapshot")
+}
+
+fn authoritative_refresh_input(
+    snapshot_id: &str,
+    market_info_json: &str,
+    valid_until_ns: u64,
+) -> AuthoritativeVenueEconomicsInput {
+    let snapshot = PolymarketMarketInfoSnapshot::from_json(
+        PolymarketSnapshotMetadata {
+            snapshot_id: id(snapshot_id, SnapshotId::try_new),
+            source_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns,
+            builder_attachment_id: None,
+        },
+        market_info_json,
+    )
+    .expect("refresh market-info snapshot should parse");
+    polymarket_authoritative_economics_input(
+        "polymarket_main",
         "token-yes.POLYMARKET",
         "binary_outcome",
         "token-yes",
         snapshot,
     )
-    .expect("Polymarket authority scope should match its market snapshot")
+    .expect("refresh authority scope should match its market snapshot")
+    .with_valuation_observations([
+        AuthoritativeValuationObservation::ProviderExactConversion {
+            source_id: id("fixture-collateral", SourceIdentity::try_new),
+            from_unit: id("pUSD", CurrencyId::try_new),
+            to_unit: id("USD", CurrencyId::try_new),
+            snapshot_id: id("collateral-refresh", SnapshotId::try_new),
+            observed_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns,
+        },
+    ])
+}
+
+fn maker_admission_for_refresh(
+    bound: &bolt_v2::bolt_v3_economics_runtime::BoundExecutionEconomics,
+) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
+    let mut request = quote_request("token-yes.POLYMARKET", "binary_outcome");
+    request.liquidity_role = LiquidityRole::GuaranteedMaker;
+    request.requested_at_ns = 1_000_000_000;
+    bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request,
+            order_binding: order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect("fresh maker economics should quote")
 }
 
 fn polymarket_limit_order() -> OrderAny {
@@ -200,17 +262,18 @@ fn hyperliquid_input_for(
         include_str!("fixtures/economics/hyperliquid/user_fees_discounted.json"),
     )
     .expect("test user-fees authority should parse");
-    let product = HyperliquidProductEconomicsSnapshot::perp_from_json(
-        hyperliquid_metadata(product_metadata_source, "perp-1"),
-        id("BTC-PERP.HYPERLIQUID", EconomicsInstrumentId::try_new),
-        id("standard_perps", ProductSurfaceId::try_new),
-        Decimal::ZERO,
-        false,
-        None,
-        hyperliquid_metadata(funding_source, "funding-1"),
-        include_str!("fixtures/economics/hyperliquid/perp_context.json"),
-    )
-    .expect("test product authority should parse");
+    let product =
+        HyperliquidProductEconomicsSnapshot::perp_from_json(HyperliquidPerpetualSnapshotInput {
+            metadata: hyperliquid_metadata(product_metadata_source, "perp-1"),
+            instrument_id: id("BTC-PERP.HYPERLIQUID", EconomicsInstrumentId::try_new),
+            product_surface_id: id("standard_perps", ProductSurfaceId::try_new),
+            deployer_fee_scale: Decimal::ZERO,
+            growth_mode: false,
+            aligned_quote_json: None,
+            context_metadata: hyperliquid_metadata(funding_source, "funding-1"),
+            context_json: include_str!("fixtures/economics/hyperliquid/perp_context.json"),
+        })
+        .expect("test product authority should parse");
     hyperliquid_authoritative_economics_input(
         "hyperliquid_offline",
         "BTC-PERP.HYPERLIQUID",
@@ -231,6 +294,86 @@ fn hyperliquid_input_for(
             valid_until_ns: 2_000,
         },
     ])
+}
+
+fn hyperliquid_refresh_input(
+    user_add_rate: &str,
+    snapshot_suffix: &str,
+    valid_until_ns: u64,
+) -> AuthoritativeVenueEconomicsInput {
+    let metadata = |source: &str, snapshot: &str| HyperliquidSnapshotMetadata {
+        source: id(source, SourceIdentity::try_new),
+        snapshot_id: id(
+            &format!("{snapshot}-{snapshot_suffix}"),
+            SnapshotId::try_new,
+        ),
+        source_at_ns: 900,
+        fetched_at_ns: 950,
+        valid_until_ns,
+    };
+    let mut user_fees_json = serde_json::from_str::<serde_json::Value>(include_str!(
+        "fixtures/economics/hyperliquid/user_fees_discounted.json"
+    ))
+    .expect("fixture user fees should parse");
+    user_fees_json["userAddRate"] = serde_json::Value::String(user_add_rate.to_string());
+    let user_fees = HyperliquidUserFeesSnapshot::from_json(
+        metadata("user-fees", "fees"),
+        id("HYPERLIQUID-001", AccountId::try_new),
+        &serde_json::to_string(&user_fees_json).expect("changed user fees should serialize"),
+    )
+    .expect("changed user fees should parse");
+    let product =
+        HyperliquidProductEconomicsSnapshot::perp_from_json(HyperliquidPerpetualSnapshotInput {
+            metadata: metadata("meta-and-asset-contexts", "perp"),
+            instrument_id: id("BTC-PERP.HYPERLIQUID", EconomicsInstrumentId::try_new),
+            product_surface_id: id("standard_perps", ProductSurfaceId::try_new),
+            deployer_fee_scale: Decimal::ZERO,
+            growth_mode: false,
+            aligned_quote_json: None,
+            context_metadata: metadata("funding-context", "funding"),
+            context_json: include_str!("fixtures/economics/hyperliquid/perp_context.json"),
+        })
+        .expect("refresh product authority should parse");
+    hyperliquid_authoritative_economics_input(
+        "hyperliquid_offline",
+        "BTC-PERP.HYPERLIQUID",
+        "standard_perps",
+        user_fees,
+        product,
+        None,
+    )
+    .expect("refresh Hyperliquid scope should match")
+    .with_valuation_observations([
+        AuthoritativeValuationObservation::ProviderExactConversion {
+            source_id: id("fixture-settlement", SourceIdentity::try_new),
+            from_unit: id("hUSD", CurrencyId::try_new),
+            to_unit: id("USD", CurrencyId::try_new),
+            snapshot_id: id(
+                &format!("settlement-{snapshot_suffix}"),
+                SnapshotId::try_new,
+            ),
+            observed_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns,
+        },
+    ])
+}
+
+fn hyperliquid_maker_admission_for_refresh(
+    bound: &bolt_v2::bolt_v3_economics_runtime::BoundExecutionEconomics,
+) -> bolt_v2::bolt_v3_economics_runtime::EconomicsAdmission {
+    let mut request = hyperliquid_quote_request();
+    request.liquidity_role = LiquidityRole::GuaranteedMaker;
+    request.requested_at_ns = 1_000_000_000;
+    bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request,
+            order_binding: order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect("fresh Hyperliquid maker economics should quote")
 }
 
 fn hyperliquid_loaded() -> bolt_v2::bolt_v3_config::LoadedBoltV3Config {
@@ -256,6 +399,12 @@ fn hyperliquid_quote_request() -> EconomicsQuoteRequest {
     let mut request = quote_request("BTC-PERP.HYPERLIQUID", "standard_perps");
     request.execution_client_id = id("hyperliquid_offline", ExecutionClientId::try_new);
     request.account_id = id("HYPERLIQUID-001", AccountId::try_new);
+    request.position = Some(PositionContext {
+        position_id: id("position", PositionId::try_new),
+        side: PositionSide::Long,
+        quantity: Decimal::TEN,
+        holding_horizon_ns: 250,
+    });
     request
 }
 
@@ -271,7 +420,6 @@ fn execution_economics_binds_one_matching_toml_authority() {
 
     assert_eq!(bound.execution_client_id(), "polymarket_main");
     assert_eq!(bound.provider_key(), "POLYMARKET");
-    assert_eq!(bound.account_id().as_str(), "POLYMARKET-001");
     assert_eq!(bound.config(), &config);
 }
 
@@ -352,13 +500,16 @@ fn bound_execution_economics_routes_edge_basis_by_exact_product_scope() {
     let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
         .expect("matching authority should bind");
     let request = quote_request("token-yes.POLYMARKET", "binary_outcome");
-    let notional = PlannedFillNotional::from_legs(&request.planned_fill_legs)
-        .expect("test fill should have positive notional");
-
-    let basis = bound
-        .adapter()
-        .resolve_edge_basis(&request, notional)
+    let admission = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request,
+            order_binding: order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
         .expect("exact scope should resolve its venue-owned edge basis");
+    let basis = &admission.net_edge().basis;
 
     assert_eq!(basis.normalized_amount.amount(), Decimal::from(5));
     assert_eq!(basis.resolver_id.as_str(), "product-metadata");
@@ -393,6 +544,15 @@ fn bound_execution_economics_quotes_and_folds_admission_from_one_authority() {
         admission.quote().valuations()[0].source_snapshot_ids,
         vec![id("collateral-conversion-1", SnapshotId::try_new)]
     );
+    assert_eq!(
+        admission
+            .quote()
+            .source_snapshot_ids()
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["collateral-conversion-1", "market-info-1"]
+    );
 }
 
 #[test]
@@ -426,13 +586,23 @@ fn execution_economics_rejects_missing_required_valuation_authority() {
         AuthoritativeEconomicsInputStore::try_new([authoritative_input_without_valuation()])
             .expect("one input should construct");
 
-    let error = bind_execution_economics(&loaded, "polymarket_main", &inputs)
-        .err()
-        .expect("missing configured valuation authority must fail binding");
+    let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
+        .expect("TOML authority should bind before a runtime scope is published");
+    let error = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
+            order_binding: order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect_err("missing configured valuation authority must fail at quote time");
 
     assert!(matches!(
         error,
-        EconomicsRuntimeBindingError::AuthoritativeValuationBuildFailed { .. }
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionError::AuthorityBinding(
+            EconomicsRuntimeBindingError::AuthoritativeValuationBuildFailed { .. }
+        )
     ));
 }
 
@@ -483,21 +653,194 @@ fn bound_execution_economics_rejects_foreign_product_edge_policy() {
 }
 
 #[test]
-fn execution_economics_rejects_missing_authoritative_input() {
+fn execution_economics_rotates_authoritative_scopes_without_rebinding() {
     let loaded = loaded();
-    let error = bind_execution_economics(
-        &loaded,
-        "polymarket_main",
-        &AuthoritativeEconomicsInputStore::default(),
-    )
-    .err()
-    .expect("missing authoritative input must fail closed");
+    let inputs = AuthoritativeEconomicsInputStore::default();
+    let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
+        .expect("TOML authority should bind before the first runtime snapshot");
+    let quote = |instrument_id: &str| {
+        bound.quote_admission(EconomicsAdmissionIntent {
+            request: quote_request(instrument_id, "binary_outcome"),
+            order_binding: order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+    };
+
+    assert!(matches!(
+        quote("token-yes.POLYMARKET"),
+        Err(
+            bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionError::Venue(
+                VenueEconomicsUnavailable::MissingAuthoritativeSnapshot
+            )
+        )
+    ));
+
+    inputs
+        .replace_execution_client("polymarket_main", [authoritative_input()])
+        .expect("publishing the first scope should succeed");
+    quote("token-yes.POLYMARKET").expect("the published scope should quote");
+
+    let replacement = authoritative_input_without_valuation_for("token-no.POLYMARKET", "token-no")
+        .with_valuation_observations([
+            AuthoritativeValuationObservation::ProviderExactConversion {
+                source_id: id("fixture-collateral", SourceIdentity::try_new),
+                from_unit: id("pUSD", CurrencyId::try_new),
+                to_unit: id("USD", CurrencyId::try_new),
+                snapshot_id: id("collateral-conversion-2", SnapshotId::try_new),
+                observed_at_ns: 900,
+                fetched_at_ns: 950,
+                valid_until_ns: 2_000,
+            },
+        ]);
+    inputs
+        .replace_execution_client("polymarket_main", [replacement])
+        .expect("rotating the execution-client scope should be atomic");
+
+    assert!(matches!(
+        quote("token-yes.POLYMARKET"),
+        Err(
+            bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionError::Venue(
+                VenueEconomicsUnavailable::MissingAuthoritativeSnapshot
+            )
+        )
+    ));
+    quote("token-no.POLYMARKET").expect("the replacement scope should quote immediately");
+}
+
+#[test]
+fn resting_maker_economics_refreshes_before_expiry_without_changing_terms() {
+    let loaded = loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([authoritative_refresh_input(
+        "market-refresh-1",
+        include_str!("fixtures/economics/polymarket/fee_enabled.json"),
+        40_000_000_000,
+    )])
+    .expect("one refresh authority should construct");
+    let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
+        .expect("refresh authority should bind");
+    let prior = maker_admission_for_refresh(&bound);
 
     assert_eq!(
-        error,
-        EconomicsRuntimeBindingError::MissingAuthoritativeInput {
-            execution_client_id: "polymarket_main".to_string(),
-        }
+        refresh_resting_order_economics(
+            &bound,
+            &prior,
+            Decimal::from(5),
+            Decimal::TEN,
+            true,
+            25_000_000_000,
+        ),
+        RestingOrderEconomicsRefresh::NotDue
+    );
+    let RestingOrderEconomicsRefresh::Refreshed(refreshed) = refresh_resting_order_economics(
+        &bound,
+        &prior,
+        Decimal::from(5),
+        Decimal::TEN,
+        true,
+        26_000_000_000,
+    ) else {
+        panic!("unchanged authoritative terms should refresh the resting order");
+    };
+    assert_eq!(refreshed.request().requested_at_ns, 26_000_000_000);
+    assert_eq!(
+        refreshed.request().planned_fill_legs[0].quantity,
+        Decimal::from(5)
+    );
+    assert_eq!(refreshed.reservation_basis(), Decimal::new(25, 1));
+    assert_eq!(refreshed.order_binding(), prior.order_binding());
+}
+
+#[test]
+fn resting_maker_economics_cancels_on_lost_or_unavailable_authority() {
+    let loaded = loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([authoritative_refresh_input(
+        "market-refresh-1",
+        include_str!("fixtures/economics/polymarket/fee_enabled.json"),
+        40_000_000_000,
+    )])
+    .expect("one refresh authority should construct");
+    let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
+        .expect("refresh authority should bind");
+    let prior = maker_admission_for_refresh(&bound);
+
+    assert_eq!(
+        refresh_resting_order_economics(
+            &bound,
+            &prior,
+            Decimal::TEN,
+            Decimal::TEN,
+            false,
+            26_000_000_000,
+        ),
+        RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::MakerGuaranteeLost
+        )
+    );
+    assert_eq!(
+        refresh_resting_order_economics(
+            &bound,
+            &prior,
+            Decimal::TEN,
+            Decimal::TEN,
+            true,
+            prior.quote().valid_until_ns() + 1,
+        ),
+        RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::QuoteUnavailable
+        )
+    );
+
+    inputs
+        .replace_execution_client("polymarket_main", [])
+        .expect("retiring authority should publish atomically");
+    assert_eq!(
+        refresh_resting_order_economics(
+            &bound,
+            &prior,
+            Decimal::TEN,
+            Decimal::TEN,
+            true,
+            26_000_000_000,
+        ),
+        RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::QuoteUnavailable
+        )
+    );
+}
+
+#[test]
+fn resting_maker_economics_cancels_when_provider_terms_change() {
+    let loaded = hyperliquid_loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([hyperliquid_refresh_input(
+        "-0.00001",
+        "one",
+        40_000_000_000,
+    )])
+    .expect("one Hyperliquid refresh authority should construct");
+    let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
+        .expect("Hyperliquid refresh authority should bind");
+    let prior = hyperliquid_maker_admission_for_refresh(&bound);
+
+    inputs
+        .replace_execution_client(
+            "hyperliquid_offline",
+            [hyperliquid_refresh_input("-0.00002", "two", 40_000_000_000)],
+        )
+        .expect("changed Hyperliquid authority should publish atomically");
+    assert_eq!(
+        refresh_resting_order_economics(
+            &bound,
+            &prior,
+            Decimal::TEN,
+            Decimal::TEN,
+            true,
+            26_000_000_000,
+        ),
+        RestingOrderEconomicsRefresh::CancelRequired(
+            RestingOrderEconomicsCancelReason::TermsChanged
+        )
     );
 }
 
@@ -543,28 +886,6 @@ fn execution_economics_rejects_unsupported_provider() {
 }
 
 #[test]
-fn execution_economics_rejects_provider_mismatch() {
-    let mut loaded = loaded();
-    loaded
-        .root
-        .clients
-        .get_mut("polymarket_main")
-        .expect("fixture client should exist")
-        .venue = nautilus_model::identifiers::Venue::from("HYPERLIQUID");
-    let inputs = AuthoritativeEconomicsInputStore::try_new([authoritative_input()])
-        .expect("one input should construct");
-
-    let error = bind_execution_economics(&loaded, "polymarket_main", &inputs)
-        .err()
-        .expect("foreign provider authority must fail closed");
-
-    assert!(matches!(
-        error,
-        EconomicsRuntimeBindingError::AuthoritativeProviderMismatch { .. }
-    ));
-}
-
-#[test]
 fn execution_economics_builds_the_adapter_from_the_loaded_toml() {
     let mut loaded = loaded();
     loaded
@@ -581,16 +902,19 @@ fn execution_economics_builds_the_adapter_from_the_loaded_toml() {
     let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
         .expect("loaded TOML and raw market authority should construct the adapter");
 
-    let estimate = bound
-        .adapter()
-        .quote(&quote_request("token-yes.POLYMARKET", "binary_outcome"))
+    let admission = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
+            order_binding: order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
         .expect("configured fee-bearing authority should quote");
+    let components = admission.quote().components();
 
-    assert_eq!(estimate.components.len(), 1);
-    assert_eq!(
-        estimate.components[0].component_id.as_str(),
-        "configured-platform"
-    );
+    assert_eq!(components.len(), 1);
+    assert_eq!(components[0].component_id.as_str(), "configured-platform");
 }
 
 #[test]
@@ -601,16 +925,18 @@ fn hyperliquid_execution_economics_binds_from_offline_toml_and_raw_authority() {
 
     let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
         .expect("offline Hyperliquid TOML and raw authority should bind");
-    let request = hyperliquid_quote_request();
-    let notional = PlannedFillNotional::from_legs(&request.planned_fill_legs)
-        .expect("test fill should have positive notional");
-    let basis = bound
-        .adapter()
-        .resolve_edge_basis(&request, notional)
+    let admission = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request: hyperliquid_quote_request(),
+            order_binding: order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
         .expect("exact Hyperliquid scope should resolve its edge basis");
+    let basis = &admission.net_edge().basis;
 
     assert_eq!(bound.provider_key(), "HYPERLIQUID");
-    assert_eq!(bound.account_id().as_str(), "HYPERLIQUID-001");
     assert_eq!(basis.normalized_amount.amount(), Decimal::from(5));
     assert_eq!(
         basis.product_metadata_source.as_str(),
@@ -628,13 +954,23 @@ fn hyperliquid_execution_economics_rejects_foreign_account_authority() {
     )])
     .expect("one Hyperliquid input should construct");
 
-    let error = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
-        .err()
-        .expect("foreign account authority must fail closed");
+    let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
+        .expect("TOML authority should bind before the runtime scope is evaluated");
+    let error = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request: hyperliquid_quote_request(),
+            order_binding: order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect_err("foreign account authority must fail closed");
 
     assert!(matches!(
         error,
-        EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed { .. }
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionError::AuthorityBinding(
+            EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed { .. }
+        )
     ));
 }
 
@@ -648,13 +984,23 @@ fn hyperliquid_execution_economics_rejects_mismatched_product_source() {
     )])
     .expect("one Hyperliquid input should construct");
 
-    let error = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
-        .err()
-        .expect("mismatched product authority must fail closed");
+    let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
+        .expect("TOML authority should bind before the runtime scope is evaluated");
+    let error = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request: hyperliquid_quote_request(),
+            order_binding: order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect_err("mismatched product authority must fail closed");
 
     assert!(matches!(
         error,
-        EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed { .. }
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionError::AuthorityBinding(
+            EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed { .. }
+        )
     ));
 }
 
@@ -668,12 +1014,22 @@ fn hyperliquid_execution_economics_rejects_mismatched_funding_source() {
     )])
     .expect("one Hyperliquid input should construct");
 
-    let error = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
-        .err()
-        .expect("mismatched funding authority must fail closed");
+    let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
+        .expect("TOML authority should bind before the runtime scope is evaluated");
+    let error = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request: hyperliquid_quote_request(),
+            order_binding: order_binding(),
+            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect_err("mismatched funding authority must fail closed");
 
     assert!(matches!(
         error,
-        EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed { .. }
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionError::AuthorityBinding(
+            EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed { .. }
+        )
     ));
 }

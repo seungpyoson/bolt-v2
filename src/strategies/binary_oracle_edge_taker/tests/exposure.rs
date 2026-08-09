@@ -760,11 +760,10 @@ fn managed_partial_entry_blocks_normal_exit_until_entry_order_resolves() {
 
 #[test]
 fn forced_flat_exit_submits_despite_resting_pending_entry() {
-    let configured_instruments = configured_outcome_instruments(
-        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
-    );
+    let configured_instruments =
+        configured_outcome_instruments(&ready_to_trade_strategy_with_bound_economics());
     for instrument_id in configured_instruments {
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let mut strategy = ready_to_trade_strategy_with_bound_economics();
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
@@ -831,24 +830,21 @@ fn forced_flat_exit_submits_despite_resting_pending_entry() {
 
 #[test]
 fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
-    let configured_instruments = configured_outcome_instruments(
-        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
-    );
+    let configured_instruments =
+        configured_outcome_instruments(&ready_to_trade_strategy_with_bound_economics());
     for instrument_id in configured_instruments {
         let submit_admission = submit_admission_with_provider_cap(
             Decimal::new(10_000, 0),
             recording_decision_evidence(),
         );
-        let (mut strategy, fee_provider) =
-            ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+        let mut strategy = ready_to_trade_strategy_with_bound_economics();
         strategy.context = StrategyBuildContext::new(
-            fee_provider,
+            fixture_order_economics(),
             recording_decision_evidence(),
             submit_admission,
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
-        )
-        .with_order_economics(fixture_order_economics());
+        );
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
@@ -1245,7 +1241,7 @@ fn late_fill_observed_entry_cancel_or_expire_preserves_entry_reconcile_fail_clos
 #[test]
 fn malformed_entry_reject_stops_same_instrument_entry_decisions() {
     let entry_client_order_id = ClientOrderId::from("ENTRY-MALFORMED-AMOUNTS");
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
@@ -1362,7 +1358,7 @@ fn selection_rotation_reclassifies_unresolved_pending_entry_and_records_lifecycl
 #[test]
 fn unfillable_fok_entry_reject_waits_for_book_change_before_redeciding() {
     let entry_client_order_id = ClientOrderId::from("ENTRY-FOK-NO-MATCH");
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
@@ -1416,7 +1412,7 @@ fn incident_entry_reject_strings_pin_classifier_classes() {
 #[test]
 fn balance_entry_reject_stops_same_instrument_entry_decisions() {
     let entry_client_order_id = ClientOrderId::from("ENTRY-BALANCE-REJECTED");
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
@@ -1456,7 +1452,7 @@ fn balance_entry_reject_stops_same_instrument_entry_decisions() {
 #[test]
 fn unknown_entry_reject_waits_for_book_change_before_redeciding() {
     let entry_client_order_id = ClientOrderId::from("ENTRY-UNKNOWN-REJECTED");
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
@@ -1493,7 +1489,7 @@ fn unknown_entry_reject_waits_for_book_change_before_redeciding() {
 
 #[test]
 fn book_delta_entry_reconcile_pending_does_not_try_new_entry() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     let pending = pending_entry_state(
         &mut strategy,
@@ -1569,7 +1565,7 @@ fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
 
 #[test]
 fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
@@ -1643,24 +1639,21 @@ fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
 
 #[test]
 fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
-    let configured_instruments = configured_outcome_instruments(
-        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
-    );
+    let configured_instruments =
+        configured_outcome_instruments(&ready_to_trade_strategy_with_bound_economics());
     for instrument_id in configured_instruments {
         let submit_admission = submit_admission_with_provider_cap(
             Decimal::new(10_000, 0),
             recording_decision_evidence(),
         );
-        let (mut strategy, fee_provider) =
-            ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+        let mut strategy = ready_to_trade_strategy_with_bound_economics();
         strategy.context = StrategyBuildContext::new(
-            fee_provider,
+            fixture_order_economics(),
             recording_decision_evidence(),
             submit_admission,
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
-        )
-        .with_order_economics(fixture_order_economics());
+        );
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
@@ -1742,7 +1735,7 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
 
 #[test]
 fn position_closed_in_shadow_mode_suppresses_resting_entry_cancel() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
@@ -2681,11 +2674,10 @@ fn taker_hardening_guards_are_entry_only_and_do_not_block_exits() {
     // Exits must always be able to fire (risk-off), even with a crossed book
     // and an armed spike cooldown. The exit path is structurally independent
     // of `entry_gate_decision_at`, so neither new gate reason can reach it.
-    let configured_instruments = configured_outcome_instruments(
-        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
-    );
+    let configured_instruments =
+        configured_outcome_instruments(&ready_to_trade_strategy_with_bound_economics());
     for instrument_id in configured_instruments {
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let mut strategy = ready_to_trade_strategy_with_bound_economics();
         strategy.config.exit_order.order_type = OrderType::Limit;
         strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
         strategy.config.exit_order.is_post_only = true;
@@ -2838,7 +2830,7 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
 
 #[test]
 fn unknown_recovered_position_lifecycle_blocks_instead_of_liquidating_by_default() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let instrument_id = InstrumentId::from("0xcondition-222.POLYMARKET");
     let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
     tracked_book.last_observed_instrument_id = Some(instrument_id);
@@ -3166,7 +3158,7 @@ fn flat_terminal_override_is_not_consumed_when_exposure_is_not_flat() {
 
 #[test]
 fn new_entry_submit_clears_stale_flat_terminal_override() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
     strategy.config.order_notional_target = 25.0;
@@ -3206,7 +3198,7 @@ fn new_entry_submit_clears_stale_flat_terminal_override() {
 #[test]
 fn live_entered_and_pending_adopted_positions_retain_interval_end_boundary() {
     let live_pending_entry = || {
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let mut strategy = ready_to_trade_strategy_with_bound_economics();
         register_test_strategy_with_active_instruments(&mut strategy);
         set_active_books_best_prices(&mut strategy, 0.40, 0.41);
         strategy.config.order_notional_target = 25.0;

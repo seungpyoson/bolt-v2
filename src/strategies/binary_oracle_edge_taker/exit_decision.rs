@@ -290,8 +290,6 @@ pub(super) fn exit_decision_details(
         fair_probability_up,
         fair_probability_down,
         uncertainty_band_probability,
-        up_fee_bps: None,
-        down_fee_bps: None,
         hold_ev_bps,
         exit_ev_bps,
         realized_vol,

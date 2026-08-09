@@ -4,7 +4,6 @@ use crate::support;
 /// portfolio may hold several markets from, so the two are not interchangeable.
 const MARKET_KEY: &str = "eth-static-event";
 
-use anyhow::Result;
 use bolt_v2::{
     bolt_v3_config::ReferencePriceProvider,
     bolt_v3_current_evidence::{
@@ -18,7 +17,6 @@ use bolt_v2::{
     bolt_v3_maker_order_dispatch::MakerOrderDispatchOutcome,
     bolt_v3_maker_order_plan::{MakerLegBinding, MakerMarketActionOrderInput},
     bolt_v3_maker_quote_plan::{MakerQuotePlanInputs, plan_maker_quote_targets},
-    bolt_v3_maker_quote_set::QuoteSetBlockReason,
     bolt_v3_maker_rate_budget::build_requote_budget_pair,
     bolt_v3_maker_risk::{MakerLossRiskPolicy, MakerRiskBlockReason, MakerRiskMode},
     bolt_v3_maker_runtime_quote::{
@@ -32,7 +30,6 @@ use bolt_v2::{
     },
     bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
-    bolt_v3_providers::FeeProvider,
     bolt_v3_quote_lifecycle::{
         Leg, LegEvent, LifecycleAction, MarketAction, MarketQuote, MarketState,
     },
@@ -53,7 +50,6 @@ use bolt_v2::{
         mu::MakerMuState,
     },
 };
-use futures_util::{FutureExt, future::BoxFuture};
 use nautilus_common::{
     actor::DataActorNative,
     cache::Cache,
@@ -142,7 +138,7 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
     };
 
     let outcome = maker
-        .route_maker_order_command(&command, "maker_submit", Decimal::ZERO)
+        .route_maker_order_command(&command, "maker_submit", Decimal::ONE)
         .expect("maker submit should route through shared execution context");
 
     assert_eq!(
@@ -163,6 +159,20 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
         writer.admission_decisions()[0].outcome,
         AdmissionDecisionOutcome::Admitted
     );
+    let decisions = writer.admission_decisions();
+    let economics = decisions[0]
+        .economics
+        .as_ref()
+        .expect("maker admission evidence must retain its economics lineage");
+    assert_eq!(economics.decision_correlation_id, "MAKER-YES-1");
+    assert_eq!(economics.core_total, "0");
+    assert_eq!(economics.core_net_edge, "1");
+    assert_eq!(economics.forecast_net_edge, "1");
+    assert!(economics.forecast_complete);
+    assert!(economics.missing_forecast_component_ids.is_empty());
+    assert_eq!(economics.source_snapshot_ids, vec!["fixture-market-info"]);
+    assert_eq!(economics.reservation_basis, "0.8000");
+    assert_eq!(economics.full_reservation_liability, "0.8000");
 }
 
 #[test]
@@ -186,7 +196,6 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
             },
         )
         .expect("maker quote tick should route through shared execution context");
@@ -290,7 +299,6 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
         price_precision: 2,
         quantity_precision: 2,
         submit_order_prefix: "maker_submit",
-        max_fee_bps: Decimal::ZERO,
     };
 
     maker
@@ -331,61 +339,6 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
 }
 
 #[test]
-fn maker_runtime_quote_does_not_misreport_collateral_rejection_as_requote_throttling() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
-    let (mut maker, _cache) = maker_with_active_static_market(writer.recorder(), admission);
-    record_one_budget_block(&mut maker, MARKET_KEY);
-    assert_eq!(writer.requote_throttles().len(), 1);
-    let mut market = MarketQuote::new(false);
-    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
-        .expect("ample requote budget fixture builds");
-    let mut quote_set = quote_set_inputs();
-    quote_set.available_collateral = 0.01;
-
-    let outcome = maker
-        .route_maker_runtime_quote(
-            MARKET_KEY,
-            &mut market,
-            &mut budget,
-            BinaryOracleMakerRuntimeQuoteRouteInput {
-                quote_plan: quote_plan_inputs(static_binary_event::KEY),
-                quote_set,
-                submit_template: &maker_limit_post_only_template(),
-                price_precision: 2,
-                quantity_precision: 2,
-                submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
-            },
-        )
-        .expect("collateral rejection should return a blocked quote decision");
-
-    let quote_set = outcome
-        .quote
-        .quote_set
-        .expect("valid quote inputs should reach reservation");
-    assert_eq!(
-        quote_set.yes.blocked_by,
-        Some(QuoteSetBlockReason::ReservationRejected)
-    );
-    assert_eq!(
-        quote_set.no.blocked_by,
-        Some(QuoteSetBlockReason::ReservationRejected)
-    );
-    assert_eq!(
-        writer.requote_throttles().len(),
-        1,
-        "collateral rejection must not add a requote-budget throttle record"
-    );
-    record_one_budget_block(&mut maker, MARKET_KEY);
-    assert_eq!(
-        writer.requote_throttles().len(),
-        2,
-        "collateral rejection ends the prior budget-throttle episode, so a later budget block records again"
-    );
-}
-
-#[test]
 fn maker_runtime_quote_rejects_an_inactive_market_before_planning() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
@@ -407,7 +360,6 @@ fn maker_runtime_quote_rejects_an_inactive_market_before_planning() {
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
         },
     );
 
@@ -465,7 +417,6 @@ fn maker_run_quote_cycle_rejects_an_inactive_market_without_mutation() {
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
         },
     );
 
@@ -502,7 +453,6 @@ fn maker_runtime_quote_rejects_a_family_mismatch_before_planning() {
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
         },
     );
 
@@ -538,7 +488,6 @@ fn maker_run_quote_cycle_rejects_a_family_mismatch_before_minting_identities() {
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
         },
     );
 
@@ -593,7 +542,6 @@ fn maker_run_quote_cycle_waits_for_a_preloaded_next_window_without_mutation() {
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
         },
     );
 
@@ -660,7 +608,6 @@ fn maker_runtime_quote_blocks_timestamps_outside_the_active_window_before_mutati
                     price_precision: 2,
                     quantity_precision: 2,
                     submit_order_prefix: "maker_submit",
-                    max_fee_bps: Decimal::ZERO,
                 },
             )
             .expect("an unavailable runtime window is a normal blocked quote state");
@@ -736,7 +683,6 @@ fn maker_run_quote_cycle_waits_for_timestamps_outside_the_active_window_before_m
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
             },
         );
 
@@ -801,7 +747,6 @@ fn maker_runtime_reference_quote_rejects_an_inactive_market_before_fair_value() 
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
         },
     );
 
@@ -860,7 +805,6 @@ fn maker_runtime_reference_quote_rejects_a_family_mismatch_before_fair_value() {
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
         },
     );
 
@@ -925,7 +869,6 @@ fn maker_runtime_reference_quote_rejects_a_selector_for_another_asset() {
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
         },
     );
 
@@ -1016,7 +959,6 @@ fn maker_runtime_reference_quote_rejects_a_strike_from_another_market_asset_or_w
                     price_precision: 2,
                     quantity_precision: 2,
                     submit_order_prefix: "maker_submit",
-                    max_fee_bps: Decimal::ZERO,
                 },
             )
             .expect_err("a foreign strike must fail before fair-value pricing");
@@ -1100,7 +1042,6 @@ fn maker_runtime_reference_quote_blocks_an_unavailable_window_without_touching_t
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
             },
         )
         .expect("an unavailable runtime window is a normal blocked reference state");
@@ -1173,7 +1114,6 @@ fn maker_runtime_quote_records_one_throttle_while_the_bound_oscillates() {
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
         }
     };
 
@@ -1244,7 +1184,6 @@ fn maker_runtime_quote_records_each_market_in_a_shared_family() {
                     price_precision: 2,
                     quantity_precision: 2,
                     submit_order_prefix: "maker_submit",
-                    max_fee_bps: Decimal::ZERO,
                 },
             )
             .expect("a second market in the same family must not fail the quote route");
@@ -1396,7 +1335,6 @@ fn maker_runtime_metadata_identity_round_trip_prunes_each_predecessor_episode() 
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
             },
         )
         .expect("the first identity routes")
@@ -1458,7 +1396,6 @@ fn maker_runtime_metadata_identity_round_trip_prunes_each_predecessor_episode() 
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
             },
         )
         .expect("the corrected identity routes with the retained quote state")
@@ -1491,7 +1428,6 @@ fn maker_runtime_metadata_identity_round_trip_prunes_each_predecessor_episode() 
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
             },
         )
         .expect("the reverted identity routes with the retained quote state")
@@ -1533,7 +1469,6 @@ fn maker_runtime_quote_records_a_second_block_across_a_cycle_with_no_quote_set()
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
         }
     };
 
@@ -1638,7 +1573,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
             },
         )
         .expect("maker reference quote tick should route through shared context");
@@ -1723,7 +1657,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
             },
         )
         .expect("maker reference quote blocker should be a route outcome");
@@ -1785,7 +1718,6 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
             },
         )
         .expect("maker reference quote shared fair-value blocker should be a route outcome");
@@ -1894,7 +1826,7 @@ fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
+            gross_expected_value: Decimal::ONE,
         })
         .expect("maker should route pre-paid replacement submit through shared context");
 
@@ -2076,19 +2008,6 @@ fn maker_loss_risk_route_hard_flat_does_not_hide_unsupported_active_reduce() {
     assert_eq!(writer.admission_decisions().len(), 0);
 }
 
-#[derive(Debug)]
-struct NoopFeeProvider;
-
-impl FeeProvider for NoopFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        None
-    }
-
-    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        async { Ok(()) }.boxed()
-    }
-}
-
 fn maker_context(
     writer: Arc<DecisionEvidenceRecorder>,
     admission: Arc<BoltV3SubmitAdmissionState>,
@@ -2101,11 +2020,35 @@ fn maker_context_with_writer(
     admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> StrategyBuildContext {
     StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
+        maker_order_economics(),
         bolt_v2::bolt_v3_strategy_context::StrategyDecisionEvidence::maker_for_test(writer),
         admission,
         BoltV3OrderExecutionPolicy::shadow(),
         Venue::from("MAKER.TEST"),
+    )
+}
+
+fn maker_order_economics() -> bolt_v2::bolt_v3_order_execution::BoltV3OrderEconomicsHandle {
+    maker_order_economics_at(1)
+}
+
+fn maker_order_economics_at(
+    source_at_ns: u64,
+) -> bolt_v2::bolt_v3_order_execution::BoltV3OrderEconomicsHandle {
+    support::economics::polymarket_order_economics_for(
+        "maker_execution_client",
+        &[
+            "YES.RUNTIME",
+            "NO.RUNTIME",
+            "MAKER-RT-YES.SIM",
+            "MAKER-RT-NO.SIM",
+            "MAKER-RT-SECOND-YES.SIM",
+            "MAKER-RT-SECOND-NO.SIM",
+            "MAKER-RT-UP.SIM",
+            "MAKER-RT-DOWN.SIM",
+            "MAKER-RT-YES-REISSUED.SIM",
+        ],
+        source_at_ns,
     )
 }
 
@@ -2232,15 +2175,12 @@ fn gate_cleared_informed_fraction() -> UsableMu {
         .expect("warmup flow clears the μ gate")
 }
 
-fn quote_set_inputs() -> MakerRuntimeQuoteSetInput<'static> {
+fn quote_set_inputs() -> MakerRuntimeQuoteSetInput {
     MakerRuntimeQuoteSetInput {
         yes_quantity: 2.0,
         no_quantity: 3.0,
         yes_resting_price: None,
         no_resting_price: None,
-        open_commitments: &[],
-        max_fee_bps: 0.0,
-        available_collateral: 100.0,
         requote_threshold: 0.001,
         eps: 0.001,
         now_ms: RUNTIME_NOW_MS,
@@ -2283,7 +2223,6 @@ fn risk_route_input<'a>(
         price_precision: 2,
         quantity_precision: 2,
         submit_order_prefix: "maker_submit",
-        max_fee_bps: Decimal::ZERO,
     }
 }
 
@@ -2927,7 +2866,7 @@ fn maker_sim_context(
     admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> StrategyBuildContext {
     StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
+        maker_order_economics_at(RUNTIME_NOW_MS.saturating_mul(1_000_000)),
         bolt_v2::bolt_v3_strategy_context::StrategyDecisionEvidence::maker_for_test(writer),
         admission,
         BoltV3OrderExecutionPolicy::shadow(),
@@ -3090,7 +3029,6 @@ fn record_one_budget_block_for_family(
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
             },
         )
         .expect("an active market routes its first budget block");
@@ -3220,7 +3158,6 @@ fn maker_lifecycle_retires_throttle_episodes_from_the_runtime_owned_store() {
                     price_precision: 2,
                     quantity_precision: 2,
                     submit_order_prefix: "maker_submit",
-                    max_fee_bps: Decimal::ZERO,
                 },
             )
             .expect("the first denied leg in an active lifecycle records");
@@ -3414,7 +3351,6 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
                 price_precision: 2,
                 quantity_precision: 2,
                 submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
             },
         )
         .expect("run_quote_cycle routes an active market")

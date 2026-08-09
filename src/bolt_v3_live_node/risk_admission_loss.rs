@@ -20,6 +20,7 @@ use crate::bolt_v3_provider_collateral_allowance::{
 };
 use crate::{
     bolt_v3_config::{KillSwitchFlattenConfigBlock, KillSwitchFlattenRouteKindConfig},
+    bolt_v3_economics_runtime::{AuthoritativeEconomicsInputStore, bind_execution_economics},
     bolt_v3_kill_switch_flatten::{
         BoltV3KillSwitchFlattenCandidate, BoltV3KillSwitchFlattenCommand,
         BoltV3KillSwitchFlattenPlan, BoltV3KillSwitchFlattenPlanRequest,
@@ -29,8 +30,8 @@ use crate::{
         BoltV3KillSwitchFlattenSupervisor,
     },
     bolt_v3_order_execution::{
-        BoltV3KillSwitchFlattenRoutingContext, BoltV3NtSubmitOnlySink, BoltV3OrderExecutionPolicy,
-        route_kill_switch_flatten_command_with_sink,
+        BoltV3KillSwitchFlattenRoutingContext, BoltV3NtSubmitOnlySink, BoltV3OrderEconomicsHandle,
+        BoltV3OrderExecutionPolicy, route_kill_switch_flatten_command_with_sink,
     },
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_submit_admission::{
@@ -773,6 +774,7 @@ fn live_node_kill_switch_flatten_executor(
     node: &LiveNode,
     decision_evidence: OrderExecutionEvidence,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    economics_inputs: &AuthoritativeEconomicsInputStore,
 ) -> Result<Option<Rc<dyn KillSwitchFlattenExecutor>>, BoltV3LiveNodeError> {
     let Some(kill_switch) = loaded
         .root
@@ -813,6 +815,18 @@ fn live_node_kill_switch_flatten_executor(
     let order_template = flatten_order_template_from_config(flatten);
     let execution_clients_by_venue = execution_clients_by_venue(loaded)
         .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
+    let economics_by_venue = execution_clients_by_venue
+        .iter()
+        .map(|(venue, execution_client_id)| {
+            bind_execution_economics(loaded, execution_client_id, economics_inputs)
+                .map(|economics| (*venue, BoltV3OrderEconomicsHandle::new(economics)))
+                .map_err(|error| {
+                    BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
+                        "kill switch flatten economics binding failed for execution client `{execution_client_id}`: {error}"
+                    ))
+                })
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     let cache = node.kernel().cache();
     let risk_engine = node.kernel().risk_engine().clone();
     let clock = node.kernel().clock();
@@ -879,6 +893,9 @@ fn live_node_kill_switch_flatten_executor(
                         )
                     })?
                     .as_str();
+                let order_economics = economics_by_venue.get(&venue).ok_or_else(|| {
+                    anyhow::anyhow!("kill switch flatten economics not bound for venue={venue}")
+                })?;
                 let mut order_factory = OrderFactory::new(
                     trader_id,
                     command.strategy_id(),
@@ -938,7 +955,7 @@ fn live_node_kill_switch_flatten_executor(
                         execution_client_id,
                         fallback_price: fallback_price.as_str(),
                         instrument: Some(&instrument),
-                        max_fee_bps: Decimal::ZERO,
+                        order_economics,
                     },
                     command,
                 )?;
@@ -1104,6 +1121,7 @@ pub(super) fn configure_bolt_v3_kill_switch_loss_protection(
     node: &LiveNode,
     decision_evidence: impl Into<OrderExecutionEvidence>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    economics_inputs: &AuthoritativeEconomicsInputStore,
 ) -> Result<Option<Rc<RefCell<KillSwitchLossProtection>>>, BoltV3LiveNodeError> {
     let Some(kill_switch) = loaded
         .root
@@ -1141,6 +1159,7 @@ pub(super) fn configure_bolt_v3_kill_switch_loss_protection(
         node,
         decision_evidence.into(),
         submit_admission.clone(),
+        economics_inputs,
     )?;
     let action_sink: Rc<dyn KillSwitchLossActionSink> = match flatten_executor {
         Some(flatten_executor) => Rc::new(NtReducingLossActionSink::with_flatten_executor(
@@ -2045,12 +2064,22 @@ mod tests {
                     execution_client_id: "execution_client",
                     fallback_price: "1",
                     instrument: Some(&instrument),
-                    max_fee_bps: Decimal::ZERO,
+                    order_economics: test_order_economics(),
                 },
                 command,
             )?;
             Ok(())
         }
+    }
+
+    fn test_order_economics() -> &'static crate::bolt_v3_order_execution::BoltV3OrderEconomicsHandle
+    {
+        static HANDLE: std::sync::OnceLock<
+            crate::bolt_v3_order_execution::BoltV3OrderEconomicsHandle,
+        > = std::sync::OnceLock::new();
+        HANDLE.get_or_init(|| {
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client")
+        })
     }
 
     fn flatten_admission_with_yes_position(

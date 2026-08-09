@@ -24,7 +24,7 @@ use nautilus_model::{
     instruments::{Instrument, InstrumentAny},
 };
 use nautilus_trading::{StrategyConfig, StrategyCore};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::FromPrimitive};
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
@@ -117,12 +117,11 @@ pub struct BinaryOracleMaker {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerRuntimeQuoteRouteInput<'a> {
     pub quote_plan: MakerQuotePlanInputs<'a>,
-    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
+    pub quote_set: MakerRuntimeQuoteSetInput,
     pub submit_template: &'a NtOrderTemplate,
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -224,12 +223,11 @@ fn requote_throttle_observation(
 pub struct BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'a> {
     pub reference_fair_value: BinaryOracleMakerReferenceFairValueInput<'a>,
     pub quote_plan: MakerQuotePlanInputs<'a>,
-    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
+    pub quote_set: MakerRuntimeQuoteSetInput,
     pub submit_template: &'a NtOrderTemplate,
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
 }
 
 /// A validated opening strike bound to one configured market, asset, and window.
@@ -329,7 +327,9 @@ pub struct BinaryOracleMakerMarketActionRouteInput<'a> {
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
+    /// Strategy-owned gross value assumption for a submit action. Cancel-only
+    /// actions do not consume it.
+    pub gross_expected_value: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -351,13 +351,38 @@ pub struct BinaryOracleMakerRiskRouteInput<'a> {
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerRiskRouteOutcome {
     pub risk: MakerRiskDecision,
     pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
+}
+
+fn maker_command_gross_expected_value(
+    command: &MakerCompiledOrderCommand,
+    fair_probability_up: f64,
+) -> Result<Decimal> {
+    let MakerCompiledOrderCommand::Submit { leg, inputs, .. } = command else {
+        return Ok(Decimal::ZERO);
+    };
+    let fair_probability_up = Decimal::from_f64(fair_probability_up)
+        .filter(|value| (Decimal::ZERO..=Decimal::ONE).contains(value))
+        .ok_or_else(|| anyhow::anyhow!("maker economics fair probability is invalid"))?;
+    let outcome_probability = match leg {
+        Leg::Yes => fair_probability_up,
+        Leg::No => Decimal::ONE - fair_probability_up,
+    };
+    let price = inputs
+        .price
+        .ok_or_else(|| anyhow::anyhow!("maker economics requires a limit price"))?
+        .to_string()
+        .parse::<Decimal>()?;
+    let quantity = inputs.quantity.to_string().parse::<Decimal>()?;
+    outcome_probability
+        .checked_sub(price)
+        .and_then(|edge| edge.checked_mul(quantity))
+        .ok_or_else(|| anyhow::anyhow!("maker gross expected value arithmetic overflow"))
 }
 
 impl std::fmt::Debug for BinaryOracleMaker {
@@ -436,7 +461,7 @@ impl BinaryOracleMaker {
         &mut self,
         command: &MakerCompiledOrderCommand,
         submit_order_prefix: &str,
-        max_fee_bps: Decimal,
+        gross_expected_value: Decimal,
     ) -> Result<MakerOrderDispatchOutcome> {
         let policy = self.context.order_execution_policy();
         let decision_evidence = self
@@ -446,6 +471,7 @@ impl BinaryOracleMaker {
         let submit_admission = self.context.submit_admission_arc();
         let strategy_id = self.config.strategy_id.clone();
         let execution_client_id = self.config.client_id.clone();
+        let order_economics = self.context.order_economics().clone();
         route_maker_order_command_through_policy(
             policy,
             self,
@@ -454,7 +480,8 @@ impl BinaryOracleMaker {
             BoltV3MakerOrderRoutingContext {
                 strategy_id: strategy_id.as_str(),
                 execution_client_id: execution_client_id.as_str(),
-                max_fee_bps,
+                order_economics: &order_economics,
+                gross_expected_value,
             },
             MakerOrderDispatchInput {
                 command,
@@ -567,7 +594,6 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
         } = input;
 
         let authority = self.ensure_active_quote_authority(market_key, quote_plan.family_key)?;
@@ -606,9 +632,20 @@ impl BinaryOracleMaker {
             self.update_requote_throttle_edge(market_key, market, budget, leg, decision, now_ms)?;
         }
         let orders = if let Some(order_plan) = quote_decision.order_plan.as_ref() {
+            let fair_probability_up = quote_decision
+                .quote_plan
+                .as_ref()
+                .expect("an order plan requires a quote plan")
+                .fair_probability_up;
             let mut route_command =
                 |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-                    self.route_maker_order_command(command, submit_order_prefix, max_fee_bps)
+                    let gross_expected_value =
+                        maker_command_gross_expected_value(command, fair_probability_up)?;
+                    self.route_maker_order_command(
+                        command,
+                        submit_order_prefix,
+                        gross_expected_value,
+                    )
                 };
             Some(dispatch_maker_runtime_order_plan_with_command_router(
                 MakerRuntimeOrderDispatchInput {
@@ -649,7 +686,6 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
         } = input;
 
         let authority = self.ensure_active_quote_authority(market_key, quote_plan.family_key)?;
@@ -749,7 +785,6 @@ impl BinaryOracleMaker {
                 price_precision,
                 quantity_precision,
                 submit_order_prefix,
-                max_fee_bps,
             },
         )?;
         // A routing error is now per-leg data, not a `?` abort; fail loud here to
@@ -786,14 +821,14 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
+            gross_expected_value,
         } = input;
 
         let action_kind = action.action;
         let order_plan = maker_order_plan_from_market_action(action);
 
         let mut route_command = |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-            self.route_maker_order_command(command, submit_order_prefix, max_fee_bps)
+            self.route_maker_order_command(command, submit_order_prefix, gross_expected_value)
         };
         let orders = dispatch_maker_runtime_order_plan_with_command_router(
             MakerRuntimeOrderDispatchInput {
@@ -840,7 +875,6 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
         } = input;
         let mode = maker_risk_mode_for_loss_decision(&policy, loss_decision);
         let risk = apply_maker_risk_mode(market, mode);
@@ -859,7 +893,7 @@ impl BinaryOracleMaker {
                     price_precision,
                     quantity_precision,
                     submit_order_prefix,
-                    max_fee_bps,
+                    gross_expected_value: Decimal::ZERO,
                 })?
                 .orders,
             )
@@ -974,12 +1008,11 @@ fn requote_throttle_bound(
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerQuoteCycleInput<'a> {
     pub quote_plan: MakerQuotePlanInputs<'a>,
-    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
+    pub quote_set: MakerRuntimeQuoteSetInput,
     pub submit_template: &'a NtOrderTemplate,
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
 }
 
 impl BinaryOracleMaker {
@@ -1130,7 +1163,6 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
         } = input;
         let outcome = self.route_maker_runtime_quote(
             market_key,
@@ -1143,7 +1175,6 @@ impl BinaryOracleMaker {
                 price_precision,
                 quantity_precision,
                 submit_order_prefix,
-                max_fee_bps,
             },
         )?;
         if outcome.quote.blocked_by == Some(MakerRuntimeQuoteBlockReason::RuntimeWindowUnavailable)
@@ -1243,11 +1274,9 @@ mod tests {
         bolt_v3_numeric::NANOS_PER_MILLI_U64,
         bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
         bolt_v3_position_contract::BoltV3PositionMarketLifecycle,
-        bolt_v3_providers::FeeProvider,
         bolt_v3_strategy_context::StrategyDecisionEvidence,
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     };
-    use futures_util::{FutureExt, future::BoxFuture};
     use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
         enums::{AggressorSide, AssetClass},
@@ -1288,9 +1317,6 @@ mod tests {
     const TEST_MU_FLOOR: f64 = 0.05;
     const TEST_REQUOTE_MIN_INTERVAL_MS: u64 = 500;
     const TEST_QUOTE_INTERVAL_MS: u64 = 1_000;
-
-    #[derive(Debug)]
-    struct NoopFeeProvider;
 
     #[allow(clippy::too_many_arguments)]
     fn maker_binary_option(
@@ -1350,16 +1376,6 @@ mod tests {
         ))
     }
 
-    impl FeeProvider for NoopFeeProvider {
-        fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-            None
-        }
-
-        fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-            async { Ok(()) }.boxed()
-        }
-    }
-
     fn test_context() -> StrategyBuildContext {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let evidence = StrategyDecisionEvidence::maker(
@@ -1367,7 +1383,7 @@ mod tests {
             OrderExecutionEvidence::new(&writer),
         );
         StrategyBuildContext::new(
-            Arc::new(NoopFeeProvider),
+            crate::bolt_v3_economics_test_support::fixture_order_economics(),
             evidence,
             Arc::new(BoltV3SubmitAdmissionState::new(writer)),
             BoltV3OrderExecutionPolicy::shadow(),

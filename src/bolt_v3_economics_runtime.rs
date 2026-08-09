@@ -1,7 +1,7 @@
 use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
 use rust_decimal::Decimal;
@@ -11,13 +11,16 @@ use crate::{
         EconomicsReportingConfig, EconomicsValuationLegConfig, EconomicsValuationOrientation,
         ExecutionEconomicsConfig, LoadedBoltV3Config,
     },
-    bolt_v3_providers::{ProviderEconomicsAdapterBuildContext, binding_for_provider_key},
+    bolt_v3_providers::{
+        ProviderEconomicsAdapterBuildContext, ProviderEconomicsReplayAuthorityBuildContext,
+        ProviderExecutionEconomicsBinding, binding_for_provider_key,
+    },
     economics::{
         AccountId, AdmissionTreatment, CurrencyId, EconomicScope, EconomicsError,
         EconomicsInstrumentId, EconomicsQuote, EconomicsQuoteRequest, EdgeBasisEvidence,
-        NativeUnitId, NetEdgeQuote, PlannedFillNotional, ProductSurfaceId, ReportingPolicyId,
-        SnapshotId, SourceIdentity, SourceValidity, ValuationLeg, ValuationRoute, ValuationRouteId,
-        VenueEconomicsAdapter, VenueEconomicsUnavailable, VenueEdgeBasisEstimate,
+        LiquidityRole, NativeUnitId, NetEdgeQuote, PlannedFillNotional, ProductSurfaceId,
+        ReportingPolicyId, SnapshotId, SourceIdentity, SourceValidity, ValuationLeg,
+        ValuationRoute, ValuationRouteId, VenueEconomicsAdapter, VenueEconomicsUnavailable,
         VenueQuoteEstimate, fold_net_edge, validate_and_aggregate_quote,
     },
 };
@@ -94,7 +97,7 @@ pub enum AuthoritativeValuationObservation {
 
 #[derive(Clone, Default)]
 pub struct AuthoritativeEconomicsInputStore {
-    by_scope: Arc<BTreeMap<AuthoritativeEconomicsKey, AuthoritativeVenueEconomicsInput>>,
+    by_scope: Arc<RwLock<BTreeMap<AuthoritativeEconomicsKey, AuthoritativeVenueEconomicsInput>>>,
 }
 
 impl AuthoritativeEconomicsInputStore {
@@ -113,71 +116,79 @@ impl AuthoritativeEconomicsInputStore {
             }
         }
         Ok(Self {
-            by_scope: Arc::new(by_scope),
+            by_scope: Arc::new(RwLock::new(by_scope)),
         })
+    }
+
+    /// Atomically replace one execution client's authority set.
+    ///
+    /// Runtime refreshers use this to publish rotating instruments without
+    /// leaving retired scopes quotable. Other execution clients are untouched.
+    pub fn replace_execution_client(
+        &self,
+        execution_client_id: &str,
+        inputs: impl IntoIterator<Item = AuthoritativeVenueEconomicsInput>,
+    ) -> Result<(), EconomicsRuntimeBindingError> {
+        let mut replacement = BTreeMap::new();
+        for input in inputs {
+            if input.key.execution_client_id != execution_client_id {
+                return Err(
+                    EconomicsRuntimeBindingError::AuthoritativeExecutionClientMismatch {
+                        expected_execution_client_id: execution_client_id.to_string(),
+                        authoritative_execution_client_id: input.key.execution_client_id,
+                    },
+                );
+            }
+            let key = input.key.clone();
+            if replacement.insert(key.clone(), input).is_some() {
+                return Err(EconomicsRuntimeBindingError::DuplicateAuthoritativeInput {
+                    execution_client_id: key.execution_client_id,
+                    instrument_id: key.instrument_id,
+                    product_surface_id: key.product_surface_id,
+                });
+            }
+        }
+        let mut current = self
+            .by_scope
+            .write()
+            .map_err(|_| EconomicsRuntimeBindingError::AuthoritativeInputStoreUnavailable)?;
+        current.retain(|key, _| key.execution_client_id != execution_client_id);
+        current.extend(replacement);
+        Ok(())
     }
 
     fn for_execution_client(
         &self,
         execution_client_id: &str,
-    ) -> impl Iterator<Item = &AuthoritativeVenueEconomicsInput> {
-        self.by_scope
+    ) -> Result<Vec<AuthoritativeVenueEconomicsInput>, EconomicsRuntimeBindingError> {
+        Ok(self
+            .by_scope
+            .read()
+            .map_err(|_| EconomicsRuntimeBindingError::AuthoritativeInputStoreUnavailable)?
             .iter()
-            .filter(move |(key, _)| key.execution_client_id == execution_client_id)
-            .map(|(_, input)| input)
+            .filter(|(key, _)| key.execution_client_id == execution_client_id)
+            .map(|(_, input)| input.clone())
+            .collect())
+    }
+
+    fn exact(
+        &self,
+        key: &AuthoritativeEconomicsKey,
+    ) -> Result<Option<AuthoritativeVenueEconomicsInput>, EconomicsRuntimeBindingError> {
+        Ok(self
+            .by_scope
+            .read()
+            .map_err(|_| EconomicsRuntimeBindingError::AuthoritativeInputStoreUnavailable)?
+            .get(key)
+            .cloned())
     }
 }
 
-struct ExecutionVenueEconomicsRouter {
-    execution_client_id: String,
-    provider_key: String,
-    account_id: AccountId,
-    by_scope: BTreeMap<(String, String), BoundEconomicsScope>,
-}
-
+#[derive(Clone)]
 struct BoundEconomicsScope {
+    account_id: AccountId,
     adapter: Arc<dyn VenueEconomicsAdapter>,
     valuation_routes: Vec<ValuationRoute>,
-}
-
-impl ExecutionVenueEconomicsRouter {
-    fn adapter_for_request(
-        &self,
-        request: &EconomicsQuoteRequest,
-    ) -> Result<&BoundEconomicsScope, VenueEconomicsUnavailable> {
-        if request.execution_client_id.as_str() != self.execution_client_id {
-            return Err(VenueEconomicsUnavailable::RequestScopeMismatch);
-        }
-        self.by_scope
-            .get(&(
-                request.instrument_id.as_str().to_string(),
-                request.product_surface_id.as_str().to_string(),
-            ))
-            .ok_or(VenueEconomicsUnavailable::MissingAuthoritativeSnapshot)
-    }
-}
-
-impl VenueEconomicsAdapter for ExecutionVenueEconomicsRouter {
-    fn provider_key(&self) -> &str {
-        &self.provider_key
-    }
-
-    fn resolve_edge_basis(
-        &self,
-        request: &EconomicsQuoteRequest,
-        planned_fill_notional: PlannedFillNotional,
-    ) -> Result<VenueEdgeBasisEstimate, VenueEconomicsUnavailable> {
-        self.adapter_for_request(request)?
-            .adapter
-            .resolve_edge_basis(request, planned_fill_notional)
-    }
-
-    fn quote(
-        &self,
-        request: &EconomicsQuoteRequest,
-    ) -> Result<VenueQuoteEstimate, VenueEconomicsUnavailable> {
-        self.adapter_for_request(request)?.adapter.quote(request)
-    }
 }
 
 #[derive(Clone)]
@@ -187,7 +198,9 @@ pub struct BoundExecutionEconomics {
     reporting_policy_id: ReportingPolicyId,
     reporting_currency: CurrencyId,
     config: ExecutionEconomicsConfig,
-    adapter: Arc<ExecutionVenueEconomicsRouter>,
+    execution: toml::Value,
+    binding: ProviderExecutionEconomicsBinding,
+    inputs: AuthoritativeEconomicsInputStore,
 }
 
 impl BoundExecutionEconomics {
@@ -199,16 +212,107 @@ impl BoundExecutionEconomics {
         &self.provider_key
     }
 
-    pub fn account_id(&self) -> &AccountId {
-        &self.adapter.account_id
-    }
-
     pub fn config(&self) -> &ExecutionEconomicsConfig {
         &self.config
     }
 
-    pub fn adapter(&self) -> Arc<dyn VenueEconomicsAdapter> {
-        self.adapter.clone()
+    pub(crate) fn planned_exit_horizon_ns(&self) -> Result<u64, EconomicsAdmissionError> {
+        self.config
+            .quote_validity_ms
+            .checked_mul(NANOSECONDS_PER_MILLISECOND)
+            .ok_or(EconomicsError::ArithmeticOverflow.into())
+    }
+
+    fn resting_order_refresh_margin_ns(&self) -> Result<u64, EconomicsAdmissionError> {
+        self.config
+            .resting_order_refresh_margin_ms
+            .checked_mul(NANOSECONDS_PER_MILLISECOND)
+            .ok_or(EconomicsError::ArithmeticOverflow.into())
+    }
+
+    fn build_scope(
+        &self,
+        input: &AuthoritativeVenueEconomicsInput,
+    ) -> Result<BoundEconomicsScope, EconomicsRuntimeBindingError> {
+        if input.provider_key != self.provider_key {
+            return Err(
+                EconomicsRuntimeBindingError::AuthoritativeProviderMismatch {
+                    execution_client_id: self.execution_client_id.clone(),
+                    configured_provider_key: self.provider_key.clone(),
+                    authoritative_provider_key: input.provider_key.clone(),
+                },
+            );
+        }
+        let built = (self.binding.build_adapter)(ProviderEconomicsAdapterBuildContext {
+            execution: &self.execution,
+            config: &self.config,
+            instrument_id: &input.key.instrument_id,
+            product_surface_id: &input.key.product_surface_id,
+            authority: input.authority.as_ref(),
+        })
+        .map_err(|message| {
+            EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
+                execution_client_id: self.execution_client_id.clone(),
+                instrument_id: input.key.instrument_id.clone(),
+                product_surface_id: input.key.product_surface_id.clone(),
+                message,
+            }
+        })?;
+        if built.adapter.provider_key() != self.provider_key {
+            return Err(
+                EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
+                    execution_client_id: self.execution_client_id.clone(),
+                    instrument_id: input.key.instrument_id.clone(),
+                    product_surface_id: input.key.product_surface_id.clone(),
+                    message: format!(
+                        "provider builder returned `{}` instead of `{}`",
+                        built.adapter.provider_key(),
+                        self.provider_key
+                    ),
+                },
+            );
+        }
+        let account_id = AccountId::try_new(built.account_id).map_err(|error| {
+            EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
+                execution_client_id: self.execution_client_id.clone(),
+                instrument_id: input.key.instrument_id.clone(),
+                product_surface_id: input.key.product_surface_id.clone(),
+                message: error.to_string(),
+            }
+        })?;
+        let valuation_routes = build_valuation_routes(&self.config, &input.valuation_observations)
+            .map_err(
+                |message| EconomicsRuntimeBindingError::AuthoritativeValuationBuildFailed {
+                    execution_client_id: self.execution_client_id.clone(),
+                    instrument_id: input.key.instrument_id.clone(),
+                    product_surface_id: input.key.product_surface_id.clone(),
+                    message,
+                },
+            )?;
+        Ok(BoundEconomicsScope {
+            account_id,
+            adapter: built.adapter,
+            valuation_routes,
+        })
+    }
+
+    fn scope_for_request(
+        &self,
+        request: &EconomicsQuoteRequest,
+    ) -> Result<BoundEconomicsScope, EconomicsAdmissionError> {
+        if request.execution_client_id.as_str() != self.execution_client_id {
+            return Err(VenueEconomicsUnavailable::RequestScopeMismatch.into());
+        }
+        let key = AuthoritativeEconomicsKey {
+            execution_client_id: self.execution_client_id.clone(),
+            instrument_id: request.instrument_id.as_str().to_string(),
+            product_surface_id: request.product_surface_id.as_str().to_string(),
+        };
+        let input = self
+            .inputs
+            .exact(&key)?
+            .ok_or(VenueEconomicsUnavailable::MissingAuthoritativeSnapshot)?;
+        self.build_scope(&input).map_err(Into::into)
     }
 
     pub(crate) fn request_authority(
@@ -216,18 +320,20 @@ impl BoundExecutionEconomics {
         instrument_id: &str,
     ) -> Result<BoundEconomicsRequestAuthority, EconomicsAdmissionError> {
         let instrument_id = EconomicsInstrumentId::try_new(instrument_id)?;
-        let mut matching = self
-            .adapter
-            .by_scope
-            .keys()
-            .filter(|(configured_instrument, _)| configured_instrument == instrument_id.as_str());
-        let (_, product_surface_id) = matching
+        let matching = self
+            .inputs
+            .for_execution_client(&self.execution_client_id)?;
+        let mut matching = matching
+            .iter()
+            .filter(|input| input.key.instrument_id == instrument_id.as_str());
+        let input = matching
             .next()
             .ok_or(VenueEconomicsUnavailable::MissingAuthoritativeSnapshot)?;
         if matching.next().is_some() {
             return Err(EconomicsAdmissionError::AmbiguousProductSurface);
         }
-        let product_surface_id = ProductSurfaceId::try_new(product_surface_id.clone())?;
+        let scope = self.build_scope(input)?;
+        let product_surface_id = ProductSurfaceId::try_new(input.key.product_surface_id.clone())?;
         let edge_basis_policy_id = self
             .config
             .product_surface_policies
@@ -235,7 +341,7 @@ impl BoundExecutionEconomics {
             .ok_or(EconomicsAdmissionError::EdgeBasisAuthorityMismatch)?;
         Ok(BoundEconomicsRequestAuthority {
             execution_client_id: self.execution_client_id.clone(),
-            account_id: self.account_id().clone(),
+            account_id: scope.account_id,
             product_surface_id: product_surface_id.clone(),
             reporting_policy_id: self.reporting_policy_id.clone(),
             reporting_currency: self.reporting_currency.clone(),
@@ -272,7 +378,10 @@ impl BoundExecutionEconomics {
         {
             return Err(EconomicsAdmissionError::EdgeBasisAuthorityMismatch);
         }
-        let scope = self.adapter.adapter_for_request(&intent.request)?;
+        let scope = self.scope_for_request(&intent.request)?;
+        if intent.request.account_id != scope.account_id {
+            return Err(VenueEconomicsUnavailable::RequestScopeMismatch.into());
+        }
         let planned_fill_notional =
             PlannedFillNotional::from_legs(&intent.request.planned_fill_legs)?;
         let edge_estimate = scope
@@ -401,6 +510,402 @@ impl EconomicsAdmission {
     pub const fn full_reservation_liability(&self) -> Decimal {
         self.full_reservation_liability
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_routing_test(
+        execution_client_id: &str,
+        instrument_id: &str,
+        order_side: crate::economics::OrderSide,
+        order_binding: EconomicsOrderBinding,
+        purpose: EconomicsAdmissionPurpose,
+        reservation_basis: Decimal,
+        full_reservation_liability: Decimal,
+    ) -> Self {
+        use crate::economics::{
+            DecisionCorrelationId, EdgeBasisAmount, EdgeBasisPolicyId, FormulaId, LifecyclePath,
+            LiquidityRole, PlannedFillLeg, RoutingContext,
+        };
+
+        let edge_basis_policy_id =
+            routing_test_id("routing-test-basis", EdgeBasisPolicyId::try_new);
+        let decision_correlation_id =
+            routing_test_id("routing-test-decision", DecisionCorrelationId::try_new);
+        let request = EconomicsQuoteRequest {
+            execution_client_id: routing_test_id(
+                execution_client_id,
+                crate::economics::ExecutionClientId::try_new,
+            ),
+            account_id: routing_test_id("routing-test-account", AccountId::try_new),
+            instrument_id: routing_test_id(instrument_id, EconomicsInstrumentId::try_new),
+            product_surface_id: routing_test_id("routing-test-surface", ProductSurfaceId::try_new),
+            order_side,
+            liquidity_role: LiquidityRole::Taker,
+            planned_fill_legs: vec![PlannedFillLeg {
+                price: Decimal::ONE,
+                quantity: reservation_basis,
+            }],
+            routing: RoutingContext {
+                attached_charge: None,
+            },
+            position: None,
+            lifecycle_path: LifecyclePath::PlannedExit,
+            reporting_policy_id: routing_test_id(
+                "routing-test-reporting",
+                ReportingPolicyId::try_new,
+            ),
+            reporting_currency: routing_test_id("USD", CurrencyId::try_new),
+            edge_basis_policy_id: edge_basis_policy_id.clone(),
+            requested_at_ns: 1,
+            decision_correlation_id: decision_correlation_id.clone(),
+        };
+        let quote = validate_and_aggregate_quote(
+            &request,
+            VenueQuoteEstimate {
+                authority: SourceValidity {
+                    source: routing_test_id("routing-test-source", SourceIdentity::try_new),
+                    snapshot_id: routing_test_id("routing-test-snapshot", SnapshotId::try_new),
+                    source_at_ns: 1,
+                    fetched_at_ns: 1,
+                    valid_until_ns: u64::MAX,
+                },
+                dependency_sources: Vec::new(),
+                components: Vec::new(),
+            },
+            &[],
+        )
+        .expect("routing-test economics quote should validate");
+        let basis = EdgeBasisEvidence {
+            policy_id: edge_basis_policy_id,
+            resolver_id: routing_test_id("routing-test-resolver", FormulaId::try_new),
+            product_metadata_source: routing_test_id(
+                "routing-test-product",
+                SourceIdentity::try_new,
+            ),
+            policy_version: 1,
+            normalized_amount: EdgeBasisAmount::try_new(reservation_basis)
+                .expect("routing-test reservation should be positive"),
+            scope: EconomicScope::Decision {
+                decision_correlation_id,
+            },
+            source_snapshot_ids: vec![routing_test_id(
+                "routing-test-product-snapshot",
+                SnapshotId::try_new,
+            )],
+            valid_until_ns: u64::MAX,
+        };
+        let net_edge =
+            fold_net_edge(reservation_basis, &quote, basis).expect("routing-test edge should fold");
+        Self {
+            request,
+            order_binding,
+            purpose,
+            quote,
+            net_edge,
+            reservation_basis,
+            full_reservation_liability,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestingOrderEconomicsCancelReason {
+    InvalidState,
+    MakerGuaranteeLost,
+    QuoteUnavailable,
+    TermsChanged,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestingOrderEconomicsRefresh {
+    NotDue,
+    Complete,
+    Refreshed(Box<EconomicsAdmission>),
+    CancelRequired(RestingOrderEconomicsCancelReason),
+}
+
+pub fn refresh_resting_order_economics(
+    source: &BoundExecutionEconomics,
+    prior: &EconomicsAdmission,
+    remaining_quantity: Decimal,
+    authorized_quantity_ceiling: Decimal,
+    maker_guarantee_intact: bool,
+    now_ns: u64,
+) -> RestingOrderEconomicsRefresh {
+    if remaining_quantity.is_sign_negative() || now_ns == 0 {
+        return resting_cancel(RestingOrderEconomicsCancelReason::InvalidState);
+    }
+    if remaining_quantity.is_zero() {
+        return RestingOrderEconomicsRefresh::Complete;
+    }
+    if prior.request.liquidity_role != LiquidityRole::GuaranteedMaker
+        || prior.purpose != EconomicsAdmissionPurpose::TradingEdge
+    {
+        return resting_cancel(RestingOrderEconomicsCancelReason::InvalidState);
+    }
+    if !maker_guarantee_intact {
+        return resting_cancel(RestingOrderEconomicsCancelReason::MakerGuaranteeLost);
+    }
+    if now_ns > prior.quote.valid_until_ns() {
+        return resting_cancel(RestingOrderEconomicsCancelReason::QuoteUnavailable);
+    }
+    let refresh_at_ns = source
+        .resting_order_refresh_margin_ns()
+        .ok()
+        .and_then(|margin| prior.quote.valid_until_ns().checked_sub(margin));
+    let Some(refresh_at_ns) = refresh_at_ns else {
+        return resting_cancel(RestingOrderEconomicsCancelReason::InvalidState);
+    };
+    if now_ns < refresh_at_ns {
+        return RestingOrderEconomicsRefresh::NotDue;
+    }
+    let [prior_leg] = prior.request.planned_fill_legs.as_slice() else {
+        return resting_cancel(RestingOrderEconomicsCancelReason::InvalidState);
+    };
+    if authorized_quantity_ceiling <= Decimal::ZERO
+        || remaining_quantity > authorized_quantity_ceiling
+        || remaining_quantity > prior_leg.quantity
+        || prior.reservation_basis <= Decimal::ZERO
+    {
+        return resting_cancel(RestingOrderEconomicsCancelReason::InvalidState);
+    }
+    let Some(quantity_ratio) = remaining_quantity.checked_div(prior_leg.quantity) else {
+        return resting_cancel(RestingOrderEconomicsCancelReason::InvalidState);
+    };
+    let Some(reservation_basis) = prior.reservation_basis.checked_mul(quantity_ratio) else {
+        return resting_cancel(RestingOrderEconomicsCancelReason::InvalidState);
+    };
+    let Some(gross_expected_value) = prior
+        .net_edge
+        .gross_expected_value
+        .checked_mul(quantity_ratio)
+    else {
+        return resting_cancel(RestingOrderEconomicsCancelReason::InvalidState);
+    };
+    if reservation_basis <= Decimal::ZERO {
+        return resting_cancel(RestingOrderEconomicsCancelReason::InvalidState);
+    }
+    let mut request = prior.request.clone();
+    request.planned_fill_legs[0].quantity = remaining_quantity;
+    request.requested_at_ns = now_ns;
+    let refreshed = match source.quote_admission(EconomicsAdmissionIntent {
+        request,
+        order_binding: prior.order_binding.clone(),
+        purpose: prior.purpose,
+        gross_expected_value,
+        reservation_basis,
+    }) {
+        Ok(admission) => admission,
+        Err(_) => {
+            return resting_cancel(RestingOrderEconomicsCancelReason::QuoteUnavailable);
+        }
+    };
+    if !resting_economic_terms_match(prior, &refreshed) {
+        return resting_cancel(RestingOrderEconomicsCancelReason::TermsChanged);
+    }
+    RestingOrderEconomicsRefresh::Refreshed(Box::new(refreshed))
+}
+
+fn resting_cancel(reason: RestingOrderEconomicsCancelReason) -> RestingOrderEconomicsRefresh {
+    RestingOrderEconomicsRefresh::CancelRequired(reason)
+}
+
+fn resting_economic_terms_match(
+    prior: &EconomicsAdmission,
+    refreshed: &EconomicsAdmission,
+) -> bool {
+    fn ratio(amount: Decimal, basis: Decimal) -> Option<Decimal> {
+        amount.checked_div(basis)
+    }
+
+    fn effect_terms_match(
+        before: &crate::economics::SignedNativeEffect,
+        after: &crate::economics::SignedNativeEffect,
+        before_quantity: Decimal,
+        after_quantity: Decimal,
+    ) -> bool {
+        use crate::economics::SignedNativeEffect;
+
+        let same_shape = match (before, after) {
+            (
+                SignedNativeEffect::CurrencyAmount {
+                    currency_id: before,
+                    ..
+                },
+                SignedNativeEffect::CurrencyAmount {
+                    currency_id: after, ..
+                },
+            ) => before == after,
+            (
+                SignedNativeEffect::AssetQuantity {
+                    asset_id: before_asset,
+                    inventory_application: before_application,
+                    ..
+                },
+                SignedNativeEffect::AssetQuantity {
+                    asset_id: after_asset,
+                    inventory_application: after_application,
+                    ..
+                },
+            ) => before_asset == after_asset && before_application == after_application,
+            _ => false,
+        };
+        same_shape
+            && ratio(before.amount(), before_quantity) == ratio(after.amount(), after_quantity)
+    }
+
+    fn optional_effect_terms_match(
+        before: Option<&crate::economics::SignedNativeEffect>,
+        after: Option<&crate::economics::SignedNativeEffect>,
+        before_quantity: Decimal,
+        after_quantity: Decimal,
+    ) -> bool {
+        match (before, after) {
+            (Some(before), Some(after)) => {
+                effect_terms_match(before, after, before_quantity, after_quantity)
+            }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    fn scope_terms_match(
+        before: &crate::economics::EconomicScope,
+        after: &crate::economics::EconomicScope,
+    ) -> bool {
+        use crate::economics::EconomicScope;
+
+        match (before, after) {
+            (
+                EconomicScope::Decision {
+                    decision_correlation_id: before,
+                },
+                EconomicScope::Decision {
+                    decision_correlation_id: after,
+                },
+            ) => before == after,
+            (
+                EconomicScope::PositionInterval {
+                    position_id: before_position,
+                    starts_at_ns: before_start,
+                    ends_at_ns: before_end,
+                },
+                EconomicScope::PositionInterval {
+                    position_id: after_position,
+                    starts_at_ns: after_start,
+                    ends_at_ns: after_end,
+                },
+            ) => {
+                before_position == after_position
+                    && before_end.checked_sub(*before_start) == after_end.checked_sub(*after_start)
+            }
+            (
+                EconomicScope::Action { action_id: before },
+                EconomicScope::Action { action_id: after },
+            ) => before == after,
+            _ => false,
+        }
+    }
+
+    let [prior_leg] = prior.request.planned_fill_legs.as_slice() else {
+        return false;
+    };
+    let [refreshed_leg] = refreshed.request.planned_fill_legs.as_slice() else {
+        return false;
+    };
+    let same_components = prior.quote.components().len() == refreshed.quote.components().len()
+        && prior
+            .quote
+            .components()
+            .iter()
+            .zip(refreshed.quote.components())
+            .all(|(before, after)| {
+                let point_estimate_matches = match (&before.point_estimate, &after.point_estimate) {
+                    (
+                        crate::economics::PointEstimate::NonZero(before),
+                        crate::economics::PointEstimate::NonZero(after),
+                    ) => effect_terms_match(
+                        before,
+                        after,
+                        prior_leg.quantity,
+                        refreshed_leg.quantity,
+                    ),
+                    (
+                        crate::economics::PointEstimate::ProvenZero { factor_id: before },
+                        crate::economics::PointEstimate::ProvenZero { factor_id: after },
+                    ) => before == after,
+                    _ => false,
+                };
+                before.component_id == after.component_id
+                    && before.class == after.class
+                    && before.kind == after.kind
+                    && scope_terms_match(&before.scope, &after.scope)
+                    && before.admission_treatment == after.admission_treatment
+                    && before.formula_id == after.formula_id
+                    && before.source.source == after.source.source
+                    && before.calculation_factors == after.calculation_factors
+                    && point_estimate_matches
+                    && optional_effect_terms_match(
+                        before.debit_risk_bound.as_ref(),
+                        after.debit_risk_bound.as_ref(),
+                        prior_leg.quantity,
+                        refreshed_leg.quantity,
+                    )
+            });
+    let prior_basis = &prior.net_edge.basis;
+    let refreshed_basis = &refreshed.net_edge.basis;
+    let same_basis_authority = prior_basis.policy_id == refreshed_basis.policy_id
+        && prior_basis.resolver_id == refreshed_basis.resolver_id
+        && prior_basis.product_metadata_source == refreshed_basis.product_metadata_source
+        && prior_basis.policy_version == refreshed_basis.policy_version
+        && prior_basis.scope == refreshed_basis.scope;
+    let same_scaled_totals = [
+        (prior.quote.core_total(), refreshed.quote.core_total()),
+        (
+            prior.quote.forecast_total(),
+            refreshed.quote.forecast_total(),
+        ),
+        (
+            prior.net_edge.gross_expected_value,
+            refreshed.net_edge.gross_expected_value,
+        ),
+        (
+            prior.net_edge.core_net_edge,
+            refreshed.net_edge.core_net_edge,
+        ),
+        (
+            prior.net_edge.forecast_net_edge,
+            refreshed.net_edge.forecast_net_edge,
+        ),
+        (
+            prior.full_reservation_liability,
+            refreshed.full_reservation_liability,
+        ),
+        (
+            prior_basis.normalized_amount.amount(),
+            refreshed_basis.normalized_amount.amount(),
+        ),
+    ]
+    .into_iter()
+    .all(|(before, after)| {
+        ratio(before, prior.reservation_basis) == ratio(after, refreshed.reservation_basis)
+    });
+    same_components
+        && same_basis_authority
+        && same_scaled_totals
+        && prior.quote.reporting_currency() == refreshed.quote.reporting_currency()
+        && prior.quote.forecast_complete() == refreshed.quote.forecast_complete()
+        && prior.quote.missing_forecast_component_ids()
+            == refreshed.quote.missing_forecast_component_ids()
+        && prior.net_edge.core_edge_ratio == refreshed.net_edge.core_edge_ratio
+        && prior.net_edge.forecast_edge_ratio == refreshed.net_edge.forecast_edge_ratio
+}
+
+#[cfg(test)]
+fn routing_test_id<T>(
+    value: &str,
+    constructor: impl FnOnce(String) -> Result<T, EconomicsError>,
+) -> T {
+    constructor(value.to_string()).expect("routing-test economics id should be valid")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -416,6 +921,7 @@ impl EconomicsOrderBinding {
 pub enum EconomicsAdmissionError {
     Venue(VenueEconomicsUnavailable),
     Invalid(EconomicsError),
+    AuthorityBinding(EconomicsRuntimeBindingError),
     EdgeBasisAuthorityMismatch,
     ReportingAuthorityMismatch,
     AmbiguousProductSurface,
@@ -427,6 +933,7 @@ impl std::fmt::Display for EconomicsAdmissionError {
         match self {
             Self::Venue(error) => error.fmt(f),
             Self::Invalid(error) => error.fmt(f),
+            Self::AuthorityBinding(error) => error.fmt(f),
             Self::EdgeBasisAuthorityMismatch => {
                 f.write_str("economics edge-basis authority does not match TOML")
             }
@@ -455,8 +962,19 @@ impl From<EconomicsError> for EconomicsAdmissionError {
     }
 }
 
+impl From<EconomicsRuntimeBindingError> for EconomicsAdmissionError {
+    fn from(value: EconomicsRuntimeBindingError) -> Self {
+        Self::AuthorityBinding(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EconomicsRuntimeBindingError {
+    AuthoritativeInputStoreUnavailable,
+    AuthoritativeExecutionClientMismatch {
+        expected_execution_client_id: String,
+        authoritative_execution_client_id: String,
+    },
     MissingRootConfig,
     MissingExecutionClient {
         execution_client_id: String,
@@ -513,6 +1031,16 @@ pub enum EconomicsRuntimeBindingError {
 impl std::fmt::Display for EconomicsRuntimeBindingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::AuthoritativeInputStoreUnavailable => {
+                f.write_str("authoritative economics input store is unavailable")
+            }
+            Self::AuthoritativeExecutionClientMismatch {
+                expected_execution_client_id,
+                authoritative_execution_client_id,
+            } => write!(
+                f,
+                "authoritative economics input belongs to execution client `{authoritative_execution_client_id}` instead of `{expected_execution_client_id}`"
+            ),
             Self::MissingRootConfig => {
                 f.write_str("root economics reporting configuration is required")
             }
@@ -609,6 +1137,52 @@ impl std::fmt::Display for EconomicsRuntimeBindingError {
 
 impl std::error::Error for EconomicsRuntimeBindingError {}
 
+/// Build one historical economics authority through the configured provider's
+/// registry binding. Replay supplies captured provider bytes and neutral scope
+/// identifiers; the substrate never selects or implements venue formulas.
+pub fn authoritative_economics_input_from_replay(
+    loaded: &LoadedBoltV3Config,
+    execution_client_id: &str,
+    instrument_id: &str,
+    product_surface_id: &str,
+    authority: &toml::Value,
+) -> Result<AuthoritativeVenueEconomicsInput, EconomicsRuntimeBindingError> {
+    let client = loaded
+        .root
+        .clients
+        .get(execution_client_id)
+        .ok_or_else(|| EconomicsRuntimeBindingError::MissingExecutionClient {
+            execution_client_id: execution_client_id.to_string(),
+        })?;
+    let provider_key = client.venue.as_str();
+    let binding = binding_for_provider_key(provider_key).ok_or_else(|| {
+        EconomicsRuntimeBindingError::UnsupportedProvider {
+            execution_client_id: execution_client_id.to_string(),
+            provider_key: provider_key.to_string(),
+        }
+    })?;
+    let economics = binding.execution_economics.ok_or_else(|| {
+        EconomicsRuntimeBindingError::ProviderWithoutEconomicsBinding {
+            execution_client_id: execution_client_id.to_string(),
+            provider_key: provider_key.to_string(),
+        }
+    })?;
+    (economics.build_replay_authority)(ProviderEconomicsReplayAuthorityBuildContext {
+        execution_client_id,
+        instrument_id,
+        product_surface_id,
+        authority,
+    })
+    .map_err(
+        |message| EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
+            execution_client_id: execution_client_id.to_string(),
+            instrument_id: instrument_id.to_string(),
+            product_surface_id: product_surface_id.to_string(),
+            message,
+        },
+    )
+}
+
 pub fn bind_execution_economics(
     loaded: &LoadedBoltV3Config,
     execution_client_id: &str,
@@ -634,25 +1208,6 @@ pub fn bind_execution_economics(
             provider_key: provider_key.to_string(),
         }
     })?;
-    let resolved_inputs = inputs
-        .for_execution_client(execution_client_id)
-        .collect::<Vec<_>>();
-    if resolved_inputs.is_empty() {
-        return Err(EconomicsRuntimeBindingError::MissingAuthoritativeInput {
-            execution_client_id: execution_client_id.to_string(),
-        });
-    }
-    for input in &resolved_inputs {
-        if input.provider_key != provider_key {
-            return Err(
-                EconomicsRuntimeBindingError::AuthoritativeProviderMismatch {
-                    execution_client_id: execution_client_id.to_string(),
-                    configured_provider_key: provider_key.to_string(),
-                    authoritative_provider_key: input.provider_key.clone(),
-                },
-            );
-        }
-    }
     let economics_binding = binding.execution_economics.ok_or_else(|| {
         EconomicsRuntimeBindingError::ProviderWithoutEconomicsBinding {
             execution_client_id: execution_client_id.to_string(),
@@ -689,97 +1244,15 @@ pub fn bind_execution_economics(
                 errors: vec![error.to_string()],
             }
         })?;
-    let mut by_scope = BTreeMap::new();
-    let mut bound_account_id = None;
-    for input in resolved_inputs {
-        let built = (economics_binding.build_adapter)(ProviderEconomicsAdapterBuildContext {
-            execution,
-            config: &config,
-            instrument_id: &input.key.instrument_id,
-            product_surface_id: &input.key.product_surface_id,
-            authority: input.authority.as_ref(),
-        })
-        .map_err(|message| {
-            EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
-                execution_client_id: execution_client_id.to_string(),
-                instrument_id: input.key.instrument_id.clone(),
-                product_surface_id: input.key.product_surface_id.clone(),
-                message,
-            }
-        })?;
-        if built.adapter.provider_key() != provider_key {
-            return Err(
-                EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
-                    execution_client_id: execution_client_id.to_string(),
-                    instrument_id: input.key.instrument_id.clone(),
-                    product_surface_id: input.key.product_surface_id.clone(),
-                    message: format!(
-                        "provider builder returned `{}` instead of `{provider_key}`",
-                        built.adapter.provider_key()
-                    ),
-                },
-            );
-        }
-        let account_id = AccountId::try_new(built.account_id).map_err(|error| {
-            EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
-                execution_client_id: execution_client_id.to_string(),
-                instrument_id: input.key.instrument_id.clone(),
-                product_surface_id: input.key.product_surface_id.clone(),
-                message: error.to_string(),
-            }
-        })?;
-        if bound_account_id
-            .as_ref()
-            .is_some_and(|bound| bound != &account_id)
-        {
-            return Err(
-                EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
-                    execution_client_id: execution_client_id.to_string(),
-                    instrument_id: input.key.instrument_id.clone(),
-                    product_surface_id: input.key.product_surface_id.clone(),
-                    message: "provider builder returned inconsistent accounts".to_string(),
-                },
-            );
-        }
-        bound_account_id = Some(account_id);
-        let valuation_routes = build_valuation_routes(&config, &input.valuation_observations)
-            .map_err(
-                |message| EconomicsRuntimeBindingError::AuthoritativeValuationBuildFailed {
-                    execution_client_id: execution_client_id.to_string(),
-                    instrument_id: input.key.instrument_id.clone(),
-                    product_surface_id: input.key.product_surface_id.clone(),
-                    message,
-                },
-            )?;
-        by_scope.insert(
-            (
-                input.key.instrument_id.clone(),
-                input.key.product_surface_id.clone(),
-            ),
-            BoundEconomicsScope {
-                adapter: built.adapter,
-                valuation_routes,
-            },
-        );
-    }
-    let account_id = bound_account_id.ok_or_else(|| {
-        EconomicsRuntimeBindingError::MissingAuthoritativeInput {
-            execution_client_id: execution_client_id.to_string(),
-        }
-    })?;
-    let adapter = Arc::new(ExecutionVenueEconomicsRouter {
-        execution_client_id: execution_client_id.to_string(),
-        provider_key: provider_key.to_string(),
-        account_id,
-        by_scope,
-    });
     Ok(BoundExecutionEconomics {
         execution_client_id: execution_client_id.to_string(),
         provider_key: provider_key.to_string(),
         reporting_policy_id,
         reporting_currency,
         config,
-        adapter,
+        execution: execution.clone(),
+        binding: economics_binding,
+        inputs: inputs.clone(),
     })
 }
 

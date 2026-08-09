@@ -14,7 +14,6 @@ mod bolt_v3_production_entrypoint;
 mod bolt_v3_provider_binding;
 mod bolt_v3_readiness;
 mod bolt_v3_strategy_registration;
-mod bolt_v3_strategy_substrate_structure;
 
 // Shared helper module (tests/support/mod.rs); not a [[test]] member.
 mod support;

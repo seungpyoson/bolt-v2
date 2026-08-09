@@ -251,13 +251,12 @@ fn test_strategy_with_realized_volatility_surface(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(decision_evidence.clone()),
     );
     let context = StrategyBuildContext::new(
-        RecordingFeeProvider::cold(),
+        fixture_order_economics(),
         decision_evidence,
         submit_admission,
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     )
-    .with_order_economics(fixture_order_economics())
     .with_realized_volatility_surfaces(surfaces);
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     register_test_strategy(&mut strategy);
@@ -2053,8 +2052,6 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
     assert_eq!(details.fair_probability_up, None);
     assert_eq!(details.fair_probability_down, None);
     assert_eq!(details.uncertainty_band_probability, None);
-    assert_eq!(details.up_fee_bps, None);
-    assert_eq!(details.down_fee_bps, None);
     assert!(
         decision.submission.order_side != EvidenceOrderSide::Unspecified,
         "exit decision evidence must preserve the submitted order side"
@@ -2939,10 +2936,7 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
         return;
     }
 
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        failing_decision_evidence(),
-    );
+    let mut strategy = test_strategy_with_decision_evidence(failing_decision_evidence());
     let strategy_id = unique_log_capture_strategy_id("exit");
     strategy.config.strategy_id = strategy_id.clone();
 
@@ -3294,10 +3288,7 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
         return;
     }
 
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        failing_decision_evidence(),
-    );
+    let mut strategy = test_strategy_with_decision_evidence(failing_decision_evidence());
     let strategy_id = unique_log_capture_strategy_id("entry");
     strategy.config.strategy_id = strategy_id.clone();
 
@@ -3417,8 +3408,6 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
         record.uncertainty_band_probability.is_some(),
         "exit evaluation evidence must preserve the computed uncertainty band"
     );
-    assert_eq!(record.up_fee_bps, None);
-    assert_eq!(record.down_fee_bps, None);
 }
 
 #[test]
@@ -4709,11 +4698,11 @@ fn rv_clock_domain_amendment_entry_skip_records_each_registered_reason_once() {
     // twelve RV gate/watermark bits, which is not its axis under the frozen
     // registry -- that domain belongs to the blocked-snapshot producer, whose
     // own twelve-bit test still stands beside this one. Entry skip's registered
-    // domain is the twenty skip reasons, so that is what is exercised here, and
+    // domain is the nineteen skip reasons, so that is what is exercised here, and
     // exhaustively: a reason added to the enum without a registry state fails
     // the mapping's exhaustive match at compile time, and a reason that stops
     // recording fails the count below.
-    const REGISTERED_REASONS: [EntrySkipReason; 20] = [
+    const REGISTERED_REASONS: [EntrySkipReason; 19] = [
         EntrySkipReason::StrategyCoreNotRegistered,
         EntrySkipReason::EntryGateBlocked,
         EntrySkipReason::EntryPricingBlocked,
@@ -4729,7 +4718,6 @@ fn rv_clock_domain_amendment_entry_skip_records_each_registered_reason_once() {
         EntrySkipReason::QuantityNotPositive,
         EntrySkipReason::PositionContractInvalid,
         EntrySkipReason::EntryPositionContractUnsupported,
-        EntrySkipReason::HistoricalEntryFeeUnavailable,
         EntrySkipReason::OnePositionInvariantViolation,
         EntrySkipReason::EntryMalformedRejected,
         EntrySkipReason::EntryBalanceRejected,
@@ -4989,10 +4977,7 @@ fn selecting_a_market_binds_the_episode_identity_every_producer_keys_on() {
     // That failure is invisible by construction, which is exactly why it needs a
     // test that goes through selection rather than around it.
     let evidence = recording_decision_evidence();
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        evidence,
-    );
+    let mut strategy = test_strategy_with_decision_evidence(evidence);
 
     strategy.active.evidence_identity = None;
     assert!(
@@ -5651,10 +5636,7 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
 
 #[test]
 fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        failing_decision_evidence(),
-    );
+    let mut strategy = test_strategy_with_decision_evidence(failing_decision_evidence());
     let decision = minimal_entry_submission_decision();
     assert!(
         strategy

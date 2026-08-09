@@ -33,6 +33,73 @@ pub struct HyperliquidSnapshotMetadata {
     pub valid_until_ns: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HyperliquidReplaySnapshotMetadata {
+    source: String,
+    snapshot_id: String,
+    source_at_ns: u64,
+    fetched_at_ns: u64,
+    valid_until_ns: u64,
+}
+
+impl HyperliquidReplaySnapshotMetadata {
+    fn into_snapshot(self) -> Result<HyperliquidSnapshotMetadata, EconomicsError> {
+        Ok(HyperliquidSnapshotMetadata {
+            source: SourceIdentity::try_new(self.source)?,
+            snapshot_id: SnapshotId::try_new(self.snapshot_id)?,
+            source_at_ns: self.source_at_ns,
+            fetched_at_ns: self.fetched_at_ns,
+            valid_until_ns: self.valid_until_ns,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HyperliquidReplayJsonSnapshot {
+    metadata: HyperliquidReplaySnapshotMetadata,
+    json: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum HyperliquidReplayProductSnapshot {
+    Perpetual {
+        metadata: HyperliquidReplaySnapshotMetadata,
+        deployer_fee_scale: Decimal,
+        growth_mode: bool,
+        #[serde(default)]
+        aligned_quote: Option<HyperliquidReplayJsonSnapshot>,
+        context: HyperliquidReplayJsonSnapshot,
+    },
+    Spot {
+        metadata: HyperliquidReplaySnapshotMetadata,
+        base_asset: String,
+        quote_currency: String,
+        stable_pair: bool,
+        aligned_quote: HyperliquidReplayJsonSnapshot,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HyperliquidReplayBuilderApproval {
+    metadata: HyperliquidReplaySnapshotMetadata,
+    attachment_id: String,
+    json: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HyperliquidReplayEconomicsAuthority {
+    user_fees: HyperliquidReplayJsonSnapshot,
+    account_id: String,
+    product: HyperliquidReplayProductSnapshot,
+    #[serde(default)]
+    builder_approval: Option<HyperliquidReplayBuilderApproval>,
+}
+
 impl HyperliquidSnapshotMetadata {
     fn validity(&self) -> SourceValidity {
         SourceValidity {
@@ -256,17 +323,31 @@ pub struct HyperliquidProductEconomicsSnapshot {
     perp_context: Option<HyperliquidPerpContextSnapshot>,
 }
 
+pub struct HyperliquidPerpetualSnapshotInput<'a> {
+    pub metadata: HyperliquidSnapshotMetadata,
+    pub instrument_id: EconomicsInstrumentId,
+    pub product_surface_id: ProductSurfaceId,
+    pub deployer_fee_scale: Decimal,
+    pub growth_mode: bool,
+    pub aligned_quote_json: Option<(&'a HyperliquidSnapshotMetadata, &'a str)>,
+    pub context_metadata: HyperliquidSnapshotMetadata,
+    pub context_json: &'a str,
+}
+
 impl HyperliquidProductEconomicsSnapshot {
     pub fn perp_from_json(
-        metadata: HyperliquidSnapshotMetadata,
-        instrument_id: EconomicsInstrumentId,
-        product_surface_id: ProductSurfaceId,
-        deployer_fee_scale: Decimal,
-        growth_mode: bool,
-        aligned_quote_json: Option<(&HyperliquidSnapshotMetadata, &str)>,
-        context_metadata: HyperliquidSnapshotMetadata,
-        context_json: &str,
+        input: HyperliquidPerpetualSnapshotInput<'_>,
     ) -> Result<Self, HyperliquidEconomicsError> {
+        let HyperliquidPerpetualSnapshotInput {
+            metadata,
+            instrument_id,
+            product_surface_id,
+            deployer_fee_scale,
+            growth_mode,
+            aligned_quote_json,
+            context_metadata,
+            context_json,
+        } = input;
         let alignment = aligned_quote_json
             .map(|(metadata, json)| {
                 HyperliquidAlignedQuoteSnapshot::from_json(metadata.clone(), json)
@@ -405,6 +486,116 @@ pub fn authoritative_economics_input(
             builder_approval,
         }),
     ))
+}
+
+pub(crate) fn build_replay_economics_authority(
+    context: crate::bolt_v3_providers::ProviderEconomicsReplayAuthorityBuildContext<'_>,
+) -> Result<AuthoritativeVenueEconomicsInput, String> {
+    let replay: HyperliquidReplayEconomicsAuthority = context
+        .authority
+        .clone()
+        .try_into()
+        .map_err(|error| format!("invalid Hyperliquid replay economics authority: {error}"))?;
+    let user_fees = HyperliquidUserFeesSnapshot::from_json(
+        replay
+            .user_fees
+            .metadata
+            .into_snapshot()
+            .map_err(|error| error.to_string())?,
+        AccountId::try_new(replay.account_id).map_err(|error| error.to_string())?,
+        &replay.user_fees.json,
+    )
+    .map_err(|error| error.to_string())?;
+    let instrument_id = EconomicsInstrumentId::try_new(context.instrument_id.to_string())
+        .map_err(|error| error.to_string())?;
+    let product_surface_id = ProductSurfaceId::try_new(context.product_surface_id.to_string())
+        .map_err(|error| error.to_string())?;
+    let product = match replay.product {
+        HyperliquidReplayProductSnapshot::Perpetual {
+            metadata,
+            deployer_fee_scale,
+            growth_mode,
+            aligned_quote,
+            context: product_context,
+        } => {
+            let aligned_quote = aligned_quote
+                .map(|snapshot| -> Result<_, String> {
+                    Ok((
+                        snapshot
+                            .metadata
+                            .into_snapshot()
+                            .map_err(|error| error.to_string())?,
+                        snapshot.json,
+                    ))
+                })
+                .transpose()?;
+            HyperliquidProductEconomicsSnapshot::perp_from_json(HyperliquidPerpetualSnapshotInput {
+                metadata: metadata
+                    .into_snapshot()
+                    .map_err(|error| error.to_string())?,
+                instrument_id,
+                product_surface_id,
+                deployer_fee_scale,
+                growth_mode,
+                aligned_quote_json: aligned_quote
+                    .as_ref()
+                    .map(|(metadata, json)| (metadata, json.as_str())),
+                context_metadata: product_context
+                    .metadata
+                    .into_snapshot()
+                    .map_err(|error| error.to_string())?,
+                context_json: &product_context.json,
+            })
+        }
+        HyperliquidReplayProductSnapshot::Spot {
+            metadata,
+            base_asset,
+            quote_currency,
+            stable_pair,
+            aligned_quote,
+        } => HyperliquidProductEconomicsSnapshot::spot_from_json(
+            metadata
+                .into_snapshot()
+                .map_err(|error| error.to_string())?,
+            instrument_id,
+            product_surface_id,
+            AssetId::try_new(base_asset).map_err(|error| error.to_string())?,
+            CurrencyId::try_new(quote_currency).map_err(|error| error.to_string())?,
+            stable_pair,
+            (
+                &aligned_quote
+                    .metadata
+                    .into_snapshot()
+                    .map_err(|error| error.to_string())?,
+                &aligned_quote.json,
+            ),
+        ),
+    }
+    .map_err(|error| error.to_string())?;
+    let builder_approval = replay
+        .builder_approval
+        .map(|approval| {
+            HyperliquidBuilderApprovalSnapshot::from_json(
+                approval
+                    .metadata
+                    .into_snapshot()
+                    .map_err(|error| error.to_string())?,
+                RoutingAttachmentId::try_new(approval.attachment_id)
+                    .map_err(|error| error.to_string())?,
+                &approval.json,
+            )
+            .map_err(|error| error.to_string())
+        })
+        .transpose()?;
+    authoritative_economics_input(
+        context.execution_client_id,
+        context.instrument_id,
+        context.product_surface_id,
+        user_fees,
+        product,
+        builder_approval,
+    )
+    .map_err(|error| error.to_string())
 }
 
 pub(crate) fn build_execution_economics_adapter(
@@ -1311,16 +1502,18 @@ mod tests {
     }
 
     fn perp_product() -> HyperliquidProductEconomicsSnapshot {
-        HyperliquidProductEconomicsSnapshot::perp_from_json(
-            metadata("meta-and-asset-contexts", "perp-1"),
-            id("BTC-PERP", EconomicsInstrumentId::try_new),
-            id("perpetual", ProductSurfaceId::try_new),
-            Decimal::ZERO,
-            false,
-            None,
-            metadata("funding-context", "funding-1"),
-            include_str!("../../../tests/fixtures/economics/hyperliquid/perp_context.json"),
-        )
+        HyperliquidProductEconomicsSnapshot::perp_from_json(HyperliquidPerpetualSnapshotInput {
+            metadata: metadata("meta-and-asset-contexts", "perp-1"),
+            instrument_id: id("BTC-PERP", EconomicsInstrumentId::try_new),
+            product_surface_id: id("perpetual", ProductSurfaceId::try_new),
+            deployer_fee_scale: Decimal::ZERO,
+            growth_mode: false,
+            aligned_quote_json: None,
+            context_metadata: metadata("funding-context", "funding-1"),
+            context_json: include_str!(
+                "../../../tests/fixtures/economics/hyperliquid/perp_context.json"
+            ),
+        })
         .expect("perp fixture should parse")
     }
 

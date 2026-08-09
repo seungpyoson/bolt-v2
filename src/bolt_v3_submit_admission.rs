@@ -67,7 +67,6 @@ pub enum BoltV3SubmitIntentKind {
     KillSwitchForcedReduction,
 }
 
-const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
 pub const PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE_RESERVATION_SOURCE: &str =
     "provider_collateral_allowance_capture_failure";
 
@@ -1584,11 +1583,15 @@ impl BoltV3SubmitAdmissionState {
         inner.forced_reduction_liveness_reconciled = false;
     }
 
+    /// Test-only entrypoint for exercising admission policy independently of
+    /// the production economics seal.
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
     pub fn admit(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
-        self.admit_at_with_economics(request, None, current_unix_ns()?)
+        self.admit_at_inner(request, None, current_unix_ns()?)
     }
 
     pub fn admit_with_economics(
@@ -1596,18 +1599,22 @@ impl BoltV3SubmitAdmissionState {
         request: &BoltV3SubmitAdmissionRequest,
         economics: &EconomicsAdmission,
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
-        self.admit_at_with_economics(request, Some(economics), current_unix_ns()?)
+        self.admit_at_inner(request, Some(economics), current_unix_ns()?)
     }
 
+    /// Test-only event-time entrypoint for admission policy tests that do not
+    /// exercise the production economics seal.
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
     pub fn admit_at(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
         now_ns: u64,
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
-        self.admit_at_with_economics(request, None, now_ns)
+        self.admit_at_inner(request, None, now_ns)
     }
 
-    fn admit_at_with_economics(
+    fn admit_at_inner(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
         economics: Option<&EconomicsAdmission>,
@@ -1774,13 +1781,6 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
-    pub fn evaluate_and_record_without_consuming_capacity(
-        &self,
-        request: &BoltV3SubmitAdmissionRequest,
-    ) -> Result<(), BoltV3SubmitAdmissionError> {
-        self.evaluate_and_record_without_consuming_capacity_at(request, None, current_unix_ns()?)
-    }
-
     pub fn evaluate_and_record_without_consuming_capacity_with_economics(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
@@ -1908,9 +1908,38 @@ impl BoltV3SubmitAdmissionState {
                 .loss_snapshot_diagnostics
                 .as_ref()
                 .map(|diagnostics| diagnostics.admission_now_ns),
-            economics: economics.map(|economics| AdmissionEconomicsDetails {
-                core_total: economics.quote().core_total().to_string(),
-                core_edge_ratio: economics.net_edge().core_edge_ratio.to_string(),
+            economics: economics.map(|economics| {
+                let source_snapshot_ids = economics
+                    .quote()
+                    .source_snapshot_ids()
+                    .iter()
+                    .chain(economics.net_edge().basis.source_snapshot_ids.iter())
+                    .map(ToString::to_string)
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                AdmissionEconomicsDetails {
+                    decision_correlation_id: economics
+                        .quote()
+                        .decision_correlation_id()
+                        .to_string(),
+                    core_total: economics.quote().core_total().to_string(),
+                    core_net_edge: economics.net_edge().core_net_edge.to_string(),
+                    core_edge_ratio: economics.net_edge().core_edge_ratio.to_string(),
+                    forecast_net_edge: economics.net_edge().forecast_net_edge.to_string(),
+                    forecast_complete: economics.quote().forecast_complete(),
+                    missing_forecast_component_ids: economics
+                        .quote()
+                        .missing_forecast_component_ids()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                    valid_until_ns: economics.quote().valid_until_ns(),
+                    forecast_valid_until_ns: economics.quote().forecast_valid_until_ns(),
+                    source_snapshot_ids,
+                    reservation_basis: economics.reservation_basis().to_string(),
+                    full_reservation_liability: economics.full_reservation_liability().to_string(),
+                }
             }),
         };
         let result = match (request.intent_kind, evaluation.outcome) {
@@ -3314,19 +3343,6 @@ fn compiled_order_price_source(fallback_price: String, order: &OrderAny) -> Stri
         .unwrap_or(fallback_price)
 }
 
-pub fn build_submit_admission_request_from_order<F>(
-    input: BoltV3SubmitAdmissionRequestInput<'_>,
-    max_fee_bps_for_price: F,
-) -> anyhow::Result<BoltV3SubmitAdmissionRequest>
-where
-    F: FnOnce(Decimal) -> anyhow::Result<Decimal>,
-{
-    let facts = order_admission_facts(&input)?;
-    let max_fee_bps = max_fee_bps_for_price(facts.price)?;
-    let notional = fee_inclusive_admission_notional(facts.reservation_basis, max_fee_bps)?;
-    Ok(submit_admission_request_from_facts(input, facts, notional))
-}
-
 #[derive(Debug)]
 pub struct BoltV3EconomicsSubmitAdmission {
     request: BoltV3SubmitAdmissionRequest,
@@ -3357,6 +3373,14 @@ impl BoltV3EconomicsSubmitAdmission {
 
     pub(crate) fn into_parts(self) -> (BoltV3SubmitAdmissionRequest, EconomicsAdmission) {
         (self.request, self.economics)
+    }
+
+    pub(crate) fn with_kill_switch_forced_reduction(
+        mut self,
+        claim: BoltV3KillSwitchForcedReductionClaim,
+    ) -> Self {
+        self.request.kill_switch_forced_reduction = Some(claim);
+        self
     }
 }
 
@@ -3722,61 +3746,6 @@ fn quote_quantity_effective_price(
     }
 }
 
-pub fn fee_inclusive_admission_notional(
-    notional: Decimal,
-    max_fee_bps: Decimal,
-) -> Result<Decimal, BoltV3SubmitAdmissionError> {
-    checked_fee_inclusive_admission_notional(notional, max_fee_bps)
-        .ok_or(BoltV3SubmitAdmissionError::NotionalArithmeticOverflow)
-}
-
-pub(crate) fn checked_fee_inclusive_admission_notional(
-    notional: Decimal,
-    max_fee_bps: Decimal,
-) -> Option<Decimal> {
-    let fee_rate = max_fee_bps.checked_div(Decimal::from(SUBMIT_ADMISSION_BPS_DENOMINATOR))?;
-    let fee_multiplier = Decimal::ONE.checked_add(fee_rate)?;
-    notional.checked_mul(fee_multiplier)
-}
-
-/// Cap-bypass-via-rounding guard for submit paths that carry an operator
-/// intent SEPARATE from the order actually built.
-///
-/// Callers must pass the base notional of the already-rounded order
-/// (`rounded_base_notional`) — i.e. the product of the venue-precision
-/// `Price`/`Quantity` actually submitted — together with the operator-intended
-/// raw notional that authorized the order. Banker's rounding to venue precision
-/// can round a quantity or price UP, so the rounded base notional can exceed the
-/// intended notional. When that happens this helper fails CLOSED: a rounded
-/// order may never debit more than the operator approved, so admission is
-/// refused rather than letting the cap be bypassed by rounding.
-///
-/// On success it returns the fee-inclusive admission notional computed from the
-/// rounded base, so the cap check downstream sees the same cash debit the venue
-/// will incur.
-///
-/// Scope: this guard is required precisely for any path where the operator
-/// approves an explicit `order_intent.notional` BEFORE the venue-precision order
-/// is constructed. Paths that build the venue-precision order first and derive
-/// admission notional from that already-rounded order structurally do not need
-/// this guard: the strict-`>` cap check in [`BoltV3SubmitAdmissionState::admit`]
-/// already evaluates the exact order handed to the venue — there is no separate
-/// unrounded intent for rounding to bypass. Both paths share the same
-/// fee-inclusive cap arithmetic via [`fee_inclusive_admission_notional`].
-pub fn rounded_order_admission_notional(
-    rounded_base_notional: Decimal,
-    intended_notional: Decimal,
-    max_fee_bps: Decimal,
-) -> Result<Decimal, BoltV3SubmitAdmissionError> {
-    if rounded_base_notional > intended_notional {
-        return Err(BoltV3SubmitAdmissionError::RoundedNotionalExceedsIntent {
-            rounded_base_notional,
-            intended_notional,
-        });
-    }
-    fee_inclusive_admission_notional(rounded_base_notional, max_fee_bps)
-}
-
 pub(crate) fn limit_notional_exceeds_sized_notional(
     limit_notional: f64,
     sized_notional: f64,
@@ -3850,12 +3819,7 @@ pub enum BoltV3SubmitAdmissionError {
     NonPositiveNotional,
     NotionalCapExceeded,
     ClientOrderAlreadyAuthorized,
-    NotionalArithmeticOverflow,
     MissingPriceCeiling,
-    RoundedNotionalExceedsIntent {
-        rounded_base_notional: Decimal,
-        intended_notional: Decimal,
-    },
     ExchangeMutationCountOverflow,
     ExchangeMutationsObserved {
         mutation_count: u64,
@@ -3906,19 +3870,9 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
                 f,
                 "bolt-v3 submit admission client-order identity is already durably authorized"
             ),
-            Self::NotionalArithmeticOverflow => {
-                write!(f, "bolt-v3 submit admission notional arithmetic overflowed")
-            }
             Self::MissingPriceCeiling => write!(
                 f,
                 "bolt-v3 submit admission refuses a market-style order without a declared instrument price ceiling"
-            ),
-            Self::RoundedNotionalExceedsIntent {
-                rounded_base_notional,
-                intended_notional,
-            } => write!(
-                f,
-                "bolt-v3 submit admission rejected: rounded order notional {rounded_base_notional} exceeded operator-intended notional {intended_notional}"
             ),
             Self::ExchangeMutationCountOverflow => {
                 write!(

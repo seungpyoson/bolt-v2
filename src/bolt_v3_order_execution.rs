@@ -9,7 +9,10 @@ use nautilus_common::{
 };
 use nautilus_core::Params;
 use nautilus_model::{
-    enums::{OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
+    enums::{
+        OrderSide, OrderType, PositionSide as NtPositionSide, TimeInForce, TrailingOffsetType,
+        TriggerType,
+    },
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId},
     instruments::InstrumentAny,
     orders::{Order, OrderAny, OrderList},
@@ -41,7 +44,7 @@ use crate::{
     bolt_v3_submit_admission::{
         BoltV3EconomicsSubmitAdmission, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
         BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-        build_submit_admission_request_from_order, order_admission_facts,
+        build_submit_admission_request_from_economics, order_admission_facts,
         validate_economics_submit_authority,
     },
     economics::{LifecyclePath, PositionContext},
@@ -58,6 +61,17 @@ pub struct BoltV3OrderEconomicsHandle {
 
 pub struct BoltV3OrderEconomicsIntent<'a> {
     pub request: &'a BoltV3SubmitAdmissionRequestInput<'a>,
+    pub planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
+    pub liquidity_role: NautilusEstimateLiquidityRole,
+    pub position: Option<PositionContext>,
+    pub lifecycle_path: LifecyclePath,
+    pub requested_at_ns: u64,
+    pub decision_correlation_id: &'a str,
+    pub gross_expected_value: Decimal,
+}
+
+pub struct BoltV3OrderEconomicsSubmitInput<'a> {
+    pub request: BoltV3SubmitAdmissionRequestInput<'a>,
     pub planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
     pub liquidity_role: NautilusEstimateLiquidityRole,
     pub position: Option<PositionContext>,
@@ -147,6 +161,54 @@ impl BoltV3OrderEconomicsHandle {
             })
             .map_err(Into::into)
     }
+
+    fn planned_exit_position(
+        &self,
+        position_id: PositionId,
+        side: NtPositionSide,
+        quantity: Decimal,
+    ) -> Result<PositionContext> {
+        let side = match side {
+            NtPositionSide::Long => crate::economics::PositionSide::Long,
+            NtPositionSide::Short => crate::economics::PositionSide::Short,
+            NtPositionSide::Flat | NtPositionSide::NoPositionSide => {
+                anyhow::bail!("economics planned exit requires an open sided position")
+            }
+        };
+        Ok(PositionContext {
+            position_id: crate::economics::PositionId::try_new(position_id.to_string())?,
+            side,
+            quantity,
+            holding_horizon_ns: self.economics.planned_exit_horizon_ns()?,
+        })
+    }
+}
+
+pub fn build_order_economics_submit_admission(
+    economics: &BoltV3OrderEconomicsHandle,
+    input: BoltV3OrderEconomicsSubmitInput<'_>,
+) -> Result<BoltV3EconomicsSubmitAdmission> {
+    let BoltV3OrderEconomicsSubmitInput {
+        request,
+        planned_fill_legs,
+        liquidity_role,
+        position,
+        lifecycle_path,
+        requested_at_ns,
+        decision_correlation_id,
+        gross_expected_value,
+    } = input;
+    let admission = economics.quote_admission(BoltV3OrderEconomicsIntent {
+        request: &request,
+        planned_fill_legs,
+        liquidity_role,
+        position,
+        lifecycle_path,
+        requested_at_ns,
+        decision_correlation_id,
+        gross_expected_value,
+    })?;
+    build_submit_admission_request_from_economics(request, admission)
 }
 
 fn normalize_economics_fill_legs(
@@ -349,36 +411,23 @@ impl BoltV3OrderExecutionPolicy {
             }
         };
         record_order_intent(decision_evidence, intent_kind, intent.clone())?;
-        if let Some(economics) = economics.as_ref() {
-            let execution_client_id = context
-                .client_id
-                .as_ref()
-                .map(ClientId::as_str)
-                .ok_or(BoltV3SubmitAdmissionError::EconomicsOrderMismatch)?;
-            validate_economics_submit_authority(&request, &economics, &order, execution_client_id)?;
-        }
+        let execution_client_id = context
+            .client_id
+            .as_ref()
+            .map(ClientId::as_str)
+            .ok_or(BoltV3SubmitAdmissionError::EconomicsOrderMismatch)?;
+        validate_economics_submit_authority(&request, &economics, &order, execution_client_id)?;
         match self.mode {
             BoltV3OrderExecutionMode::Live => {
-                let permit = match economics.as_ref() {
-                    Some(economics) => {
-                        submit_admission.admit_with_economics(&request, economics)?
-                    }
-                    None => submit_admission.admit(&request)?,
-                };
+                let permit = submit_admission.admit_with_economics(&request, &economics)?;
                 sink.submit_order_via_nt(order, context)?;
                 permit.commit_submitted();
                 Ok(BoltV3SubmitRoutingOutcome::Submitted)
             }
             BoltV3OrderExecutionMode::Shadow => {
-                match economics.as_ref() {
-                    Some(economics) => submit_admission
-                        .evaluate_and_record_without_consuming_capacity_with_economics(
-                            &request, economics,
-                        )?,
-                    None => {
-                        submit_admission.evaluate_and_record_without_consuming_capacity(&request)?
-                    }
-                }
+                submit_admission.evaluate_and_record_without_consuming_capacity_with_economics(
+                    &request, &economics,
+                )?;
                 log::info!(
                     "bolt-v3 submit skipped by execution policy: mode=shadow strategy_id={} client_order_id={}",
                     request.strategy_id,
@@ -467,7 +516,7 @@ impl BoltV3OrderExecutionPolicy {
         // admission capacity before mutating the venue — an in-place modify carries
         // NONE of those admission/reservation/fee/intent checks. Routing one to the
         // venue in Live would bypass the risk gate: a live amend could lift a resting
-        // order's notional past the `max_order_notional`/`max_fee_bps` limits a submit
+        // order's economics-backed reservation past the operator notional limit a submit
         // would block, with no capital-reservation delta recorded. Until the
         // admission-gated in-place modify lands (#835), the Live arm REFUSES the venue
         // mutation; the maker requotes through the already-admitted cancel+resubmit
@@ -840,25 +889,10 @@ pub struct BoltV3SubmitRoutingRequest<'a> {
     submit_admission: &'a BoltV3SubmitAdmissionState,
     intent: OrderIntentDetails,
     request: BoltV3SubmitAdmissionRequest,
-    economics: Option<EconomicsAdmission>,
+    economics: EconomicsAdmission,
 }
 
 impl<'a> BoltV3SubmitRoutingRequest<'a> {
-    pub fn new(
-        decision_evidence: &'a dyn OrderIntentEvidence,
-        submit_admission: &'a BoltV3SubmitAdmissionState,
-        intent: OrderIntentDetails,
-        request: BoltV3SubmitAdmissionRequest,
-    ) -> Self {
-        Self {
-            decision_evidence,
-            submit_admission,
-            intent,
-            request,
-            economics: None,
-        }
-    }
-
     pub fn with_economics(
         decision_evidence: &'a dyn OrderIntentEvidence,
         submit_admission: &'a BoltV3SubmitAdmissionState,
@@ -871,7 +905,45 @@ impl<'a> BoltV3SubmitRoutingRequest<'a> {
             submit_admission,
             intent,
             request,
-            economics: Some(economics),
+            economics,
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test(
+        decision_evidence: &'a dyn OrderIntentEvidence,
+        submit_admission: &'a BoltV3SubmitAdmissionState,
+        intent: OrderIntentDetails,
+        request: BoltV3SubmitAdmissionRequest,
+        order: &OrderAny,
+    ) -> Self {
+        let purpose = match request.intent_kind {
+            BoltV3SubmitIntentKind::Entry => EconomicsAdmissionPurpose::TradingEdge,
+            BoltV3SubmitIntentKind::RiskReducingExit
+            | BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+                EconomicsAdmissionPurpose::RiskReduction
+            }
+        };
+        let order_side = match order.order_side() {
+            OrderSide::Buy => crate::economics::OrderSide::Buy,
+            OrderSide::Sell => crate::economics::OrderSide::Sell,
+            OrderSide::NoOrderSide => panic!("routing-test order must be sided"),
+        };
+        let economics = EconomicsAdmission::for_routing_test(
+            &request.execution_client_id,
+            &request.instrument_id,
+            order_side,
+            economics_order_binding(order).expect("routing-test order should serialize"),
+            purpose,
+            request.notional,
+            request.notional,
+        );
+        Self {
+            decision_evidence,
+            submit_admission,
+            intent,
+            request,
+            economics,
         }
     }
 }
@@ -929,19 +1001,20 @@ pub enum BoltV3ModifyRoutingOutcome {
     SkippedByPolicy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct BoltV3MakerOrderRoutingContext<'a> {
     pub strategy_id: &'a str,
     pub execution_client_id: &'a str,
-    pub max_fee_bps: Decimal,
+    pub order_economics: &'a BoltV3OrderEconomicsHandle,
+    pub gross_expected_value: Decimal,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct BoltV3KillSwitchFlattenRoutingContext<'a> {
     pub execution_client_id: &'a str,
     pub fallback_price: &'a str,
     pub instrument: Option<&'a InstrumentAny>,
-    pub max_fee_bps: Decimal,
+    pub order_economics: &'a BoltV3OrderEconomicsHandle,
 }
 
 pub(crate) fn route_kill_switch_flatten_command_with_sink<S>(
@@ -974,26 +1047,48 @@ where
         context.fallback_price.to_string(),
         &order,
     );
-    let mut request = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
-            execution_client_id: context.execution_client_id,
-            intent: &intent,
-            intent_kind: BoltV3SubmitIntentKind::KillSwitchForcedReduction,
-            order: &order,
-            valuation: crate::bolt_v3_submit_admission::OrderValuationContext {
-                instrument: context.instrument,
-                ..crate::bolt_v3_submit_admission::OrderValuationContext::empty()
-            },
-            risk_reducing_exit_position: None,
+    let admission_input = BoltV3SubmitAdmissionRequestInput {
+        execution_client_id: context.execution_client_id,
+        intent: &intent,
+        intent_kind: BoltV3SubmitIntentKind::KillSwitchForcedReduction,
+        order: &order,
+        valuation: crate::bolt_v3_submit_admission::OrderValuationContext {
+            instrument: context.instrument,
+            ..crate::bolt_v3_submit_admission::OrderValuationContext::empty()
         },
-        |_| Ok(context.max_fee_bps),
+        risk_reducing_exit_position: None,
+    };
+    let facts = order_admission_facts(&admission_input)?;
+    let position = context.order_economics.planned_exit_position(
+        command.position_id(),
+        command.position_side(),
+        facts.order_quantity,
     )?;
-    request.intent_kind = BoltV3SubmitIntentKind::KillSwitchForcedReduction;
-    request.risk_reducing_exit_proof = None;
-    request.kill_switch_forced_reduction = Some(command.forced_reduction_claim().clone());
+    let sealed = build_order_economics_submit_admission(
+        context.order_economics,
+        BoltV3OrderEconomicsSubmitInput {
+            request: admission_input,
+            planned_fill_legs: vec![BoltV3PlannedFillLeg {
+                price: facts.price,
+                quantity: facts.order_quantity,
+            }],
+            liquidity_role: NautilusEstimateLiquidityRole::Taker,
+            position: Some(position),
+            lifecycle_path: LifecyclePath::PlannedExit,
+            requested_at_ns: command.source_timestamp_unix_nanos(),
+            decision_correlation_id: command.action_id(),
+            gross_expected_value: Decimal::ZERO,
+        },
+    )?
+    .with_kill_switch_forced_reduction(command.forced_reduction_claim().clone());
 
     policy.route_submit_with_sink(
-        BoltV3SubmitRoutingRequest::new(decision_evidence, submit_admission, intent, request),
+        BoltV3SubmitRoutingRequest::with_economics(
+            decision_evidence,
+            submit_admission,
+            intent,
+            sealed,
+        ),
         sink,
         order,
         BoltV3SubmitContext::with_client_id_and_position_id(
@@ -1325,25 +1420,39 @@ where
             fallback_price,
             &order,
         );
-        let request = build_submit_admission_request_from_order(
-            BoltV3SubmitAdmissionRequestInput {
-                execution_client_id: self.context.execution_client_id,
-                intent: &intent,
-                intent_kind: BoltV3SubmitIntentKind::Entry,
-                order: &order,
-                valuation: crate::bolt_v3_submit_admission::OrderValuationContext::empty(),
-                risk_reducing_exit_position: None,
+        let admission_input = BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: self.context.execution_client_id,
+            intent: &intent,
+            intent_kind: BoltV3SubmitIntentKind::Entry,
+            order: &order,
+            valuation: crate::bolt_v3_submit_admission::OrderValuationContext::empty(),
+            risk_reducing_exit_position: None,
+        };
+        let facts = order_admission_facts(&admission_input)?;
+        let sealed = build_order_economics_submit_admission(
+            self.context.order_economics,
+            BoltV3OrderEconomicsSubmitInput {
+                request: admission_input,
+                planned_fill_legs: vec![BoltV3PlannedFillLeg {
+                    price: facts.price,
+                    quantity: facts.order_quantity,
+                }],
+                liquidity_role: NautilusEstimateLiquidityRole::GuaranteedMaker,
+                position: None,
+                lifecycle_path: LifecyclePath::HoldToRedemption,
+                requested_at_ns: order.ts_init().as_u64(),
+                decision_correlation_id: order.client_order_id().as_str(),
+                gross_expected_value: self.context.gross_expected_value,
             },
-            |_| Ok(self.context.max_fee_bps),
         )?;
         let submit_context =
             BoltV3SubmitContext::with_client_id(ClientId::from(self.context.execution_client_id));
         self.policy.route_submit_with_sink(
-            BoltV3SubmitRoutingRequest::new(
+            BoltV3SubmitRoutingRequest::with_economics(
                 self.decision_evidence,
                 self.submit_admission,
                 intent,
-                request,
+                sealed,
             ),
             self.runtime,
             order,
@@ -1844,11 +1953,12 @@ mod tests {
 
         let outcome = policy
             .route_submit_with_sink(
-                BoltV3SubmitRoutingRequest::new(
+                BoltV3SubmitRoutingRequest::for_test(
                     writer.as_ref(),
                     admission.as_ref(),
                     intent,
                     request,
+                    &order,
                 ),
                 &mut sink,
                 order,
@@ -1881,11 +1991,12 @@ mod tests {
 
         let error = BoltV3OrderExecutionPolicy::live()
             .route_submit_with_sink(
-                BoltV3SubmitRoutingRequest::new(
+                BoltV3SubmitRoutingRequest::for_test(
                     writer.as_ref(),
                     admission.as_ref(),
                     intent,
                     request,
+                    &order,
                 ),
                 &mut sink,
                 order,
@@ -1931,7 +2042,13 @@ mod tests {
         let policy = BoltV3OrderExecutionPolicy::from_mode(BoltV3OrderExecutionMode::Live);
 
         let result = policy.route_submit_with_sink(
-            BoltV3SubmitRoutingRequest::new(writer.as_ref(), admission.as_ref(), intent, request),
+            BoltV3SubmitRoutingRequest::for_test(
+                writer.as_ref(),
+                admission.as_ref(),
+                intent,
+                request,
+                &order,
+            ),
             &mut sink,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
@@ -1969,11 +2086,12 @@ mod tests {
 
         let outcome = policy
             .route_submit_with_sink(
-                BoltV3SubmitRoutingRequest::new(
+                BoltV3SubmitRoutingRequest::for_test(
                     writer.as_ref(),
                     admission.as_ref(),
                     intent,
                     request,
+                    &order,
                 ),
                 &mut sink,
                 order,
@@ -2021,11 +2139,12 @@ mod tests {
 
         let outcome = BoltV3OrderExecutionPolicy::live()
             .route_submit_with_sink(
-                BoltV3SubmitRoutingRequest::new(
+                BoltV3SubmitRoutingRequest::for_test(
                     writer.as_ref(),
                     admission.as_ref(),
                     intent,
                     request,
+                    &order,
                 ),
                 &mut sink,
                 order,
@@ -2064,11 +2183,12 @@ mod tests {
 
         let outcome = policy
             .route_submit_with_sink(
-                BoltV3SubmitRoutingRequest::new(
+                BoltV3SubmitRoutingRequest::for_test(
                     writer.as_ref(),
                     admission.as_ref(),
                     intent,
                     request,
+                    &order,
                 ),
                 &mut sink,
                 order,
@@ -2176,11 +2296,12 @@ mod tests {
 
         let error = policy
             .route_submit_with_sink(
-                BoltV3SubmitRoutingRequest::new(
+                BoltV3SubmitRoutingRequest::for_test(
                     writer.as_ref(),
                     admission.as_ref(),
                     intent,
                     request,
+                    &order,
                 ),
                 &mut sink,
                 order,
@@ -2355,7 +2476,7 @@ mod tests {
                 execution_client_id: "execution_client",
                 fallback_price: "1",
                 instrument: Some(&instrument),
-                max_fee_bps: Decimal::ZERO,
+                order_economics: kill_switch_order_economics(),
             },
             command,
         )
@@ -2448,7 +2569,7 @@ mod tests {
                 execution_client_id: "execution_client",
                 fallback_price: "1",
                 instrument: Some(&instrument),
-                max_fee_bps: Decimal::ZERO,
+                order_economics: kill_switch_order_economics(),
             },
             command,
         )
@@ -2556,11 +2677,12 @@ mod tests {
 
         let outcome = policy
             .route_submit_with_sink(
-                BoltV3SubmitRoutingRequest::new(
+                BoltV3SubmitRoutingRequest::for_test(
                     writer.as_ref(),
                     admission.as_ref(),
                     intent,
                     request,
+                    &order,
                 ),
                 &mut sink,
                 order,
@@ -2943,8 +3065,27 @@ mod tests {
         BoltV3MakerOrderRoutingContext {
             strategy_id: "maker-strategy",
             execution_client_id: "maker_execution_client",
-            max_fee_bps: Decimal::ZERO,
+            order_economics: maker_order_economics(),
+            gross_expected_value: Decimal::ONE,
         }
+    }
+
+    fn maker_order_economics() -> &'static super::BoltV3OrderEconomicsHandle {
+        static HANDLE: std::sync::OnceLock<super::BoltV3OrderEconomicsHandle> =
+            std::sync::OnceLock::new();
+        HANDLE.get_or_init(|| {
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for(
+                "maker_execution_client",
+            )
+        })
+    }
+
+    fn kill_switch_order_economics() -> &'static super::BoltV3OrderEconomicsHandle {
+        static HANDLE: std::sync::OnceLock<super::BoltV3OrderEconomicsHandle> =
+            std::sync::OnceLock::new();
+        HANDLE.get_or_init(|| {
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client")
+        })
     }
 
     fn capital_admission_config() -> BoltV3SubmitCapitalAdmissionConfig {
@@ -3134,7 +3275,7 @@ mod tests {
                 execution_client_id: "execution_client",
                 fallback_price: "1",
                 instrument: Some(instrument),
-                max_fee_bps: Decimal::ZERO,
+                order_economics: kill_switch_order_economics(),
             },
             command,
         )

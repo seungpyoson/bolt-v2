@@ -21,27 +21,32 @@ use anyhow::{Context, Result, bail, ensure};
 use bolt_v2::{
     ReferencePriceUpdate, ReferenceQuoteProvenance,
     bolt_v3_config::{
-        BacktestConfigOverrideReport, LoadedStrategy, apply_backtest_config_override,
-        load_bolt_v3_config,
+        BacktestConfigOverrideReport, LoadedBoltV3Config, LoadedStrategy,
+        apply_backtest_config_override, load_bolt_v3_config,
     },
     bolt_v3_current_evidence::{
         AdmissionDecisionOutcome, BacktestRunGuardEvent, CurrentEvidenceStream,
         OfflineDecisionEvidenceRuntime, PositiveFiniteEvidenceReadCap, StrategyInputDetails,
         StrategyInputRvState, SubmitAdmissionEvidence, read_backtest_run_guard_events,
     },
+    bolt_v3_economics_runtime::{
+        AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
+        authoritative_economics_input_from_replay, bind_execution_economics,
+    },
     bolt_v3_operator_artifacts::json_artifact_bytes,
-    bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
-    bolt_v3_providers::FeeProvider,
+    bolt_v3_order_execution::{
+        BoltV3OrderEconomicsHandle, BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy,
+    },
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_strategy_context::{StrategyBuildContext, StrategyDecisionEvidence},
     bolt_v3_strategy_registration::{
         StrategyPreparationConfig, prepare_strategy_client_routes, register_prepared_strategy_batch,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    economics::{CurrencyId, SnapshotId, SourceIdentity},
     strategies::binary_oracle_edge_taker::archetype::raw_taker_config,
     strategies::production_strategy_registry,
 };
-use futures_util::future::BoxFuture;
 use nautilus_analysis::analyzer::PortfolioAnalyzer;
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_core::{UUID4, UnixNanos};
@@ -94,11 +99,12 @@ use super::{
         ResultContractInputs, build_result_contract,
     },
     run_manifest::{
-        BacktestingRunManifest, NtSurfaceClassification, STRATEGY_BINARY_ORACLE_EDGE_TAKER,
-        STRATEGY_BINARY_ORACLE_MAKER, STRATEGY_HURST_VPIN_DIRECTIONAL,
-        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
-        STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT, STRATEGY_PARAM_ORDER_EXECUTION_MODE,
-        StrategySource,
+        BacktestingRunManifest, ManifestEconomicsAuthorityValue,
+        ManifestEconomicsValuationObservation, NtSurfaceClassification,
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_BINARY_ORACLE_MAKER,
+        STRATEGY_HURST_VPIN_DIRECTIONAL, STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
+        STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES, STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
+        STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategySource,
     },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
 };
@@ -109,8 +115,6 @@ const PARAM_BAR_TYPE: &str = "bar_type";
 const PARAM_TRADE_SIZE: &str = "trade_size";
 /// Strategy parameter key for the normalized binary-oracle builder TOML.
 const PARAM_CONFIG_TOML: &str = "config_toml";
-/// Strategy parameter key for the backtest fee-provider assumption.
-const PARAM_FEE_BPS: &str = "fee_bps";
 
 #[derive(Debug, Default)]
 struct BacktestDecisionEvidenceState {
@@ -522,21 +526,6 @@ fn did_not_arm_reason(inputs: DidNotArmReasonInputs<'_>) -> Option<String> {
     None
 }
 
-#[derive(Debug)]
-struct ManifestFeeProvider {
-    fee_bps: Decimal,
-}
-
-impl FeeProvider for ManifestFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        Some(self.fee_bps)
-    }
-
-    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
 /// Strategy parameter key for the number of delivered trades before the entry order.
 const PARAM_ENTRY_AFTER_TRADES: &str = "entry_after_trades";
 /// Strategy parameter key for the number of further delivered trades before the close.
@@ -791,17 +780,7 @@ fn effective_taker_subscription_data_client_ids(
 
 fn manifest_binary_oracle_execution_controls(
     strategy: &StrategySource,
-) -> Result<(Decimal, BoltV3OrderExecutionMode)> {
-    let fee_bps_raw = strategy
-        .parameters
-        .get(PARAM_FEE_BPS)
-        .with_context(|| format!("strategy parameter {PARAM_FEE_BPS} is required"))?;
-    let fee_bps = Decimal::from_str(fee_bps_raw)
-        .with_context(|| format!("invalid {PARAM_FEE_BPS} {fee_bps_raw:?}"))?;
-    ensure!(
-        fee_bps >= Decimal::ZERO,
-        "strategy parameter {PARAM_FEE_BPS} must be non-negative"
-    );
+) -> Result<BoltV3OrderExecutionMode> {
     let order_execution_mode_raw = strategy
         .parameters
         .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
@@ -816,7 +795,146 @@ fn manifest_binary_oracle_execution_controls(
                     "invalid {STRATEGY_PARAM_ORDER_EXECUTION_MODE} {order_execution_mode_raw:?}"
                 )
             })?;
-    Ok((fee_bps, order_execution_mode))
+    Ok(order_execution_mode)
+}
+
+fn load_manifest_economics_config(manifest: &BacktestingRunManifest) -> Result<LoadedBoltV3Config> {
+    let economics = manifest
+        .economics
+        .as_ref()
+        .context("binary-oracle replay requires manifest economics authority")?;
+    let production_root_config_path =
+        resolve_existing_input_path(Path::new(&economics.production_root_config_path));
+    load_bolt_v3_config(&production_root_config_path).with_context(|| {
+        format!(
+            "load production economics config root {}",
+            economics.production_root_config_path
+        )
+    })
+}
+
+fn raw_execution_client_id(raw_config: &toml::Value) -> Result<&str> {
+    raw_config
+        .get("client_id")
+        .and_then(toml::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .context("binary-oracle config client_id is required for execution economics")
+}
+
+fn manifest_order_economics(
+    manifest: &BacktestingRunManifest,
+    loaded: &LoadedBoltV3Config,
+    raw_config: &toml::Value,
+) -> Result<BoltV3OrderEconomicsHandle> {
+    let economics = manifest
+        .economics
+        .as_ref()
+        .context("binary-oracle replay requires manifest economics authority")?;
+    let execution_client_id = raw_execution_client_id(raw_config)?;
+    let inputs = economics
+        .inputs
+        .iter()
+        .map(|input| {
+            let authority = manifest_authority_table(&input.authority);
+            let authority = authoritative_economics_input_from_replay(
+                loaded,
+                execution_client_id,
+                &input.instrument_id,
+                &input.product_surface_id,
+                &authority,
+            )
+            .map_err(anyhow::Error::from)?;
+            let observations = input
+                .valuation_observations
+                .iter()
+                .map(manifest_valuation_observation)
+                .collect::<Result<Vec<_>>>()?;
+            Ok(authority.with_valuation_observations(observations))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let inputs = AuthoritativeEconomicsInputStore::try_new(inputs)
+        .map_err(anyhow::Error::from)
+        .context("build replay authoritative economics store")?;
+    let economics = bind_execution_economics(loaded, execution_client_id, &inputs)
+        .map_err(anyhow::Error::from)
+        .context("bind replay execution economics")?;
+    Ok(BoltV3OrderEconomicsHandle::new(economics))
+}
+
+fn manifest_authority_table(
+    table: &BTreeMap<String, ManifestEconomicsAuthorityValue>,
+) -> toml::Value {
+    toml::Value::Table(
+        table
+            .iter()
+            .map(|(key, value)| (key.clone(), manifest_authority_value(value)))
+            .collect(),
+    )
+}
+
+fn manifest_authority_value(value: &ManifestEconomicsAuthorityValue) -> toml::Value {
+    match value {
+        ManifestEconomicsAuthorityValue::String(value) => toml::Value::String(value.clone()),
+        ManifestEconomicsAuthorityValue::Integer(value) => toml::Value::Integer(*value),
+        ManifestEconomicsAuthorityValue::Boolean(value) => toml::Value::Boolean(*value),
+        ManifestEconomicsAuthorityValue::Array(values) => {
+            toml::Value::Array(values.iter().map(manifest_authority_value).collect())
+        }
+        ManifestEconomicsAuthorityValue::Table(values) => toml::Value::Table(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), manifest_authority_value(value)))
+                .collect(),
+        ),
+    }
+}
+
+fn manifest_valuation_observation(
+    observation: &ManifestEconomicsValuationObservation,
+) -> Result<AuthoritativeValuationObservation> {
+    match observation {
+        ManifestEconomicsValuationObservation::MarketQuote {
+            client_id,
+            instrument_id,
+            base_currency,
+            quote_currency,
+            price,
+            snapshot_id,
+            observed_at_ns,
+            fetched_at_ns,
+            valid_until_ns,
+        } => Ok(AuthoritativeValuationObservation::MarketQuote {
+            client_id: client_id.clone(),
+            instrument_id: instrument_id.clone(),
+            base_currency: CurrencyId::try_new(base_currency.clone())
+                .map_err(anyhow::Error::from)?,
+            quote_currency: CurrencyId::try_new(quote_currency.clone())
+                .map_err(anyhow::Error::from)?,
+            price: Decimal::from_str(price)
+                .with_context(|| format!("invalid economics valuation price {price:?}"))?,
+            snapshot_id: SnapshotId::try_new(snapshot_id.clone()).map_err(anyhow::Error::from)?,
+            observed_at_ns: *observed_at_ns,
+            fetched_at_ns: *fetched_at_ns,
+            valid_until_ns: *valid_until_ns,
+        }),
+        ManifestEconomicsValuationObservation::ProviderExactConversion {
+            source_id,
+            from_unit,
+            to_unit,
+            snapshot_id,
+            observed_at_ns,
+            fetched_at_ns,
+            valid_until_ns,
+        } => Ok(AuthoritativeValuationObservation::ProviderExactConversion {
+            source_id: SourceIdentity::try_new(source_id.clone()).map_err(anyhow::Error::from)?,
+            from_unit: CurrencyId::try_new(from_unit.clone()).map_err(anyhow::Error::from)?,
+            to_unit: CurrencyId::try_new(to_unit.clone()).map_err(anyhow::Error::from)?,
+            snapshot_id: SnapshotId::try_new(snapshot_id.clone()).map_err(anyhow::Error::from)?,
+            observed_at_ns: *observed_at_ns,
+            fetched_at_ns: *fetched_at_ns,
+            valid_until_ns: *valid_until_ns,
+        }),
+    }
 }
 
 fn manifest_evidence_reject_episode_max_count(strategy: &StrategySource) -> Result<usize> {
@@ -871,7 +989,7 @@ fn register_manifest_binary_oracle_strategy(
     manifest: &BacktestingRunManifest,
     registry_key: &str,
     raw_config: &toml::Value,
-    fee_bps: Decimal,
+    order_economics: BoltV3OrderEconomicsHandle,
     order_execution_mode: BoltV3OrderExecutionMode,
     realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
 ) -> Result<Arc<BacktestDecisionEvidenceWriter>> {
@@ -882,9 +1000,8 @@ fn register_manifest_binary_oracle_strategy(
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(
         run_guard_writer.submit_admission_evidence(),
     ));
-    let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
     let mut build_context = StrategyBuildContext::new(
-        fee_provider,
+        order_economics,
         run_guard_writer.strategy_evidence(registry_key)?,
         submit_admission,
         BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
@@ -944,46 +1061,15 @@ fn add_manifest_strategy(
             Ok(AddedManifestStrategy::default())
         }
         STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
-            let fee_bps_raw = strategy
-                .parameters
-                .get(PARAM_FEE_BPS)
-                .with_context(|| format!("strategy parameter {PARAM_FEE_BPS} is required"))?;
-            let fee_bps = Decimal::from_str(fee_bps_raw)
-                .with_context(|| format!("invalid {PARAM_FEE_BPS} {fee_bps_raw:?}"))?;
-            ensure!(
-                fee_bps >= Decimal::ZERO,
-                "strategy parameter {PARAM_FEE_BPS} must be non-negative"
-            );
-            let order_execution_mode_raw = strategy
-                .parameters
-                .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
-                .with_context(|| {
-                    format!("strategy parameter {STRATEGY_PARAM_ORDER_EXECUTION_MODE} is required")
-                })?;
-            let order_execution_mode: BoltV3OrderExecutionMode = toml::Value::String(
-                order_execution_mode_raw.clone(),
-            )
-            .try_into()
-            .with_context(|| {
-                format!(
-                    "invalid {STRATEGY_PARAM_ORDER_EXECUTION_MODE} {order_execution_mode_raw:?}"
-                )
-            })?;
+            let order_execution_mode = manifest_binary_oracle_execution_controls(strategy)?;
+            let loaded = load_manifest_economics_config(manifest)?;
             let (
+                loaded,
                 raw_config,
                 config_override_report,
                 realized_volatility_runtime,
                 resolved_config_bytes,
             ) = if let Some(overlay) = &strategy.config_overlay {
-                let production_root_config_path =
-                    resolve_existing_input_path(Path::new(&overlay.production_root_config_path));
-                let loaded =
-                    load_bolt_v3_config(&production_root_config_path).with_context(|| {
-                        format!(
-                            "load production config root {}",
-                            overlay.production_root_config_path
-                        )
-                    })?;
                 let override_spec = overlay.to_bolt_v3_override();
                 let (loaded, report) = apply_backtest_config_override(loaded, &override_spec)
                     .with_context(|| {
@@ -1025,6 +1111,7 @@ fn add_manifest_strategy(
                     Some(&override_spec),
                 )?;
                 (
+                    loaded,
                     raw_config,
                     Some(report),
                     Some(runtime),
@@ -1041,7 +1128,7 @@ fn add_manifest_strategy(
                     .with_context(|| format!("invalid {PARAM_CONFIG_TOML}"))?;
                 let resolved_config_bytes =
                     canonical_resolved_taker_config_bytes(&raw_config, None, None)?;
-                (raw_config, None, None, resolved_config_bytes)
+                (loaded, raw_config, None, None, resolved_config_bytes)
             };
             let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::new(
                 manifest_evidence_reject_episode_max_count(strategy)?,
@@ -1051,9 +1138,9 @@ fn add_manifest_strategy(
             let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(
                 run_guard_writer.submit_admission_evidence(),
             ));
-            let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
+            let order_economics = manifest_order_economics(manifest, &loaded, &raw_config)?;
             let mut build_context = StrategyBuildContext::new(
-                fee_provider,
+                order_economics,
                 run_guard_writer.strategy_evidence(STRATEGY_BINARY_ORACLE_EDGE_TAKER)?,
                 submit_admission,
                 BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
@@ -1085,15 +1172,16 @@ fn add_manifest_strategy(
                 strategy.config_overlay.is_none(),
                 "strategy.config_overlay is not supported for strategy {STRATEGY_BINARY_ORACLE_MAKER:?}"
             );
-            let (fee_bps, order_execution_mode) =
-                manifest_binary_oracle_execution_controls(strategy)?;
+            let order_execution_mode = manifest_binary_oracle_execution_controls(strategy)?;
             let raw_config = inline_manifest_strategy_config(strategy)?;
+            let loaded = load_manifest_economics_config(manifest)?;
+            let order_economics = manifest_order_economics(manifest, &loaded, &raw_config)?;
             let run_guard_writer = register_manifest_binary_oracle_strategy(
                 engine,
                 manifest,
                 STRATEGY_BINARY_ORACLE_MAKER,
                 &raw_config,
-                fee_bps,
+                order_economics,
                 order_execution_mode,
                 None,
             )?;
@@ -2751,11 +2839,12 @@ mod tests {
     use crate::run_manifest::{
         BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION, BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE,
         ManifestArtifactStore, ManifestBacktestConfigOverride, ManifestCatalogInput,
-        ManifestInstrumentSettlementInput, ManifestRealizedVolatilitySourceSelector,
-        ManifestReferenceCurrentPriceInput, ManifestVenueConfig, MarketStructureFixture,
-        RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_BINARY_ORACLE_MAKER,
-        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE, STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
-        STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT, STRATEGY_PARAM_FEE_BPS,
+        ManifestEconomicsAuthorityValue, ManifestEconomicsInput, ManifestEconomicsSource,
+        ManifestEconomicsValuationObservation, ManifestInstrumentSettlementInput,
+        ManifestRealizedVolatilitySourceSelector, ManifestReferenceCurrentPriceInput,
+        ManifestVenueConfig, MarketStructureFixture, RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER,
+        STRATEGY_BINARY_ORACLE_MAKER, STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
+        STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES, STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
         STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
         StrategySourceKind,
     };
@@ -2778,6 +2867,101 @@ mod tests {
     const MAKER_SMOKE_YES_INSTRUMENT: &str = "SAMPLE-EVENT-YES.POLYMARKET";
     const MAKER_SMOKE_NO_INSTRUMENT: &str = "SAMPLE-EVENT-NO.POLYMARKET";
     const MAKER_SMOKE_MARKET_SLUG: &str = "will-sample-event-resolve-yes";
+
+    fn polymarket_replay_economics(
+        instruments: &[(&str, &str)],
+        condition_id: &str,
+        source_at_ns: u64,
+        valid_until_ns: u64,
+    ) -> ManifestEconomicsSource {
+        let market_info_json = serde_json::json!({
+            "r": {},
+            "t": instruments
+                .iter()
+                .enumerate()
+                .map(|(index, (_, provider_instrument_id))| serde_json::json!({
+                    "t": provider_instrument_id,
+                    "o": if index == 0 { "Yes" } else { "No" },
+                }))
+                .collect::<Vec<_>>(),
+            "c": condition_id,
+            "mos": "1",
+            "mts": "1",
+        })
+        .to_string();
+        let valuation_observations = vec![
+            ManifestEconomicsValuationObservation::ProviderExactConversion {
+                source_id: "collateral".to_string(),
+                from_unit: "pUSD".to_string(),
+                to_unit: "USDC.e".to_string(),
+                snapshot_id: format!("{condition_id}-collateral"),
+                observed_at_ns: source_at_ns,
+                fetched_at_ns: source_at_ns,
+                valid_until_ns,
+            },
+            ManifestEconomicsValuationObservation::MarketQuote {
+                client_id: "coinbase_data".to_string(),
+                instrument_id: "USDC-USD.COINBASE".to_string(),
+                base_currency: "USDC".to_string(),
+                quote_currency: "USD".to_string(),
+                price: "1".to_string(),
+                snapshot_id: format!("{condition_id}-usdc-usd"),
+                observed_at_ns: source_at_ns,
+                fetched_at_ns: source_at_ns,
+                valid_until_ns,
+            },
+        ];
+        ManifestEconomicsSource {
+            production_root_config_path: "config/root.toml".to_string(),
+            inputs: instruments
+                .iter()
+                .map(|(instrument_id, provider_instrument_id)| {
+                    let authority = BTreeMap::from([
+                        (
+                            "provider_instrument_id".to_string(),
+                            ManifestEconomicsAuthorityValue::String(
+                                (*provider_instrument_id).to_string(),
+                            ),
+                        ),
+                        (
+                            "snapshot_id".to_string(),
+                            ManifestEconomicsAuthorityValue::String(format!(
+                                "{condition_id}-market-info"
+                            )),
+                        ),
+                        (
+                            "source_at_ns".to_string(),
+                            ManifestEconomicsAuthorityValue::Integer(
+                                i64::try_from(source_at_ns).expect("fixture timestamp fits i64"),
+                            ),
+                        ),
+                        (
+                            "fetched_at_ns".to_string(),
+                            ManifestEconomicsAuthorityValue::Integer(
+                                i64::try_from(source_at_ns).expect("fixture timestamp fits i64"),
+                            ),
+                        ),
+                        (
+                            "valid_until_ns".to_string(),
+                            ManifestEconomicsAuthorityValue::Integer(
+                                i64::try_from(valid_until_ns).expect("fixture timestamp fits i64"),
+                            ),
+                        ),
+                        (
+                            "market_info_json".to_string(),
+                            ManifestEconomicsAuthorityValue::String(market_info_json.clone()),
+                        ),
+                    ]);
+                    ManifestEconomicsInput {
+                        instrument_id: (*instrument_id).to_string(),
+                        product_surface_id: "binary_outcome".to_string(),
+                        authority,
+                        valuation_observations: valuation_observations.clone(),
+                    }
+                })
+                .collect(),
+        }
+    }
     const MAKER_SMOKE_CONDITION_ID: &str = "condition-sample-event";
     const MAKER_SMOKE_QUESTION_ID: &str = "question-sample-event";
     const MAKER_SMOKE_CLIENT_ID: &str = "maker_execution_client";
@@ -3349,7 +3533,7 @@ mod tests {
         strategy_id = "binary_oracle_maker-backtest-smoke"
         order_id_tag = "001"
         oms_type = "netting"
-        client_id = "maker_execution_client"
+        client_id = "polymarket_main"
         trade_flow_window_secs = 600
         trade_flow_max_samples = 1000
         mu_min_classified_samples = 4
@@ -3462,7 +3646,6 @@ mod tests {
                         STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT.to_string(),
                         "4096".to_string(),
                     ),
-                    (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
                     (
                         STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
                         "shadow".to_string(),
@@ -3474,6 +3657,15 @@ mod tests {
                 experiment_result_hash: None,
                 config_overlay: None,
             },
+            economics: Some(polymarket_replay_economics(
+                &[
+                    (MAKER_SMOKE_YES_INSTRUMENT, "SAMPLE-EVENT-YES"),
+                    (MAKER_SMOKE_NO_INSTRUMENT, "SAMPLE-EVENT-NO"),
+                ],
+                "condition-sample-event",
+                MAKER_SMOKE_TS_NS,
+                MAKER_SMOKE_TS_NS + 60_000_000_000,
+            )),
             strategy_config_hash: sha256_hex(maker_smoke_config_toml().as_bytes()),
             venue: maker_smoke_venue(),
             additional_venues: Vec::new(),
@@ -3541,6 +3733,32 @@ mod tests {
     }
 
     #[test]
+    fn binary_oracle_replay_rejects_malformed_provider_economics() -> Result<()> {
+        let tempdir = tempfile::TempDir::new().context("create maker smoke catalog root")?;
+        write_maker_smoke_catalog(tempdir.path())?;
+        let mut manifest = maker_smoke_manifest(tempdir.path());
+        let input = manifest
+            .economics
+            .as_mut()
+            .and_then(|economics| economics.inputs.first_mut())
+            .context("maker smoke economics input")?;
+        input.authority.insert(
+            "market_info_json".to_string(),
+            ManifestEconomicsAuthorityValue::String("{}".to_string()),
+        );
+
+        let error = match run_nt_backtest_node(&manifest) {
+            Ok(_) => anyhow::bail!("malformed provider economics unexpectedly ran"),
+            Err(error) => error,
+        };
+        ensure!(
+            format!("{error:#}").contains("Polymarket market-info is invalid"),
+            "unexpected malformed-economics error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn runner_propagates_execution_contract_validator_failure() -> Result<()> {
         let tempdir = tempfile::TempDir::new().context("create execution smoke catalog root")?;
         write_execution_contract_smoke_catalog(tempdir.path())?;
@@ -3553,6 +3771,7 @@ mod tests {
             ("exit_after_trades".to_string(), "1".to_string()),
             ("side".to_string(), "buy".to_string()),
         ]);
+        manifest.economics = None;
         manifest.catalog_inputs.truncate(1);
         let result = run_nt_backtest_node_with_execution_contract(&manifest, |_, _| {
             anyhow::bail!("execution-contract-validator-sentinel")
@@ -3596,7 +3815,6 @@ mod tests {
     fn execution_contract_config_identity_covers_applied_rv_source_filter() -> Result<()> {
         let raw_config = toml::from_str::<toml::Value>(&maker_smoke_config_toml())?;
         let mut override_spec = StrategyConfigOverlaySource {
-            production_root_config_path: "config/root.toml".to_string(),
             override_delta: ManifestBacktestConfigOverride {
                 label: "test override".to_string(),
                 strategy_instance_id: "binary_oracle_btc".to_string(),
@@ -7604,6 +7822,23 @@ mod tests {
             )
             .as_bytes(),
         );
+        let up_provider_instrument_id = catalogs
+            .up_instrument_id
+            .split_once('.')
+            .map_or(catalogs.up_instrument_id.as_str(), |(symbol, _)| symbol);
+        let down_provider_instrument_id = catalogs
+            .down_instrument_id
+            .split_once('.')
+            .map_or(catalogs.down_instrument_id.as_str(), |(symbol, _)| symbol);
+        let economics = polymarket_replay_economics(
+            &[
+                (&catalogs.up_instrument_id, up_provider_instrument_id),
+                (&catalogs.down_instrument_id, down_provider_instrument_id),
+            ],
+            "issue-789-condition",
+            ISSUE_789_START_NS as u64,
+            ISSUE_789_END_NS as u64,
+        );
         let mut manifest = BacktestingRunManifest {
             manifest_schema_version: BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION.to_string(),
             run_id: "issue-789-first-real-free-data-taker-pl".to_string(),
@@ -7632,7 +7867,6 @@ mod tests {
                         STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT.to_string(),
                         "4096".to_string(),
                     ),
-                    (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
                     (
                         STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
                         "live".to_string(),
@@ -7643,7 +7877,6 @@ mod tests {
                 experiment_result_uri: None,
                 experiment_result_hash: None,
                 config_overlay: Some(StrategyConfigOverlaySource {
-                    production_root_config_path: "config/root.toml".to_string(),
                     override_delta: ManifestBacktestConfigOverride {
                         label: "production config + documented OKX/Bybit override".to_string(),
                         strategy_instance_id: "binary_oracle_btc".to_string(),
@@ -7664,6 +7897,7 @@ mod tests {
                     },
                 }),
             },
+            economics: Some(economics),
             strategy_config_hash: "0".repeat(64),
             // POLYMARKET must be funded in the binary's settlement currency
             // (pUSD — the NT Polymarket adapter's collateral currency), not
@@ -7741,8 +7975,12 @@ mod tests {
             .config_overlay
             .as_ref()
             .context("issue #789 manifest must carry its production config override")?;
+        let economics = manifest
+            .economics
+            .as_ref()
+            .context("issue #789 manifest must carry economics authority")?;
         let production_root_config_path =
-            resolve_existing_input_path(Path::new(&overlay.production_root_config_path));
+            resolve_existing_input_path(Path::new(&economics.production_root_config_path));
         let loaded = load_bolt_v3_config(&production_root_config_path)
             .context("load issue #789 production config for canonical provenance")?;
         let override_spec = overlay.to_bolt_v3_override();

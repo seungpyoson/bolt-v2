@@ -1079,7 +1079,6 @@ mod tests {
             QuantityNotPositive => "quantity_not_positive",
             PositionContractInvalid => "position_contract_invalid",
             EntryPositionContractUnsupported => "entry_position_contract_unsupported",
-            HistoricalEntryFeeUnavailable => "historical_entry_fee_unavailable",
             OnePositionInvariantViolation => "one_position_invariant_violation",
             EntryMalformedRejected => "entry_malformed_rejected",
             EntryBalanceRejected => "entry_balance_rejected",
@@ -1117,7 +1116,6 @@ mod tests {
             Self::BookCrossed => Self::BookCrossed => "book_crossed",
             Self::IntervalOpenMissing => Self::IntervalOpenMissing => "interval_open_missing",
             Self::WarmupIncomplete => Self::WarmupIncomplete => "warmup_incomplete",
-            Self::FeesNotReady => Self::FeesNotReady => "fees_not_ready",
             Self::RecoveryMode => Self::RecoveryMode => "recovery_mode",
             Self::MarketCoolingDown => Self::MarketCoolingDown => "market_cooling_down",
             Self::SpotSpikeCooldown => Self::SpotSpikeCooldown => "spot_spike_cooldown",
@@ -1136,8 +1134,7 @@ mod tests {
             InvalidCost => "invalid_cost",
             UnsupportedOrderShape => "unsupported_order_shape",
             EdgeBelowThreshold => "edge_below_threshold",
-            SpreadOrSlippageWipedEdge => "spread_or_slippage_wiped_edge",
-            FeeUnavailable => "fee_unavailable"
+            SpreadOrSlippageWipedEdge => "spread_or_slippage_wiped_edge"
         ]
     );
     payload_wire_coverage!(
@@ -1156,8 +1153,6 @@ mod tests {
                 Self::UncertaintyBandUnavailable => "uncertainty_band_unavailable",
             Self::FairProbabilityUnavailable =>
                 Self::FairProbabilityUnavailable => "fair_probability_unavailable",
-            Self::FeeUnavailable(OutcomeSide::Up) =>
-                Self::FeeUnavailable(_) => "fee_unavailable",
             Self::ExecutableEntryCostUnavailable(OutcomeSide::Up) =>
                 Self::ExecutableEntryCostUnavailable(_) => "executable_entry_cost_unavailable",
             Self::ExecutableEdgeUnavailable(
@@ -1761,7 +1756,6 @@ mod tests {
             .map(|(value, _)| value)
             .collect::<Vec<_>>();
         for (side, _) in OutcomeSide::wire_coverage_values() {
-            values.push(EntryPricingBlockReason::FeeUnavailable(side));
             values.push(EntryPricingBlockReason::ExecutableEntryCostUnavailable(
                 side,
             ));
@@ -1858,7 +1852,6 @@ mod tests {
                 absent_numbers.details.uncertainty_band_probability = None;
                 absent_numbers.details.expected_edge_basis_points = None;
                 absent_numbers.details.worst_case_edge_basis_points = None;
-                absent_numbers.details.fee_rate_basis_points = None;
                 cases.push(CurrentFact::BlockedStrategyInputObservation(Box::new(
                     absent_numbers,
                 )));
@@ -2470,8 +2463,6 @@ mod tests {
         nulls.fair_probability_up = None;
         nulls.fair_probability_down = None;
         nulls.uncertainty_band_probability = None;
-        nulls.up_fee_bps = None;
-        nulls.down_fee_bps = None;
         nulls.hold_ev_bps = None;
         nulls.exit_ev_bps = None;
         nulls.realized_vol = None;
@@ -2503,8 +2494,6 @@ mod tests {
         present.fair_probability_up = Some("0.5".to_string());
         present.fair_probability_down = Some("0.5".to_string());
         present.uncertainty_band_probability = Some("0.01".to_string());
-        present.up_fee_bps = Some("1".to_string());
-        present.down_fee_bps = Some("1".to_string());
         present.hold_ev_bps = Some("1".to_string());
         present.exit_ev_bps = Some("2".to_string());
         present.realized_vol = Some("0.2".to_string());
@@ -2544,8 +2533,6 @@ mod tests {
         nulls.fair_probability_up = None;
         nulls.fair_probability_down = None;
         nulls.uncertainty_band_probability = None;
-        nulls.up_fee_bps = None;
-        nulls.down_fee_bps = None;
         nulls.hold_ev_bps = None;
         nulls.exit_ev_bps = None;
 
@@ -2567,8 +2554,6 @@ mod tests {
         present.fair_probability_up = Some("0.5".to_string());
         present.fair_probability_down = Some("0.5".to_string());
         present.uncertainty_band_probability = Some("0.01".to_string());
-        present.up_fee_bps = Some("1".to_string());
-        present.down_fee_bps = Some("1".to_string());
         present.hold_ev_bps = Some("1".to_string());
         present.exit_ev_bps = Some("2".to_string());
 
@@ -2679,8 +2664,6 @@ mod tests {
         nulls.sized_worst_case_ev_bps = None;
         nulls.sized_edge_cents_per_share = None;
         nulls.theta_scaled_min_edge_bps = None;
-        nulls.up_fee_bps = None;
-        nulls.down_fee_bps = None;
         nulls.submission_blocked_reason = None;
         nulls.stale_reference_after_ms = None;
         nulls.last_reference_ts_ms = None;
@@ -2705,8 +2688,6 @@ mod tests {
         present.sized_worst_case_ev_bps = Some("5".to_string());
         present.sized_edge_cents_per_share = Some("0.01".to_string());
         present.theta_scaled_min_edge_bps = Some("5".to_string());
-        present.up_fee_bps = Some("1".to_string());
-        present.down_fee_bps = Some("1".to_string());
         present.submission_blocked_reason = Some(EntrySkipReason::EntryPricingBlocked);
         present.stale_reference_after_ms = Some(5_000);
         present.last_reference_ts_ms = Some(1);
@@ -2737,7 +2718,6 @@ mod tests {
         details.fast_venue_age_ms = None;
         details.fast_venue_jitter_ms = None;
         details.lead_agreement_corr = None;
-        details.fee_rate_basis_points = None;
         details.selected_side = None;
         details.realized_volatility = StrategyInputRvState::Absent {
             gate_result: RvGateResult::MissingSnapshot,
@@ -3053,6 +3033,23 @@ mod tests {
         }
     }
 
+    fn admission_economics_details() -> AdmissionEconomicsDetails {
+        AdmissionEconomicsDetails {
+            decision_correlation_id: "client-1".to_string(),
+            core_total: "-0.1".to_string(),
+            core_net_edge: "0.4".to_string(),
+            core_edge_ratio: "0.04".to_string(),
+            forecast_net_edge: "0.4".to_string(),
+            forecast_complete: true,
+            missing_forecast_component_ids: vec![],
+            valid_until_ns: 20,
+            forecast_valid_until_ns: Some(20),
+            source_snapshot_ids: vec!["economics-snapshot-1".to_string()],
+            reservation_basis: "10".to_string(),
+            full_reservation_liability: "10.1".to_string(),
+        }
+    }
+
     fn order_reject() -> OrderRejectFact {
         OrderRejectFact {
             reject_source: OrderRejectSource::Venue,
@@ -3109,8 +3106,6 @@ mod tests {
             sized_worst_case_ev_bps: None,
             sized_edge_cents_per_share: None,
             theta_scaled_min_edge_bps: None,
-            up_fee_bps: None,
-            down_fee_bps: None,
             submission_blocked_reason: Some(
                 super::super::facts::EntrySkipReason::EntryPricingBlocked,
             ),
@@ -3174,7 +3169,6 @@ mod tests {
             fast_venue_jitter_ms: Some(1),
             fast_venue_incoherent: false,
             lead_agreement_corr: Some("1".to_string()),
-            fee_rate_basis_points: Some("0".to_string()),
             selected_side: None,
         }
     }
@@ -3196,8 +3190,6 @@ mod tests {
             fair_probability_up: Some("0.5".to_string()),
             fair_probability_down: Some("0.5".to_string()),
             uncertainty_band_probability: Some("0.01".to_string()),
-            up_fee_bps: Some("0".to_string()),
-            down_fee_bps: Some("0".to_string()),
             hold_ev_bps: Some("1".to_string()),
             exit_ev_bps: Some("2".to_string()),
             realized_vol: None,
@@ -4344,6 +4336,23 @@ mod tests {
     }
 
     #[test]
+    fn admission_economics_rejects_contradictory_forecast_health() {
+        let mut details = admission_details();
+        let mut economics = admission_economics_details();
+        economics.forecast_complete = false;
+        details.economics = Some(economics);
+        let fact = AdmittedEntryAdmissionFact {
+            details,
+            reservation: None,
+        };
+
+        assert!(
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(&fact, 24)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn order_reject_identity_round_trips_and_rejects_invalid_admission_shape() {
         let expected = order_reject();
         let record = <CurrentCodecs as CodecFor<identities::OrderRejectV1>>::encode(&expected, 28)
@@ -4523,8 +4532,6 @@ mod tests {
             fair_probability_up: Some("0.5".to_string()),
             fair_probability_down: Some("0.5".to_string()),
             uncertainty_band_probability: Some("0.01".to_string()),
-            up_fee_bps: Some("0".to_string()),
-            down_fee_bps: Some("0".to_string()),
             hold_ev_bps: Some("1".to_string()),
             exit_ev_bps: Some("2".to_string()),
             decision: ExitEvaluationDecision::Hold {

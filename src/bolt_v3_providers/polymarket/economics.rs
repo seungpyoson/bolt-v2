@@ -6,7 +6,10 @@ use serde::Deserialize;
 use crate::{
     bolt_v3_config::{EconomicsRoutingAttachmentPolicy, ExecutionEconomicsConfig},
     bolt_v3_economics_runtime::AuthoritativeVenueEconomicsInput,
-    bolt_v3_providers::{BuiltProviderEconomicsAdapter, ProviderEconomicsAdapterBuildContext},
+    bolt_v3_providers::{
+        BuiltProviderEconomicsAdapter, ProviderEconomicsAdapterBuildContext,
+        ProviderEconomicsReplayAuthorityBuildContext,
+    },
     economics::{
         AdmissionTreatment, CalculationFactor, CurrencyId, EconomicClass, EconomicComponentId,
         EconomicKind, EconomicScope, EconomicsError, EconomicsInstrumentId, EconomicsQuoteRequest,
@@ -77,6 +80,19 @@ pub struct PolymarketMarketInfoSnapshot {
     platform: PolymarketPlatformPlan,
     builder_maker_fee_bps: Decimal,
     builder_taker_fee_bps: Decimal,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolymarketReplayEconomicsAuthority {
+    provider_instrument_id: String,
+    snapshot_id: String,
+    source_at_ns: u64,
+    fetched_at_ns: u64,
+    valid_until_ns: u64,
+    #[serde(default)]
+    builder_attachment_id: Option<String>,
+    market_info_json: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,6 +295,40 @@ pub fn authoritative_economics_input(
             provider_instrument_id,
         }),
     ))
+}
+
+pub(crate) fn build_replay_economics_authority(
+    context: ProviderEconomicsReplayAuthorityBuildContext<'_>,
+) -> Result<AuthoritativeVenueEconomicsInput, String> {
+    let replay: PolymarketReplayEconomicsAuthority = context
+        .authority
+        .clone()
+        .try_into()
+        .map_err(|error| format!("invalid Polymarket replay economics authority: {error}"))?;
+    let snapshot = PolymarketMarketInfoSnapshot::from_json(
+        PolymarketSnapshotMetadata {
+            snapshot_id: SnapshotId::try_new(replay.snapshot_id)
+                .map_err(|error| error.to_string())?,
+            source_at_ns: replay.source_at_ns,
+            fetched_at_ns: replay.fetched_at_ns,
+            valid_until_ns: replay.valid_until_ns,
+            builder_attachment_id: replay
+                .builder_attachment_id
+                .map(RoutingAttachmentId::try_new)
+                .transpose()
+                .map_err(|error| error.to_string())?,
+        },
+        &replay.market_info_json,
+    )
+    .map_err(|error| error.to_string())?;
+    authoritative_economics_input(
+        context.execution_client_id,
+        context.instrument_id,
+        context.product_surface_id,
+        replay.provider_instrument_id,
+        snapshot,
+    )
+    .map_err(|error| error.to_string())
 }
 
 pub(crate) fn build_execution_economics_adapter(

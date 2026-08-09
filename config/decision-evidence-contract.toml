@@ -555,8 +555,8 @@ classification = "already-deduped"
 runtime_wiring = "wired"
 reviewed_runtime_triggers = ["book"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_entry_skip_once"]
-repeat_semantics = "finite per-episode monotone suppression over the exact twenty registered entry-skip states"
-dedupe_key_evidence = "EvidenceEpisodeId binds stable strategy, target, venue and ordered market identity; config/evidence-novelty.toml enumerates the twenty canonical states, and payload churn or writer failure cannot reclaim a claimed state"
+repeat_semantics = "finite per-episode monotone suppression over the exact nineteen registered entry-skip states"
+dedupe_key_evidence = "EvidenceEpisodeId binds stable strategy, target, venue and ordered market identity; config/evidence-novelty.toml enumerates the nineteen canonical states, and payload churn or writer failure cannot reclaim a claimed state"
 census_ancestor = "entry_skip"
 
 [[producers]]
@@ -684,14 +684,14 @@ census_ancestor = "venue_truth_capture_failure"
 id = "blocked_strategy_input_observation_v1"
 purpose = "blocked_strategy_input_observation"
 kind = "blocked_strategy_input_observation"
-schema_version = 1
+schema_version = 3
 gate_id = "bolt_v3.strategy_input_snapshot"
 
 [[identities]]
 id = "submit_linked_strategy_input_snapshot_v1"
 purpose = "submit_linked_strategy_input_snapshot"
 kind = "strategy_input_snapshot"
-schema_version = 16
+schema_version = 18
 gate_id = "bolt_v3.strategy_input_snapshot"
 
 [[identities]]
@@ -712,28 +712,28 @@ gate_id = "bolt_v3.order_intent"
 id = "admitted_entry_admission_v1"
 purpose = "admitted_entry_admission"
 kind = "admission_decision"
-schema_version = 16
+schema_version = 17
 gate_id = "bolt_v3.submit_admission"
 
 [[identities]]
 id = "rejected_entry_admission_v1"
 purpose = "rejected_entry_admission"
 kind = "rejected_entry_admission"
-schema_version = 1
+schema_version = 2
 gate_id = "bolt_v3.submit_admission"
 
 [[identities]]
 id = "risk_reducing_exit_admission_v1"
 purpose = "risk_reducing_exit_admission"
 kind = "risk_reducing_exit_admission"
-schema_version = 1
+schema_version = 2
 gate_id = "bolt_v3.submit_admission"
 
 [[identities]]
 id = "forced_reduction_admission_v1"
 purpose = "forced_reduction_admission"
 kind = "forced_reduction_admission"
-schema_version = 1
+schema_version = 2
 gate_id = "bolt_v3.submit_admission"
 
 [[identities]]
@@ -768,28 +768,28 @@ gate_id = "bolt_v3.submit_admission"
 id = "entry_skip_observation_v1"
 purpose = "entry_skip_observation"
 kind = "entry_skip"
-schema_version = 16
+schema_version = 18
 gate_id = "bolt_v3.entry_skip"
 
 [[identities]]
 id = "exit_submission_decision_v1"
 purpose = "exit_submission_decision"
 kind = "exit_submission_decision"
-schema_version = 1
+schema_version = 2
 gate_id = "bolt_v3.exit_decision"
 
 [[identities]]
 id = "exit_hold_decision_v1"
 purpose = "exit_hold_decision"
 kind = "exit_hold_decision"
-schema_version = 1
+schema_version = 2
 gate_id = "bolt_v3.exit_decision"
 
 [[identities]]
 id = "exit_evaluation_v1"
 purpose = "exit_evaluation"
 kind = "exit_evaluation"
-schema_version = 16
+schema_version = 17
 gate_id = "bolt_v3.exit_evaluation"
 
 [[identities]]

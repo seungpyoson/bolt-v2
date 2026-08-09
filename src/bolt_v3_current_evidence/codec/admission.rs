@@ -466,8 +466,35 @@ fn validate_admission_details(details: &AdmissionDetails) -> Result<(), RecordFa
             || details.current_equity_present
             || details.peak_equity_present);
     let economics_invalid = details.economics.as_ref().is_some_and(|economics| {
+        let forecast_shape_invalid = if economics.forecast_complete {
+            !economics.missing_forecast_component_ids.is_empty()
+                || economics.forecast_valid_until_ns.is_none()
+        } else {
+            economics.missing_forecast_component_ids.is_empty()
+                || economics.forecast_valid_until_ns.is_some()
+        };
         economics.core_total.parse::<Decimal>().is_err()
+            || economics.core_net_edge.parse::<Decimal>().is_err()
             || economics.core_edge_ratio.parse::<Decimal>().is_err()
+            || economics.forecast_net_edge.parse::<Decimal>().is_err()
+            || economics.reservation_basis.parse::<Decimal>().is_err()
+            || economics
+                .full_reservation_liability
+                .parse::<Decimal>()
+                .is_err()
+            || economics.decision_correlation_id.trim().is_empty()
+            || economics.valid_until_ns == 0
+            || economics.forecast_valid_until_ns == Some(0)
+            || forecast_shape_invalid
+            || economics.source_snapshot_ids.is_empty()
+            || economics
+                .source_snapshot_ids
+                .iter()
+                .any(|id| id.trim().is_empty())
+            || economics
+                .missing_forecast_component_ids
+                .iter()
+                .any(|id| id.trim().is_empty())
     });
     if details.strategy_id.trim().is_empty()
         || details.execution_client_id.trim().is_empty()
@@ -498,22 +525,52 @@ macro_rules! reservation_fact_type {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AdmissionEconomicsDetailsV1 {
+    decision_correlation_id: String,
     core_total: String,
+    core_net_edge: String,
     core_edge_ratio: String,
+    forecast_net_edge: String,
+    forecast_complete: bool,
+    missing_forecast_component_ids: Vec<String>,
+    valid_until_ns: u64,
+    forecast_valid_until_ns: Option<u64>,
+    source_snapshot_ids: Vec<String>,
+    reservation_basis: String,
+    full_reservation_liability: String,
 }
 
 impl AdmissionEconomicsDetailsV1 {
     fn from_fact(value: AdmissionEconomicsDetails) -> Self {
         Self {
+            decision_correlation_id: value.decision_correlation_id,
             core_total: value.core_total,
+            core_net_edge: value.core_net_edge,
             core_edge_ratio: value.core_edge_ratio,
+            forecast_net_edge: value.forecast_net_edge,
+            forecast_complete: value.forecast_complete,
+            missing_forecast_component_ids: value.missing_forecast_component_ids,
+            valid_until_ns: value.valid_until_ns,
+            forecast_valid_until_ns: value.forecast_valid_until_ns,
+            source_snapshot_ids: value.source_snapshot_ids,
+            reservation_basis: value.reservation_basis,
+            full_reservation_liability: value.full_reservation_liability,
         }
     }
 
     fn into_fact(self) -> AdmissionEconomicsDetails {
         AdmissionEconomicsDetails {
+            decision_correlation_id: self.decision_correlation_id,
             core_total: self.core_total,
+            core_net_edge: self.core_net_edge,
             core_edge_ratio: self.core_edge_ratio,
+            forecast_net_edge: self.forecast_net_edge,
+            forecast_complete: self.forecast_complete,
+            missing_forecast_component_ids: self.missing_forecast_component_ids,
+            valid_until_ns: self.valid_until_ns,
+            forecast_valid_until_ns: self.forecast_valid_until_ns,
+            source_snapshot_ids: self.source_snapshot_ids,
+            reservation_basis: self.reservation_basis,
+            full_reservation_liability: self.full_reservation_liability,
         }
     }
 }

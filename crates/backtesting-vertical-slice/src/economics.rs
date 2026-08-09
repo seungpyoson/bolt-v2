@@ -134,9 +134,8 @@ mod tests {
         economics_request_from_nautilus,
     };
     use nautilus_model::{
-        enums::{CurrencyType, OrderSide as NautilusOrderSide},
-        identifiers::{AccountId as NautilusAccountId, InstrumentId, Symbol, Venue},
-        types::{Currency, Price, Quantity},
+        enums::OrderSide as NautilusOrderSide,
+        identifiers::{InstrumentId, Symbol, Venue},
     };
 
     use super::*;
@@ -178,19 +177,17 @@ mod tests {
 
     #[test]
     fn live_and_replay_facts_produce_the_identical_neutral_request() {
-        let currency = Currency::new_checked("USD", 2, 840, "US Dollar", CurrencyType::Fiat)
-            .expect("currency fixture should be valid");
         let legs = [NautilusPlannedFillLeg {
-            price: Price::new(100.25, 2),
-            quantity: Quantity::new(3.0, 1),
+            price: Decimal::new(10_025, 2),
+            quantity: Decimal::new(30, 1),
         }];
         let live = economics_request_from_nautilus(NautilusEconomicsIntent {
             execution_client_id: "execution",
-            account_id: NautilusAccountId::from("SIM-001"),
+            account_id: "SIM-001",
             instrument_id: InstrumentId::new(Symbol::new("BTC-USD"), Venue::new("SIM")),
             product_surface_id: "spot",
             reporting_policy_id: "reporting",
-            reporting_currency: &currency,
+            reporting_currency: "USD",
             edge_basis_policy_id: "basis",
             decision_correlation_id: "decision",
             side: NautilusOrderSide::Buy,

@@ -90,8 +90,8 @@ use crate::{
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransition,
     bolt_v3_order_execution::{
-        BoltV3OrderEconomicsIntent, BoltV3PlannedFillLeg, BoltV3SubmitContext,
-        BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
+        BoltV3PlannedFillLeg, BoltV3SubmitContext, BoltV3SubmitRoutingOutcome,
+        BoltV3SubmitRoutingRequest, build_order_economics_submit_admission,
         order_intent_details_from_compiled_order,
     },
     bolt_v3_order_intent::{
@@ -123,8 +123,7 @@ use crate::{
     bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequestInput,
-        BoltV3SubmitIntentKind, OrderValuationContext,
-        build_submit_admission_request_from_economics, limit_notional_exceeds_sized_notional,
+        BoltV3SubmitIntentKind, OrderValuationContext, limit_notional_exceeds_sized_notional,
     },
     bolt_v3_taker_pricing::{
         FastSpotObservation, TakerPricingConfig, TakerPricingRequest,
@@ -152,11 +151,7 @@ use crate::{
         MarketSelectionOutcome, SelectedMarketEvidenceIdentity, SelectedMarketEvidenceOutcome,
         SelectedMarketSourceIdentity,
     },
-    bolt_v3_providers::FeeProvider,
-    bolt_v3_submit_admission::{
-        BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionRequest,
-        build_submit_admission_request_from_order,
-    },
+    bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionRequest},
     bolt_v3_taker_pricing::VenueTimingState,
     bolt_v3_taker_updown_signal::{price_agreement_corr, price_gap_probability},
 };
@@ -5309,91 +5304,13 @@ impl BinaryOracleEdgeTaker {
         intent_kind: BoltV3SubmitIntentKind,
         order: &nautilus_model::orders::OrderAny,
     ) -> Result<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest> {
-        let client_order_id = order.client_order_id().to_string();
-        let is_quote_quantity = order.is_quote_quantity();
-        let instrument = if is_quote_quantity {
-            Some(self.current_instrument(order.instrument_id()).with_context(|| {
-                format!(
-                    "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={client_order_id}"
-                )
-            })?)
-        } else if order.price().is_none() {
-            self.current_instrument(order.instrument_id())
-        } else {
-            None
-        };
-        let (last_quote, last_trade) = if is_quote_quantity {
-            let cache = self.cache();
-            (
-                cache.quote(&order.instrument_id()),
-                cache.trade(&order.instrument_id()),
-            )
-        } else {
-            (None, None)
-        };
-        let risk_reducing_exit_position_context = if intent_kind != BoltV3SubmitIntentKind::Entry {
-            let managed_position = self.managed_position().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "bolt-v3 submit admission risk-reducing exit requires managed position state for client_order_id={client_order_id}"
-                )
-            })?;
-            let position_quantity = Decimal::from_f64(managed_position.position.quantity.as_f64())
-                .with_context(|| {
-                    format!(
-                        "bolt-v3 submit admission position quantity is not a decimal for client_order_id={client_order_id}"
-                    )
-                })?;
-            Some((
-                managed_position.position.position_id.to_string(),
-                managed_position.position.instrument_id.to_string(),
-                managed_position.position.side,
-                position_quantity,
-            ))
-        } else {
-            None
-        };
-        let risk_reducing_exit_position = risk_reducing_exit_position_context.as_ref().map(
-            |(position_id, instrument_id, position_side, position_quantity)| {
-                BoltV3RiskReducingExitPositionInput {
-                    position_id: position_id.as_str(),
-                    instrument_id: instrument_id.as_str(),
-                    position_side: *position_side,
-                    position_quantity: *position_quantity,
-                }
-            },
-        );
-
-        build_submit_admission_request_from_order(
-            BoltV3SubmitAdmissionRequestInput {
-                execution_client_id: &self.config.client_id,
-                intent,
-                intent_kind,
-                order,
-                valuation: OrderValuationContext {
-                    last_quote,
-                    last_trade,
-                    instrument: instrument.as_ref(),
-                },
-                risk_reducing_exit_position,
-            },
-            |price| {
-                let instrument = self.current_instrument(order.instrument_id()).with_context(|| {
-                    format!(
-                        "bolt-v3 submit admission requires cached instrument for instrument_id={}",
-                        order.instrument_id()
-                    )
-                })?;
-                self.context
-                    .fee_provider()
-                    .max_entry_fee_bps(&instrument, price)
-                    .with_context(|| {
-                        format!(
-                            "bolt-v3 submit admission requires a max entry fee bound for instrument_id={}",
-                            order.instrument_id()
-                        )
-                    })
-            },
+        self.economics_submit_admission_from_order(
+            intent,
+            intent_kind,
+            order,
+            StrategyEconomicsInput::CompiledFinalOrderFixture,
         )
+        .map(|admission| admission.into_parts().0)
     }
 
     fn economics_submit_admission_from_order(
@@ -5479,20 +5396,19 @@ impl BinaryOracleEdgeTaker {
         } else {
             NautilusEstimateLiquidityRole::Taker
         };
-        let economics =
-            self.context
-                .order_economics()?
-                .quote_admission(BoltV3OrderEconomicsIntent {
-                    request: &admission_input,
-                    planned_fill_legs,
-                    liquidity_role,
-                    position: None,
-                    lifecycle_path: LifecyclePath::PlannedExit,
-                    requested_at_ns: order.ts_init().as_u64(),
-                    decision_correlation_id: order.client_order_id().as_str(),
-                    gross_expected_value,
-                })?;
-        build_submit_admission_request_from_economics(admission_input, economics)
+        build_order_economics_submit_admission(
+            self.context.order_economics(),
+            crate::bolt_v3_order_execution::BoltV3OrderEconomicsSubmitInput {
+                request: admission_input,
+                planned_fill_legs,
+                liquidity_role,
+                position: None,
+                lifecycle_path: LifecyclePath::PlannedExit,
+                requested_at_ns: order.ts_init().as_u64(),
+                decision_correlation_id: order.client_order_id().as_str(),
+                gross_expected_value,
+            },
+        )
     }
 
     #[cfg(test)]
@@ -5762,7 +5678,6 @@ impl BinaryOracleEdgeTaker {
                 lead_agreement_corr: option_evidence_probability(
                     self.pricing.last_lead_agreement_corr,
                 ),
-                fee_rate_basis_points: None,
                 selected_side: decision
                     .evaluation
                     .selected_side
@@ -6028,7 +5943,6 @@ impl BinaryOracleEdgeTaker {
                 lead_agreement_corr: option_evidence_probability(
                     self.pricing.last_lead_agreement_corr,
                 ),
-                fee_rate_basis_points: None,
                 selected_side: Some(outcome_side_to_evidence(selected_side)),
             },
             submission: SubmissionLinkage {
@@ -6350,8 +6264,6 @@ impl BinaryOracleEdgeTaker {
             uncertainty_band_probability: option_evidence_number(
                 log_fields.uncertainty_band_probability,
             ),
-            up_fee_bps: None,
-            down_fee_bps: None,
             hold_ev_bps: option_evidence_number(log_fields.hold_ev_bps),
             exit_ev_bps: option_evidence_number(log_fields.exit_ev_bps),
             decision: evaluation_decision,

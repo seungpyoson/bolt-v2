@@ -39,6 +39,8 @@ pub mod bolt_v3_config;
 pub mod bolt_v3_current_evidence;
 pub mod bolt_v3_deploy_target;
 pub mod bolt_v3_economics_runtime;
+#[cfg(test)]
+mod bolt_v3_economics_test_support;
 pub mod bolt_v3_evidence_novelty;
 mod bolt_v3_evidence_sampling;
 mod bolt_v3_evidence_values;
@@ -73,7 +75,6 @@ pub mod bolt_v3_maker_quote_control;
 pub mod bolt_v3_maker_quote_plan;
 pub mod bolt_v3_maker_quote_set;
 pub mod bolt_v3_maker_rate_budget;
-pub mod bolt_v3_maker_reservation;
 pub mod bolt_v3_maker_risk;
 pub mod bolt_v3_maker_runtime_order;
 pub mod bolt_v3_maker_runtime_quote;

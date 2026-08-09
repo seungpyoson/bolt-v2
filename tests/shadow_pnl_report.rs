@@ -47,7 +47,7 @@ fn shadow_pnl_report_matches_settlement_by_market_and_instrument() {
             instrument_id: "BTC-DOWN.POLYMARKET",
             selected_side: "down",
             expected_edge_basis_points: "200",
-            fee_rate_basis_points: "50",
+            execution_component_rate_basis_points: "50",
             price: "0.60",
             quantity: "5",
         },
@@ -121,7 +121,7 @@ fn shadow_pnl_report_rejects_unrecognized_winning_side() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -180,7 +180,7 @@ fn shadow_pnl_report_rejects_unrecognized_selected_side() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "sideways",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -237,7 +237,7 @@ fn shadow_pnl_report_matches_unique_settlement_without_settlement_market_id() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -292,7 +292,7 @@ fn shadow_pnl_report_rejects_ambiguous_settlement_without_trade_market_id() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -392,7 +392,7 @@ fn shadow_pnl_report_escapes_csv_asset_fields() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -448,7 +448,7 @@ fn shadow_pnl_report_rejects_trade_with_no_matching_settlement() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -505,7 +505,7 @@ fn shadow_pnl_report_rejects_duplicate_exact_market_id_settlements() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -578,7 +578,7 @@ fn shadow_pnl_report_rejects_settlement_inconsistent_with_winning_side() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.60",
             quantity: "10",
         },
@@ -639,7 +639,7 @@ fn shadow_pnl_report_rejects_duplicate_client_order_id() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -653,7 +653,7 @@ fn shadow_pnl_report_rejects_duplicate_client_order_id() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -716,7 +716,7 @@ fn shadow_pnl_report_rejects_admitted_entry_without_order_intent() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -770,7 +770,7 @@ fn fixture_evidence_jsonl() -> String {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -784,7 +784,7 @@ fn fixture_evidence_jsonl() -> String {
             instrument_id: "BTC-DOWN.POLYMARKET",
             selected_side: "down",
             expected_edge_basis_points: "200",
-            fee_rate_basis_points: "50",
+            execution_component_rate_basis_points: "50",
             price: "0.60",
             quantity: "5",
         },
@@ -826,7 +826,7 @@ struct TradeFixture {
     instrument_id: &'static str,
     selected_side: &'static str,
     expected_edge_basis_points: &'static str,
-    fee_rate_basis_points: &'static str,
+    execution_component_rate_basis_points: &'static str,
     price: &'static str,
     quantity: &'static str,
 }
@@ -850,9 +850,6 @@ fn push_trade_lines_with_snapshot_market_id(
         serde_json::json!(trade.selected_side);
     snapshot_record["snapshot"]["details"]["expected_edge_basis_points"] =
         serde_json::json!(trade.expected_edge_basis_points);
-    // This legacy strategy field is intentionally contradictory. Shadow PnL must
-    // use the economics result sealed to admission, never this strategy estimate.
-    snapshot_record["snapshot"]["details"]["fee_rate_basis_points"] = serde_json::json!("9999");
     snapshot_record["snapshot"]["submission"]["client_order_id"] =
         serde_json::json!(trade.client_order_id);
     snapshot_record["snapshot"]["submission"]["instrument_id"] =
@@ -897,16 +894,30 @@ fn push_trade_lines_with_snapshot_market_id(
         .parse::<Decimal>()
         .expect("fixture quantity must be decimal");
     let fee_bps = trade
-        .fee_rate_basis_points
+        .execution_component_rate_basis_points
         .parse::<Decimal>()
         .expect("fixture fee rate must be decimal");
     let expected_edge_bps = trade
         .expected_edge_basis_points
         .parse::<Decimal>()
         .expect("fixture edge must be decimal");
+    let reservation_basis = price * quantity;
+    let core_total = Decimal::ZERO - reservation_basis * fee_bps / Decimal::from(10_000);
+    let core_edge_ratio = expected_edge_bps / Decimal::from(10_000);
+    let core_net_edge = reservation_basis * core_edge_ratio;
     admission_record["decision"]["economics"] = serde_json::json!({
-        "core_total": (Decimal::ZERO - price * quantity * fee_bps / Decimal::from(10_000)).to_string(),
-        "core_edge_ratio": (expected_edge_bps / Decimal::from(10_000)).to_string(),
+        "decision_correlation_id": trade.client_order_id,
+        "core_total": core_total.to_string(),
+        "core_net_edge": core_net_edge.to_string(),
+        "core_edge_ratio": core_edge_ratio.to_string(),
+        "forecast_net_edge": core_net_edge.to_string(),
+        "forecast_complete": true,
+        "missing_forecast_component_ids": [],
+        "valid_until_ns": u64::MAX,
+        "forecast_valid_until_ns": u64::MAX,
+        "source_snapshot_ids": ["shadow-pnl-fixture-economics"],
+        "reservation_basis": reservation_basis.to_string(),
+        "full_reservation_liability": (reservation_basis - core_total).to_string(),
     });
     lines.push(
         serde_json::to_string(&admission_record).expect("admission fixture should serialize"),

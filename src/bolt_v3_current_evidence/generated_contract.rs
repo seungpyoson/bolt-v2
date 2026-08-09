@@ -421,12 +421,12 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
     match identity {
         KnownIdentity::BlockedStrategyInputObservationV1 => IdentityDescriptor {
             kind: "blocked_strategy_input_observation",
-            schema_version: 1,
+            schema_version: 3,
             gate_id: "bolt_v3.strategy_input_snapshot",
         },
         KnownIdentity::SubmitLinkedStrategyInputSnapshotV1 => IdentityDescriptor {
             kind: "strategy_input_snapshot",
-            schema_version: 16,
+            schema_version: 18,
             gate_id: "bolt_v3.strategy_input_snapshot",
         },
         KnownIdentity::EntryOrderIntentV1 => IdentityDescriptor {
@@ -441,22 +441,22 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::AdmittedEntryAdmissionV1 => IdentityDescriptor {
             kind: "admission_decision",
-            schema_version: 16,
+            schema_version: 17,
             gate_id: "bolt_v3.submit_admission",
         },
         KnownIdentity::RejectedEntryAdmissionV1 => IdentityDescriptor {
             kind: "rejected_entry_admission",
-            schema_version: 1,
+            schema_version: 2,
             gate_id: "bolt_v3.submit_admission",
         },
         KnownIdentity::RiskReducingExitAdmissionV1 => IdentityDescriptor {
             kind: "risk_reducing_exit_admission",
-            schema_version: 1,
+            schema_version: 2,
             gate_id: "bolt_v3.submit_admission",
         },
         KnownIdentity::ForcedReductionAdmissionV1 => IdentityDescriptor {
             kind: "forced_reduction_admission",
-            schema_version: 1,
+            schema_version: 2,
             gate_id: "bolt_v3.submit_admission",
         },
         KnownIdentity::BasketAdmissionGrantedV1 => IdentityDescriptor {
@@ -481,22 +481,22 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::EntrySkipObservationV1 => IdentityDescriptor {
             kind: "entry_skip",
-            schema_version: 16,
+            schema_version: 18,
             gate_id: "bolt_v3.entry_skip",
         },
         KnownIdentity::ExitSubmissionDecisionV1 => IdentityDescriptor {
             kind: "exit_submission_decision",
-            schema_version: 1,
+            schema_version: 2,
             gate_id: "bolt_v3.exit_decision",
         },
         KnownIdentity::ExitHoldDecisionV1 => IdentityDescriptor {
             kind: "exit_hold_decision",
-            schema_version: 1,
+            schema_version: 2,
             gate_id: "bolt_v3.exit_decision",
         },
         KnownIdentity::ExitEvaluationV1 => IdentityDescriptor {
             kind: "exit_evaluation",
-            schema_version: 16,
+            schema_version: 17,
             gate_id: "bolt_v3.exit_evaluation",
         },
         KnownIdentity::LossGovernorHaltV1 => IdentityDescriptor {
@@ -895,10 +895,10 @@ pub(crate) const fn disposition_for(
 }
 
 pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownIdentity> {
-    if kind == "blocked_strategy_input_observation" && schema_version == 1 {
+    if kind == "blocked_strategy_input_observation" && schema_version == 3 {
         return Some(KnownIdentity::BlockedStrategyInputObservationV1);
     }
-    if kind == "strategy_input_snapshot" && schema_version == 16 {
+    if kind == "strategy_input_snapshot" && schema_version == 18 {
         return Some(KnownIdentity::SubmitLinkedStrategyInputSnapshotV1);
     }
     if kind == "order_intent" && schema_version == 16 {
@@ -907,16 +907,16 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "risk_reducing_exit_order_intent" && schema_version == 1 {
         return Some(KnownIdentity::RiskReducingExitOrderIntentV1);
     }
-    if kind == "admission_decision" && schema_version == 16 {
+    if kind == "admission_decision" && schema_version == 17 {
         return Some(KnownIdentity::AdmittedEntryAdmissionV1);
     }
-    if kind == "rejected_entry_admission" && schema_version == 1 {
+    if kind == "rejected_entry_admission" && schema_version == 2 {
         return Some(KnownIdentity::RejectedEntryAdmissionV1);
     }
-    if kind == "risk_reducing_exit_admission" && schema_version == 1 {
+    if kind == "risk_reducing_exit_admission" && schema_version == 2 {
         return Some(KnownIdentity::RiskReducingExitAdmissionV1);
     }
-    if kind == "forced_reduction_admission" && schema_version == 1 {
+    if kind == "forced_reduction_admission" && schema_version == 2 {
         return Some(KnownIdentity::ForcedReductionAdmissionV1);
     }
     if kind == "basket_admission_granted" && schema_version == 1 {
@@ -931,16 +931,16 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "submit_reservation_fill" && schema_version == 16 {
         return Some(KnownIdentity::SubmitReservationFillV1);
     }
-    if kind == "entry_skip" && schema_version == 16 {
+    if kind == "entry_skip" && schema_version == 18 {
         return Some(KnownIdentity::EntrySkipObservationV1);
     }
-    if kind == "exit_submission_decision" && schema_version == 1 {
+    if kind == "exit_submission_decision" && schema_version == 2 {
         return Some(KnownIdentity::ExitSubmissionDecisionV1);
     }
-    if kind == "exit_hold_decision" && schema_version == 1 {
+    if kind == "exit_hold_decision" && schema_version == 2 {
         return Some(KnownIdentity::ExitHoldDecisionV1);
     }
-    if kind == "exit_evaluation" && schema_version == 16 {
+    if kind == "exit_evaluation" && schema_version == 17 {
         return Some(KnownIdentity::ExitEvaluationV1);
     }
     if kind == "loss_governor_halt" && schema_version == 16 {

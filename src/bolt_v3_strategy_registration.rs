@@ -21,8 +21,6 @@ use crate::bolt_v3_iv::{
 };
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::{BoltV3OrderEconomicsHandle, BoltV3OrderExecutionPolicy};
-use crate::bolt_v3_providers::{FeeProvider, resolve_fee_provider};
-use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle;
 use crate::bolt_v3_strategy_context::{StrategyBuildContext, StrategyDecisionEvidence};
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
@@ -263,7 +261,6 @@ pub struct StrategyRegistrationContext<'a> {
     realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
     client_routes: PreparedStrategyClientRoutes,
     execution_venue: Venue,
-    fee_provider: Arc<dyn FeeProvider>,
     order_economics: BoltV3OrderEconomicsHandle,
     settlement: Option<StrategyRegistrationSettlementResources>,
 }
@@ -404,7 +401,6 @@ impl<'a> StrategyRegistrationContext<'a> {
         loaded: &LoadedBoltV3Config,
         strategy: &'a LoadedStrategy,
         contract: StrategyRegistrationContract,
-        resolved: &ResolvedBoltV3Secrets,
         preparation_config: Arc<StrategyPreparationConfig>,
         runtime_resources: &StrategyRegistrationRuntimeResources,
     ) -> Result<Self, BoltV3StrategyRegistrationError> {
@@ -470,13 +466,6 @@ impl<'a> StrategyRegistrationContext<'a> {
             })
             .transpose()
             .map_err(|error| binding_error(strategy, error.message()))?;
-        let fee_provider = resolve_fee_provider(
-            execution_client_id,
-            execution_client,
-            execution_venue,
-            resolved,
-        )
-        .map_err(|error| binding_error(strategy, error.to_string()))?;
         let execution_economics =
             bind_execution_economics(loaded, execution_client_id, &economics_inputs)
                 .map_err(|error| binding_error(strategy, error.to_string()))?;
@@ -493,7 +482,6 @@ impl<'a> StrategyRegistrationContext<'a> {
             realized_volatility_runtime,
             client_routes,
             execution_venue,
-            fee_provider,
             order_economics: BoltV3OrderEconomicsHandle::new(execution_economics),
             settlement,
         })
@@ -619,15 +607,13 @@ pub fn assemble_strategy_build_context(
 ) -> Result<StrategyBuildContext, BoltV3StrategyRegistrationError> {
     let execution_venue = context.execution_venue;
     let settlement = settlement_resources_for_context(context);
-    let fee_provider = context.fee_provider.clone();
     let mut build_context = StrategyBuildContext::new(
-        fee_provider,
+        context.order_economics.clone(),
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
         context.order_execution_policy,
         execution_venue,
-    )
-    .with_order_economics(context.order_economics.clone());
+    );
     if let Some(realized_volatility_runtime) = &context.realized_volatility_runtime {
         build_context =
             build_context.with_realized_volatility_runtime(realized_volatility_runtime.clone());
@@ -967,7 +953,6 @@ pub fn validate_iv_strategy_references(
 pub fn register_bolt_v3_strategies_on_node_with_bindings(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
-    resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
     decision_evidence: impl Into<StrategyEvidenceHandles>,
@@ -985,7 +970,6 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     register_bolt_v3_strategies_on_node_with_handle_registry(
         node,
         loaded,
-        resolved,
         bindings,
         execution_controls,
         decision_evidence.into(),
@@ -996,7 +980,6 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
 pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
-    resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
     decision_evidence: impl Into<StrategyEvidenceHandles>,
@@ -1013,7 +996,6 @@ pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
     register_bolt_v3_strategies_on_node_with_handle_registry(
         node,
         loaded,
-        resolved,
         bindings,
         execution_controls,
         decision_evidence.into(),
@@ -1024,7 +1006,6 @@ pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
 fn register_bolt_v3_strategies_on_node_with_handle_registry(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
-    resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
     decision_evidence: StrategyEvidenceHandles,
@@ -1060,7 +1041,6 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 loaded,
                 strategy,
                 binding.registration_contract(),
-                resolved,
                 preparation_config.clone(),
                 &runtime_resources,
             )?;

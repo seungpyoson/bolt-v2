@@ -3315,11 +3315,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     );
     let settlement_recovery = Some(Arc::clone(&settlement_recovery));
     let booking_recovery = Some(Arc::clone(&booking_recovery));
+    let economics_inputs =
+        crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default();
     let strategy_execution_controls = BoltV3StrategyExecutionControls {
         submit_admission: submit_admission.clone(),
         order_execution_policy,
-        economics_inputs:
-            crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default(),
+        economics_inputs: economics_inputs.clone(),
         settlement_runtime_sink,
         settlement_recovery,
         booking_recovery,
@@ -3374,7 +3375,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
             &mut node,
             loaded,
-            resolved,
             crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
             evidence_runtime.strategy_evidence_handles(),
@@ -3384,7 +3384,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         register_bolt_v3_strategies_on_node_with_bindings(
             &mut node,
             loaded,
-            resolved,
             crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
             evidence_runtime.strategy_evidence_handles(),
@@ -3447,6 +3446,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         &node,
         evidence_runtime.order_execution_evidence(),
         submit_admission.clone(),
+        &economics_inputs,
     )?;
     debug_assert!(
         !settlement_runtime_sink_backends.loss_protection() || loss_protection.is_some(),

@@ -520,7 +520,6 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         execution_economics: None,
-        build_fee_provider: None,
         build_provider_collateral_allowance_runtime_source: None,
     };
 
@@ -544,7 +543,6 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         execution_economics: None,
-        build_fee_provider: None,
         build_provider_collateral_allowance_runtime_source: None,
     };
 
@@ -568,7 +566,6 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         execution_economics: None,
-        build_fee_provider: None,
         build_provider_collateral_allowance_runtime_source: None,
     };
 

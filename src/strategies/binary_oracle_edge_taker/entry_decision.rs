@@ -401,9 +401,6 @@ pub(super) const fn entry_skip_canonical_state(
         EvidenceEntrySkipReason::EntryPositionContractUnsupported => {
             EvidenceCanonicalState::EntrySkipEntryPositionContractUnsupported
         }
-        EvidenceEntrySkipReason::HistoricalEntryFeeUnavailable => {
-            EvidenceCanonicalState::EntrySkipHistoricalEntryFeeUnavailable
-        }
         EvidenceEntrySkipReason::OnePositionInvariantViolation => {
             EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation
         }
@@ -477,8 +474,6 @@ pub(super) fn entry_skip_fact(
         sized_worst_case_ev_bps: option_evidence_number(fields.sized_worst_case_ev_bps),
         sized_edge_cents_per_share: option_evidence_number(fields.sized_edge_cents_per_share),
         theta_scaled_min_edge_bps: option_evidence_number(fields.theta_scaled_min_edge_bps),
-        up_fee_bps: None,
-        down_fee_bps: None,
         submission_blocked_reason: fields.submission_blocked_reason.or(Some(reason_category)),
         stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
         last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
@@ -613,9 +608,6 @@ pub(super) const fn entry_skip_reason_label(reason: EvidenceEntrySkipReason) -> 
         EvidenceEntrySkipReason::PositionContractInvalid => "position_contract_invalid",
         EvidenceEntrySkipReason::EntryPositionContractUnsupported => {
             "entry_position_contract_unsupported"
-        }
-        EvidenceEntrySkipReason::HistoricalEntryFeeUnavailable => {
-            "historical_entry_fee_unavailable"
         }
         EvidenceEntrySkipReason::OnePositionInvariantViolation => {
             "one_position_invariant_violation"

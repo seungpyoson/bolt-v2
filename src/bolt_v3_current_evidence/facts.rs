@@ -413,8 +413,18 @@ pub enum AdmissionDecisionOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmissionEconomicsDetails {
+    pub decision_correlation_id: String,
     pub core_total: String,
+    pub core_net_edge: String,
     pub core_edge_ratio: String,
+    pub forecast_net_edge: String,
+    pub forecast_complete: bool,
+    pub missing_forecast_component_ids: Vec<String>,
+    pub valid_until_ns: u64,
+    pub forecast_valid_until_ns: Option<u64>,
+    pub source_snapshot_ids: Vec<String>,
+    pub reservation_basis: String,
+    pub full_reservation_liability: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -532,7 +542,6 @@ define_closed_enum! {
         QuantityNotPositive,
         PositionContractInvalid,
         EntryPositionContractUnsupported,
-        HistoricalEntryFeeUnavailable,
         OnePositionInvariantViolation,
         EntryMalformedRejected,
         EntryBalanceRejected,
@@ -567,7 +576,6 @@ pub enum EntryBlockReason {
     BookCrossed,
     IntervalOpenMissing,
     WarmupIncomplete,
-    FeesNotReady,
     RecoveryMode,
     MarketCoolingDown,
     SpotSpikeCooldown,
@@ -584,7 +592,6 @@ pub enum BinaryOutcomeEdgeBlockReason {
     UnsupportedOrderShape,
     EdgeBelowThreshold,
     SpreadOrSlippageWipedEdge,
-    FeeUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -597,7 +604,6 @@ pub enum EntryPricingBlockReason {
     ThetaScalerUnavailable,
     UncertaintyBandUnavailable,
     FairProbabilityUnavailable,
-    FeeUnavailable(OutcomeSide),
     ExecutableEntryCostUnavailable(OutcomeSide),
     ExecutableEdgeUnavailable(OutcomeSide, BinaryOutcomeEdgeBlockReason),
     SizedNotionalUnsupported(OutcomeSide),
@@ -743,8 +749,6 @@ pub struct EntrySkipFact {
     pub sized_worst_case_ev_bps: Option<String>,
     pub sized_edge_cents_per_share: Option<String>,
     pub theta_scaled_min_edge_bps: Option<String>,
-    pub up_fee_bps: Option<String>,
-    pub down_fee_bps: Option<String>,
     pub submission_blocked_reason: Option<EntrySkipReason>,
     pub stale_reference_after_ms: Option<u64>,
     pub last_reference_ts_ms: Option<u64>,
@@ -818,7 +822,6 @@ pub struct StrategyInputDetails<PurposeNumeric> {
     pub fast_venue_jitter_ms: Option<u64>,
     pub fast_venue_incoherent: bool,
     pub lead_agreement_corr: Option<String>,
-    pub fee_rate_basis_points: Option<String>,
     pub selected_side: Option<OutcomeSide>,
 }
 
@@ -888,8 +891,6 @@ pub struct ExitDecisionDetails {
     pub fair_probability_up: Option<String>,
     pub fair_probability_down: Option<String>,
     pub uncertainty_band_probability: Option<String>,
-    pub up_fee_bps: Option<String>,
-    pub down_fee_bps: Option<String>,
     pub hold_ev_bps: Option<String>,
     pub exit_ev_bps: Option<String>,
     pub realized_vol: Option<String>,
@@ -986,8 +987,6 @@ pub struct ExitEvaluationFact {
     pub fair_probability_up: Option<String>,
     pub fair_probability_down: Option<String>,
     pub uncertainty_band_probability: Option<String>,
-    pub up_fee_bps: Option<String>,
-    pub down_fee_bps: Option<String>,
     pub hold_ev_bps: Option<String>,
     pub exit_ev_bps: Option<String>,
     pub decision: ExitEvaluationDecision,

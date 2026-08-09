@@ -1162,15 +1162,12 @@ fn reference_quote_received_at(
     .expect("reference quote fixture should be valid")
 }
 
-fn quote_set_inputs() -> MakerRuntimeQuoteSetInput<'static> {
+fn quote_set_inputs() -> MakerRuntimeQuoteSetInput {
     MakerRuntimeQuoteSetInput {
         yes_quantity: 2.0,
         no_quantity: 3.0,
         yes_resting_price: None,
         no_resting_price: None,
-        open_commitments: &[],
-        max_fee_bps: 0.0,
-        available_collateral: 100.0,
         requote_threshold: 0.001,
         eps: 0.001,
         now_ms: 1_000,

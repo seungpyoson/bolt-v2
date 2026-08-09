@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use rust_decimal::Decimal;
 
@@ -7,8 +7,8 @@ use crate::{
     EconomicComponentId, EconomicScope, EconomicsCapabilityHealth, EconomicsError,
     EconomicsInstrumentId, EdgeBasisPolicyId, EstimatedEffect, ExecutionClientId, LifecyclePath,
     LiquidityRole, OrderSide, PlannedFillLeg, PointEstimate, PositionContext, ProductSurfaceId,
-    ReportingPolicyId, RoutingContext, SourceValidity, ValuationEvidence, ValuationRoute,
-    value_with_routes,
+    ReportingPolicyId, RoutingContext, SnapshotId, SourceValidity, ValuationEvidence,
+    ValuationRoute, value_with_routes,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +86,7 @@ pub struct EconomicsQuote {
     forecast_total: Decimal,
     forecast_complete: bool,
     missing_forecast_component_ids: Vec<EconomicComponentId>,
+    source_snapshot_ids: Vec<SnapshotId>,
     reporting_currency: CurrencyId,
     valid_until_ns: u64,
     forecast_valid_until_ns: Option<u64>,
@@ -126,6 +127,10 @@ impl EconomicsQuote {
 
     pub fn missing_forecast_component_ids(&self) -> &[EconomicComponentId] {
         &self.missing_forecast_component_ids
+    }
+
+    pub fn source_snapshot_ids(&self) -> &[SnapshotId] {
+        &self.source_snapshot_ids
     }
 
     pub fn reporting_currency(&self) -> &CurrencyId {
@@ -174,6 +179,13 @@ pub fn validate_and_aggregate_quote(
     let mut forecast_total = Decimal::ZERO;
     let mut forecast_complete = true;
     let mut missing_forecast_component_ids = Vec::new();
+    let mut source_snapshot_ids = BTreeSet::from([estimate.authority.snapshot_id.clone()]);
+    source_snapshot_ids.extend(
+        estimate
+            .dependency_sources
+            .iter()
+            .map(|source| source.snapshot_id.clone()),
+    );
     let mut valid_until_ns = estimate
         .dependency_sources
         .iter()
@@ -191,6 +203,7 @@ pub fn validate_and_aggregate_quote(
         validate_component_scope(request, &component)?;
         validate_factors(&component)?;
         validate_component_sign(&component)?;
+        source_snapshot_ids.insert(component.source.snapshot_id.clone());
 
         let source_is_fresh = validate_component_source(request.requested_at_ns, &component.source);
         if let Err(error) = source_is_fresh {
@@ -227,6 +240,7 @@ pub fn validate_and_aggregate_quote(
         };
 
         if let Some(point_valuation) = &point_valuation {
+            source_snapshot_ids.extend(point_valuation.source_snapshot_ids.iter().cloned());
             forecast_total = forecast_total
                 .checked_add(point_valuation.normalized_amount)
                 .ok_or(EconomicsError::ArithmeticOverflow)?;
@@ -273,6 +287,7 @@ pub fn validate_and_aggregate_quote(
                     routes,
                     request.requested_at_ns,
                 )?;
+                source_snapshot_ids.extend(bound_valuation.source_snapshot_ids.iter().cloned());
                 if bound_valuation.normalized_amount >= Decimal::ZERO {
                     return Err(EconomicsError::InvalidDebitRiskBound {
                         component_id: component.component_id,
@@ -319,6 +334,7 @@ pub fn validate_and_aggregate_quote(
         forecast_total,
         forecast_complete,
         missing_forecast_component_ids,
+        source_snapshot_ids: source_snapshot_ids.into_iter().collect(),
         reporting_currency: request.reporting_currency.clone(),
         valid_until_ns,
         forecast_valid_until_ns,

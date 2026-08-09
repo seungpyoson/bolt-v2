@@ -8,10 +8,7 @@ fn decision_evidence_failure_rejects_before_nt_submit() {
     // Seed a (zero) fee for the order's instrument so admission clears the
     // fee-bound guard and the FailingDecisionEvidenceWriter is what rejects
     // the order before NT submit — the behavior this test pins.
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
-        failing_decision_evidence(),
-    );
+    let mut strategy = test_strategy_with_decision_evidence(failing_decision_evidence());
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.50, 2);
@@ -80,8 +77,7 @@ fn effective_stale_bound_uses_gate_freshness_as_single_source_when_armed() {
             recording_decision_evidence(),
         ),
     );
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::cold(),
+    let mut strategy = test_strategy_with_decision_evidence_and_submit_admission(
         recording_decision_evidence(),
         submit_admission.clone(),
     );
@@ -106,7 +102,7 @@ fn effective_stale_bound_uses_gate_freshness_as_single_source_when_armed() {
 
 #[test]
 fn limit_if_touched_rejects_nt_side_price_invariants_before_factory() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let _cache = register_test_strategy(&mut strategy);
     let instrument_id = selected_entry_instrument(&strategy);
     let quantity = Quantity::new(2.0, 2);

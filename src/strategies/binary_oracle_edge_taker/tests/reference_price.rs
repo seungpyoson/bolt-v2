@@ -253,13 +253,12 @@ fn prod_strategy_build_context(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(decision_evidence.clone()),
     );
     StrategyBuildContext::new(
-        RecordingFeeProvider::cold(),
+        fixture_order_economics(),
         decision_evidence,
         submit_admission,
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         execution_venue,
     )
-    .with_order_economics(fixture_order_economics())
     .with_realized_volatility_surfaces(surfaces)
 }
 

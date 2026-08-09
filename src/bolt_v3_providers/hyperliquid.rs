@@ -6,23 +6,22 @@
 
 mod economics;
 
-pub(crate) use economics::build_execution_economics_adapter;
 pub use economics::{
     HyperliquidBuilderApprovalSnapshot, HyperliquidCarryPolicy, HyperliquidEconomicsAdapter,
-    HyperliquidEconomicsConfig, HyperliquidEconomicsError, HyperliquidProductEconomicsSnapshot,
-    HyperliquidProductKind, HyperliquidRoutingEconomicsConfig, HyperliquidSnapshotMetadata,
-    HyperliquidUserFeesSnapshot, authoritative_economics_input,
+    HyperliquidEconomicsConfig, HyperliquidEconomicsError, HyperliquidPerpetualSnapshotInput,
+    HyperliquidProductEconomicsSnapshot, HyperliquidProductKind, HyperliquidRoutingEconomicsConfig,
+    HyperliquidSnapshotMetadata, HyperliquidUserFeesSnapshot, authoritative_economics_input,
 };
+pub(crate) use economics::{build_execution_economics_adapter, build_replay_economics_authority};
 
 use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},
     path::Path,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
-use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_core::string::secret::REDACTED;
 use nautilus_hyperliquid::{
     common::enums::HyperliquidEnvironment as NtHyperliquidEnvironment,
@@ -31,9 +30,8 @@ use nautilus_hyperliquid::{
         HyperliquidDataClientFactory, HyperliquidExecFactoryConfig,
         HyperliquidExecutionClientFactory,
     },
-    http::client::HyperliquidHttpClient,
 };
-use nautilus_model::identifiers::{AccountId, InstrumentId};
+use nautilus_model::identifiers::AccountId;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -66,8 +64,8 @@ use crate::{
         write_hyperliquid_product_submit_proof_artifact,
     },
     bolt_v3_providers::{
-        FeeProvider, ProviderAdapterMapContext, ProviderCredentialedBlock,
-        ProviderLiveSubmitApproval, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
+        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderLiveSubmitApproval,
+        ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderLiveSubmitArmingPreflight, ProviderLiveSubmitOrderLimits,
         ProviderProductSubmitProofArtifactRequest, ProviderSecretRequirement,
         ProviderSecretResolveContext, ProviderSsmPathReference, ResolvedClientSecrets,
@@ -336,9 +334,6 @@ pub const USER_FEES_NT_CALLERS: &[&str] = &[
     "nautilus_hyperliquid::http::client::HyperliquidHttpClient::info_user_fees",
     "nautilus_hyperliquid::python::http::HyperliquidHttpClient::py_info_user_fees",
 ];
-const USER_CROSS_RATE_FIELD: &str = "userCrossRate";
-const BASIS_POINTS_PER_UNIT_RATE: i64 = 10_000;
-
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HyperliquidUserFeesRequestWeightStatus {
@@ -1274,131 +1269,6 @@ fn parse_secrets_config(
             field: KEY.to_string(),
             source: format!("invalid hyperliquid secrets schema: {error}"),
         })
-}
-
-#[derive(Debug)]
-struct HyperliquidUserFeesFeeProvider {
-    http_client: HyperliquidHttpClient,
-    account_address: String,
-    account_fee_bps: Mutex<Option<Decimal>>,
-}
-
-impl FeeProvider for HyperliquidUserFeesFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        self.account_fee_bps
-            .lock()
-            .ok()
-            .and_then(|fee_bps| *fee_bps)
-    }
-
-    fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, anyhow::Result<()>> {
-        async move {
-            if self.fee_bps(instrument_id).is_some() {
-                return Ok(());
-            }
-            let response = self
-                .http_client
-                .info_user_fees(&self.account_address)
-                .await
-                .map_err(|source| {
-                    anyhow::anyhow!("Hyperliquid userFees request failed: {source}")
-                })?;
-            let taker_fee_bps = hyperliquid_user_cross_fee_bps(&response)?;
-            *self
-                .account_fee_bps
-                .lock()
-                .map_err(|_| anyhow::anyhow!("Hyperliquid fee cache mutex poisoned"))? =
-                Some(taker_fee_bps);
-            Ok(())
-        }
-        .boxed()
-    }
-}
-
-fn hyperliquid_user_cross_fee_bps(response: &serde_json::Value) -> anyhow::Result<Decimal> {
-    let raw_rate = response
-        .get(USER_CROSS_RATE_FIELD)
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("Hyperliquid userFees response missing userCrossRate"))?;
-    let rate = Decimal::from_str(raw_rate.trim())
-        .map_err(|source| anyhow::anyhow!("Hyperliquid userCrossRate parse failed: {source}"))?;
-    if rate < Decimal::ZERO {
-        return Err(anyhow::anyhow!(
-            "Hyperliquid userCrossRate must be non-negative"
-        ));
-    }
-    Ok(rate * Decimal::from(BASIS_POINTS_PER_UNIT_RATE))
-}
-
-fn hyperliquid_fee_http_client(
-    client_key: &str,
-    cfg: &HyperliquidExecutionConfig,
-    secrets: &ResolvedBoltV3HyperliquidSecrets,
-) -> Result<HyperliquidHttpClient, BoltV3AdapterMappingError> {
-    let mut http_client = HyperliquidHttpClient::with_credentials(
-        Some(secrets.private_key.as_str().to_owned()),
-        secrets
-            .vault_address
-            .as_ref()
-            .map(|vault_address| vault_address.as_str().to_owned()),
-        Some(secrets.account_address.as_str()),
-        nt_environment(cfg.environment),
-        cfg.http_timeout_secs,
-        cfg.proxy_url.clone(),
-    )
-    .map_err(|source| BoltV3AdapterMappingError::ValidationInvariant {
-        client_key: client_key.to_string(),
-        field: "execution",
-        message: format!("failed to create Hyperliquid fee HTTP client: {source}"),
-    })?;
-    http_client.set_base_info_url(cfg.base_url_http.clone());
-    Ok(http_client)
-}
-
-pub fn build_fee_provider(
-    client_key: &str,
-    client: &ClientBlock,
-    resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
-) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError> {
-    let value = client.execution.as_ref().ok_or_else(|| {
-        BoltV3AdapterMappingError::ValidationInvariant {
-            client_key: client_key.to_string(),
-            field: "execution",
-            message: "is required by the Hyperliquid fee-provider boundary".to_string(),
-        }
-    })?;
-    let cfg: HyperliquidExecutionConfig =
-        value.clone().try_into().map_err(|error: toml::de::Error| {
-            BoltV3AdapterMappingError::SchemaParse {
-                client_key: client_key.to_string(),
-                block: "execution",
-                message: error.to_string(),
-            }
-        })?;
-    if let Some(message) = validate_execution_config(client_key, &cfg)
-        .into_iter()
-        .next()
-    {
-        return Err(BoltV3AdapterMappingError::SchemaParse {
-            client_key: client_key.to_string(),
-            block: "execution",
-            message,
-        });
-    }
-    let secrets = resolved
-        .get_as::<ResolvedBoltV3HyperliquidSecrets>(client_key)
-        .ok_or_else(|| BoltV3AdapterMappingError::ValidationInvariant {
-            client_key: client_key.to_string(),
-            field: "secrets",
-            message: "resolved Hyperliquid secrets are required by the fee-provider boundary"
-                .to_string(),
-        })?;
-    let http_client = hyperliquid_fee_http_client(client_key, &cfg, secrets)?;
-    Ok(Arc::new(HyperliquidUserFeesFeeProvider {
-        http_client,
-        account_address: secrets.account_address.as_str().to_owned(),
-        account_fee_bps: Mutex::new(None),
-    }))
 }
 
 pub fn map_adapters(

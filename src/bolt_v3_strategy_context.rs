@@ -15,7 +15,6 @@ use crate::{
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter,
     bolt_v3_order_execution::{BoltV3OrderEconomicsHandle, BoltV3OrderExecutionPolicy},
-    bolt_v3_providers::FeeProvider,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle,
@@ -72,8 +71,7 @@ impl SettlementCapability {
 
 #[derive(Clone)]
 pub struct StrategyBuildContext {
-    fee_provider: Arc<dyn FeeProvider>,
-    order_economics: Option<BoltV3OrderEconomicsHandle>,
+    order_economics: BoltV3OrderEconomicsHandle,
     decision_evidence: StrategyDecisionEvidence,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     order_execution_policy: BoltV3OrderExecutionPolicy,
@@ -157,15 +155,14 @@ impl StrategyBuildContext {
     /// selected market's venue equals this one (a wrong-venue selection from the shared NT cache
     /// would otherwise be possible once a second venue's instruments coexist in the cache).
     pub fn new(
-        fee_provider: Arc<dyn FeeProvider>,
+        order_economics: BoltV3OrderEconomicsHandle,
         decision_evidence: impl Into<StrategyDecisionEvidence>,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
         order_execution_policy: BoltV3OrderExecutionPolicy,
         execution_venue: Venue,
     ) -> Self {
         Self {
-            fee_provider,
-            order_economics: None,
+            order_economics,
             decision_evidence: decision_evidence.into(),
             submit_admission,
             order_execution_policy,
@@ -175,15 +172,8 @@ impl StrategyBuildContext {
         }
     }
 
-    pub fn with_order_economics(mut self, handle: BoltV3OrderEconomicsHandle) -> Self {
-        self.order_economics = Some(handle);
-        self
-    }
-
-    pub fn order_economics(&self) -> anyhow::Result<BoltV3OrderEconomicsHandle> {
-        self.order_economics
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("strategy order economics authority is unavailable"))
+    pub fn order_economics(&self) -> &BoltV3OrderEconomicsHandle {
+        &self.order_economics
     }
 
     #[cfg(test)]
@@ -247,14 +237,6 @@ impl StrategyBuildContext {
             .get_or_insert_default()
             .health_transition_emitter = emitter;
         self
-    }
-
-    pub fn fee_provider(&self) -> &dyn FeeProvider {
-        self.fee_provider.as_ref()
-    }
-
-    pub fn fee_provider_arc(&self) -> Arc<dyn FeeProvider> {
-        self.fee_provider.clone()
     }
 
     pub(crate) fn edge_taker_evidence(&self) -> Option<EdgeTakerEvidence> {

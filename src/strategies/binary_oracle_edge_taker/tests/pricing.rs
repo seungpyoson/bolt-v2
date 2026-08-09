@@ -38,7 +38,7 @@ const RV_CLOCK_DOMAIN_AMENDMENT_CASES: [(RvClockDomainAmendmentSnapshot, u64, bo
 ];
 
 fn rv_clock_domain_amendment_ready_entry() -> BinaryOracleEdgeTaker {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     rv_clock_domain_amendment_configure_surface(&mut strategy);
     rv_clock_domain_amendment_prepare_non_rv_inputs(&mut strategy);
     register_test_strategy_with_active_instruments(&mut strategy);
@@ -836,7 +836,7 @@ fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
 
 #[test]
 fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.pricing.set_selected_pricing_spot(None);
     strategy
         .pricing
@@ -864,7 +864,7 @@ fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
 
 #[test]
 fn entry_evaluation_blocks_when_realized_vol_is_not_ready() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_101.0, 1_200)));
@@ -1157,7 +1157,7 @@ fn task5_exit_decision_uses_hold_favoring_hysteresis_and_holds_on_missing_inputs
 
 #[test]
 fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_101.0, 1_200)));
@@ -1175,7 +1175,7 @@ fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
 
 #[test]
 fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     // Both-sided cheap book so each outcome is unambiguously tradeable: the #789
     // diffusion-grounded uncertainty band is nonzero even at market open, so a
@@ -1263,7 +1263,7 @@ fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
 
 #[test]
 fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap_limit() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.config.order_notional_target = 5.0;
     strategy.config.vwap_depth_limit_bps = 0;
     strategy.config.slippage_buffer_bps = 0;
@@ -1320,7 +1320,7 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
 
 #[test]
 fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.order_notional_target = 5.0;
     strategy.config.maximum_position_notional = 5.0;
@@ -1385,7 +1385,7 @@ fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
 #[test]
 fn sized_acceptance_rejects_notional_unsupported_by_final_repriced_edge() {
     fn cliff_strategy() -> BinaryOracleEdgeTaker {
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let mut strategy = ready_to_trade_strategy_with_bound_economics();
         register_test_strategy_with_active_instruments(&mut strategy);
         strategy.config.order_notional_target = 10.0;
         strategy.config.maximum_position_notional = 10.0;
@@ -1524,7 +1524,7 @@ fn sized_acceptance_rejects_notional_unsupported_by_final_repriced_edge() {
 
 #[test]
 fn sized_acceptance_keeps_first_pass_size_when_repriced_resize_is_within_tolerance() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.order_notional_target = 10.0;
     strategy.config.maximum_position_notional = 10.0;
@@ -1621,7 +1621,7 @@ fn sized_acceptance_keeps_first_pass_size_when_repriced_resize_is_within_toleran
 
 #[test]
 fn executable_edge_blocks_unsupported_post_only_entry_shape() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     strategy
@@ -1651,7 +1651,7 @@ fn executable_edge_blocks_unsupported_post_only_entry_shape() {
 
 #[test]
 fn entry_submission_blocks_legacy_limit_base_entry_shape_before_liability_sizing() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.order_notional_target = 5.0;
@@ -1732,7 +1732,7 @@ fn entry_submission_notional_guard_blocks_non_finite_inputs() {
 
 #[test]
 fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.order_notional_target = UNIT_F64;
     strategy.config.maximum_position_notional = UNIT_F64;
@@ -1783,8 +1783,7 @@ fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
 
 #[test]
 fn task6_entry_evaluation_requires_live_uncertainty_components() {
-    let mut strategy =
-        ready_to_trade_strategy_with_live_fees(Decimal::new(250, 2), Decimal::new(250, 2));
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy
         .pricing
@@ -1806,7 +1805,7 @@ fn task6_entry_evaluation_requires_live_uncertainty_components() {
 
 #[test]
 fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy
         .pricing
@@ -1853,7 +1852,7 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
 
 #[test]
 fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.observe_reference_snapshot(
         &ReferenceSnapshot {
@@ -1951,7 +1950,7 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
 
 #[test]
 fn exit_hold_ev_does_not_require_uncertainty_band_components() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
@@ -1992,7 +1991,7 @@ fn exit_hold_ev_does_not_require_uncertainty_band_components() {
 
 #[test]
 fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
@@ -2040,7 +2039,7 @@ fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
 
 #[test]
 fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatility() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),

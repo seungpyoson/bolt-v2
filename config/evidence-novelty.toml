@@ -236,13 +236,6 @@ allocation = "strategy_input_pricing_blocker"
 id = 170
 
 [[state]]
-rust_variant = "EntrySkipHistoricalEntryFeeUnavailable"
-producer_kind = "entry_skip"
-semantic_state = "entry_skip.historical_entry_fee_unavailable"
-allocation = "strategy_input_pricing_blocker"
-id = 171
-
-[[state]]
 rust_variant = "EntrySkipOnePositionInvariantViolation"
 producer_kind = "entry_skip"
 semantic_state = "entry_skip.one_position_invariant_violation"

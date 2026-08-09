@@ -17,7 +17,7 @@
 - One production authority only: the final branch state contains no `FeeProvider`, provider fee builder, strategy fee math, or flat replay `fee_bps` path.
 - Tests are behavioral or compiler-enforced; no source-scanning test is added.
 - Live Polymarket and Hyperliquid execution remains disabled.
-- Compile-heavy Cargo evidence is remote-first; any local Cargo target is `/Volumes/BoltCargoTarget/bolt-v2` on T9.
+- Compile-heavy Cargo evidence is remote-first; any local Cargo target is under `/Volumes/T9 1/bolt-v2-cargo/` on T9.
 
 ---
 
@@ -93,18 +93,18 @@
 - Modify: `src/bolt_v3_strategy_registration.rs`
 - Modify: `src/bolt_v3_strategy_context.rs`
 - Modify: `src/bolt_v3_config.rs`
-- Modify: current `config/root.toml` and `config/live.toml` without changing live/shadow posture
+- Modify: current `config/root.toml` and `config/profiles/prod-btc-5m.overlay.toml` without changing live/shadow posture
 - Test: `tests/bolt_v3_provider_binding.rs`
 - Test: `tests/bolt_v3_strategy_registration.rs`
 
 **Interfaces:**
 - Consumes: configured execution client and resolved authoritative venue inputs.
-- Produces: exactly one `Arc<dyn VenueEconomicsAdapter>` per execution client in shared execution context.
+- Produces: one `BoundExecutionEconomics` authority per execution client, selecting exactly one provider-registry binding; rotating instrument snapshots remain exact internal scopes, not alternate adapters.
 
-- [ ] Add behavior tests for valid binding and fail-closed missing, duplicate, unsupported, or mismatched adapter configuration.
-- [ ] Replace provider-registry `build_fee_provider` with one economics-adapter builder.
-- [ ] Replace `StrategyBuildContext` fee authority with the shared execution economics handle; strategies cannot call venue formulas.
-- [ ] Preserve existing live/shadow flags and reject configuration that would enable live execution.
+- [x] Add behavior tests for valid binding and fail-closed missing, duplicate, unsupported, or mismatched adapter configuration.
+- [x] Replace provider-registry `build_fee_provider` with one economics-adapter builder.
+- [x] Replace `StrategyBuildContext` fee authority with the shared execution economics handle; strategies cannot call venue formulas.
+- [x] Preserve existing live/shadow flags; because Slice 1 publishes no live authority, live quote attempts fail closed before submission.
 
 ### Task 5: Shared quote/admission and evidence cutover
 
@@ -124,12 +124,12 @@
 - Consumes: gross strategy intent plus one current `EconomicsQuote`.
 - Produces: sized/admitted order intent whose evidence records quote identity, health, guaranteed effects, debit bounds, valuation lineage, and folded edge.
 
-- [ ] Add fail-before-mutation tests for unavailable, stale, contradictory, unsupported, and unvalued required economics.
-- [ ] Add tests proving forecast rewards do not improve admissible edge.
-- [ ] Add resting-order tests proving material economics changes cause refresh.
-- [ ] Move sizing and admission to the typed quote before identity mint, reservation, evidence authority, or dispatch mutation.
-- [ ] Remove strategy-owned fee warm/read/math paths and pass gross assumptions only.
-- [ ] Update typed evidence and codec fixtures without a parallel legacy fact.
+- [x] Add fail-before-mutation tests for unavailable, stale, contradictory, unsupported, and unvalued required economics.
+- [x] Add tests proving forecast rewards do not improve admissible edge.
+- [x] Add resting-order tests proving unchanged terms refresh while expiry, unavailable authority, lost maker status, or changed terms require cancellation.
+- [x] Move sizing and admission to the typed quote before identity mint, reservation, evidence authority, or dispatch mutation.
+- [x] Remove strategy-owned fee warm/read/math paths and pass gross assumptions only.
+- [x] Update typed evidence and codec fixtures without a parallel legacy fact.
 
 ### Task 6: Replay cutover and atomic legacy removal
 
@@ -144,10 +144,10 @@
 - Consumes: replay economics adapter from Task 2 and venue adapter from Task 3.
 - Produces: replay decisions with the same quote/edge semantics as shared execution.
 
-- [ ] Add replay parity tests for identical quote inputs and fail-closed unknown economics.
-- [ ] Remove manifest `fee_bps` parsing and `ManifestFeeProvider`.
-- [ ] Remove `FeeProvider`, `FeeProviderBuilder`, `resolve_fee_provider`, provider fee builders, strategy fee doubles, and duplicate scalar calculations.
-- [ ] Verify by direct symbol inspection and compilation—not source-scanning tests—that no production scalar authority remains.
+- [x] Add replay parity tests for identical quote inputs and fail-closed unknown economics.
+- [x] Remove manifest `fee_bps` parsing and `ManifestFeeProvider`.
+- [x] Remove `FeeProvider`, `FeeProviderBuilder`, `resolve_fee_provider`, provider fee builders, strategy fee doubles, and duplicate scalar calculations.
+- [x] Verify by direct symbol inspection and compilation—not source-scanning tests—that no production scalar authority remains.
 - [ ] Run format/static checks, push the exact head, and request the required reviewer; advisory CI supplies compile, Clippy, test, and build evidence.
 
 ## Later-slice ownership map

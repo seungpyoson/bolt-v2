@@ -16,7 +16,6 @@ use crate::{
     },
     bolt_v3_maker_quote_plan::{MakerQuotePlan, MakerQuotePlanInputs, plan_maker_quote_targets},
     bolt_v3_maker_quote_set::{QuoteSetDecision, QuoteSetInput, drive_binary_quote_set},
-    bolt_v3_maker_reservation::BuyCommitment,
     bolt_v3_quote_lifecycle::MarketQuote,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
@@ -27,19 +26,16 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct MakerRuntimeQuoteInput<'a> {
     pub quote_plan: MakerQuotePlanInputs<'a>,
-    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
+    pub quote_set: MakerRuntimeQuoteSetInput,
     pub order_plan: MakerRuntimeOrderPlanInput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MakerRuntimeQuoteSetInput<'a> {
+pub struct MakerRuntimeQuoteSetInput {
     pub yes_quantity: f64,
     pub no_quantity: f64,
     pub yes_resting_price: Option<f64>,
     pub no_resting_price: Option<f64>,
-    pub open_commitments: &'a [BuyCommitment],
-    pub max_fee_bps: f64,
-    pub available_collateral: f64,
     pub requote_threshold: f64,
     pub eps: f64,
     pub now_ms: u64,
@@ -285,9 +281,6 @@ pub fn plan_maker_runtime_quote(
             no_quantity: input.quote_set.no_quantity,
             yes_resting_price: input.quote_set.yes_resting_price,
             no_resting_price: input.quote_set.no_resting_price,
-            open_commitments: input.quote_set.open_commitments,
-            max_fee_bps: input.quote_set.max_fee_bps,
-            available_collateral: input.quote_set.available_collateral,
             requote_threshold: input.quote_set.requote_threshold,
             eps: input.quote_set.eps,
             now_ms: input.quote_set.now_ms,

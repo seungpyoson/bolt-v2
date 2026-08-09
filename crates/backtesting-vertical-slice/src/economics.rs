@@ -130,9 +130,6 @@ mod tests {
         })
         .expect_err("zero replay price must fail closed");
 
-        assert_eq!(
-            error,
-            EconomicsError::NonPositiveValue { field: "price" }
-        );
+        assert_eq!(error, EconomicsError::NonPositiveValue { field: "price" });
     }
 }

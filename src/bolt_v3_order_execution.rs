@@ -1,6 +1,6 @@
 use std::{any::type_name, cell::RefMut};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use nautilus_common::{
     factories::OrderFactory,
     messages::execution::{
@@ -27,6 +27,10 @@ use crate::{
         OrderExecutionEvidence, OrderIntentClampNotEvaluatedReason, OrderIntentClampOutcome,
         OrderIntentDetails, OrderIntentOrderFields, RecordFailure, RiskReducingExitOrderIntentFact,
     },
+    bolt_v3_economics_runtime::{
+        BoundExecutionEconomics, EconomicsAdmission, EconomicsAdmissionIntent,
+        EconomicsAdmissionPurpose,
+    },
     bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
     bolt_v3_maker_order_dispatch::{
         MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
@@ -37,9 +41,170 @@ use crate::{
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
         BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-        build_submit_admission_request_from_order,
+        build_submit_admission_request_from_order, order_admission_facts,
+    },
+    economics::{LifecyclePath, PositionContext},
+    integrations::nautilus::economics::{
+        NautilusEconomicsIntent, NautilusEstimateLiquidityRole, NautilusPlannedFillLeg,
+        economics_request_from_nautilus,
     },
 };
+
+#[derive(Clone)]
+pub struct BoltV3OrderEconomicsHandle {
+    economics: BoundExecutionEconomics,
+}
+
+pub struct BoltV3OrderEconomicsIntent<'a> {
+    pub request: &'a BoltV3SubmitAdmissionRequestInput<'a>,
+    pub planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
+    pub liquidity_role: NautilusEstimateLiquidityRole,
+    pub position: Option<PositionContext>,
+    pub lifecycle_path: LifecyclePath,
+    pub requested_at_ns: u64,
+    pub decision_correlation_id: &'a str,
+    pub gross_expected_value: Decimal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoltV3PlannedFillLeg {
+    pub price: Decimal,
+    pub quantity: Decimal,
+}
+
+impl BoltV3OrderEconomicsHandle {
+    pub fn new(economics: BoundExecutionEconomics) -> Self {
+        Self { economics }
+    }
+
+    pub fn quote_admission(
+        &self,
+        intent: BoltV3OrderEconomicsIntent<'_>,
+    ) -> Result<EconomicsAdmission> {
+        let facts = order_admission_facts(intent.request)?;
+        anyhow::ensure!(
+            self.economics.execution_client_id() == intent.request.execution_client_id,
+            "economics execution client does not match the final order route"
+        );
+        match intent.liquidity_role {
+            NautilusEstimateLiquidityRole::GuaranteedMaker => anyhow::ensure!(
+                intent.request.order.is_post_only(),
+                "guaranteed-maker economics requires a final post-only order"
+            ),
+            NautilusEstimateLiquidityRole::Taker => anyhow::ensure!(
+                !intent.request.order.is_post_only(),
+                "taker economics does not accept a post-only order"
+            ),
+            NautilusEstimateLiquidityRole::Unspecified => {
+                anyhow::bail!("economics liquidity role is unspecified")
+            }
+        }
+        let authority = self
+            .economics
+            .request_authority(&intent.request.order.instrument_id().to_string())?;
+        let position = if authority.carry_required {
+            Some(intent.position.ok_or_else(|| {
+                anyhow::anyhow!("carry economics requires a position and holding horizon")
+            })?)
+        } else {
+            anyhow::ensure!(
+                intent.position.is_none(),
+                "non-carry economics rejects position holding context"
+            );
+            None
+        };
+        let planned_fill_legs =
+            normalize_economics_fill_legs(intent.request.order, facts, intent.planned_fill_legs)?;
+        let request = economics_request_from_nautilus(NautilusEconomicsIntent {
+            execution_client_id: &authority.execution_client_id,
+            account_id: authority.account_id.as_str(),
+            instrument_id: intent.request.order.instrument_id(),
+            product_surface_id: authority.product_surface_id.as_str(),
+            reporting_policy_id: authority.reporting_policy_id.as_str(),
+            reporting_currency: authority.reporting_currency.as_str(),
+            edge_basis_policy_id: authority.edge_basis_policy_id.as_str(),
+            decision_correlation_id: intent.decision_correlation_id,
+            side: intent.request.order.order_side(),
+            liquidity_role: intent.liquidity_role,
+            planned_fill_legs: &planned_fill_legs,
+            routing_attachment_id: None,
+            position,
+            lifecycle_path: intent.lifecycle_path,
+            requested_at_ns: intent.requested_at_ns,
+        })
+        .map_err(|error| anyhow::anyhow!(error))?;
+        self.economics
+            .quote_admission(EconomicsAdmissionIntent {
+                request,
+                purpose: match intent.request.intent_kind {
+                    BoltV3SubmitIntentKind::Entry => EconomicsAdmissionPurpose::TradingEdge,
+                    BoltV3SubmitIntentKind::RiskReducingExit
+                    | BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+                        EconomicsAdmissionPurpose::RiskReduction
+                    }
+                },
+                gross_expected_value: intent.gross_expected_value,
+                reservation_basis: facts.reservation_basis,
+            })
+            .map_err(Into::into)
+    }
+}
+
+fn normalize_economics_fill_legs(
+    order: &OrderAny,
+    facts: crate::bolt_v3_submit_admission::BoltV3OrderAdmissionFacts,
+    legs: Vec<BoltV3PlannedFillLeg>,
+) -> Result<Vec<NautilusPlannedFillLeg>> {
+    anyhow::ensure!(!legs.is_empty(), "economics requires planned fill levels");
+    let mut remaining = facts.order_quantity;
+    let mut normalized = Vec::new();
+    for leg in legs {
+        anyhow::ensure!(
+            leg.price > Decimal::ZERO && leg.quantity > Decimal::ZERO,
+            "economics planned fill level must be positive"
+        );
+        let available = if order.is_quote_quantity() {
+            leg.price
+                .checked_mul(leg.quantity)
+                .context("economics planned fill notional overflow")?
+        } else {
+            leg.quantity
+        };
+        let consumed = available.min(remaining);
+        let quantity = if order.is_quote_quantity() {
+            consumed
+                .checked_div(leg.price)
+                .context("economics planned fill quantity division failed")?
+        } else {
+            consumed
+        };
+        normalized.push(NautilusPlannedFillLeg {
+            price: leg.price,
+            quantity,
+        });
+        remaining = remaining
+            .checked_sub(consumed)
+            .context("economics planned fill subtraction failed")?;
+        if remaining.is_zero() {
+            break;
+        }
+    }
+    anyhow::ensure!(
+        remaining.is_zero(),
+        "economics planned fill levels do not cover the final order"
+    );
+    if order.price().is_some() {
+        anyhow::ensure!(
+            normalized.iter().all(|leg| match order.order_side() {
+                OrderSide::Buy => leg.price <= facts.price,
+                OrderSide::Sell => leg.price >= facts.price,
+                OrderSide::NoOrderSide => false,
+            }),
+            "economics planned fill level exceeds the final order limit"
+        );
+    }
+    Ok(normalized)
+}
 
 pub trait OrderIntentEvidence {
     fn record_entry_order_intent(
@@ -1240,10 +1405,11 @@ mod tests {
     use super::{
         BoltV3CancelAllRoutingOutcome, BoltV3CancelRoutingOutcome, BoltV3MakerOrderRoutingContext,
         BoltV3MakerOrderRuntime, BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink,
-        BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy, BoltV3SubmitContext,
-        BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
-        clamp_risk_reducing_exit_to_venue_position, order_intent_details_from_compiled_order,
-        route_kill_switch_flatten_command_with_sink, route_maker_order_command_with_runtime,
+        BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy, BoltV3PlannedFillLeg,
+        BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
+        clamp_risk_reducing_exit_to_venue_position, normalize_economics_fill_legs,
+        order_intent_details_from_compiled_order, route_kill_switch_flatten_command_with_sink,
+        route_maker_order_command_with_runtime,
     };
     use crate::{
         bolt_v3_capital_admission::{
@@ -3057,5 +3223,47 @@ mod tests {
             )
             .expect("limit exit order should be valid"),
         )
+    }
+
+    #[test]
+    fn economics_fill_normalization_seals_the_final_order_quantity() {
+        let order = limit_order("economics-normalize");
+        let normalized = normalize_economics_fill_legs(
+            &order,
+            crate::bolt_v3_submit_admission::BoltV3OrderAdmissionFacts {
+                price: Decimal::new(50, 2),
+                order_quantity: Decimal::ONE,
+                reservation_basis: Decimal::new(50, 2),
+            },
+            vec![BoltV3PlannedFillLeg {
+                price: Decimal::new(49, 2),
+                quantity: Decimal::from(2),
+            }],
+        )
+        .expect("a deeper level should be truncated to the final order quantity");
+
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].quantity, Decimal::ONE);
+        assert_eq!(normalized[0].price, Decimal::new(49, 2));
+    }
+
+    #[test]
+    fn economics_fill_normalization_rejects_a_price_outside_the_final_limit() {
+        let order = limit_order("economics-limit");
+        let error = normalize_economics_fill_legs(
+            &order,
+            crate::bolt_v3_submit_admission::BoltV3OrderAdmissionFacts {
+                price: Decimal::new(50, 2),
+                order_quantity: Decimal::ONE,
+                reservation_basis: Decimal::new(50, 2),
+            },
+            vec![BoltV3PlannedFillLeg {
+                price: Decimal::new(51, 2),
+                quantity: Decimal::ONE,
+            }],
+        )
+        .expect_err("a buy fill above the final limit must fail closed");
+
+        assert!(error.to_string().contains("exceeds the final order limit"));
     }
 }

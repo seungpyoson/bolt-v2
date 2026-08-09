@@ -36,6 +36,8 @@ impl FeeRoundingMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolymarketEconomicsConfig {
+    pub instrument_id: EconomicsInstrumentId,
+    pub provider_instrument_id: EconomicsInstrumentId,
     pub collateral_currency: CurrencyId,
     pub source: SourceIdentity,
     pub product_surface_id: ProductSurfaceId,
@@ -75,6 +77,12 @@ pub struct PolymarketMarketInfoSnapshot {
     platform: PolymarketPlatformPlan,
     builder_maker_fee_bps: Decimal,
     builder_taker_fee_bps: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PolymarketAuthoritativeEconomics {
+    snapshot: PolymarketMarketInfoSnapshot,
+    provider_instrument_id: EconomicsInstrumentId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,13 +258,15 @@ pub fn authoritative_economics_input(
     execution_client_id: impl Into<String>,
     instrument_id: impl Into<String>,
     product_surface_id: impl Into<String>,
+    provider_instrument_id: impl Into<String>,
     snapshot: PolymarketMarketInfoSnapshot,
 ) -> Result<AuthoritativeVenueEconomicsInput, PolymarketEconomicsError> {
     let execution_client_id = execution_client_id.into();
     let instrument_id = EconomicsInstrumentId::try_new(instrument_id.into())?;
     let product_surface_id = ProductSurfaceId::try_new(product_surface_id.into())?;
+    let provider_instrument_id = EconomicsInstrumentId::try_new(provider_instrument_id.into())?;
     ExecutionClientId::try_new(execution_client_id.clone())?;
-    if !snapshot.token_ids.contains(&instrument_id) {
+    if !snapshot.token_ids.contains(&provider_instrument_id) {
         return Err(PolymarketEconomicsError::InvalidRequestScope);
     }
     Ok(AuthoritativeVenueEconomicsInput::from_provider_authority(
@@ -264,24 +274,32 @@ pub fn authoritative_economics_input(
         instrument_id.as_str(),
         product_surface_id.as_str(),
         super::KEY,
-        Arc::new(snapshot),
+        Arc::new(PolymarketAuthoritativeEconomics {
+            snapshot,
+            provider_instrument_id,
+        }),
     ))
 }
 
 pub(crate) fn build_execution_economics_adapter(
     context: ProviderEconomicsAdapterBuildContext<'_>,
 ) -> Result<BuiltProviderEconomicsAdapter, String> {
-    let snapshot = context
+    let authority = context
         .authority
-        .downcast_ref::<PolymarketMarketInfoSnapshot>()
+        .downcast_ref::<PolymarketAuthoritativeEconomics>()
         .ok_or_else(|| "Polymarket economics authority has the wrong snapshot type".to_string())?;
     let execution = context
         .execution
         .clone()
         .try_into::<super::PolymarketExecutionConfig>()
         .map_err(|error| error.to_string())?;
-    let config = adapter_config_from_toml(context.config, context.product_surface_id)?;
-    PolymarketEconomicsAdapter::try_new(config, snapshot.clone())
+    let config = adapter_config_from_toml(
+        context.config,
+        context.instrument_id,
+        context.product_surface_id,
+        &authority.provider_instrument_id,
+    )?;
+    PolymarketEconomicsAdapter::try_new(config, authority.snapshot.clone())
         .map(|adapter| BuiltProviderEconomicsAdapter {
             account_id: execution.account_id.to_string(),
             adapter: Arc::new(adapter),
@@ -291,7 +309,9 @@ pub(crate) fn build_execution_economics_adapter(
 
 fn adapter_config_from_toml(
     config: &ExecutionEconomicsConfig,
+    instrument_id: &str,
     product_surface_id: &str,
+    provider_instrument_id: &EconomicsInstrumentId,
 ) -> Result<PolymarketEconomicsConfig, String> {
     if config.routing_attachment_policy != EconomicsRoutingAttachmentPolicy::Forbidden {
         return Err("Polymarket Slice 1 requires routing attachments to be forbidden".to_string());
@@ -349,6 +369,8 @@ fn adapter_config_from_toml(
     };
     let id_error = |error: EconomicsError| error.to_string();
     Ok(PolymarketEconomicsConfig {
+        instrument_id: EconomicsInstrumentId::try_new(instrument_id).map_err(id_error)?,
+        provider_instrument_id: provider_instrument_id.clone(),
         collateral_currency: CurrencyId::try_new(collateral.currency.clone()).map_err(id_error)?,
         source: SourceIdentity::try_new(config.sources["schedule"].clone()).map_err(id_error)?,
         product_surface_id: ProductSurfaceId::try_new(product_surface_id).map_err(id_error)?,
@@ -387,6 +409,9 @@ impl PolymarketEconomicsAdapter {
             .map(|routing| &routing.attachment_id)
             != snapshot.metadata.builder_attachment_id.as_ref()
         {
+            return Err(PolymarketEconomicsError::InvalidRequestScope);
+        }
+        if !snapshot.token_ids.contains(&config.provider_instrument_id) {
             return Err(PolymarketEconomicsError::InvalidRequestScope);
         }
         if matches!(
@@ -469,7 +494,7 @@ impl PolymarketEconomicsAdapter {
         request: &EconomicsQuoteRequest,
     ) -> Result<(), PolymarketEconomicsError> {
         if request.product_surface_id != self.config.product_surface_id
-            || !self.snapshot.token_ids.contains(&request.instrument_id)
+            || request.instrument_id != self.config.instrument_id
             || match (
                 request.routing.attached_charge.as_ref(),
                 self.config.routing.as_ref(),
@@ -657,6 +682,8 @@ mod tests {
 
     fn config() -> PolymarketEconomicsConfig {
         PolymarketEconomicsConfig {
+            instrument_id: id("token-yes.POLYMARKET", EconomicsInstrumentId::try_new),
+            provider_instrument_id: id("token-yes", EconomicsInstrumentId::try_new),
             collateral_currency: id("pUSD", CurrencyId::try_new),
             source: id("clob-market-info", SourceIdentity::try_new),
             product_surface_id: id("condition", ProductSurfaceId::try_new),
@@ -691,7 +718,7 @@ mod tests {
     }
 
     fn request(role: LiquidityRole, routed: bool) -> EconomicsQuoteRequest {
-        request_for("token-yes", "condition", role, routed)
+        request_for("token-yes.POLYMARKET", "condition", role, routed)
     }
 
     fn request_for(
@@ -840,11 +867,19 @@ mod tests {
         )
         .expect("captured fee-bearing market info should parse");
         let mut captured_config = config();
+        captured_config.instrument_id = id(
+            "43187333641922996188398060383389814287787647811837308994701068387397271207198.POLYMARKET",
+            EconomicsInstrumentId::try_new,
+        );
+        captured_config.provider_instrument_id = id(
+            "43187333641922996188398060383389814287787647811837308994701068387397271207198",
+            EconomicsInstrumentId::try_new,
+        );
         captured_config.product_surface_id = id(product_surface_id, ProductSurfaceId::try_new);
         let adapter = PolymarketEconomicsAdapter::try_new(captured_config, snapshot)
             .expect("captured fee-bearing market info should construct");
         let request = request_for(
-            "43187333641922996188398060383389814287787647811837308994701068387397271207198",
+            "43187333641922996188398060383389814287787647811837308994701068387397271207198.POLYMARKET",
             product_surface_id,
             LiquidityRole::Taker,
             false,

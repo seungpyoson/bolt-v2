@@ -7,6 +7,10 @@ use bolt_v2::{
         AuthoritativeVenueEconomicsInput, EconomicsAdmissionIntent, EconomicsAdmissionPurpose,
         EconomicsRuntimeBindingError, bind_execution_economics,
     },
+    bolt_v3_order_execution::{
+        BoltV3OrderEconomicsHandle, BoltV3OrderEconomicsIntent, BoltV3PlannedFillLeg,
+        order_intent_details_from_compiled_order,
+    },
     bolt_v3_providers::{
         hyperliquid::{
             HyperliquidProductEconomicsSnapshot, HyperliquidSnapshotMetadata,
@@ -18,12 +22,22 @@ use bolt_v2::{
             authoritative_economics_input as polymarket_authoritative_economics_input,
         },
     },
+    bolt_v3_submit_admission::{
+        BoltV3SubmitAdmissionRequestInput, BoltV3SubmitIntentKind, OrderValuationContext,
+    },
     economics::{
         AccountId, CurrencyId, DecisionCorrelationId, EconomicsInstrumentId, EconomicsQuoteRequest,
         EdgeBasisPolicyId, ExecutionClientId, LifecyclePath, LiquidityRole, OrderSide,
         PlannedFillLeg, PlannedFillNotional, ProductSurfaceId, ReportingPolicyId, RoutingContext,
         SnapshotId, SourceIdentity,
     },
+    integrations::nautilus::economics::NautilusEstimateLiquidityRole,
+};
+use nautilus_model::{
+    enums::{OrderSide as NautilusOrderSide, TimeInForce},
+    identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId},
+    orders::{LimitOrder, OrderAny},
+    types::{Price, Quantity},
 };
 use rust_decimal::Decimal;
 
@@ -111,11 +125,45 @@ fn authoritative_input_without_valuation() -> AuthoritativeVenueEconomicsInput {
     .expect("test market-info snapshot should parse");
     polymarket_authoritative_economics_input(
         "polymarket_main",
-        "token-yes",
+        "token-yes.POLYMARKET",
         "binary_outcome",
+        "token-yes",
         snapshot,
     )
     .expect("Polymarket authority scope should match its market snapshot")
+}
+
+fn polymarket_limit_order() -> OrderAny {
+    OrderAny::Limit(
+        LimitOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            InstrumentId::from("token-yes.POLYMARKET"),
+            ClientOrderId::from("O-19700101-000000-001-E1-1"),
+            NautilusOrderSide::Buy,
+            Quantity::new(10.0, 2),
+            Price::new(0.50, 2),
+            TimeInForce::Gtc,
+            None,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+        )
+        .expect("fixture final order should be valid"),
+    )
 }
 
 fn hyperliquid_metadata(source: &str, snapshot_id: &str) -> HyperliquidSnapshotMetadata {
@@ -223,13 +271,62 @@ fn execution_economics_binds_one_matching_toml_authority() {
 }
 
 #[test]
+fn final_nautilus_order_routes_through_its_exact_provider_authority() {
+    let loaded = loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([authoritative_input()])
+        .expect("one input should construct");
+    let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
+        .expect("matching authority should bind");
+    let handle = BoltV3OrderEconomicsHandle::new(bound);
+    let order = polymarket_limit_order();
+    let intent = order_intent_details_from_compiled_order(
+        "strategy-a".to_string(),
+        "0.50".to_string(),
+        &order,
+    );
+    let admission_input = BoltV3SubmitAdmissionRequestInput {
+        execution_client_id: "polymarket_main",
+        intent: &intent,
+        intent_kind: BoltV3SubmitIntentKind::Entry,
+        order: &order,
+        valuation: OrderValuationContext::empty(),
+        risk_reducing_exit_position: None,
+    };
+
+    let admission = handle
+        .quote_admission(BoltV3OrderEconomicsIntent {
+            request: &admission_input,
+            planned_fill_legs: vec![BoltV3PlannedFillLeg {
+                price: Decimal::new(5, 1),
+                quantity: Decimal::TEN,
+            }],
+            liquidity_role: NautilusEstimateLiquidityRole::Taker,
+            position: None,
+            lifecycle_path: LifecyclePath::HoldToRedemption,
+            requested_at_ns: 1_000,
+            decision_correlation_id: "decision-final-order",
+            gross_expected_value: Decimal::ONE,
+        })
+        .expect("the exact final order identity should reach its provider quote");
+
+    assert_eq!(
+        admission.request().instrument_id.as_str(),
+        "token-yes.POLYMARKET"
+    );
+    assert_eq!(admission.request().account_id.as_str(), "POLYMARKET-001");
+    assert_eq!(admission.request().planned_fill_legs.len(), 1);
+    assert_eq!(admission.reservation_basis(), Decimal::from(5));
+    assert!(admission.full_reservation_liability() > Decimal::from(5));
+}
+
+#[test]
 fn bound_execution_economics_routes_edge_basis_by_exact_product_scope() {
     let loaded = loaded();
     let inputs = AuthoritativeEconomicsInputStore::try_new([authoritative_input()])
         .expect("one input should construct");
     let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
         .expect("matching authority should bind");
-    let request = quote_request("token-yes", "binary_outcome");
+    let request = quote_request("token-yes.POLYMARKET", "binary_outcome");
     let notional = PlannedFillNotional::from_legs(&request.planned_fill_legs)
         .expect("test fill should have positive notional");
 
@@ -256,7 +353,7 @@ fn bound_execution_economics_quotes_and_folds_admission_from_one_authority() {
 
     let admission = bound
         .quote_admission(EconomicsAdmissionIntent {
-            request: quote_request("token-yes", "binary_outcome"),
+            request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
             purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
@@ -285,7 +382,7 @@ fn bound_execution_economics_rejects_stale_required_valuation() {
 
     let error = bound
         .quote_admission(EconomicsAdmissionIntent {
-            request: quote_request("token-yes", "binary_outcome"),
+            request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
             purpose: EconomicsAdmissionPurpose::TradingEdge,
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
@@ -319,7 +416,7 @@ fn bound_execution_economics_rejects_foreign_reporting_policy() {
         .expect("one input should construct");
     let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
         .expect("matching authority should bind");
-    let mut request = quote_request("token-yes", "binary_outcome");
+    let mut request = quote_request("token-yes.POLYMARKET", "binary_outcome");
     request.reporting_policy_id = id("foreign-reporting-policy", ReportingPolicyId::try_new);
 
     let error = bound
@@ -341,7 +438,7 @@ fn bound_execution_economics_rejects_foreign_product_edge_policy() {
         .expect("one input should construct");
     let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
         .expect("matching authority should bind");
-    let mut request = quote_request("token-yes", "binary_outcome");
+    let mut request = quote_request("token-yes.POLYMARKET", "binary_outcome");
     request.edge_basis_policy_id = id("foreign-edge-policy", EdgeBasisPolicyId::try_new);
 
     let error = bound
@@ -386,7 +483,7 @@ fn execution_economics_rejects_duplicate_authoritative_inputs() {
         error,
         EconomicsRuntimeBindingError::DuplicateAuthoritativeInput {
             execution_client_id: "polymarket_main".to_string(),
-            instrument_id: "token-yes".to_string(),
+            instrument_id: "token-yes.POLYMARKET".to_string(),
             product_surface_id: "binary_outcome".to_string(),
         }
     );
@@ -457,7 +554,7 @@ fn execution_economics_builds_the_adapter_from_the_loaded_toml() {
 
     let estimate = bound
         .adapter()
-        .quote(&quote_request("token-yes", "binary_outcome"))
+        .quote(&quote_request("token-yes.POLYMARKET", "binary_outcome"))
         .expect("configured fee-bearing authority should quote");
 
     assert_eq!(estimate.components.len(), 1);

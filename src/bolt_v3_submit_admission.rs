@@ -3264,6 +3264,22 @@ pub fn build_submit_admission_request_from_order<F>(
 where
     F: FnOnce(Decimal) -> anyhow::Result<Decimal>,
 {
+    let facts = order_admission_facts(&input)?;
+    let max_fee_bps = max_fee_bps_for_price(facts.price)?;
+    let notional = fee_inclusive_admission_notional(facts.reservation_basis, max_fee_bps)?;
+    Ok(submit_admission_request_from_facts(input, facts, notional))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BoltV3OrderAdmissionFacts {
+    pub price: Decimal,
+    pub order_quantity: Decimal,
+    pub reservation_basis: Decimal,
+}
+
+pub(crate) fn order_admission_facts(
+    input: &BoltV3SubmitAdmissionRequestInput<'_>,
+) -> anyhow::Result<BoltV3OrderAdmissionFacts> {
     let client_order_id = input.order.client_order_id().to_string();
     let unsided_quote_quantity_market_style = input.order.is_quote_quantity()
         && matches!(
@@ -3320,8 +3336,7 @@ where
     } else {
         base_quantity_admission_notional(price, quantity)
     };
-    let max_fee_bps = max_fee_bps_for_price(price)?;
-    let notional = if input.order.price().is_none() && !input.order.is_quote_quantity() {
+    let reservation_basis = if input.order.price().is_none() && !input.order.is_quote_quantity() {
         let price_ceiling = input
             .valuation
             .instrument
@@ -3336,7 +3351,19 @@ where
     } else {
         notional
     };
-    let notional = fee_inclusive_admission_notional(notional, max_fee_bps)?;
+
+    Ok(BoltV3OrderAdmissionFacts {
+        price,
+        order_quantity: quantity,
+        reservation_basis,
+    })
+}
+
+fn submit_admission_request_from_facts(
+    input: BoltV3SubmitAdmissionRequestInput<'_>,
+    facts: BoltV3OrderAdmissionFacts,
+    notional: Decimal,
+) -> BoltV3SubmitAdmissionRequest {
     let intent_kind = input.intent_kind;
     let risk_reducing_exit_proof =
         if matches!(intent_kind, BoltV3SubmitIntentKind::RiskReducingExit) {
@@ -3348,25 +3375,25 @@ where
                     position_side: position.position_side,
                     exit_order_side: input.order.order_side(),
                     position_quantity: position.position_quantity,
-                    exit_quantity: quantity,
+                    exit_quantity: facts.order_quantity,
                 })
         } else {
             None
         };
 
-    Ok(BoltV3SubmitAdmissionRequest {
+    BoltV3SubmitAdmissionRequest {
         strategy_id: input.intent.strategy_id.clone(),
         execution_client_id: input.execution_client_id.to_string(),
-        client_order_id,
+        client_order_id: input.order.client_order_id().to_string(),
         instrument_id: input.order.instrument_id().to_string(),
         notional,
         order_side: input.order.order_side(),
-        order_quantity: quantity,
+        order_quantity: facts.order_quantity,
         intent_kind,
         risk_reducing_exit_proof,
         kill_switch_forced_reduction: None,
         admission_evidence: None,
-    })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

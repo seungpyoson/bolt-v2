@@ -15,8 +15,8 @@ use crate::{
     economics::{
         AccountId, AdmissionTreatment, CurrencyId, EconomicScope, EconomicsError,
         EconomicsInstrumentId, EconomicsQuote, EconomicsQuoteRequest, EdgeBasisEvidence,
-        NativeUnitId, NetEdgeQuote, PlannedFillNotional, ReportingPolicyId, SnapshotId,
-        SourceIdentity, SourceValidity, ValuationLeg, ValuationRoute, ValuationRouteId,
+        NativeUnitId, NetEdgeQuote, PlannedFillNotional, ProductSurfaceId, ReportingPolicyId,
+        SnapshotId, SourceIdentity, SourceValidity, ValuationLeg, ValuationRoute, ValuationRouteId,
         VenueEconomicsAdapter, VenueEconomicsUnavailable, VenueEdgeBasisEstimate,
         VenueQuoteEstimate, fold_net_edge, validate_and_aggregate_quote,
     },
@@ -211,6 +211,44 @@ impl BoundExecutionEconomics {
         self.adapter.clone()
     }
 
+    pub(crate) fn request_authority(
+        &self,
+        instrument_id: &str,
+    ) -> Result<BoundEconomicsRequestAuthority, EconomicsAdmissionError> {
+        let instrument_id = EconomicsInstrumentId::try_new(instrument_id)?;
+        let mut matching = self
+            .adapter
+            .by_scope
+            .keys()
+            .filter(|(configured_instrument, _)| configured_instrument == instrument_id.as_str());
+        let (_, product_surface_id) = matching
+            .next()
+            .ok_or(VenueEconomicsUnavailable::MissingAuthoritativeSnapshot)?;
+        if matching.next().is_some() {
+            return Err(EconomicsAdmissionError::AmbiguousProductSurface);
+        }
+        let product_surface_id = ProductSurfaceId::try_new(product_surface_id.clone())?;
+        let edge_basis_policy_id = self
+            .config
+            .product_surface_policies
+            .get(product_surface_id.as_str())
+            .ok_or(EconomicsAdmissionError::EdgeBasisAuthorityMismatch)?;
+        Ok(BoundEconomicsRequestAuthority {
+            execution_client_id: self.execution_client_id.clone(),
+            account_id: self.account_id().clone(),
+            product_surface_id: product_surface_id.clone(),
+            reporting_policy_id: self.reporting_policy_id.clone(),
+            reporting_currency: self.reporting_currency.clone(),
+            edge_basis_policy_id: crate::economics::EdgeBasisPolicyId::try_new(
+                edge_basis_policy_id.clone(),
+            )?,
+            carry_required: self
+                .config
+                .carry_surfaces
+                .contains(product_surface_id.as_str()),
+        })
+    }
+
     pub fn quote_admission(
         &self,
         intent: EconomicsAdmissionIntent,
@@ -299,6 +337,16 @@ impl BoundExecutionEconomics {
     }
 }
 
+pub(crate) struct BoundEconomicsRequestAuthority {
+    pub execution_client_id: String,
+    pub account_id: AccountId,
+    pub product_surface_id: ProductSurfaceId,
+    pub reporting_policy_id: ReportingPolicyId,
+    pub reporting_currency: CurrencyId,
+    pub edge_basis_policy_id: crate::economics::EdgeBasisPolicyId,
+    pub carry_required: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EconomicsAdmissionPurpose {
     TradingEdge,
@@ -354,6 +402,7 @@ pub enum EconomicsAdmissionError {
     Invalid(EconomicsError),
     EdgeBasisAuthorityMismatch,
     ReportingAuthorityMismatch,
+    AmbiguousProductSurface,
     NonPositiveNetEdge,
 }
 
@@ -367,6 +416,9 @@ impl std::fmt::Display for EconomicsAdmissionError {
             }
             Self::ReportingAuthorityMismatch => {
                 f.write_str("economics reporting authority does not match root TOML")
+            }
+            Self::AmbiguousProductSurface => {
+                f.write_str("economics instrument matches more than one product surface")
             }
             Self::NonPositiveNetEdge => f.write_str("economics core net edge is not positive"),
         }
@@ -627,6 +679,7 @@ pub fn bind_execution_economics(
         let built = (economics_binding.build_adapter)(ProviderEconomicsAdapterBuildContext {
             execution,
             config: &config,
+            instrument_id: &input.key.instrument_id,
             product_surface_id: &input.key.product_surface_id,
             authority: input.authority.as_ref(),
         })

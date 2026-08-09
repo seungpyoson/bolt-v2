@@ -33,8 +33,9 @@ pub fn polymarket_inputs(loaded: &LoadedBoltV3Config) -> AuthoritativeEconomicsI
     .expect("fixture market-info snapshot should parse");
     AuthoritativeEconomicsInputStore::try_new([authoritative_economics_input(
         "polymarket_main",
-        "token-yes",
+        "token-yes.POLYMARKET",
         "binary_outcome",
+        "token-yes",
         snapshot,
     )
     .expect("fixture authority should match its token scope")

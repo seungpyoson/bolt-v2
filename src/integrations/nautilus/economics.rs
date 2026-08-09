@@ -1,8 +1,5 @@
-use nautilus_model::{
-    enums::OrderSide as NautilusOrderSide,
-    identifiers::{AccountId as NautilusAccountId, InstrumentId},
-    types::{Currency, Price, Quantity},
-};
+use nautilus_model::{enums::OrderSide as NautilusOrderSide, identifiers::InstrumentId};
+use rust_decimal::Decimal;
 
 use crate::economics::{
     AccountId, DecisionCorrelationId, EconomicsError, EconomicsInstrumentId, EconomicsQuoteRequest,
@@ -37,8 +34,8 @@ impl From<EconomicsError> for NautilusEconomicsAdapterError {
 
 #[derive(Debug, Clone, Copy)]
 pub struct NautilusPlannedFillLeg {
-    pub price: Price,
-    pub quantity: Quantity,
+    pub price: Decimal,
+    pub quantity: Decimal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,11 +48,11 @@ pub enum NautilusEstimateLiquidityRole {
 #[derive(Debug, Clone)]
 pub struct NautilusEconomicsIntent<'a> {
     pub execution_client_id: &'a str,
-    pub account_id: NautilusAccountId,
+    pub account_id: &'a str,
     pub instrument_id: InstrumentId,
     pub product_surface_id: &'a str,
     pub reporting_policy_id: &'a str,
-    pub reporting_currency: &'a Currency,
+    pub reporting_currency: &'a str,
     pub edge_basis_policy_id: &'a str,
     pub decision_correlation_id: &'a str,
     pub side: NautilusOrderSide,
@@ -86,7 +83,7 @@ pub fn economics_request_from_nautilus(
     };
     let request = EconomicsQuoteRequest {
         execution_client_id: ExecutionClientId::try_new(intent.execution_client_id)?,
-        account_id: AccountId::try_new(intent.account_id.to_string())?,
+        account_id: AccountId::try_new(intent.account_id)?,
         instrument_id: EconomicsInstrumentId::try_new(intent.instrument_id.to_string())?,
         product_surface_id: ProductSurfaceId::try_new(intent.product_surface_id)?,
         order_side,
@@ -95,8 +92,8 @@ pub fn economics_request_from_nautilus(
             .planned_fill_legs
             .iter()
             .map(|leg| PlannedFillLeg {
-                price: leg.price.as_decimal(),
-                quantity: leg.quantity.as_decimal(),
+                price: leg.price,
+                quantity: leg.quantity,
             })
             .collect(),
         routing: RoutingContext {
@@ -108,9 +105,7 @@ pub fn economics_request_from_nautilus(
         position: intent.position,
         lifecycle_path: intent.lifecycle_path,
         reporting_policy_id: ReportingPolicyId::try_new(intent.reporting_policy_id)?,
-        reporting_currency: crate::economics::CurrencyId::try_new(
-            intent.reporting_currency.code.to_string(),
-        )?,
+        reporting_currency: crate::economics::CurrencyId::try_new(intent.reporting_currency)?,
         edge_basis_policy_id: EdgeBasisPolicyId::try_new(intent.edge_basis_policy_id)?,
         requested_at_ns: intent.requested_at_ns,
         decision_correlation_id: DecisionCorrelationId::try_new(intent.decision_correlation_id)?,
@@ -121,31 +116,19 @@ pub fn economics_request_from_nautilus(
 
 #[cfg(test)]
 mod tests {
-    use nautilus_model::{
-        enums::CurrencyType,
-        identifiers::{AccountId as NautilusAccountId, InstrumentId, Symbol, Venue},
-        types::{Currency, Price, Quantity},
-    };
+    use nautilus_model::identifiers::{InstrumentId, Symbol, Venue};
     use rust_decimal::Decimal;
 
     use super::*;
 
-    fn usd() -> Currency {
-        Currency::new_checked("USD", 2, 840, "US Dollar", CurrencyType::Fiat)
-            .expect("currency fixture should be valid")
-    }
-
-    fn intent<'a>(
-        currency: &'a Currency,
-        legs: &'a [NautilusPlannedFillLeg],
-    ) -> NautilusEconomicsIntent<'a> {
+    fn intent<'a>(legs: &'a [NautilusPlannedFillLeg]) -> NautilusEconomicsIntent<'a> {
         NautilusEconomicsIntent {
             execution_client_id: "execution",
-            account_id: NautilusAccountId::from("SIM-001"),
+            account_id: "SIM-001",
             instrument_id: InstrumentId::new(Symbol::new("BTC-USD"), Venue::new("SIM")),
             product_surface_id: "spot",
             reporting_policy_id: "reporting",
-            reporting_currency: currency,
+            reporting_currency: "USD",
             edge_basis_policy_id: "basis",
             decision_correlation_id: "decision",
             side: NautilusOrderSide::Buy,
@@ -160,18 +143,17 @@ mod tests {
 
     #[test]
     fn nautilus_intent_maps_every_level_to_the_neutral_economics_request() {
-        let currency = usd();
         let legs = [
             NautilusPlannedFillLeg {
-                price: Price::new(100.25, 2),
-                quantity: Quantity::new(3.0, 1),
+                price: Decimal::new(10_025, 2),
+                quantity: Decimal::from(3),
             },
             NautilusPlannedFillLeg {
-                price: Price::new(100.50, 2),
-                quantity: Quantity::new(2.0, 1),
+                price: Decimal::new(10_050, 2),
+                quantity: Decimal::from(2),
             },
         ];
-        let request = economics_request_from_nautilus(intent(&currency, &legs))
+        let request = economics_request_from_nautilus(intent(&legs))
             .expect("valid Nautilus intent should adapt");
 
         assert_eq!(request.instrument_id.as_str(), "BTC-USD.SIM");
@@ -184,22 +166,21 @@ mod tests {
 
     #[test]
     fn nautilus_intent_rejects_unspecified_execution_facts() {
-        let currency = usd();
         let legs = [NautilusPlannedFillLeg {
-            price: Price::new(100.0, 1),
-            quantity: Quantity::new(1.0, 1),
+            price: Decimal::from(100),
+            quantity: Decimal::ONE,
         }];
         assert_eq!(
             economics_request_from_nautilus(NautilusEconomicsIntent {
                 side: NautilusOrderSide::NoOrderSide,
-                ..intent(&currency, &legs)
+                ..intent(&legs)
             }),
             Err(NautilusEconomicsAdapterError::MissingOrderSide)
         );
         assert_eq!(
             economics_request_from_nautilus(NautilusEconomicsIntent {
                 liquidity_role: NautilusEstimateLiquidityRole::Unspecified,
-                ..intent(&currency, &legs)
+                ..intent(&legs)
             }),
             Err(NautilusEconomicsAdapterError::MissingLiquiditySide)
         );

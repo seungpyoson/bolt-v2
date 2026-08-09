@@ -447,6 +447,7 @@ pub(crate) struct BuiltProviderEconomicsAdapter {
 pub(crate) struct ProviderEconomicsAdapterBuildContext<'a> {
     pub execution: &'a toml::Value,
     pub config: &'a ExecutionEconomicsConfig,
+    pub instrument_id: &'a str,
     pub product_surface_id: &'a str,
     pub authority: &'a (dyn Any + Send + Sync),
 }

@@ -3,15 +3,14 @@ use std::collections::BTreeMap;
 use nautilus_model::{enums::OrderSide, types::Price};
 
 use crate::bolt_v3_numeric::{
-    BPS_DENOMINATOR, CENTS_PER_SHARE, UNIT_F64, ZERO_F64, is_non_negative_finite,
-    is_positive_finite, notional_float_tolerance,
+    BPS_DENOMINATOR, CENTS_PER_SHARE, UNIT_F64, ZERO_F64, is_positive_finite,
+    notional_float_tolerance,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecutableCostBlockReason {
     MissingOrderBook,
     InsufficientDepth,
-    FeeUnavailable,
     InvalidCost,
     UnsupportedOrderShape,
 }
@@ -21,7 +20,6 @@ impl ExecutableCostBlockReason {
         match self {
             Self::MissingOrderBook => "missing_order_book",
             Self::InsufficientDepth => "insufficient_depth",
-            Self::FeeUnavailable => "fee_unavailable",
             Self::InvalidCost => "invalid_cost",
             Self::UnsupportedOrderShape => "unsupported_order_shape",
         }
@@ -70,7 +68,6 @@ pub(crate) struct ExecutableCostBreakdown {
     pub(crate) limit_price: Option<f64>,
     pub(crate) exact_size_filled: bool,
     pub(crate) gross_cost_cents: f64,
-    pub(crate) fee_cost_cents: f64,
     pub(crate) slippage_buffer_cents: f64,
     pub(crate) total_adjusted_cost_cents: f64,
     pub(crate) cost_available: bool,
@@ -85,7 +82,6 @@ impl ExecutableCostBreakdown {
             limit_price: None,
             exact_size_filled: false,
             gross_cost_cents: ZERO_F64,
-            fee_cost_cents: ZERO_F64,
             slippage_buffer_cents: ZERO_F64,
             total_adjusted_cost_cents: ZERO_F64,
             cost_available: false,
@@ -361,17 +357,11 @@ fn consume_exact_notional_level(
 
 pub(crate) fn executable_cost_breakdown(
     vwap: &ExactSizeVwap,
-    fee_bps: f64,
     slippage_buffer_bps: u64,
 ) -> Result<ExecutableCostBreakdown, ExecutableCostBlockReason> {
-    if !is_non_negative_finite(fee_bps) {
-        return Err(ExecutableCostBlockReason::FeeUnavailable);
-    }
-
     let gross_cost_cents = vwap.vwap_price * CENTS_PER_SHARE;
-    let fee_cost_cents = gross_cost_cents * fee_bps / BPS_DENOMINATOR;
     let slippage_buffer_cents = gross_cost_cents * slippage_buffer_bps as f64 / BPS_DENOMINATOR;
-    let total_adjusted_cost_cents = gross_cost_cents + fee_cost_cents + slippage_buffer_cents;
+    let total_adjusted_cost_cents = gross_cost_cents + slippage_buffer_cents;
     if !is_positive_finite(gross_cost_cents) || !is_positive_finite(total_adjusted_cost_cents) {
         return Err(ExecutableCostBlockReason::InvalidCost);
     }
@@ -382,7 +372,6 @@ pub(crate) fn executable_cost_breakdown(
         limit_price: Some(vwap.limit_price),
         exact_size_filled: vwap.exact_size_filled,
         gross_cost_cents,
-        fee_cost_cents,
         slippage_buffer_cents,
         total_adjusted_cost_cents,
         cost_available: true,
@@ -544,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn executable_cost_breakdown_applies_fee_and_slippage_to_vwap_cost() {
+    fn executable_cost_breakdown_applies_slippage_to_gross_vwap_cost() {
         let vwap = super::ExactSizeVwap {
             vwap_price: 0.50,
             vwap_quantity: 10.0,
@@ -553,37 +542,17 @@ mod tests {
             fill_legs: Vec::new(),
         };
 
-        let breakdown =
-            super::executable_cost_breakdown(&vwap, 100.0, 200).expect("cost should be valid");
+        let breakdown = super::executable_cost_breakdown(&vwap, 200).expect("cost should be valid");
 
         assert_eq!(breakdown.vwap_price, Some(0.50));
         assert_eq!(breakdown.vwap_quantity, Some(10.0));
         assert_eq!(breakdown.limit_price, Some(0.50));
         assert!(breakdown.exact_size_filled);
         assert!((breakdown.gross_cost_cents - 50.0).abs() < EPSILON);
-        assert!((breakdown.fee_cost_cents - 0.5).abs() < EPSILON);
         assert!((breakdown.slippage_buffer_cents - 1.0).abs() < EPSILON);
-        assert!((breakdown.total_adjusted_cost_cents - 51.5).abs() < EPSILON);
+        assert!((breakdown.total_adjusted_cost_cents - 51.0).abs() < EPSILON);
         assert!(breakdown.cost_available);
         assert_eq!(breakdown.block_reason, None);
-    }
-
-    #[test]
-    fn executable_cost_breakdown_blocks_invalid_fee_bps() {
-        let vwap = super::ExactSizeVwap {
-            vwap_price: 0.50,
-            vwap_quantity: 10.0,
-            limit_price: 0.50,
-            exact_size_filled: true,
-            fill_legs: Vec::new(),
-        };
-
-        for fee_bps in [f64::NAN, -1.0, f64::INFINITY] {
-            let reason = super::executable_cost_breakdown(&vwap, fee_bps, 0)
-                .expect_err("invalid fee inputs must fail closed");
-
-            assert_eq!(reason, super::ExecutableCostBlockReason::FeeUnavailable);
-        }
     }
 
     #[test]
@@ -592,21 +561,18 @@ mod tests {
         let vwap = super::price_exact_size_vwap(&book.quote(), OrderSide::Buy, 5.0, 2_000)
             .expect("exact notional should fill inside the depth limit");
 
-        let breakdown =
-            super::executable_cost_breakdown(&vwap, 100.0, 100).expect("cost should be valid");
+        let breakdown = super::executable_cost_breakdown(&vwap, 100).expect("cost should be valid");
 
         let expected_vwap_price = 6.0 / 11.0;
         let expected_gross_cost_cents = 600.0 / 11.0;
-        let expected_fee_cost_cents = 6.0 / 11.0;
         let expected_slippage_buffer_cents = 6.0 / 11.0;
-        let expected_total_adjusted_cost_cents = 612.0 / 11.0;
+        let expected_total_adjusted_cost_cents = 606.0 / 11.0;
         assert!(
             breakdown
                 .vwap_price
                 .is_some_and(|value| (value - expected_vwap_price).abs() < EPSILON)
         );
         assert!((breakdown.gross_cost_cents - expected_gross_cost_cents).abs() < EPSILON);
-        assert!((breakdown.fee_cost_cents - expected_fee_cost_cents).abs() < EPSILON);
         assert!((breakdown.slippage_buffer_cents - expected_slippage_buffer_cents).abs() < EPSILON);
         assert!(
             (breakdown.total_adjusted_cost_cents - expected_total_adjusted_cost_cents).abs()

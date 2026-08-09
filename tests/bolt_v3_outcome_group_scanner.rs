@@ -41,7 +41,6 @@ fn scanner_accepts_all_true_complete_set_when_edge_exceeds_threshold() {
     let group = fixture_group();
     let result = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![
             candidate("home-positive", dec!(0.4)),
             candidate("away-positive", dec!(0.4)),
@@ -72,7 +71,6 @@ fn scanner_evaluates_all_false_and_mixed_role_baskets_from_payout_matrix() {
     let group = fixture_group();
     let all_false = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![
             candidate("home-negative", dec!(0.3)),
             candidate("away-negative", dec!(0.3)),
@@ -88,7 +86,6 @@ fn scanner_evaluates_all_false_and_mixed_role_baskets_from_payout_matrix() {
 
     let mixed = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![
             candidate("home-positive", dec!(0.4)),
             candidate("away-negative", dec!(0.3)),
@@ -161,7 +158,6 @@ fn scanner_blocks_insufficient_depth_stale_books_and_missing_timestamps() {
     let group = fixture_group();
     let insufficient = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book(
             "home-positive",
@@ -179,7 +175,6 @@ fn scanner_blocks_insufficient_depth_stale_books_and_missing_timestamps() {
 
     let stale = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book("home-positive", "0.39", "20", "0.40", "20", Some(100))]),
     ));
@@ -190,7 +185,6 @@ fn scanner_blocks_insufficient_depth_stale_books_and_missing_timestamps() {
 
     let future_timestamp = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book(
             "home-positive",
@@ -208,7 +202,6 @@ fn scanner_blocks_insufficient_depth_stale_books_and_missing_timestamps() {
 
     let missing_timestamp = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book("home-positive", "0.39", "20", "0.40", "20", None)]),
     ));
@@ -219,11 +212,10 @@ fn scanner_blocks_insufficient_depth_stale_books_and_missing_timestamps() {
 }
 
 #[test]
-fn scanner_applies_fee_slippage_and_minimum_depth_sizing() {
+fn scanner_applies_slippage_and_minimum_depth_sizing() {
     let group = fixture_group();
     let result = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(100)),
         vec![
             candidate("home-positive", dec!(0.4)),
             candidate("away-positive", dec!(0.4)),
@@ -235,14 +227,13 @@ fn scanner_applies_fee_slippage_and_minimum_depth_sizing() {
     ));
 
     assert!(result.admissible);
-    assert_eq!(result.total_fee_cost.round_dp(6), dec!(0.008));
     assert_eq!(result.total_slippage_buffer.round_dp(6), dec!(0.008));
-    assert_eq!(result.total_adjusted_cost.round_dp(6), dec!(0.816));
+    assert_eq!(result.total_adjusted_cost.round_dp(6), dec!(0.808));
     assert_eq!(result.min_depth_quantity.round_dp(6), dec!(1));
 }
 
 #[test]
-fn scanner_rejects_order_constraints_and_fee_boundaries() {
+fn scanner_rejects_order_constraints() {
     let mut group = fixture_group();
     group
         .tradable_legs
@@ -252,7 +243,6 @@ fn scanner_rejects_order_constraints_and_fee_boundaries() {
         .min_quantity = dec!(2);
     let min_quantity = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book(
             "home-positive",
@@ -277,7 +267,6 @@ fn scanner_rejects_order_constraints_and_fee_boundaries() {
         .quantity_step = dec!(2);
     let quantity_step = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book(
             "home-positive",
@@ -292,24 +281,6 @@ fn scanner_rejects_order_constraints_and_fee_boundaries() {
         quantity_step.block_reason,
         Some(OutcomeGroupScanBlockReason::QuantityStep)
     );
-
-    let missing_fee = scan_outcome_group_candidate(scan_input(
-        &fixture_group(),
-        BTreeMap::new(),
-        vec![candidate("home-positive", dec!(0.4))],
-        books([book(
-            "home-positive",
-            "0.39",
-            "20",
-            "0.40",
-            "20",
-            Some(1_000),
-        )]),
-    ));
-    assert_eq!(
-        missing_fee.block_reason,
-        Some(OutcomeGroupScanBlockReason::FeeUnavailable)
-    );
 }
 
 #[test]
@@ -319,7 +290,6 @@ fn scanner_rejects_non_positive_cost_edge_threshold_and_invalid_price_scale() {
         min_edge_bps: dec!(3_000),
         ..scan_input(
             &group,
-            fees(&group, dec!(0)),
             vec![
                 candidate("home-positive", dec!(0.4)),
                 candidate("away-positive", dec!(0.4)),
@@ -337,7 +307,6 @@ fn scanner_rejects_non_positive_cost_edge_threshold_and_invalid_price_scale() {
 
     let invalid_cost = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0))],
         books([book(
             "home-positive",
@@ -371,7 +340,6 @@ fn scanner_rejects_non_positive_cost_edge_threshold_and_invalid_price_scale() {
     };
     let invalid_scale = scan_outcome_group_candidate(scan_input(
         &invalid_scale,
-        fees(&invalid_scale, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book(
             "home-positive",
@@ -397,7 +365,6 @@ fn scanner_rejects_sell_candidates_before_payout_evaluation() {
     };
     let result = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![sell_candidate],
         books([book(
             "home-positive",
@@ -425,7 +392,6 @@ fn scanner_rejects_incomplete_candidate_baskets_before_payout_evaluation() {
     let group = fixture_group();
     let result = scan_outcome_group_candidate(scan_input(
         &group,
-        fees(&group, dec!(0)),
         vec![candidate("home-positive", dec!(0.4))],
         books([book(
             "home-positive",
@@ -450,7 +416,6 @@ fn scanner_rejects_incomplete_candidate_baskets_before_payout_evaluation() {
 
 fn scan_input<'a>(
     group: &'a OutcomeGroup,
-    fee_bps: BTreeMap<InstrumentId, Decimal>,
     candidate_legs: Vec<OutcomeGroupCandidateLeg>,
     books: BTreeMap<InstrumentId, OutcomeGroupDepthSnapshot>,
 ) -> OutcomeGroupScanInput<'a> {
@@ -458,21 +423,12 @@ fn scan_input<'a>(
         group,
         candidate_legs,
         books,
-        fee_bps,
         now_unix_ms: 1_000,
         max_book_age_ms: 100,
         min_edge_bps: dec!(100),
         vwap_depth_limit_bps: 2_000,
         slippage_buffer_bps: 100,
     }
-}
-
-fn fees(group: &OutcomeGroup, fee_bps: Decimal) -> BTreeMap<InstrumentId, Decimal> {
-    group
-        .tradable_legs
-        .values()
-        .map(|leg| (leg.instrument_id, fee_bps))
-        .collect()
 }
 
 fn candidate(leg_id: &str, target_notional: Decimal) -> OutcomeGroupCandidateLeg {

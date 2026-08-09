@@ -88,7 +88,6 @@ pub(super) enum EntryPricingBlockReason {
     ThetaScalerUnavailable,
     UncertaintyBandUnavailable,
     FairProbabilityUnavailable,
-    FeeUnavailable(OutcomeSide),
     ExecutableEntryCostUnavailable(OutcomeSide),
     ExecutableEdgeUnavailable(OutcomeSide, BinaryOutcomeEdgeBlockReason),
     /// The sized re-evaluation oscillated: the final re-priced edge does not
@@ -179,9 +178,6 @@ pub(super) fn push_executable_edge_pricing_block(
     reason: Option<BinaryOutcomeEdgeBlockReason>,
 ) {
     match reason {
-        Some(BinaryOutcomeEdgeBlockReason::FeeUnavailable) => {
-            reasons.push(EntryPricingBlockReason::FeeUnavailable(side));
-        }
         Some(
             reason @ (BinaryOutcomeEdgeBlockReason::MissingOrderBook
             | BinaryOutcomeEdgeBlockReason::InsufficientDepth
@@ -550,9 +546,6 @@ fn binary_edge_block_reason_to_evidence(
         BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge => {
             EvidenceBinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
         }
-        BinaryOutcomeEdgeBlockReason::FeeUnavailable => {
-            EvidenceBinaryOutcomeEdgeBlockReason::FeeUnavailable
-        }
     }
 }
 
@@ -583,9 +576,6 @@ pub(super) fn entry_pricing_block_reason_to_evidence(
         }
         EntryPricingBlockReason::FairProbabilityUnavailable => {
             EvidenceEntryPricingBlockReason::FairProbabilityUnavailable
-        }
-        EntryPricingBlockReason::FeeUnavailable(side) => {
-            EvidenceEntryPricingBlockReason::FeeUnavailable(outcome_side_to_evidence(*side))
         }
         EntryPricingBlockReason::ExecutableEntryCostUnavailable(side) => {
             EvidenceEntryPricingBlockReason::ExecutableEntryCostUnavailable(

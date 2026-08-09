@@ -225,13 +225,6 @@ impl RecordingFeeProvider {
             .insert(instrument_id.to_string(), fee_bps);
     }
 
-    pub(super) fn set_entry_fee_bps(&self, instrument_id: &str, fee_bps: Decimal) {
-        self.entry_fees
-            .lock()
-            .expect("recording fee provider mutex poisoned")
-            .insert(instrument_id.to_string(), fee_bps);
-    }
-
     pub(super) fn warm_calls(&self) -> Vec<String> {
         self.warm_calls
             .lock()

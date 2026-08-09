@@ -141,7 +141,6 @@ pub struct OutcomeGroupScanInput<'a> {
     pub group: &'a OutcomeGroup,
     pub candidate_legs: Vec<OutcomeGroupCandidateLeg>,
     pub books: BTreeMap<InstrumentId, OutcomeGroupDepthSnapshot>,
-    pub fee_bps: BTreeMap<InstrumentId, Decimal>,
     pub now_unix_ms: u64,
     pub max_book_age_ms: u64,
     pub min_edge_bps: Decimal,
@@ -155,7 +154,6 @@ pub enum OutcomeGroupScanBlockReason {
     MissingBookTimestamp,
     StaleBook,
     InsufficientDepth,
-    FeeUnavailable,
     InvalidCost,
     InvalidPriceScale,
     MinQuantity,
@@ -175,7 +173,6 @@ impl OutcomeGroupScanBlockReason {
             Self::MissingBookTimestamp => "missing_book_timestamp",
             Self::StaleBook => "stale_book",
             Self::InsufficientDepth => "insufficient_depth",
-            Self::FeeUnavailable => "fee_unavailable",
             Self::InvalidCost => "invalid_cost",
             Self::InvalidPriceScale => "invalid_price_scale",
             Self::MinQuantity => "min_quantity",
@@ -198,7 +195,6 @@ pub struct OutcomeGroupLegScanEvidence {
     pub target_notional: Decimal,
     pub executable_quantity: Decimal,
     pub gross_cost: Decimal,
-    pub fee_cost: Decimal,
     pub slippage_buffer: Decimal,
     pub total_adjusted_cost: Decimal,
     pub vwap_price: Decimal,
@@ -214,7 +210,6 @@ pub struct OutcomeGroupScanEvidence {
     pub state_payouts: BTreeMap<String, Decimal>,
     pub guaranteed_payout: Decimal,
     pub total_gross_cost: Decimal,
-    pub total_fee_cost: Decimal,
     pub total_slippage_buffer: Decimal,
     pub total_adjusted_cost: Decimal,
     pub absolute_edge: Decimal,
@@ -299,10 +294,6 @@ fn scan_outcome_group_candidate_inner(
                 Some(value) => value,
                 None => return Err((OutcomeGroupScanBlockReason::InvalidCost, evidence)),
             };
-        evidence.total_fee_cost = match evidence.total_fee_cost.checked_add(priced_leg.fee_cost) {
-            Some(value) => value,
-            None => return Err((OutcomeGroupScanBlockReason::InvalidCost, evidence)),
-        };
         evidence.total_slippage_buffer = match evidence
             .total_slippage_buffer
             .checked_add(priced_leg.slippage_buffer)
@@ -384,18 +375,10 @@ fn price_candidate_leg(
         .tradable_legs
         .get(&candidate.leg_id)
         .ok_or(OutcomeGroupScanBlockReason::UnknownLeg)?;
-    let fee_bps = input
-        .fee_bps
-        .get(&leg.instrument_id)
-        .copied()
-        .and_then(|value| value.to_f64())
-        .filter(|value| is_non_negative_finite(*value))
-        .ok_or(OutcomeGroupScanBlockReason::FeeUnavailable)?;
-    let cost_breakdown = executable_cost_breakdown(&vwap, fee_bps, input.slippage_buffer_bps)
+    let cost_breakdown = executable_cost_breakdown(&vwap, input.slippage_buffer_bps)
         .map_err(scan_reason_from_cost)?;
     let quantity = decimal_from_f64(vwap.vwap_quantity)?;
     let gross_cost = settlement_total_from_cents(cost_breakdown.gross_cost_cents, quantity)?;
-    let fee_cost = settlement_total_from_cents(cost_breakdown.fee_cost_cents, quantity)?;
     let slippage_buffer =
         settlement_total_from_cents(cost_breakdown.slippage_buffer_cents, quantity)?;
     let total_adjusted_cost =
@@ -407,7 +390,6 @@ fn price_candidate_leg(
         target_notional: candidate.target_notional,
         executable_quantity: quantity,
         gross_cost,
-        fee_cost,
         slippage_buffer,
         total_adjusted_cost,
         vwap_price: decimal_from_f64(required_vwap_field(vwap.vwap_price)?)?,
@@ -571,7 +553,6 @@ fn scan_reason_from_cost(reason: ExecutableCostBlockReason) -> OutcomeGroupScanB
         ExecutableCostBlockReason::InsufficientDepth => {
             OutcomeGroupScanBlockReason::InsufficientDepth
         }
-        ExecutableCostBlockReason::FeeUnavailable => OutcomeGroupScanBlockReason::FeeUnavailable,
         ExecutableCostBlockReason::InvalidCost => OutcomeGroupScanBlockReason::InvalidCost,
         ExecutableCostBlockReason::UnsupportedOrderShape => {
             OutcomeGroupScanBlockReason::UnsupportedOrderSide
@@ -588,7 +569,6 @@ impl OutcomeGroupScanEvidence {
             state_payouts: BTreeMap::new(),
             guaranteed_payout: Decimal::ZERO,
             total_gross_cost: Decimal::ZERO,
-            total_fee_cost: Decimal::ZERO,
             total_slippage_buffer: Decimal::ZERO,
             total_adjusted_cost: Decimal::ZERO,
             absolute_edge: Decimal::ZERO,

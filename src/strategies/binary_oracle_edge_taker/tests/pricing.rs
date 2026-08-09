@@ -19,8 +19,6 @@ const TEST_PRICING_SNAPSHOT_FRESH_SIGNAL_PRICE: f64 = TEST_PRICING_SNAPSHOT_NEWE
 const TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE: f64 =
     TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP;
 
-struct PriceSensitiveEntryFeeProvider;
-
 const RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS: u64 = 3_201;
 #[derive(Clone, Copy, Debug)]
 enum RvClockDomainAmendmentSnapshot {
@@ -146,32 +144,6 @@ fn rv_clock_domain_amendment_set_snapshot(
     }
 }
 
-impl FeeProvider for PriceSensitiveEntryFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        Some(Decimal::ZERO)
-    }
-
-    fn entry_fee_bps(&self, _instrument: &InstrumentAny, entry_price: Decimal) -> Option<Decimal> {
-        if entry_price <= Decimal::new(55, 2) {
-            Some(Decimal::from(5_000))
-        } else {
-            Some(Decimal::ZERO)
-        }
-    }
-
-    fn max_entry_fee_bps(
-        &self,
-        _instrument: &InstrumentAny,
-        _entry_price: Decimal,
-    ) -> Option<Decimal> {
-        Some(Decimal::from(5_000))
-    }
-
-    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        async move { Ok(()) }.boxed()
-    }
-}
-
 #[test]
 fn rv_clock_domain_amendment_initial_uncertainty_uses_entry_receive_stamp() {
     for (snapshot_receive_ms, evaluation_receive_ms, expected_available) in
@@ -193,7 +165,7 @@ fn rv_clock_domain_amendment_initial_uncertainty_uses_entry_receive_stamp() {
 }
 
 #[test]
-fn rv_clock_domain_amendment_sized_fee_adjustment_uses_entry_receive_stamp() {
+fn rv_clock_domain_amendment_sized_edge_uses_entry_receive_stamp() {
     let strategy = rv_clock_domain_amendment_ready_entry();
     let evaluation = strategy.entry_evaluation_for_receive_at(
         RV_CLOCK_DOMAIN_AMENDMENT_STALE_WALL_MS,
@@ -210,8 +182,7 @@ fn rv_clock_domain_amendment_sized_fee_adjustment_uses_entry_receive_stamp() {
 }
 
 #[test]
-fn rv_clock_domain_amendment_resized_fee_regate_uses_entry_receive_stamp_before_fixed_point_rejection()
- {
+fn rv_clock_domain_amendment_resized_edge_uses_entry_receive_stamp_before_fixed_point_rejection() {
     fn cliff_strategy() -> BinaryOracleEdgeTaker {
         let mut strategy = rv_clock_domain_amendment_ready_entry();
         strategy.config.order_notional_target = 10.0;
@@ -987,39 +958,6 @@ fn reference_current_price_does_not_open_interval_without_source_bound_price_to_
 }
 
 #[test]
-fn entry_evaluation_uses_price_adjusted_fee_bps_not_cached_base_fee_rate() {
-    let (mut strategy, fee_provider) =
-        ready_to_trade_strategy_with_recording_fees(Decimal::from(1000), Decimal::from(1000));
-    fee_provider.set_entry_fee_bps(
-        "condition-MKT-1-MKT-1-UP.POLYMARKET",
-        Decimal::from_str("511.111111111111").expect("test decimal should parse"),
-    );
-    fee_provider.set_entry_fee_bps(
-        "condition-MKT-1-MKT-1-DOWN.POLYMARKET",
-        Decimal::from_str("182.027027027027").expect("test decimal should parse"),
-    );
-    register_test_strategy_with_active_instruments(&mut strategy);
-
-    let decision = strategy.entry_submission_decision_at(1_200);
-    let fields = strategy.entry_evaluation_log_fields_at(1_200, &decision);
-
-    assert!(
-        fields
-            .up_fee_bps
-            .is_some_and(|value| (value - 511.111111111111).abs() < 1e-9),
-        "up fee bps should use price-adjusted fee: {:?}",
-        fields.up_fee_bps
-    );
-    assert!(
-        fields
-            .down_fee_bps
-            .is_some_and(|value| (value - 182.027027027027).abs() < 1e-9),
-        "down fee bps should use price-adjusted fee: {:?}",
-        fields.down_fee_bps
-    );
-}
-
-#[test]
 fn task4_lead_arbitration_uses_composite_score_over_fixed_precedence() {
     let candidates = vec![
         lead_signal("younger_but_weaker", 10, 10, 0.81, 1.0, 0.01),
@@ -1438,110 +1376,6 @@ fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
     assert_eq!(evaluation.down_worst_case_ev_bps, None);
 }
 
-#[test]
-fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
-    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
-    configure_supported_market_quote_entry_order(&mut strategy);
-    strategy.config.order_notional_target = 10.0;
-    strategy.config.maximum_position_notional = 100.0;
-    strategy.config.risk_lambda = 1.0;
-    // A deliberately high EV reference scales the sized notional below the
-    // 0.50-level depth so the sized probe's limit price drops into the
-    // punitive <= 0.55 fee region and forces the sized re-evaluation block.
-    strategy.config.sizing_ev_reference_bps = 10_000;
-    strategy.config.book_impact_cap_bps = 5_000;
-    strategy.config.vwap_depth_limit_bps = 5_000;
-    strategy.config.edge_threshold_basis_points = i64::default();
-    strategy.config.slippage_buffer_bps = 0;
-    strategy.config.warmup_tick_count = 2;
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
-    strategy.active.price_to_beat = Some(3_100.0);
-    strategy.active.interval_open = Some(3_100.0);
-    strategy.active.warmup_count = 2;
-    strategy.active.last_reference_ts_ms = Some(1_200);
-    strategy.active.fast_venue_incoherent = false;
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_500.0, 1_200)));
-    strategy
-        .pricing
-        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
-    register_test_strategy_with_active_instruments(&mut strategy);
-
-    let up_instrument_id = strategy
-        .instrument_id_for_side(OutcomeSide::Up)
-        .expect("UP instrument should be configured");
-    let down_instrument_id = strategy
-        .instrument_id_for_side(OutcomeSide::Down)
-        .expect("DOWN instrument should be configured");
-    assert!(strategy.active.books.update_from_deltas(&book_deltas(
-        up_instrument_id,
-        &[
-            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Sell, 0.50, 10.0),
-            (BookAction::Add, OrderSide::Sell, 0.70, 100.0),
-        ],
-    )));
-    assert!(strategy.active.books.update_from_deltas(&book_deltas(
-        down_instrument_id,
-        &[
-            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Sell, 0.90, 100.0),
-        ],
-    )));
-
-    let evaluation = strategy.entry_evaluation_at(1_200);
-
-    assert_eq!(
-        evaluation.selected_side, None,
-        "sized re-evaluation must block when the sized limit price has a wider fee band: {evaluation:#?}"
-    );
-    assert!(
-        evaluation
-            .up_executable_edge
-            .is_some_and(|edge| edge.trade_allowed),
-        "preliminary UP edge should remain visible when sized re-evaluation blocks: {evaluation:#?}"
-    );
-    assert_eq!(
-        evaluation
-            .sized_executable_edge
-            .as_ref()
-            .and_then(|edge| edge.block_reason),
-        Some(BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge)
-    );
-    assert_eq!(
-        evaluation.pricing_blocked_by,
-        vec![EntryPricingBlockReason::ExecutableEdgeUnavailable(
-            OutcomeSide::Up,
-            BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
-        )],
-        "sized selected-side threshold failure should surface as a pricing block"
-    );
-    // lead_gap and jitter are 0 and the recomputed sized fee contributes a 0.5
-    // fee-uncertainty term, so the band is 0.5 plus the #789 diffusion-grounded
-    // time term (realized_vol 1.5 * sqrt(T)) at seconds_to_expiry = 300 (snapshot
-    // start 1_000ms, eval 1_200ms => 0 elapsed seconds). The prior inverted term
-    // was exactly 0 at market open, which is why this used to assert band == 0.5.
-    let expected_time_band = crate::bolt_v3_taker_updown_signal::time_uncertainty_probability(
-        1.5,
-        300,
-        crate::bolt_v3_numeric::SECONDS_PER_YEAR_F64,
-    )
-    .expect("finite realized vol yields a time-uncertainty band")
-    .value();
-    let expected_band = 0.5 + expected_time_band;
-    assert!(
-        evaluation
-            .uncertainty_band_probability
-            .is_some_and(|band| (band.value() - expected_band).abs() < 1e-9),
-        "final selected-side band should be the recomputed sized fee plus the diffusion time term: {evaluation:#?}"
-    );
-}
-
 /// PR #623 review reproduction: a cliff-shaped ask book (thin cheap level,
 /// expensive depth behind it) makes the sized re-evaluation oscillate — the
 /// small first-pass size fills entirely at the cheap level, the EV jumps, the
@@ -1783,106 +1617,6 @@ fn sized_acceptance_keeps_first_pass_size_when_repriced_resize_is_within_toleran
             <= notional_float_tolerance(sized_notional),
         "final re-priced EV should support the retained first-pass notional within tolerance: {evaluation:#?}"
     );
-}
-
-#[test]
-fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
-    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
-    configure_supported_market_quote_entry_order(&mut strategy);
-    strategy.config.order_notional_target = 5.0;
-    strategy.config.maximum_position_notional = 5.0;
-    strategy.config.vwap_depth_limit_bps = 2_000;
-    strategy.config.edge_threshold_basis_points = 0;
-    strategy.config.slippage_buffer_bps = 0;
-    strategy.config.warmup_tick_count = 2;
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
-    strategy.active.price_to_beat = Some(3_100.0);
-    strategy.active.interval_open = Some(3_100.0);
-    strategy.active.warmup_count = 2;
-    strategy.active.last_reference_ts_ms = Some(1_200);
-    strategy.active.fast_venue_incoherent = false;
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
-    strategy
-        .pricing
-        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
-    register_test_strategy_with_active_instruments(&mut strategy);
-    set_configured_books_depth(
-        &mut strategy,
-        &[
-            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Sell, 0.50, 5.0),
-            (BookAction::Add, OrderSide::Sell, 0.60, 100.0),
-        ],
-    );
-
-    let evaluation = strategy.entry_evaluation_at(1_200);
-
-    assert_eq!(
-        evaluation
-            .up_executable_edge
-            .as_ref()
-            .map(|edge| edge.cost_breakdown.limit_price),
-        Some(Some(0.60))
-    );
-    assert!(
-        evaluation
-            .up_executable_edge
-            .as_ref()
-            .and_then(|edge| executable_edge_fee_bps(Some(*edge)))
-            .is_some_and(|fee_bps| (fee_bps - 5_000.0).abs() < 1e-9),
-        "fee must be probed at exact-size VWAP price, not the last limit level: {evaluation:#?}"
-    );
-}
-
-#[test]
-fn executable_edge_fee_requires_cached_instrument_in_test_builds() {
-    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
-    configure_supported_market_quote_entry_order(&mut strategy);
-    strategy.config.order_notional_target = 5.0;
-    strategy.config.maximum_position_notional = 5.0;
-    strategy.config.vwap_depth_limit_bps = 2_000;
-    strategy.config.edge_threshold_basis_points = 0;
-    strategy.config.slippage_buffer_bps = 0;
-    strategy.config.warmup_tick_count = 2;
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
-    strategy.active.price_to_beat = Some(3_100.0);
-    strategy.active.interval_open = Some(3_100.0);
-    strategy.active.warmup_count = 2;
-    strategy.active.last_reference_ts_ms = Some(1_200);
-    strategy.active.fast_venue_incoherent = false;
-    strategy
-        .pricing
-        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_120.0, 1_200)));
-    strategy
-        .pricing
-        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
-    strategy.pricing.last_lead_gap_probability = Some(probability(0.0));
-    strategy.pricing.last_jitter_penalty_probability = Some(probability(0.0));
-    set_configured_books_depth(
-        &mut strategy,
-        &[
-            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
-            (BookAction::Add, OrderSide::Sell, 0.50, 100.0),
-        ],
-    );
-
-    let evaluation = strategy.entry_evaluation_at(1_200);
-
-    assert_eq!(
-        evaluation.pricing_blocked_by,
-        vec![
-            EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up),
-            EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Down),
-        ],
-        "test builds must not fall back to FeeProvider::fee_bps when the NT instrument is missing: {evaluation:#?}"
-    );
-    assert_eq!(evaluation.selected_side, None);
 }
 
 #[test]
@@ -2163,14 +1897,14 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     assert!(fields.uncertainty_band_live);
     assert_eq!(
         fields.uncertainty_band_reason,
-        "derived_from_lead_gap_jitter_time_and_fee"
+        "derived_from_lead_gap_jitter_and_time"
     );
     assert!(fields.up_entry_limit_price.is_some());
     assert!(fields.down_entry_limit_price.is_some());
     assert!(fields.up_gross_cost_cents.is_some());
     assert!(fields.down_gross_cost_cents.is_some());
-    assert!(fields.up_fee_cost_cents.is_some());
-    assert!(fields.down_fee_cost_cents.is_some());
+    assert_eq!(fields.up_fee_cost_cents, None);
+    assert_eq!(fields.down_fee_cost_cents, None);
     assert!(fields.up_slippage_buffer_cents.is_some());
     assert!(fields.down_slippage_buffer_cents.is_some());
     assert!(fields.up_total_adjusted_cost_cents.is_some());

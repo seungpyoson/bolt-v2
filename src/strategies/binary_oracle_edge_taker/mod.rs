@@ -249,7 +249,6 @@ use self::subscriptions::{
 struct ExecutableEntryProbe {
     order_side: OrderSide,
     vwap: ExactSizeVwap,
-    fee_bps: f64,
 }
 
 const ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY: OrderLifecycleSource =
@@ -460,16 +459,6 @@ fn executable_edge_cost_component(
     }
     let value = component(&result.cost_breakdown);
     value.is_finite().then_some(value)
-}
-
-fn executable_edge_fee_bps(result: Option<BinaryOutcomeEdgeResult>) -> Option<f64> {
-    let result = result?;
-    let gross_cost_cents = result.cost_breakdown.gross_cost_cents;
-    if !is_positive_finite(gross_cost_cents) {
-        return None;
-    }
-    Some(result.cost_breakdown.fee_cost_cents / gross_cost_cents * BPS_DENOMINATOR)
-        .filter(|value| is_non_negative_finite(*value))
 }
 
 fn executable_edge_worst_case_ev_bps(result: Option<BinaryOutcomeEdgeResult>) -> Option<f64> {
@@ -3193,30 +3182,19 @@ impl BinaryOracleEdgeTaker {
         &self,
         now_ms: u64,
         receive_context: EntryEvaluationReceiveContext,
-        up_fee_bps: f64,
-        down_fee_bps: f64,
     ) -> Option<Probability> {
         let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
         let realized_vol = self.current_realized_vol_for_gate_at(receive_context.receive_ms())?;
-        self.uncertainty_band_probability_for_seconds(
-            seconds_to_expiry,
-            realized_vol,
-            up_fee_bps,
-            down_fee_bps,
-        )
+        self.uncertainty_band_probability_for_seconds(seconds_to_expiry, realized_vol)
     }
 
     fn uncertainty_band_probability_for_seconds(
         &self,
         seconds_to_expiry: u64,
         realized_vol: f64,
-        up_fee_bps: f64,
-        down_fee_bps: f64,
     ) -> Option<Probability> {
         let time_uncertainty_probability =
             time_uncertainty_probability(realized_vol, seconds_to_expiry, SECONDS_PER_YEAR_F64)?;
-        let fee_uncertainty_probability =
-            Probability::clamped(up_fee_bps.max(down_fee_bps) / BPS_DENOMINATOR)?;
         let lead_gap_probability = self.pricing.last_lead_gap_probability?;
         let jitter_penalty_probability = self.pricing.last_jitter_penalty_probability?;
 
@@ -3224,7 +3202,6 @@ impl BinaryOracleEdgeTaker {
             lead_gap_probability,
             jitter_penalty_probability,
             time_uncertainty_probability,
-            fee_uncertainty_probability,
         })
     }
 
@@ -3271,7 +3248,7 @@ impl BinaryOracleEdgeTaker {
                 .map(Probability::value),
             uncertainty_band_live: evaluation.uncertainty_band_probability.is_some(),
             uncertainty_band_reason: if evaluation.uncertainty_band_probability.is_some() {
-                EVIDENCE_REASON_DERIVED_FROM_LEAD_GAP_JITTER_TIME_AND_FEE
+                EVIDENCE_REASON_DERIVED_FROM_LEAD_GAP_JITTER_AND_TIME
             } else {
                 EVIDENCE_REASON_UNCERTAINTY_BAND_UNAVAILABLE
             },
@@ -3281,8 +3258,8 @@ impl BinaryOracleEdgeTaker {
                 .map(Probability::value),
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
-            up_fee_bps: executable_edge_fee_bps(evaluation.up_executable_edge),
-            down_fee_bps: executable_edge_fee_bps(evaluation.down_executable_edge),
+            up_fee_bps: None,
+            down_fee_bps: None,
             up_entry_cost: executable_edge_vwap_price(evaluation.up_executable_edge),
             down_entry_cost: executable_edge_vwap_price(evaluation.down_executable_edge),
             up_entry_limit_price: executable_edge_limit_price(evaluation.up_executable_edge),
@@ -3295,14 +3272,8 @@ impl BinaryOracleEdgeTaker {
                 evaluation.down_executable_edge,
                 |cost| cost.gross_cost_cents,
             ),
-            up_fee_cost_cents: executable_edge_cost_component(
-                evaluation.up_executable_edge,
-                |cost| cost.fee_cost_cents,
-            ),
-            down_fee_cost_cents: executable_edge_cost_component(
-                evaluation.down_executable_edge,
-                |cost| cost.fee_cost_cents,
-            ),
+            up_fee_cost_cents: None,
+            down_fee_cost_cents: None,
             up_slippage_buffer_cents: executable_edge_cost_component(
                 evaluation.up_executable_edge,
                 |cost| cost.slippage_buffer_cents,
@@ -3325,17 +3296,14 @@ impl BinaryOracleEdgeTaker {
             ),
             up_worst_case_ev_bps: evaluation.up_worst_case_ev_bps,
             down_worst_case_ev_bps: evaluation.down_worst_case_ev_bps,
-            sized_fee_bps: executable_edge_fee_bps(evaluation.sized_executable_edge),
+            sized_fee_bps: None,
             sized_entry_cost: executable_edge_vwap_price(evaluation.sized_executable_edge),
             sized_entry_limit_price: executable_edge_limit_price(evaluation.sized_executable_edge),
             sized_gross_cost_cents: executable_edge_cost_component(
                 evaluation.sized_executable_edge,
                 |cost| cost.gross_cost_cents,
             ),
-            sized_fee_cost_cents: executable_edge_cost_component(
-                evaluation.sized_executable_edge,
-                |cost| cost.fee_cost_cents,
-            ),
+            sized_fee_cost_cents: None,
             sized_slippage_buffer_cents: executable_edge_cost_component(
                 evaluation.sized_executable_edge,
                 |cost| cost.slippage_buffer_cents,
@@ -3980,15 +3948,7 @@ impl BinaryOracleEdgeTaker {
             edge_pricing_notional,
             self.config.vwap_depth_limit_bps,
         )?;
-        let fee_bps = self
-            .entry_fee_bps_at_price(side, vwap.vwap_price)
-            .filter(|value| is_non_negative_finite(*value))
-            .ok_or(BinaryOutcomeEdgeBlockReason::FeeUnavailable)?;
-        Ok(ExecutableEntryProbe {
-            order_side,
-            vwap,
-            fee_bps,
-        })
+        Ok(ExecutableEntryProbe { order_side, vwap })
     }
 
     fn executable_edge_for_side(
@@ -4002,14 +3962,11 @@ impl BinaryOracleEdgeTaker {
         if let Some(reason) = self.executable_edge_order_shape_block_reason() {
             return BinaryOutcomeEdgeResult::blocked(side, reason);
         }
-        let cost_breakdown = match executable_cost_breakdown(
-            &probe.vwap,
-            probe.fee_bps,
-            self.config.slippage_buffer_bps,
-        ) {
-            Ok(cost_breakdown) => cost_breakdown,
-            Err(reason) => return BinaryOutcomeEdgeResult::blocked(side, reason.into()),
-        };
+        let cost_breakdown =
+            match executable_cost_breakdown(&probe.vwap, self.config.slippage_buffer_bps) {
+                Ok(cost_breakdown) => cost_breakdown,
+                Err(reason) => return BinaryOutcomeEdgeResult::blocked(side, reason.into()),
+            };
         evaluate_binary_outcome_edge(&BinaryOutcomeEdgeInputs {
             side,
             fair_probability_up: Some(fair_probability_up),
@@ -4020,22 +3977,17 @@ impl BinaryOracleEdgeTaker {
         })
     }
 
-    fn adjusted_probability_up_for_fee_uncertainty(
+    fn adjusted_probability_up_for_uncertainty(
         &self,
         now_ms: u64,
         receive_context: EntryEvaluationReceiveContext,
         side: OutcomeSide,
         fair_probability_up: Probability,
-        fee_uncertainty_bps: f64,
     ) -> Option<(Probability, Probability)> {
         let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
         let realized_vol = self.current_realized_vol_for_gate_at(receive_context.receive_ms())?;
-        let uncertainty_band_probability = self.uncertainty_band_probability_for_seconds(
-            seconds_to_expiry,
-            realized_vol,
-            fee_uncertainty_bps,
-            fee_uncertainty_bps,
-        )?;
+        let uncertainty_band_probability =
+            self.uncertainty_band_probability_for_seconds(seconds_to_expiry, realized_vol)?;
         let adjusted_probability_up = match side {
             OutcomeSide::Up => fair_probability_up.narrowed(uncertainty_band_probability),
             OutcomeSide::Down => fair_probability_up.widened(uncertainty_band_probability),
@@ -4813,14 +4765,7 @@ impl BinaryOracleEdgeTaker {
             .position
             .lifecycle
             .seconds_to_expiry_at(now_ms)?;
-        let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
-        let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
-        self.uncertainty_band_probability_for_seconds(
-            seconds_to_expiry,
-            realized_vol,
-            up_fee_bps,
-            down_fee_bps,
-        )
+        self.uncertainty_band_probability_for_seconds(seconds_to_expiry, realized_vol)
     }
 
     #[cfg(test)]
@@ -6867,40 +6812,29 @@ impl BinaryOracleEdgeTaker {
                 Some(BinaryOutcomeEdgeResult::blocked(OutcomeSide::Down, reason));
         }
 
-        let fee_uncertainty_bps = match (up_probe.as_ref().ok(), down_probe.as_ref().ok()) {
-            (Some(up), Some(down)) => Some(up.fee_bps.max(down.fee_bps)),
-            (Some(up), None) => Some(up.fee_bps),
-            (None, Some(down)) => Some(down.fee_bps),
-            (None, None) => None,
-        };
-        let Some(fee_uncertainty_bps) = fee_uncertainty_bps else {
+        if up_probe.is_err() && down_probe.is_err() {
             push_executable_edge_pricing_block(
                 &mut evaluation.pricing_blocked_by,
                 OutcomeSide::Up,
-                up_probe.err(),
+                up_probe.as_ref().err().copied(),
             );
             push_executable_edge_pricing_block(
                 &mut evaluation.pricing_blocked_by,
                 OutcomeSide::Down,
-                down_probe.err(),
+                down_probe.as_ref().err().copied(),
             );
             return evaluation;
-        };
-        let uncertainty_band_probability = match self
-            .current_uncertainty_band_probability_for_gate_at(
-                now_ms,
-                receive_context,
-                fee_uncertainty_bps,
-                fee_uncertainty_bps,
-            ) {
-            Some(value) => value,
-            None => {
-                evaluation
-                    .pricing_blocked_by
-                    .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
-                return evaluation;
-            }
-        };
+        }
+        let uncertainty_band_probability =
+            match self.current_uncertainty_band_probability_for_gate_at(now_ms, receive_context) {
+                Some(value) => value,
+                None => {
+                    evaluation
+                        .pricing_blocked_by
+                        .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
+                    return evaluation;
+                }
+            };
         evaluation.uncertainty_band_probability = Some(uncertainty_band_probability);
 
         let up_adjusted_probability_up = fair_probability_up.narrowed(uncertainty_band_probability);
@@ -6978,14 +6912,12 @@ impl BinaryOracleEdgeTaker {
                     sized_notional,
                 ) {
                     Ok(probe) => {
-                        let sized_fee_uncertainty_bps = fee_uncertainty_bps.max(probe.fee_bps);
                         let Some((selected_uncertainty_band, adjusted_probability_up)) = self
-                            .adjusted_probability_up_for_fee_uncertainty(
+                            .adjusted_probability_up_for_uncertainty(
                                 now_ms,
                                 receive_context,
                                 selected_side,
                                 fair_probability_up,
-                                sized_fee_uncertainty_bps,
                             )
                         else {
                             evaluation
@@ -7070,15 +7002,12 @@ impl BinaryOracleEdgeTaker {
                                 return evaluation;
                             }
                         };
-                        let resized_fee_uncertainty_bps =
-                            fee_uncertainty_bps.max(resized_probe.fee_bps);
                         let Some((resized_uncertainty_band, resized_adjusted_probability_up)) =
-                            self.adjusted_probability_up_for_fee_uncertainty(
+                            self.adjusted_probability_up_for_uncertainty(
                                 now_ms,
                                 receive_context,
                                 selected_side,
                                 fair_probability_up,
-                                resized_fee_uncertainty_bps,
                             )
                         else {
                             evaluation
@@ -7835,8 +7764,8 @@ const CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE: &str = "forced_exit_order_po
 const ORDER_CONFIGURATION_PREFIX_ENTRY: &str = "entry";
 const ORDER_CONFIGURATION_PREFIX_EXIT: &str = "exit";
 const SELECTION_BLOCK_REASON_TARGET_SELECTION_BLOCKED: &str = "target_selection_blocked";
-const EVIDENCE_REASON_DERIVED_FROM_LEAD_GAP_JITTER_TIME_AND_FEE: &str =
-    "derived_from_lead_gap_jitter_time_and_fee";
+const EVIDENCE_REASON_DERIVED_FROM_LEAD_GAP_JITTER_AND_TIME: &str =
+    "derived_from_lead_gap_jitter_and_time";
 const EVIDENCE_REASON_UNCERTAINTY_BAND_UNAVAILABLE: &str = "uncertainty_band_unavailable";
 const EVIDENCE_REASON_NO_FAST_VENUE_CLEARED_LEAD_QUALITY_THRESHOLDS: &str =
     "no_fast_venue_cleared_lead_quality_thresholds";

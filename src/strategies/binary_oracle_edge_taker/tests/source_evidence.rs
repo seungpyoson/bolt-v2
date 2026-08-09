@@ -2414,9 +2414,8 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
     let mut realized_vol_not_ready = minimal_entry_submission_decision();
     realized_vol_not_ready.evaluation.pricing_blocked_by =
         vec![EntryPricingBlockReason::RealizedVolNotReady];
-    let mut fee_unavailable = minimal_entry_submission_decision();
-    fee_unavailable.evaluation.pricing_blocked_by =
-        vec![EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up)];
+    let mut spot_missing = minimal_entry_submission_decision();
+    spot_missing.evaluation.pricing_blocked_by = vec![EntryPricingBlockReason::SpotPriceMissing];
 
     strategy
         .record_entry_skip_once(
@@ -2426,11 +2425,7 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
         )
         .expect("first pricing-blocked skip should record");
     strategy
-        .record_entry_skip_once(
-            1_201,
-            &fee_unavailable,
-            EntrySkipReason::EntryPricingBlocked,
-        )
+        .record_entry_skip_once(1_201, &spot_missing, EntrySkipReason::EntryPricingBlocked)
         .expect("distinct pricing blocker in same interval should record");
 
     let entry_skips = evidence

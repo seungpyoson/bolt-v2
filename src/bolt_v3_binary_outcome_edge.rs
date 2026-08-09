@@ -234,11 +234,12 @@ mod tests {
         slippage_buffer_bps: u64,
     ) -> ExecutableCostBreakdown {
         bolt_v3_executable_cost::executable_cost_breakdown(
-            ExactSizeVwap {
+            &ExactSizeVwap {
                 vwap_price,
                 vwap_quantity: 10.0,
                 limit_price: vwap_price,
                 exact_size_filled: true,
+                fill_legs: Vec::new(),
             },
             fee_bps,
             slippage_buffer_bps,

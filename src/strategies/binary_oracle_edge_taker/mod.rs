@@ -245,7 +245,7 @@ use self::subscriptions::{
     ResolutionStrikeReportBoundary,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ExecutableEntryProbe {
     order_side: OrderSide,
     vwap: ExactSizeVwap,
@@ -499,6 +499,7 @@ fn executable_submission_vwap_from_evaluation(
             vwap_quantity: result.cost_breakdown.vwap_quantity?,
             limit_price: result.cost_breakdown.limit_price?,
             exact_size_filled: result.cost_breakdown.exact_size_filled,
+            fill_legs: Vec::new(),
         });
     }
     let result = match selected_side {
@@ -521,6 +522,7 @@ fn executable_submission_vwap_from_evaluation(
             .limit_price
             .filter(|value| is_positive_finite(*value))?,
         exact_size_filled: cost.exact_size_filled,
+        fill_legs: Vec::new(),
     })
 }
 
@@ -4001,7 +4003,7 @@ impl BinaryOracleEdgeTaker {
             return BinaryOutcomeEdgeResult::blocked(side, reason);
         }
         let cost_breakdown = match executable_cost_breakdown(
-            probe.vwap,
+            &probe.vwap,
             probe.fee_bps,
             self.config.slippage_buffer_bps,
         ) {

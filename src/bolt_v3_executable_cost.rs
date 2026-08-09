@@ -40,12 +40,19 @@ impl std::fmt::Debug for ExecutableCostBlockReason {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExactSizeVwap {
     pub(crate) vwap_price: f64,
     pub(crate) vwap_quantity: f64,
     pub(crate) limit_price: f64,
     pub(crate) exact_size_filled: bool,
+    pub(crate) fill_legs: Vec<ExecutableFillLeg>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ExecutableFillLeg {
+    pub(crate) price: f64,
+    pub(crate) quantity: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -119,6 +126,7 @@ pub(crate) fn price_exact_size_vwap(
     let mut filled_quantity = ZERO_F64;
     let mut filled_notional = ZERO_F64;
     let mut limit_price = None;
+    let mut fill_legs = Vec::new();
 
     match order_side {
         OrderSide::Buy => {
@@ -128,6 +136,7 @@ pub(crate) fn price_exact_size_vwap(
                     break;
                 }
                 let previous_remaining_notional = remaining_notional;
+                let previous_filled_quantity = filled_quantity;
                 consume_exact_notional_level(
                     price,
                     *size,
@@ -137,6 +146,10 @@ pub(crate) fn price_exact_size_vwap(
                 )?;
                 if remaining_notional < previous_remaining_notional {
                     limit_price = Some(price);
+                    fill_legs.push(ExecutableFillLeg {
+                        price,
+                        quantity: filled_quantity - previous_filled_quantity,
+                    });
                 }
                 if remaining_notional <= ZERO_F64 {
                     break;
@@ -150,6 +163,7 @@ pub(crate) fn price_exact_size_vwap(
                     break;
                 }
                 let previous_remaining_notional = remaining_notional;
+                let previous_filled_quantity = filled_quantity;
                 consume_exact_notional_level(
                     price,
                     *size,
@@ -159,6 +173,10 @@ pub(crate) fn price_exact_size_vwap(
                 )?;
                 if remaining_notional < previous_remaining_notional {
                     limit_price = Some(price);
+                    fill_legs.push(ExecutableFillLeg {
+                        price,
+                        quantity: filled_quantity - previous_filled_quantity,
+                    });
                 }
                 if remaining_notional <= ZERO_F64 {
                     break;
@@ -194,7 +212,126 @@ pub(crate) fn price_exact_size_vwap(
         vwap_quantity: filled_quantity,
         limit_price,
         exact_size_filled: true,
+        fill_legs,
     })
+}
+
+pub(crate) fn price_exact_quantity_vwap(
+    book: &ExecutableBookQuote<'_>,
+    order_side: OrderSide,
+    requested_quantity: f64,
+    vwap_depth_limit_bps: u64,
+) -> Result<ExactSizeVwap, ExecutableCostBlockReason> {
+    if !is_positive_finite(requested_quantity) {
+        return Err(ExecutableCostBlockReason::InvalidCost);
+    }
+    let depth_limit = vwap_depth_limit_bps as f64 / BPS_DENOMINATOR;
+    let (best_touch, is_buy) = match order_side {
+        OrderSide::Buy => (book.best_ask, true),
+        OrderSide::Sell => (book.best_bid, false),
+        _ => return Err(ExecutableCostBlockReason::UnsupportedOrderShape),
+    };
+    let best_touch = best_touch
+        .filter(|value| is_positive_finite(*value))
+        .ok_or(ExecutableCostBlockReason::MissingOrderBook)?;
+    let allowed_limit = if is_buy {
+        best_touch * (UNIT_F64 + depth_limit)
+    } else {
+        best_touch * (UNIT_F64 - depth_limit)
+    };
+    if !is_positive_finite(allowed_limit) {
+        return Err(ExecutableCostBlockReason::InvalidCost);
+    }
+
+    let mut remaining_quantity = requested_quantity;
+    let mut filled_quantity = ZERO_F64;
+    let mut filled_notional = ZERO_F64;
+    let mut fill_legs = Vec::new();
+    match order_side {
+        OrderSide::Buy => {
+            for (price, available_quantity) in book.ask_levels {
+                let price = price.as_f64();
+                if price > allowed_limit {
+                    break;
+                }
+                consume_exact_quantity_level(
+                    price,
+                    *available_quantity,
+                    &mut remaining_quantity,
+                    &mut filled_quantity,
+                    &mut filled_notional,
+                    &mut fill_legs,
+                )?;
+                if remaining_quantity <= ZERO_F64 {
+                    break;
+                }
+            }
+        }
+        OrderSide::Sell => {
+            for (price, available_quantity) in book.bid_levels.iter().rev() {
+                let price = price.as_f64();
+                if price < allowed_limit {
+                    break;
+                }
+                consume_exact_quantity_level(
+                    price,
+                    *available_quantity,
+                    &mut remaining_quantity,
+                    &mut filled_quantity,
+                    &mut filled_notional,
+                    &mut fill_legs,
+                )?;
+                if remaining_quantity <= ZERO_F64 {
+                    break;
+                }
+            }
+        }
+        _ => return Err(ExecutableCostBlockReason::UnsupportedOrderShape),
+    }
+    if remaining_quantity > notional_float_tolerance(requested_quantity)
+        || !is_positive_finite(filled_quantity)
+    {
+        return Err(ExecutableCostBlockReason::InsufficientDepth);
+    }
+    let vwap_price = filled_notional / filled_quantity;
+    let limit_price = fill_legs
+        .last()
+        .map(|leg| leg.price)
+        .filter(|price| is_positive_finite(*price))
+        .ok_or(ExecutableCostBlockReason::InvalidCost)?;
+    if !is_positive_finite(vwap_price) {
+        return Err(ExecutableCostBlockReason::InvalidCost);
+    }
+    Ok(ExactSizeVwap {
+        vwap_price,
+        vwap_quantity: filled_quantity,
+        limit_price,
+        exact_size_filled: true,
+        fill_legs,
+    })
+}
+
+fn consume_exact_quantity_level(
+    price: f64,
+    available_quantity: f64,
+    remaining_quantity: &mut f64,
+    filled_quantity: &mut f64,
+    filled_notional: &mut f64,
+    fill_legs: &mut Vec<ExecutableFillLeg>,
+) -> Result<(), ExecutableCostBlockReason> {
+    if !is_positive_finite(price) || !is_positive_finite(available_quantity) {
+        return Err(ExecutableCostBlockReason::InvalidCost);
+    }
+    let quantity = remaining_quantity.min(available_quantity);
+    let notional = price * quantity;
+    if !is_positive_finite(quantity) || !is_positive_finite(notional) {
+        return Err(ExecutableCostBlockReason::InvalidCost);
+    }
+    *remaining_quantity -= quantity;
+    *filled_quantity += quantity;
+    *filled_notional += notional;
+    fill_legs.push(ExecutableFillLeg { price, quantity });
+    Ok(())
 }
 
 fn consume_exact_notional_level(
@@ -223,7 +360,7 @@ fn consume_exact_notional_level(
 }
 
 pub(crate) fn executable_cost_breakdown(
-    vwap: ExactSizeVwap,
+    vwap: &ExactSizeVwap,
     fee_bps: f64,
     slippage_buffer_bps: u64,
 ) -> Result<ExecutableCostBreakdown, ExecutableCostBlockReason> {
@@ -335,6 +472,14 @@ mod tests {
         assert!((priced.vwap_quantity - expected_vwap_quantity).abs() < EPSILON);
         assert_eq!(priced.limit_price, second_level_price);
         assert!(priced.exact_size_filled);
+        assert_eq!(priced.fill_legs.len(), 2);
+        assert_eq!(priced.fill_legs[0].price, best_level_price);
+        assert_eq!(priced.fill_legs[0].quantity, best_level_quantity);
+        assert_eq!(priced.fill_legs[1].price, second_level_price);
+        assert!(
+            (priced.fill_legs[1].quantity - (second_level_notional / second_level_price)).abs()
+                < EPSILON
+        );
     }
 
     #[test]
@@ -364,16 +509,52 @@ mod tests {
     }
 
     #[test]
+    fn exact_quantity_sell_preserves_every_consumed_bid_level() {
+        let book = priced_book_with_levels(&[(0.60, 5.0), (0.50, 100.0)], &[(0.70, 100.0)]);
+
+        let priced = super::price_exact_quantity_vwap(&book.quote(), OrderSide::Sell, 10.0, 2_000)
+            .expect("exact exit quantity should fill across visible bid levels");
+
+        assert_eq!(priced.limit_price, 0.50);
+        assert_eq!(priced.vwap_quantity, 10.0);
+        assert!((priced.vwap_price - 0.55).abs() < EPSILON);
+        assert_eq!(
+            priced.fill_legs,
+            vec![
+                super::ExecutableFillLeg {
+                    price: 0.60,
+                    quantity: 5.0,
+                },
+                super::ExecutableFillLeg {
+                    price: 0.50,
+                    quantity: 5.0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn exact_quantity_sweep_rejects_incomplete_visible_depth() {
+        let book = priced_book_with_levels(&[(0.60, 5.0)], &[(0.70, 100.0)]);
+
+        let reason = super::price_exact_quantity_vwap(&book.quote(), OrderSide::Sell, 10.0, 2_000)
+            .expect_err("an exit without complete planned levels must fail closed");
+
+        assert_eq!(reason, super::ExecutableCostBlockReason::InsufficientDepth);
+    }
+
+    #[test]
     fn executable_cost_breakdown_applies_fee_and_slippage_to_vwap_cost() {
         let vwap = super::ExactSizeVwap {
             vwap_price: 0.50,
             vwap_quantity: 10.0,
             limit_price: 0.50,
             exact_size_filled: true,
+            fill_legs: Vec::new(),
         };
 
         let breakdown =
-            super::executable_cost_breakdown(vwap, 100.0, 200).expect("cost should be valid");
+            super::executable_cost_breakdown(&vwap, 100.0, 200).expect("cost should be valid");
 
         assert_eq!(breakdown.vwap_price, Some(0.50));
         assert_eq!(breakdown.vwap_quantity, Some(10.0));
@@ -394,10 +575,11 @@ mod tests {
             vwap_quantity: 10.0,
             limit_price: 0.50,
             exact_size_filled: true,
+            fill_legs: Vec::new(),
         };
 
         for fee_bps in [f64::NAN, -1.0, f64::INFINITY] {
-            let reason = super::executable_cost_breakdown(vwap, fee_bps, 0)
+            let reason = super::executable_cost_breakdown(&vwap, fee_bps, 0)
                 .expect_err("invalid fee inputs must fail closed");
 
             assert_eq!(reason, super::ExecutableCostBlockReason::FeeUnavailable);
@@ -411,7 +593,7 @@ mod tests {
             .expect("exact notional should fill inside the depth limit");
 
         let breakdown =
-            super::executable_cost_breakdown(vwap, 100.0, 100).expect("cost should be valid");
+            super::executable_cost_breakdown(&vwap, 100.0, 100).expect("cost should be valid");
 
         let expected_vwap_price = 6.0 / 11.0;
         let expected_gross_cost_cents = 600.0 / 11.0;

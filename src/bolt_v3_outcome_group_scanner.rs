@@ -391,7 +391,7 @@ fn price_candidate_leg(
         .and_then(|value| value.to_f64())
         .filter(|value| is_non_negative_finite(*value))
         .ok_or(OutcomeGroupScanBlockReason::FeeUnavailable)?;
-    let cost_breakdown = executable_cost_breakdown(vwap, fee_bps, input.slippage_buffer_bps)
+    let cost_breakdown = executable_cost_breakdown(&vwap, fee_bps, input.slippage_buffer_bps)
         .map_err(scan_reason_from_cost)?;
     let quantity = decimal_from_f64(vwap.vwap_quantity)?;
     let gross_cost = settlement_total_from_cents(cost_breakdown.gross_cost_cents, quantity)?;

@@ -158,6 +158,7 @@ impl HyperliquidAlignedQuoteSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HyperliquidPerpContextSnapshot {
+    metadata: HyperliquidSnapshotMetadata,
     funding_rate: Decimal,
     oracle_price: Decimal,
 }
@@ -178,7 +179,10 @@ struct HyperliquidPerpContextWire {
 }
 
 impl HyperliquidPerpContextSnapshot {
-    fn from_json(json: &str) -> Result<Self, HyperliquidEconomicsError> {
+    fn from_json(
+        metadata: HyperliquidSnapshotMetadata,
+        json: &str,
+    ) -> Result<Self, HyperliquidEconomicsError> {
         let wire: HyperliquidPerpContextWire = serde_json::from_str(json)
             .map_err(|_| HyperliquidEconomicsError::InvalidProductMetadata)?;
         let funding_rate = product_decimal(&wire.funding)?;
@@ -190,7 +194,8 @@ impl HyperliquidPerpContextSnapshot {
             product_decimal(&wire.mark_px)?,
             product_decimal(&wire.day_base_vlm)?,
         ];
-        if oracle_price <= Decimal::ZERO
+        if !metadata.timeline_is_valid()
+            || oracle_price <= Decimal::ZERO
             || required_non_negative
                 .iter()
                 .any(|value| *value < Decimal::ZERO)
@@ -210,6 +215,7 @@ impl HyperliquidPerpContextSnapshot {
             return Err(HyperliquidEconomicsError::InvalidProductMetadata);
         }
         Ok(Self {
+            metadata,
             funding_rate,
             oracle_price,
         })
@@ -247,6 +253,7 @@ impl HyperliquidProductEconomicsSnapshot {
         deployer_fee_scale: Decimal,
         growth_mode: bool,
         aligned_quote_json: Option<(&HyperliquidSnapshotMetadata, &str)>,
+        context_metadata: HyperliquidSnapshotMetadata,
         context_json: &str,
     ) -> Result<Self, HyperliquidEconomicsError> {
         let alignment = aligned_quote_json
@@ -263,7 +270,10 @@ impl HyperliquidProductEconomicsSnapshot {
                 growth_mode,
             },
             alignment,
-            perp_context: Some(HyperliquidPerpContextSnapshot::from_json(context_json)?),
+            perp_context: Some(HyperliquidPerpContextSnapshot::from_json(
+                context_metadata,
+                context_json,
+            )?),
         };
         snapshot.validate()?;
         Ok(snapshot)
@@ -372,11 +382,7 @@ pub struct HyperliquidEconomicsConfig {
     pub protocol_component_id: EconomicComponentId,
     pub protocol_formula_id: FormulaId,
     pub protocol_rate_factor_id: FormulaId,
-    pub builder_component_id: EconomicComponentId,
-    pub builder_formula_id: FormulaId,
-    pub builder_rate_factor_id: FormulaId,
-    pub builder_attachment_id: RoutingAttachmentId,
-    pub builder_fee_tenths_bps: u32,
+    pub routing: Option<HyperliquidRoutingEconomicsConfig>,
     pub stable_pair_scale: Decimal,
     pub growth_mode_scale: Decimal,
     pub hip3_scale_threshold: Decimal,
@@ -387,6 +393,15 @@ pub struct HyperliquidEconomicsConfig {
     pub edge_basis_product_metadata_source: SourceIdentity,
     pub edge_basis_policy_version: u64,
     pub carry: HyperliquidCarryPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidRoutingEconomicsConfig {
+    pub component_id: EconomicComponentId,
+    pub formula_id: FormulaId,
+    pub rate_factor_id: FormulaId,
+    pub attachment_id: RoutingAttachmentId,
+    pub fee_tenths_bps: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,7 +474,10 @@ impl HyperliquidEconomicsAdapter {
     ) -> Result<Self, HyperliquidEconomicsError> {
         product.validate()?;
         if !user_fees.metadata.timeline_is_valid()
-            || config.builder_fee_tenths_bps == 0
+            || config
+                .routing
+                .as_ref()
+                .is_some_and(|routing| routing.fee_tenths_bps == 0)
             || config.stable_pair_scale < Decimal::ZERO
             || config.growth_mode_scale < Decimal::ZERO
             || config.hip3_scale_threshold <= Decimal::ZERO
@@ -471,10 +489,14 @@ impl HyperliquidEconomicsAdapter {
             || config.carry.funding_schedule_phase_ns >= config.carry.funding_interval_ns
             || config.carry.debit_rate_bound_per_interval <= Decimal::ZERO
             || config.carry.price_stress_multiplier < Decimal::ONE
-            || builder_approval.as_ref().is_some_and(|approval| {
-                !approval.metadata.timeline_is_valid()
-                    || approval.attachment_id != config.builder_attachment_id
-            })
+            || match (config.routing.as_ref(), builder_approval.as_ref()) {
+                (_, None) => false,
+                (Some(routing), Some(approval)) => {
+                    !approval.metadata.timeline_is_valid()
+                        || approval.attachment_id != routing.attachment_id
+                }
+                (None, Some(_)) => true,
+            }
         {
             return Err(HyperliquidEconomicsError::InvalidProductMetadata);
         }
@@ -510,15 +532,23 @@ impl HyperliquidEconomicsAdapter {
             components.push(self.protocol_effect(request, rate)?);
         }
         let mut dependencies = vec![self.product.metadata.validity()];
+        if let Some(context) = &self.product.perp_context {
+            dependencies.push(context.metadata.validity());
+        }
         if let Some(alignment) = &self.product.alignment {
             dependencies.push(alignment.metadata.validity());
         }
         if self.builder_applies(request)? {
+            let routing = self
+                .config
+                .routing
+                .as_ref()
+                .ok_or(HyperliquidEconomicsError::InvalidRequestScope)?;
             let approval = self
                 .builder_approval
                 .as_ref()
                 .ok_or(HyperliquidEconomicsError::MissingBuilderApproval)?;
-            if self.config.builder_fee_tenths_bps > approval.max_fee_tenths_bps {
+            if routing.fee_tenths_bps > approval.max_fee_tenths_bps {
                 return Err(HyperliquidEconomicsError::BuilderApprovalInsufficient);
             }
             dependencies.push(approval.metadata.validity());
@@ -662,7 +692,12 @@ impl HyperliquidEconomicsAdapter {
         let Some(attached) = &request.routing.attached_charge else {
             return Ok(false);
         };
-        if attached != &self.config.builder_attachment_id {
+        let routing = self
+            .config
+            .routing
+            .as_ref()
+            .ok_or(HyperliquidEconomicsError::InvalidRequestScope)?;
+        if attached != &routing.attachment_id {
             return Err(HyperliquidEconomicsError::InvalidRequestScope);
         }
         Ok(!matches!(
@@ -676,9 +711,14 @@ impl HyperliquidEconomicsAdapter {
         request: &EconomicsQuoteRequest,
         approval: &HyperliquidBuilderApprovalSnapshot,
     ) -> Result<EstimatedEffect, HyperliquidEconomicsError> {
+        let routing = self
+            .config
+            .routing
+            .as_ref()
+            .ok_or(HyperliquidEconomicsError::InvalidRequestScope)?;
         let amount = PlannedFillNotional::from_legs(&request.planned_fill_legs)?
             .amount()
-            .checked_mul(Decimal::from(self.config.builder_fee_tenths_bps))
+            .checked_mul(Decimal::from(routing.fee_tenths_bps))
             .and_then(|value| value.checked_div(Decimal::from(TENTHS_OF_BASIS_POINTS_PER_UNIT)))
             .and_then(|value| Decimal::ZERO.checked_sub(value))
             .ok_or(HyperliquidEconomicsError::ArithmeticOverflow)?;
@@ -687,7 +727,7 @@ impl HyperliquidEconomicsAdapter {
             HyperliquidProductKind::Spot { quote_currency, .. } => quote_currency.clone(),
         };
         Ok(EstimatedEffect {
-            component_id: self.config.builder_component_id.clone(),
+            component_id: routing.component_id.clone(),
             class: EconomicClass::Charge,
             kind: EconomicKind::Execution(ExecutionKind::AttachedRoutingCharge),
             scope: decision_scope(request),
@@ -695,10 +735,10 @@ impl HyperliquidEconomicsAdapter {
             debit_risk_bound: None,
             admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
             calculation_factors: vec![CalculationFactor {
-                factor_id: self.config.builder_rate_factor_id.clone(),
-                value: Decimal::from(self.config.builder_fee_tenths_bps),
+                factor_id: routing.rate_factor_id.clone(),
+                value: Decimal::from(routing.fee_tenths_bps),
             }],
-            formula_id: self.config.builder_formula_id.clone(),
+            formula_id: routing.formula_id.clone(),
             source: approval.metadata.validity(),
         })
     }
@@ -813,7 +853,7 @@ impl HyperliquidEconomicsAdapter {
                 },
             ],
             formula_id: policy.formula_id.clone(),
-            source: self.product.metadata.validity(),
+            source: context.metadata.validity(),
         }))
     }
 }
@@ -955,11 +995,13 @@ mod tests {
             protocol_component_id: id("protocol", EconomicComponentId::try_new),
             protocol_formula_id: id("protocol-v1", FormulaId::try_new),
             protocol_rate_factor_id: id("protocol-rate", FormulaId::try_new),
-            builder_component_id: id("builder", EconomicComponentId::try_new),
-            builder_formula_id: id("builder-v1", FormulaId::try_new),
-            builder_rate_factor_id: id("builder-rate", FormulaId::try_new),
-            builder_attachment_id: id("builder-code", RoutingAttachmentId::try_new),
-            builder_fee_tenths_bps: 10,
+            routing: Some(HyperliquidRoutingEconomicsConfig {
+                component_id: id("builder", EconomicComponentId::try_new),
+                formula_id: id("builder-v1", FormulaId::try_new),
+                rate_factor_id: id("builder-rate", FormulaId::try_new),
+                attachment_id: id("builder-code", RoutingAttachmentId::try_new),
+                fee_tenths_bps: 10,
+            }),
             stable_pair_scale: Decimal::new(2, 1),
             growth_mode_scale: Decimal::new(1, 1),
             hip3_scale_threshold: Decimal::ONE,
@@ -1005,6 +1047,7 @@ mod tests {
             Decimal::ZERO,
             false,
             None,
+            metadata("funding-context", "funding-1"),
             include_str!("../../../tests/fixtures/economics/hyperliquid/perp_context.json"),
         )
         .expect("perp fixture should parse")
@@ -1118,6 +1161,7 @@ mod tests {
                     .unwrap()
             )
         );
+        assert_eq!(funding.source.source.as_str(), "funding-context");
         let quote = validate_and_aggregate_quote(&request, estimate, &[])
             .expect("same-currency perp quote should aggregate");
         assert_eq!(quote.core_total(), Decimal::new(-522336, 6));
@@ -1293,6 +1337,42 @@ mod tests {
                 true
             )),
             Err(HyperliquidEconomicsError::MissingBuilderApproval)
+        );
+    }
+
+    #[test]
+    fn routing_forbidden_config_has_no_latent_builder_authority() {
+        let mut config = config();
+        config.routing = None;
+        let adapter = HyperliquidEconomicsAdapter::try_new(
+            config,
+            user_fees(metadata("user-fees", "fees-1")),
+            spot_product(),
+            None,
+        )
+        .expect("unrouted spot adapter should construct without builder authority");
+        assert!(
+            adapter
+                .quote(&request(
+                    "HYPE-hUSD",
+                    "spot",
+                    OrderSide::Sell,
+                    LiquidityRole::Taker,
+                    false,
+                    false,
+                ))
+                .is_ok()
+        );
+        assert_eq!(
+            adapter.quote(&request(
+                "HYPE-hUSD",
+                "spot",
+                OrderSide::Sell,
+                LiquidityRole::Taker,
+                true,
+                false,
+            )),
+            Err(HyperliquidEconomicsError::InvalidRequestScope)
         );
     }
 

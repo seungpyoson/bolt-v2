@@ -9,7 +9,8 @@ mod economics;
 pub use economics::{
     HyperliquidBuilderApprovalSnapshot, HyperliquidCarryPolicy, HyperliquidEconomicsAdapter,
     HyperliquidEconomicsConfig, HyperliquidEconomicsError, HyperliquidProductEconomicsSnapshot,
-    HyperliquidProductKind, HyperliquidSnapshotMetadata, HyperliquidUserFeesSnapshot,
+    HyperliquidProductKind, HyperliquidRoutingEconomicsConfig, HyperliquidSnapshotMetadata,
+    HyperliquidUserFeesSnapshot,
 };
 
 use std::{

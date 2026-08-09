@@ -436,7 +436,12 @@ pub(crate) struct ProviderExecutionEconomicsBinding {
     pub load_config: fn(&toml::Value) -> Result<Option<ExecutionEconomicsConfig>, String>,
     pub build_adapter: for<'a> fn(
         ProviderEconomicsAdapterBuildContext<'a>,
-    ) -> Result<Arc<dyn VenueEconomicsAdapter>, String>,
+    ) -> Result<BuiltProviderEconomicsAdapter, String>,
+}
+
+pub(crate) struct BuiltProviderEconomicsAdapter {
+    pub account_id: String,
+    pub adapter: Arc<dyn VenueEconomicsAdapter>,
 }
 
 pub(crate) struct ProviderEconomicsAdapterBuildContext<'a> {

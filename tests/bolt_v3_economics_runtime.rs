@@ -218,6 +218,7 @@ fn execution_economics_binds_one_matching_toml_authority() {
 
     assert_eq!(bound.execution_client_id(), "polymarket_main");
     assert_eq!(bound.provider_key(), "POLYMARKET");
+    assert_eq!(bound.account_id().as_str(), "POLYMARKET-001");
     assert_eq!(bound.config(), &config);
 }
 
@@ -483,6 +484,7 @@ fn hyperliquid_execution_economics_binds_from_offline_toml_and_raw_authority() {
         .expect("exact Hyperliquid scope should resolve its edge basis");
 
     assert_eq!(bound.provider_key(), "HYPERLIQUID");
+    assert_eq!(bound.account_id().as_str(), "HYPERLIQUID-001");
     assert_eq!(basis.normalized_amount.amount(), Decimal::from(5));
     assert_eq!(
         basis.product_metadata_source.as_str(),

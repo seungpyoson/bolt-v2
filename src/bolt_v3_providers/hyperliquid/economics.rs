@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::{
     bolt_v3_config::{EconomicsRoutingAttachmentPolicy, ExecutionEconomicsConfig},
     bolt_v3_economics_runtime::AuthoritativeVenueEconomicsInput,
-    bolt_v3_providers::ProviderEconomicsAdapterBuildContext,
+    bolt_v3_providers::{BuiltProviderEconomicsAdapter, ProviderEconomicsAdapterBuildContext},
     economics::{
         AccountId, AdmissionTreatment, AssetId, CalculationFactor, CarryKind, CurrencyId,
         EconomicClass, EconomicComponentId, EconomicKind, EconomicScope, EconomicsError,
@@ -409,7 +409,7 @@ pub fn authoritative_economics_input(
 
 pub(crate) fn build_execution_economics_adapter(
     context: ProviderEconomicsAdapterBuildContext<'_>,
-) -> Result<Arc<dyn VenueEconomicsAdapter>, String> {
+) -> Result<BuiltProviderEconomicsAdapter, String> {
     let authority = context
         .authority
         .downcast_ref::<HyperliquidAuthoritativeEconomics>()
@@ -434,7 +434,10 @@ pub(crate) fn build_execution_economics_adapter(
         authority.product.clone(),
         authority.builder_approval.clone(),
     )
-    .map(|adapter| Arc::new(adapter) as Arc<dyn VenueEconomicsAdapter>)
+    .map(|adapter| BuiltProviderEconomicsAdapter {
+        account_id: execution.account_id.to_string(),
+        adapter: Arc::new(adapter),
+    })
     .map_err(|error| error.to_string())
 }
 

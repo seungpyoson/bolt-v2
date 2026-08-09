@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::{
     bolt_v3_config::{EconomicsRoutingAttachmentPolicy, ExecutionEconomicsConfig},
     bolt_v3_economics_runtime::AuthoritativeVenueEconomicsInput,
-    bolt_v3_providers::ProviderEconomicsAdapterBuildContext,
+    bolt_v3_providers::{BuiltProviderEconomicsAdapter, ProviderEconomicsAdapterBuildContext},
     economics::{
         AdmissionTreatment, CalculationFactor, CurrencyId, EconomicClass, EconomicComponentId,
         EconomicKind, EconomicScope, EconomicsError, EconomicsInstrumentId, EconomicsQuoteRequest,
@@ -270,14 +270,22 @@ pub fn authoritative_economics_input(
 
 pub(crate) fn build_execution_economics_adapter(
     context: ProviderEconomicsAdapterBuildContext<'_>,
-) -> Result<Arc<dyn VenueEconomicsAdapter>, String> {
+) -> Result<BuiltProviderEconomicsAdapter, String> {
     let snapshot = context
         .authority
         .downcast_ref::<PolymarketMarketInfoSnapshot>()
         .ok_or_else(|| "Polymarket economics authority has the wrong snapshot type".to_string())?;
+    let execution = context
+        .execution
+        .clone()
+        .try_into::<super::PolymarketExecutionConfig>()
+        .map_err(|error| error.to_string())?;
     let config = adapter_config_from_toml(context.config, context.product_surface_id)?;
     PolymarketEconomicsAdapter::try_new(config, snapshot.clone())
-        .map(|adapter| Arc::new(adapter) as Arc<dyn VenueEconomicsAdapter>)
+        .map(|adapter| BuiltProviderEconomicsAdapter {
+            account_id: execution.account_id.to_string(),
+            adapter: Arc::new(adapter),
+        })
         .map_err(|error| error.to_string())
 }
 

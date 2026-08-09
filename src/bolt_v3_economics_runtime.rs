@@ -13,12 +13,12 @@ use crate::{
     },
     bolt_v3_providers::{ProviderEconomicsAdapterBuildContext, binding_for_provider_key},
     economics::{
-        AdmissionTreatment, CurrencyId, EconomicScope, EconomicsError, EconomicsInstrumentId,
-        EconomicsQuote, EconomicsQuoteRequest, EdgeBasisEvidence, NativeUnitId, NetEdgeQuote,
-        PlannedFillNotional, ReportingPolicyId, SnapshotId, SourceIdentity, SourceValidity,
-        ValuationLeg, ValuationRoute, ValuationRouteId, VenueEconomicsAdapter,
-        VenueEconomicsUnavailable, VenueEdgeBasisEstimate, VenueQuoteEstimate, fold_net_edge,
-        validate_and_aggregate_quote,
+        AccountId, AdmissionTreatment, CurrencyId, EconomicScope, EconomicsError,
+        EconomicsInstrumentId, EconomicsQuote, EconomicsQuoteRequest, EdgeBasisEvidence,
+        NativeUnitId, NetEdgeQuote, PlannedFillNotional, ReportingPolicyId, SnapshotId,
+        SourceIdentity, SourceValidity, ValuationLeg, ValuationRoute, ValuationRouteId,
+        VenueEconomicsAdapter, VenueEconomicsUnavailable, VenueEdgeBasisEstimate,
+        VenueQuoteEstimate, fold_net_edge, validate_and_aggregate_quote,
     },
 };
 
@@ -131,6 +131,7 @@ impl AuthoritativeEconomicsInputStore {
 struct ExecutionVenueEconomicsRouter {
     execution_client_id: String,
     provider_key: String,
+    account_id: AccountId,
     by_scope: BTreeMap<(String, String), BoundEconomicsScope>,
 }
 
@@ -196,6 +197,10 @@ impl BoundExecutionEconomics {
 
     pub fn provider_key(&self) -> &str {
         &self.provider_key
+    }
+
+    pub fn account_id(&self) -> &AccountId {
+        &self.adapter.account_id
     }
 
     pub fn config(&self) -> &ExecutionEconomicsConfig {
@@ -617,8 +622,9 @@ pub fn bind_execution_economics(
             }
         })?;
     let mut by_scope = BTreeMap::new();
+    let mut bound_account_id = None;
     for input in resolved_inputs {
-        let adapter = (economics_binding.build_adapter)(ProviderEconomicsAdapterBuildContext {
+        let built = (economics_binding.build_adapter)(ProviderEconomicsAdapterBuildContext {
             execution,
             config: &config,
             product_surface_id: &input.key.product_surface_id,
@@ -632,7 +638,7 @@ pub fn bind_execution_economics(
                 message,
             }
         })?;
-        if adapter.provider_key() != provider_key {
+        if built.adapter.provider_key() != provider_key {
             return Err(
                 EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
                     execution_client_id: execution_client_id.to_string(),
@@ -640,11 +646,33 @@ pub fn bind_execution_economics(
                     product_surface_id: input.key.product_surface_id.clone(),
                     message: format!(
                         "provider builder returned `{}` instead of `{provider_key}`",
-                        adapter.provider_key()
+                        built.adapter.provider_key()
                     ),
                 },
             );
         }
+        let account_id = AccountId::try_new(built.account_id).map_err(|error| {
+            EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
+                execution_client_id: execution_client_id.to_string(),
+                instrument_id: input.key.instrument_id.clone(),
+                product_surface_id: input.key.product_surface_id.clone(),
+                message: error.to_string(),
+            }
+        })?;
+        if bound_account_id
+            .as_ref()
+            .is_some_and(|bound| bound != &account_id)
+        {
+            return Err(
+                EconomicsRuntimeBindingError::AuthoritativeInputBuildFailed {
+                    execution_client_id: execution_client_id.to_string(),
+                    instrument_id: input.key.instrument_id.clone(),
+                    product_surface_id: input.key.product_surface_id.clone(),
+                    message: "provider builder returned inconsistent accounts".to_string(),
+                },
+            );
+        }
+        bound_account_id = Some(account_id);
         let valuation_routes = build_valuation_routes(&config, &input.valuation_observations)
             .map_err(
                 |message| EconomicsRuntimeBindingError::AuthoritativeValuationBuildFailed {
@@ -660,14 +688,20 @@ pub fn bind_execution_economics(
                 input.key.product_surface_id.clone(),
             ),
             BoundEconomicsScope {
-                adapter,
+                adapter: built.adapter,
                 valuation_routes,
             },
         );
     }
+    let account_id = bound_account_id.ok_or_else(|| {
+        EconomicsRuntimeBindingError::MissingAuthoritativeInput {
+            execution_client_id: execution_client_id.to_string(),
+        }
+    })?;
     let adapter = Arc::new(ExecutionVenueEconomicsRouter {
         execution_client_id: execution_client_id.to_string(),
         provider_key: provider_key.to_string(),
+        account_id,
         by_scope,
     });
     Ok(BoundExecutionEconomics {

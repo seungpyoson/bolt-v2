@@ -60,10 +60,10 @@
 - Consumes: `EconomicsQuoteRequest` neutral contracts from Task 1 and current NT instrument/order/catalog facts.
 - Produces: `economics_request_from_nt_intent` and `economics_request_from_replay_intent` with equivalent neutral semantics.
 
-- [ ] Add behavioral parity tests using the same intent represented by NT and replay fixtures.
-- [ ] Map NT identifiers, side, price, quantity, liquidity role, and observation time into neutral values.
-- [ ] Map replay catalog and manifest facts into the identical request without scalar fee defaults.
-- [ ] Reject missing price, quantity, role, currency, or observation time with typed adapter errors.
+- [x] Add behavioral parity tests using the same intent represented by NT and replay fixtures.
+- [x] Map NT identifiers, side, price, quantity, liquidity role, and observation time into neutral values.
+- [x] Map replay catalog and manifest facts into the identical request without scalar fee defaults.
+- [x] Reject missing price, quantity, role, currency, or observation time with typed adapter errors or unrepresentable typed inputs.
 
 ### Task 3: Venue economics adapters
 

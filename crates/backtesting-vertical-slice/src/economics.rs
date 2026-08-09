@@ -53,6 +53,15 @@ pub fn economics_request_from_replay(
 
 #[cfg(test)]
 mod tests {
+    use bolt_v2::integrations::nautilus::economics::{
+        NautilusEconomicsIntent, economics_request_from_nautilus,
+    };
+    use nautilus_model::{
+        enums::{CurrencyType, LiquiditySide, OrderSide as NautilusOrderSide},
+        identifiers::{InstrumentId, Symbol, Venue},
+        types::{Currency, Price, Quantity},
+    };
+
     use super::*;
 
     #[test]
@@ -75,6 +84,36 @@ mod tests {
         assert_eq!(request.liquidity_role, LiquidityRole::Maker);
         assert_eq!(request.price, Decimal::new(10_025, 2));
         assert_eq!(request.quantity, Decimal::new(30, 1));
+    }
+
+    #[test]
+    fn live_and_replay_facts_produce_the_identical_neutral_request() {
+        let currency = Currency::new_checked("USD", 2, 840, "US Dollar", CurrencyType::Fiat)
+            .expect("currency fixture should be valid");
+        let live = economics_request_from_nautilus(NautilusEconomicsIntent {
+            instrument_id: InstrumentId::new(Symbol::new("BTC-USD"), Venue::new("SIM")),
+            settlement_currency: &currency,
+            side: NautilusOrderSide::Buy,
+            liquidity_side: LiquiditySide::Taker,
+            price: Price::new(100.25, 2),
+            quantity: Quantity::new(3.0, 1),
+            requested_at_ns: 1_000,
+            max_source_age_ns: 100,
+        })
+        .expect("valid live intent should adapt");
+        let replay = economics_request_from_replay(ReplayEconomicsIntent {
+            instrument_id: "BTC-USD.SIM".to_owned(),
+            settlement_currency: "USD".to_owned(),
+            side: ReplayOrderSide::Buy,
+            liquidity_role: ReplayLiquidityRole::Taker,
+            price: Decimal::new(10_025, 2),
+            quantity: Decimal::new(30, 1),
+            requested_at_ns: 1_000,
+            max_source_age_ns: 100,
+        })
+        .expect("valid replay intent should adapt");
+
+        assert_eq!(live, replay);
     }
 
     #[test]

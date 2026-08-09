@@ -4,11 +4,20 @@ mod quote;
 mod types;
 mod valuation;
 
-pub use edge::{FoldedEdge, fold_core_edge};
-pub use health::QuoteHealth;
-pub use quote::{EconomicsQuote, EconomicsQuoteRequest};
-pub use types::{
-    CurrencyId, DebitRiskBound, EconomicsError, EconomicsInstrumentId, EffectDirection,
-    EffectGuarantee, EstimatedEffect, LiquidityRole, OrderSide, SourceIdentity,
+pub use edge::{EdgeBasisAmount, EdgeBasisEvidence, NetEdgeQuote, fold_net_edge};
+pub use health::EconomicsCapabilityHealth;
+pub use quote::{
+    EconomicsQuote, EconomicsQuoteRequest, PlannedFillNotional, VenueQuoteEstimate,
+    validate_and_aggregate_quote,
 };
-pub use valuation::ValuationRate;
+pub use types::{
+    AccountId, ActionId, AdmissionTreatment, AssetId, CalculationFactor, CarryKind, CurrencyId,
+    DecisionCorrelationId, EconomicClass, EconomicComponentId, EconomicKind, EconomicScope,
+    EconomicsError, EconomicsInstrumentId, EdgeBasisPolicyId, EstimatedEffect, ExecutionClientId,
+    ExecutionKind, FormulaId, IncentiveKind, InventoryApplication, LifecyclePath, LiquidityRole,
+    NativeUnitId, OrderSide, PlannedFillLeg, PointEstimate, PositionContext, PositionId,
+    PositionSide, ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority, RoutingAttachmentId,
+    RoutingContext, SignedNativeEffect, SnapshotId, SourceIdentity, SourceValidity,
+    ValuationRouteId,
+};
+pub use valuation::{ValuationEvidence, ValuationLeg, ValuationRoute, value_with_routes};

@@ -1,35 +1,34 @@
+use crate::EconomicsError;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuoteHealth {
-    Healthy,
-    MissingRequiredInput,
-    Stale,
-    Contradictory,
-    Unsupported,
-    Unvalued,
+pub struct EconomicsCapabilityHealth {
+    required_valid_until_ns: u64,
+    forecast_valid_until_ns: Option<u64>,
 }
 
-impl QuoteHealth {
-    pub const fn is_healthy(self) -> bool {
-        matches!(self, Self::Healthy)
-    }
-
-    pub const fn combine(self, other: Self) -> Self {
-        if self.severity() >= other.severity() {
-            self
-        } else {
-            other
+impl EconomicsCapabilityHealth {
+    pub const fn quote_only(
+        required_valid_until_ns: u64,
+        forecast_valid_until_ns: Option<u64>,
+    ) -> Self {
+        Self {
+            required_valid_until_ns,
+            forecast_valid_until_ns,
         }
     }
 
-    const fn severity(self) -> u8 {
-        match self {
-            Self::Healthy => 0,
-            Self::MissingRequiredInput => 1,
-            Self::Stale => 2,
-            Self::Unvalued => 3,
-            Self::Unsupported => 4,
-            Self::Contradictory => 5,
+    pub fn allows_admission(&self, now_ns: u64) -> Result<(), EconomicsError> {
+        if self.required_valid_until_ns < now_ns {
+            return Err(EconomicsError::RequiredCapabilityStale {
+                valid_until_ns: self.required_valid_until_ns,
+            });
         }
+        Ok(())
+    }
+
+    pub fn forecast_available(&self, now_ns: u64) -> bool {
+        self.forecast_valid_until_ns
+            .is_some_and(|valid_until_ns| valid_until_ns >= now_ns)
     }
 }
 
@@ -38,14 +37,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn health_combination_preserves_the_most_conservative_state() {
+    fn stale_required_capability_blocks_while_forecast_health_is_supplemental() {
+        let health = EconomicsCapabilityHealth::quote_only(999, None);
         assert_eq!(
-            QuoteHealth::Healthy.combine(QuoteHealth::Stale),
-            QuoteHealth::Stale
+            health.allows_admission(1_000),
+            Err(EconomicsError::RequiredCapabilityStale {
+                valid_until_ns: 999
+            })
         );
-        assert_eq!(
-            QuoteHealth::Unsupported.combine(QuoteHealth::Contradictory),
-            QuoteHealth::Contradictory
-        );
+        assert!(!health.forecast_available(1_000));
     }
 }

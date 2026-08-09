@@ -1,160 +1,522 @@
+use std::collections::HashSet;
+
 use rust_decimal::Decimal;
 
 use crate::{
-    CurrencyId, DebitRiskBound, EconomicsError, EconomicsInstrumentId, EstimatedEffect,
-    LiquidityRole, OrderSide, QuoteHealth, SourceIdentity, ValuationRate,
+    AccountId, AdmissionTreatment, CurrencyId, DecisionCorrelationId, EconomicClass,
+    EconomicComponentId, EconomicsError, EconomicsInstrumentId, EdgeBasisPolicyId, EstimatedEffect,
+    ExecutionClientId, LifecyclePath, LiquidityRole, OrderSide, PlannedFillLeg, PointEstimate,
+    PositionContext, ProductSurfaceId, ReportingPolicyId, RoutingContext, SourceValidity,
+    ValuationEvidence, ValuationRoute, value_with_routes,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EconomicsQuoteRequest {
+    pub execution_client_id: ExecutionClientId,
+    pub account_id: AccountId,
     pub instrument_id: EconomicsInstrumentId,
-    pub settlement_currency: CurrencyId,
-    pub side: OrderSide,
+    pub product_surface_id: ProductSurfaceId,
+    pub order_side: OrderSide,
     pub liquidity_role: LiquidityRole,
-    pub price: Decimal,
-    pub quantity: Decimal,
+    pub planned_fill_legs: Vec<PlannedFillLeg>,
+    pub routing: RoutingContext,
+    pub position: Option<PositionContext>,
+    pub lifecycle_path: LifecyclePath,
+    pub reporting_policy_id: ReportingPolicyId,
+    pub reporting_currency: CurrencyId,
+    pub edge_basis_policy_id: EdgeBasisPolicyId,
     pub requested_at_ns: u64,
-    pub max_source_age_ns: u64,
+    pub decision_correlation_id: DecisionCorrelationId,
 }
 
 impl EconomicsQuoteRequest {
     pub fn validate(&self) -> Result<(), EconomicsError> {
-        if self.price <= Decimal::ZERO {
-            return Err(EconomicsError::NonPositiveValue { field: "price" });
-        }
-        if self.quantity <= Decimal::ZERO {
-            return Err(EconomicsError::NonPositiveValue { field: "quantity" });
+        PlannedFillNotional::from_legs(&self.planned_fill_legs)?;
+        if let Some(position) = &self.position
+            && (position.quantity <= Decimal::ZERO || position.holding_horizon_ns == 0)
+        {
+            return Err(EconomicsError::MissingHoldingHorizon);
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlannedFillNotional(Decimal);
+
+impl PlannedFillNotional {
+    pub fn from_legs(legs: &[PlannedFillLeg]) -> Result<Self, EconomicsError> {
+        if legs.is_empty() {
+            return Err(EconomicsError::InvalidPlannedFill);
+        }
+        let amount = legs.iter().try_fold(Decimal::ZERO, |total, leg| {
+            if leg.price <= Decimal::ZERO || leg.quantity <= Decimal::ZERO {
+                return None;
+            }
+            total.checked_add(leg.price.checked_mul(leg.quantity)?)
+        });
+        let amount = amount.ok_or(EconomicsError::InvalidPlannedFill)?;
+        if amount <= Decimal::ZERO {
+            return Err(EconomicsError::InvalidPlannedFill);
+        }
+        Ok(Self(amount))
+    }
+
+    pub const fn amount(self) -> Decimal {
+        self.0
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VenueQuoteEstimate {
+    pub authority: SourceValidity,
+    pub dependency_sources: Vec<SourceValidity>,
+    pub components: Vec<EstimatedEffect>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EconomicsQuote {
-    pub source: SourceIdentity,
-    pub observed_at_ns: u64,
-    pub health: QuoteHealth,
-    pub effects: Vec<EstimatedEffect>,
-    pub debit_risk_bounds: Vec<DebitRiskBound>,
-    pub valuations: Vec<ValuationRate>,
+    decision_correlation_id: DecisionCorrelationId,
+    requested_at_ns: u64,
+    edge_basis_policy_id: EdgeBasisPolicyId,
+    components: Vec<EstimatedEffect>,
+    valuations: Vec<ValuationEvidence>,
+    core_total: Decimal,
+    forecast_total: Decimal,
+    forecast_complete: bool,
+    missing_forecast_component_ids: Vec<EconomicComponentId>,
+    reporting_currency: CurrencyId,
+    valid_until_ns: u64,
 }
 
 impl EconomicsQuote {
-    pub fn validate_for(&self, request: &EconomicsQuoteRequest) -> Result<(), EconomicsError> {
-        request.validate()?;
-        if !self.health.is_healthy() {
-            return Err(EconomicsError::QuoteUnavailable {
-                health: self.health,
-            });
-        }
-        validate_source_time(self.observed_at_ns, request)?;
-        for effect in &self.effects {
-            effect.validate()?;
-            validate_source_time(effect.observed_at_ns, request)?;
-        }
-        for bound in &self.debit_risk_bounds {
-            bound.validate()?;
-            validate_source_time(bound.observed_at_ns, request)?;
-        }
-        for valuation in &self.valuations {
-            valuation.validate()?;
-            validate_source_time(valuation.observed_at_ns, request)?;
-        }
-        Ok(())
+    pub fn decision_correlation_id(&self) -> &DecisionCorrelationId {
+        &self.decision_correlation_id
+    }
+
+    pub fn requested_at_ns(&self) -> u64 {
+        self.requested_at_ns
+    }
+
+    pub fn edge_basis_policy_id(&self) -> &EdgeBasisPolicyId {
+        &self.edge_basis_policy_id
+    }
+
+    pub fn components(&self) -> &[EstimatedEffect] {
+        &self.components
+    }
+
+    pub fn valuations(&self) -> &[ValuationEvidence] {
+        &self.valuations
+    }
+
+    pub fn core_total(&self) -> Decimal {
+        self.core_total
+    }
+
+    pub fn forecast_total(&self) -> Decimal {
+        self.forecast_total
+    }
+
+    pub fn forecast_complete(&self) -> bool {
+        self.forecast_complete
+    }
+
+    pub fn missing_forecast_component_ids(&self) -> &[EconomicComponentId] {
+        &self.missing_forecast_component_ids
+    }
+
+    pub fn reporting_currency(&self) -> &CurrencyId {
+        &self.reporting_currency
+    }
+
+    pub fn valid_until_ns(&self) -> u64 {
+        self.valid_until_ns
     }
 }
 
-fn validate_source_time(
-    observed_at_ns: u64,
+pub fn validate_and_aggregate_quote(
     request: &EconomicsQuoteRequest,
+    estimate: VenueQuoteEstimate,
+    routes: &[ValuationRoute],
+) -> Result<EconomicsQuote, EconomicsError> {
+    request.validate()?;
+    validate_required_source(request.requested_at_ns, &estimate.authority)?;
+    for source in &estimate.dependency_sources {
+        validate_required_source(request.requested_at_ns, source)?;
+    }
+
+    let mut component_ids = HashSet::new();
+    let mut components = Vec::with_capacity(estimate.components.len());
+    let mut valuations = Vec::new();
+    let mut core_total = Decimal::ZERO;
+    let mut forecast_total = Decimal::ZERO;
+    let mut forecast_complete = true;
+    let mut missing_forecast_component_ids = Vec::new();
+    let mut valid_until_ns = estimate
+        .dependency_sources
+        .iter()
+        .fold(estimate.authority.valid_until_ns, |deadline, source| {
+            deadline.min(source.valid_until_ns)
+        });
+
+    for component in estimate.components {
+        if !component_ids.insert(component.component_id.clone()) {
+            return Err(EconomicsError::DuplicateComponent {
+                component_id: component.component_id,
+            });
+        }
+        validate_factors(&component)?;
+        validate_component_sign(&component)?;
+
+        let source_is_fresh = validate_component_source(request.requested_at_ns, &component.source);
+        if let Err(error) = source_is_fresh {
+            if component.admission_treatment == AdmissionTreatment::ForecastOnly {
+                forecast_complete = false;
+                missing_forecast_component_ids.push(component.component_id.clone());
+                components.push(component);
+                continue;
+            }
+            return Err(error);
+        }
+
+        let point_valuation = match &component.point_estimate {
+            PointEstimate::NonZero(effect) => match value_with_routes(
+                effect,
+                &request.reporting_currency,
+                routes,
+                request.requested_at_ns,
+            ) {
+                Ok(valuation) => Some(valuation),
+                Err(
+                    EconomicsError::MissingValuation { .. } | EconomicsError::StaleValuation { .. },
+                ) if component.admission_treatment == AdmissionTreatment::ForecastOnly => {
+                    forecast_complete = false;
+                    missing_forecast_component_ids.push(component.component_id.clone());
+                    components.push(component);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            },
+            PointEstimate::ProvenZero { .. } => None,
+        };
+
+        if let Some(point_valuation) = &point_valuation {
+            forecast_total = forecast_total
+                .checked_add(point_valuation.normalized_amount)
+                .ok_or(EconomicsError::ArithmeticOverflow)?;
+            if let Some(deadline) = point_valuation.valid_until_ns {
+                valid_until_ns = valid_until_ns.min(deadline);
+            }
+            valuations.push(point_valuation.clone());
+        }
+
+        match component.admission_treatment {
+            AdmissionTreatment::GuaranteedConditionalOnAction => {
+                let normalized = point_valuation
+                    .as_ref()
+                    .map(|valuation| valuation.normalized_amount)
+                    .unwrap_or(Decimal::ZERO);
+                core_total = core_total
+                    .checked_add(normalized)
+                    .ok_or(EconomicsError::ArithmeticOverflow)?;
+                valid_until_ns = valid_until_ns.min(component.source.valid_until_ns);
+            }
+            AdmissionTreatment::RiskBound { .. } => {
+                let bound = component.debit_risk_bound.as_ref().ok_or_else(|| {
+                    EconomicsError::MissingDebitRiskBound {
+                        component_id: component.component_id.clone(),
+                    }
+                })?;
+                if bound.amount() >= Decimal::ZERO {
+                    return Err(EconomicsError::InvalidDebitRiskBound {
+                        component_id: component.component_id,
+                    });
+                }
+                let bound_valuation = value_with_routes(
+                    bound,
+                    &request.reporting_currency,
+                    routes,
+                    request.requested_at_ns,
+                )?;
+                if bound_valuation.normalized_amount >= Decimal::ZERO {
+                    return Err(EconomicsError::InvalidDebitRiskBound {
+                        component_id: component.component_id,
+                    });
+                }
+                core_total = core_total
+                    .checked_add(bound_valuation.normalized_amount)
+                    .ok_or(EconomicsError::ArithmeticOverflow)?;
+                if let Some(deadline) = bound_valuation.valid_until_ns {
+                    valid_until_ns = valid_until_ns.min(deadline);
+                }
+                valuations.push(bound_valuation);
+                valid_until_ns = valid_until_ns.min(component.source.valid_until_ns);
+            }
+            AdmissionTreatment::ForecastOnly => {}
+        }
+        components.push(component);
+    }
+
+    Ok(EconomicsQuote {
+        decision_correlation_id: request.decision_correlation_id.clone(),
+        requested_at_ns: request.requested_at_ns,
+        edge_basis_policy_id: request.edge_basis_policy_id.clone(),
+        components,
+        valuations,
+        core_total,
+        forecast_total,
+        forecast_complete,
+        missing_forecast_component_ids,
+        reporting_currency: request.reporting_currency.clone(),
+        valid_until_ns,
+    })
+}
+
+fn validate_required_source(
+    requested_at_ns: u64,
+    source: &SourceValidity,
 ) -> Result<(), EconomicsError> {
-    let age = request
-        .requested_at_ns
-        .checked_sub(observed_at_ns)
-        .ok_or(EconomicsError::FutureDatedSource)?;
-    if age > request.max_source_age_ns {
-        return Err(EconomicsError::StaleSource);
+    validate_component_source(requested_at_ns, source)?;
+    if source.valid_until_ns < requested_at_ns {
+        return Err(EconomicsError::StaleSource {
+            source_id: source.source.clone(),
+        });
     }
     Ok(())
+}
+
+fn validate_component_source(
+    requested_at_ns: u64,
+    source: &SourceValidity,
+) -> Result<(), EconomicsError> {
+    if source.source_at_ns > source.fetched_at_ns
+        || source.fetched_at_ns > requested_at_ns
+        || source.fetched_at_ns > source.valid_until_ns
+    {
+        return Err(EconomicsError::InvalidSourceTimeline {
+            source_id: source.source.clone(),
+        });
+    }
+    if source.valid_until_ns < requested_at_ns {
+        return Err(EconomicsError::StaleSource {
+            source_id: source.source.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_factors(component: &EstimatedEffect) -> Result<(), EconomicsError> {
+    let mut factor_ids = HashSet::new();
+    if let Some(duplicate) = component
+        .calculation_factors
+        .iter()
+        .find(|factor| !factor_ids.insert(factor.factor_id.clone()))
+    {
+        return Err(EconomicsError::DuplicateCalculationFactor {
+            factor_id: duplicate.factor_id.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_component_sign(component: &EstimatedEffect) -> Result<(), EconomicsError> {
+    match &component.point_estimate {
+        PointEstimate::NonZero(effect)
+            if !matches!(
+                (component.class, effect.amount().is_sign_negative()),
+                (EconomicClass::Charge, true) | (EconomicClass::Credit, false)
+            ) =>
+        {
+            Err(EconomicsError::EconomicClassSignMismatch {
+                component_id: component.component_id.clone(),
+            })
+        }
+        PointEstimate::ProvenZero { factor_id }
+            if !matches!(
+                component.admission_treatment,
+                AdmissionTreatment::RiskBound { .. }
+            ) || component.class != EconomicClass::Charge
+                || !component
+                    .calculation_factors
+                    .iter()
+                    .any(|factor| factor.factor_id == *factor_id && factor.value.is_zero()) =>
+        {
+            Err(EconomicsError::EconomicClassSignMismatch {
+                component_id: component.component_id.clone(),
+            })
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EffectDirection, EffectGuarantee, SourceIdentity};
+    use crate::{
+        EconomicKind, EconomicScope, ExecutionKind, FormulaId, PointEstimate, SignedNativeEffect,
+        SnapshotId, SourceIdentity,
+    };
+
+    fn id<T>(value: &str, constructor: impl FnOnce(String) -> Result<T, EconomicsError>) -> T {
+        constructor(value.to_owned()).expect("fixture identifier should be canonical")
+    }
 
     fn request() -> EconomicsQuoteRequest {
         EconomicsQuoteRequest {
-            instrument_id: EconomicsInstrumentId::try_new("instrument")
-                .expect("instrument fixture should be canonical"),
-            settlement_currency: CurrencyId::try_new("USD")
-                .expect("currency fixture should be canonical"),
-            side: OrderSide::Buy,
+            execution_client_id: id("execution", ExecutionClientId::try_new),
+            account_id: id("account", AccountId::try_new),
+            instrument_id: id("instrument", EconomicsInstrumentId::try_new),
+            product_surface_id: id("surface", ProductSurfaceId::try_new),
+            order_side: OrderSide::Buy,
             liquidity_role: LiquidityRole::Taker,
-            price: Decimal::ONE,
-            quantity: Decimal::ONE,
+            planned_fill_legs: vec![PlannedFillLeg {
+                price: Decimal::new(5, 1),
+                quantity: Decimal::new(10, 0),
+            }],
+            routing: RoutingContext {
+                attached_charge: None,
+            },
+            position: None,
+            lifecycle_path: LifecyclePath::PlannedExit,
+            reporting_policy_id: id("reporting", ReportingPolicyId::try_new),
+            reporting_currency: id("USD", CurrencyId::try_new),
+            edge_basis_policy_id: id("basis", EdgeBasisPolicyId::try_new),
             requested_at_ns: 1_000,
-            max_source_age_ns: 100,
+            decision_correlation_id: id("decision", DecisionCorrelationId::try_new),
         }
     }
 
-    fn effect(observed_at_ns: u64) -> EstimatedEffect {
+    fn source(valid_until_ns: u64) -> SourceValidity {
+        SourceValidity {
+            source: id("schedule", SourceIdentity::try_new),
+            snapshot_id: id("schedule-1", SnapshotId::try_new),
+            source_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns,
+        }
+    }
+
+    fn component(
+        component_id: &str,
+        amount: Decimal,
+        treatment: AdmissionTreatment,
+    ) -> EstimatedEffect {
+        let class = if amount.is_sign_negative() {
+            EconomicClass::Charge
+        } else {
+            EconomicClass::Credit
+        };
         EstimatedEffect {
-            currency: CurrencyId::try_new("USD").expect("currency fixture should be canonical"),
-            amount: Decimal::ONE,
-            direction: EffectDirection::Debit,
-            guarantee: EffectGuarantee::Guaranteed,
-            source: SourceIdentity::try_new("schedule")
-                .expect("source fixture should be canonical"),
-            observed_at_ns,
+            component_id: id(component_id, EconomicComponentId::try_new),
+            class,
+            kind: EconomicKind::Execution(ExecutionKind::ProtocolTrading),
+            scope: EconomicScope::Decision {
+                decision_correlation_id: id("decision", DecisionCorrelationId::try_new),
+            },
+            point_estimate: PointEstimate::NonZero(
+                SignedNativeEffect::currency(amount, id("USD", CurrencyId::try_new))
+                    .expect("non-zero effect should construct"),
+            ),
+            debit_risk_bound: None,
+            admission_treatment: treatment,
+            calculation_factors: Vec::new(),
+            formula_id: id("formula", FormulaId::try_new),
+            source: source(1_100),
         }
     }
 
     #[test]
-    fn quote_rejects_unhealthy_future_and_stale_required_economics() {
-        let unhealthy = EconomicsQuote {
-            source: SourceIdentity::try_new("schedule")
-                .expect("source fixture should be canonical"),
-            observed_at_ns: 1_000,
-            health: QuoteHealth::Unsupported,
-            effects: vec![effect(1_000)],
-            debit_risk_bounds: Vec::new(),
-            valuations: Vec::new(),
+    fn aggregate_uses_guaranteed_effects_and_bounds_but_not_forecast_credits() {
+        let mut bounded = component(
+            "funding",
+            Decimal::new(2, 0),
+            AdmissionTreatment::RiskBound {
+                authority: crate::RiskBoundAuthority::VenueRateCapWithPriceStress,
+            },
+        );
+        bounded.debit_risk_bound = Some(
+            SignedNativeEffect::currency(Decimal::new(-3, 0), id("USD", CurrencyId::try_new))
+                .expect("negative bound should construct"),
+        );
+        let quote = validate_and_aggregate_quote(
+            &request(),
+            VenueQuoteEstimate {
+                authority: source(1_100),
+                dependency_sources: Vec::new(),
+                components: vec![
+                    component(
+                        "fee",
+                        Decimal::new(-2, 0),
+                        AdmissionTreatment::GuaranteedConditionalOnAction,
+                    ),
+                    bounded,
+                    component(
+                        "reward",
+                        Decimal::new(50, 0),
+                        AdmissionTreatment::ForecastOnly,
+                    ),
+                ],
+            },
+            &[],
+        )
+        .expect("complete quote should aggregate");
+
+        assert_eq!(quote.core_total(), Decimal::new(-5, 0));
+        assert_eq!(quote.forecast_total(), Decimal::new(50, 0));
+    }
+
+    #[test]
+    fn missing_required_valuation_and_stale_authority_fail_closed() {
+        let foreign = EstimatedEffect {
+            point_estimate: PointEstimate::NonZero(
+                SignedNativeEffect::currency(Decimal::new(-2, 0), id("TOKEN", CurrencyId::try_new))
+                    .expect("non-zero effect should construct"),
+            ),
+            ..component(
+                "fee",
+                Decimal::new(-2, 0),
+                AdmissionTreatment::GuaranteedConditionalOnAction,
+            )
         };
         assert!(matches!(
-            unhealthy.validate_for(&request()),
-            Err(EconomicsError::QuoteUnavailable { .. })
+            validate_and_aggregate_quote(
+                &request(),
+                VenueQuoteEstimate {
+                    authority: source(1_100),
+                    dependency_sources: Vec::new(),
+                    components: vec![foreign],
+                },
+                &[],
+            ),
+            Err(EconomicsError::MissingValuation { .. })
         ));
-
-        for (observed_at_ns, expected) in [
-            (1_001, EconomicsError::FutureDatedSource),
-            (899, EconomicsError::StaleSource),
-        ] {
-            let quote = EconomicsQuote {
-                source: SourceIdentity::try_new("schedule")
-                    .expect("source fixture should be canonical"),
-                observed_at_ns,
-                health: QuoteHealth::Healthy,
-                effects: vec![effect(observed_at_ns)],
-                debit_risk_bounds: Vec::new(),
-                valuations: Vec::new(),
-            };
-            assert_eq!(quote.validate_for(&request()), Err(expected));
-        }
+        assert!(matches!(
+            validate_and_aggregate_quote(
+                &request(),
+                VenueQuoteEstimate {
+                    authority: source(999),
+                    dependency_sources: Vec::new(),
+                    components: Vec::new(),
+                },
+                &[],
+            ),
+            Err(EconomicsError::StaleSource { .. })
+        ));
     }
 
     #[test]
-    fn healthy_fee_free_quote_is_valid_when_its_authority_is_fresh() {
-        let quote = EconomicsQuote {
-            source: SourceIdentity::try_new("fee-free-schedule")
-                .expect("source fixture should be canonical"),
-            observed_at_ns: 1_000,
-            health: QuoteHealth::Healthy,
-            effects: Vec::new(),
-            debit_risk_bounds: Vec::new(),
-            valuations: Vec::new(),
-        };
-
-        assert_eq!(quote.validate_for(&request()), Ok(()));
+    fn position_requires_positive_quantity_and_horizon() {
+        let mut request = request();
+        request.position = Some(PositionContext {
+            position_id: id("position", crate::PositionId::try_new),
+            side: crate::PositionSide::Long,
+            quantity: Decimal::ONE,
+            holding_horizon_ns: 0,
+        });
+        assert_eq!(
+            request.validate(),
+            Err(EconomicsError::MissingHoldingHorizon)
+        );
     }
 }

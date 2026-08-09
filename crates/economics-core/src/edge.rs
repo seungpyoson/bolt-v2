@@ -1,216 +1,163 @@
 use rust_decimal::Decimal;
 
 use crate::{
-    CurrencyId, EconomicsError, EconomicsQuote, EconomicsQuoteRequest, EffectDirection,
-    EffectGuarantee, ValuationRate,
+    EconomicScope, EconomicsError, EconomicsQuote, EdgeBasisPolicyId, FormulaId, SnapshotId,
+    SourceIdentity,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FoldedEdge {
-    pub gross_edge: Decimal,
-    pub authorization_effect: Decimal,
-    pub net_authorization_edge: Decimal,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EdgeBasisAmount(Decimal);
 
-pub fn fold_core_edge(
-    gross_edge: Decimal,
-    request: &EconomicsQuoteRequest,
-    quote: &EconomicsQuote,
-) -> Result<FoldedEdge, EconomicsError> {
-    quote.validate_for(request)?;
-    let mut authorization_effect = Decimal::ZERO;
-    for effect in &quote.effects {
-        if effect.guarantee == EffectGuarantee::Forecast {
-            continue;
+impl EdgeBasisAmount {
+    pub fn try_new(amount: Decimal) -> Result<Self, EconomicsError> {
+        if amount <= Decimal::ZERO {
+            return Err(EconomicsError::NonPositiveValue {
+                field: "edge_basis_amount",
+            });
         }
-        let amount = value_in(
-            effect.amount,
-            &effect.currency,
-            &request.settlement_currency,
-            &quote.valuations,
-        )?;
-        authorization_effect = match effect.direction {
-            EffectDirection::Debit => authorization_effect
-                .checked_sub(amount)
-                .ok_or(EconomicsError::ArithmeticOverflow)?,
-            EffectDirection::Credit => authorization_effect
-                .checked_add(amount)
-                .ok_or(EconomicsError::ArithmeticOverflow)?,
-        };
+        Ok(Self(amount))
     }
-    for bound in &quote.debit_risk_bounds {
-        let amount = value_in(
-            bound.amount,
-            &bound.currency,
-            &request.settlement_currency,
-            &quote.valuations,
-        )?;
-        authorization_effect = authorization_effect
-            .checked_sub(amount)
-            .ok_or(EconomicsError::ArithmeticOverflow)?;
+
+    pub const fn amount(self) -> Decimal {
+        self.0
     }
-    let net_authorization_edge = gross_edge
-        .checked_add(authorization_effect)
-        .ok_or(EconomicsError::ArithmeticOverflow)?;
-    Ok(FoldedEdge {
-        gross_edge,
-        authorization_effect,
-        net_authorization_edge,
-    })
 }
 
-fn value_in(
-    amount: Decimal,
-    from: &CurrencyId,
-    to: &CurrencyId,
-    valuations: &[ValuationRate],
-) -> Result<Decimal, EconomicsError> {
-    if from == to {
-        return Ok(amount);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeBasisEvidence {
+    pub policy_id: EdgeBasisPolicyId,
+    pub resolver_id: FormulaId,
+    pub product_metadata_source: SourceIdentity,
+    pub policy_version: u64,
+    pub normalized_amount: EdgeBasisAmount,
+    pub scope: EconomicScope,
+    pub source_snapshot_ids: Vec<SnapshotId>,
+    pub valid_until_ns: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetEdgeQuote {
+    pub gross_expected_value: Decimal,
+    pub core_net_edge: Decimal,
+    pub forecast_net_edge: Decimal,
+    pub core_edge_ratio: Decimal,
+    pub forecast_edge_ratio: Decimal,
+    pub basis: EdgeBasisEvidence,
+}
+
+pub fn fold_net_edge(
+    gross_expected_value: Decimal,
+    quote: &EconomicsQuote,
+    basis: EdgeBasisEvidence,
+) -> Result<NetEdgeQuote, EconomicsError> {
+    if basis.policy_id != *quote.edge_basis_policy_id() {
+        return Err(EconomicsError::EdgeBasisPolicyMismatch);
     }
-    let mut matching = valuations
-        .iter()
-        .filter(|valuation| &valuation.from == from && &valuation.to == to);
-    let rate = matching
-        .next()
-        .ok_or_else(|| EconomicsError::MissingValuation {
-            from: from.clone(),
-            to: to.clone(),
-        })?;
-    if matching.next().is_some() {
-        return Err(EconomicsError::ContradictoryValuation {
-            from: from.clone(),
-            to: to.clone(),
-        });
+    if basis.valid_until_ns < quote.requested_at_ns() {
+        return Err(EconomicsError::StaleEdgeBasis);
     }
-    amount
-        .checked_mul(rate.to_units_per_from_unit)
-        .ok_or(EconomicsError::ArithmeticOverflow)
+    let core_net_edge = gross_expected_value
+        .checked_add(quote.core_total())
+        .ok_or(EconomicsError::ArithmeticOverflow)?;
+    let forecast_net_edge = gross_expected_value
+        .checked_add(quote.forecast_total())
+        .ok_or(EconomicsError::ArithmeticOverflow)?;
+    let core_edge_ratio = core_net_edge
+        .checked_div(basis.normalized_amount.amount())
+        .ok_or(EconomicsError::ArithmeticOverflow)?;
+    let forecast_edge_ratio = forecast_net_edge
+        .checked_div(basis.normalized_amount.amount())
+        .ok_or(EconomicsError::ArithmeticOverflow)?;
+    Ok(NetEdgeQuote {
+        gross_expected_value,
+        core_net_edge,
+        forecast_net_edge,
+        core_edge_ratio,
+        forecast_edge_ratio,
+        basis,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        DebitRiskBound, EconomicsInstrumentId, EstimatedEffect, LiquidityRole, OrderSide,
-        QuoteHealth, SourceIdentity,
+        AccountId, DecisionCorrelationId, EconomicsInstrumentId, EconomicsQuoteRequest,
+        ExecutionClientId, LifecyclePath, LiquidityRole, OrderSide, PlannedFillLeg,
+        ProductSurfaceId, ReportingPolicyId, RoutingContext, SourceValidity, VenueQuoteEstimate,
+        validate_and_aggregate_quote,
     };
 
-    fn currency(value: &str) -> CurrencyId {
-        CurrencyId::try_new(value).expect("currency fixture should be canonical")
+    fn id<T>(value: &str, constructor: impl FnOnce(String) -> Result<T, EconomicsError>) -> T {
+        constructor(value.to_owned()).expect("fixture identifier should be canonical")
     }
 
-    fn source() -> SourceIdentity {
-        SourceIdentity::try_new("schedule").expect("source fixture should be canonical")
-    }
-
-    fn request() -> EconomicsQuoteRequest {
-        EconomicsQuoteRequest {
-            instrument_id: EconomicsInstrumentId::try_new("instrument")
-                .expect("instrument fixture should be canonical"),
-            settlement_currency: currency("USD"),
-            side: OrderSide::Buy,
+    #[test]
+    fn fold_uses_evidence_backed_basis_and_rejects_policy_mismatch() {
+        let policy_id = id("basis", EdgeBasisPolicyId::try_new);
+        let request = EconomicsQuoteRequest {
+            execution_client_id: id("execution", ExecutionClientId::try_new),
+            account_id: id("account", AccountId::try_new),
+            instrument_id: id("instrument", EconomicsInstrumentId::try_new),
+            product_surface_id: id("surface", ProductSurfaceId::try_new),
+            order_side: OrderSide::Buy,
             liquidity_role: LiquidityRole::Taker,
-            price: Decimal::ONE,
-            quantity: Decimal::ONE,
-            requested_at_ns: 1_000,
-            max_source_age_ns: 100,
-        }
-    }
-
-    #[test]
-    fn fold_subtracts_debits_and_bounds_but_ignores_forecast_credits() {
-        let quote = EconomicsQuote {
-            source: source(),
-            observed_at_ns: 1_000,
-            health: QuoteHealth::Healthy,
-            effects: vec![
-                EstimatedEffect {
-                    currency: currency("USD"),
-                    amount: Decimal::new(2, 0),
-                    direction: EffectDirection::Debit,
-                    guarantee: EffectGuarantee::Guaranteed,
-                    source: source(),
-                    observed_at_ns: 1_000,
-                },
-                EstimatedEffect {
-                    currency: currency("USD"),
-                    amount: Decimal::new(50, 0),
-                    direction: EffectDirection::Credit,
-                    guarantee: EffectGuarantee::Forecast,
-                    source: source(),
-                    observed_at_ns: 1_000,
-                },
-            ],
-            debit_risk_bounds: vec![DebitRiskBound {
-                currency: currency("USD"),
-                amount: Decimal::ONE,
-                source: source(),
-                observed_at_ns: 1_000,
+            planned_fill_legs: vec![PlannedFillLeg {
+                price: Decimal::ONE,
+                quantity: Decimal::ONE,
             }],
-            valuations: Vec::new(),
+            routing: RoutingContext {
+                attached_charge: None,
+            },
+            position: None,
+            lifecycle_path: LifecyclePath::PlannedExit,
+            reporting_policy_id: id("reporting", ReportingPolicyId::try_new),
+            reporting_currency: id("USD", crate::CurrencyId::try_new),
+            edge_basis_policy_id: policy_id.clone(),
+            requested_at_ns: 1_000,
+            decision_correlation_id: id("decision", DecisionCorrelationId::try_new),
         };
+        let quote = validate_and_aggregate_quote(
+            &request,
+            VenueQuoteEstimate {
+                authority: SourceValidity {
+                    source: id("schedule", SourceIdentity::try_new),
+                    snapshot_id: id("schedule-1", SnapshotId::try_new),
+                    source_at_ns: 900,
+                    fetched_at_ns: 950,
+                    valid_until_ns: 1_100,
+                },
+                dependency_sources: Vec::new(),
+                components: Vec::new(),
+            },
+            &[],
+        )
+        .expect("empty fee-free quote should aggregate");
+        let basis = EdgeBasisEvidence {
+            policy_id,
+            resolver_id: id("resolver", FormulaId::try_new),
+            product_metadata_source: id("product", SourceIdentity::try_new),
+            policy_version: 1,
+            normalized_amount: EdgeBasisAmount::try_new(Decimal::new(100, 0))
+                .expect("positive basis should construct"),
+            scope: EconomicScope::Decision {
+                decision_correlation_id: id("decision", DecisionCorrelationId::try_new),
+            },
+            source_snapshot_ids: vec![id("product-1", SnapshotId::try_new)],
+            valid_until_ns: 1_100,
+        };
+        let edge = fold_net_edge(Decimal::new(5, 0), &quote, basis.clone())
+            .expect("matching basis should fold");
+        assert_eq!(edge.core_net_edge, Decimal::new(5, 0));
+        assert_eq!(edge.core_edge_ratio, Decimal::new(5, 2));
 
+        let mismatched = EdgeBasisEvidence {
+            policy_id: id("other", EdgeBasisPolicyId::try_new),
+            ..basis
+        };
         assert_eq!(
-            fold_core_edge(Decimal::new(10, 0), &request(), &quote),
-            Ok(FoldedEdge {
-                gross_edge: Decimal::new(10, 0),
-                authorization_effect: Decimal::new(-3, 0),
-                net_authorization_edge: Decimal::new(7, 0),
-            })
+            fold_net_edge(Decimal::ONE, &quote, mismatched),
+            Err(EconomicsError::EdgeBasisPolicyMismatch)
         );
-    }
-
-    #[test]
-    fn fold_requires_exactly_one_valuation_for_foreign_native_units() {
-        let effect = EstimatedEffect {
-            currency: currency("TOKEN"),
-            amount: Decimal::new(2, 0),
-            direction: EffectDirection::Debit,
-            guarantee: EffectGuarantee::Guaranteed,
-            source: source(),
-            observed_at_ns: 1_000,
-        };
-        let quote = EconomicsQuote {
-            source: source(),
-            observed_at_ns: 1_000,
-            health: QuoteHealth::Healthy,
-            effects: vec![effect],
-            debit_risk_bounds: Vec::new(),
-            valuations: Vec::new(),
-        };
-        assert!(matches!(
-            fold_core_edge(Decimal::new(10, 0), &request(), &quote),
-            Err(EconomicsError::MissingValuation { .. })
-        ));
-
-        let rate = ValuationRate {
-            from: currency("TOKEN"),
-            to: currency("USD"),
-            to_units_per_from_unit: Decimal::new(2, 0),
-            source: source(),
-            observed_at_ns: 1_000,
-        };
-        let valued = EconomicsQuote {
-            valuations: vec![rate.clone()],
-            ..quote.clone()
-        };
-        assert_eq!(
-            fold_core_edge(Decimal::new(10, 0), &request(), &valued),
-            Ok(FoldedEdge {
-                gross_edge: Decimal::new(10, 0),
-                authorization_effect: Decimal::new(-4, 0),
-                net_authorization_edge: Decimal::new(6, 0),
-            })
-        );
-
-        let contradictory = EconomicsQuote {
-            valuations: vec![rate.clone(), rate],
-            ..quote
-        };
-        assert!(matches!(
-            fold_core_edge(Decimal::new(10, 0), &request(), &contradictory),
-            Err(EconomicsError::ContradictoryValuation { .. })
-        ));
     }
 }

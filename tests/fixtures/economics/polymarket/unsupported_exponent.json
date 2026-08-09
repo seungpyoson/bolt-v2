@@ -1,0 +1,22 @@
+{
+  "gst": null,
+  "r": {},
+  "t": [
+    { "t": "token-yes", "o": "Yes" },
+    { "t": "token-no", "o": "No" }
+  ],
+  "c": "condition",
+  "mos": 5,
+  "mts": 0.01,
+  "mbf": 0,
+  "tbf": 0,
+  "rfqe": true,
+  "itode": true,
+  "ibce": true,
+  "fd": { "r": 0.02, "e": 2, "to": true },
+  "oas": 0,
+  "ao": true,
+  "nr": false,
+  "cbos": false,
+  "aot": "2026-08-09T00:00:00Z"
+}

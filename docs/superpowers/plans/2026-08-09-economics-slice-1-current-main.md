@@ -80,8 +80,8 @@
 - Consumes: `EconomicsQuoteRequest` and authoritative venue schedule snapshots.
 - Produces: one `VenueEconomicsAdapter` implementation per venue returning `EconomicsQuote`.
 
-- [ ] Add Polymarket fixtures for fee-free schedules, maker/taker applicability, per-level rounding, unsupported exponents, routing charges, missing source, and stale source.
-- [ ] Implement Polymarket estimates without treating NautilusTrader projection as authority.
+- [x] Add Polymarket fixtures for fee-free schedules, maker/taker applicability, per-level rounding, unsupported exponents, routing charges, missing source, and stale source.
+- [x] Implement Polymarket estimates without treating NautilusTrader projection as authority.
 - [ ] Add Hyperliquid fixtures for spot/perp maker/taker schedules, discounts, negative maker rates, side-dependent units, builder approval, carry bounds, aligned products, missing source, and schema divergence.
 - [ ] Implement Hyperliquid estimates and block unrecognized `alignedQuoteTokenInfo` shapes.
 - [ ] Prove both adapters use neutral identifiers and values at their public boundary.

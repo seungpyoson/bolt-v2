@@ -26,12 +26,17 @@
 
 mod adapter_signing_source;
 mod balance_allowance_cache;
+mod economics;
 mod fee_behavior_source;
 mod fees;
 mod provider_collateral_allowance_runtime_source;
 
 pub use adapter_signing_source::materialize_clob_v2_adapter_signing_source_from_nt_signing_source;
 pub use balance_allowance_cache::sync_clob_v2_balance_allowance_cache_from_configured_account;
+pub use economics::{
+    FeeRoundingMode, PolymarketEconomicsAdapter, PolymarketEconomicsConfig,
+    PolymarketEconomicsError, PolymarketMarketInfoSnapshot, PolymarketSnapshotMetadata,
+};
 pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
 pub use provider_collateral_allowance_runtime_source::{
     PolymarketProviderCollateralAllowanceBuildError, PolymarketProviderCollateralAllowanceInput,

@@ -22,8 +22,9 @@ use bolt_v2::{
     bolt_v3_maker_rate_budget::build_requote_budget_pair,
     bolt_v3_maker_risk::{MakerLossRiskPolicy, MakerRiskBlockReason, MakerRiskMode},
     bolt_v3_maker_runtime_quote::{
-        MakerRuntimeOrderPlanInput, MakerRuntimeQuoteInput, MakerRuntimeQuoteSetInput,
-        MakerRuntimeReferenceFairValueBlockReason, plan_maker_runtime_quote,
+        MakerRuntimeOrderPlanInput, MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteInput,
+        MakerRuntimeQuoteSetInput, MakerRuntimeReferenceFairValueBlockReason,
+        plan_maker_runtime_quote,
     },
     bolt_v3_market_families::{
         FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget,
@@ -516,7 +517,66 @@ fn maker_run_quote_cycle_rejects_a_family_mismatch_before_minting_identities() {
 }
 
 #[test]
-fn maker_runtime_quote_rejects_timestamps_outside_the_active_window_before_mutation() {
+fn maker_run_quote_cycle_waits_for_a_preloaded_next_window_without_mutation() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let (mut maker, _cache) =
+        maker_with_active_next_updown_market(writer.recorder(), admission.clone());
+    let runtime_market = maker
+        .runtime()
+        .market(MARKET_KEY)
+        .expect("the next updown window is preloaded as an active runtime market");
+    assert!(
+        runtime_market.start_timestamp_milliseconds() > RUNTIME_NOW_MS,
+        "the selected market must genuinely be a future window"
+    );
+    assert!(
+        runtime_market.expiration_timestamp_milliseconds()
+            > runtime_market.start_timestamp_milliseconds(),
+        "the future fixture must have a valid half-open quote window"
+    );
+
+    let mut market = MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("ample requote budget fixture builds");
+    let submit_template = maker_limit_post_only_template();
+    let result = maker.run_quote_cycle(
+        MARKET_KEY,
+        &mut market,
+        &mut budget,
+        BinaryOracleMakerQuoteCycleInput {
+            quote_plan: quote_plan_inputs(updown::KEY),
+            quote_set: quote_set_inputs(),
+            submit_template: &submit_template,
+            price_precision: 2,
+            quantity_precision: 2,
+            submit_order_prefix: "maker_submit",
+            max_fee_bps: Decimal::ZERO,
+        },
+    );
+
+    assert!(
+        matches!(result, Ok(None)),
+        "a legitimately preloaded future market is active but not yet quotable: {result:?}"
+    );
+    let runtime_market = maker
+        .runtime()
+        .market(MARKET_KEY)
+        .expect("waiting must keep the preloaded market active");
+    for leg in [Leg::Yes, Leg::No] {
+        assert_eq!(runtime_market.leg_binding(leg).active_order, None);
+        assert_eq!(runtime_market.leg_binding(leg).next_order, None);
+    }
+    assert_eq!(market.market_state(), MarketState::Idle);
+    assert_eq!(budget.submit_commands_in_window(), 0);
+    assert_eq!(budget.rest_cost_in_window(), 0);
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert!(writer.records().is_empty());
+    assert!(writer.requote_throttles().is_empty());
+}
+
+#[test]
+fn maker_runtime_quote_blocks_timestamps_outside_the_active_window_before_mutation() {
     for at_or_after_end in [false, true] {
         let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
         let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
@@ -546,25 +606,34 @@ fn maker_runtime_quote_rejects_timestamps_outside_the_active_window_before_mutat
         let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
             .expect("ample requote budget fixture builds");
 
-        let result = maker.route_maker_runtime_quote(
-            MARKET_KEY,
-            &mut market,
-            &mut budget,
-            BinaryOracleMakerRuntimeQuoteRouteInput {
-                quote_plan: quote_plan_inputs(static_binary_event::KEY),
-                quote_set,
-                submit_template: &maker_limit_post_only_template(),
-                price_precision: 2,
-                quantity_precision: 2,
-                submit_order_prefix: "maker_submit",
-                max_fee_bps: Decimal::ZERO,
-            },
-        );
+        let outcome = maker
+            .route_maker_runtime_quote(
+                MARKET_KEY,
+                &mut market,
+                &mut budget,
+                BinaryOracleMakerRuntimeQuoteRouteInput {
+                    quote_plan: quote_plan_inputs(static_binary_event::KEY),
+                    quote_set,
+                    submit_template: &maker_limit_post_only_template(),
+                    price_precision: 2,
+                    quantity_precision: 2,
+                    submit_order_prefix: "maker_submit",
+                    max_fee_bps: Decimal::ZERO,
+                },
+            )
+            .expect("an unavailable runtime window is a normal blocked quote state");
 
         assert!(
-            result.is_err(),
-            "a stale cadence timestamp must fail closed"
+            outcome.quote.quote_plan.is_none(),
+            "an unavailable window must stop before quote planning"
         );
+        assert!(outcome.quote.quote_set.is_none());
+        assert!(outcome.quote.order_plan.is_none());
+        assert_eq!(
+            outcome.quote.blocked_by,
+            Some(MakerRuntimeQuoteBlockReason::RuntimeWindowUnavailable)
+        );
+        assert!(outcome.orders.is_none());
         let runtime_market = maker
             .runtime()
             .market(MARKET_KEY)
@@ -583,7 +652,7 @@ fn maker_runtime_quote_rejects_timestamps_outside_the_active_window_before_mutat
 }
 
 #[test]
-fn maker_run_quote_cycle_rejects_timestamps_outside_the_active_window_before_mutation() {
+fn maker_run_quote_cycle_waits_for_timestamps_outside_the_active_window_before_mutation() {
     for at_or_after_end in [false, true] {
         let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
         let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
@@ -630,8 +699,8 @@ fn maker_run_quote_cycle_rejects_timestamps_outside_the_active_window_before_mut
         );
 
         assert!(
-            result.is_err(),
-            "a stale cadence timestamp must fail closed"
+            matches!(result, Ok(None)),
+            "an unavailable cadence window must wait without routing: {result:?}"
         );
         let runtime_market = maker
             .runtime()
@@ -923,25 +992,34 @@ fn maker_runtime_reference_quote_rejects_a_strike_from_another_market_asset_or_w
 }
 
 #[test]
-fn maker_runtime_reference_quote_does_not_price_a_foreign_same_family_window() {
+fn maker_runtime_reference_quote_blocks_an_unavailable_window_without_touching_the_selector() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
-    let (mut maker, _cache) = maker_with_active_updown_market(writer.recorder(), admission);
-    let interval_start_ms = maker
+    let (mut maker, _cache) = maker_with_active_updown_market(writer.recorder(), admission.clone());
+    record_one_budget_block_for_family(&mut maker, MARKET_KEY, updown::KEY);
+    let records_before_wait = writer.records().len();
+    let throttles_before_wait = writer.requote_throttles().len();
+    let admissions_before_wait = admission.admitted_order_count();
+    assert_eq!(throttles_before_wait, 1, "the test must seed one episode");
+    let runtime_market = maker
         .runtime()
         .market(MARKET_KEY)
-        .expect("the updown runtime market is active")
-        .start_timestamp_milliseconds();
-    let quotes = [reference_quote(
-        TEST_REFERENCE_ASSET,
-        "primary",
-        100.05,
-        1_490,
-    )];
-    let realized_volatility_snapshot = ready_realized_vol_snapshot(1_400, 1.5);
+        .expect("the updown runtime market is active");
+    let interval_start_ms = runtime_market.start_timestamp_milliseconds();
+    let interval_end_ms = runtime_market.expiration_timestamp_milliseconds();
+    let quotes = [
+        reference_quote(
+            TEST_REFERENCE_ASSET,
+            "primary",
+            100.05,
+            interval_end_ms - 10,
+        ),
+        reference_quote(TEST_REFERENCE_ASSET, "backup", 101.05, interval_end_ms - 10),
+    ];
+    let realized_volatility_snapshot = ready_realized_vol_snapshot(interval_end_ms - 100, 1.5);
     let mut selector = ReferencePriceSelector::new(
         TEST_REFERENCE_ASSET,
-        vec!["primary".to_string()],
+        vec!["primary".to_string(), "backup".to_string()],
         1,
         100,
         25,
@@ -951,46 +1029,76 @@ fn maker_runtime_reference_quote_does_not_price_a_foreign_same_family_window() {
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("ample requote budget fixture builds");
     let mut quote_set = quote_set_inputs();
-    quote_set.now_ms = 1_500;
+    quote_set.now_ms = interval_end_ms;
+    assert_eq!(selector.last_cross_source_drift_bps(), None);
 
-    let result = maker.route_maker_runtime_reference_quote(
-        MARKET_KEY,
-        &mut market,
-        &mut budget,
-        &mut selector,
-        BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-            reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
-                reference_quotes: &quotes,
-                strike: Some(bound_strike(
-                    MARKET_KEY,
-                    RUNTIME_UPDOWN_ASSET,
-                    interval_start_ms,
-                    100.0,
-                )),
-                realized_volatility_snapshot: &realized_volatility_snapshot,
-                realized_volatility_max_source_age_ms: None,
-                pricing_kurtosis: 0.25,
-                evaluation_receive_ms: LocalReceiveMs::new(1_500),
+    let outcome = maker
+        .route_maker_runtime_reference_quote(
+            MARKET_KEY,
+            &mut market,
+            &mut budget,
+            &mut selector,
+            BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+                reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
+                    reference_quotes: &quotes,
+                    strike: Some(bound_strike(
+                        MARKET_KEY,
+                        RUNTIME_UPDOWN_ASSET,
+                        interval_start_ms,
+                        100.0,
+                    )),
+                    realized_volatility_snapshot: &realized_volatility_snapshot,
+                    realized_volatility_max_source_age_ms: None,
+                    pricing_kurtosis: 0.25,
+                    evaluation_receive_ms: LocalReceiveMs::new(interval_end_ms),
+                },
+                quote_plan: quote_plan_inputs(updown::KEY),
+                quote_set,
+                submit_template: &maker_limit_post_only_template(),
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+                max_fee_bps: Decimal::ZERO,
             },
-            quote_plan: quote_plan_inputs(updown::KEY),
-            quote_set,
-            submit_template: &maker_limit_post_only_template(),
-            price_precision: 2,
-            quantity_precision: 2,
-            submit_order_prefix: "maker_submit",
-            max_fee_bps: Decimal::ZERO,
-        },
-    );
+        )
+        .expect("an unavailable runtime window is a normal blocked reference state");
 
     assert!(
-        result.is_err(),
-        "an evaluation timestamp outside the active runtime window must fail before fair-value pricing"
+        outcome.fair_value.fair_value.is_none(),
+        "an unavailable window must stop before fair-value pricing"
+    );
+    assert_eq!(
+        outcome.fair_value.blocked_by,
+        Some(MakerRuntimeReferenceFairValueBlockReason::RuntimeWindowUnavailable)
+    );
+    assert!(outcome.quote.is_none());
+    assert!(outcome.orders.is_none());
+    assert_eq!(
+        outcome.blocked_by,
+        Some(
+            BinaryOracleMakerRuntimeReferenceQuoteBlockReason::FairValue(
+                MakerRuntimeReferenceFairValueBlockReason::RuntimeWindowUnavailable,
+            )
+        )
+    );
+    assert_eq!(
+        selector.last_cross_source_drift_bps(),
+        None,
+        "the two live quotes would set drift if the selector were evaluated"
     );
     assert_eq!(market.market_state(), MarketState::Idle);
     assert_eq!(budget.submit_commands_in_window(), 0);
     assert_eq!(budget.rest_cost_in_window(), 0);
-    assert!(writer.records().is_empty());
-    assert!(writer.requote_throttles().is_empty());
+    assert_eq!(writer.records().len(), records_before_wait);
+    assert_eq!(writer.requote_throttles().len(), throttles_before_wait);
+    assert_eq!(admission.admitted_order_count(), admissions_before_wait);
+
+    record_one_budget_block_for_family(&mut maker, MARKET_KEY, updown::KEY);
+    assert_eq!(
+        writer.requote_throttles().len(),
+        throttles_before_wait,
+        "waiting must preserve the existing episode rather than clear and re-emit it"
+    );
 }
 
 /// A blocked leg whose *observation* alternates while its blocked state does not
@@ -2372,6 +2480,31 @@ fn runtime_binary_option_for_static_market_with_identity(
     question_id: &str,
     activation_milliseconds: u64,
 ) -> InstrumentAny {
+    runtime_binary_option_for_static_market_with_identity_and_expiration(
+        instrument_id,
+        raw_symbol,
+        outcome,
+        market_slug,
+        condition_id,
+        market_id,
+        question_id,
+        activation_milliseconds,
+        RUNTIME_NOW_MS + 30_000,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runtime_binary_option_for_static_market_with_identity_and_expiration(
+    instrument_id: &str,
+    raw_symbol: &str,
+    outcome: &str,
+    market_slug: &str,
+    condition_id: &str,
+    market_id: &str,
+    question_id: &str,
+    activation_milliseconds: u64,
+    expiration_milliseconds: u64,
+) -> InstrumentAny {
     let mut info = Params::new();
     for (key, value) in [
         ("market_slug", market_slug),
@@ -2393,7 +2526,7 @@ fn runtime_binary_option_for_static_market_with_identity(
         AssetClass::Alternative,
         Currency::USDC(),
         (activation_milliseconds.saturating_mul(1_000_000)).into(),
-        ((RUNTIME_NOW_MS + 30_000).saturating_mul(1_000_000)).into(),
+        (expiration_milliseconds.saturating_mul(1_000_000)).into(),
         3,
         2,
         Price::from("0.001"),
@@ -2451,6 +2584,14 @@ fn runtime_static_instruments_with_question_id(question_id: &str) -> Vec<Instrum
 }
 
 fn runtime_updown_instruments() -> Vec<InstrumentAny> {
+    runtime_updown_instruments_for(MarketSelectionOutcome::Current)
+}
+
+fn runtime_next_updown_instruments() -> Vec<InstrumentAny> {
+    runtime_updown_instruments_for(MarketSelectionOutcome::Next)
+}
+
+fn runtime_updown_instruments_for(selection_outcome: MarketSelectionOutcome) -> Vec<InstrumentAny> {
     let declaration = runtime_updown_declaration();
     let cadence_seconds =
         i64::try_from(declaration.cadence_seconds).expect("test cadence fits i64");
@@ -2463,29 +2604,49 @@ fn runtime_updown_instruments() -> Vec<InstrumentAny> {
         static_yes_outcome: None,
         static_no_outcome: None,
     };
-    let current = market_selection_candidate_windows_from_target(target, RUNTIME_NOW_MS)
+    let window = market_selection_candidate_windows_from_target(target, RUNTIME_NOW_MS)
         .expect("updown candidate windows compute")
         .into_iter()
-        .find(|window| window.outcome == MarketSelectionOutcome::Current)
-        .expect("updown fixture has a current window");
-    let market_id = format!("market-{}", current.market_slug);
-    let condition_id = format!("condition-{}", current.market_slug);
+        .find(|window| window.outcome == selection_outcome)
+        .expect("updown fixture has the requested window");
+    let market_id = format!("market-{}", window.market_slug);
+    let condition_id = format!("condition-{}", window.market_slug);
+    let question_id = format!("question-{}", window.market_slug);
+    let expiration_milliseconds = match selection_outcome {
+        MarketSelectionOutcome::Current => RUNTIME_NOW_MS + 30_000,
+        MarketSelectionOutcome::Next => window
+            .start_timestamp_milliseconds
+            .checked_add(RUNTIME_UPDOWN_CADENCE_SECONDS * 1_000)
+            .expect("fixture expiration fits u64"),
+    };
     vec![
-        runtime_binary_option_for_static_market(
+        runtime_binary_option_for_static_market_with_identity_and_expiration(
             RUNTIME_UP_INSTRUMENT,
+            RUNTIME_UP_INSTRUMENT
+                .split('.')
+                .next()
+                .expect("fixture instrument has a raw symbol"),
             "Up",
-            current.market_slug.as_str(),
+            window.market_slug.as_str(),
             condition_id.as_str(),
             market_id.as_str(),
-            current.start_timestamp_milliseconds,
+            question_id.as_str(),
+            window.start_timestamp_milliseconds,
+            expiration_milliseconds,
         ),
-        runtime_binary_option_for_static_market(
+        runtime_binary_option_for_static_market_with_identity_and_expiration(
             RUNTIME_DOWN_INSTRUMENT,
+            RUNTIME_DOWN_INSTRUMENT
+                .split('.')
+                .next()
+                .expect("fixture instrument has a raw symbol"),
             "Down",
-            current.market_slug.as_str(),
+            window.market_slug.as_str(),
             condition_id.as_str(),
             market_id.as_str(),
-            current.start_timestamp_milliseconds,
+            question_id.as_str(),
+            window.start_timestamp_milliseconds,
+            expiration_milliseconds,
         ),
     ]
 }
@@ -2808,6 +2969,18 @@ fn maker_with_active_updown_market(
     )
 }
 
+fn maker_with_active_next_updown_market(
+    writer: Arc<DecisionEvidenceRecorder>,
+    admission: Arc<BoltV3SubmitAdmissionState>,
+) -> (BinaryOracleMaker, Rc<RefCell<Cache>>) {
+    maker_with_active_markets(
+        writer,
+        admission,
+        vec![runtime_updown_declaration()],
+        runtime_next_updown_instruments(),
+    )
+}
+
 fn maker_with_active_markets(
     writer: Arc<DecisionEvidenceRecorder>,
     admission: Arc<BoltV3SubmitAdmissionState>,
@@ -2851,6 +3024,14 @@ fn refresh_maker_instruments(
 }
 
 fn record_one_budget_block(maker: &mut BinaryOracleMaker, market_key: &str) {
+    record_one_budget_block_for_family(maker, market_key, RUNTIME_STATIC_FAMILY);
+}
+
+fn record_one_budget_block_for_family(
+    maker: &mut BinaryOracleMaker,
+    market_key: &str,
+    family_key: &str,
+) {
     let mut market = MarketQuote::new(false);
     let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
         .expect("one-submit budget fixture builds");
@@ -2861,7 +3042,7 @@ fn record_one_budget_block(maker: &mut BinaryOracleMaker, market_key: &str) {
             &mut market,
             &mut budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
-                quote_plan: quote_plan_inputs(RUNTIME_STATIC_FAMILY),
+                quote_plan: quote_plan_inputs(family_key),
                 quote_set: quote_set_inputs(),
                 submit_template: &submit_template,
                 price_precision: 2,

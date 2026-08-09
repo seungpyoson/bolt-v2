@@ -58,7 +58,8 @@ use crate::{
         MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteDecision, MakerRuntimeQuoteInput,
         MakerRuntimeQuoteSetInput, MakerRuntimeReferenceFairValueBlockReason,
         MakerRuntimeReferenceFairValueDecision, MakerRuntimeReferenceFairValueInput,
-        maker_reference_current_price_fair_value_decision, plan_maker_runtime_quote,
+        blocked_runtime_quote_decision, maker_reference_current_price_fair_value_decision,
+        plan_maker_runtime_quote, runtime_window_contains,
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
@@ -166,6 +167,23 @@ struct ThrottledMarket<'a> {
     key: &'a str,
     family_key: &'a str,
     concrete_identity: &'a MakerConcreteMarketIdentity,
+}
+
+/// Runtime-owned coordinates that authorize a caller to address one active
+/// market. Being authorized does not imply that the market is quotable at this
+/// instant: rotating families deliberately preload a future window so its market
+/// data can be subscribed before the window opens.
+struct ActiveQuoteAuthority {
+    family_key: String,
+    underlying_asset: String,
+    interval_start_ms: u64,
+    interval_end_ms: u64,
+}
+
+impl ActiveQuoteAuthority {
+    fn window_contains(&self, evaluation_ms: u64) -> bool {
+        runtime_window_contains(self.interval_start_ms, self.interval_end_ms, evaluation_ms)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -387,14 +405,15 @@ impl BinaryOracleMaker {
         &self.runtime
     }
 
-    /// Validate the caller's evaluation coordinates against the active runtime
-    /// before pricing, identity minting, or quote planning can mutate state.
+    /// Validate the caller's market ownership against the active runtime before
+    /// pricing, identity minting, or quote planning can mutate state. The returned
+    /// window is availability, not authority: a valid preloaded future market is
+    /// authorized but must wait until its half-open cadence window begins.
     fn ensure_active_quote_authority(
         &self,
         market_key: &str,
         input_family_key: &str,
-        evaluation_ms: u64,
-    ) -> Result<()> {
+    ) -> Result<ActiveQuoteAuthority> {
         let runtime_market = self.runtime.market(market_key).ok_or_else(|| {
             anyhow::anyhow!(
                 "binary_oracle_maker cannot route quote for inactive market: market_key={market_key}"
@@ -405,13 +424,12 @@ impl BinaryOracleMaker {
             input_family_key == runtime_family_key,
             "binary_oracle_maker quote family does not match active runtime binding: market_key={market_key} runtime_family_key={runtime_family_key} input_family_key={input_family_key}"
         );
-        let interval_start_ms = runtime_market.start_timestamp_milliseconds();
-        let interval_end_ms = runtime_market.expiration_timestamp_milliseconds();
-        anyhow::ensure!(
-            (interval_start_ms..interval_end_ms).contains(&evaluation_ms),
-            "binary_oracle_maker quote evaluation is outside the active runtime window: market_key={market_key} interval_start_ms={interval_start_ms} interval_end_ms={interval_end_ms} evaluation_ms={evaluation_ms}"
-        );
-        Ok(())
+        Ok(ActiveQuoteAuthority {
+            family_key: runtime_family_key.to_string(),
+            underlying_asset: runtime_market.underlying_asset().to_string(),
+            interval_start_ms: runtime_market.start_timestamp_milliseconds(),
+            interval_end_ms: runtime_market.expiration_timestamp_milliseconds(),
+        })
     }
 
     pub fn route_maker_order_command(
@@ -552,7 +570,15 @@ impl BinaryOracleMaker {
             max_fee_bps,
         } = input;
 
-        self.ensure_active_quote_authority(market_key, quote_plan.family_key, quote_set.now_ms)?;
+        let authority = self.ensure_active_quote_authority(market_key, quote_plan.family_key)?;
+        if !authority.window_contains(quote_set.now_ms) {
+            return Ok(BinaryOracleMakerRuntimeQuoteRouteOutcome {
+                quote: blocked_runtime_quote_decision(
+                    MakerRuntimeQuoteBlockReason::RuntimeWindowUnavailable,
+                ),
+                orders: None,
+            });
+        }
 
         let order_id_tag = self.config.order_id_tag.clone();
         let minted = self.runtime.mint_next_identities(market_key, &order_id_tag);
@@ -626,18 +652,11 @@ impl BinaryOracleMaker {
             max_fee_bps,
         } = input;
 
-        self.ensure_active_quote_authority(market_key, quote_plan.family_key, quote_set.now_ms)?;
-        let runtime_market = self
-            .runtime
-            .market(market_key)
-            .expect("active quote authority checked runtime market presence");
-        let runtime_family_key = runtime_market.family_key().to_string();
-        let runtime_underlying_asset = runtime_market.underlying_asset().to_string();
-        let interval_start_ms = runtime_market.start_timestamp_milliseconds();
-        let interval_end_ms = runtime_market.expiration_timestamp_milliseconds();
+        let authority = self.ensure_active_quote_authority(market_key, quote_plan.family_key)?;
         anyhow::ensure!(
-            reference_selector.asset() == runtime_underlying_asset,
-            "binary_oracle_maker reference selector asset does not match active runtime binding: market_key={market_key} runtime_underlying_asset={runtime_underlying_asset} selector_asset={}",
+            reference_selector.asset() == authority.underlying_asset,
+            "binary_oracle_maker reference selector asset does not match active runtime binding: market_key={market_key} runtime_underlying_asset={} selector_asset={}",
+            authority.underlying_asset,
             reference_selector.asset()
         );
         let strike_price = match reference_fair_value.strike {
@@ -648,13 +667,15 @@ impl BinaryOracleMaker {
                     strike.market_key()
                 );
                 anyhow::ensure!(
-                    strike.underlying_asset() == runtime_underlying_asset,
-                    "binary_oracle_maker strike asset does not match active runtime binding: market_key={market_key} runtime_underlying_asset={runtime_underlying_asset} strike_underlying_asset={}",
+                    strike.underlying_asset() == authority.underlying_asset,
+                    "binary_oracle_maker strike asset does not match active runtime binding: market_key={market_key} runtime_underlying_asset={} strike_underlying_asset={}",
+                    authority.underlying_asset,
                     strike.underlying_asset()
                 );
                 anyhow::ensure!(
-                    strike.interval_start_ms() == interval_start_ms,
-                    "binary_oracle_maker strike window does not match active runtime binding: market_key={market_key} runtime_interval_start_ms={interval_start_ms} strike_interval_start_ms={}",
+                    strike.interval_start_ms() == authority.interval_start_ms,
+                    "binary_oracle_maker strike window does not match active runtime binding: market_key={market_key} runtime_interval_start_ms={} strike_interval_start_ms={}",
+                    authority.interval_start_ms,
                     strike.interval_start_ms()
                 );
                 Some(strike.price())
@@ -666,14 +687,16 @@ impl BinaryOracleMaker {
             reference_selector,
             quote_set.now_ms,
             MakerRuntimeReferenceFairValueInput {
-                family_key: &runtime_family_key,
-                interval_start_ms,
-                interval_end_ms,
+                family_key: &authority.family_key,
+                interval_start_ms: authority.interval_start_ms,
+                interval_end_ms: authority.interval_end_ms,
                 reference_quotes: reference_fair_value.reference_quotes,
                 strike_price,
                 seconds_to_market_end: Some(
-                    Duration::from_millis(interval_end_ms.saturating_sub(quote_set.now_ms))
-                        .as_secs(),
+                    Duration::from_millis(
+                        authority.interval_end_ms.saturating_sub(quote_set.now_ms),
+                    )
+                    .as_secs(),
                 ),
                 realized_volatility_snapshot: reference_fair_value.realized_volatility_snapshot,
                 realized_volatility_max_source_age_ms: reference_fair_value
@@ -683,20 +706,23 @@ impl BinaryOracleMaker {
             },
         );
         let Some(reference_fair_value_result) = fair_value.fair_value.as_ref() else {
-            // No fair value means the quote route below never runs, so this is
-            // the only place these legs can be seen this cycle. They are not
-            // throttled -- nothing evaluated them -- and leaving the episodes
-            // standing would suppress the next genuine block for as long as the
-            // reference price stayed unavailable.
-            for leg in [Leg::Yes, Leg::No] {
-                self.update_requote_throttle_edge(
-                    market_key,
-                    market,
-                    budget,
-                    leg,
-                    None,
-                    quote_set.now_ms,
-                )?;
+            // A missing reference price ends any prior throttle episode because
+            // the legs were considered but not throttled. Window unavailability
+            // is different: no quote cycle occurred, so it must not manufacture
+            // an episode edge; cadence rollover or market retirement owns cleanup.
+            if fair_value.blocked_by
+                != Some(MakerRuntimeReferenceFairValueBlockReason::RuntimeWindowUnavailable)
+            {
+                for leg in [Leg::Yes, Leg::No] {
+                    self.update_requote_throttle_edge(
+                        market_key,
+                        market,
+                        budget,
+                        leg,
+                        None,
+                        quote_set.now_ms,
+                    )?;
+                }
             }
             return Ok(BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome {
                 blocked_by: fair_value
@@ -714,7 +740,7 @@ impl BinaryOracleMaker {
             budget,
             BinaryOracleMakerRuntimeQuoteRouteInput {
                 quote_plan: MakerQuotePlanInputs {
-                    family_key: &runtime_family_key,
+                    family_key: &authority.family_key,
                     oracle_fair_probability_up,
                     ..quote_plan
                 },
@@ -1079,11 +1105,11 @@ impl BinaryOracleMaker {
     /// Run one intent-only quote cycle for an active market: mint fresh leg order
     /// identities, drive the existing quote/order pipeline with the caller-supplied
     /// fair-value-resolved inputs, and reconcile the dispatched leg identities.
-    /// Returns `None` if the market is not active. INTENT ONLY: the
-    /// dispatch routes through the global execution-policy chokepoint, which
-    /// suppresses every venue mutation in shadow.
-    /// The shared route validates the supplied family and evaluation timestamp
-    /// against the active binding before any identity mint.
+    /// Returns `None` if the market is inactive or its cadence window is not
+    /// currently quotable. INTENT ONLY: the dispatch routes through the global
+    /// execution-policy chokepoint, which suppresses every venue mutation in
+    /// shadow. The shared route validates the supplied family against the active
+    /// binding and checks window availability before any identity mint.
     ///
     /// The fair-value + quote-math inputs are caller-supplied because the
     /// reference/realized-volatility feed that resolves them lands in a later slice
@@ -1122,6 +1148,10 @@ impl BinaryOracleMaker {
                 max_fee_bps,
             },
         )?;
+        if outcome.quote.blocked_by == Some(MakerRuntimeQuoteBlockReason::RuntimeWindowUnavailable)
+        {
+            return Ok(None);
+        }
         if let Some(orders) = outcome.orders.as_ref() {
             // `route_maker_runtime_quote` reconciles whichever legs dispatched before
             // this fail-loud check, so a partial two-leg dispatch never orphans the

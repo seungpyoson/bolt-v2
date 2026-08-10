@@ -67,8 +67,8 @@ The rejection cases must fail before timer registration or market refresh.
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection execution_economics_requires_cancel_recovery_configuration -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection maker_start_rejects_cancel_recovery_cadence_without_margin -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test wiring_registration execution_economics_requires_cancel_recovery_configuration -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker maker_start_rejects_cancel_recovery_cadence_without_margin -- --test-threads=1
 ```
 
 Expected: missing struct fields or assertions showing the unvalidated configuration is accepted.
@@ -119,9 +119,9 @@ Place them beside `resting_order_refresh_margin_ms` in all five config/fixture f
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection execution_economics_requires_cancel_recovery_configuration -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection maker_start_rejects_cancel_recovery_cadence_without_margin -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection maker_start_accepts_bounded_cancel_recovery_cadence -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test wiring_registration execution_economics_requires_cancel_recovery_configuration -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker maker_start_rejects_cancel_recovery_cadence_without_margin -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker maker_start_accepts_bounded_cancel_recovery_cadence -- --test-threads=1
 ```
 
 Expected: all focused tests pass.
@@ -163,7 +163,7 @@ The quote residual case must use size increment `0.05`, quote quantity `1.23`, a
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection quote_quantity_seal_rolls_residual_into_a_later_cheaper_level -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib quote_quantity_seal_rolls_residual_into_a_later_cheaper_level -- --test-threads=1
 ```
 
 Expected: missing module/types or the old per-level consumption behavior fails the assertions.
@@ -280,7 +280,7 @@ Compute terminal-entry gross as `sum((terminal_value - price) * quantity)`, plan
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection economics_basis::tests -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib economics_basis::tests -- --test-threads=1
 ```
 
 Expected: all new base, quote, price-less, mismatch, and clamp tests pass.
@@ -319,8 +319,8 @@ Each success case must assert derived submit intent, lifecycle, liquidity role, 
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection edge_candidate_and_final_entry_share_terminal_value_scenario -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection maker_submit_derives_gross_from_terminal_value_and_final_order -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib edge_candidate_and_final_entry_share_terminal_value_scenario -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib maker_submit_derives_gross_from_terminal_value_and_final_order -- --test-threads=1
 ```
 
 Expected: old raw constructors or duplicated gross calculations violate the new assertions.
@@ -354,10 +354,10 @@ Replace direct `BoltV3OrderEconomicsIntent` and raw submit input construction in
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection edge_candidate_and_final_entry_share_terminal_value_scenario -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection edge_exit_seals_after_the_final_quantity_clamp -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection maker_submit_derives_gross_from_terminal_value_and_final_order -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection forced_reduction_derives_zero_gross_and_risk_reduction_purpose -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib edge_candidate_and_final_entry_share_terminal_value_scenario -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib edge_exit_seals_after_the_final_quantity_clamp -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib maker_submit_derives_gross_from_terminal_value_and_final_order -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib forced_reduction_derives_zero_gross_and_risk_reduction_purpose -- --test-threads=1
 ```
 
 Expected: all caller-matrix and failure-ordering tests pass.
@@ -398,7 +398,7 @@ Use a test sink with a `VecDeque<u64>` of actor times. The rollback test must ad
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection total_lifetime_cannot_hide_insufficient_remaining_margin -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib total_lifetime_cannot_hide_insufficient_remaining_margin -- --test-threads=1
 ```
 
 Expected: the old `current_unix_ns()` production entrypoint cannot reproduce the injected event-time boundary.
@@ -452,8 +452,8 @@ If step 5 fails, return while the permit and registration guard remain uncommitt
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection total_lifetime_cannot_hide_insufficient_remaining_margin -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection pre_sink_clock_advance_rolls_back_permit_and_registration -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib total_lifetime_cannot_hide_insufficient_remaining_margin -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib pre_sink_clock_advance_rolls_back_permit_and_registration -- --test-threads=1
 ```
 
 Expected: both pass with zero venue mutation in rejection cases.
@@ -496,8 +496,8 @@ Keep provider formula and replay-parity coverage in their existing provider/econ
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection settlement_payout_dispatches_by_registered_family -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection unknown_family_dispatch_fails_closed -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib settlement_payout_dispatches_by_registered_family -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib unknown_family_dispatch_fails_closed -- --test-threads=1
 ```
 
 Expected: pass before deletion.
@@ -523,8 +523,8 @@ Remove only fee-specific fixture fields and assertions. Do not add a wrapper or 
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection settlement_payout_dispatches_by_registered_family -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection final_nautilus_order_routes_through_its_exact_provider_authority -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib settlement_payout_dispatches_by_registered_family -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test wiring_registration final_nautilus_order_routes_through_its_exact_provider_authority -- --test-threads=1
 ```
 
 Expected: retained behavior and provider economics tests pass.
@@ -568,7 +568,7 @@ The identity-conflict test must start with non-default generation, deadline, cou
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection every_cancel_state_observation_pair_has_one_explicit_transition -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib every_cancel_state_observation_pair_has_one_explicit_transition -- --test-threads=1
 ```
 
 Expected: missing module/types.
@@ -657,7 +657,7 @@ Add `BoundExecutionEconomics::cancel_recovery_escalation_attempts()` in this ste
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection cancel_coordinator::tests -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib cancel_coordinator::tests -- --test-threads=1
 ```
 
 Expected: all identity, status, matrix, generation, and health tests pass in the working tree. Do not commit until the routing integration below consumes the coordinator and removes the old boolean path.
@@ -696,7 +696,7 @@ The query test must use the real `Strategy::query_order` boundary with a registe
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection healthy_resting_order_survives_timer_drives_without_a_cancel_intent -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker healthy_resting_order_survives_timer_drives_without_a_cancel_intent -- --test-threads=1
 ```
 
 Expected: missing coordinator registry/API.
@@ -759,10 +759,10 @@ fn cancel_rejected_without_an_outstanding_cancel_is_a_noop()
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection healthy_resting_order_survives_timer_drives_without_a_cancel_intent -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection synchronous_pending_rejection_and_terminal_callbacks_cannot_duplicate_or_overwrite -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection one_side_cancel_all_marks_only_matching_records_after_nt_accepts -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection cancel_rejected_retains_cancel_pending_without_routing -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker healthy_resting_order_survives_timer_drives_without_a_cancel_intent -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker synchronous_pending_rejection_and_terminal_callbacks_cannot_duplicate_or_overwrite -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker one_side_cancel_all_marks_only_matching_records_after_nt_accepts -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib cancel_rejected_retains_cancel_pending_without_routing -- --test-threads=1
 ```
 
 Expected: all focused tests pass; cancel/query counts remain bounded.
@@ -806,7 +806,7 @@ The main stop test must use NT's real `Strategy::stop`/`Trader` lifecycle under 
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection draining_disables_quote_refresh_admission_and_submission -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker draining_disables_quote_refresh_admission_and_submission -- --test-threads=1
 ```
 
 Expected: current immediate teardown/cancel behavior violates deferred draining.
@@ -857,10 +857,10 @@ Override `Strategy::stop() -> bool` in the macro block. Return `true` when no tr
 Run:
 
 ```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection maker_validation_rejects_manage_stop_true -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection maker_stop_defers_and_cancels_every_tracked_order -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection draining_disables_quote_refresh_admission_and_submission -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection unresolved_query_or_identity_conflict_keeps_draining_running_and_loud -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker maker_validation_rejects_manage_stop_true -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker maker_stop_defers_and_cancels_every_tracked_order -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker draining_disables_quote_refresh_admission_and_submission -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker unresolved_query_or_identity_conflict_keeps_draining_running_and_loud -- --test-threads=1
 ```
 
 Expected: all lifecycle tests pass with no post-stop submission.
@@ -902,8 +902,8 @@ Run:
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo fmt --check
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib bolt_v3_order_execution -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test bolt_v3_economics_runtime -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test bolt_v3_binary_oracle_maker_runtime -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test wiring_registration -- --test-threads=1
+CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker -- --test-threads=1
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo clippy --locked --features test-current-evidence-inspection --lib --bins -- -D warnings
 ```
 

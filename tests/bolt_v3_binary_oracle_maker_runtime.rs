@@ -3267,6 +3267,97 @@ fn maker_on_start_fails_loud_when_quote_interval_overflows_the_nanosecond_clock(
 }
 
 #[test]
+fn maker_start_rejects_cancel_recovery_cadence_without_margin() {
+    // The fixture config has a 1s cancel-retry timeout and a 5s refresh margin.
+    // At a 2.5s drive cadence, the worst timer phase plus one rounded-up retry is
+    // exactly 5s, so the strict pre-expiry recovery guarantee does not hold.
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let config = BinaryOracleMakerConfig {
+        quote_interval_ms: 2_500,
+        ..maker_config_with_static_market()
+    };
+    let mut maker = BinaryOracleMaker::new(config, maker_sim_context(writer.recorder(), admission));
+    let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+
+    let error = DataActor::on_start(&mut maker)
+        .expect_err("a cadence without strict cancel-recovery margin must fail on_start");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("cancel-recovery cadence"),
+        "on_start should name the unsafe cancel-recovery cadence: {rendered}"
+    );
+    assert_eq!(
+        maker.runtime().active_market_count(),
+        0,
+        "cadence validation must fail before market refresh"
+    );
+}
+
+#[test]
+fn maker_start_rejects_cancel_recovery_cadence_arithmetic_overflow() {
+    // This interval still converts from milliseconds to nanoseconds, but adding
+    // the worst timer phase to one rounded retry interval overflows u64.
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let config = BinaryOracleMakerConfig {
+        quote_interval_ms: u64::MAX / 1_000_000,
+        ..maker_config_with_static_market()
+    };
+    let mut maker = BinaryOracleMaker::new(config, maker_sim_context(writer.recorder(), admission));
+    let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+
+    let error = DataActor::on_start(&mut maker)
+        .expect_err("overflowing cancel-recovery cadence arithmetic must fail on_start");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("cancel-recovery cadence arithmetic overflow"),
+        "on_start should fail loud on cancel-recovery arithmetic overflow: {rendered}"
+    );
+    assert_eq!(
+        maker.runtime().active_market_count(),
+        0,
+        "overflow validation must fail before market refresh"
+    );
+}
+
+#[test]
+fn maker_start_accepts_bounded_cancel_recovery_cadence() {
+    // 2s cadence + ceil(1s / 2s) * 2s = 4s, strictly below the 5s margin.
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let config = BinaryOracleMakerConfig {
+        quote_interval_ms: 2_000,
+        ..maker_config_with_static_market()
+    };
+    let mut maker = BinaryOracleMaker::new(config, maker_sim_context(writer.recorder(), admission));
+    let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+
+    DataActor::on_start(&mut maker)
+        .expect("a cadence with strict cancel-recovery margin should start");
+    assert_eq!(maker.runtime().active_market_count(), 1);
+    DataActor::on_stop(&mut maker).expect("the accepted maker cadence should stop cleanly");
+}
+
+#[test]
 fn maker_on_start_fails_loud_when_the_quote_timer_cannot_register() {
     // register_quote_timer registers the autonomous quote/refresh timer through
     // NT's clock default time-event handler, which the actor lifecycle wires in

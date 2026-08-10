@@ -230,6 +230,14 @@ impl BoundExecutionEconomics {
             .ok_or(EconomicsError::ArithmeticOverflow.into())
     }
 
+    pub(crate) fn cancel_retry_timeout_ns(&self) -> Result<u64, EconomicsAdmissionError> {
+        self.config
+            .cancel_retry_timeout_ms
+            .get()
+            .checked_mul(NANOSECONDS_PER_MILLISECOND)
+            .ok_or(EconomicsError::ArithmeticOverflow.into())
+    }
+
     fn build_scope(
         &self,
         input: &AuthoritativeVenueEconomicsInput,

@@ -165,11 +165,28 @@ impl BoltV3OrderEconomicsHandle {
         }
     }
 
-    pub fn validate_resting_refresh_cadence(&self, cadence_ns: u64) -> Result<()> {
+    pub fn validate_cancel_recovery_cadence(&self, cadence_ns: u64) -> Result<()> {
         let margin_ns = self.economics.resting_order_refresh_margin_ns()?;
+        let retry_timeout_ns = self.economics.cancel_retry_timeout_ns()?;
         anyhow::ensure!(
-            cadence_ns > 0 && cadence_ns < margin_ns,
-            "resting economics cadence must be positive and strictly shorter than the configured refresh margin: cadence_ns={cadence_ns} margin_ns={margin_ns}"
+            cadence_ns > 0,
+            "cancel-recovery cadence must be positive: cadence_ns={cadence_ns}"
+        );
+        let retry_intervals = retry_timeout_ns
+            .checked_div(cadence_ns)
+            .and_then(|quotient| {
+                quotient.checked_add(u64::from(retry_timeout_ns % cadence_ns != 0))
+            })
+            .ok_or_else(|| anyhow::anyhow!("cancel-recovery cadence arithmetic overflow"))?;
+        let rounded_retry_ns = retry_intervals
+            .checked_mul(cadence_ns)
+            .ok_or_else(|| anyhow::anyhow!("cancel-recovery cadence arithmetic overflow"))?;
+        let required_margin_ns = cadence_ns
+            .checked_add(rounded_retry_ns)
+            .ok_or_else(|| anyhow::anyhow!("cancel-recovery cadence arithmetic overflow"))?;
+        anyhow::ensure!(
+            required_margin_ns < margin_ns,
+            "cancel-recovery cadence must leave strict pre-expiry margin: cadence_ns={cadence_ns} retry_timeout_ns={retry_timeout_ns} required_margin_ns={required_margin_ns} margin_ns={margin_ns}"
         );
         Ok(())
     }

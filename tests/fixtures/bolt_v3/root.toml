@@ -287,6 +287,8 @@ quote_refresh_secs = 30
 quote_max_age_secs = 60
 quote_validity_ms = 30000
 resting_order_refresh_margin_ms = 5000
+cancel_retry_timeout_ms = 1000
+cancel_recovery_escalation_attempts = 3
 carry_surfaces = []
 
 [clients.polymarket_main.execution.economics.sources]

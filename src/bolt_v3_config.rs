@@ -9,7 +9,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
-    num::NonZeroU64,
+    num::{NonZeroU32, NonZeroU64},
     path::{Path, PathBuf},
 };
 
@@ -588,6 +588,8 @@ pub struct ExecutionEconomicsConfig {
     pub quote_max_age_secs: u64,
     pub quote_validity_ms: u64,
     pub resting_order_refresh_margin_ms: u64,
+    pub cancel_retry_timeout_ms: NonZeroU64,
+    pub cancel_recovery_escalation_attempts: NonZeroU32,
     pub sources: BTreeMap<String, String>,
     pub formula: BTreeMap<String, String>,
     pub quote_components: BTreeMap<String, EconomicsQuoteComponentConfig>,
@@ -724,6 +726,12 @@ impl ExecutionEconomicsConfig {
         {
             errors
                 .push("resting_order_refresh_margin_ms must be inside quote validity".to_string());
+        }
+        if self.cancel_retry_timeout_ms.get() >= self.resting_order_refresh_margin_ms {
+            errors.push(
+                "cancel_retry_timeout_ms must be strictly shorter than the resting-order refresh margin"
+                    .to_string(),
+            );
         }
         if self.sources.is_empty()
             || self.formula.is_empty()

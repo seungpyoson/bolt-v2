@@ -97,6 +97,96 @@ fn configured_economics(
         .expect("fixture economics config should exist")
 }
 
+fn polymarket_execution_with_cancel_recovery(
+    cancel_retry_timeout_ms: i64,
+    cancel_recovery_escalation_attempts: i64,
+) -> toml::Value {
+    let mut execution = loaded().root.clients["polymarket_main"]
+        .execution
+        .clone()
+        .expect("fixture execution config should exist");
+    let economics = execution
+        .get_mut("economics")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture execution economics should be a table");
+    economics.insert(
+        "cancel_retry_timeout_ms".to_string(),
+        toml::Value::Integer(cancel_retry_timeout_ms),
+    );
+    economics.insert(
+        "cancel_recovery_escalation_attempts".to_string(),
+        toml::Value::Integer(cancel_recovery_escalation_attempts),
+    );
+    execution
+}
+
+#[test]
+fn execution_economics_requires_cancel_recovery_configuration() {
+    for required_key in [
+        "cancel_retry_timeout_ms",
+        "cancel_recovery_escalation_attempts",
+    ] {
+        let mut execution = polymarket_execution_with_cancel_recovery(1_000, 3);
+        execution["economics"]
+            .as_table_mut()
+            .expect("fixture execution economics should be a table")
+            .remove(required_key)
+            .expect("the test must remove a present recovery key");
+
+        let error = execution
+            .try_into::<PolymarketExecutionConfig>()
+            .expect_err("omitting either cancel-recovery key must fail deserialization");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(required_key),
+            "the error must name the omitted recovery key `{required_key}`: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn execution_economics_rejects_zero_cancel_recovery_configuration() {
+    for zero_key in [
+        "cancel_retry_timeout_ms",
+        "cancel_recovery_escalation_attempts",
+    ] {
+        let mut execution = polymarket_execution_with_cancel_recovery(1_000, 3);
+        execution["economics"][zero_key] = toml::Value::Integer(0);
+
+        let error = execution
+            .try_into::<PolymarketExecutionConfig>()
+            .expect_err("zero cancel-recovery settings must fail deserialization");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(zero_key) && rendered.to_ascii_lowercase().contains("nonzero"),
+            "the error must identify `{zero_key}` as nonzero: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn execution_economics_rejects_cancel_retry_timeout_outside_refresh_margin() {
+    let loaded = loaded();
+    let mut config = configured_economics(&loaded);
+    config.cancel_retry_timeout_ms =
+        std::num::NonZeroU64::new(config.resting_order_refresh_margin_ms)
+            .expect("the fixture refresh margin is nonzero");
+    let reporting = &loaded
+        .root
+        .economics
+        .as_ref()
+        .expect("fixture root economics should exist")
+        .reporting;
+
+    let errors = config.validate_common(reporting);
+    assert!(
+        errors.iter().any(|error| {
+            error.contains("cancel_retry_timeout_ms") && error.contains("strictly shorter")
+        }),
+        "an equal retry timeout and refresh margin must fail closed: {errors:?}"
+    );
+}
+
 fn authoritative_input() -> AuthoritativeVenueEconomicsInput {
     authoritative_input_with_valuation_deadline(2_000)
 }

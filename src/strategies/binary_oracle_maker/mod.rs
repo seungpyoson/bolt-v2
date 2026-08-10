@@ -1113,7 +1113,7 @@ impl BinaryOracleMaker {
             })?;
         self.context
             .order_economics()
-            .validate_resting_refresh_cadence(interval_nanoseconds)
+            .validate_cancel_recovery_cadence(interval_nanoseconds)
             .map_err(|error| {
                 anyhow::anyhow!(
                     "binary_oracle_maker quote timer cannot safely refresh resting economics: strategy_id={strategy_id} error={error:#}"

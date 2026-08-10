@@ -79,6 +79,8 @@ fn fixture_order_economics_with_platform_fee(
     .expect("fixture execution economics must exist");
     assert_eq!(configured.quote_max_age_secs, 4_000_000_000);
     assert_eq!(configured.quote_validity_ms, 4_000_000_000_000);
+    assert_eq!(configured.cancel_retry_timeout_ms.get(), 1_000);
+    assert_eq!(configured.cancel_recovery_escalation_attempts.get(), 3);
     loaded
         .root
         .clients

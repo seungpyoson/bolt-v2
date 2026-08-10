@@ -2,7 +2,7 @@
 
 use crate::{
     bolt_v3_binary_settlement::BinarySettlementPayout,
-    bolt_v3_numeric::{UNIT_F64, ZERO_F64, sanitize_probability},
+    bolt_v3_numeric::ZERO_F64,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{
         FamilyQuoteInputs, QuoteSide, QuoteTargetLeg, QuoteTargets, compose_binary_legs,
@@ -53,17 +53,4 @@ pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
 
 pub fn settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64> {
     Some(payout.leg_payout(leg))
-}
-
-pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
-    if !fee_rate.is_finite() || fee_rate < ZERO_F64 {
-        return None;
-    }
-    let price = sanitize_probability(price)?;
-    let fee = fee_rate * price * (UNIT_F64 - price);
-    if fee.is_finite() && fee >= ZERO_F64 {
-        Some(fee)
-    } else {
-        None
-    }
 }

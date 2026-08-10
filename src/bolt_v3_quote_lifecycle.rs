@@ -209,17 +209,9 @@ impl QuoteLeg {
                 self.state = LegState::Idle;
                 None
             }
-            // Cancel-rejected: an outstanding cancel — a requote cancel in
-            // RequotePending, or a wind-down cancel in CancelPending — was refused
-            // by the venue. The order may still be live, so re-emit the Cancel and
-            // stay in the retryable state rather than wait forever for a `Canceled`
-            // that may never come (the stuck-leg hazard) or silently abandon a live
-            // order. The retry is ultimately bounded by the governor /
-            // reconnect-resync (a later slice); a full fill resolves it via the
-            // `Filled` arm below.
-            (LegState::RequotePending | LegState::CancelPending, LegEvent::CancelRejected) => {
-                Some(LifecycleAction::Cancel)
-            }
+            // The shared tracked-order cancellation coordinator owns retry timing.
+            // Preserve the lifecycle state, but never create a second retry route.
+            (LegState::RequotePending | LegState::CancelPending, LegEvent::CancelRejected) => None,
             // Fill: a full fill removes the order from the book entirely, from
             // any state that holds or is working an order, so the leg returns to
             // Idle — there is no resting quote left to cancel or modify. This is
@@ -486,16 +478,14 @@ mod tests {
     }
 
     #[test]
-    fn cancel_rejected_retries_in_requote_pending() {
+    fn cancel_rejected_retains_requote_pending_without_routing() {
         let mut leg = resting_leg(false);
         leg.on_event(LegEvent::QuoteTrigger {
             requote_needed: true,
         });
         assert_eq!(leg.state(), LegState::RequotePending);
-        // The venue rejects the requote cancel: re-emit Cancel, stay retryable —
-        // do not abandon a possibly-live order or wait forever for a Canceled.
         let action = leg.on_event(LegEvent::CancelRejected);
-        assert_eq!(action, Some(LifecycleAction::Cancel));
+        assert_eq!(action, None);
         assert_eq!(leg.state(), LegState::RequotePending);
         // A later Canceled still drives the replacement submit (T5).
         assert_eq!(
@@ -505,12 +495,12 @@ mod tests {
     }
 
     #[test]
-    fn cancel_rejected_retries_in_cancel_pending() {
+    fn cancel_rejected_retains_cancel_pending_without_routing() {
         let mut leg = resting_leg(false);
         leg.request_cancel();
         assert_eq!(leg.state(), LegState::CancelPending);
         let action = leg.on_event(LegEvent::CancelRejected);
-        assert_eq!(action, Some(LifecycleAction::Cancel));
+        assert_eq!(action, None);
         assert_eq!(leg.state(), LegState::CancelPending);
         // The eventual Canceled winds the leg down with no resubmit.
         assert_eq!(leg.on_event(LegEvent::Canceled), None);

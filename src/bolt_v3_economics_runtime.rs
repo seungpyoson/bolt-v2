@@ -238,6 +238,10 @@ impl BoundExecutionEconomics {
             .ok_or(EconomicsError::ArithmeticOverflow.into())
     }
 
+    pub(crate) const fn cancel_recovery_escalation_attempts(&self) -> u32 {
+        self.config.cancel_recovery_escalation_attempts.get()
+    }
+
     fn build_scope(
         &self,
         input: &AuthoritativeVenueEconomicsInput,

@@ -43,9 +43,10 @@ use bolt_v2::{
     bolt_v3_timestamp_domain::LocalReceiveMs,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::{
-        BinaryOracleMaker, BinaryOracleMakerConfig, BinaryOracleMakerMarketActionRouteInput,
-        BinaryOracleMakerReferenceFairValueInput, BinaryOracleMakerRiskRouteInput,
-        BinaryOracleMakerRuntimeQuoteRouteInput, BinaryOracleMakerRuntimeReferenceQuoteBlockReason,
+        BinaryOracleMaker, BinaryOracleMakerConfig, BinaryOracleMakerLifecycleError,
+        BinaryOracleMakerMarketActionRouteInput, BinaryOracleMakerReferenceFairValueInput,
+        BinaryOracleMakerRiskRouteInput, BinaryOracleMakerRuntimeQuoteRouteInput,
+        BinaryOracleMakerRuntimeReferenceQuoteBlockReason,
         BinaryOracleMakerRuntimeReferenceQuoteRouteInput, BinaryOracleMakerStrikePrice,
         mu::MakerMuState,
     },
@@ -54,17 +55,22 @@ use nautilus_common::{
     actor::DataActorNative,
     cache::Cache,
     clock::{Clock, TestClock},
+    component::Component,
     timer::{TimeEvent, TimeEventCallback},
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     data::TradeTick,
     enums::{AggressorSide, OrderSide, OrderType, TimeInForce},
-    identifiers::{ClientOrderId, InstrumentId, TradeId, TraderId, Venue},
+    events::OrderEventAny,
+    identifiers::{
+        AccountId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId, Venue, VenueOrderId,
+    },
+    orders::{LimitOrder, Order, OrderAny, stubs::TestOrderEventStubs},
     types::{Price, Quantity},
 };
 use nautilus_portfolio::portfolio::Portfolio;
-use nautilus_trading::StrategyNative;
+use nautilus_trading::{Strategy, StrategyNative};
 use rust_decimal::Decimal;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
@@ -2098,6 +2104,52 @@ fn maker_order_economics_at(
     )
 }
 
+fn accepted_maker_order(client_order_id: ClientOrderId) -> OrderAny {
+    let mut order = OrderAny::Limit(
+        LimitOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("maker-strategy"),
+            InstrumentId::from("MAKER-RT-YES.SIM"),
+            client_order_id,
+            OrderSide::Buy,
+            Quantity::new(1.0, 2),
+            Price::new(0.50, 2),
+            TimeInForce::Gtc,
+            None,
+            true,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            UUID4::new(),
+            UnixNanos::from(RUNTIME_NOW_MS.saturating_mul(1_000_000)),
+        )
+        .expect("the tracked maker-order fixture is valid"),
+    );
+    let submitted = TestOrderEventStubs::submitted(&order, AccountId::from("ACCOUNT-001"));
+    order
+        .apply(submitted)
+        .expect("the maker-order fixture submits");
+    let accepted = TestOrderEventStubs::accepted(
+        &order,
+        AccountId::from("ACCOUNT-001"),
+        VenueOrderId::from("VENUE-DRAIN-1"),
+    );
+    order
+        .apply(accepted)
+        .expect("the maker-order fixture is accepted");
+    order
+}
+
 fn register_maker_for_order_factory(maker: &mut BinaryOracleMaker) {
     let clock = Rc::new(RefCell::new(TestClock::new()));
     clock.borrow_mut().set_time(UnixNanos::from(1_u64));
@@ -3163,6 +3215,99 @@ fn maker_on_stop_resets_runtime_so_a_restart_re_resolves_and_re_subscribes() {
         1,
         "the restart re-activates the declared market from an empty runtime"
     );
+}
+
+#[test]
+fn maker_graceful_stop_defers_until_tracked_orders_close_and_rejects_new_quotes() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let order_economics = maker_order_economics_at(RUNTIME_NOW_MS.saturating_mul(1_000_000));
+    let context = StrategyBuildContext::new(
+        order_economics.clone(),
+        bolt_v2::bolt_v3_strategy_context::StrategyDecisionEvidence::maker_for_test(
+            writer.recorder(),
+        ),
+        admission,
+        BoltV3OrderExecutionPolicy::shadow(),
+        Venue::from("SIM"),
+    );
+    let mut maker = BinaryOracleMaker::new(maker_config_with_static_market(), context);
+    let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the active maker market");
+    }
+    Component::initialize(&mut maker).expect("the registered maker initializes");
+    Component::start(&mut maker).expect("the maker starts through the real NT lifecycle");
+    assert!(Component::is_running(&maker));
+    assert_eq!(maker.runtime().active_market_count(), 1);
+
+    let client_order_id = ClientOrderId::from("MAKER-DRAIN-1");
+    let accepted_order = accepted_maker_order(client_order_id);
+    cache
+        .borrow_mut()
+        .add_order(accepted_order.clone(), None, None, false)
+        .expect("the accepted maker order is present in the NT cache");
+    order_economics
+        .reconcile_fill_void_at(
+            client_order_id,
+            Some(accepted_order.clone()),
+            RUNTIME_NOW_MS.saturating_mul(1_000_000),
+        )
+        .expect("a reopened maker order creates cancellation-only tracking");
+    assert_eq!(order_economics.resting_order_ids().unwrap().len(), 1);
+
+    assert!(
+        !<BinaryOracleMaker as Strategy>::stop(&mut maker),
+        "a tracked order must defer component stop"
+    );
+    assert!(Component::is_running(&maker));
+
+    let mut quote = MarketQuote::new(false);
+    let mut budget =
+        build_requote_budget_pair("1/00:01:00", 100, 500).expect("the quote budget fixture builds");
+    let submit_template = maker_limit_post_only_template();
+    let error = maker
+        .route_maker_runtime_quote(
+            RUNTIME_MARKET_KEY,
+            &mut quote,
+            &mut budget,
+            BinaryOracleMakerRuntimeQuoteRouteInput {
+                quote_plan: quote_plan_inputs(RUNTIME_STATIC_FAMILY),
+                quote_set: quote_set_inputs(),
+                submit_template: &submit_template,
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+            },
+        )
+        .expect_err("draining must reject quote work before planning mutates state");
+    assert_eq!(
+        error.downcast_ref::<BinaryOracleMakerLifecycleError>(),
+        Some(&BinaryOracleMakerLifecycleError::Draining)
+    );
+    assert_eq!(quote.market_state(), MarketState::Idle);
+    assert_eq!(writer.records().len(), 0);
+
+    let canceled = TestOrderEventStubs::canceled(
+        &accepted_order,
+        AccountId::from("ACCOUNT-001"),
+        Some(VenueOrderId::from("VENUE-DRAIN-1")),
+    );
+    cache
+        .borrow_mut()
+        .update_order(&canceled)
+        .expect("the terminal event updates authoritative NT cache state");
+    let OrderEventAny::Canceled(canceled) = &canceled else {
+        unreachable!("the test stub produced an order-canceled event")
+    };
+    <BinaryOracleMaker as Strategy>::on_order_canceled(&mut maker, canceled);
+
+    assert!(order_economics.resting_order_ids().unwrap().is_empty());
+    assert!(Component::is_stopped(&maker));
+    assert_eq!(maker.runtime().active_market_count(), 0);
 }
 
 #[test]

@@ -271,10 +271,9 @@ impl RestingOrderCancelRecord {
             not_before_ns,
             ..
         } = self.routing_state
+            && active_generation == generation
         {
-            if active_generation == generation {
-                self.routing_state = CancelRoutingState::Backoff { not_before_ns };
-            }
+            self.routing_state = CancelRoutingState::Backoff { not_before_ns };
         }
     }
 

@@ -210,28 +210,6 @@ impl BoltV3OrderEconomicsHandle {
         )
     }
 
-    pub fn stop_resting_order_economics<S>(
-        &self,
-        policy: BoltV3OrderExecutionPolicy,
-        strategy: &mut S,
-        execution_client_id: &str,
-    ) -> Result<()>
-    where
-        S: Strategy + StrategyNative + DataActorNative + ?Sized,
-    {
-        let mut sink = NtStrategyVenueMutationSink { strategy };
-        let now_ns = sink.actor_time_ns()?;
-        request_cancel_for_all_tracked_orders(self, now_ns)?;
-        drive_resting_order_economics(
-            self,
-            policy,
-            &mut sink,
-            execution_client_id,
-            Vec::new(),
-            now_ns,
-        )
-    }
-
     pub fn resting_order_ids(&self) -> Result<Vec<ClientOrderId>> {
         Ok(self
             .tracked_orders
@@ -240,6 +218,14 @@ impl BoltV3OrderEconomicsHandle {
             .keys()
             .copied()
             .collect())
+    }
+
+    pub fn begin_resting_order_drain_at_ns(&self, now_ns: u64) -> Result<usize> {
+        let client_order_ids = self.resting_order_ids()?;
+        for client_order_id in &client_order_ids {
+            self.request_cancel_intent(*client_order_id, now_ns)?;
+        }
+        Ok(client_order_ids.len())
     }
 
     fn request_cancel_intent(&self, client_order_id: ClientOrderId, now_ns: u64) -> Result<bool> {
@@ -432,7 +418,7 @@ impl BoltV3OrderEconomicsHandle {
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        if !records.contains_key(&client_order_id) {
+        if let std::collections::btree_map::Entry::Vacant(entry) = records.entry(client_order_id) {
             let Some(order) = cached.as_ref() else {
                 return Ok(());
             };
@@ -442,14 +428,11 @@ impl BoltV3OrderEconomicsHandle {
             let recovery_deadline_ns = now_ns
                 .checked_add(retry_timeout_ns)
                 .ok_or_else(|| anyhow::anyhow!("fill-void cancellation deadline overflow"))?;
-            records.insert(
-                client_order_id,
-                TrackedMakerOrderRecord {
-                    economics: None,
-                    query_seed: NtOrderQuerySeed::new(order.clone()),
-                    cancellation: Some(RestingOrderCancelRecord::new(recovery_deadline_ns)),
-                },
-            );
+            entry.insert(TrackedMakerOrderRecord {
+                economics: None,
+                query_seed: NtOrderQuerySeed::new(order.clone()),
+                cancellation: Some(RestingOrderCancelRecord::new(recovery_deadline_ns)),
+            });
         }
         let Some(record) = records.get_mut(&client_order_id) else {
             return Ok(());
@@ -823,16 +806,6 @@ where
             failures.join(" | ")
         )
     }
-}
-
-fn request_cancel_for_all_tracked_orders(
-    order_economics: &BoltV3OrderEconomicsHandle,
-    now_ns: u64,
-) -> Result<()> {
-    for client_order_id in order_economics.resting_order_ids()? {
-        order_economics.request_cancel_intent(client_order_id, now_ns)?;
-    }
-    Ok(())
 }
 
 fn route_tracked_cancel_all<S>(
@@ -2365,8 +2338,8 @@ mod tests {
         BoltV3TerminalValueEntry, EconomicsAdmissionPurpose, LifecyclePath, NtOrderQuerySeed,
         TrackedMakerOrderRecord, build_order_economics_submit_admission,
         clamp_risk_reducing_exit_to_venue_position, economics_order_binding,
-        order_intent_details_from_compiled_order, request_cancel_for_all_tracked_orders,
-        route_kill_switch_flatten_command_with_sink, route_maker_order_command_with_runtime,
+        order_intent_details_from_compiled_order, route_kill_switch_flatten_command_with_sink,
+        route_maker_order_command_with_runtime,
     };
     use crate::{
         bolt_v3_capital_admission::{
@@ -2832,7 +2805,8 @@ mod tests {
         assert_eq!(runtime.venue_sink.cancel_calls, 1);
 
         let retry_timeout_ns = order_economics.economics.cancel_retry_timeout_ns().unwrap();
-        request_cancel_for_all_tracked_orders(&order_economics, retry_timeout_ns / 2)
+        order_economics
+            .begin_resting_order_drain_at_ns(retry_timeout_ns / 2)
             .expect("a second cancellation origin must merge into the existing intent");
         let cached = runtime.venue_sink.cached_order(client_order_id).unwrap();
         super::drive_resting_order_economics(
@@ -3176,7 +3150,7 @@ mod tests {
             .unwrap();
         }
         runtime.venue_sink.fail_cancel_ids.insert(first);
-        request_cancel_for_all_tracked_orders(&order_economics, 1).unwrap();
+        order_economics.begin_resting_order_drain_at_ns(1).unwrap();
         let first_cached = runtime.venue_sink.cached_order(first).unwrap();
         let second_cached = runtime.venue_sink.cached_order(second).unwrap();
 

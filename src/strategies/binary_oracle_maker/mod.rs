@@ -20,6 +20,10 @@ use nautilus_common::{actor::DataActor, timer::TimeEvent};
 use nautilus_model::{
     data::TradeTick,
     enums::OmsType,
+    events::{
+        OrderCancelRejected, OrderCanceled, OrderExpired, OrderFillVoided, OrderFilled,
+        OrderPendingCancel, OrderRejected,
+    },
     identifiers::{ClientId, StrategyId},
     instruments::{Instrument, InstrumentAny},
 };
@@ -101,6 +105,29 @@ const REQUOTE_THROTTLE_CANCEL_RESUBMIT_REST_COST: u64 = 2;
 const REQUOTE_THROTTLE_CANCEL_SUBMIT_COST: u64 = 0;
 const REQUOTE_THROTTLE_CANCEL_REST_COST: u64 = 1;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum MakerShutdownState {
+    #[default]
+    Running,
+    Draining,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOracleMakerLifecycleError {
+    Draining,
+}
+
+impl std::fmt::Display for BinaryOracleMakerLifecycleError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Draining => formatter
+                .write_str("binary_oracle_maker is draining and cannot accept new quote work"),
+        }
+    }
+}
+
+impl std::error::Error for BinaryOracleMakerLifecycleError {}
+
 /// Binary-oracle market-making strategy. Carries the NautilusTrader envelope
 /// (`core`), its parsed config, and the per-instrument μ (informed-fraction)
 /// runtime state. Compiled maker order commands route through the shared
@@ -112,6 +139,7 @@ pub struct BinaryOracleMaker {
     context: StrategyBuildContext,
     mu: MakerMuState,
     runtime: MakerRuntime,
+    shutdown: MakerShutdownState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -390,6 +418,7 @@ impl std::fmt::Debug for BinaryOracleMaker {
             .field("config", &self.config)
             .field("mu", &self.mu)
             .field("runtime", &self.runtime)
+            .field("shutdown", &self.shutdown)
             .finish_non_exhaustive()
     }
 }
@@ -414,6 +443,7 @@ impl BinaryOracleMaker {
             context,
             mu,
             runtime: MakerRuntime::empty(),
+            shutdown: MakerShutdownState::Running,
         }
     }
 
@@ -426,6 +456,61 @@ impl BinaryOracleMaker {
     /// identities). Read by the integration tests and later runtime slices.
     pub fn runtime(&self) -> &MakerRuntime {
         &self.runtime
+    }
+
+    fn ensure_accepting_new_quotes(&self) -> Result<()> {
+        if self.shutdown == MakerShutdownState::Draining {
+            return Err(BinaryOracleMakerLifecycleError::Draining.into());
+        }
+        Ok(())
+    }
+
+    fn begin_draining(&mut self) -> Result<usize> {
+        let now_ns = self.clock().timestamp_ns().as_u64();
+        self.context
+            .order_economics()
+            .begin_resting_order_drain_at_ns(now_ns)
+    }
+
+    fn reconcile_order_callback(
+        &mut self,
+        client_order_id: nautilus_model::identifiers::ClientOrderId,
+        fill_voided: bool,
+    ) {
+        let now_ns = self.clock().timestamp_ns().as_u64();
+        let cached_order = self.cache().order(&client_order_id);
+        let order_economics = self.context.order_economics().clone();
+        let result = if fill_voided {
+            order_economics.reconcile_fill_void_at(client_order_id, cached_order, now_ns)
+        } else {
+            order_economics.reconcile_tracked_order_at(client_order_id, cached_order, now_ns)
+        };
+        if let Err(error) = result {
+            log::error!(
+                "binary_oracle_maker order-event reconciliation failed: strategy_id={} client_order_id={} error={error:#}",
+                self.config.strategy_id,
+                client_order_id,
+            );
+        }
+        if let Err(error) = self.complete_draining_if_empty() {
+            log::error!(
+                "binary_oracle_maker graceful stop completion failed: strategy_id={} error={error:#}",
+                self.config.strategy_id,
+            );
+        }
+    }
+
+    fn complete_draining_if_empty(&mut self) -> Result<()> {
+        if self.shutdown != MakerShutdownState::Draining
+            || !self
+                .context
+                .order_economics()
+                .resting_order_ids()?
+                .is_empty()
+        {
+            return Ok(());
+        }
+        nautilus_common::component::Component::stop(self)
     }
 
     /// Validate the caller's market ownership against the active runtime before
@@ -461,6 +546,12 @@ impl BinaryOracleMaker {
         submit_order_prefix: &str,
         terminal_value_entry: Option<BoltV3TerminalValueEntry>,
     ) -> Result<MakerOrderDispatchOutcome> {
+        if matches!(
+            command,
+            MakerCompiledOrderCommand::Submit { .. } | MakerCompiledOrderCommand::Modify { .. }
+        ) {
+            self.ensure_accepting_new_quotes()?;
+        }
         let policy = self.context.order_execution_policy();
         let decision_evidence = self
             .context
@@ -585,6 +676,7 @@ impl BinaryOracleMaker {
         budget: &mut RequoteBudgetPair,
         input: BinaryOracleMakerRuntimeQuoteRouteInput<'_>,
     ) -> Result<BinaryOracleMakerRuntimeQuoteRouteOutcome> {
+        self.ensure_accepting_new_quotes()?;
         let BinaryOracleMakerRuntimeQuoteRouteInput {
             quote_plan,
             quote_set,
@@ -676,6 +768,7 @@ impl BinaryOracleMaker {
         reference_selector: &mut ReferencePriceSelector,
         input: BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'_>,
     ) -> Result<BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome> {
+        self.ensure_accepting_new_quotes()?;
         let BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
             reference_fair_value,
             quote_plan,
@@ -1068,7 +1161,8 @@ impl BinaryOracleMaker {
     /// subscribes to market data and tracks per-market runtime state; it never
     /// submits. Declared markets that do not resolve are logged (a fail-closed
     /// surface), never silently dropped.
-    fn refresh_active_markets(&mut self) {
+    fn refresh_active_markets(&mut self) -> Result<()> {
+        self.ensure_accepting_new_quotes()?;
         let now_milliseconds = self.now_milliseconds();
         let instruments = self.execution_venue_instruments();
         let policy = self.market_portfolio_policy();
@@ -1092,6 +1186,7 @@ impl BinaryOracleMaker {
                 miss,
             );
         }
+        Ok(())
     }
 
     /// Register the autonomous quote/refresh timer (period = `quote_interval_ms`).
@@ -1217,8 +1312,9 @@ impl DataActor for BinaryOracleMaker {
         // Register the quote timer first: it is the only fallible step here, so a
         // registration failure aborts on_start before refresh_active_markets emits
         // any subscription side effects, leaving no half-started runtime behind.
+        self.shutdown = MakerShutdownState::Running;
         self.register_quote_timer()?;
-        self.refresh_active_markets();
+        self.refresh_active_markets()?;
         Ok(())
     }
 
@@ -1238,14 +1334,6 @@ impl DataActor for BinaryOracleMaker {
         // prior run consumed. (Cross-process restart durability needs a persisted
         // high-water — arming-time work, #869.)
         self.runtime.deactivate_all();
-        let order_economics = self.context.order_economics().clone();
-        let execution_policy = self.context.order_execution_policy();
-        let execution_client_id = self.config.client_id.clone();
-        order_economics.stop_resting_order_economics(
-            execution_policy,
-            self,
-            execution_client_id.as_str(),
-        )?;
         Ok(())
     }
 
@@ -1260,19 +1348,87 @@ impl DataActor for BinaryOracleMaker {
             let execution_policy = self.context.order_execution_policy();
             let execution_client_id = self.config.client_id.clone();
             let now_ms = self.now_milliseconds();
+            if self.shutdown == MakerShutdownState::Draining {
+                order_economics.begin_resting_order_drain_at_ns(
+                    now_ms
+                        .checked_mul(NANOS_PER_MILLI_U64)
+                        .ok_or_else(|| anyhow::anyhow!("maker drain clock overflow"))?,
+                )?;
+                let drive_result = order_economics.drive_resting_order_economics_at_ms(
+                    execution_policy,
+                    self,
+                    execution_client_id.as_str(),
+                    now_ms,
+                );
+                self.complete_draining_if_empty()?;
+                return drive_result;
+            }
             order_economics.drive_resting_order_economics_at_ms(
                 execution_policy,
                 self,
                 execution_client_id.as_str(),
                 now_ms,
             )?;
-            self.refresh_active_markets();
+            self.refresh_active_markets()?;
         }
         Ok(())
     }
 }
 
-nautilus_trading::nautilus_strategy!(BinaryOracleMaker, {});
+nautilus_trading::nautilus_strategy!(BinaryOracleMaker, {
+    fn stop(&mut self) -> bool {
+        let order_economics = self.context.order_economics().clone();
+        match order_economics.resting_order_ids() {
+            Ok(client_order_ids) if client_order_ids.is_empty() => true,
+            Ok(_) => {
+                self.shutdown = MakerShutdownState::Draining;
+                if let Err(error) = self.begin_draining() {
+                    log::error!(
+                        "binary_oracle_maker failed to begin tracked-order drain: strategy_id={} error={error:#}",
+                        self.config.strategy_id,
+                    );
+                }
+                false
+            }
+            Err(error) => {
+                self.shutdown = MakerShutdownState::Draining;
+                log::error!(
+                    "binary_oracle_maker cannot inspect tracked orders during stop: strategy_id={} error={error:#}",
+                    self.config.strategy_id,
+                );
+                false
+            }
+        }
+    }
+
+    fn on_order_pending_cancel(&mut self, event: OrderPendingCancel) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+
+    fn on_order_cancel_rejected(&mut self, event: OrderCancelRejected) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+
+    fn on_order_canceled(&mut self, event: &OrderCanceled) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+
+    fn on_order_filled(&mut self, event: &OrderFilled) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+
+    fn on_order_fill_voided(&mut self, event: &OrderFillVoided) {
+        self.reconcile_order_callback(event.client_order_id, true);
+    }
+
+    fn on_order_expired(&mut self, event: OrderExpired) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+
+    fn on_order_rejected(&mut self, event: OrderRejected) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+});
 
 impl StrategyBuilder for BinaryOracleMakerBuilder {
     type Strategy = BinaryOracleMaker;

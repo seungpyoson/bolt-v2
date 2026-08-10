@@ -82,6 +82,7 @@ use bolt_v2::{
         assemble_strategy_build_context,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    strategies::binary_oracle_maker,
     strategy_bindings::production_runtime_bindings,
 };
 
@@ -631,7 +632,7 @@ fn maker_runtime_binding_omits_the_unused_shared_realized_volatility_capability(
     let resolved = fixture_resolved_secrets();
     let maker_capabilities = production_runtime_bindings()
         .iter()
-        .find(|binding| binding.key == "binary_oracle_maker")
+        .find(|binding| binding.key == binary_oracle_maker::KEY)
         .expect("production maker runtime binding should exist")
         .capabilities;
     let context = assembly_context(&loaded, &resolved, maker_capabilities);

@@ -36,10 +36,10 @@ Candidate sizing and final sealing use the same `TerminalValueEntry` value objec
 The constructor first validates that scenario purpose, order side, position context, and final order agree. It then binds the exact final order and handles denominations explicitly:
 
 - for a base-quantity order, the order quantity is base quantity;
-- for a quote-quantity order, each candidate level contributes `price * base_quantity` toward the submitted quote notional, and retained base quantity is `consumed_quote_notional / price`;
+- for a quote-quantity order, each candidate level contributes `price * base_quantity` toward the submitted quote notional; the constructor retains the exact consumed quote notional, derives base quantity with checked division, and floors that base quantity toward zero at the instrument's quantity precision before any gross-value or provider-fee calculation;
 - a price-less market order does not invent a limit price; limit checks run only when the final order actually has one.
 
-Over-covering candidate levels are deterministically truncated to the final order. Empty, non-positive, overflowing, under-covering, side-incompatible, scenario-incompatible, or limit-violating inputs fail. The constructor then derives normalized fill legs, planned-fill notional, gross value, provider economics, edge basis, and the final order binding from the retained levels.
+Over-covering candidate levels are deterministically truncated to the final order. For quote-quantity orders, any difference between exact consumed quote notional and `price * floored_base_quantity` is represented explicitly as non-executable quote dust; it is excluded from gross value, planned-fill notional, and provider fees, while conservative reservation liability remains bound to the full submitted quote quantity. Dust must be smaller than one instrument quantity increment valued at that level; a larger remainder is under-coverage and fails. Empty, non-positive, overflowing, under-covering, side-incompatible, scenario-incompatible, or limit-violating inputs fail. The constructor then derives normalized fill legs, planned-fill notional, gross value, provider economics, edge basis, and the final order binding from the retained levels.
 
 For terminal-value entries, each retained level contributes:
 
@@ -71,6 +71,8 @@ Only fee-specific fixtures and assertions are removed. Tests that also cover set
 
 All normal tracked-maker cancellation origins use the coordinator: economics refresh, per-leg quote lifecycle, side- or instrument-scoped cancel-all, and strategy stop. The pure quote-lifecycle machine may request cancellation, but it cannot route or retry one. Its `CancelRejected -> Cancel` action is removed; the leg retains its lifecycle state while the coordinator owns retry timing. Slice 1's kill-switch cancellation plan remains dry-run proof-only. If NT nevertheless reports an externally initiated pending cancel, the coordinator adopts that authoritative state without issuing a competing request.
 
+A coordinator record represents exactly one outstanding cancellation intent. It is created only by a cancellation-origin request, a pending-cancel observation for a tracked maker order, or running-state fill-void reconciliation. Resting economics registration retains an immutable NT query seed for later recovery, but a healthy resting order has no coordinator record and no timer drive can cancel it. Repeated origins merge diagnostics into the existing record without resetting its generation, deadline, or backoff. Terminal reconciliation removes both the cancellation intent and its resting-order registration.
+
 ### Authoritative NT observation matrix
 
 Every timer or order callback re-reads the current NT cache and maps it through an exhaustive `OrderStatus` match with no wildcard:
@@ -84,33 +86,39 @@ Every timer or order callback re-reads the current NT cache and maps it through 
 
 An `OrderFilled` callback is only a reconciliation trigger. A partial fill remains `Retryable`; the record retires only when the cache is closed or leaves are zero. NT updates its cache before strategy callbacks at the pinned revision, so callbacks never override current cache state with stale event payloads.
 
-NT can later reopen a filled order through `OrderFillVoided`. The maker's fill-void callback re-reads the cache. If a previously retired maker order is open again, it creates a cancellation-only coordinator record with `quote_deadline_ns = observed_now_ns`; it does not recreate or reuse expired economics admission. The next timer routes through the normal coordinator and health is immediately deadline-exceeded until NT closes the order. Strategy event ownership identifies the order as this maker's; no client-order-ID string parsing or source scan is used.
+NT can later reopen a filled order through `OrderFillVoided`. While the maker is `Running`, its fill-void callback re-reads the cache. If a previously retired maker order is open again, it creates a cancellation-only coordinator record with `quote_deadline_ns = observed_now_ns`; it does not recreate or reuse expired economics admission. The next timer routes through the normal coordinator and health is immediately deadline-exceeded until NT closes the order. Strategy event ownership identifies the order as this maker's; no client-order-ID string parsing or source scan is used.
+
+This guarantee ends when `Component::stop` completes: pinned NT logs residual order events but does not dispatch strategy callbacks outside `Running`. NT exposes no authoritative event proving that a fill can never later be voided, so keeping a fill tombstone until an invented finality deadline would make graceful stop non-convergent. A post-stop reopen remains visible to NT cache/reconciliation and the existing next-start open-order fail-closed gate, but this live-disabled Slice 1 does not claim automatic post-stop cancellation or cross-process retry durability.
 
 ### Coordinator state matrix
 
 Routing state is deliberately small:
 
 - `Ready`: a cancellation may be attempted now;
-- `Backoff { retry_not_before_ns }`: an attempt occurred and no further attempt is allowed before the deadline;
-- `PendingCancel { retry_not_before_ns }`: NT has acknowledged pending cancellation; duplicates stay suppressed.
+- `Attempting { generation, operation, not_before_ns }`: a cancel or query operation has been armed under coordinator ownership and the coordinator lock has been released for the NT call;
+- `Backoff { not_before_ns }`: an operation occurred and no further operation is allowed before the deadline;
+- `PendingCancel { not_before_ns }`: NT reports its local pending-cancel request state; this is not a venue acknowledgment, and duplicate cancel calls stay suppressed.
 
-Attempt count, last attempt outcome, and typed health are diagnostic metadata, not alternate routing states. The implementation is an exhaustive match over coordinator state × authoritative observation; adding a state or observation must produce a compiler error until every pair is handled.
+Operation generation, checked cancel/query counters, last outcomes, and typed health are diagnostic metadata, not alternate order-state authority. The implementation is an exhaustive match over coordinator state × authoritative observation; adding a state or observation must produce a compiler error until every pair is handled.
 
 | Current state | `Missing` | `Retryable` | `PendingCancel` | `Terminal` |
 | --- | --- | --- | --- | --- |
-| `Ready` | On an origin request or timer drive, route once | On an origin request or timer drive, route once | Adopt `PendingCancel` with `retry_not_before_ns = observed_now_ns + retry_timeout`; do not route | Remove record |
-| `Backoff` | Suppress before the deadline; timer routes once at or after it | Suppress before the deadline; timer routes once at or after it | Enter `PendingCancel`; do not route | Remove record |
-| `PendingCancel` | Return to `Backoff` with the existing deadline; callback does not route | Return to `Backoff` with the existing deadline; callback does not route | Stay pending; do not route | Remove record |
+| `Ready` | An origin request or timer drive begins an NT `query_order` recovery from the immutable seed; never call cancel against a missing cache entry | An origin request or timer drive begins one cancel attempt | Adopt `PendingCancel` and arm its reconciliation deadline; do not cancel | Remove record |
+| `Attempting` | Settle to `Backoff` at the already-armed deadline | Settle to `Backoff` at the already-armed deadline | Settle to `PendingCancel` at the already-armed deadline | Remove record |
+| `Backoff` | Suppress before the deadline; timer begins one query at or after it | Suppress before the deadline; timer begins one cancel at or after it | Enter `PendingCancel`, preserving the armed deadline; do not cancel | Remove record |
+| `PendingCancel` | Return to `Backoff`; timer queries at or after the preserved deadline | Return to `Backoff`; timer cancels at or after the preserved deadline | Suppress before the deadline; timer queries, rather than re-canceling, at or after it | Remove record |
 
-The identical `Missing` and `Retryable` behavior is still represented explicitly so neither branch can silently drift. `Ready × PendingCancel` covers an externally initiated cancel. A stale `CancelRejected` while `Ready` only reconciles current cache state; callbacks never route.
+`Missing` is an invariant-recovery path, not a cancelable order state. The immutable query seed is used only to call NT's native `query_order`; it never supplies authoritative status. NT's execution reconciliation must restore a cache order or report terminal state before the coordinator can cancel or retire it. `Ready × PendingCancel` covers an externally initiated cancel. A stale `CancelRejected` while `Ready` only reconciles current cache state; callbacks never route.
 
 ### Attempt outcome, retry, and health rules
 
-Every actual cancel API invocation increments a checked attempt counter and arms `retry_not_before_ns = attempt_now_ns + cancel_retry_timeout`. This includes synchronous routing failures, so they cannot retry at timer cadence. A successful NT route enters `Backoff` while awaiting status; a synchronous failure also enters `Backoff` without claiming that NT accepted anything. `SkippedByPolicy` is not an attempt and advances neither counter nor routing state.
+Every actual cancel or query invocation increments its checked typed counter and arms the same checked not-before deadline. A checked total recovery-attempt counter drives escalation, so repeated cache-missing or locally-pending reconciliation cannot look healthy forever. Synchronous routing failures remain rate-limited. `SkippedByPolicy` is not an operation and advances neither counters nor routing state.
 
-`CancelRejected` never routes from its callback. Reconciliation normally sees NT's restored retryable status and preserves the current not-before deadline. If callback/cache ordering is stale and NT still says pending, the coordinator remains pending. A later timer makes the authoritative decision.
+Operations use a two-phase generation protocol because pinned NT publishes `OrderPendingCancel` synchronously before it sends the cancel command. Under the coordinator lock, the timer increments the generation and counters, arms the deadline, and enters `Attempting`; it then releases the lock before calling NT. A synchronous pending, rejection, retryable, missing, or terminal callback reconciles that generation through the exhaustive matrix. After NT returns, the caller reacquires the lock, re-reads authoritative cache state, and settles the result only if the same generation is still `Attempting`; a callback that already advanced or removed the record cannot be overwritten by stale return-path bookkeeping.
 
-At exactly `cancel_retry_escalation_attempts`, the record exposes typed `RetryEscalated` health and a loud error. Later timer drives continue rate-limited retries. If the retained quote deadline passes while the order is still retryable or missing, health becomes `CancellationDeadlineExceeded`; if it remains pending, health becomes `StuckPendingCancel`. Neither condition creates venue-paced retry churn. Attempt and health failures are isolated per record: every due sibling is processed, each primary error is retained, and one aggregate error is returned afterward.
+`CancelRejected` never routes from its callback. Reconciliation normally sees NT's restored retryable status and preserves the current not-before deadline. If NT still says locally pending, the coordinator remains pending. At its deadline the timer queries NT instead of invoking `cancel_order`, because pinned NT treats an already-pending cancel as `Ok` without sending another command. A later authoritative status report makes the cancel-or-retire decision.
+
+At exactly `cancel_recovery_escalation_attempts`, the record exposes `RetryEscalated` and a loud error. Later timer drives continue rate-limited recovery. Liveness health is a separate monotonic facet: the retained quote deadline yields `CancellationDeadlineExceeded` while retryable or missing, and `StuckPendingCancel` while locally pending. Escalation and liveness may coexist; neither overwrites the other. Exact-boundary collisions expose both facets. Neither condition creates venue-paced retry churn. Operation and health failures are isolated per record: every due sibling is processed, each primary error is retained, and one aggregate error is returned afterward.
 
 Cancel-all selects records by the exact routed `(instrument_id, order_side)` scope. An accepted route arms backoff for only those records. A synchronous failure also rate-limits only those records while reporting failure. `SkippedByPolicy` stamps none. Uncovered records remain immediately eligible.
 
@@ -120,7 +128,7 @@ The maker's `nautilus_strategy!` hook block implements `on_order_pending_cancel`
 
 The concrete stop hook is NT's `Strategy::stop() -> bool`, registered by `Trader`. Maker construction rejects `manage_stop = true`; the maker's tracked-order draining protocol and NT's position-closing managed stop cannot both own the same stop request. The maker archetype's canonical strategy envelope already uses `manage_stop = false`.
 
-If no tracked orders exist, the maker stop hook returns `true`. Otherwise it enters maker `Draining`, asks the coordinator to cancel all tracked orders, and returns `false`, so NT leaves the strategy `Running`; its timer and order callbacks continue. When reconciliation removes the last tracked order, the timer or callback completes shutdown through public `Component::stop(self)` and returns immediately without further quote refresh or routing. Only then does `DataActor::on_stop` deregister the timer, unsubscribe, and deactivate the maker runtime.
+If no tracked orders exist, the maker stop hook returns `true`. Otherwise it enters maker `Draining`, creates or merges a cancellation intent for every tracked order, and returns `false`, so NT leaves the strategy `Running`; its timer and order callbacks continue. While `Draining`, the timer drives only coordinator reconciliation and cancellation recovery. Quote planning, active-market refresh that can re-quote, new economics admission, and new submission are disabled with a typed loud skip; no new resting registration can be created. When reconciliation removes the last tracked order and cancellation record, the timer or callback completes shutdown through public `Component::stop(self)` and returns immediately without further work. Only then does `DataActor::on_stop` deregister the timer, unsubscribe, and deactivate the maker runtime.
 
 This stop protocol is independent of NT's position-closing `manage_stop` policy. Process-level forced termination cannot guarantee acknowledgement delivery and is not claimed as an in-process graceful-stop path.
 
@@ -133,11 +141,11 @@ Production economics admission and cancellation use one clock: the NT actor cloc
 | `requested_at_ns` | Original economics request | Quote lineage and provider validity calculation only |
 | `route_now_ns` | Fresh NT actor time at shared routing entry | Remaining-lifetime and admission evaluation before evidence or counters |
 | `pre_sink_now_ns` | Fresh NT actor time immediately before venue mutation | Final remaining-lifetime guard; failure drops the uncommitted admission permit and does not call the sink |
-| `retry_not_before_ns` | Checked `attempt_now_ns + retry_timeout` | Earliest timer-driven retry for success, rejection, or synchronous failure |
+| `operation_not_before_ns` | Checked `attempt_now_ns + retry_timeout` | Earliest next cancel or query operation after success, rejection, or synchronous failure |
 | `quote_deadline_ns` | Economics quote `valid_until_ns` | Cancellation health deadline |
 | `last_observed_ns` | Prior coordinator observation | Clock-regression rejection |
 
-`ExecutionEconomicsConfig` gains required, no-default positive `cancel_retry_timeout_ms` and `cancel_retry_escalation_attempts`. Every shipped economics TOML section and fixture is updated in the same branch state; serde defaults are forbidden.
+`ExecutionEconomicsConfig` gains required, no-default positive `cancel_retry_timeout_ms` and `cancel_recovery_escalation_attempts`. The latter counts all coordinator recovery operations, including invariant-recovery queries, rather than only cancel commands. Every shipped economics TOML section and fixture is updated in the same branch state; serde defaults are forbidden.
 
 If `C` is maker timer cadence, `R` retry timeout, and `ceil_to_cadence(R)` the first timer-observable retry delay, startup accepts configuration only when checked arithmetic proves:
 
@@ -168,19 +176,21 @@ Tests are behavioral; no source-scanning test is added.
 | Every economics caller is purpose-typed | Edge candidate sizing, edge final entry, maker final entry, planned exit, and forced reduction each assert derived intent, lifecycle, role, value, and admission purpose; cancel-only maker actions require no scenario |
 | Cross-purpose pairing is impossible | Scenario constructors derive intent/lifecycle privately; compilation and direct API review confirm raw constructors are gone |
 | Final base-quantity coherence | Multi-level coarse rounding and over-cover truncation assert retained legs, recomputed gross, provider fee, edge basis, planned notional, distinct reservation liability, and final binding |
-| Final quote-quantity coherence | The same multi-level case uses a quote-quantity order and asserts quote consumption, divide-by-price base legs, planned notional, gross, and binding |
+| Final quote-quantity coherence | The same multi-level case uses a quote-quantity order and asserts exact quote consumption, toward-zero base flooring at instrument precision, bounded non-executable dust, planned notional, gross, provider fee, full reservation liability, and binding |
 | Price-less order support | A market quote-quantity order seals without inventing a limit; invalid or under-covering levels fail |
 | Fail-before-mutation construction | Under-cover, invalid price/quantity, limit violation, scenario mismatch, and exit-clamp mismatch leave evidence, pending exposure, counters, registration, sink calls, and venue state unchanged |
-| Exhaustive cancellation transitions | A table-driven test covers all 12 coordinator-state × observation pairs, including `Ready × PendingCancel`, stale rejection while ready, and explicit identical missing/retryable behavior |
-| Rejection and stale-event safety | `Backoff -> PendingCancel -> CancelRejected/open` becomes timer-retryable at the preserved deadline; delayed rejection against newer pending/terminal cache state cannot override it |
-| Fill and correction safety | A partial `OrderFilled` with positive leaves retains cancellation tracking; a full fill or zero leaves retires it; a later reopened `OrderFillVoided` creates a cancellation-only record and routes only on the next timer |
-| Retry-rate floor | Repeated synchronous failures and accepted-but-unacknowledged attempts do not retry before the timeout, retry exactly at the boundary, and remain sibling-isolated |
-| Attempt escalation | The exact configured attempt threshold exposes `RetryEscalated`; a later timer still performs one bounded retry |
-| Pending/deadline health | Pending suppresses duplicates and becomes `StuckPendingCancel`; retryable/missing becomes `CancellationDeadlineExceeded` at the quote deadline |
+| Cancellation-intent gate | A healthy tracked resting order has no coordinator record and survives repeated timer drives without a cancel; each origin creates or merges exactly one intent |
+| Exhaustive cancellation transitions | A table-driven test covers all 16 coordinator-state × observation pairs, including `Attempting` re-entry, `Ready × PendingCancel`, stale rejection while ready, and distinct missing-query/retryable-cancel actions |
+| Missing-cache recovery | Through the real NT query/reconciliation boundary, a missing cached order is queried, never passed to cancel, and reaches either restored cancel routing or terminal retirement without starving siblings |
+| Reentrant rejection and stale-event safety | Synchronous pending, rejection, and terminal callbacks before the NT call returns cannot be overwritten; `Backoff -> PendingCancel -> CancelRejected/open` becomes timer-retryable at the preserved deadline; delayed rejection against newer pending/terminal cache state cannot override it |
+| Fill and correction safety | While `Running`, a partial `OrderFilled` with positive leaves retains cancellation tracking; a full fill or zero leaves retires it; a later reopened `OrderFillVoided` creates a cancellation-only record and routes only on the next timer; after `Component::stop`, residual events are observable through NT but no strategy callback or automatic cancellation is claimed |
+| Retry-rate floor | Repeated synchronous failures, missing-cache queries, and locally pending attempts do not perform another operation before the timeout, perform exactly one at the boundary, and remain sibling-isolated |
+| Attempt escalation and health composition | The exact configured total recovery-attempt threshold exposes `RetryEscalated`; a later timer still performs one bounded operation; threshold/deadline collisions retain both escalation and liveness facets |
+| Pending/deadline health | Local pending suppresses duplicate cancel commands and becomes `StuckPendingCancel`; retryable/missing becomes `CancellationDeadlineExceeded` at the quote deadline |
 | Cancel-all scoping | One-side cancel-all affects only matching records; synchronous failure rate-limits only that scope; shadow skip affects none |
 | One clock and remaining lifetime | Missing/zero/overflow/cadence config fails; delayed routing that passes total lifetime but lacks remaining margin fails before evidence; exact boundary succeeds; clock regression fails |
 | Pre-sink recheck and rollback | An injected clock advance between admission and sink blocks the sink and proves counter/reservation/registration rollback |
-| Real graceful stop | Maker construction rejects `manage_stop = true`; through NT's real `Strategy::stop`/`Trader` lifecycle, stop returns deferred while records remain, timer/callback processing continues, and `Component::stop` runs only after the last terminal observation |
+| Real graceful stop | Maker construction rejects `manage_stop = true`; through NT's real `Strategy::stop`/`Trader` lifecycle under active quoting conditions, stop returns deferred while records remain, timer/callback processing continues, zero new quote/admission/submit calls occur after the request, and `Component::stop` runs only after the last record retires |
 | Fee-seam deletion without collateral loss | Provider formula and replay parity tests remain; settlement dispatch, maker quote-target dispatch, and unknown-family failure tests remain after fee assertions are removed |
 
 Existing fail-before-mutation admission and resting-refresh tests remain regression evidence. Deletion of obsolete public paths is established by compilation and reviewer diff/symbol inspection, not by testing source text.

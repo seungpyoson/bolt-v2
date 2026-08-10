@@ -2542,13 +2542,10 @@ impl BoltV3SubmitAdmissionState {
                     )
                     .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics));
                 }
-                BoltV3CapitalAdmissionSubmitDecision::Accepted {
-                    rollback,
-                    reservation_attribution,
-                } => {
+                BoltV3CapitalAdmissionSubmitDecision::Accepted(accepted) => {
                     return Ok(BoltV3SubmitAdmissionEvaluation::admitted_with_rollback(
-                        rollback,
-                        reservation_attribution,
+                        accepted.rollback,
+                        accepted.reservation_attribution,
                         now_ns,
                     )
                     .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics));
@@ -3233,11 +3230,14 @@ struct BoltV3CapitalAdmissionReservationRollback {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct BoltV3CapitalAdmissionAcceptance {
+    rollback: Option<BoltV3CapitalAdmissionReservationRollback>,
+    reservation_attribution: Option<ReservationAttribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum BoltV3CapitalAdmissionSubmitDecision {
-    Accepted {
-        rollback: Option<BoltV3CapitalAdmissionReservationRollback>,
-        reservation_attribution: Option<ReservationAttribution>,
-    },
+    Accepted(Box<BoltV3CapitalAdmissionAcceptance>),
     Rejected {
         reason: BoltV3CapitalAdmissionRejectReason,
     },
@@ -4073,7 +4073,7 @@ fn evaluate_capital_admission_submit(
             }),
         },
     );
-    BoltV3CapitalAdmissionSubmitDecision::Accepted {
+    BoltV3CapitalAdmissionSubmitDecision::Accepted(Box::new(BoltV3CapitalAdmissionAcceptance {
         rollback: Some(BoltV3CapitalAdmissionReservationRollback {
             client_order_id: request.client_order_id.clone(),
             submit_reservation_id,
@@ -4081,7 +4081,7 @@ fn evaluate_capital_admission_submit(
             observed_at_ns: now_ns,
         }),
         reservation_attribution: Some(reservation_attribution),
-    }
+    }))
 }
 
 fn compiled_order_side_matches_request(
@@ -4288,10 +4288,10 @@ fn compose_capital_admission_state_from_components(
 }
 
 fn accepted_without_reservation() -> BoltV3CapitalAdmissionSubmitDecision {
-    BoltV3CapitalAdmissionSubmitDecision::Accepted {
+    BoltV3CapitalAdmissionSubmitDecision::Accepted(Box::new(BoltV3CapitalAdmissionAcceptance {
         rollback: None,
         reservation_attribution: None,
-    }
+    }))
 }
 
 fn rejected_capital_admission(
@@ -4472,10 +4472,12 @@ mod fail_closed_invariant_tests {
     fn capital_admission_submit_decisions_make_rejection_context_structural() {
         assert_eq!(
             accepted_without_reservation(),
-            BoltV3CapitalAdmissionSubmitDecision::Accepted {
-                rollback: None,
-                reservation_attribution: None,
-            }
+            BoltV3CapitalAdmissionSubmitDecision::Accepted(Box::new(
+                BoltV3CapitalAdmissionAcceptance {
+                    rollback: None,
+                    reservation_attribution: None,
+                },
+            ))
         );
         assert_eq!(
             rejected_capital_admission(BoltV3CapitalAdmissionRejectReason::OverBudget),

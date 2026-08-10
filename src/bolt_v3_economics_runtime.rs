@@ -388,7 +388,7 @@ impl BoundExecutionEconomics {
         })
     }
 
-    pub fn quote_sizing(
+    pub(crate) fn quote_sizing(
         &self,
         intent: EconomicsSizingIntent,
     ) -> Result<EconomicsSizingQuote, EconomicsAdmissionError> {
@@ -529,18 +529,69 @@ impl EconomicsAdmissionPolicy {
 }
 
 pub struct EconomicsAdmissionIntent {
-    pub request: EconomicsQuoteRequest,
-    pub order_binding: EconomicsOrderBinding,
-    pub policy: EconomicsAdmissionPolicy,
-    pub gross_expected_value: Decimal,
-    pub reservation_basis: Decimal,
+    request: EconomicsQuoteRequest,
+    order_binding: EconomicsOrderBinding,
+    policy: EconomicsAdmissionPolicy,
+    gross_expected_value: Decimal,
+    reservation_basis: Decimal,
 }
 
-pub struct EconomicsSizingIntent {
-    pub request: EconomicsQuoteRequest,
-    pub policy: EconomicsAdmissionPolicy,
-    pub gross_expected_value: Decimal,
-    pub reservation_basis: Decimal,
+impl EconomicsAdmissionIntent {
+    pub(crate) fn new(
+        request: EconomicsQuoteRequest,
+        order_binding: EconomicsOrderBinding,
+        policy: EconomicsAdmissionPolicy,
+        gross_expected_value: Decimal,
+        reservation_basis: Decimal,
+    ) -> Self {
+        Self {
+            request,
+            order_binding,
+            policy,
+            gross_expected_value,
+            reservation_basis,
+        }
+    }
+
+    #[cfg(feature = "test-current-evidence-inspection")]
+    pub fn for_test(
+        request: EconomicsQuoteRequest,
+        order_binding: EconomicsOrderBinding,
+        policy: EconomicsAdmissionPolicy,
+        gross_expected_value: Decimal,
+        reservation_basis: Decimal,
+    ) -> Self {
+        Self::new(
+            request,
+            order_binding,
+            policy,
+            gross_expected_value,
+            reservation_basis,
+        )
+    }
+}
+
+pub(crate) struct EconomicsSizingIntent {
+    request: EconomicsQuoteRequest,
+    policy: EconomicsAdmissionPolicy,
+    gross_expected_value: Decimal,
+    reservation_basis: Decimal,
+}
+
+impl EconomicsSizingIntent {
+    pub(crate) const fn new(
+        request: EconomicsQuoteRequest,
+        policy: EconomicsAdmissionPolicy,
+        gross_expected_value: Decimal,
+        reservation_basis: Decimal,
+    ) -> Self {
+        Self {
+            request,
+            policy,
+            gross_expected_value,
+            reservation_basis,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -786,13 +837,13 @@ pub fn refresh_resting_order_economics(
     let mut request = prior.request.clone();
     request.planned_fill_legs[0].quantity = remaining_quantity;
     request.requested_at_ns = now_ns;
-    let refreshed = match source.quote_admission(EconomicsAdmissionIntent {
+    let refreshed = match source.quote_admission(EconomicsAdmissionIntent::new(
         request,
-        order_binding: prior.order_binding.clone(),
-        policy: prior.policy,
+        prior.order_binding.clone(),
+        prior.policy,
         gross_expected_value,
         reservation_basis,
-    }) {
+    )) {
         Ok(admission) => admission,
         Err(_) => {
             return resting_cancel(RestingOrderEconomicsCancelReason::QuoteUnavailable);

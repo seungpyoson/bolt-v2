@@ -425,13 +425,10 @@ impl BoltV3OrderEconomicsHandle {
             if !fill_void || order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO {
                 return Ok(());
             }
-            let recovery_deadline_ns = now_ns
-                .checked_add(retry_timeout_ns)
-                .ok_or_else(|| anyhow::anyhow!("fill-void cancellation deadline overflow"))?;
             entry.insert(TrackedMakerOrderRecord {
                 economics: None,
                 query_seed: NtOrderQuerySeed::new(order.clone()),
-                cancellation: Some(RestingOrderCancelRecord::new(recovery_deadline_ns)),
+                cancellation: Some(RestingOrderCancelRecord::new(now_ns)),
             });
         }
         let Some(record) = records.get_mut(&client_order_id) else {
@@ -519,14 +516,14 @@ impl BoltV3OrderEconomicsHandle {
         let reservation_basis =
             PlannedFillNotional::from_legs(&request.planned_fill_legs)?.amount();
         self.economics
-            .quote_sizing(EconomicsSizingIntent {
+            .quote_sizing(EconomicsSizingIntent::new(
                 request,
-                policy: EconomicsAdmissionPolicy::TradingEdge {
+                EconomicsAdmissionPolicy::TradingEdge {
                     minimum_core_edge_ratio: intent.terminal_value_entry.minimum_core_edge_ratio(),
                 },
                 gross_expected_value,
                 reservation_basis,
-            })
+            ))
             .map_err(Into::into)
     }
 
@@ -628,13 +625,13 @@ pub fn build_order_economics_submit_admission(
     );
     let admission = economics
         .economics
-        .quote_admission(EconomicsAdmissionIntent {
-            request: economics_request,
-            order_binding: basis.order_binding().clone(),
-            policy: basis.policy(),
-            gross_expected_value: basis.gross_expected_value(),
-            reservation_basis: basis.reservation_basis(),
-        })
+        .quote_admission(EconomicsAdmissionIntent::new(
+            economics_request,
+            basis.order_binding().clone(),
+            basis.policy(),
+            basis.gross_expected_value(),
+            basis.reservation_basis(),
+        ))
         .map_err(|error| {
             anyhow::anyhow!(
                 "final-order economics quote failed at requested_at_ns={requested_at_ns}: {error}"
@@ -831,81 +828,22 @@ where
     }
     let now_ns = sink.actor_time_ns()?;
     let selected = order_economics.request_cancel_scope(instrument_id, order_side, now_ns)?;
-    let retry_timeout_ns = order_economics.economics.cancel_retry_timeout_ns()?;
-    let escalation_attempts = order_economics
-        .economics
-        .cancel_recovery_escalation_attempts();
-    let mut armed = Vec::new();
+    let mut observations = Vec::with_capacity(selected.len());
     let mut failures = Vec::new();
-    for client_order_id in &selected {
-        let cached = sink.cached_order(*client_order_id)?;
-        let mut records = order_economics
-            .tracked_orders
-            .write()
-            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = records.get_mut(client_order_id) else {
-            continue;
-        };
-        let Some(cancellation) = record.cancellation.as_mut() else {
-            continue;
-        };
-        match cancellation.plan_drive(
-            &mut record.query_seed,
-            cached.as_ref(),
-            now_ns,
-            retry_timeout_ns,
-            escalation_attempts,
-        ) {
-            Ok((CancelTransition::Remove, _)) => {
-                records.remove(client_order_id);
-            }
-            Ok((_, Some(operation))) if operation.kind == CancelOperationKind::Cancel => {
-                armed.push((*client_order_id, operation.generation));
-            }
-            Ok(_) => {}
+    for client_order_id in selected {
+        match sink.cached_order(client_order_id) {
+            Ok(cached) => observations.push((client_order_id, cached)),
             Err(error) => failures.push(error.to_string()),
         }
     }
-
-    let route = policy.route_cancel_all_with_sink(
+    if let Err(error) = drive_resting_order_economics(
+        order_economics,
+        policy,
         sink,
-        instrument_id,
-        order_side,
-        Some(ClientId::from(execution_client_id)),
-        None,
-    );
-    for (client_order_id, generation) in armed {
-        let cached = sink.cached_order(client_order_id)?;
-        let settle_now_ns = sink.actor_time_ns()?;
-        let mut records = order_economics
-            .tracked_orders
-            .write()
-            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = records.get_mut(&client_order_id) else {
-            continue;
-        };
-        let Some(cancellation) = record.cancellation.as_mut() else {
-            continue;
-        };
-        if route.is_err() {
-            cancellation.settle_synchronous_failure(generation);
-            continue;
-        }
-        match cancellation.settle_operation(
-            generation,
-            &mut record.query_seed,
-            cached.as_ref(),
-            settle_now_ns,
-            retry_timeout_ns,
-        ) {
-            Ok(CancelTransition::Remove) => {
-                records.remove(&client_order_id);
-            }
-            Ok(_) => {}
-            Err(error) => failures.push(error.to_string()),
-        }
-    }
-    if let Err(error) = route {
+        execution_client_id,
+        observations,
+        now_ns,
+    ) {
         failures.push(error.to_string());
     }
     if failures.is_empty() {
@@ -2330,7 +2268,8 @@ mod tests {
     use ustr::Ustr;
 
     use super::{
-        BoltV3CancelAllRoutingOutcome, BoltV3CancelRoutingOutcome, BoltV3FinalOrderEconomicsInput,
+        BoltV3CancelAllRoutingOutcome, BoltV3CancelRoutingOutcome,
+        BoltV3CancellationLivenessFailure, BoltV3FinalOrderEconomicsInput,
         BoltV3FinalOrderEconomicsScenario, BoltV3MakerOrderRoutingContext, BoltV3MakerOrderRuntime,
         BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode,
         BoltV3OrderExecutionPolicy, BoltV3PlannedFillLeg, BoltV3SubmitContext,
@@ -2953,6 +2892,10 @@ mod tests {
             assert!(recreated.economics.is_none());
             assert!(recreated.cancellation.is_some());
         }
+        assert_eq!(
+            order_economics.resting_cancel_health().unwrap()[0].liveness(),
+            Some(BoltV3CancellationLivenessFailure::CancellationDeadlineExceeded)
+        );
 
         runtime
             .venue_sink
@@ -2967,24 +2910,8 @@ mod tests {
             vec![(client_order_id, Some(order))],
             4,
         )
-        .unwrap();
+        .expect_err("a reopened fill routes cancellation and remains loudly past its deadline");
         assert_eq!(runtime.venue_sink.cancel_calls, 1);
-    }
-
-    #[test]
-    fn fill_void_recovery_deadline_overflow_fails_before_tracking() {
-        let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
-            "maker_execution_client",
-        );
-        let order = limit_order("MAKER-FILL-VOID-OVERFLOW");
-        let client_order_id = order.client_order_id();
-
-        let error = order_economics
-            .reconcile_fill_void_at(client_order_id, Some(order), u64::MAX)
-            .expect_err("a fill-void deadline overflow must fail before registration");
-
-        assert!(error.to_string().contains("deadline overflow"));
-        assert!(order_economics.resting_order_ids().unwrap().is_empty());
     }
 
     #[test]
@@ -3258,16 +3185,9 @@ mod tests {
                 order_side: Some(OrderSide::Buy),
             }
         );
-        assert_eq!(runtime.venue_sink.cancel_all_calls, 1);
-        assert_eq!(
-            runtime.venue_sink.cancel_all_requests,
-            vec![(
-                InstrumentId::from("NO.INSTRUMENT"),
-                Some(OrderSide::Buy),
-                Some(ClientId::from("maker_execution_client")),
-            )]
-        );
-        assert_eq!(runtime.venue_sink.cancel_calls, 0);
+        assert_eq!(runtime.venue_sink.cancel_all_calls, 0);
+        assert!(runtime.venue_sink.cancel_all_requests.is_empty());
+        assert_eq!(runtime.venue_sink.cancel_calls, 1);
         assert_eq!(writer.order_intents().len(), 1);
         assert_eq!(writer.admission_count(), 1);
         let records = order_economics.tracked_orders.read().unwrap();
@@ -3284,6 +3204,26 @@ mod tests {
                 .unwrap()
                 .cancellation
                 .is_none()
+        );
+        drop(records);
+
+        route_maker_order_command_with_runtime(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut runtime,
+            writer.as_ref(),
+            admission.as_ref(),
+            maker_routing_context(&order_economics),
+            MakerOrderDispatchInput {
+                command: &command,
+                submit_order_prefix: "maker_submit",
+            },
+        )
+        .expect("repeated cancel-all origin should merge into the existing backoff");
+
+        assert_eq!(runtime.venue_sink.cancel_all_calls, 0);
+        assert_eq!(
+            runtime.venue_sink.cancel_calls, 1,
+            "a repeated cancel-all origin must not bypass coordinator backoff"
         );
     }
 

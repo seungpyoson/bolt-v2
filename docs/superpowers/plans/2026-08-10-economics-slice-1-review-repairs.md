@@ -740,9 +740,9 @@ running-state fill-void reopen
 
 Keep `route_cancel_with_sink` for untracked transient edge-taker cancels, but make the coordinator its only caller for tracked maker orders. This is one mechanics boundary, not two retry authorities.
 
-- [ ] **Step 13: Make cancel-all scope and policy outcomes fail-atomic**
+- [ ] **Step 13: Route cancel-all scope through the per-order coordinator**
 
-Select exact `(instrument_id, order_side)` records. Arm matching records before one NT cancel-all call, allowing synchronous callbacks to reconcile generations. On `CanceledAll`, settle only matching records. On synchronous error, apply backoff only to matching records. On `SkippedByPolicy`, restore the untouched pre-attempt state and counters for every selected record. Uncovered records remain eligible.
+Select exact `(instrument_id, order_side)` records and create or merge their cancellation intents. Do not call NT's scope-wide cancel API: it cannot exclude a matching record that the coordinator says is already pending or still in backoff. Fan out through the same per-order coordinator driver as every other tracked-maker origin, so each record independently chooses cancel, query, or no operation. On synchronous error, apply backoff only to that record and continue siblings. On `SkippedByPolicy`, create no intents or operations. Uncovered records remain eligible. Add a repeated-origin assertion proving that cancel-all cannot bypass an existing pending/backoff deadline.
 
 - [ ] **Step 14: Remove quote-lifecycle retry authority**
 

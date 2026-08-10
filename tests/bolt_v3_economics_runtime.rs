@@ -40,6 +40,39 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 
+macro_rules! economics_admission_intent {
+    (
+        $request:ident,
+        order_binding: $order_binding:expr,
+        policy: $policy:expr,
+        gross_expected_value: $gross_expected_value:expr,
+        reservation_basis: $reservation_basis:expr $(,)?
+    ) => {
+        economics_admission_intent! {
+            request: $request,
+            order_binding: $order_binding,
+            policy: $policy,
+            gross_expected_value: $gross_expected_value,
+            reservation_basis: $reservation_basis,
+        }
+    };
+    (
+        request: $request:expr,
+        order_binding: $order_binding:expr,
+        policy: $policy:expr,
+        gross_expected_value: $gross_expected_value:expr,
+        reservation_basis: $reservation_basis:expr $(,)?
+    ) => {
+        EconomicsAdmissionIntent::for_test(
+            $request,
+            $order_binding,
+            $policy,
+            $gross_expected_value,
+            $reservation_basis,
+        )
+    };
+}
+
 fn id<T>(
     value: &str,
     constructor: impl FnOnce(String) -> Result<T, bolt_v2::economics::EconomicsError>,
@@ -277,7 +310,7 @@ fn maker_admission_for_refresh(
     request.liquidity_role = LiquidityRole::GuaranteedMaker;
     request.requested_at_ns = 1_000_000_000;
     bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request,
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -455,7 +488,7 @@ fn hyperliquid_maker_admission_for_refresh(
     request.liquidity_role = LiquidityRole::GuaranteedMaker;
     request.requested_at_ns = 1_000_000_000;
     bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request,
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -586,7 +619,7 @@ fn bound_execution_economics_routes_edge_basis_by_exact_product_scope() {
         .expect("matching authority should bind");
     let request = quote_request("token-yes.POLYMARKET", "binary_outcome");
     let admission = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request,
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -615,7 +648,7 @@ fn bound_execution_economics_quotes_and_folds_admission_from_one_authority() {
         .expect("matching authority should bind");
 
     let admission = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -656,7 +689,7 @@ fn bound_execution_economics_enforces_the_declared_minimum_net_edge() {
         .expect("matching authority should bind");
 
     let error = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -689,7 +722,7 @@ fn bound_execution_economics_rejects_stale_required_valuation() {
         .expect("authority shape should bind before quote-time freshness evaluation");
 
     let error = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -713,7 +746,7 @@ fn execution_economics_rejects_missing_required_valuation_authority() {
     let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
         .expect("TOML authority should bind before a runtime scope is published");
     let error = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -743,7 +776,7 @@ fn bound_execution_economics_rejects_foreign_reporting_policy() {
     request.reporting_policy_id = id("foreign-reporting-policy", ReportingPolicyId::try_new);
 
     let error = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request,
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -768,7 +801,7 @@ fn bound_execution_economics_rejects_foreign_product_edge_policy() {
     request.edge_basis_policy_id = id("foreign-edge-policy", EdgeBasisPolicyId::try_new);
 
     let error = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request,
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -789,7 +822,7 @@ fn execution_economics_rotates_authoritative_scopes_without_rebinding() {
     let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
         .expect("TOML authority should bind before the first runtime snapshot");
     let quote = |instrument_id: &str| {
-        bound.quote_admission(EconomicsAdmissionIntent {
+        bound.quote_admission(economics_admission_intent! {
             request: quote_request(instrument_id, "binary_outcome"),
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -1035,7 +1068,7 @@ fn execution_economics_builds_the_adapter_from_the_loaded_toml() {
         .expect("loaded TOML and raw market authority should construct the adapter");
 
     let admission = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -1063,7 +1096,7 @@ fn hyperliquid_execution_economics_binds_from_offline_toml_and_raw_authority() {
     let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
         .expect("offline Hyperliquid TOML and raw authority should bind");
     let admission = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request: hyperliquid_quote_request(),
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -1096,7 +1129,7 @@ fn hyperliquid_execution_economics_rejects_foreign_account_authority() {
     let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
         .expect("TOML authority should bind before the runtime scope is evaluated");
     let error = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request: hyperliquid_quote_request(),
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -1128,7 +1161,7 @@ fn hyperliquid_execution_economics_rejects_mismatched_product_source() {
     let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
         .expect("TOML authority should bind before the runtime scope is evaluated");
     let error = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request: hyperliquid_quote_request(),
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {
@@ -1160,7 +1193,7 @@ fn hyperliquid_execution_economics_rejects_mismatched_funding_source() {
     let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
         .expect("TOML authority should bind before the runtime scope is evaluated");
     let error = bound
-        .quote_admission(EconomicsAdmissionIntent {
+        .quote_admission(economics_admission_intent! {
             request: hyperliquid_quote_request(),
             order_binding: order_binding(),
             policy: EconomicsAdmissionPolicy::TradingEdge {

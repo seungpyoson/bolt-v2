@@ -9,8 +9,9 @@ use bolt_v2::{
         RestingOrderEconomicsRefresh, bind_execution_economics, refresh_resting_order_economics,
     },
     bolt_v3_order_execution::{
-        BoltV3OrderEconomicsHandle, BoltV3OrderEconomicsIntent, BoltV3PlannedFillLeg,
-        order_intent_details_from_compiled_order,
+        BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario,
+        BoltV3OrderEconomicsHandle, BoltV3PlannedFillLeg, BoltV3TerminalValueEntry,
+        build_order_economics_submit_admission, order_intent_details_from_compiled_order,
     },
     bolt_v3_providers::{
         hyperliquid::{
@@ -23,17 +24,13 @@ use bolt_v2::{
             authoritative_economics_input as polymarket_authoritative_economics_input,
         },
     },
-    bolt_v3_submit_admission::{
-        BoltV3SubmitAdmissionRequestInput, BoltV3SubmitIntentKind, OrderValuationContext,
-        build_submit_admission_request_from_economics,
-    },
+    bolt_v3_submit_admission::OrderValuationContext,
     economics::{
         AccountId, CurrencyId, DecisionCorrelationId, EconomicsInstrumentId, EconomicsQuoteRequest,
         EdgeBasisPolicyId, ExecutionClientId, LifecyclePath, LiquidityRole, OrderSide,
         PlannedFillLeg, PositionContext, PositionId, PositionSide, ProductSurfaceId,
         ReportingPolicyId, RoutingContext, SnapshotId, SourceIdentity, VenueEconomicsUnavailable,
     },
-    integrations::nautilus::economics::NautilusEstimateLiquidityRole,
 };
 use nautilus_model::{
     enums::{OrderSide as NautilusOrderSide, TimeInForce},
@@ -531,34 +528,27 @@ fn final_nautilus_order_routes_through_its_exact_provider_authority() {
         "0.50".to_string(),
         &order,
     );
-    let admission_input = BoltV3SubmitAdmissionRequestInput {
-        execution_client_id: "polymarket_main",
-        intent: &intent,
-        intent_kind: BoltV3SubmitIntentKind::Entry,
-        order: &order,
-        valuation: OrderValuationContext::empty(),
-        risk_reducing_exit_position: None,
-    };
-
-    let admission = handle
-        .quote_admission(BoltV3OrderEconomicsIntent {
-            request: &admission_input,
-            planned_fill_legs: vec![BoltV3PlannedFillLeg {
+    let sealed = build_order_economics_submit_admission(
+        &handle,
+        BoltV3FinalOrderEconomicsInput {
+            execution_client_id: "polymarket_main",
+            intent: &intent,
+            order: &order,
+            valuation: OrderValuationContext::empty(),
+            risk_reducing_exit_position: None,
+            scenario: BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
+                BoltV3TerminalValueEntry::try_new(Decimal::new(6, 1), Decimal::ZERO)
+                    .expect("terminal value should construct"),
+            ),
+            candidate_fill_levels: vec![BoltV3PlannedFillLeg {
                 price: Decimal::new(5, 1),
                 quantity: Decimal::TEN,
             }],
-            liquidity_role: NautilusEstimateLiquidityRole::Taker,
-            position: None,
-            lifecycle_path: LifecyclePath::HoldToRedemption,
             requested_at_ns: 1_000,
             decision_correlation_id: "decision-final-order",
-            gross_expected_value: Decimal::ONE,
-            minimum_core_edge_ratio: Decimal::ZERO,
-        })
-        .expect("the exact final order identity should reach its provider quote");
-
-    let sealed = build_submit_admission_request_from_economics(admission_input, admission)
-        .expect("shared admission should consume the exact economics result");
+        },
+    )
+    .expect("the exact final order identity should reach its provider quote");
 
     assert_eq!(
         sealed.economics().request().instrument_id.as_str(),

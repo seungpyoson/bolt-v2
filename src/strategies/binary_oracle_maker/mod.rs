@@ -63,7 +63,7 @@ use crate::{
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
-        BoltV3MakerOrderRoutingContext,
+        BoltV3MakerOrderRoutingContext, BoltV3TerminalValueEntry,
         route_maker_order_command as route_maker_order_command_through_policy,
     },
     bolt_v3_order_intent::NtOrderTemplate,
@@ -327,9 +327,9 @@ pub struct BinaryOracleMakerMarketActionRouteInput<'a> {
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    /// Strategy-owned gross value assumption for a submit action. Cancel-only
-    /// actions do not consume it.
-    pub gross_expected_value: Decimal,
+    /// Strategy-owned terminal value for a submit action. Cancel-only actions
+    /// do not consume it.
+    pub terminal_value_entry: Option<BoltV3TerminalValueEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -359,12 +359,12 @@ pub struct BinaryOracleMakerRiskRouteOutcome {
     pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
 }
 
-fn maker_command_gross_expected_value(
+fn maker_command_terminal_value_entry(
     command: &MakerCompiledOrderCommand,
     fair_probability_up: f64,
-) -> Result<Decimal> {
+) -> Result<Option<BoltV3TerminalValueEntry>> {
     let MakerCompiledOrderCommand::Submit { leg, inputs, .. } = command else {
-        return Ok(Decimal::ZERO);
+        return Ok(None);
     };
     let fair_probability_up = Decimal::from_f64(fair_probability_up)
         .filter(|value| (Decimal::ZERO..=Decimal::ONE).contains(value))
@@ -373,16 +373,14 @@ fn maker_command_gross_expected_value(
         Leg::Yes => fair_probability_up,
         Leg::No => Decimal::ONE - fair_probability_up,
     };
-    let price = inputs
-        .price
-        .ok_or_else(|| anyhow::anyhow!("maker economics requires a limit price"))?
-        .to_string()
-        .parse::<Decimal>()?;
-    let quantity = inputs.quantity.to_string().parse::<Decimal>()?;
-    outcome_probability
-        .checked_sub(price)
-        .and_then(|edge| edge.checked_mul(quantity))
-        .ok_or_else(|| anyhow::anyhow!("maker gross expected value arithmetic overflow"))
+    anyhow::ensure!(
+        inputs.price.is_some() && inputs.quantity.as_f64() > 0.0,
+        "maker economics requires a positive priced submit"
+    );
+    Ok(Some(BoltV3TerminalValueEntry::try_new(
+        outcome_probability,
+        Decimal::ZERO,
+    )?))
 }
 
 impl std::fmt::Debug for BinaryOracleMaker {
@@ -461,7 +459,7 @@ impl BinaryOracleMaker {
         &mut self,
         command: &MakerCompiledOrderCommand,
         submit_order_prefix: &str,
-        gross_expected_value: Decimal,
+        terminal_value_entry: Option<BoltV3TerminalValueEntry>,
     ) -> Result<MakerOrderDispatchOutcome> {
         let policy = self.context.order_execution_policy();
         let decision_evidence = self
@@ -481,7 +479,7 @@ impl BinaryOracleMaker {
                 strategy_id: strategy_id.as_str(),
                 execution_client_id: execution_client_id.as_str(),
                 order_economics: &order_economics,
-                gross_expected_value,
+                terminal_value_entry,
             },
             MakerOrderDispatchInput {
                 command,
@@ -639,12 +637,12 @@ impl BinaryOracleMaker {
                 .fair_probability_up;
             let mut route_command =
                 |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-                    let gross_expected_value =
-                        maker_command_gross_expected_value(command, fair_probability_up)?;
+                    let terminal_value_entry =
+                        maker_command_terminal_value_entry(command, fair_probability_up)?;
                     self.route_maker_order_command(
                         command,
                         submit_order_prefix,
-                        gross_expected_value,
+                        terminal_value_entry,
                     )
                 };
             Some(dispatch_maker_runtime_order_plan_with_command_router(
@@ -821,14 +819,18 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            gross_expected_value,
+            terminal_value_entry,
         } = input;
 
         let action_kind = action.action;
         let order_plan = maker_order_plan_from_market_action(action);
 
         let mut route_command = |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-            self.route_maker_order_command(command, submit_order_prefix, gross_expected_value)
+            self.route_maker_order_command(
+                command,
+                submit_order_prefix,
+                terminal_value_entry.clone(),
+            )
         };
         let orders = dispatch_maker_runtime_order_plan_with_command_router(
             MakerRuntimeOrderDispatchInput {
@@ -893,7 +895,7 @@ impl BinaryOracleMaker {
                     price_precision,
                     quantity_precision,
                     submit_order_prefix,
-                    gross_expected_value: Decimal::ZERO,
+                    terminal_value_entry: None,
                 })?
                 .orders,
             )

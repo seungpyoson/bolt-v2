@@ -91,8 +91,9 @@ use crate::{
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransition,
     bolt_v3_order_execution::{
-        BoltV3PlannedFillLeg, BoltV3SubmitContext, BoltV3SubmitRoutingOutcome,
-        BoltV3SubmitRoutingRequest, BoltV3TakerEconomicsSizingInput,
+        BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario, BoltV3PlannedFillLeg,
+        BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
+        BoltV3TakerEconomicsSizingInput, BoltV3TerminalValueEntry,
         build_order_economics_submit_admission, order_intent_details_from_compiled_order,
     },
     bolt_v3_order_intent::{
@@ -136,8 +137,6 @@ use crate::{
     },
     bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
     bolt_v3_trade_flow::SignedTradeFlowConfig,
-    economics::{LifecyclePath, PlannedFillLeg, PlannedFillNotional},
-    integrations::nautilus::economics::NautilusEstimateLiquidityRole,
     strategies::registry::{StrategyBuilder, ValidationError},
 };
 
@@ -162,52 +161,16 @@ pub mod archetype;
 mod selection;
 
 enum StrategyEconomicsInput {
-    Exact {
-        gross_expected_value: Decimal,
-        planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
-        minimum_core_edge_ratio: Decimal,
+    TerminalEntry {
+        terminal_value_entry: BoltV3TerminalValueEntry,
+        candidate_fill_levels: Vec<BoltV3PlannedFillLeg>,
+    },
+    PlannedExit {
+        stored_entry_cost_per_unit: Decimal,
+        candidate_fill_levels: Vec<BoltV3PlannedFillLeg>,
     },
     #[cfg(test)]
     CompiledFinalOrderFixture,
-}
-
-impl StrategyEconomicsInput {
-    fn resolve(
-        self,
-        _request: &BoltV3SubmitAdmissionRequestInput<'_>,
-    ) -> Result<(Decimal, Vec<BoltV3PlannedFillLeg>, Decimal)> {
-        match self {
-            Self::Exact {
-                gross_expected_value,
-                planned_fill_legs,
-                minimum_core_edge_ratio,
-            } => Ok((
-                gross_expected_value,
-                planned_fill_legs,
-                minimum_core_edge_ratio,
-            )),
-            #[cfg(test)]
-            Self::CompiledFinalOrderFixture => {
-                let facts = crate::bolt_v3_submit_admission::order_admission_facts(_request)?;
-                let quantity = if _request.order.is_quote_quantity() {
-                    facts
-                        .order_quantity
-                        .checked_div(facts.price)
-                        .context("test economics fill quantity division failed")?
-                } else {
-                    facts.order_quantity
-                };
-                Ok((
-                    facts.reservation_basis,
-                    vec![BoltV3PlannedFillLeg {
-                        price: facts.price,
-                        quantity,
-                    }],
-                    Decimal::ZERO,
-                ))
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -573,20 +536,6 @@ fn executable_edge_cents_per_share(result: Option<BinaryOutcomeEdgeResult>) -> O
         .edge_cents_per_share
         .is_finite()
         .then_some(result.edge_cents_per_share)
-}
-
-fn entry_gross_expected_value(
-    edge: BinaryOutcomeEdgeResult,
-    sized_notional: f64,
-) -> Option<Decimal> {
-    let gross_cost = edge.cost_breakdown.gross_cost_cents;
-    if !is_positive_finite(gross_cost) || !is_positive_finite(sized_notional) {
-        return None;
-    }
-    let gross_ev_per_notional =
-        (edge.adjusted_probability * crate::bolt_v3_numeric::CENTS_PER_SHARE - gross_cost)
-            / gross_cost;
-    Decimal::from_f64(gross_ev_per_notional * sized_notional)
 }
 
 fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingConfig<'_> {
@@ -3963,19 +3912,12 @@ impl BinaryOracleEdgeTaker {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
-        let economics_fill_legs = planned_fill_legs
-            .iter()
-            .map(|leg| PlannedFillLeg {
-                price: leg.price,
-                quantity: leg.quantity,
-            })
-            .collect::<Vec<_>>();
-        let planned_fill_notional = PlannedFillNotional::from_legs(&economics_fill_legs)
-            .ok()?
-            .amount()
-            .to_f64()?;
-        let gross_expected_value = entry_gross_expected_value(edge, planned_fill_notional)?;
         let minimum_core_edge_ratio = Decimal::from_f64(minimum_edge_bps / BPS_DENOMINATOR)?;
+        let terminal_value_entry = BoltV3TerminalValueEntry::try_new(
+            Decimal::from_f64(edge.adjusted_probability)?,
+            minimum_core_edge_ratio,
+        )
+        .ok()?;
         let requested_at_ns = now_ms.checked_mul(NANOS_PER_MILLI_U64)?;
         let sizing_quote = self
             .context
@@ -3984,11 +3926,9 @@ impl BinaryOracleEdgeTaker {
                 instrument_id,
                 order_side: probe.order_side,
                 planned_fill_legs,
-                lifecycle_path: LifecyclePath::HoldToRedemption,
+                terminal_value_entry,
                 requested_at_ns,
                 decision_correlation_id: &self.config.strategy_id,
-                gross_expected_value,
-                minimum_core_edge_ratio,
             })
             .ok()?;
         sizing_quote
@@ -5296,6 +5236,7 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
+    #[cfg(test)]
     fn submit_order_with_decision_evidence_inner(
         &mut self,
         intent: OrderIntentDetails,
@@ -5304,14 +5245,29 @@ impl BinaryOracleEdgeTaker {
         submit_context: BoltV3SubmitContext,
         economics_input: StrategyEconomicsInput,
     ) -> Result<BoltV3SubmitRoutingOutcome> {
+        let (intent, order, sealed) =
+            self.prepare_order_economics_submission(intent, intent_kind, order, economics_input)?;
+        self.route_prepared_order_submission(intent, order, sealed, submit_context)
+    }
+
+    fn prepare_order_economics_submission(
+        &self,
+        intent: OrderIntentDetails,
+        intent_kind: BoltV3SubmitIntentKind,
+        order: nautilus_model::orders::OrderAny,
+        economics_input: StrategyEconomicsInput,
+    ) -> Result<(
+        OrderIntentDetails,
+        nautilus_model::orders::OrderAny,
+        crate::bolt_v3_submit_admission::BoltV3EconomicsSubmitAdmission,
+    )> {
         let decision_evidence = self
             .context
             .order_execution_evidence()
             .expect("edge-taker strategy must own order-intent evidence");
-        let submit_admission = self.context.submit_admission_arc();
         let (intent, order) =
             match crate::bolt_v3_order_execution::clamp_risk_reducing_exit_to_venue_position(
-                submit_admission.as_ref(),
+                self.context.submit_admission_arc().as_ref(),
                 intent_kind,
                 intent,
                 order,
@@ -5332,6 +5288,21 @@ impl BinaryOracleEdgeTaker {
             &order,
             economics_input,
         )?;
+        Ok((intent, order, sealed))
+    }
+
+    fn route_prepared_order_submission(
+        &mut self,
+        intent: OrderIntentDetails,
+        order: nautilus_model::orders::OrderAny,
+        sealed: crate::bolt_v3_submit_admission::BoltV3EconomicsSubmitAdmission,
+        submit_context: BoltV3SubmitContext,
+    ) -> Result<BoltV3SubmitRoutingOutcome> {
+        let decision_evidence = self
+            .context
+            .order_execution_evidence()
+            .expect("edge-taker strategy must own order-intent evidence");
+        let submit_admission = self.context.submit_admission_arc();
         let policy = self.context.order_execution_policy();
         let routing = BoltV3SubmitRoutingRequest::with_economics(
             &decision_evidence,
@@ -5446,27 +5417,92 @@ impl BinaryOracleEdgeTaker {
                 last_trade,
                 instrument: instrument.as_ref(),
             },
-            risk_reducing_exit_position,
+            risk_reducing_exit_position: risk_reducing_exit_position.clone(),
         };
-        let (gross_expected_value, planned_fill_legs, minimum_core_edge_ratio) =
-            economics_input.resolve(&admission_input)?;
-        let liquidity_role = if order.is_post_only() {
-            NautilusEstimateLiquidityRole::GuaranteedMaker
-        } else {
-            NautilusEstimateLiquidityRole::Taker
+        let facts = crate::bolt_v3_submit_admission::order_admission_facts(&admission_input)?;
+        let planned_exit_scenario = |stored_entry_cost_per_unit: Decimal| {
+            let managed_position = self.managed_position().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "risk-reducing economics requires managed position state for client_order_id={client_order_id}"
+                )
+            })?;
+            let position = self.context.order_economics().planned_exit_position(
+                managed_position.position.position_id,
+                managed_position.position.side,
+                facts.order_quantity,
+            )?;
+            BoltV3FinalOrderEconomicsScenario::planned_risk_reducing_exit(
+                stored_entry_cost_per_unit,
+                position,
+            )
         };
+        let (scenario, candidate_fill_levels) = match economics_input {
+            StrategyEconomicsInput::TerminalEntry {
+                terminal_value_entry,
+                candidate_fill_levels,
+            } => (
+                BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(terminal_value_entry),
+                candidate_fill_levels,
+            ),
+            StrategyEconomicsInput::PlannedExit {
+                stored_entry_cost_per_unit,
+                candidate_fill_levels,
+            } => (
+                planned_exit_scenario(stored_entry_cost_per_unit)?,
+                candidate_fill_levels,
+            ),
+            #[cfg(test)]
+            StrategyEconomicsInput::CompiledFinalOrderFixture => {
+                let quantity = if order.is_quote_quantity() {
+                    facts
+                        .order_quantity
+                        .checked_div(facts.price)
+                        .context("test economics fill quantity division failed")?
+                } else {
+                    facts.order_quantity
+                };
+                let scenario = match intent_kind {
+                    BoltV3SubmitIntentKind::Entry => {
+                        BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
+                            BoltV3TerminalValueEntry::try_new(
+                                facts
+                                    .price
+                                    .checked_add(Decimal::ONE)
+                                    .context("test terminal value overflow")?,
+                                Decimal::ZERO,
+                            )?,
+                        )
+                    }
+                    BoltV3SubmitIntentKind::RiskReducingExit => planned_exit_scenario(facts.price)?,
+                    BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+                        anyhow::bail!("edge-taker fixture cannot construct forced reduction")
+                    }
+                };
+                (
+                    scenario,
+                    vec![BoltV3PlannedFillLeg {
+                        price: facts.price,
+                        quantity,
+                    }],
+                )
+            }
+        };
+        anyhow::ensure!(
+            scenario.intent_kind() == intent_kind,
+            "strategy economics scenario does not match the routed submit intent"
+        );
         build_order_economics_submit_admission(
             self.context.order_economics(),
-            crate::bolt_v3_order_execution::BoltV3OrderEconomicsSubmitInput {
-                request: admission_input,
-                planned_fill_legs,
-                liquidity_role,
-                position: None,
-                lifecycle_path: LifecyclePath::PlannedExit,
+            BoltV3FinalOrderEconomicsInput {
+                execution_client_id: &self.config.client_id,
+                intent,
+                order,
+                valuation: admission_input.valuation,
+                risk_reducing_exit_position,
+                scenario,
+                candidate_fill_levels,
                 requested_at_ns: order.ts_init().as_u64(),
                 decision_correlation_id: order.client_order_id().as_str(),
-                gross_expected_value,
-                minimum_core_edge_ratio,
             },
         )
     }
@@ -6129,8 +6165,6 @@ impl BinaryOracleEdgeTaker {
         let price = Price::new(planned_exit_price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
         decision.client_order_id = Some(client_order_id);
-        self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
-        self.log_exit_evaluation(now_ms, trigger_context, &decision);
         let order = self.build_exit_order_with_execution_config(
             order_config,
             instrument_id,
@@ -6144,6 +6178,27 @@ impl BinaryOracleEdgeTaker {
         let Some(managed_context) = self.exposure.managed_position_context().cloned() else {
             anyhow::bail!("exit submit requires managed position context");
         };
+        let intent = order_intent_details_from_compiled_order(
+            self.config.strategy_id.clone(),
+            price.to_string(),
+            &order,
+        );
+        let entry_cost = self
+            .open_position_effective_entry_cost()
+            .filter(|value| is_positive_finite(*value))
+            .and_then(Decimal::from_f64)
+            .ok_or_else(|| anyhow::anyhow!("exit economics requires a valid entry cost basis"))?;
+        let (intent, order, sealed) = self.prepare_order_economics_submission(
+            intent,
+            BoltV3SubmitIntentKind::RiskReducingExit,
+            order,
+            StrategyEconomicsInput::PlannedExit {
+                stored_entry_cost_per_unit: entry_cost,
+                candidate_fill_levels: planned_fill_legs,
+            },
+        )?;
+        self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
+        self.log_exit_evaluation(now_ms, trigger_context, &decision);
         if !decision.forced_flat_reasons.is_empty()
             && let Some(pending_entry) = managed_position.pending_entry.as_ref()
         {
@@ -6173,51 +6228,14 @@ impl BinaryOracleEdgeTaker {
             quantity,
             client_order_id,
         );
-
-        let intent = order_intent_details_from_compiled_order(
-            self.config.strategy_id.clone(),
-            price.to_string(),
-            &order,
-        );
-        let entry_cost = self
-            .open_position_effective_entry_cost()
-            .filter(|value| is_positive_finite(*value))
-            .and_then(Decimal::from_f64)
-            .ok_or_else(|| anyhow::anyhow!("exit economics requires a valid entry cost basis"))?;
-        let exit_quantity = Decimal::from_str(&quantity.to_string())
-            .context("exit economics quantity is not representable as Decimal")?;
-        let economics_fill_legs = planned_fill_legs
-            .iter()
-            .map(|leg| PlannedFillLeg {
-                price: leg.price,
-                quantity: leg.quantity,
-            })
-            .collect::<Vec<_>>();
-        let planned_fill_notional = PlannedFillNotional::from_legs(&economics_fill_legs)
-            .context("exit planned-fill legs are invalid")?;
-        let entry_notional = entry_cost
-            .checked_mul(exit_quantity)
-            .ok_or_else(|| anyhow::anyhow!("exit entry notional overflow"))?;
-        let gross_expected_value = match order_side {
-            OrderSide::Sell => planned_fill_notional.amount().checked_sub(entry_notional),
-            OrderSide::Buy => entry_notional.checked_sub(planned_fill_notional.amount()),
-            OrderSide::NoOrderSide => None,
-        }
-        .ok_or_else(|| anyhow::anyhow!("exit gross value arithmetic overflow"))?;
-
-        match self.submit_order_with_decision_evidence_inner(
+        match self.route_prepared_order_submission(
             intent,
-            BoltV3SubmitIntentKind::RiskReducingExit,
             order,
+            sealed,
             BoltV3SubmitContext::with_client_id_and_position_id(
                 client_id,
                 managed_position.position.position_id,
             ),
-            StrategyEconomicsInput::Exact {
-                gross_expected_value,
-                planned_fill_legs,
-                minimum_core_edge_ratio: Decimal::ZERO,
-            },
         ) {
             Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}
             Ok(BoltV3SubmitRoutingOutcome::SkippedByPolicy) => {}
@@ -6668,12 +6686,36 @@ impl BinaryOracleEdgeTaker {
             &price,
             &quantity,
         )?;
-        let gross_expected_value = decision
+        let terminal_value_per_unit = decision
             .evaluation
             .sized_executable_edge
-            .zip(decision.evaluation.sized_notional)
-            .and_then(|(edge, sized_notional)| entry_gross_expected_value(edge, sized_notional))
-            .ok_or_else(|| anyhow::anyhow!("entry economics requires a gross value assumption"))?;
+            .and_then(|edge| Decimal::from_f64(edge.adjusted_probability))
+            .ok_or_else(|| anyhow::anyhow!("entry economics requires a terminal value"))?;
+        let minimum_core_edge_ratio = decision
+            .evaluation
+            .min_worst_case_ev_bps
+            .filter(|value| value.is_finite())
+            .and_then(|value| Decimal::from_f64(value / BPS_DENOMINATOR))
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry economics requires a finite theta-scaled minimum edge ratio")
+            })?;
+        let intent = order_intent_details_from_compiled_order(
+            self.config.strategy_id.clone(),
+            price.to_string(),
+            &order,
+        );
+        let (intent, order, sealed) = self.prepare_order_economics_submission(
+            intent,
+            BoltV3SubmitIntentKind::Entry,
+            order,
+            StrategyEconomicsInput::TerminalEntry {
+                terminal_value_entry: BoltV3TerminalValueEntry::try_new(
+                    terminal_value_per_unit,
+                    minimum_core_edge_ratio,
+                )?,
+                candidate_fill_levels: decision.planned_fill_legs.clone(),
+            },
+        )?;
 
         let client_id = ClientId::from(self.config.client_id.as_str());
         self.last_flat_terminal_entry_override = None;
@@ -6714,12 +6756,6 @@ impl BinaryOracleEdgeTaker {
             client_order_id,
         );
 
-        let intent = order_intent_details_from_compiled_order(
-            self.config.strategy_id.clone(),
-            price.to_string(),
-            &order,
-        );
-
         if let Err(error) = self
             .context
             .edge_taker_evidence()
@@ -6729,24 +6765,11 @@ impl BinaryOracleEdgeTaker {
             self.clear_pending_entry_state();
             return Err(anyhow::Error::from(error));
         }
-        let minimum_core_edge_ratio = decision
-            .evaluation
-            .min_worst_case_ev_bps
-            .filter(|value| value.is_finite())
-            .and_then(|value| Decimal::from_f64(value / BPS_DENOMINATOR))
-            .ok_or_else(|| {
-                anyhow::anyhow!("entry economics requires a finite theta-scaled minimum edge ratio")
-            })?;
-        match self.submit_order_with_decision_evidence_inner(
+        match self.route_prepared_order_submission(
             intent,
-            BoltV3SubmitIntentKind::Entry,
             order,
+            sealed,
             BoltV3SubmitContext::with_client_id(client_id),
-            StrategyEconomicsInput::Exact {
-                gross_expected_value,
-                planned_fill_legs: decision.planned_fill_legs.clone(),
-                minimum_core_edge_ratio,
-            },
         ) {
             Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}
             Ok(BoltV3SubmitRoutingOutcome::SkippedByPolicy) => {

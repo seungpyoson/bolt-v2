@@ -905,42 +905,45 @@ fn live_node_kill_switch_flatten_executor(
                     false,
                     true,
                 );
-                let mut sink = BoltV3NtSubmitOnlySink::new(|order, context| {
-                    if order.status() != nautilus_model::enums::OrderStatus::Initialized {
-                        anyhow::bail!(
-                            "kill switch flatten order denied before NT risk engine: invalid status for {}, expected INITIALIZED",
-                            order.client_order_id()
-                        );
-                    }
-                    {
-                        cache.borrow_mut().add_order(
-                            order.clone(),
-                            context.position_id,
+                let mut sink = BoltV3NtSubmitOnlySink::new(
+                    clock.borrow().timestamp_ns().as_u64(),
+                    |order, context| {
+                        if order.status() != nautilus_model::enums::OrderStatus::Initialized {
+                            anyhow::bail!(
+                                "kill switch flatten order denied before NT risk engine: invalid status for {}, expected INITIALIZED",
+                                order.client_order_id()
+                            );
+                        }
+                        {
+                            cache.borrow_mut().add_order(
+                                order.clone(),
+                                context.position_id,
+                                context.client_id,
+                                true,
+                            )?;
+                        }
+                        publish_order_initialized(&order);
+                        let params = context.params.filter(|params| !params.is_empty());
+                        let command = SubmitOrder::new(
+                            trader_id,
                             context.client_id,
-                            true,
-                        )?;
-                    }
-                    publish_order_initialized(&order);
-                    let params = context.params.filter(|params| !params.is_empty());
-                    let command = SubmitOrder::new(
-                        trader_id,
-                        context.client_id,
-                        order.strategy_id(),
-                        order.instrument_id(),
-                        order.client_order_id(),
-                        order.init_event().clone(),
-                        order.exec_algorithm_id(),
-                        context.position_id,
-                        params,
-                        UUID4::new(),
-                        clock.borrow().timestamp_ns(),
-                        None,
-                    );
-                    risk_engine
-                        .borrow_mut()
-                        .execute(TradingCommand::SubmitOrder(command));
-                    Ok(())
-                });
+                            order.strategy_id(),
+                            order.instrument_id(),
+                            order.client_order_id(),
+                            order.init_event().clone(),
+                            order.exec_algorithm_id(),
+                            context.position_id,
+                            params,
+                            UUID4::new(),
+                            clock.borrow().timestamp_ns(),
+                            None,
+                        );
+                        risk_engine
+                            .borrow_mut()
+                            .execute(TradingCommand::SubmitOrder(command));
+                        Ok(())
+                    },
+                );
                 let fallback_price = instrument
                     .max_price()
                     .map(|price| price.to_string())
@@ -2049,10 +2052,13 @@ mod tests {
             let mut order_factory = flatten_order_factory(command.strategy_id());
             let instrument = flatten_binary_option(command.instrument_id());
             let submitted_quantities = self.submitted_quantities.clone();
-            let mut sink = BoltV3NtSubmitOnlySink::new(move |order, _context| {
-                submitted_quantities.borrow_mut().push(order.quantity());
-                Ok(())
-            });
+            let mut sink = BoltV3NtSubmitOnlySink::new(
+                command.source_timestamp_unix_nanos(),
+                move |order, _context| {
+                    submitted_quantities.borrow_mut().push(order.quantity());
+                    Ok(())
+                },
+            );
 
             route_kill_switch_flatten_command_with_sink(
                 BoltV3OrderExecutionPolicy::live(),

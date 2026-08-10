@@ -1600,12 +1600,13 @@ impl BoltV3SubmitAdmissionState {
         self.admit_at_inner(request, None, current_unix_ns()?)
     }
 
-    pub fn admit_with_economics(
+    pub(crate) fn admit_with_economics_at(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
         economics: &EconomicsAdmission,
+        now_ns: u64,
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
-        self.admit_at_inner(request, Some(economics), current_unix_ns()?)
+        self.admit_at_inner(request, Some(economics), now_ns)
     }
 
     /// Test-only event-time entrypoint for admission policy tests that do not
@@ -1788,16 +1789,13 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
-    pub fn evaluate_and_record_without_consuming_capacity_with_economics(
+    pub(crate) fn evaluate_and_record_without_consuming_capacity_with_economics_at(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
         economics: &EconomicsAdmission,
+        now_ns: u64,
     ) -> Result<(), BoltV3SubmitAdmissionError> {
-        self.evaluate_and_record_without_consuming_capacity_at(
-            request,
-            Some(economics),
-            current_unix_ns()?,
-        )
+        self.evaluate_and_record_without_consuming_capacity_at(request, Some(economics), now_ns)
     }
 
     fn evaluate_and_record_without_consuming_capacity_at(
@@ -3324,6 +3322,7 @@ fn compiled_order_price_source(fallback_price: String, order: &OrderAny) -> Stri
 pub struct BoltV3EconomicsSubmitAdmission {
     request: BoltV3SubmitAdmissionRequest,
     economics: EconomicsAdmission,
+    required_remaining_margin_ns: u64,
 }
 
 impl BoltV3EconomicsSubmitAdmission {
@@ -3333,6 +3332,17 @@ impl BoltV3EconomicsSubmitAdmission {
 
     pub const fn economics(&self) -> &EconomicsAdmission {
         &self.economics
+    }
+
+    pub fn validate_remaining_margin_at(
+        &self,
+        now_ns: u64,
+    ) -> Result<(), BoltV3SubmitAdmissionError> {
+        validate_economics_remaining_margin_at(
+            &self.economics,
+            self.required_remaining_margin_ns,
+            now_ns,
+        )
     }
 
     pub fn validate_final_order(
@@ -3348,8 +3358,12 @@ impl BoltV3EconomicsSubmitAdmission {
         )
     }
 
-    pub(crate) fn into_parts(self) -> (BoltV3SubmitAdmissionRequest, EconomicsAdmission) {
-        (self.request, self.economics)
+    pub(crate) fn into_parts(self) -> (BoltV3SubmitAdmissionRequest, EconomicsAdmission, u64) {
+        (
+            self.request,
+            self.economics,
+            self.required_remaining_margin_ns,
+        )
     }
 
     pub(crate) fn with_kill_switch_forced_reduction(
@@ -3359,6 +3373,30 @@ impl BoltV3EconomicsSubmitAdmission {
         self.request.kill_switch_forced_reduction = Some(claim);
         self
     }
+}
+
+pub(crate) fn validate_economics_remaining_margin_at(
+    economics: &EconomicsAdmission,
+    required_margin_ns: u64,
+    now_ns: u64,
+) -> Result<(), BoltV3SubmitAdmissionError> {
+    let requested_at_ns = economics.request().requested_at_ns;
+    let valid_until_ns = economics.quote().valid_until_ns();
+    if now_ns < requested_at_ns
+        || valid_until_ns
+            .checked_sub(now_ns)
+            .is_none_or(|remaining| remaining < required_margin_ns)
+    {
+        return Err(
+            BoltV3SubmitAdmissionError::EconomicsRemainingMarginUnavailable {
+                requested_at_ns,
+                valid_until_ns,
+                observed_at_ns: now_ns,
+                required_margin_ns,
+            },
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_economics_submit_authority(
@@ -3614,6 +3652,7 @@ fn admission_economics_treatment(
 pub fn build_submit_admission_request_from_economics(
     input: BoltV3SubmitAdmissionRequestInput<'_>,
     economics: EconomicsAdmission,
+    required_remaining_margin_ns: u64,
 ) -> anyhow::Result<BoltV3EconomicsSubmitAdmission> {
     let facts = order_admission_facts(&input)?;
     let expected_purpose = match input.intent_kind {
@@ -3655,7 +3694,15 @@ pub fn build_submit_admission_request_from_economics(
     );
     let notional = economics.full_reservation_liability();
     let request = submit_admission_request_from_facts(input, facts, notional);
-    Ok(BoltV3EconomicsSubmitAdmission { request, economics })
+    anyhow::ensure!(
+        required_remaining_margin_ns > 0,
+        "economics submit admission requires a positive remaining margin"
+    );
+    Ok(BoltV3EconomicsSubmitAdmission {
+        request,
+        economics,
+        required_remaining_margin_ns,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4037,6 +4084,12 @@ pub enum BoltV3SubmitAdmissionError {
     },
     InvalidRiskReducingExitProof,
     EconomicsOrderMismatch,
+    EconomicsRemainingMarginUnavailable {
+        requested_at_ns: u64,
+        valid_until_ns: u64,
+        observed_at_ns: u64,
+        required_margin_ns: u64,
+    },
     EconomicsUnavailable(EconomicsError),
     CapitalAdmissionRejected {
         reason: BoltV3CapitalAdmissionRejectReason,
@@ -4103,6 +4156,15 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             Self::EconomicsOrderMismatch => write!(
                 f,
                 "bolt-v3 submit admission final order does not match its economics authority"
+            ),
+            Self::EconomicsRemainingMarginUnavailable {
+                requested_at_ns,
+                valid_until_ns,
+                observed_at_ns,
+                required_margin_ns,
+            } => write!(
+                f,
+                "bolt-v3 submit admission economics lacks remaining lifetime: requested_at_ns={requested_at_ns} valid_until_ns={valid_until_ns} observed_at_ns={observed_at_ns} required_margin_ns={required_margin_ns}"
             ),
             Self::EconomicsUnavailable(error) => {
                 write!(

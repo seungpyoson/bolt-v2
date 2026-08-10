@@ -28,7 +28,7 @@ use bolt_v2::{
         FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget,
         market_selection_candidate_windows_from_target, static_binary_event, updown,
     },
-    bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
+    bolt_v3_order_execution::{BoltV3OrderExecutionPolicy, BoltV3TerminalValueEntry},
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
     bolt_v3_quote_lifecycle::{
         Leg, LegEvent, LifecycleAction, MarketAction, MarketQuote, MarketState,
@@ -138,7 +138,14 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
     };
 
     let outcome = maker
-        .route_maker_order_command(&command, "maker_submit", Decimal::ONE)
+        .route_maker_order_command(
+            &command,
+            "maker_submit",
+            Some(
+                BoltV3TerminalValueEntry::try_new(Decimal::new(9, 1), Decimal::ZERO)
+                    .expect("maker terminal value should construct"),
+            ),
+        )
         .expect("maker submit should route through shared execution context");
 
     assert_eq!(
@@ -173,6 +180,42 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
     assert_eq!(economics.source_snapshot_ids, vec!["fixture-market-info"]);
     assert_eq!(economics.reservation_basis, "0.8000");
     assert_eq!(economics.full_reservation_liability, "0.8000");
+}
+
+#[test]
+fn maker_submit_without_terminal_value_fails_before_order_evidence() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config(),
+        maker_context(writer.recorder(), admission.clone()),
+    );
+    register_maker_for_order_factory(&mut maker);
+    let command = MakerCompiledOrderCommand::Submit {
+        leg: Leg::Yes,
+        template: Box::new(maker_limit_post_only_template()),
+        inputs: NtOrderBuildInputs {
+            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            order_side: OrderSide::Buy,
+            quantity: Quantity::new(2.0, 2),
+            price: Some(Price::new(0.40, 2)),
+            client_order_id: ClientOrderId::from("MAKER-YES-MISSING-VALUE"),
+        },
+        fallback_price: Price::new(0.40, 2),
+    };
+
+    let error = maker
+        .route_maker_order_command(&command, "maker_submit", None)
+        .expect_err("maker submit without terminal value must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("terminal-value economics scenario")
+    );
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert!(writer.records().is_empty());
+    assert!(writer.admission_decisions().is_empty());
 }
 
 #[test]
@@ -1826,7 +1869,10 @@ fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
-            gross_expected_value: Decimal::ONE,
+            terminal_value_entry: Some(
+                BoltV3TerminalValueEntry::try_new(Decimal::ONE, Decimal::ZERO)
+                    .expect("maker terminal value should construct"),
+            ),
         })
         .expect("maker should route pre-paid replacement submit through shared context");
 

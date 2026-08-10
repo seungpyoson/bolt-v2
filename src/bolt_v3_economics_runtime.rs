@@ -601,28 +601,6 @@ impl EconomicsAdmission {
     }
 
     #[cfg(test)]
-    pub(crate) fn for_routing_test(
-        execution_client_id: &str,
-        instrument_id: &str,
-        order_side: crate::economics::OrderSide,
-        order_binding: EconomicsOrderBinding,
-        purpose: EconomicsAdmissionPurpose,
-        reservation_basis: Decimal,
-        full_reservation_liability: Decimal,
-    ) -> Self {
-        Self::for_routing_test_with_validity(
-            execution_client_id,
-            instrument_id,
-            order_side,
-            order_binding,
-            purpose,
-            reservation_basis,
-            full_reservation_liability,
-            u64::MAX,
-        )
-    }
-
-    #[cfg(test)]
     pub(crate) fn for_routing_test_with_validity(
         execution_client_id: &str,
         instrument_id: &str,

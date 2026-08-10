@@ -1366,6 +1366,59 @@ fn submit_snapshot_failure_clears_pending_entry_and_never_reaches_submit_admissi
     );
 }
 
+#[test]
+fn final_basis_failure_precedes_edge_evidence_exposure_and_admission_mutation() {
+    let evidence = recording_decision_evidence();
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
+    let mut decision = strategy.entry_submission_decision_at(1_200);
+    assert!(
+        decision.instrument_id.is_some(),
+        "fixture must admit an entry"
+    );
+    decision.planned_fill_legs = vec![BoltV3PlannedFillLeg {
+        price: Decimal::new(5, 1),
+        quantity: Decimal::ZERO,
+    }];
+
+    let error = strategy
+        .submit_admitted_entry_decision(1_200, decision)
+        .expect_err("invalid final economics basis must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("planned fill level must be positive")
+    );
+    assert!(
+        !matches!(strategy.exposure, ExposureState::PendingEntry(_)),
+        "basis failure must precede pending-entry exposure"
+    );
+    assert_eq!(submit_admission.admitted_order_count(), 0);
+    let facts = evidence
+        .recorded_facts()
+        .expect("recorded evidence must decode");
+    assert!(
+        facts.iter().all(|fact| !matches!(
+            fact,
+            CurrentFact::SubmitLinkedStrategyInputSnapshot(_)
+                | CurrentFact::EntryOrderIntent(_)
+                | CurrentFact::AdmittedEntryAdmission(_)
+                | CurrentFact::RejectedEntryAdmission(_)
+        )),
+        "basis failure must precede strategy and admission evidence: {facts:?}"
+    );
+}
+
 fn assert_admitted_a_snapshot_fields(fields: &RealizedVolatilityEvidenceFields) {
     assert_eq!(fields.surface_id, TEST_SURFACE_ID);
     assert_eq!(fields.as_of_ms, Some(1_200));

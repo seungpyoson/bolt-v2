@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, RwLock, RwLockWriteGuard},
 };
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use nautilus_common::actor::DataActorNative;
 use nautilus_common::{
     factories::OrderFactory,
@@ -52,9 +52,11 @@ use crate::{
     bolt_v3_order_intent::{NtOrderBuildInputs, build_nt_order},
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_submit_admission::{
-        BoltV3EconomicsSubmitAdmission, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
+        BoltV3EconomicsSubmitAdmission, BoltV3RiskReducingExitPositionInput,
+        BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
         BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-        build_submit_admission_request_from_economics, order_admission_facts,
+        OrderValuationContext, build_submit_admission_request_from_economics,
+        order_admission_facts, validate_economics_remaining_margin_at,
         validate_economics_submit_authority,
     },
     economics::{LifecyclePath, PlannedFillNotional, PositionContext},
@@ -63,6 +65,11 @@ use crate::{
         economics_order_binding, economics_request_from_nautilus,
     },
 };
+
+mod economics_basis;
+
+use economics_basis::seal_final_order_economics_basis;
+pub use economics_basis::{BoltV3FinalOrderEconomicsScenario, BoltV3TerminalValueEntry};
 
 #[derive(Clone)]
 pub struct BoltV3OrderEconomicsHandle {
@@ -116,39 +123,25 @@ pub enum BoltV3RestingOrderEconomicsAction {
     Complete,
 }
 
-pub struct BoltV3OrderEconomicsIntent<'a> {
-    pub request: &'a BoltV3SubmitAdmissionRequestInput<'a>,
-    pub planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
-    pub liquidity_role: NautilusEstimateLiquidityRole,
-    pub position: Option<PositionContext>,
-    pub lifecycle_path: LifecyclePath,
+pub struct BoltV3FinalOrderEconomicsInput<'a> {
+    pub execution_client_id: &'a str,
+    pub intent: &'a OrderIntentDetails,
+    pub order: &'a OrderAny,
+    pub valuation: OrderValuationContext<'a>,
+    pub risk_reducing_exit_position: Option<BoltV3RiskReducingExitPositionInput<'a>>,
+    pub scenario: BoltV3FinalOrderEconomicsScenario,
+    pub candidate_fill_levels: Vec<BoltV3PlannedFillLeg>,
     pub requested_at_ns: u64,
     pub decision_correlation_id: &'a str,
-    pub gross_expected_value: Decimal,
-    pub minimum_core_edge_ratio: Decimal,
-}
-
-pub struct BoltV3OrderEconomicsSubmitInput<'a> {
-    pub request: BoltV3SubmitAdmissionRequestInput<'a>,
-    pub planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
-    pub liquidity_role: NautilusEstimateLiquidityRole,
-    pub position: Option<PositionContext>,
-    pub lifecycle_path: LifecyclePath,
-    pub requested_at_ns: u64,
-    pub decision_correlation_id: &'a str,
-    pub gross_expected_value: Decimal,
-    pub minimum_core_edge_ratio: Decimal,
 }
 
 pub struct BoltV3TakerEconomicsSizingInput<'a> {
     pub instrument_id: InstrumentId,
     pub order_side: OrderSide,
     pub planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
-    pub lifecycle_path: LifecyclePath,
+    pub terminal_value_entry: BoltV3TerminalValueEntry,
     pub requested_at_ns: u64,
     pub decision_correlation_id: &'a str,
-    pub gross_expected_value: Decimal,
-    pub minimum_core_edge_ratio: Decimal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -230,7 +223,7 @@ impl BoltV3OrderEconomicsHandle {
         execution_client_id: &str,
     ) -> Result<()>
     where
-        S: Strategy + StrategyNative + ?Sized,
+        S: Strategy + StrategyNative + DataActorNative + ?Sized,
     {
         let mut sink = NtStrategyVenueMutationSink { strategy };
         cancel_tracked_resting_orders(self, policy, &mut sink, execution_client_id)
@@ -364,78 +357,6 @@ impl BoltV3OrderEconomicsHandle {
         Ok(())
     }
 
-    pub fn quote_admission(
-        &self,
-        intent: BoltV3OrderEconomicsIntent<'_>,
-    ) -> Result<EconomicsAdmission> {
-        let facts = order_admission_facts(intent.request)?;
-        anyhow::ensure!(
-            self.economics.execution_client_id() == intent.request.execution_client_id,
-            "economics execution client does not match the final order route"
-        );
-        match intent.liquidity_role {
-            NautilusEstimateLiquidityRole::GuaranteedMaker => anyhow::ensure!(
-                intent.request.order.is_post_only(),
-                "guaranteed-maker economics requires a final post-only order"
-            ),
-            NautilusEstimateLiquidityRole::Taker => anyhow::ensure!(
-                !intent.request.order.is_post_only(),
-                "taker economics does not accept a post-only order"
-            ),
-            NautilusEstimateLiquidityRole::Unspecified => {
-                anyhow::bail!("economics liquidity role is unspecified")
-            }
-        }
-        let authority = self
-            .economics
-            .request_authority(&intent.request.order.instrument_id().to_string())?;
-        let position = if authority.carry_required {
-            Some(intent.position.ok_or_else(|| {
-                anyhow::anyhow!("carry economics requires a position and holding horizon")
-            })?)
-        } else {
-            None
-        };
-        let planned_fill_legs =
-            normalize_economics_fill_legs(intent.request.order, facts, intent.planned_fill_legs)?;
-        let request = economics_request_from_nautilus(NautilusEconomicsIntent {
-            execution_client_id: &authority.execution_client_id,
-            account_id: authority.account_id.as_str(),
-            instrument_id: intent.request.order.instrument_id(),
-            product_surface_id: authority.product_surface_id.as_str(),
-            reporting_policy_id: authority.reporting_policy_id.as_str(),
-            reporting_currency: authority.reporting_currency.as_str(),
-            edge_basis_policy_id: authority.edge_basis_policy_id.as_str(),
-            decision_correlation_id: intent.decision_correlation_id,
-            side: intent.request.order.order_side(),
-            liquidity_role: intent.liquidity_role,
-            planned_fill_legs: &planned_fill_legs,
-            routing_attachment_id: None,
-            position,
-            lifecycle_path: intent.lifecycle_path,
-            requested_at_ns: intent.requested_at_ns,
-        })
-        .map_err(|error| anyhow::anyhow!(error))?;
-        self.economics
-            .quote_admission(EconomicsAdmissionIntent {
-                request,
-                order_binding: economics_order_binding(intent.request.order)
-                    .map_err(|error| anyhow::anyhow!(error))?,
-                policy: match intent.request.intent_kind {
-                    BoltV3SubmitIntentKind::Entry => EconomicsAdmissionPolicy::TradingEdge {
-                        minimum_core_edge_ratio: intent.minimum_core_edge_ratio,
-                    },
-                    BoltV3SubmitIntentKind::RiskReducingExit
-                    | BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-                        EconomicsAdmissionPolicy::RiskReduction
-                    }
-                },
-                gross_expected_value: intent.gross_expected_value,
-                reservation_basis: facts.reservation_basis,
-            })
-            .map_err(Into::into)
-    }
-
     pub fn quote_taker_sizing(
         &self,
         intent: BoltV3TakerEconomicsSizingInput<'_>,
@@ -446,6 +367,10 @@ impl BoltV3OrderEconomicsHandle {
         anyhow::ensure!(
             !authority.carry_required,
             "taker entry sizing does not support a carry-bearing product surface"
+        );
+        anyhow::ensure!(
+            intent.order_side == OrderSide::Buy,
+            "terminal-value taker entry sizing requires a buy order"
         );
         let planned_fill_legs = intent
             .planned_fill_legs
@@ -469,25 +394,29 @@ impl BoltV3OrderEconomicsHandle {
             planned_fill_legs: &planned_fill_legs,
             routing_attachment_id: None,
             position: None,
-            lifecycle_path: intent.lifecycle_path,
+            lifecycle_path: LifecyclePath::HoldToRedemption,
             requested_at_ns: intent.requested_at_ns,
         })
         .map_err(|error| anyhow::anyhow!(error))?;
+        let gross_expected_value = BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
+            intent.terminal_value_entry.clone(),
+        )
+        .gross_expected_value(&planned_fill_legs)?;
         let reservation_basis =
             PlannedFillNotional::from_legs(&request.planned_fill_legs)?.amount();
         self.economics
             .quote_sizing(EconomicsSizingIntent {
                 request,
                 policy: EconomicsAdmissionPolicy::TradingEdge {
-                    minimum_core_edge_ratio: intent.minimum_core_edge_ratio,
+                    minimum_core_edge_ratio: intent.terminal_value_entry.minimum_core_edge_ratio(),
                 },
-                gross_expected_value: intent.gross_expected_value,
+                gross_expected_value,
                 reservation_basis,
             })
             .map_err(Into::into)
     }
 
-    fn planned_exit_position(
+    pub(crate) fn planned_exit_position(
         &self,
         position_id: PositionId,
         side: NtPositionSide,
@@ -511,87 +440,97 @@ impl BoltV3OrderEconomicsHandle {
 
 pub fn build_order_economics_submit_admission(
     economics: &BoltV3OrderEconomicsHandle,
-    input: BoltV3OrderEconomicsSubmitInput<'_>,
+    input: BoltV3FinalOrderEconomicsInput<'_>,
 ) -> Result<BoltV3EconomicsSubmitAdmission> {
-    let BoltV3OrderEconomicsSubmitInput {
-        request,
-        planned_fill_legs,
-        liquidity_role,
-        position,
-        lifecycle_path,
+    let BoltV3FinalOrderEconomicsInput {
+        execution_client_id,
+        intent,
+        order,
+        valuation,
+        risk_reducing_exit_position,
+        scenario,
+        candidate_fill_levels,
         requested_at_ns,
         decision_correlation_id,
-        gross_expected_value,
-        minimum_core_edge_ratio,
     } = input;
-    let admission = economics.quote_admission(BoltV3OrderEconomicsIntent {
-        request: &request,
-        planned_fill_legs,
-        liquidity_role,
-        position,
-        lifecycle_path,
-        requested_at_ns,
-        decision_correlation_id,
-        gross_expected_value,
-        minimum_core_edge_ratio,
-    })?;
-    build_submit_admission_request_from_economics(request, admission)
-}
-
-fn normalize_economics_fill_legs(
-    order: &OrderAny,
-    facts: crate::bolt_v3_submit_admission::BoltV3OrderAdmissionFacts,
-    legs: Vec<BoltV3PlannedFillLeg>,
-) -> Result<Vec<NautilusPlannedFillLeg>> {
-    anyhow::ensure!(!legs.is_empty(), "economics requires planned fill levels");
-    let mut remaining = facts.order_quantity;
-    let mut normalized = Vec::new();
-    for leg in legs {
-        anyhow::ensure!(
-            leg.price > Decimal::ZERO && leg.quantity > Decimal::ZERO,
-            "economics planned fill level must be positive"
-        );
-        let available = if order.is_quote_quantity() {
-            leg.price
-                .checked_mul(leg.quantity)
-                .context("economics planned fill notional overflow")?
-        } else {
-            leg.quantity
-        };
-        let consumed = available.min(remaining);
-        let quantity = if order.is_quote_quantity() {
-            consumed
-                .checked_div(leg.price)
-                .context("economics planned fill quantity division failed")?
-        } else {
-            consumed
-        };
-        normalized.push(NautilusPlannedFillLeg {
-            price: leg.price,
-            quantity,
-        });
-        remaining = remaining
-            .checked_sub(consumed)
-            .context("economics planned fill subtraction failed")?;
-        if remaining.is_zero() {
-            break;
-        }
-    }
+    let submit_intent_kind = scenario.intent_kind();
+    let request = BoltV3SubmitAdmissionRequestInput {
+        execution_client_id,
+        intent,
+        intent_kind: submit_intent_kind,
+        order,
+        valuation,
+        risk_reducing_exit_position,
+    };
+    let facts = order_admission_facts(&request)?;
     anyhow::ensure!(
-        remaining.is_zero(),
-        "economics planned fill levels do not cover the final order"
+        economics.economics.execution_client_id() == execution_client_id,
+        "economics execution client does not match the final order route"
     );
-    if order.price().is_some() {
-        anyhow::ensure!(
-            normalized.iter().all(|leg| match order.order_side() {
-                OrderSide::Buy => leg.price <= facts.price,
-                OrderSide::Sell => leg.price >= facts.price,
-                OrderSide::NoOrderSide => false,
-            }),
-            "economics planned fill level exceeds the final order limit"
-        );
-    }
-    Ok(normalized)
+    let liquidity_role = if order.is_post_only() {
+        NautilusEstimateLiquidityRole::GuaranteedMaker
+    } else {
+        NautilusEstimateLiquidityRole::Taker
+    };
+    let authority = economics
+        .economics
+        .request_authority(&order.instrument_id().to_string())?;
+    let basis = seal_final_order_economics_basis(
+        order,
+        request.valuation.instrument,
+        facts,
+        &scenario,
+        candidate_fill_levels,
+    )?;
+    let position = if authority.carry_required {
+        Some(basis.position().ok_or_else(|| {
+            anyhow::anyhow!("carry economics requires a position and holding horizon")
+        })?)
+    } else {
+        None
+    };
+    let economics_request = economics_request_from_nautilus(NautilusEconomicsIntent {
+        execution_client_id: &authority.execution_client_id,
+        account_id: authority.account_id.as_str(),
+        instrument_id: order.instrument_id(),
+        product_surface_id: authority.product_surface_id.as_str(),
+        reporting_policy_id: authority.reporting_policy_id.as_str(),
+        reporting_currency: authority.reporting_currency.as_str(),
+        edge_basis_policy_id: authority.edge_basis_policy_id.as_str(),
+        decision_correlation_id,
+        side: order.order_side(),
+        liquidity_role,
+        planned_fill_legs: basis.normalized_fill_legs(),
+        routing_attachment_id: None,
+        position,
+        lifecycle_path: basis.lifecycle_path(),
+        requested_at_ns,
+    })
+    .map_err(|error| anyhow::anyhow!(error))?;
+    anyhow::ensure!(
+        PlannedFillNotional::from_legs(&economics_request.planned_fill_legs)?
+            == basis.planned_fill_notional(),
+        "sealed planned-fill notional diverged from the provider request"
+    );
+    let admission = economics
+        .economics
+        .quote_admission(EconomicsAdmissionIntent {
+            request: economics_request,
+            order_binding: basis.order_binding().clone(),
+            policy: basis.policy(),
+            gross_expected_value: basis.gross_expected_value(),
+            reservation_basis: basis.reservation_basis(),
+        })
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "final-order economics quote failed at requested_at_ns={requested_at_ns}: {error}"
+            )
+        })?;
+    build_submit_admission_request_from_economics(
+        request,
+        admission,
+        economics.economics.resting_order_refresh_margin_ns()?,
+    )
 }
 
 fn resting_order_observation(order: Option<&OrderAny>) -> BoltV3RestingOrderObservation {
@@ -763,7 +702,7 @@ impl BoltV3OrderExecutionPolicy {
         context: BoltV3SubmitContext,
     ) -> Result<BoltV3SubmitRoutingOutcome>
     where
-        S: Strategy + StrategyNative + ?Sized,
+        S: Strategy + StrategyNative + DataActorNative + ?Sized,
     {
         let mut sink = NtStrategyVenueMutationSink { strategy };
         self.route_submit_with_sink(routing, &mut sink, order, context)
@@ -785,25 +724,41 @@ impl BoltV3OrderExecutionPolicy {
             intent,
             request,
             economics,
+            required_remaining_margin_ns,
         } = routing;
         let intent_kind = request.intent_kind;
-        record_order_intent(decision_evidence, intent_kind, intent.clone())?;
         let execution_client_id = context
             .client_id
             .as_ref()
             .map(ClientId::as_str)
             .ok_or(BoltV3SubmitAdmissionError::EconomicsOrderMismatch)?;
+        let route_now_ns = sink.actor_time_ns()?;
         validate_economics_submit_authority(&request, &economics, &order, execution_client_id)?;
+        validate_economics_remaining_margin_at(
+            &economics,
+            required_remaining_margin_ns,
+            route_now_ns,
+        )?;
+        record_order_intent(decision_evidence, intent_kind, intent.clone())?;
         match self.mode {
             BoltV3OrderExecutionMode::Live => {
-                let permit = submit_admission.admit_with_economics(&request, &economics)?;
+                let permit =
+                    submit_admission.admit_with_economics_at(&request, &economics, route_now_ns)?;
+                let pre_sink_now_ns = sink.actor_time_ns()?;
+                validate_economics_remaining_margin_at(
+                    &economics,
+                    required_remaining_margin_ns,
+                    pre_sink_now_ns,
+                )?;
                 sink.submit_order_via_nt(order, context)?;
                 permit.commit_submitted();
                 Ok(BoltV3SubmitRoutingOutcome::Submitted)
             }
             BoltV3OrderExecutionMode::Shadow => {
-                submit_admission.evaluate_and_record_without_consuming_capacity_with_economics(
-                    &request, &economics,
+                submit_admission.evaluate_and_record_without_consuming_capacity_with_economics_at(
+                    &request,
+                    &economics,
+                    route_now_ns,
                 )?;
                 log::info!(
                     "bolt-v3 submit skipped by execution policy: mode=shadow strategy_id={} client_order_id={}",
@@ -823,7 +778,7 @@ impl BoltV3OrderExecutionPolicy {
         params: Option<Params>,
     ) -> Result<BoltV3CancelRoutingOutcome>
     where
-        S: Strategy + StrategyNative + ?Sized,
+        S: Strategy + StrategyNative + DataActorNative + ?Sized,
     {
         let mut sink = NtStrategyVenueMutationSink { strategy };
         self.route_cancel_with_sink(&mut sink, client_order_id, client_id, params)
@@ -863,7 +818,7 @@ impl BoltV3OrderExecutionPolicy {
         params: Option<Params>,
     ) -> Result<BoltV3ModifyRoutingOutcome>
     where
-        S: Strategy + StrategyNative + ?Sized,
+        S: Strategy + StrategyNative + DataActorNative + ?Sized,
     {
         let mut sink = NtStrategyVenueMutationSink { strategy };
         self.route_modify_with_sink(
@@ -928,7 +883,7 @@ impl BoltV3OrderExecutionPolicy {
         params: Option<Params>,
     ) -> Result<BoltV3CancelAllRoutingOutcome>
     where
-        S: Strategy + StrategyNative + ?Sized,
+        S: Strategy + StrategyNative + DataActorNative + ?Sized,
     {
         let mut sink = NtStrategyVenueMutationSink { strategy };
         self.route_cancel_all_with_sink(&mut sink, instrument_id, order_side, client_id, params)
@@ -1240,6 +1195,7 @@ pub struct BoltV3SubmitRoutingRequest<'a> {
     intent: OrderIntentDetails,
     request: BoltV3SubmitAdmissionRequest,
     economics: EconomicsAdmission,
+    required_remaining_margin_ns: u64,
 }
 
 impl<'a> BoltV3SubmitRoutingRequest<'a> {
@@ -1249,13 +1205,14 @@ impl<'a> BoltV3SubmitRoutingRequest<'a> {
         intent: OrderIntentDetails,
         sealed: BoltV3EconomicsSubmitAdmission,
     ) -> Self {
-        let (request, economics) = sealed.into_parts();
+        let (request, economics, required_remaining_margin_ns) = sealed.into_parts();
         Self {
             decision_evidence,
             submit_admission,
             intent,
             request,
             economics,
+            required_remaining_margin_ns,
         }
     }
 
@@ -1266,6 +1223,27 @@ impl<'a> BoltV3SubmitRoutingRequest<'a> {
         intent: OrderIntentDetails,
         request: BoltV3SubmitAdmissionRequest,
         order: &OrderAny,
+    ) -> Self {
+        Self::for_test_with_timing(
+            decision_evidence,
+            submit_admission,
+            intent,
+            request,
+            order,
+            u64::MAX,
+            1,
+        )
+    }
+
+    #[cfg(test)]
+    fn for_test_with_timing(
+        decision_evidence: &'a dyn OrderIntentEvidence,
+        submit_admission: &'a BoltV3SubmitAdmissionState,
+        intent: OrderIntentDetails,
+        request: BoltV3SubmitAdmissionRequest,
+        order: &OrderAny,
+        valid_until_ns: u64,
+        required_remaining_margin_ns: u64,
     ) -> Self {
         let purpose = match request.intent_kind {
             BoltV3SubmitIntentKind::Entry => EconomicsAdmissionPurpose::TradingEdge,
@@ -1279,7 +1257,7 @@ impl<'a> BoltV3SubmitRoutingRequest<'a> {
             OrderSide::Sell => crate::economics::OrderSide::Sell,
             OrderSide::NoOrderSide => panic!("routing-test order must be sided"),
         };
-        let economics = EconomicsAdmission::for_routing_test(
+        let economics = EconomicsAdmission::for_routing_test_with_validity(
             &request.execution_client_id,
             &request.instrument_id,
             order_side,
@@ -1287,6 +1265,7 @@ impl<'a> BoltV3SubmitRoutingRequest<'a> {
             purpose,
             request.notional,
             request.notional,
+            valid_until_ns,
         );
         Self {
             decision_evidence,
@@ -1294,6 +1273,7 @@ impl<'a> BoltV3SubmitRoutingRequest<'a> {
             intent,
             request,
             economics,
+            required_remaining_margin_ns,
         }
     }
 }
@@ -1351,12 +1331,12 @@ pub enum BoltV3ModifyRoutingOutcome {
     SkippedByPolicy,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct BoltV3MakerOrderRoutingContext<'a> {
     pub strategy_id: &'a str,
     pub execution_client_id: &'a str,
     pub order_economics: &'a BoltV3OrderEconomicsHandle,
-    pub gross_expected_value: Decimal,
+    pub terminal_value_entry: Option<BoltV3TerminalValueEntry>,
 }
 
 #[derive(Clone, Copy)]
@@ -1432,19 +1412,19 @@ where
     )?;
     let sealed = build_order_economics_submit_admission(
         context.order_economics,
-        BoltV3OrderEconomicsSubmitInput {
-            request: admission_input,
-            planned_fill_legs: vec![BoltV3PlannedFillLeg {
+        BoltV3FinalOrderEconomicsInput {
+            execution_client_id: context.execution_client_id,
+            intent: &intent,
+            order: &order,
+            valuation: admission_input.valuation,
+            risk_reducing_exit_position: None,
+            scenario: BoltV3FinalOrderEconomicsScenario::forced_reduction(position)?,
+            candidate_fill_levels: vec![BoltV3PlannedFillLeg {
                 price: facts.price,
                 quantity: facts.order_quantity,
             }],
-            liquidity_role: NautilusEstimateLiquidityRole::Taker,
-            position: Some(position),
-            lifecycle_path: LifecyclePath::PlannedExit,
             requested_at_ns: command.source_timestamp_unix_nanos(),
             decision_correlation_id: command.action_id(),
-            gross_expected_value: Decimal::ZERO,
-            minimum_core_edge_ratio: Decimal::ZERO,
         },
     )?
     .with_kill_switch_forced_reduction(command.forced_reduction_claim().clone());
@@ -1484,7 +1464,7 @@ pub fn route_maker_order_command<S>(
     input: MakerOrderDispatchInput<'_>,
 ) -> Result<MakerOrderDispatchOutcome>
 where
-    S: Strategy + StrategyNative + ?Sized,
+    S: Strategy + StrategyNative + DataActorNative + ?Sized,
 {
     let mut runtime = NtStrategyMakerOrderRuntime { strategy };
     route_maker_order_command_with_runtime(
@@ -1498,6 +1478,8 @@ where
 }
 
 pub(crate) trait BoltV3NtVenueMutationSink {
+    fn actor_time_ns(&mut self) -> Result<u64>;
+
     fn submit_order_via_nt(&mut self, order: OrderAny, context: BoltV3SubmitContext) -> Result<()>;
 
     fn cancel_order_via_nt(
@@ -1538,6 +1520,7 @@ pub(crate) struct BoltV3NtSubmitOnlySink<F>
 where
     F: FnMut(OrderAny, BoltV3SubmitContext) -> Result<()>,
 {
+    actor_time_ns: u64,
     dispatch: F,
 }
 
@@ -1545,8 +1528,11 @@ impl<F> BoltV3NtSubmitOnlySink<F>
 where
     F: FnMut(OrderAny, BoltV3SubmitContext) -> Result<()>,
 {
-    pub(crate) fn new(dispatch: F) -> Self {
-        Self { dispatch }
+    pub(crate) fn new(actor_time_ns: u64, dispatch: F) -> Self {
+        Self {
+            actor_time_ns,
+            dispatch,
+        }
     }
 }
 
@@ -1554,6 +1540,10 @@ impl<F> BoltV3NtVenueMutationSink for BoltV3NtSubmitOnlySink<F>
 where
     F: FnMut(OrderAny, BoltV3SubmitContext) -> Result<()>,
 {
+    fn actor_time_ns(&mut self) -> Result<u64> {
+        Ok(self.actor_time_ns)
+    }
+
     fn submit_order_via_nt(&mut self, order: OrderAny, context: BoltV3SubmitContext) -> Result<()> {
         (self.dispatch)(order, context)
     }
@@ -1597,15 +1587,19 @@ where
 
 struct NtStrategyVenueMutationSink<'a, S>
 where
-    S: Strategy + StrategyNative + ?Sized,
+    S: Strategy + StrategyNative + DataActorNative + ?Sized,
 {
     strategy: &'a mut S,
 }
 
 impl<S> BoltV3NtVenueMutationSink for NtStrategyVenueMutationSink<'_, S>
 where
-    S: Strategy + StrategyNative + ?Sized,
+    S: Strategy + StrategyNative + DataActorNative + ?Sized,
 {
+    fn actor_time_ns(&mut self) -> Result<u64> {
+        Ok(self.strategy.clock().timestamp_ns().as_u64())
+    }
+
     fn submit_order_via_nt(&mut self, order: OrderAny, context: BoltV3SubmitContext) -> Result<()> {
         self.strategy.submit_order(
             order,
@@ -1665,15 +1659,19 @@ trait BoltV3MakerOrderRuntime: BoltV3NtVenueMutationSink {
 
 struct NtStrategyMakerOrderRuntime<'a, S>
 where
-    S: Strategy + StrategyNative + ?Sized,
+    S: Strategy + StrategyNative + DataActorNative + ?Sized,
 {
     strategy: &'a mut S,
 }
 
 impl<S> BoltV3NtVenueMutationSink for NtStrategyMakerOrderRuntime<'_, S>
 where
-    S: Strategy + StrategyNative + ?Sized,
+    S: Strategy + StrategyNative + DataActorNative + ?Sized,
 {
+    fn actor_time_ns(&mut self) -> Result<u64> {
+        Ok(self.strategy.clock().timestamp_ns().as_u64())
+    }
+
     fn submit_order_via_nt(&mut self, order: OrderAny, context: BoltV3SubmitContext) -> Result<()> {
         self.strategy.submit_order(
             order,
@@ -1725,7 +1723,7 @@ where
 
 impl<S> BoltV3MakerOrderRuntime for NtStrategyMakerOrderRuntime<'_, S>
 where
-    S: Strategy + StrategyNative + ?Sized,
+    S: Strategy + StrategyNative + DataActorNative + ?Sized,
 {
     fn order_factory(&mut self) -> RefMut<'_, OrderFactory> {
         self.strategy.order_factory()
@@ -1798,19 +1796,23 @@ where
         let facts = order_admission_facts(&admission_input)?;
         let sealed = build_order_economics_submit_admission(
             self.context.order_economics,
-            BoltV3OrderEconomicsSubmitInput {
-                request: admission_input,
-                planned_fill_legs: vec![BoltV3PlannedFillLeg {
+            BoltV3FinalOrderEconomicsInput {
+                execution_client_id: self.context.execution_client_id,
+                intent: &intent,
+                order: &order,
+                valuation: admission_input.valuation,
+                risk_reducing_exit_position: None,
+                scenario: BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
+                    self.context.terminal_value_entry.clone().ok_or_else(|| {
+                        anyhow::anyhow!("maker submit requires a terminal-value economics scenario")
+                    })?,
+                ),
+                candidate_fill_levels: vec![BoltV3PlannedFillLeg {
                     price: facts.price,
                     quantity: facts.order_quantity,
                 }],
-                liquidity_role: NautilusEstimateLiquidityRole::GuaranteedMaker,
-                position: None,
-                lifecycle_path: LifecyclePath::HoldToRedemption,
                 requested_at_ns: order.ts_init().as_u64(),
                 decision_correlation_id: order.client_order_id().as_str(),
-                gross_expected_value: self.context.gross_expected_value,
-                minimum_core_edge_ratio: Decimal::ZERO,
             },
         )?;
         let retained_economics = self
@@ -1947,12 +1949,14 @@ mod tests {
     use ustr::Ustr;
 
     use super::{
-        BoltV3CancelAllRoutingOutcome, BoltV3CancelRoutingOutcome, BoltV3MakerOrderRoutingContext,
-        BoltV3MakerOrderRuntime, BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink,
-        BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy, BoltV3PlannedFillLeg,
-        BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
-        clamp_risk_reducing_exit_to_venue_position, economics_order_binding,
-        normalize_economics_fill_legs, order_intent_details_from_compiled_order,
+        BoltV3CancelAllRoutingOutcome, BoltV3CancelRoutingOutcome, BoltV3FinalOrderEconomicsInput,
+        BoltV3FinalOrderEconomicsScenario, BoltV3MakerOrderRoutingContext, BoltV3MakerOrderRuntime,
+        BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode,
+        BoltV3OrderExecutionPolicy, BoltV3PlannedFillLeg, BoltV3SubmitContext,
+        BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest, BoltV3TakerEconomicsSizingInput,
+        BoltV3TerminalValueEntry, EconomicsAdmissionPurpose, LifecyclePath,
+        build_order_economics_submit_admission, clamp_risk_reducing_exit_to_venue_position,
+        economics_order_binding, order_intent_details_from_compiled_order,
         route_kill_switch_flatten_command_with_sink, route_maker_order_command_with_runtime,
     };
     use crate::{
@@ -1993,8 +1997,9 @@ mod tests {
             BoltV3LiveSubmitApprovalLimits, BoltV3RiskReducingExitProof,
             BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
             BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitCapitalAdmissionNtComponents,
-            BoltV3SubmitIntentKind, PredictionMarketOutcomeSide,
+            BoltV3SubmitIntentKind, OrderValuationContext, PredictionMarketOutcomeSide,
         },
+        economics::LiquidityRole,
     };
 
     trait RecordedCurrentEvidence {
@@ -2084,6 +2089,10 @@ mod tests {
     }
 
     impl BoltV3NtVenueMutationSink for RecordingMakerRuntime {
+        fn actor_time_ns(&mut self) -> Result<u64> {
+            self.venue_sink.actor_time_ns()
+        }
+
         fn submit_order_via_nt(
             &mut self,
             order: OrderAny,
@@ -2314,6 +2323,7 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct RecordingVenueMutationSink {
+        actor_times_ns: std::collections::VecDeque<u64>,
         submit_calls: usize,
         submitted_order_quantities: Vec<Quantity>,
         cancel_calls: usize,
@@ -2325,6 +2335,10 @@ mod tests {
     }
 
     impl BoltV3NtVenueMutationSink for RecordingVenueMutationSink {
+        fn actor_time_ns(&mut self) -> Result<u64> {
+            Ok(self.actor_times_ns.pop_front().unwrap_or(1))
+        }
+
         fn submit_order_via_nt(
             &mut self,
             order: OrderAny,
@@ -2409,6 +2423,227 @@ mod tests {
         assert_eq!(writer.order_intents().len(), 1);
         assert_eq!(writer.admitted_entry_admissions().len(), 1);
         assert_eq!(admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn total_lifetime_cannot_hide_insufficient_remaining_margin() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+        let order = limit_order("remaining-margin-delayed");
+        let intent = intent_for_order(&order);
+        let request = submit_request_for_order(&order, Decimal::new(50, 0));
+        let mut sink = RecordingVenueMutationSink {
+            actor_times_ns: std::collections::VecDeque::from([90]),
+            ..RecordingVenueMutationSink::default()
+        };
+
+        let error = BoltV3OrderExecutionPolicy::shadow()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::for_test_with_timing(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                    &order,
+                    100,
+                    20,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect_err("delayed routing must use remaining, not total, quote lifetime");
+
+        assert!(error.to_string().contains("lacks remaining lifetime"));
+        assert!(writer.order_intents().is_empty());
+        assert_eq!(writer.admission_count(), 0);
+        assert_eq!(admission.admitted_order_count(), 0);
+        assert_eq!(sink.submit_calls, 0);
+    }
+
+    #[test]
+    fn source_horizon_shorter_than_remaining_margin_fails_before_evidence() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+        let order = limit_order("remaining-margin-source");
+        let intent = intent_for_order(&order);
+        let request = submit_request_for_order(&order, Decimal::new(50, 0));
+        let mut sink = RecordingVenueMutationSink {
+            actor_times_ns: std::collections::VecDeque::from([1]),
+            ..RecordingVenueMutationSink::default()
+        };
+
+        let error = BoltV3OrderExecutionPolicy::shadow()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::for_test_with_timing(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                    &order,
+                    15,
+                    20,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect_err("a short source horizon must fail before evidence");
+
+        assert!(error.to_string().contains("lacks remaining lifetime"));
+        assert!(writer.order_intents().is_empty());
+        assert_eq!(writer.admission_count(), 0);
+        assert_eq!(sink.submit_calls, 0);
+    }
+
+    #[test]
+    fn exact_remaining_margin_boundary_is_accepted() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+        let order = limit_order("remaining-margin-exact");
+        let intent = intent_for_order(&order);
+        let request = submit_request_for_order(&order, Decimal::new(50, 0));
+        let mut sink = RecordingVenueMutationSink {
+            actor_times_ns: std::collections::VecDeque::from([80]),
+            ..RecordingVenueMutationSink::default()
+        };
+
+        let outcome = BoltV3OrderExecutionPolicy::shadow()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::for_test_with_timing(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                    &order,
+                    100,
+                    20,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect("the exact remaining-margin boundary should be accepted");
+
+        assert_eq!(outcome, BoltV3SubmitRoutingOutcome::SkippedByPolicy);
+        assert_eq!(writer.order_intents().len(), 1);
+        assert_eq!(writer.admission_count(), 1);
+        assert_eq!(sink.submit_calls, 0);
+    }
+
+    #[test]
+    fn pre_sink_clock_advance_rolls_back_permit_and_registration() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            writer.clone(),
+            live_submit_cap_for_client("maker_execution_client"),
+        ));
+        let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
+            "maker_execution_client",
+        );
+        let mut runtime = RecordingMakerRuntime::new();
+        runtime.venue_sink.actor_times_ns = std::collections::VecDeque::from([1, u64::MAX]);
+        let command = MakerCompiledOrderCommand::Submit {
+            leg: Leg::Yes,
+            template: Box::new(maker_limit_post_only_template()),
+            inputs: NtOrderBuildInputs {
+                instrument_id: InstrumentId::from("YES.INSTRUMENT"),
+                order_side: OrderSide::Buy,
+                quantity: Quantity::new(2.0, 2),
+                price: Some(Price::new(0.40, 2)),
+                client_order_id: ClientOrderId::from("remaining-margin-pre-sink"),
+            },
+            fallback_price: Price::new(0.40, 2),
+        };
+
+        let error = route_maker_order_command_with_runtime(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut runtime,
+            writer.as_ref(),
+            admission.as_ref(),
+            maker_routing_context(&order_economics),
+            MakerOrderDispatchInput {
+                command: &command,
+                submit_order_prefix: "maker_submit",
+            },
+        )
+        .expect_err("the fresh pre-sink time must veto an expired remaining margin");
+
+        assert!(error.to_string().contains("lacks remaining lifetime"));
+        assert_eq!(writer.order_intents().len(), 1);
+        assert_eq!(admission.admitted_order_count(), 0);
+        assert_eq!(runtime.venue_sink.submit_calls, 0);
+        assert!(order_economics.resting_order_ids().unwrap().is_empty());
+    }
+
+    #[test]
+    fn actor_clock_regression_fails_before_evidence() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+        let order = limit_order("actor-clock-regression");
+        let intent = intent_for_order(&order);
+        let request = submit_request_for_order(&order, Decimal::new(50, 0));
+        let mut sink = RecordingVenueMutationSink {
+            actor_times_ns: std::collections::VecDeque::from([0]),
+            ..RecordingVenueMutationSink::default()
+        };
+
+        let error = BoltV3OrderExecutionPolicy::shadow()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::for_test_with_timing(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                    &order,
+                    100,
+                    20,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect_err("actor time before order time must fail closed");
+
+        assert!(error.to_string().contains("lacks remaining lifetime"));
+        assert!(writer.order_intents().is_empty());
+        assert_eq!(writer.admission_count(), 0);
+        assert_eq!(admission.admitted_order_count(), 0);
+        assert_eq!(sink.submit_calls, 0);
+    }
+
+    #[test]
+    fn production_economics_route_uses_only_injected_actor_time() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+        let order = limit_order("actor-time-only");
+        let intent = intent_for_order(&order);
+        let request = submit_request_for_order(&order, Decimal::new(50, 0));
+        let mut sink = RecordingVenueMutationSink {
+            actor_times_ns: std::collections::VecDeque::from([1]),
+            ..RecordingVenueMutationSink::default()
+        };
+
+        let outcome = BoltV3OrderExecutionPolicy::shadow()
+            .route_submit_with_sink(
+                BoltV3SubmitRoutingRequest::for_test_with_timing(
+                    writer.as_ref(),
+                    admission.as_ref(),
+                    intent,
+                    request,
+                    &order,
+                    21,
+                    20,
+                ),
+                &mut sink,
+                order,
+                BoltV3SubmitContext::with_client_id(ClientId::from("execution_client")),
+            )
+            .expect("wall time must not affect an actor-time economics route");
+
+        assert_eq!(outcome, BoltV3SubmitRoutingOutcome::SkippedByPolicy);
+        assert_eq!(writer.order_intents().len(), 1);
+        assert_eq!(writer.admission_count(), 1);
     }
 
     #[test]
@@ -3526,7 +3761,10 @@ mod tests {
             strategy_id: "maker-strategy",
             execution_client_id: "maker_execution_client",
             order_economics,
-            gross_expected_value: Decimal::ONE,
+            terminal_value_entry: Some(
+                BoltV3TerminalValueEntry::try_new(Decimal::ONE, Decimal::ZERO)
+                    .expect("maker terminal value should construct"),
+            ),
         }
     }
 
@@ -3810,6 +4048,202 @@ mod tests {
         )
     }
 
+    fn post_only_limit_order(client_order_id: &str) -> OrderAny {
+        OrderAny::Limit(
+            LimitOrder::new_checked(
+                TraderId::from("TRADER-001"),
+                StrategyId::from("strategy-a"),
+                InstrumentId::from("INSTRUMENT.SOURCE"),
+                ClientOrderId::from(client_order_id),
+                OrderSide::Buy,
+                Quantity::new(1.0, 2),
+                Price::new(0.50, 2),
+                TimeInForce::Gtc,
+                None,
+                true,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("post-only limit order should be valid"),
+        )
+    }
+
+    #[test]
+    fn edge_candidate_and_final_entry_share_terminal_value_scenario() {
+        let economics =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
+        let terminal_value_entry =
+            BoltV3TerminalValueEntry::try_new(Decimal::new(7, 1), Decimal::ZERO)
+                .expect("terminal value should construct");
+        let candidate_fill_levels = vec![BoltV3PlannedFillLeg {
+            price: Decimal::new(5, 1),
+            quantity: Decimal::ONE,
+        }];
+        let sizing = economics
+            .quote_taker_sizing(BoltV3TakerEconomicsSizingInput {
+                instrument_id: InstrumentId::from("INSTRUMENT.SOURCE"),
+                order_side: OrderSide::Buy,
+                planned_fill_legs: candidate_fill_levels.clone(),
+                terminal_value_entry: terminal_value_entry.clone(),
+                requested_at_ns: 1,
+                decision_correlation_id: "edge-candidate",
+            })
+            .expect("candidate sizing should quote from terminal value");
+        let order = limit_order("edge-final-entry");
+        let intent = intent_for_order(&order);
+        let sealed = build_order_economics_submit_admission(
+            &economics,
+            BoltV3FinalOrderEconomicsInput {
+                execution_client_id: "execution_client",
+                intent: &intent,
+                order: &order,
+                valuation: OrderValuationContext::empty(),
+                risk_reducing_exit_position: None,
+                scenario: BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
+                    terminal_value_entry,
+                ),
+                candidate_fill_levels,
+                requested_at_ns: 1,
+                decision_correlation_id: "edge-final",
+            },
+        )
+        .expect("final entry should seal from the same terminal value");
+
+        assert_eq!(sizing.net_edge().gross_expected_value, Decimal::new(2, 1));
+        assert_eq!(
+            sealed.economics().net_edge().gross_expected_value,
+            Decimal::new(2, 1)
+        );
+        assert_eq!(sealed.request().intent_kind, BoltV3SubmitIntentKind::Entry);
+        assert_eq!(
+            sealed.economics().request().lifecycle_path,
+            LifecyclePath::HoldToRedemption
+        );
+        assert_eq!(
+            sealed.economics().request().liquidity_role,
+            LiquidityRole::Taker
+        );
+        assert_eq!(
+            sealed.economics().purpose(),
+            EconomicsAdmissionPurpose::TradingEdge
+        );
+        assert_eq!(
+            sealed.economics().order_binding(),
+            &economics_order_binding(&order).expect("final order should bind")
+        );
+    }
+
+    #[test]
+    fn maker_submit_derives_gross_from_terminal_value_and_final_order() {
+        let economics =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
+        let order = post_only_limit_order("maker-terminal-entry");
+        let intent = intent_for_order(&order);
+        let sealed = build_order_economics_submit_admission(
+            &economics,
+            BoltV3FinalOrderEconomicsInput {
+                execution_client_id: "execution_client",
+                intent: &intent,
+                order: &order,
+                valuation: OrderValuationContext::empty(),
+                risk_reducing_exit_position: None,
+                scenario: BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
+                    BoltV3TerminalValueEntry::try_new(Decimal::new(7, 1), Decimal::ZERO)
+                        .expect("terminal value should construct"),
+                ),
+                candidate_fill_levels: vec![BoltV3PlannedFillLeg {
+                    price: Decimal::new(5, 1),
+                    quantity: Decimal::ONE,
+                }],
+                requested_at_ns: 1,
+                decision_correlation_id: "maker-terminal-entry",
+            },
+        )
+        .expect("maker entry should seal from terminal value");
+
+        assert_eq!(
+            sealed.economics().net_edge().gross_expected_value,
+            Decimal::new(2, 1)
+        );
+        assert_eq!(
+            sealed.economics().request().liquidity_role,
+            LiquidityRole::GuaranteedMaker
+        );
+        assert_eq!(sealed.request().intent_kind, BoltV3SubmitIntentKind::Entry);
+        assert_eq!(
+            sealed.economics().request().lifecycle_path,
+            LifecyclePath::HoldToRedemption
+        );
+        assert_eq!(
+            sealed.economics().purpose(),
+            EconomicsAdmissionPurpose::TradingEdge
+        );
+    }
+
+    #[test]
+    fn forced_reduction_derives_zero_gross_and_risk_reduction_purpose() {
+        let economics =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
+        let order = limit_exit_order("forced-reduction-scenario", Quantity::new(1.0, 2));
+        let intent = exit_intent_for_order(&order);
+        let position = economics
+            .planned_exit_position(
+                PositionId::from("POSITION-001"),
+                PositionSide::Long,
+                Decimal::ONE,
+            )
+            .expect("forced-reduction position should construct");
+        let sealed = build_order_economics_submit_admission(
+            &economics,
+            BoltV3FinalOrderEconomicsInput {
+                execution_client_id: "execution_client",
+                intent: &intent,
+                order: &order,
+                valuation: OrderValuationContext::empty(),
+                risk_reducing_exit_position: None,
+                scenario: BoltV3FinalOrderEconomicsScenario::forced_reduction(position)
+                    .expect("forced-reduction scenario should construct"),
+                candidate_fill_levels: vec![BoltV3PlannedFillLeg {
+                    price: Decimal::new(5, 1),
+                    quantity: Decimal::ONE,
+                }],
+                requested_at_ns: 1,
+                decision_correlation_id: "forced-reduction-scenario",
+            },
+        )
+        .expect("forced reduction should seal without caller-selected gross or lifecycle");
+
+        assert_eq!(
+            sealed.economics().net_edge().gross_expected_value,
+            Decimal::ZERO
+        );
+        assert_eq!(
+            sealed.request().intent_kind,
+            BoltV3SubmitIntentKind::KillSwitchForcedReduction
+        );
+        assert_eq!(
+            sealed.economics().request().lifecycle_path,
+            LifecyclePath::PlannedExit
+        );
+        assert_eq!(
+            sealed.economics().purpose(),
+            EconomicsAdmissionPurpose::RiskReduction
+        );
+    }
+
     fn limit_exit_order(client_order_id: &str, quantity: Quantity) -> OrderAny {
         limit_exit_order_for_instrument(
             client_order_id,
@@ -3853,48 +4287,6 @@ mod tests {
             )
             .expect("limit exit order should be valid"),
         )
-    }
-
-    #[test]
-    fn economics_fill_normalization_seals_the_final_order_quantity() {
-        let order = limit_order("economics-normalize");
-        let normalized = normalize_economics_fill_legs(
-            &order,
-            crate::bolt_v3_submit_admission::BoltV3OrderAdmissionFacts {
-                price: Decimal::new(50, 2),
-                order_quantity: Decimal::ONE,
-                reservation_basis: Decimal::new(50, 2),
-            },
-            vec![BoltV3PlannedFillLeg {
-                price: Decimal::new(49, 2),
-                quantity: Decimal::from(2),
-            }],
-        )
-        .expect("a deeper level should be truncated to the final order quantity");
-
-        assert_eq!(normalized.len(), 1);
-        assert_eq!(normalized[0].quantity, Decimal::ONE);
-        assert_eq!(normalized[0].price, Decimal::new(49, 2));
-    }
-
-    #[test]
-    fn economics_fill_normalization_rejects_a_price_outside_the_final_limit() {
-        let order = limit_order("economics-limit");
-        let error = normalize_economics_fill_legs(
-            &order,
-            crate::bolt_v3_submit_admission::BoltV3OrderAdmissionFacts {
-                price: Decimal::new(50, 2),
-                order_quantity: Decimal::ONE,
-                reservation_basis: Decimal::new(50, 2),
-            },
-            vec![BoltV3PlannedFillLeg {
-                price: Decimal::new(51, 2),
-                quantity: Decimal::ONE,
-            }],
-        )
-        .expect_err("a buy fill above the final limit must fail closed");
-
-        assert!(error.to_string().contains("exceeds the final order limit"));
     }
 
     #[test]

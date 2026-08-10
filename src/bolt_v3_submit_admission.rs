@@ -14,15 +14,20 @@ use crate::bolt_v3_capital_reservation::{
 #[cfg(test)]
 use crate::bolt_v3_current_evidence::DecisionEvidenceRecorder;
 use crate::bolt_v3_current_evidence::{
-    AdmissionDecisionOutcome, AdmissionDetails, AdmissionEconomicsDetails,
-    AdmissionRejectionReason, AdmittedEntryAdmissionFact, BasketAdmissionDetails,
-    BasketAdmissionGrantedFact, BasketAdmissionIntentKind, BasketAdmittedLeg,
-    CapitalAdmissionRebuildFact, CapitalAdmissionRebuildOutcome, CapitalAdmissionRebuildSource,
-    CapitalAdmissionRejectionReason, CommittedAdmission, EvidenceOrderSide,
-    ForcedReductionAdmissionFact, LossGovernorHaltFact, LossHaltReason as EvidenceLossHaltReason,
-    LossSnapshotSource, LossSnapshotStaleReason as EvidenceLossSnapshotStaleReason,
-    NonBlockingRecordOutcome, OrderIntentDetails, OrderRejectFact, OrderRejectReason,
-    OrderRejectSource, ProviderCollateralAllowanceCaptureEndpoint as EvidenceCaptureEndpoint,
+    AdmissionDecisionOutcome, AdmissionDetails, AdmissionEconomicsCalculationFactor,
+    AdmissionEconomicsClass, AdmissionEconomicsComponent, AdmissionEconomicsDetails,
+    AdmissionEconomicsInventoryApplication, AdmissionEconomicsKind, AdmissionEconomicsNativeEffect,
+    AdmissionEconomicsNativeUnit, AdmissionEconomicsPointEstimate,
+    AdmissionEconomicsRiskBoundAuthority, AdmissionEconomicsScope, AdmissionEconomicsSource,
+    AdmissionEconomicsTreatment, AdmissionEconomicsValuation, AdmissionRejectionReason,
+    AdmittedEntryAdmissionFact, BasketAdmissionDetails, BasketAdmissionGrantedFact,
+    BasketAdmissionIntentKind, BasketAdmittedLeg, CapitalAdmissionRebuildFact,
+    CapitalAdmissionRebuildOutcome, CapitalAdmissionRebuildSource, CapitalAdmissionRejectionReason,
+    CommittedAdmission, EvidenceOrderSide, ForcedReductionAdmissionFact, LossGovernorHaltFact,
+    LossHaltReason as EvidenceLossHaltReason, LossSnapshotSource,
+    LossSnapshotStaleReason as EvidenceLossSnapshotStaleReason, NonBlockingRecordOutcome,
+    OrderIntentDetails, OrderRejectFact, OrderRejectReason, OrderRejectSource,
+    ProviderCollateralAllowanceCaptureEndpoint as EvidenceCaptureEndpoint,
     ProviderCollateralAllowanceCaptureErrorClass as EvidenceCaptureErrorClass,
     ProviderCollateralAllowanceCaptureFailureFact, RecordFailure, RejectedEntryAdmissionFact,
     ReservationAttribution, ReservationProductKind, ReservationRecoveryEvent,
@@ -43,6 +48,7 @@ use crate::bolt_v3_loss_governor::{
 };
 use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
 use crate::bolt_v3_provider_collateral_allowance::ProviderCollateralAllowanceCaptureFailureEvidence;
+use crate::economics::EconomicsError;
 use crate::integrations::nautilus::economics::economics_order_binding;
 use anyhow::Context;
 use nautilus_model::{
@@ -1620,6 +1626,7 @@ impl BoltV3SubmitAdmissionState {
         economics: Option<&EconomicsAdmission>,
         now_ns: u64,
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
+        ensure_economics_available(economics, now_ns)?;
         let mut inner = self
             .inner
             .lock()
@@ -1799,6 +1806,7 @@ impl BoltV3SubmitAdmissionState {
         economics: Option<&EconomicsAdmission>,
         now_ns: u64,
     ) -> Result<(), BoltV3SubmitAdmissionError> {
+        ensure_economics_available(economics, now_ns)?;
         let mut inner = self
             .inner
             .lock()
@@ -1825,6 +1833,7 @@ impl BoltV3SubmitAdmissionState {
         economics: Option<&EconomicsAdmission>,
         now_ns: u64,
     ) -> Result<RecordedAdmissionAuthority, anyhow::Error> {
+        let economics_details = economics.map(admission_economics_details).transpose()?;
         let details = AdmissionDetails {
             strategy_id: request.strategy_id.clone(),
             execution_client_id: request.execution_client_id.clone(),
@@ -1908,39 +1917,7 @@ impl BoltV3SubmitAdmissionState {
                 .loss_snapshot_diagnostics
                 .as_ref()
                 .map(|diagnostics| diagnostics.admission_now_ns),
-            economics: economics.map(|economics| {
-                let source_snapshot_ids = economics
-                    .quote()
-                    .source_snapshot_ids()
-                    .iter()
-                    .chain(economics.net_edge().basis.source_snapshot_ids.iter())
-                    .map(ToString::to_string)
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect();
-                AdmissionEconomicsDetails {
-                    decision_correlation_id: economics
-                        .quote()
-                        .decision_correlation_id()
-                        .to_string(),
-                    core_total: economics.quote().core_total().to_string(),
-                    core_net_edge: economics.net_edge().core_net_edge.to_string(),
-                    core_edge_ratio: economics.net_edge().core_edge_ratio.to_string(),
-                    forecast_net_edge: economics.net_edge().forecast_net_edge.to_string(),
-                    forecast_complete: economics.quote().forecast_complete(),
-                    missing_forecast_component_ids: economics
-                        .quote()
-                        .missing_forecast_component_ids()
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect(),
-                    valid_until_ns: economics.quote().valid_until_ns(),
-                    forecast_valid_until_ns: economics.quote().forecast_valid_until_ns(),
-                    source_snapshot_ids,
-                    reservation_basis: economics.reservation_basis().to_string(),
-                    full_reservation_liability: economics.full_reservation_liability().to_string(),
-                }
-            }),
+            economics: economics_details,
         };
         let result = match (request.intent_kind, evaluation.outcome) {
             (BoltV3SubmitIntentKind::Entry, AdmissionDecisionOutcome::Admitted) => {
@@ -3400,6 +3377,240 @@ pub(crate) fn validate_economics_submit_authority(
     Ok(())
 }
 
+fn ensure_economics_available(
+    economics: Option<&EconomicsAdmission>,
+    now_ns: u64,
+) -> Result<(), BoltV3SubmitAdmissionError> {
+    if let Some(economics) = economics {
+        economics
+            .quote()
+            .capability_health()
+            .allows_admission(now_ns)
+            .map_err(BoltV3SubmitAdmissionError::EconomicsUnavailable)?;
+    }
+    Ok(())
+}
+
+fn admission_economics_details(
+    economics: &EconomicsAdmission,
+) -> anyhow::Result<AdmissionEconomicsDetails> {
+    let quote = economics.quote();
+    let missing_forecast_component_ids = quote
+        .missing_forecast_component_ids()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+    let mut components = Vec::with_capacity(quote.components().len());
+    for evaluated in quote.components() {
+        let component = evaluated.component();
+        components.push(AdmissionEconomicsComponent {
+            component_id: component.component_id.to_string(),
+            class: match component.class {
+                crate::economics::EconomicClass::Charge => AdmissionEconomicsClass::Charge,
+                crate::economics::EconomicClass::Credit => AdmissionEconomicsClass::Credit,
+            },
+            economic_kind: admission_economics_kind(component.kind),
+            scope: admission_economics_scope(&component.scope),
+            point_estimate: match &component.point_estimate {
+                crate::economics::PointEstimate::NonZero(effect) => {
+                    AdmissionEconomicsPointEstimate::NonZero {
+                        effect: admission_economics_native_effect(effect),
+                    }
+                }
+                crate::economics::PointEstimate::ProvenZero { factor_id } => {
+                    AdmissionEconomicsPointEstimate::ProvenZero {
+                        factor_id: factor_id.to_string(),
+                    }
+                }
+            },
+            point_valuation: evaluated.point_valuation().map(Into::into),
+            debit_risk_bound: component
+                .debit_risk_bound
+                .as_ref()
+                .map(admission_economics_native_effect),
+            debit_risk_bound_valuation: evaluated.debit_risk_bound_valuation().map(Into::into),
+            treatment: admission_economics_treatment(component.admission_treatment),
+            calculation_factors: component
+                .calculation_factors
+                .iter()
+                .map(|factor| AdmissionEconomicsCalculationFactor {
+                    factor_id: factor.factor_id.to_string(),
+                    value: factor.value.to_string(),
+                })
+                .collect(),
+            formula_id: component.formula_id.to_string(),
+            source: AdmissionEconomicsSource {
+                source_id: component.source.source.to_string(),
+                snapshot_id: component.source.snapshot_id.to_string(),
+                source_at_ns: component.source.source_at_ns,
+                fetched_at_ns: component.source.fetched_at_ns,
+                valid_until_ns: component.source.valid_until_ns,
+            },
+        });
+    }
+    let source_snapshot_ids = quote
+        .source_snapshot_ids()
+        .iter()
+        .chain(economics.net_edge().basis.source_snapshot_ids.iter())
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    Ok(AdmissionEconomicsDetails {
+        decision_correlation_id: quote.decision_correlation_id().to_string(),
+        core_total: quote.core_total().to_string(),
+        core_net_edge: economics.net_edge().core_net_edge.to_string(),
+        core_edge_ratio: economics.net_edge().core_edge_ratio.to_string(),
+        forecast_net_edge: economics.net_edge().forecast_net_edge.to_string(),
+        forecast_complete: quote.forecast_complete(),
+        missing_forecast_component_ids: missing_forecast_component_ids.into_iter().collect(),
+        valid_until_ns: quote.valid_until_ns(),
+        forecast_valid_until_ns: quote.forecast_valid_until_ns(),
+        source_snapshot_ids,
+        reservation_basis: economics.reservation_basis().to_string(),
+        full_reservation_liability: economics.full_reservation_liability().to_string(),
+        components,
+    })
+}
+
+fn admission_economics_kind(kind: crate::economics::EconomicKind) -> AdmissionEconomicsKind {
+    match kind {
+        crate::economics::EconomicKind::Execution(
+            crate::economics::ExecutionKind::ProtocolTrading,
+        ) => AdmissionEconomicsKind::ProtocolTrading,
+        crate::economics::EconomicKind::Execution(
+            crate::economics::ExecutionKind::AttachedRoutingCharge,
+        ) => AdmissionEconomicsKind::AttachedRoutingCharge,
+        crate::economics::EconomicKind::Carry(crate::economics::CarryKind::Funding) => {
+            AdmissionEconomicsKind::Funding
+        }
+        crate::economics::EconomicKind::Carry(crate::economics::CarryKind::BorrowInterest) => {
+            AdmissionEconomicsKind::BorrowInterest
+        }
+        crate::economics::EconomicKind::Carry(
+            crate::economics::CarryKind::SuppliedBalanceInterest,
+        ) => AdmissionEconomicsKind::SuppliedBalanceInterest,
+        crate::economics::EconomicKind::Incentive(crate::economics::IncentiveKind::MakerRebate) => {
+            AdmissionEconomicsKind::MakerRebate
+        }
+        crate::economics::EconomicKind::Incentive(
+            crate::economics::IncentiveKind::LiquidityReward,
+        ) => AdmissionEconomicsKind::LiquidityReward,
+        crate::economics::EconomicKind::Incentive(
+            crate::economics::IncentiveKind::HoldingReward,
+        ) => AdmissionEconomicsKind::HoldingReward,
+        crate::economics::EconomicKind::Incentive(
+            crate::economics::IncentiveKind::ReferralReward,
+        ) => AdmissionEconomicsKind::ReferralReward,
+        crate::economics::EconomicKind::Incentive(crate::economics::IncentiveKind::FeeCredit) => {
+            AdmissionEconomicsKind::FeeCredit
+        }
+    }
+}
+
+fn admission_economics_scope(scope: &crate::economics::EconomicScope) -> AdmissionEconomicsScope {
+    match scope {
+        crate::economics::EconomicScope::Decision {
+            decision_correlation_id,
+        } => AdmissionEconomicsScope::Decision {
+            decision_correlation_id: decision_correlation_id.to_string(),
+        },
+        crate::economics::EconomicScope::PositionInterval {
+            position_id,
+            starts_at_ns,
+            ends_at_ns,
+        } => AdmissionEconomicsScope::PositionInterval {
+            position_id: position_id.to_string(),
+            starts_at_ns: *starts_at_ns,
+            ends_at_ns: *ends_at_ns,
+        },
+        crate::economics::EconomicScope::Action { action_id } => AdmissionEconomicsScope::Action {
+            action_id: action_id.to_string(),
+        },
+    }
+}
+
+fn admission_economics_native_effect(
+    effect: &crate::economics::SignedNativeEffect,
+) -> AdmissionEconomicsNativeEffect {
+    match effect {
+        crate::economics::SignedNativeEffect::CurrencyAmount {
+            amount,
+            currency_id,
+        } => AdmissionEconomicsNativeEffect {
+            amount: amount.to_string(),
+            unit: AdmissionEconomicsNativeUnit::Currency {
+                currency_id: currency_id.to_string(),
+            },
+            inventory_application: None,
+        },
+        crate::economics::SignedNativeEffect::AssetQuantity {
+            quantity,
+            asset_id,
+            inventory_application,
+        } => AdmissionEconomicsNativeEffect {
+            amount: quantity.to_string(),
+            unit: AdmissionEconomicsNativeUnit::Asset {
+                asset_id: asset_id.to_string(),
+            },
+            inventory_application: Some(match inventory_application {
+                crate::economics::InventoryApplication::AlreadyAppliedToGrossFill => {
+                    AdmissionEconomicsInventoryApplication::AlreadyAppliedToGrossFill
+                }
+                crate::economics::InventoryApplication::ApplyOnceToNetPortfolio => {
+                    AdmissionEconomicsInventoryApplication::ApplyOnceToNetPortfolio
+                }
+            }),
+        },
+    }
+}
+
+impl From<&crate::economics::ValuationEvidence> for AdmissionEconomicsValuation {
+    fn from(valuation: &crate::economics::ValuationEvidence) -> Self {
+        Self {
+            native_effect: admission_economics_native_effect(&valuation.native_effect),
+            normalized_amount: valuation.normalized_amount.to_string(),
+            reporting_currency: valuation.reporting_currency.to_string(),
+            route_id: valuation.route_id.as_ref().map(ToString::to_string),
+            source_snapshot_ids: valuation
+                .source_snapshot_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            valued_at_ns: valuation.valued_at_ns,
+            valid_until_ns: valuation.valid_until_ns,
+        }
+    }
+}
+
+fn admission_economics_treatment(
+    treatment: crate::economics::AdmissionTreatment,
+) -> AdmissionEconomicsTreatment {
+    match treatment {
+        crate::economics::AdmissionTreatment::GuaranteedConditionalOnAction => {
+            AdmissionEconomicsTreatment::GuaranteedConditionalOnAction
+        }
+        crate::economics::AdmissionTreatment::RiskBound { authority } => {
+            AdmissionEconomicsTreatment::RiskBound {
+                authority: match authority {
+                    crate::economics::RiskBoundAuthority::VenueMaximum => {
+                        AdmissionEconomicsRiskBoundAuthority::VenueMaximum
+                    }
+                    crate::economics::RiskBoundAuthority::VenueRateCapWithPriceStress => {
+                        AdmissionEconomicsRiskBoundAuthority::VenueRateCapWithPriceStress
+                    }
+                    crate::economics::RiskBoundAuthority::OperatorRiskLimit => {
+                        AdmissionEconomicsRiskBoundAuthority::OperatorRiskLimit
+                    }
+                },
+            }
+        }
+        crate::economics::AdmissionTreatment::ForecastOnly => {
+            AdmissionEconomicsTreatment::ForecastOnly
+        }
+    }
+}
+
 pub fn build_submit_admission_request_from_economics(
     input: BoltV3SubmitAdmissionRequestInput<'_>,
     economics: EconomicsAdmission,
@@ -3826,6 +4037,7 @@ pub enum BoltV3SubmitAdmissionError {
     },
     InvalidRiskReducingExitProof,
     EconomicsOrderMismatch,
+    EconomicsUnavailable(EconomicsError),
     CapitalAdmissionRejected {
         reason: BoltV3CapitalAdmissionRejectReason,
     },
@@ -3892,6 +4104,12 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
                 f,
                 "bolt-v3 submit admission final order does not match its economics authority"
             ),
+            Self::EconomicsUnavailable(error) => {
+                write!(
+                    f,
+                    "bolt-v3 submit admission economics is unavailable: {error}"
+                )
+            }
             Self::CapitalAdmissionRejected { reason } => {
                 write!(
                     f,
@@ -4501,6 +4719,61 @@ mod notional_guard_tests {
 }
 
 #[cfg(test)]
+mod economics_health_tests {
+    use super::*;
+    use crate::{
+        bolt_v3_economics_runtime::{
+            EconomicsAdmission, EconomicsAdmissionPurpose, EconomicsOrderBinding,
+        },
+        economics::EconomicsError,
+    };
+
+    #[test]
+    fn expired_economics_fails_before_admission_mutates_state() {
+        let evidence = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = BoltV3SubmitAdmissionState::new(Arc::clone(&evidence));
+        let request = BoltV3SubmitAdmissionRequest {
+            strategy_id: "strategy-expired-economics".to_string(),
+            execution_client_id: "execution-client-expired-economics".to_string(),
+            client_order_id: "client-order-expired-economics".to_string(),
+            instrument_id: "instrument-expired-economics".to_string(),
+            notional: Decimal::ONE,
+            order_side: OrderSide::Buy,
+            order_quantity: Decimal::ONE,
+            intent_kind: BoltV3SubmitIntentKind::Entry,
+            risk_reducing_exit_proof: None,
+            kill_switch_forced_reduction: None,
+            admission_evidence: None,
+        };
+        let economics = EconomicsAdmission::for_routing_test_with_validity(
+            &request.execution_client_id,
+            &request.instrument_id,
+            crate::economics::OrderSide::Buy,
+            EconomicsOrderBinding::from_sha256([7; 32]),
+            EconomicsAdmissionPurpose::TradingEdge,
+            Decimal::ONE,
+            Decimal::ONE,
+            10,
+        );
+
+        assert!(matches!(
+            admission.admit_at_inner(&request, Some(&economics), 11),
+            Err(BoltV3SubmitAdmissionError::EconomicsUnavailable(
+                EconomicsError::RequiredCapabilityStale { valid_until_ns: 10 }
+            ))
+        ));
+        assert_eq!(admission.admitted_order_count(), 0);
+        assert_eq!(admission.reject_episode_count(), 0);
+        assert!(
+            evidence
+                .recorded_facts()
+                .expect("recorded current evidence must decode")
+                .is_empty()
+        );
+    }
+}
+
+#[cfg(test)]
 mod loss_governor_halt_evidence_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -4523,58 +4796,6 @@ mod loss_governor_halt_evidence_tests {
         );
         assert_eq!(LossSnapshotSource::Unknown.as_str(), "unknown");
         assert_eq!(LossSnapshotSource::Other.as_str(), "other");
-    }
-
-    #[derive(Default)]
-    struct CapturingLogger {
-        records: Mutex<Vec<(log::Level, String)>>,
-    }
-
-    impl log::Log for CapturingLogger {
-        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
-            true
-        }
-
-        fn log(&self, record: &log::Record<'_>) {
-            self.records
-                .lock()
-                .expect("capturing logger mutex poisoned")
-                .push((record.level(), record.args().to_string()));
-        }
-
-        fn flush(&self) {}
-    }
-
-    impl CapturingLogger {
-        fn reset(&self) {
-            self.records
-                .lock()
-                .expect("capturing logger mutex poisoned")
-                .clear();
-        }
-
-        fn records(&self) -> Vec<(log::Level, String)> {
-            self.records
-                .lock()
-                .expect("capturing logger mutex poisoned")
-                .clone()
-        }
-    }
-
-    static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> =
-        std::sync::OnceLock::new();
-    static CAPTURING_LOGGER_OBSERVERS: Mutex<()> = Mutex::new(());
-    fn install_capturing_logger() -> &'static CapturingLogger {
-        static INSTALL_OUTCOME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let logger =
-            CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
-        let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
-        assert!(
-            installed,
-            "capturing logger could not claim the global log slot; another logger is installed"
-        );
-        log::set_max_level(log::LevelFilter::Trace);
-        *logger
     }
 
     fn stale_loss_snapshot() -> LossSnapshot {
@@ -4748,11 +4969,12 @@ mod loss_governor_halt_evidence_tests {
 
     #[test]
     fn loss_governor_halt_evidence_write_failure_logs_error_and_rejects() {
-        let logger = install_capturing_logger();
-        let _observer_guard = CAPTURING_LOGGER_OBSERVERS
-            .lock()
-            .expect("capturing logger observer mutex poisoned");
-        logger.reset();
+        if !crate::bolt_v3_test_log_capture::enter_isolated_log_capture(
+            "loss_governor_halt_evidence_write_failure_logs_error_and_rejects",
+            "loss-governor-evidence-write",
+        ) {
+            return;
+        }
 
         let writer = failing_evidence();
         let admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
@@ -4771,7 +4993,9 @@ mod loss_governor_halt_evidence_tests {
             "client-order-loss-halt-log-guard".to_string(),
         );
 
-        let result = admission.admit_at(&request, 1_200);
+        let (result, records) = crate::bolt_v3_test_log_capture::with_captured_logs(|| {
+            admission.admit_at(&request, 1_200)
+        });
 
         match result {
             Err(BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }) => assert_eq!(
@@ -4790,8 +5014,7 @@ mod loss_governor_halt_evidence_tests {
             1,
             "the failing writer must still receive the halt evidence"
         );
-        let matching = logger
-            .records()
+        let matching = records
             .into_iter()
             .filter(|(_, message)| message.contains("loss governor halt evidence write failed"))
             .collect::<Vec<_>>();

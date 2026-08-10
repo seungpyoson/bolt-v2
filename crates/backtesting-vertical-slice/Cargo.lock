@@ -1678,6 +1678,7 @@ dependencies = [
  "csv",
  "flate2",
  "futures",
+ "futures-util",
  "hex",
  "hmac 0.12.1",
  "nautilus-analysis",

@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
     facts::{
-        AdmissionDecisionOutcome, AdmissionDetails, AdmissionEconomicsDetails,
+        AdmissionDecisionOutcome, AdmissionDetails, AdmissionEconomicsComponent,
+        AdmissionEconomicsDetails, AdmissionEconomicsPointEstimate, AdmissionEconomicsTreatment,
         AdmissionRejectionReason, AdmittedEntryAdmissionFact, CapitalAdmissionRebuildFact,
         CapitalAdmissionRebuildOutcome, CapitalAdmissionRebuildSource,
         CapitalAdmissionRejectionReason, ForcedReductionAdmissionFact, LossHaltReason,
@@ -495,6 +496,14 @@ fn validate_admission_details(details: &AdmissionDetails) -> Result<(), RecordFa
                 .missing_forecast_component_ids
                 .iter()
                 .any(|id| id.trim().is_empty())
+            || economics.components.iter().any(|component| {
+                admission_economics_component_is_invalid(
+                    component,
+                    economics
+                        .missing_forecast_component_ids
+                        .contains(&component.component_id),
+                )
+            })
     });
     if details.strategy_id.trim().is_empty()
         || details.execution_client_id.trim().is_empty()
@@ -537,6 +546,7 @@ struct AdmissionEconomicsDetailsV1 {
     source_snapshot_ids: Vec<String>,
     reservation_basis: String,
     full_reservation_liability: String,
+    components: Vec<AdmissionEconomicsComponent>,
 }
 
 impl AdmissionEconomicsDetailsV1 {
@@ -554,6 +564,7 @@ impl AdmissionEconomicsDetailsV1 {
             source_snapshot_ids: value.source_snapshot_ids,
             reservation_basis: value.reservation_basis,
             full_reservation_liability: value.full_reservation_liability,
+            components: value.components,
         }
     }
 
@@ -571,8 +582,94 @@ impl AdmissionEconomicsDetailsV1 {
             source_snapshot_ids: self.source_snapshot_ids,
             reservation_basis: self.reservation_basis,
             full_reservation_liability: self.full_reservation_liability,
+            components: self.components,
         }
     }
+}
+
+fn admission_economics_component_is_invalid(
+    component: &AdmissionEconomicsComponent,
+    valuation_may_be_missing: bool,
+) -> bool {
+    let native_effect_is_invalid =
+        |effect: &crate::bolt_v3_current_evidence::facts::AdmissionEconomicsNativeEffect| {
+            effect.amount.parse::<Decimal>().is_err()
+            || match (&effect.unit, effect.inventory_application) {
+                (
+                    crate::bolt_v3_current_evidence::facts::AdmissionEconomicsNativeUnit::Currency {
+                        currency_id,
+                    },
+                    None,
+                ) => currency_id.trim().is_empty(),
+                (
+                    crate::bolt_v3_current_evidence::facts::AdmissionEconomicsNativeUnit::Asset {
+                        asset_id,
+                    },
+                    Some(_),
+                ) => asset_id.trim().is_empty(),
+                _ => true,
+            }
+        };
+    let valuation_is_invalid =
+        |valuation: &crate::bolt_v3_current_evidence::facts::AdmissionEconomicsValuation| {
+            native_effect_is_invalid(&valuation.native_effect)
+                || valuation.normalized_amount.parse::<Decimal>().is_err()
+                || valuation.reporting_currency.trim().is_empty()
+                || valuation
+                    .route_id
+                    .as_ref()
+                    .is_some_and(|id| id.trim().is_empty())
+                || valuation
+                    .source_snapshot_ids
+                    .iter()
+                    .any(|id| id.trim().is_empty())
+                || valuation.valued_at_ns == 0
+                || valuation.valid_until_ns == Some(0)
+        };
+    let point_shape_invalid = match (&component.point_estimate, &component.point_valuation) {
+        (AdmissionEconomicsPointEstimate::NonZero { effect }, Some(valuation)) => {
+            native_effect_is_invalid(effect)
+                || valuation_is_invalid(valuation)
+                || valuation.native_effect != *effect
+        }
+        (AdmissionEconomicsPointEstimate::NonZero { effect }, None) => {
+            !valuation_may_be_missing || native_effect_is_invalid(effect)
+        }
+        (AdmissionEconomicsPointEstimate::ProvenZero { factor_id }, None) => {
+            factor_id.trim().is_empty()
+        }
+        _ => true,
+    };
+    let bound_shape_invalid = match (
+        component.treatment,
+        &component.debit_risk_bound,
+        &component.debit_risk_bound_valuation,
+    ) {
+        (AdmissionEconomicsTreatment::RiskBound { .. }, Some(bound), Some(valuation)) => {
+            native_effect_is_invalid(bound)
+                || valuation_is_invalid(valuation)
+                || valuation.native_effect != *bound
+        }
+        (
+            AdmissionEconomicsTreatment::GuaranteedConditionalOnAction
+            | AdmissionEconomicsTreatment::ForecastOnly,
+            None,
+            None,
+        ) => false,
+        _ => true,
+    };
+    component.component_id.trim().is_empty()
+        || component.formula_id.trim().is_empty()
+        || component.source.source_id.trim().is_empty()
+        || component.source.snapshot_id.trim().is_empty()
+        || component.source.valid_until_ns == 0
+        || component.source.source_at_ns > component.source.fetched_at_ns
+        || component.source.fetched_at_ns > component.source.valid_until_ns
+        || component.calculation_factors.iter().any(|factor| {
+            factor.factor_id.trim().is_empty() || factor.value.parse::<Decimal>().is_err()
+        })
+        || point_shape_invalid
+        || bound_shape_invalid
 }
 
 macro_rules! define_admission_wire {

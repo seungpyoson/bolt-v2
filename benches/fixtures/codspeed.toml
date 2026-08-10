@@ -165,7 +165,6 @@ price_units_per_payout = "1"
 min_quantity = "1"
 min_notional = "0.1"
 quantity_step = "1"
-fee_bps = "5"
 now_unix_ms = 1000
 max_book_age_ms = 100
 admissible_min_edge_bps = "100"

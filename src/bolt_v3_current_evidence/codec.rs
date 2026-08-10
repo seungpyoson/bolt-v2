@@ -3047,6 +3047,53 @@ mod tests {
             source_snapshot_ids: vec!["economics-snapshot-1".to_string()],
             reservation_basis: "10".to_string(),
             full_reservation_liability: "10.1".to_string(),
+            components: vec![AdmissionEconomicsComponent {
+                component_id: "platform_fee".to_string(),
+                class: AdmissionEconomicsClass::Charge,
+                economic_kind: AdmissionEconomicsKind::ProtocolTrading,
+                scope: AdmissionEconomicsScope::Decision {
+                    decision_correlation_id: "client-1".to_string(),
+                },
+                point_estimate: AdmissionEconomicsPointEstimate::NonZero {
+                    effect: AdmissionEconomicsNativeEffect {
+                        amount: "-0.1".to_string(),
+                        unit: AdmissionEconomicsNativeUnit::Currency {
+                            currency_id: "USDC".to_string(),
+                        },
+                        inventory_application: None,
+                    },
+                },
+                point_valuation: Some(AdmissionEconomicsValuation {
+                    native_effect: AdmissionEconomicsNativeEffect {
+                        amount: "-0.1".to_string(),
+                        unit: AdmissionEconomicsNativeUnit::Currency {
+                            currency_id: "USDC".to_string(),
+                        },
+                        inventory_application: None,
+                    },
+                    normalized_amount: "-0.1".to_string(),
+                    reporting_currency: "USDC".to_string(),
+                    route_id: None,
+                    source_snapshot_ids: vec![],
+                    valued_at_ns: 10,
+                    valid_until_ns: None,
+                }),
+                debit_risk_bound: None,
+                debit_risk_bound_valuation: None,
+                treatment: AdmissionEconomicsTreatment::GuaranteedConditionalOnAction,
+                calculation_factors: vec![AdmissionEconomicsCalculationFactor {
+                    factor_id: "fee_rate".to_string(),
+                    value: "0.01".to_string(),
+                }],
+                formula_id: "price-times-quantity-times-rate".to_string(),
+                source: AdmissionEconomicsSource {
+                    source_id: "market-info".to_string(),
+                    snapshot_id: "economics-snapshot-1".to_string(),
+                    source_at_ns: 9,
+                    fetched_at_ns: 9,
+                    valid_until_ns: 20,
+                },
+            }],
         }
     }
 
@@ -4348,6 +4395,76 @@ mod tests {
 
         assert!(
             <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(&fact, 24)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn admission_economics_rejects_a_valuation_for_a_different_native_effect() {
+        let mut economics = admission_economics_details();
+        economics.components[0]
+            .point_valuation
+            .as_mut()
+            .expect("fixture component must have a point valuation")
+            .native_effect
+            .amount = "-0.2".to_string();
+        let mut details = admission_details();
+        details.economics = Some(economics);
+        let fact = AdmittedEntryAdmissionFact {
+            details,
+            reservation: None,
+        };
+
+        assert!(
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(&fact, 25)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn admission_economics_component_lineage_round_trips() {
+        let expected_economics = admission_economics_details();
+        let mut details = admission_details();
+        details.economics = Some(expected_economics.clone());
+        let fact = AdmittedEntryAdmissionFact {
+            details,
+            reservation: None,
+        };
+
+        let record =
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(&fact, 25)
+                .expect("valid economics component lineage must encode");
+        let line = std::str::from_utf8(record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        let decoded =
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::decode(line, 1)
+                .expect("valid economics component lineage must decode");
+
+        assert_eq!(decoded.details.economics, Some(expected_economics));
+    }
+
+    #[test]
+    fn admission_economics_rejects_unknown_nested_component_fields() {
+        let mut details = admission_details();
+        details.economics = Some(admission_economics_details());
+        let fact = AdmittedEntryAdmissionFact {
+            details,
+            reservation: None,
+        };
+        let record =
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(&fact, 26)
+                .expect("valid economics component lineage must encode");
+        let mut line: serde_json::Value =
+            serde_json::from_slice(record.line()).expect("encoded evidence must be valid JSON");
+        line.pointer_mut("/decision/economics/components/0/scope")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("component scope must be an object")
+            .insert("unexpected".to_string(), serde_json::Value::Bool(true));
+        let line = serde_json::to_string(&line).expect("mutated evidence must serialize");
+
+        assert!(
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::decode(&line, 1)
                 .is_err()
         );
     }

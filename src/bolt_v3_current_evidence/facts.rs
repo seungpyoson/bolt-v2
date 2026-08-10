@@ -6,6 +6,7 @@ pub use crate::bolt_v3_fair_value_pricing::RvGateResult;
 
 use anyhow::{Context, Result, ensure};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 
 use super::generated_contract::KnownFact;
 
@@ -425,6 +426,142 @@ pub struct AdmissionEconomicsDetails {
     pub source_snapshot_ids: Vec<String>,
     pub reservation_basis: String,
     pub full_reservation_liability: String,
+    pub components: Vec<AdmissionEconomicsComponent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionEconomicsClass {
+    Charge,
+    Credit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionEconomicsKind {
+    ProtocolTrading,
+    AttachedRoutingCharge,
+    Funding,
+    BorrowInterest,
+    SuppliedBalanceInterest,
+    MakerRebate,
+    LiquidityReward,
+    HoldingReward,
+    ReferralReward,
+    FeeCredit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
+pub enum AdmissionEconomicsScope {
+    Decision {
+        decision_correlation_id: String,
+    },
+    PositionInterval {
+        position_id: String,
+        starts_at_ns: u64,
+        ends_at_ns: u64,
+    },
+    Action {
+        action_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionEconomicsInventoryApplication {
+    AlreadyAppliedToGrossFill,
+    ApplyOnceToNetPortfolio,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
+pub enum AdmissionEconomicsNativeUnit {
+    Currency { currency_id: String },
+    Asset { asset_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionEconomicsNativeEffect {
+    pub amount: String,
+    pub unit: AdmissionEconomicsNativeUnit,
+    pub inventory_application: Option<AdmissionEconomicsInventoryApplication>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
+pub enum AdmissionEconomicsPointEstimate {
+    NonZero {
+        effect: AdmissionEconomicsNativeEffect,
+    },
+    ProvenZero {
+        factor_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionEconomicsRiskBoundAuthority {
+    VenueMaximum,
+    VenueRateCapWithPriceStress,
+    OperatorRiskLimit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
+pub enum AdmissionEconomicsTreatment {
+    GuaranteedConditionalOnAction,
+    RiskBound {
+        authority: AdmissionEconomicsRiskBoundAuthority,
+    },
+    ForecastOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionEconomicsCalculationFactor {
+    pub factor_id: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionEconomicsSource {
+    pub source_id: String,
+    pub snapshot_id: String,
+    pub source_at_ns: u64,
+    pub fetched_at_ns: u64,
+    pub valid_until_ns: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionEconomicsValuation {
+    pub native_effect: AdmissionEconomicsNativeEffect,
+    pub normalized_amount: String,
+    pub reporting_currency: String,
+    pub route_id: Option<String>,
+    pub source_snapshot_ids: Vec<String>,
+    pub valued_at_ns: u64,
+    pub valid_until_ns: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionEconomicsComponent {
+    pub component_id: String,
+    pub class: AdmissionEconomicsClass,
+    pub economic_kind: AdmissionEconomicsKind,
+    pub scope: AdmissionEconomicsScope,
+    pub point_estimate: AdmissionEconomicsPointEstimate,
+    pub point_valuation: Option<AdmissionEconomicsValuation>,
+    pub debit_risk_bound: Option<AdmissionEconomicsNativeEffect>,
+    pub debit_risk_bound_valuation: Option<AdmissionEconomicsValuation>,
+    pub treatment: AdmissionEconomicsTreatment,
+    pub calculation_factors: Vec<AdmissionEconomicsCalculationFactor>,
+    pub formula_id: String,
+    pub source: AdmissionEconomicsSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

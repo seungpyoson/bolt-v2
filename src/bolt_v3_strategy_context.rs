@@ -177,6 +177,15 @@ impl StrategyBuildContext {
     }
 
     #[cfg(test)]
+    pub fn with_order_economics_for_test(
+        mut self,
+        order_economics: BoltV3OrderEconomicsHandle,
+    ) -> Self {
+        self.order_economics = order_economics;
+        self
+    }
+
+    #[cfg(test)]
     pub fn with_realized_volatility_surfaces(
         self,
         surfaces: std::collections::BTreeMap<

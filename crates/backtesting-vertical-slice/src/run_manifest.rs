@@ -374,6 +374,10 @@ pub struct StrategyConfigOverlaySource {
 #[serde(deny_unknown_fields)]
 pub struct ManifestEconomicsSource {
     pub production_root_config_path: String,
+    /// SHA-256 of the complete production config bundle loaded from the root.
+    /// Replay rejects the run if the mutable path no longer resolves to these
+    /// exact bytes.
+    pub production_config_bundle_checksum: String,
     pub inputs: Vec<ManifestEconomicsInput>,
 }
 
@@ -1548,6 +1552,10 @@ fn validate_manifest_economics(
             "economics.production_root_config_path",
         ));
     }
+    validate_strategy_source_hash(
+        "economics.production_config_bundle_checksum",
+        &economics.production_config_bundle_checksum,
+    )?;
     if economics.inputs.is_empty() {
         return Err(ManifestError::MissingField("economics.inputs"));
     }
@@ -4966,6 +4974,7 @@ mod tests {
     fn binary_oracle_economics_source() -> ManifestEconomicsSource {
         ManifestEconomicsSource {
             production_root_config_path: "config/root.toml".to_string(),
+            production_config_bundle_checksum: "0".repeat(64),
             inputs: vec![ManifestEconomicsInput {
                 instrument_id: "BTC-USDT.SIM".to_string(),
                 product_surface_id: "condition-replay".to_string(),

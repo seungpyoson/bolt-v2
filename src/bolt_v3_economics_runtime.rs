@@ -223,7 +223,7 @@ impl BoundExecutionEconomics {
             .ok_or(EconomicsError::ArithmeticOverflow.into())
     }
 
-    fn resting_order_refresh_margin_ns(&self) -> Result<u64, EconomicsAdmissionError> {
+    pub(crate) fn resting_order_refresh_margin_ns(&self) -> Result<u64, EconomicsAdmissionError> {
         self.config
             .resting_order_refresh_margin_ms
             .checked_mul(NANOSECONDS_PER_MILLISECOND)
@@ -359,38 +359,73 @@ impl BoundExecutionEconomics {
         &self,
         intent: EconomicsAdmissionIntent,
     ) -> Result<EconomicsAdmission, EconomicsAdmissionError> {
-        if intent.reservation_basis <= Decimal::ZERO {
+        let sizing = self.quote_sizing_inner(
+            &intent.request,
+            intent.policy,
+            intent.gross_expected_value,
+            intent.reservation_basis,
+        )?;
+        Ok(EconomicsAdmission {
+            request: intent.request,
+            order_binding: intent.order_binding,
+            policy: intent.policy,
+            quote: sizing.quote,
+            net_edge: sizing.net_edge,
+            reservation_basis: intent.reservation_basis,
+            full_reservation_liability: sizing.full_reservation_liability,
+        })
+    }
+
+    pub fn quote_sizing(
+        &self,
+        intent: EconomicsSizingIntent,
+    ) -> Result<EconomicsSizingQuote, EconomicsAdmissionError> {
+        self.quote_sizing_inner(
+            &intent.request,
+            intent.policy,
+            intent.gross_expected_value,
+            intent.reservation_basis,
+        )
+    }
+
+    fn quote_sizing_inner(
+        &self,
+        request: &EconomicsQuoteRequest,
+        policy: EconomicsAdmissionPolicy,
+        gross_expected_value: Decimal,
+        reservation_basis: Decimal,
+    ) -> Result<EconomicsSizingQuote, EconomicsAdmissionError> {
+        if reservation_basis <= Decimal::ZERO {
             return Err(EconomicsError::NonPositiveValue {
                 field: "reservation_basis",
             }
             .into());
         }
-        if intent.request.reporting_policy_id != self.reporting_policy_id
-            || intent.request.reporting_currency != self.reporting_currency
+        if request.reporting_policy_id != self.reporting_policy_id
+            || request.reporting_currency != self.reporting_currency
         {
             return Err(EconomicsAdmissionError::ReportingAuthorityMismatch);
         }
         if self
             .config
             .product_surface_policies
-            .get(intent.request.product_surface_id.as_str())
-            .is_none_or(|policy_id| policy_id != intent.request.edge_basis_policy_id.as_str())
+            .get(request.product_surface_id.as_str())
+            .is_none_or(|policy_id| policy_id != request.edge_basis_policy_id.as_str())
         {
             return Err(EconomicsAdmissionError::EdgeBasisAuthorityMismatch);
         }
-        let scope = self.scope_for_request(&intent.request)?;
-        if intent.request.account_id != scope.account_id {
+        let scope = self.scope_for_request(request)?;
+        if request.account_id != scope.account_id {
             return Err(VenueEconomicsUnavailable::RequestScopeMismatch.into());
         }
-        let planned_fill_notional =
-            PlannedFillNotional::from_legs(&intent.request.planned_fill_legs)?;
+        let planned_fill_notional = PlannedFillNotional::from_legs(&request.planned_fill_legs)?;
         let edge_estimate = scope
             .adapter
-            .resolve_edge_basis(&intent.request, planned_fill_notional)?;
+            .resolve_edge_basis(request, planned_fill_notional)?;
         let configured_basis = self
             .config
             .edge_basis
-            .get(intent.request.edge_basis_policy_id.as_str())
+            .get(request.edge_basis_policy_id.as_str())
             .ok_or(EconomicsAdmissionError::EdgeBasisAuthorityMismatch)?;
         if edge_estimate.source_snapshot_ids.is_empty()
             || edge_estimate.resolver_id.as_str() != configured_basis.resolver_id
@@ -400,29 +435,37 @@ impl BoundExecutionEconomics {
         {
             return Err(EconomicsAdmissionError::EdgeBasisAuthorityMismatch);
         }
-        let estimate = scope.adapter.quote(&intent.request)?;
+        let estimate = scope.adapter.quote(request)?;
         let configured_valid_until_ns =
-            configured_quote_deadline(&self.config, &intent.request, &estimate)?;
-        let mut quote =
-            validate_and_aggregate_quote(&intent.request, estimate, &scope.valuation_routes)?;
+            configured_quote_deadline(&self.config, request, &estimate)?;
+        let mut quote = validate_and_aggregate_quote(request, estimate, &scope.valuation_routes)?;
         quote.cap_valid_until_ns(configured_valid_until_ns.min(edge_estimate.valid_until_ns))?;
         let basis = EdgeBasisEvidence {
-            policy_id: intent.request.edge_basis_policy_id.clone(),
+            policy_id: request.edge_basis_policy_id.clone(),
             resolver_id: edge_estimate.resolver_id,
             product_metadata_source: edge_estimate.product_metadata_source,
             policy_version: edge_estimate.policy_version,
             normalized_amount: edge_estimate.normalized_amount,
             scope: EconomicScope::Decision {
-                decision_correlation_id: intent.request.decision_correlation_id.clone(),
+                decision_correlation_id: request.decision_correlation_id.clone(),
             },
             source_snapshot_ids: edge_estimate.source_snapshot_ids,
             valid_until_ns: edge_estimate.valid_until_ns.min(quote.valid_until_ns()),
         };
-        let net_edge = fold_net_edge(intent.gross_expected_value, &quote, basis)?;
-        if intent.purpose == EconomicsAdmissionPurpose::TradingEdge
-            && net_edge.core_net_edge <= Decimal::ZERO
+        let net_edge = fold_net_edge(gross_expected_value, &quote, basis)?;
+        if let EconomicsAdmissionPolicy::TradingEdge {
+            minimum_core_edge_ratio,
+        } = policy
         {
-            return Err(EconomicsAdmissionError::NonPositiveNetEdge);
+            // Strategy policy may intentionally allow a negative raw threshold,
+            // but shared economics never admits a non-positive fee-adjusted edge.
+            let required_core_edge_ratio = minimum_core_edge_ratio.max(Decimal::ZERO);
+            if net_edge.core_edge_ratio <= required_core_edge_ratio {
+                return Err(EconomicsAdmissionError::CoreEdgeBelowMinimum {
+                    minimum_core_edge_ratio: required_core_edge_ratio,
+                    actual_core_edge_ratio: net_edge.core_edge_ratio,
+                });
+            }
         }
         let guaranteed_debit = if quote.core_total().is_sign_negative() {
             Decimal::ZERO
@@ -431,17 +474,12 @@ impl BoundExecutionEconomics {
         } else {
             Decimal::ZERO
         };
-        let full_reservation_liability = intent
-            .reservation_basis
+        let full_reservation_liability = reservation_basis
             .checked_add(guaranteed_debit)
             .ok_or(EconomicsError::ArithmeticOverflow)?;
-        Ok(EconomicsAdmission {
-            request: intent.request,
-            order_binding: intent.order_binding,
-            purpose: intent.purpose,
+        Ok(EconomicsSizingQuote {
             quote,
             net_edge,
-            reservation_basis: intent.reservation_basis,
             full_reservation_liability,
         })
     }
@@ -463,19 +501,62 @@ pub enum EconomicsAdmissionPurpose {
     RiskReduction,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EconomicsAdmissionPolicy {
+    TradingEdge { minimum_core_edge_ratio: Decimal },
+    RiskReduction,
+}
+
+impl EconomicsAdmissionPolicy {
+    pub const fn purpose(self) -> EconomicsAdmissionPurpose {
+        match self {
+            Self::TradingEdge { .. } => EconomicsAdmissionPurpose::TradingEdge,
+            Self::RiskReduction => EconomicsAdmissionPurpose::RiskReduction,
+        }
+    }
+}
+
 pub struct EconomicsAdmissionIntent {
     pub request: EconomicsQuoteRequest,
     pub order_binding: EconomicsOrderBinding,
-    pub purpose: EconomicsAdmissionPurpose,
+    pub policy: EconomicsAdmissionPolicy,
     pub gross_expected_value: Decimal,
     pub reservation_basis: Decimal,
+}
+
+pub struct EconomicsSizingIntent {
+    pub request: EconomicsQuoteRequest,
+    pub policy: EconomicsAdmissionPolicy,
+    pub gross_expected_value: Decimal,
+    pub reservation_basis: Decimal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EconomicsSizingQuote {
+    quote: EconomicsQuote,
+    net_edge: NetEdgeQuote,
+    full_reservation_liability: Decimal,
+}
+
+impl EconomicsSizingQuote {
+    pub fn quote(&self) -> &EconomicsQuote {
+        &self.quote
+    }
+
+    pub fn net_edge(&self) -> &NetEdgeQuote {
+        &self.net_edge
+    }
+
+    pub const fn full_reservation_liability(&self) -> Decimal {
+        self.full_reservation_liability
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EconomicsAdmission {
     request: EconomicsQuoteRequest,
     order_binding: EconomicsOrderBinding,
-    purpose: EconomicsAdmissionPurpose,
+    policy: EconomicsAdmissionPolicy,
     quote: EconomicsQuote,
     net_edge: NetEdgeQuote,
     reservation_basis: Decimal,
@@ -492,7 +573,7 @@ impl EconomicsAdmission {
     }
 
     pub const fn purpose(&self) -> EconomicsAdmissionPurpose {
-        self.purpose
+        self.policy.purpose()
     }
 
     pub fn quote(&self) -> &EconomicsQuote {
@@ -520,6 +601,29 @@ impl EconomicsAdmission {
         purpose: EconomicsAdmissionPurpose,
         reservation_basis: Decimal,
         full_reservation_liability: Decimal,
+    ) -> Self {
+        Self::for_routing_test_with_validity(
+            execution_client_id,
+            instrument_id,
+            order_side,
+            order_binding,
+            purpose,
+            reservation_basis,
+            full_reservation_liability,
+            u64::MAX,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_routing_test_with_validity(
+        execution_client_id: &str,
+        instrument_id: &str,
+        order_side: crate::economics::OrderSide,
+        order_binding: EconomicsOrderBinding,
+        purpose: EconomicsAdmissionPurpose,
+        reservation_basis: Decimal,
+        full_reservation_liability: Decimal,
+        valid_until_ns: u64,
     ) -> Self {
         use crate::economics::{
             DecisionCorrelationId, EdgeBasisAmount, EdgeBasisPolicyId, FormulaId, LifecyclePath,
@@ -566,7 +670,7 @@ impl EconomicsAdmission {
                     snapshot_id: routing_test_id("routing-test-snapshot", SnapshotId::try_new),
                     source_at_ns: 1,
                     fetched_at_ns: 1,
-                    valid_until_ns: u64::MAX,
+                    valid_until_ns,
                 },
                 dependency_sources: Vec::new(),
                 components: Vec::new(),
@@ -591,14 +695,19 @@ impl EconomicsAdmission {
                 "routing-test-product-snapshot",
                 SnapshotId::try_new,
             )],
-            valid_until_ns: u64::MAX,
+            valid_until_ns,
         };
         let net_edge =
             fold_net_edge(reservation_basis, &quote, basis).expect("routing-test edge should fold");
         Self {
             request,
             order_binding,
-            purpose,
+            policy: match purpose {
+                EconomicsAdmissionPurpose::TradingEdge => EconomicsAdmissionPolicy::TradingEdge {
+                    minimum_core_edge_ratio: Decimal::ZERO,
+                },
+                EconomicsAdmissionPurpose::RiskReduction => EconomicsAdmissionPolicy::RiskReduction,
+            },
             quote,
             net_edge,
             reservation_basis,
@@ -638,7 +747,7 @@ pub fn refresh_resting_order_economics(
         return RestingOrderEconomicsRefresh::Complete;
     }
     if prior.request.liquidity_role != LiquidityRole::GuaranteedMaker
-        || prior.purpose != EconomicsAdmissionPurpose::TradingEdge
+        || prior.purpose() != EconomicsAdmissionPurpose::TradingEdge
     {
         return resting_cancel(RestingOrderEconomicsCancelReason::InvalidState);
     }
@@ -690,7 +799,7 @@ pub fn refresh_resting_order_economics(
     let refreshed = match source.quote_admission(EconomicsAdmissionIntent {
         request,
         order_binding: prior.order_binding.clone(),
-        purpose: prior.purpose,
+        policy: prior.policy,
         gross_expected_value,
         reservation_basis,
     }) {
@@ -819,6 +928,8 @@ fn resting_economic_terms_match(
             .iter()
             .zip(refreshed.quote.components())
             .all(|(before, after)| {
+                let before = before.component();
+                let after = after.component();
                 let point_estimate_matches = match (&before.point_estimate, &after.point_estimate) {
                     (
                         crate::economics::PointEstimate::NonZero(before),
@@ -890,6 +1001,7 @@ fn resting_economic_terms_match(
         ratio(before, prior.reservation_basis) == ratio(after, refreshed.reservation_basis)
     });
     same_components
+        && prior.policy == refreshed.policy
         && same_basis_authority
         && same_scaled_totals
         && prior.quote.reporting_currency() == refreshed.quote.reporting_currency()
@@ -925,7 +1037,10 @@ pub enum EconomicsAdmissionError {
     EdgeBasisAuthorityMismatch,
     ReportingAuthorityMismatch,
     AmbiguousProductSurface,
-    NonPositiveNetEdge,
+    CoreEdgeBelowMinimum {
+        minimum_core_edge_ratio: Decimal,
+        actual_core_edge_ratio: Decimal,
+    },
 }
 
 impl std::fmt::Display for EconomicsAdmissionError {
@@ -943,7 +1058,13 @@ impl std::fmt::Display for EconomicsAdmissionError {
             Self::AmbiguousProductSurface => {
                 f.write_str("economics instrument matches more than one product surface")
             }
-            Self::NonPositiveNetEdge => f.write_str("economics core net edge is not positive"),
+            Self::CoreEdgeBelowMinimum {
+                minimum_core_edge_ratio,
+                actual_core_edge_ratio,
+            } => write!(
+                f,
+                "economics core edge ratio {actual_core_edge_ratio} does not exceed required minimum {minimum_core_edge_ratio}"
+            ),
         }
     }
 }

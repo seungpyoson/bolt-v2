@@ -901,12 +901,9 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
     // Coarse over-cap rejection: raw notional = price*qty = 0.75*2.0 = 1.5
     // already exceeds the 1.0 cap, so this rejects with OR without the
     // fee-inclusive scaling and is NOT a discriminating test of the
-    // fee multiplier at `binary_oracle_edge_taker.rs:3972`. The fee
-    // multiplier is pinned by the discriminating pair
-    // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`
-    // / `zero_fee_submit_admission_admits_at_same_cap` below; this test
-    // only proves a grossly over-cap raw notional is rejected before NT
-    // submit.
+    // fee-inclusive authority. The bound-liability tests below pin that
+    // distinction; this test only proves a grossly over-cap raw notional is
+    // rejected before NT submit.
     let submit_admission =
         submit_admission_with_provider_cap(Decimal::ONE, recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
@@ -987,6 +984,7 @@ fn bound_economics_liability_passes_at_cap_boundary() {
         evidence.clone(),
         submit_admission.clone(),
     );
+    use_fee_bearing_economics(&mut strategy);
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.50, 2);
@@ -1060,13 +1058,26 @@ fn bound_economics_liability_passes_at_cap_boundary() {
         .core_edge_ratio
         .parse::<Decimal>()
         .expect("recorded core edge ratio must be decimal");
+    let bounded_component = economics
+        .components
+        .iter()
+        .find(|component| {
+            matches!(
+                component.treatment,
+                crate::bolt_v3_current_evidence::AdmissionEconomicsTreatment::RiskBound { .. }
+            )
+        })
+        .expect("fee-bearing admission must retain its bounded component lineage");
+    assert!(bounded_component.point_valuation.is_some());
+    assert!(bounded_component.debit_risk_bound.is_some());
+    assert!(bounded_component.debit_risk_bound_valuation.is_some());
 }
 
 #[test]
 fn bound_economics_liability_rejects_between_raw_and_full_cost() {
     // The 0.501 cap sits strictly between the 0.50 raw reservation and the
-    // TOML/provider-derived 0.50750 full liability. The legacy fee provider
-    // says zero, proving it cannot bypass the bound economics authority.
+    // TOML/provider-derived 0.50750 full liability, proving raw order notional
+    // cannot bypass the bound economics authority.
     let submit_admission =
         submit_admission_with_provider_cap(Decimal::new(501, 3), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
@@ -1074,6 +1085,7 @@ fn bound_economics_liability_rejects_between_raw_and_full_cost() {
         recording_decision_evidence(),
         submit_admission.clone(),
     );
+    use_fee_bearing_economics(&mut strategy);
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.50, 2);
@@ -1141,6 +1153,7 @@ fn bound_economics_liability_cannot_fall_back_to_raw_order_notional() {
         recording_decision_evidence(),
         submit_admission.clone(),
     );
+    use_fee_bearing_economics(&mut strategy);
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.50, 2);
@@ -1196,7 +1209,7 @@ fn bound_economics_liability_cannot_fall_back_to_raw_order_notional() {
     assert_eq!(
         submit_admission.admitted_order_count(),
         0,
-        "legacy fee provider must not authorize the order"
+        "raw order notional must not authorize the order"
     );
 }
 

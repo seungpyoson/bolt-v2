@@ -15,21 +15,90 @@ pub(crate) fn fixture_order_economics() -> BoltV3OrderEconomicsHandle {
 }
 
 pub(crate) fn fixture_order_economics_for(execution_client_id: &str) -> BoltV3OrderEconomicsHandle {
+    fixture_order_economics_with_platform_fee(execution_client_id, 0.03)
+}
+
+pub(crate) fn fee_free_fixture_order_economics() -> BoltV3OrderEconomicsHandle {
+    fixture_order_economics_with_platform_fee("POLYMARKET", 0.0)
+}
+
+fn fixture_order_economics_with_platform_fee(
+    execution_client_id: &str,
+    platform_fee_rate: f64,
+) -> BoltV3OrderEconomicsHandle {
     let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
         "tests/fixtures/bolt_v3/root.toml",
     ))
     .expect("bolt-v3 fixture root should load for economics authority");
-    let client = loaded
+    let mut client = loaded
         .root
         .clients
         .get("polymarket_main")
         .cloned()
         .expect("fixture should declare the Polymarket execution client");
+    let economics = client
+        .execution
+        .as_mut()
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|execution| execution.get_mut("economics"))
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture execution economics must be a table");
+    economics.insert(
+        "quote_max_age_secs".to_string(),
+        toml::Value::Integer(4_000_000_000),
+    );
+    economics.insert(
+        "quote_validity_ms".to_string(),
+        toml::Value::Integer(4_000_000_000_000),
+    );
+    let valuation_legs = economics
+        .get_mut("valuation")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|valuation| valuation.get_mut("routes"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|routes| routes.get_mut("pusd_usd"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|route| route.get_mut("legs"))
+        .and_then(toml::Value::as_array_mut)
+        .expect("fixture valuation route legs must exist");
+    for leg in valuation_legs {
+        leg.as_table_mut()
+            .expect("fixture valuation leg must be a table")
+            .insert(
+                "max_age_ms".to_string(),
+                toml::Value::Integer(4_000_000_000_000),
+            );
+    }
+    let configured = crate::bolt_v3_providers::polymarket::execution_economics_config(
+        client
+            .execution
+            .as_ref()
+            .expect("fixture execution block must exist"),
+    )
+    .expect("fixture execution economics must decode")
+    .expect("fixture execution economics must exist");
+    assert_eq!(configured.quote_max_age_secs, 4_000_000_000);
+    assert_eq!(configured.quote_validity_ms, 4_000_000_000_000);
     loaded
         .root
         .clients
         .insert(execution_client_id.to_string(), client);
 
+    let market_info = serde_json::json!({
+        "r": {},
+        "t": [
+            { "t": "condition-MKT-1-MKT-1-UP", "o": "Up" },
+            { "t": "condition-MKT-1-MKT-1-DOWN", "o": "Down" },
+            { "t": "condition-MKT-2-MKT-2-UP", "o": "Up" },
+            { "t": "condition-MKT-2-MKT-2-DOWN", "o": "Down" }
+        ],
+        "c": "fixture-condition",
+        "mos": 5,
+        "mts": 0.01,
+        "mbf": 50,
+        "tbf": 100,
+        "fd": { "r": platform_fee_rate, "e": 1, "to": true }
+    });
     let snapshot = PolymarketMarketInfoSnapshot::from_json(
         PolymarketSnapshotMetadata {
             snapshot_id: SnapshotId::try_new("edge-taker-fixture-market-info".to_string())
@@ -39,21 +108,7 @@ pub(crate) fn fixture_order_economics_for(execution_client_id: &str) -> BoltV3Or
             valid_until_ns: u64::MAX,
             builder_attachment_id: None,
         },
-        r#"{
-            "r": {},
-            "t": [
-                { "t": "condition-MKT-1-MKT-1-UP", "o": "Up" },
-                { "t": "condition-MKT-1-MKT-1-DOWN", "o": "Down" },
-                { "t": "condition-MKT-2-MKT-2-UP", "o": "Up" },
-                { "t": "condition-MKT-2-MKT-2-DOWN", "o": "Down" }
-            ],
-            "c": "fixture-condition",
-            "mos": 5,
-            "mts": 0.01,
-            "mbf": 50,
-            "tbf": 100,
-            "fd": { "r": 0.03, "e": 1, "to": true }
-        }"#,
+        &market_info.to_string(),
     )
     .expect("fixture market-info snapshot should parse");
 

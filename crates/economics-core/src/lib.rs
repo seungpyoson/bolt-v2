@@ -9,8 +9,8 @@ pub use edge::{EdgeBasisAmount, EdgeBasisEvidence, NetEdgeQuote, fold_net_edge};
 pub use health::EconomicsCapabilityHealth;
 pub use ports::{VenueEconomicsAdapter, VenueEconomicsUnavailable, VenueEdgeBasisEstimate};
 pub use quote::{
-    EconomicsQuote, EconomicsQuoteRequest, PlannedFillNotional, VenueQuoteEstimate,
-    validate_and_aggregate_quote,
+    EconomicsQuote, EconomicsQuoteRequest, EvaluatedEconomicsComponent, PlannedFillNotional,
+    VenueQuoteEstimate, validate_and_aggregate_quote,
 };
 pub use types::{
     AccountId, ActionId, AdmissionTreatment, AssetId, CalculationFactor, CarryKind, CurrencyId,

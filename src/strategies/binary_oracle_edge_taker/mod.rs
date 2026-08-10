@@ -18,9 +18,10 @@ use nautilus_model::{
 #[cfg(test)]
 use nautilus_trading::Strategy;
 use nautilus_trading::{StrategyConfig, StrategyCore, StrategyNative};
-#[cfg(test)]
-use rust_decimal::prelude::ToPrimitive;
-use rust_decimal::{Decimal, prelude::FromPrimitive};
+use rust_decimal::{
+    Decimal,
+    prelude::{FromPrimitive, ToPrimitive},
+};
 use toml::Value;
 
 use crate::bolt_v3_evidence_novelty::{
@@ -91,8 +92,8 @@ use crate::{
     bolt_v3_operator_health::BoltV3SettlementHealthTransition,
     bolt_v3_order_execution::{
         BoltV3PlannedFillLeg, BoltV3SubmitContext, BoltV3SubmitRoutingOutcome,
-        BoltV3SubmitRoutingRequest, build_order_economics_submit_admission,
-        order_intent_details_from_compiled_order,
+        BoltV3SubmitRoutingRequest, BoltV3TakerEconomicsSizingInput,
+        build_order_economics_submit_admission, order_intent_details_from_compiled_order,
     },
     bolt_v3_order_intent::{
         MarketQuoteBuyQuantityError, make_market_quote_buy_quantity, normalize_base_order_quantity,
@@ -164,6 +165,7 @@ enum StrategyEconomicsInput {
     Exact {
         gross_expected_value: Decimal,
         planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
+        minimum_core_edge_ratio: Decimal,
     },
     #[cfg(test)]
     CompiledFinalOrderFixture,
@@ -173,12 +175,17 @@ impl StrategyEconomicsInput {
     fn resolve(
         self,
         _request: &BoltV3SubmitAdmissionRequestInput<'_>,
-    ) -> Result<(Decimal, Vec<BoltV3PlannedFillLeg>)> {
+    ) -> Result<(Decimal, Vec<BoltV3PlannedFillLeg>, Decimal)> {
         match self {
             Self::Exact {
                 gross_expected_value,
                 planned_fill_legs,
-            } => Ok((gross_expected_value, planned_fill_legs)),
+                minimum_core_edge_ratio,
+            } => Ok((
+                gross_expected_value,
+                planned_fill_legs,
+                minimum_core_edge_ratio,
+            )),
             #[cfg(test)]
             Self::CompiledFinalOrderFixture => {
                 let facts = crate::bolt_v3_submit_admission::order_admission_facts(_request)?;
@@ -196,6 +203,7 @@ impl StrategyEconomicsInput {
                         price: facts.price,
                         quantity,
                     }],
+                    Decimal::ZERO,
                 ))
             }
         }
@@ -3935,6 +3943,61 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    fn economics_adjusted_entry_edge_ratio(
+        &self,
+        now_ms: u64,
+        selected_side: OutcomeSide,
+        edge: BinaryOutcomeEdgeResult,
+        probe: &ExecutableEntryProbe,
+        minimum_edge_bps: f64,
+    ) -> Option<f64> {
+        let instrument_id = self.instrument_id_for_side(selected_side)?;
+        let planned_fill_legs = probe
+            .vwap
+            .fill_legs
+            .iter()
+            .map(|leg| {
+                Some(BoltV3PlannedFillLeg {
+                    price: Decimal::from_f64(leg.price)?,
+                    quantity: Decimal::from_f64(leg.quantity)?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let economics_fill_legs = planned_fill_legs
+            .iter()
+            .map(|leg| PlannedFillLeg {
+                price: leg.price,
+                quantity: leg.quantity,
+            })
+            .collect::<Vec<_>>();
+        let planned_fill_notional = PlannedFillNotional::from_legs(&economics_fill_legs)
+            .ok()?
+            .amount()
+            .to_f64()?;
+        let gross_expected_value = entry_gross_expected_value(edge, planned_fill_notional)?;
+        let minimum_core_edge_ratio = Decimal::from_f64(minimum_edge_bps / BPS_DENOMINATOR)?;
+        let requested_at_ns = now_ms.checked_mul(NANOS_PER_MILLI_U64)?;
+        let sizing_quote = self
+            .context
+            .order_economics()
+            .quote_taker_sizing(BoltV3TakerEconomicsSizingInput {
+                instrument_id,
+                order_side: probe.order_side,
+                planned_fill_legs,
+                lifecycle_path: LifecyclePath::HoldToRedemption,
+                requested_at_ns,
+                decision_correlation_id: &self.config.strategy_id,
+                gross_expected_value,
+                minimum_core_edge_ratio,
+            })
+            .ok()?;
+        sizing_quote
+            .net_edge()
+            .core_edge_ratio
+            .to_f64()
+            .filter(|value| is_positive_finite(*value))
+    }
+
     fn visible_book_notional_cap(&self, side: OutcomeSide) -> Option<f64> {
         let order_side = self.configured_entry_order_side().ok()?;
         let book_depth_side =
@@ -5216,27 +5279,6 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn submit_order_with_decision_evidence_and_fill_plan(
-        &mut self,
-        intent: OrderIntentDetails,
-        intent_kind: BoltV3SubmitIntentKind,
-        order: nautilus_model::orders::OrderAny,
-        submit_context: BoltV3SubmitContext,
-        gross_expected_value: Decimal,
-        planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
-    ) -> Result<BoltV3SubmitRoutingOutcome> {
-        self.submit_order_with_decision_evidence_inner(
-            intent,
-            intent_kind,
-            order,
-            submit_context,
-            StrategyEconomicsInput::Exact {
-                gross_expected_value,
-                planned_fill_legs,
-            },
-        )
-    }
-
     #[cfg(test)]
     fn submit_order_with_decision_evidence(
         &mut self,
@@ -5262,6 +5304,28 @@ impl BinaryOracleEdgeTaker {
         submit_context: BoltV3SubmitContext,
         economics_input: StrategyEconomicsInput,
     ) -> Result<BoltV3SubmitRoutingOutcome> {
+        let decision_evidence = self
+            .context
+            .order_execution_evidence()
+            .expect("edge-taker strategy must own order-intent evidence");
+        let submit_admission = self.context.submit_admission_arc();
+        let (intent, order) =
+            match crate::bolt_v3_order_execution::clamp_risk_reducing_exit_to_venue_position(
+                submit_admission.as_ref(),
+                intent_kind,
+                intent,
+                order,
+            ) {
+                Ok(clamped) => clamped,
+                Err(error) => {
+                    crate::bolt_v3_order_execution::record_order_intent(
+                        &decision_evidence,
+                        intent_kind,
+                        error.intent().clone(),
+                    )?;
+                    return Err(error.into_error());
+                }
+            };
         let sealed = self.economics_submit_admission_from_order(
             &intent,
             intent_kind,
@@ -5269,11 +5333,6 @@ impl BinaryOracleEdgeTaker {
             economics_input,
         )?;
         let policy = self.context.order_execution_policy();
-        let decision_evidence = self
-            .context
-            .order_execution_evidence()
-            .expect("edge-taker strategy must own order-intent evidence");
-        let submit_admission = self.context.submit_admission_arc();
         let routing = BoltV3SubmitRoutingRequest::with_economics(
             &decision_evidence,
             submit_admission.as_ref(),
@@ -5389,7 +5448,7 @@ impl BinaryOracleEdgeTaker {
             },
             risk_reducing_exit_position,
         };
-        let (gross_expected_value, planned_fill_legs) =
+        let (gross_expected_value, planned_fill_legs, minimum_core_edge_ratio) =
             economics_input.resolve(&admission_input)?;
         let liquidity_role = if order.is_post_only() {
             NautilusEstimateLiquidityRole::GuaranteedMaker
@@ -5407,6 +5466,7 @@ impl BinaryOracleEdgeTaker {
                 requested_at_ns: order.ts_init().as_u64(),
                 decision_correlation_id: order.client_order_id().as_str(),
                 gross_expected_value,
+                minimum_core_edge_ratio,
             },
         )
     }
@@ -6145,7 +6205,7 @@ impl BinaryOracleEdgeTaker {
         }
         .ok_or_else(|| anyhow::anyhow!("exit gross value arithmetic overflow"))?;
 
-        match self.submit_order_with_decision_evidence_and_fill_plan(
+        match self.submit_order_with_decision_evidence_inner(
             intent,
             BoltV3SubmitIntentKind::RiskReducingExit,
             order,
@@ -6153,8 +6213,11 @@ impl BinaryOracleEdgeTaker {
                 client_id,
                 managed_position.position.position_id,
             ),
-            gross_expected_value,
-            planned_fill_legs,
+            StrategyEconomicsInput::Exact {
+                gross_expected_value,
+                planned_fill_legs,
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
         ) {
             Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}
             Ok(BoltV3SubmitRoutingOutcome::SkippedByPolicy) => {}
@@ -6666,13 +6729,24 @@ impl BinaryOracleEdgeTaker {
             self.clear_pending_entry_state();
             return Err(anyhow::Error::from(error));
         }
-        match self.submit_order_with_decision_evidence_and_fill_plan(
+        let minimum_core_edge_ratio = decision
+            .evaluation
+            .min_worst_case_ev_bps
+            .filter(|value| value.is_finite())
+            .and_then(|value| Decimal::from_f64(value / BPS_DENOMINATOR))
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry economics requires a finite theta-scaled minimum edge ratio")
+            })?;
+        match self.submit_order_with_decision_evidence_inner(
             intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(client_id),
-            gross_expected_value,
-            decision.planned_fill_legs.clone(),
+            StrategyEconomicsInput::Exact {
+                gross_expected_value,
+                planned_fill_legs: decision.planned_fill_legs.clone(),
+                minimum_core_edge_ratio,
+            },
         ) {
             Ok(BoltV3SubmitRoutingOutcome::Submitted) => {}
             Ok(BoltV3SubmitRoutingOutcome::SkippedByPolicy) => {
@@ -6860,15 +6934,36 @@ impl BinaryOracleEdgeTaker {
             return evaluation;
         }
         if let Some(selected_side) = evaluation.selected_side {
-            let selected_worst_case_ev_bps = match selected_side {
-                OutcomeSide::Up => evaluation.up_worst_case_ev_bps,
-                OutcomeSide::Down => evaluation.down_worst_case_ev_bps,
+            let selected_edge = match selected_side {
+                OutcomeSide::Up => evaluation.up_executable_edge,
+                OutcomeSide::Down => evaluation.down_executable_edge,
             };
-            let expected_ev_per_notional =
-                selected_worst_case_ev_bps.map(|ev_bps| ev_bps / BPS_DENOMINATOR);
+            let expected_ev_per_notional = selected_edge.and_then(|edge| {
+                let probe = self
+                    .executable_entry_probe_for_side(
+                        selected_side,
+                        order_side,
+                        self.preliminary_edge_pricing_notional_for_side(selected_side),
+                    )
+                    .ok()?;
+                self.economics_adjusted_entry_edge_ratio(
+                    now_ms,
+                    selected_side,
+                    edge,
+                    &probe,
+                    pricing_inputs.theta_scaled_min_edge_bps,
+                )
+            });
             let book_impact_cap_notional = self.visible_book_notional_cap(selected_side);
             evaluation.expected_ev_per_notional = expected_ev_per_notional;
             evaluation.book_impact_cap_notional = book_impact_cap_notional;
+            if expected_ev_per_notional.is_none() {
+                evaluation.pricing_blocked_by.push(
+                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(selected_side),
+                );
+                evaluation.selected_side = None;
+                return evaluation;
+            }
             if let (Some(expected_ev_per_notional), Some(book_impact_cap_notional)) =
                 (expected_ev_per_notional, book_impact_cap_notional)
             {
@@ -6928,7 +7023,7 @@ impl BinaryOracleEdgeTaker {
                     fair_probability_up,
                     selected_adjusted_probability_up,
                     pricing_inputs.theta_scaled_min_edge_bps,
-                    selected_sized_probe,
+                    selected_sized_probe.clone(),
                 );
                 evaluation.sized_worst_case_ev_bps =
                     executable_edge_worst_case_ev_bps(Some(sized_executable_edge));
@@ -6940,8 +7035,23 @@ impl BinaryOracleEdgeTaker {
                         evaluation.expected_ev_per_notional = None;
                         return evaluation;
                     };
-                    let sized_expected_ev_per_notional =
-                        sized_executable_edge.edge_bps / BPS_DENOMINATOR;
+                    let Some(sized_expected_ev_per_notional) = self
+                        .economics_adjusted_entry_edge_ratio(
+                            now_ms,
+                            selected_side,
+                            sized_executable_edge,
+                            &selected_sized_probe,
+                            pricing_inputs.theta_scaled_min_edge_bps,
+                        )
+                    else {
+                        evaluation.pricing_blocked_by.push(
+                            EntryPricingBlockReason::ExecutableEntryCostUnavailable(selected_side),
+                        );
+                        evaluation.selected_side = None;
+                        evaluation.sized_notional = None;
+                        evaluation.expected_ev_per_notional = None;
+                        return evaluation;
+                    };
                     evaluation.expected_ev_per_notional = Some(sized_expected_ev_per_notional);
                     let resized_notional = choose_robust_size(&self.robust_sizing_inputs(
                         sized_expected_ev_per_notional,
@@ -6998,7 +7108,7 @@ impl BinaryOracleEdgeTaker {
                             fair_probability_up,
                             resized_adjusted_probability_up,
                             pricing_inputs.theta_scaled_min_edge_bps,
-                            resized_probe,
+                            resized_probe.clone(),
                         );
                         evaluation.sized_worst_case_ev_bps =
                             executable_edge_worst_case_ev_bps(Some(resized_executable_edge));
@@ -7009,8 +7119,29 @@ impl BinaryOracleEdgeTaker {
                         // small first pass fills cheap, the EV jump saturates the
                         // resize to the full target, and the thin full-target edge
                         // would be traded at a size it cannot support.
+                        let final_expected_ev_per_notional = self
+                            .economics_adjusted_entry_edge_ratio(
+                                now_ms,
+                                selected_side,
+                                resized_executable_edge,
+                                &resized_probe,
+                                pricing_inputs.theta_scaled_min_edge_bps,
+                            );
+                        if resized_executable_edge.trade_allowed
+                            && final_expected_ev_per_notional.is_none()
+                        {
+                            evaluation.pricing_blocked_by.push(
+                                EntryPricingBlockReason::ExecutableEntryCostUnavailable(
+                                    selected_side,
+                                ),
+                            );
+                            evaluation.selected_side = None;
+                            evaluation.sized_notional = None;
+                            evaluation.expected_ev_per_notional = None;
+                            return evaluation;
+                        }
                         let final_expected_ev_per_notional =
-                            resized_executable_edge.edge_bps / BPS_DENOMINATOR;
+                            final_expected_ev_per_notional.unwrap_or_default();
                         let final_supported_notional =
                             choose_robust_size(&self.robust_sizing_inputs(
                                 final_expected_ev_per_notional,

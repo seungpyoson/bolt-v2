@@ -48,7 +48,6 @@ struct ScanFixture {
     min_quantity: String,
     min_notional: String,
     quantity_step: String,
-    fee_bps: String,
     now_unix_ms: u64,
     max_book_age_ms: u64,
     admissible_min_edge_bps: String,
@@ -110,7 +109,6 @@ struct ScanCase {
     group: OutcomeGroup,
     candidate_legs: Vec<OutcomeGroupCandidateLeg>,
     books: BTreeMap<InstrumentId, OutcomeGroupDepthSnapshot>,
-    fee_bps: BTreeMap<InstrumentId, Decimal>,
     now_unix_ms: u64,
     max_book_age_ms: u64,
     min_edge_bps: Decimal,
@@ -185,17 +183,10 @@ fn scan_case(fixture: &ScanFixture, min_edge_bps: &str) -> ScanCase {
             (instrument_id, snapshot)
         })
         .collect();
-    let fee = decimal(&fixture.fee_bps);
-    let fee_bps = group
-        .tradable_legs
-        .values()
-        .map(|leg| (leg.instrument_id, fee))
-        .collect();
     ScanCase {
         group,
         candidate_legs,
         books,
-        fee_bps,
         now_unix_ms: fixture.now_unix_ms,
         max_book_age_ms: fixture.max_book_age_ms,
         min_edge_bps: decimal(min_edge_bps),
@@ -214,7 +205,6 @@ fn run_scan(
         group,
         candidate_legs,
         books,
-        fee_bps,
         now_unix_ms,
         max_book_age_ms,
         min_edge_bps,
@@ -225,7 +215,6 @@ fn run_scan(
         group: &group,
         candidate_legs,
         books,
-        fee_bps,
         now_unix_ms,
         max_book_age_ms,
         min_edge_bps,
@@ -383,7 +372,6 @@ fn validate_fixture(fixture: &ScanFixture) {
             .all(|leg| leg.executable_quantity == executable_quantity),
         "scanner fixture notionals must produce equal, step-aligned payout quantities"
     );
-    assert!(admissible.total_fee_cost > Decimal::ZERO);
     assert!(admissible.total_slippage_buffer > Decimal::ZERO);
     assert!(admissible.absolute_edge > Decimal::ZERO);
     assert!(

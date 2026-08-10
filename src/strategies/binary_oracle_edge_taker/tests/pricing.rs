@@ -365,6 +365,13 @@ fn rv_clock_domain_amendment_submit_evidence_uses_entry_receive_stamp() {
 
 #[test]
 fn rv_clock_domain_amendment_durable_skip_route_uses_entry_receive_context() {
+    if !crate::bolt_v3_test_log_capture::enter_isolated_log_capture(
+        "rv_clock_domain_amendment_durable_skip_route_uses_entry_receive_context",
+        "rv-context-skip",
+    ) {
+        return;
+    }
+
     let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
@@ -407,6 +414,13 @@ fn rv_clock_domain_amendment_durable_skip_route_uses_entry_receive_context() {
 
 #[test]
 fn rv_clock_domain_amendment_actual_submit_route_uses_entry_receive_context() {
+    if !crate::bolt_v3_test_log_capture::enter_isolated_log_capture(
+        "rv_clock_domain_amendment_actual_submit_route_uses_entry_receive_context",
+        "rv-context-submit",
+    ) {
+        return;
+    }
+
     let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
@@ -1176,6 +1190,7 @@ fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
 #[test]
 fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
+    use_fee_bearing_economics(&mut strategy);
     register_test_strategy_with_active_instruments(&mut strategy);
     // Both-sided cheap book so each outcome is unambiguously tradeable: the #789
     // diffusion-grounded uncertainty band is nonzero even at market open, so a
@@ -1227,6 +1242,16 @@ fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
         decision
             .expected_ev_per_notional
             .is_some_and(|value| value > 0.0)
+    );
+    let fee_free_edge_ratio = decision
+        .up_worst_case_ev_bps
+        .expect("selected side must expose its fee-free executable edge")
+        / BPS_DENOMINATOR;
+    assert!(
+        decision
+            .expected_ev_per_notional
+            .is_some_and(|value| value < fee_free_edge_ratio),
+        "shared economics must reduce the sizing edge by the provider-derived fee"
     );
     assert!(
         decision

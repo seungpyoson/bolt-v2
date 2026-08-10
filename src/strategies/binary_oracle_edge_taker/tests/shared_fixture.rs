@@ -19,44 +19,6 @@ pub(super) const TEST_TRADE_PRICE_PRECISION: u8 = 2;
 pub(super) const TEST_TRADE_SIZE_PRECISION: u8 = 0;
 const TEST_IDENTIFIER_TOKEN_LIMIT: usize = 8;
 
-#[derive(Default)]
-struct CapturingLogger {
-    records: std::sync::Mutex<Vec<(log::Level, String)>>,
-}
-
-impl log::Log for CapturingLogger {
-    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
-        true
-    }
-
-    fn log(&self, record: &log::Record<'_>) {
-        self.records
-            .lock()
-            .expect("capturing logger mutex poisoned")
-            .push((record.level(), record.args().to_string()));
-    }
-
-    fn flush(&self) {}
-}
-
-impl CapturingLogger {
-    fn reset(&self) {
-        self.records
-            .lock()
-            .expect("capturing logger mutex poisoned")
-            .clear();
-    }
-
-    fn records(&self) -> Vec<(log::Level, String)> {
-        self.records
-            .lock()
-            .expect("capturing logger mutex poisoned")
-            .clone()
-    }
-}
-
-static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> = std::sync::OnceLock::new();
-static CAPTURING_LOGGER_OBSERVERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static NEXT_LOG_CAPTURE_STRATEGY_ID: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -65,31 +27,12 @@ pub(super) fn unique_log_capture_strategy_id(prefix: &str) -> String {
     format!("BINARYORACLEEDGETAKER-{prefix}-{id}")
 }
 
-fn install_capturing_logger() -> &'static CapturingLogger {
-    static INSTALL_OUTCOME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let logger = CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
-    let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
-    assert!(
-        installed,
-        "capturing logger could not claim the global log slot; another logger is installed"
-    );
-    log::set_max_level(log::LevelFilter::Trace);
-    *logger
-}
-
 pub(super) fn with_captured_strategy_logs<R>(
     strategy_id: &str,
     action: impl FnOnce() -> R,
 ) -> (R, Vec<(log::Level, String)>) {
-    let logger = install_capturing_logger();
-    let _observer_guard = CAPTURING_LOGGER_OBSERVERS
-        .lock()
-        .expect("capturing logger observer mutex poisoned");
-    logger.reset();
-
-    let result = action();
-    let matching = logger
-        .records()
+    let (result, records) = crate::bolt_v3_test_log_capture::with_captured_logs(action);
+    let matching = records
         .into_iter()
         .filter(|(_, message)| message.contains(strategy_id))
         .collect::<Vec<_>>();
@@ -344,6 +287,18 @@ fn fixture_settlement_identity() -> (String, Currency) {
 pub(crate) fn fixture_order_economics() -> crate::bolt_v3_order_execution::BoltV3OrderEconomicsHandle
 {
     crate::bolt_v3_economics_test_support::fixture_order_economics()
+}
+
+fn fee_free_fixture_order_economics() -> crate::bolt_v3_order_execution::BoltV3OrderEconomicsHandle
+{
+    crate::bolt_v3_economics_test_support::fee_free_fixture_order_economics()
+}
+
+pub(super) fn use_fee_bearing_economics(strategy: &mut BinaryOracleEdgeTaker) {
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_order_economics_for_test(fixture_order_economics());
 }
 
 pub(super) fn test_strategy() -> BinaryOracleEdgeTaker {
@@ -643,7 +598,7 @@ pub(super) fn test_strategy_with_decision_evidence_and_submit_admission(
             reference_current_price: None,
         },
         StrategyBuildContext::new(
-            fixture_order_economics(),
+            fee_free_fixture_order_economics(),
             decision_evidence,
             submit_admission,
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
@@ -957,7 +912,7 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
 ) -> BinaryOracleEdgeTaker {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.context = StrategyBuildContext::new(
-        fixture_order_economics(),
+        fee_free_fixture_order_economics(),
         decision_evidence,
         submit_admission,
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),

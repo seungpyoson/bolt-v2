@@ -4,7 +4,7 @@ use bolt_v2::{
     bolt_v3_config::{ClientBlock, ExecutionEconomicsConfig, load_bolt_v3_config},
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
-        AuthoritativeVenueEconomicsInput, EconomicsAdmissionIntent, EconomicsAdmissionPurpose,
+        AuthoritativeVenueEconomicsInput, EconomicsAdmissionIntent, EconomicsAdmissionPolicy,
         EconomicsOrderBinding, EconomicsRuntimeBindingError, RestingOrderEconomicsCancelReason,
         RestingOrderEconomicsRefresh, bind_execution_economics, refresh_resting_order_economics,
     },
@@ -193,7 +193,9 @@ fn maker_admission_for_refresh(
         .quote_admission(EconomicsAdmissionIntent {
             request,
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -369,7 +371,9 @@ fn hyperliquid_maker_admission_for_refresh(
         .quote_admission(EconomicsAdmissionIntent {
             request,
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -459,6 +463,7 @@ fn final_nautilus_order_routes_through_its_exact_provider_authority() {
             requested_at_ns: 1_000,
             decision_correlation_id: "decision-final-order",
             gross_expected_value: Decimal::ONE,
+            minimum_core_edge_ratio: Decimal::ZERO,
         })
         .expect("the exact final order identity should reach its provider quote");
 
@@ -504,7 +509,9 @@ fn bound_execution_economics_routes_edge_basis_by_exact_product_scope() {
         .quote_admission(EconomicsAdmissionIntent {
             request,
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -531,7 +538,9 @@ fn bound_execution_economics_quotes_and_folds_admission_from_one_authority() {
         .quote_admission(EconomicsAdmissionIntent {
             request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -541,7 +550,10 @@ fn bound_execution_economics_quotes_and_folds_admission_from_one_authority() {
     assert!(admission.net_edge().core_net_edge > Decimal::ZERO);
     assert!(admission.full_reservation_liability() > Decimal::from(5));
     assert_eq!(
-        admission.quote().valuations()[0].source_snapshot_ids,
+        admission.quote().components()[0]
+            .point_valuation()
+            .expect("fee-bearing component must retain its point valuation")
+            .source_snapshot_ids,
         vec![id("collateral-conversion-1", SnapshotId::try_new)]
     );
     assert_eq!(
@@ -553,6 +565,36 @@ fn bound_execution_economics_quotes_and_folds_admission_from_one_authority() {
             .collect::<Vec<_>>(),
         vec!["collateral-conversion-1", "market-info-1"]
     );
+}
+
+#[test]
+fn bound_execution_economics_enforces_the_declared_minimum_net_edge() {
+    let loaded = loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([authoritative_input()])
+        .expect("one input should construct");
+    let bound = bind_execution_economics(&loaded, "polymarket_main", &inputs)
+        .expect("matching authority should bind");
+
+    let error = bound
+        .quote_admission(EconomicsAdmissionIntent {
+            request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
+            order_binding: order_binding(),
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::new(2, 1),
+            },
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect_err("fees must not leave the order below its declared minimum edge");
+
+    assert!(matches!(
+        error,
+        bolt_v2::bolt_v3_economics_runtime::EconomicsAdmissionError::CoreEdgeBelowMinimum {
+            minimum_core_edge_ratio,
+            actual_core_edge_ratio,
+        } if minimum_core_edge_ratio == Decimal::new(2, 1)
+            && actual_core_edge_ratio < minimum_core_edge_ratio
+    ));
 }
 
 #[test]
@@ -570,7 +612,9 @@ fn bound_execution_economics_rejects_stale_required_valuation() {
         .quote_admission(EconomicsAdmissionIntent {
             request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -592,7 +636,9 @@ fn execution_economics_rejects_missing_required_valuation_authority() {
         .quote_admission(EconomicsAdmissionIntent {
             request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -620,7 +666,9 @@ fn bound_execution_economics_rejects_foreign_reporting_policy() {
         .quote_admission(EconomicsAdmissionIntent {
             request,
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -643,7 +691,9 @@ fn bound_execution_economics_rejects_foreign_product_edge_policy() {
         .quote_admission(EconomicsAdmissionIntent {
             request,
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -662,7 +712,9 @@ fn execution_economics_rotates_authoritative_scopes_without_rebinding() {
         bound.quote_admission(EconomicsAdmissionIntent {
             request: quote_request(instrument_id, "binary_outcome"),
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -906,7 +958,9 @@ fn execution_economics_builds_the_adapter_from_the_loaded_toml() {
         .quote_admission(EconomicsAdmissionIntent {
             request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -914,7 +968,10 @@ fn execution_economics_builds_the_adapter_from_the_loaded_toml() {
     let components = admission.quote().components();
 
     assert_eq!(components.len(), 1);
-    assert_eq!(components[0].component_id.as_str(), "configured-platform");
+    assert_eq!(
+        components[0].component().component_id.as_str(),
+        "configured-platform"
+    );
 }
 
 #[test]
@@ -929,7 +986,9 @@ fn hyperliquid_execution_economics_binds_from_offline_toml_and_raw_authority() {
         .quote_admission(EconomicsAdmissionIntent {
             request: hyperliquid_quote_request(),
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -960,7 +1019,9 @@ fn hyperliquid_execution_economics_rejects_foreign_account_authority() {
         .quote_admission(EconomicsAdmissionIntent {
             request: hyperliquid_quote_request(),
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -990,7 +1051,9 @@ fn hyperliquid_execution_economics_rejects_mismatched_product_source() {
         .quote_admission(EconomicsAdmissionIntent {
             request: hyperliquid_quote_request(),
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })
@@ -1020,7 +1083,9 @@ fn hyperliquid_execution_economics_rejects_mismatched_funding_source() {
         .quote_admission(EconomicsAdmissionIntent {
             request: hyperliquid_quote_request(),
             order_binding: order_binding(),
-            purpose: EconomicsAdmissionPurpose::TradingEdge,
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
             gross_expected_value: Decimal::ONE,
             reservation_basis: Decimal::from(5),
         })

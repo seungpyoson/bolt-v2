@@ -805,12 +805,20 @@ fn load_manifest_economics_config(manifest: &BacktestingRunManifest) -> Result<L
         .context("binary-oracle replay requires manifest economics authority")?;
     let production_root_config_path =
         resolve_existing_input_path(Path::new(&economics.production_root_config_path));
-    load_bolt_v3_config(&production_root_config_path).with_context(|| {
+    let loaded = load_bolt_v3_config(&production_root_config_path).with_context(|| {
         format!(
             "load production economics config root {}",
             economics.production_root_config_path
         )
-    })
+    })?;
+    anyhow::ensure!(
+        loaded.config_bundle_checksum == economics.production_config_bundle_checksum,
+        "production economics config bundle checksum mismatch: expected={} actual={} path={}",
+        economics.production_config_bundle_checksum,
+        loaded.config_bundle_checksum,
+        economics.production_root_config_path
+    );
+    Ok(loaded)
 }
 
 fn raw_execution_client_id(raw_config: &toml::Value) -> Result<&str> {
@@ -2913,6 +2921,11 @@ mod tests {
         ];
         ManifestEconomicsSource {
             production_root_config_path: "config/root.toml".to_string(),
+            production_config_bundle_checksum: load_bolt_v3_config(&resolve_existing_input_path(
+                Path::new("config/root.toml"),
+            ))
+            .expect("replay fixture production config must load")
+            .config_bundle_checksum,
             inputs: instruments
                 .iter()
                 .map(|(instrument_id, provider_instrument_id)| {
@@ -3754,6 +3767,25 @@ mod tests {
         ensure!(
             format!("{error:#}").contains("Polymarket market-info is invalid"),
             "unexpected malformed-economics error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn binary_oracle_replay_rejects_changed_production_economics_config() -> Result<()> {
+        let tempdir = tempfile::TempDir::new().context("create replay manifest root")?;
+        let mut manifest = maker_smoke_manifest(tempdir.path());
+        manifest
+            .economics
+            .as_mut()
+            .context("maker smoke economics source")?
+            .production_config_bundle_checksum = "0".repeat(64);
+
+        let error = super::load_manifest_economics_config(&manifest)
+            .expect_err("a changed production economics config must fail closed");
+        ensure!(
+            format!("{error:#}").contains("production economics config bundle checksum mismatch"),
+            "unexpected config-integrity error: {error:#}"
         );
         Ok(())
     }

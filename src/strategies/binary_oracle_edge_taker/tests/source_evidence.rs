@@ -953,6 +953,13 @@ fn resolution_strike_reissue_does_not_depend_on_index_unsubscribe_pairing() {
 
 #[test]
 fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent() {
+    if !crate::bolt_v3_test_log_capture::enter_isolated_log_capture(
+        "strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent",
+        "source-bound-entry-snapshot",
+    ) {
+        return;
+    }
+
     let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
@@ -1471,6 +1478,13 @@ fn admitted_entry_strategy_for_rv_receipt() -> (
 
 #[test]
 fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
+    if !crate::bolt_v3_test_log_capture::enter_isolated_log_capture(
+        "blocked_entry_replay_records_observed_spot_and_reference_inputs",
+        "blocked-entry-replay",
+    ) {
+        return;
+    }
+
     let replay = strategy_input_quote_replay();
     let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(

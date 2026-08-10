@@ -14,9 +14,10 @@ use crate::{
         AdmissionTreatment, CalculationFactor, CurrencyId, EconomicClass, EconomicComponentId,
         EconomicKind, EconomicScope, EconomicsError, EconomicsInstrumentId, EconomicsQuoteRequest,
         EstimatedEffect, ExecutionClientId, ExecutionKind, FormulaId, LiquidityRole,
-        PlannedFillNotional, PointEstimate, ProductSurfaceId, RoutingAttachmentId,
-        SignedNativeEffect, SnapshotId, SourceIdentity, SourceValidity, VenueEconomicsAdapter,
-        VenueEconomicsUnavailable, VenueEdgeBasisEstimate, VenueQuoteEstimate,
+        PlannedFillNotional, PointEstimate, ProductSurfaceId, RiskBoundAuthority,
+        RoutingAttachmentId, SignedNativeEffect, SnapshotId, SourceIdentity, SourceValidity,
+        VenueEconomicsAdapter, VenueEconomicsUnavailable, VenueEdgeBasisEstimate,
+        VenueQuoteEstimate,
     },
 };
 
@@ -493,7 +494,8 @@ impl PolymarketEconomicsAdapter {
             && (!taker_only || request.liquidity_role == LiquidityRole::Taker)
         {
             let platform_fee = self.platform_fee(request, rate)?;
-            if !platform_fee.is_zero() {
+            let debit_risk_bound = self.platform_fee_bound(request, rate)?;
+            if !platform_fee.is_zero() || !debit_risk_bound.is_zero() {
                 components.push(self.effect(
                     request,
                     EffectPlan {
@@ -503,6 +505,7 @@ impl PolymarketEconomicsAdapter {
                         rate,
                         kind: ExecutionKind::ProtocolTrading,
                         fee: platform_fee,
+                        debit_risk_bound: Some(debit_risk_bound),
                     },
                 )?);
             }
@@ -518,7 +521,10 @@ impl PolymarketEconomicsAdapter {
                 LiquidityRole::Taker => self.snapshot.builder_taker_fee_bps,
             };
             let builder_fee = self.builder_fee(request, builder_rate_bps)?;
-            if !builder_fee.is_zero() {
+            let debit_risk_bound = (request.liquidity_role == LiquidityRole::Taker)
+                .then(|| self.builder_fee_bound(request, builder_rate_bps))
+                .transpose()?;
+            if !builder_fee.is_zero() || debit_risk_bound.is_some_and(|bound| !bound.is_zero()) {
                 components.push(self.effect(
                     request,
                     EffectPlan {
@@ -528,6 +534,7 @@ impl PolymarketEconomicsAdapter {
                         rate: builder_rate_bps,
                         kind: ExecutionKind::AttachedRoutingCharge,
                         fee: builder_fee,
+                        debit_risk_bound,
                     },
                 )?);
             }
@@ -585,7 +592,7 @@ impl PolymarketEconomicsAdapter {
             .iter()
             .try_fold(Decimal::ZERO, |total, leg| {
                 if leg.price <= Decimal::ZERO
-                    || leg.price >= Decimal::ONE
+                    || leg.price > Decimal::ONE
                     || leg.quantity <= Decimal::ZERO
                 {
                     return Err(PolymarketEconomicsError::InvalidFillLeg);
@@ -634,11 +641,89 @@ impl PolymarketEconomicsAdapter {
             })
     }
 
+    fn platform_fee_bound(
+        &self,
+        request: &EconomicsQuoteRequest,
+        rate: Decimal,
+    ) -> Result<Decimal, PolymarketEconomicsError> {
+        request
+            .planned_fill_legs
+            .iter()
+            .try_fold(Decimal::ZERO, |total, leg| {
+                if leg.quantity <= Decimal::ZERO {
+                    return Err(PolymarketEconomicsError::InvalidFillLeg);
+                }
+                let fee = leg
+                    .quantity
+                    .checked_mul(rate)
+                    .and_then(|value| value.checked_mul(Decimal::new(25, 2)))
+                    .ok_or(PolymarketEconomicsError::ArithmeticOverflow)?
+                    .round_dp_with_strategy(
+                        self.config.fee_round_decimal_places,
+                        self.config.fee_rounding_mode.strategy(),
+                    );
+                total
+                    .checked_add(fee)
+                    .ok_or(PolymarketEconomicsError::ArithmeticOverflow)
+            })
+    }
+
+    fn builder_fee_bound(
+        &self,
+        request: &EconomicsQuoteRequest,
+        rate_bps: Decimal,
+    ) -> Result<Decimal, PolymarketEconomicsError> {
+        request
+            .planned_fill_legs
+            .iter()
+            .try_fold(Decimal::ZERO, |total, leg| {
+                if leg.quantity <= Decimal::ZERO {
+                    return Err(PolymarketEconomicsError::InvalidFillLeg);
+                }
+                let fee = leg
+                    .quantity
+                    .checked_mul(rate_bps)
+                    .and_then(|value| value.checked_div(Decimal::from(BASIS_POINTS_PER_UNIT)))
+                    .ok_or(PolymarketEconomicsError::ArithmeticOverflow)?
+                    .round_dp_with_strategy(
+                        self.config.fee_round_decimal_places,
+                        self.config.fee_rounding_mode.strategy(),
+                    );
+                total
+                    .checked_add(fee)
+                    .ok_or(PolymarketEconomicsError::ArithmeticOverflow)
+            })
+    }
+
     fn effect(
         &self,
         request: &EconomicsQuoteRequest,
         plan: EffectPlan,
     ) -> Result<EstimatedEffect, PolymarketEconomicsError> {
+        let rate_factor = CalculationFactor {
+            factor_id: plan.rate_factor_id.clone(),
+            value: plan.rate,
+        };
+        let (point_estimate, calculation_factors) = if plan.fee.is_zero() {
+            let evaluated_formula = CalculationFactor {
+                factor_id: plan.formula_id.clone(),
+                value: Decimal::ZERO,
+            };
+            (
+                PointEstimate::ProvenZero {
+                    factor_id: evaluated_formula.factor_id.clone(),
+                },
+                vec![rate_factor, evaluated_formula],
+            )
+        } else {
+            (
+                PointEstimate::NonZero(SignedNativeEffect::currency(
+                    -plan.fee,
+                    self.config.collateral_currency.clone(),
+                )?),
+                vec![rate_factor],
+            )
+        };
         Ok(EstimatedEffect {
             component_id: plan.component_id,
             class: EconomicClass::Charge,
@@ -646,16 +731,21 @@ impl PolymarketEconomicsAdapter {
             scope: EconomicScope::Decision {
                 decision_correlation_id: request.decision_correlation_id.clone(),
             },
-            point_estimate: PointEstimate::NonZero(SignedNativeEffect::currency(
-                -plan.fee,
-                self.config.collateral_currency.clone(),
-            )?),
-            debit_risk_bound: None,
-            admission_treatment: AdmissionTreatment::GuaranteedConditionalOnAction,
-            calculation_factors: vec![CalculationFactor {
-                factor_id: plan.rate_factor_id,
-                value: plan.rate,
-            }],
+            point_estimate,
+            debit_risk_bound: plan
+                .debit_risk_bound
+                .map(|bound| {
+                    SignedNativeEffect::currency(-bound, self.config.collateral_currency.clone())
+                })
+                .transpose()?,
+            admission_treatment: if plan.debit_risk_bound.is_some() {
+                AdmissionTreatment::RiskBound {
+                    authority: RiskBoundAuthority::VenueRateCapWithPriceStress,
+                }
+            } else {
+                AdmissionTreatment::GuaranteedConditionalOnAction
+            },
+            calculation_factors,
             formula_id: plan.formula_id,
             source: self.authority(),
         })
@@ -715,6 +805,7 @@ struct EffectPlan {
     rate: Decimal,
     kind: ExecutionKind,
     fee: Decimal,
+    debit_risk_bound: Option<Decimal>,
 }
 
 #[cfg(test)]
@@ -825,10 +916,45 @@ mod tests {
             .quote(&request)
             .expect("supported quote should resolve");
         assert_eq!(estimate.components.len(), 2);
+        assert!(estimate.components.iter().all(|component| matches!(
+            component.admission_treatment,
+            AdmissionTreatment::RiskBound { .. }
+        )));
         let quote = validate_and_aggregate_quote(&request, estimate, &[])
             .expect("native pUSD quote should aggregate");
 
-        assert_eq!(quote.core_total(), Decimal::new(-362, 3));
+        assert_eq!(quote.core_total(), Decimal::new(-525, 3));
+    }
+
+    #[test]
+    fn taker_platform_fee_accepts_the_binary_max_price_with_a_conservative_bound() {
+        let adapter = adapter(include_str!(
+            "../../../tests/fixtures/economics/polymarket/fee_enabled.json"
+        ))
+        .expect("fee-enabled fixture should construct");
+        let mut request = request(LiquidityRole::Taker, false);
+        request.planned_fill_legs = vec![PlannedFillLeg {
+            price: Decimal::ONE,
+            quantity: Decimal::new(3, 0),
+        }];
+
+        let estimate = adapter
+            .quote(&request)
+            .expect("the venue's valid binary max price should quote");
+        assert_eq!(estimate.components.len(), 1);
+        assert!(matches!(
+            estimate.components[0].point_estimate,
+            PointEstimate::ProvenZero { .. }
+        ));
+        assert!(
+            estimate.components[0]
+                .debit_risk_bound
+                .as_ref()
+                .is_some_and(|bound| bound.amount() < Decimal::ZERO),
+            "the zero point estimate must retain a conservative debit bound"
+        );
+        validate_and_aggregate_quote(&request, estimate, &[])
+            .expect("the boundary-price estimate must satisfy the shared economics contract");
     }
 
     #[test]
@@ -943,7 +1069,17 @@ mod tests {
         )
         .expect("captured schedule should aggregate");
 
-        assert_eq!(quote.core_total(), Decimal::new(-518, 3));
+        let [platform_fee] = quote.components() else {
+            panic!("captured schedule should produce one platform fee component");
+        };
+        assert_eq!(
+            platform_fee
+                .point_valuation()
+                .expect("captured point fee should be valued")
+                .normalized_amount,
+            Decimal::new(-518, 3)
+        );
+        assert_eq!(quote.core_total(), Decimal::new(-525, 3));
     }
 
     #[test]

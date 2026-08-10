@@ -1111,6 +1111,14 @@ impl BinaryOracleMaker {
                     "binary_oracle_maker quote_interval_ms is invalid; it overflows the nanosecond clock unit: strategy_id={strategy_id} quote_interval_ms={quote_interval_ms}"
                 )
             })?;
+        self.context
+            .order_economics()
+            .validate_resting_refresh_cadence(interval_nanoseconds)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "binary_oracle_maker quote timer cannot safely refresh resting economics: strategy_id={strategy_id} error={error:#}"
+                )
+            })?;
         self.clock()
             .set_timer_ns(
                 &timer_name,
@@ -1228,6 +1236,14 @@ impl DataActor for BinaryOracleMaker {
         // prior run consumed. (Cross-process restart durability needs a persisted
         // high-water — arming-time work, #869.)
         self.runtime.deactivate_all();
+        let order_economics = self.context.order_economics().clone();
+        let execution_policy = self.context.order_execution_policy();
+        let execution_client_id = self.config.client_id.clone();
+        order_economics.stop_resting_order_economics(
+            execution_policy,
+            self,
+            execution_client_id.as_str(),
+        )?;
         Ok(())
     }
 
@@ -1238,6 +1254,16 @@ impl DataActor for BinaryOracleMaker {
 
     fn on_time_event(&mut self, event: &TimeEvent) -> anyhow::Result<()> {
         if event.name.as_str() == self.quote_timer_name() {
+            let order_economics = self.context.order_economics().clone();
+            let execution_policy = self.context.order_execution_policy();
+            let execution_client_id = self.config.client_id.clone();
+            let now_ms = self.now_milliseconds();
+            order_economics.drive_resting_order_economics_at_ms(
+                execution_policy,
+                self,
+                execution_client_id.as_str(),
+                now_ms,
+            )?;
             self.refresh_active_markets();
         }
         Ok(())

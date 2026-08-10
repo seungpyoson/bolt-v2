@@ -76,12 +76,32 @@ pub struct VenueQuoteEstimate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvaluatedEconomicsComponent {
+    component: EstimatedEffect,
+    point_valuation: Option<ValuationEvidence>,
+    debit_risk_bound_valuation: Option<ValuationEvidence>,
+}
+
+impl EvaluatedEconomicsComponent {
+    pub fn component(&self) -> &EstimatedEffect {
+        &self.component
+    }
+
+    pub fn point_valuation(&self) -> Option<&ValuationEvidence> {
+        self.point_valuation.as_ref()
+    }
+
+    pub fn debit_risk_bound_valuation(&self) -> Option<&ValuationEvidence> {
+        self.debit_risk_bound_valuation.as_ref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EconomicsQuote {
     decision_correlation_id: DecisionCorrelationId,
     requested_at_ns: u64,
     edge_basis_policy_id: EdgeBasisPolicyId,
-    components: Vec<EstimatedEffect>,
-    valuations: Vec<ValuationEvidence>,
+    components: Vec<EvaluatedEconomicsComponent>,
     core_total: Decimal,
     forecast_total: Decimal,
     forecast_complete: bool,
@@ -105,12 +125,8 @@ impl EconomicsQuote {
         &self.edge_basis_policy_id
     }
 
-    pub fn components(&self) -> &[EstimatedEffect] {
+    pub fn components(&self) -> &[EvaluatedEconomicsComponent] {
         &self.components
-    }
-
-    pub fn valuations(&self) -> &[ValuationEvidence] {
-        &self.valuations
     }
 
     pub fn core_total(&self) -> Decimal {
@@ -174,7 +190,6 @@ pub fn validate_and_aggregate_quote(
 
     let mut component_ids = HashSet::new();
     let mut components = Vec::with_capacity(estimate.components.len());
-    let mut valuations = Vec::new();
     let mut core_total = Decimal::ZERO;
     let mut forecast_total = Decimal::ZERO;
     let mut forecast_complete = true;
@@ -211,7 +226,11 @@ pub fn validate_and_aggregate_quote(
                 forecast_complete = false;
                 forecast_valid_until_ns = None;
                 missing_forecast_component_ids.push(component.component_id.clone());
-                components.push(component);
+                components.push(EvaluatedEconomicsComponent {
+                    component,
+                    point_valuation: None,
+                    debit_risk_bound_valuation: None,
+                });
                 continue;
             }
             return Err(error);
@@ -231,7 +250,11 @@ pub fn validate_and_aggregate_quote(
                     forecast_complete = false;
                     forecast_valid_until_ns = None;
                     missing_forecast_component_ids.push(component.component_id.clone());
-                    components.push(component);
+                    components.push(EvaluatedEconomicsComponent {
+                        component,
+                        point_valuation: None,
+                        debit_risk_bound_valuation: None,
+                    });
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -244,10 +267,9 @@ pub fn validate_and_aggregate_quote(
             forecast_total = forecast_total
                 .checked_add(point_valuation.normalized_amount)
                 .ok_or(EconomicsError::ArithmeticOverflow)?;
-            valuations.push(point_valuation.clone());
         }
 
-        match component.admission_treatment {
+        let debit_risk_bound_valuation = match component.admission_treatment {
             AdmissionTreatment::GuaranteedConditionalOnAction => {
                 if let Some(deadline) = point_valuation
                     .as_ref()
@@ -263,6 +285,7 @@ pub fn validate_and_aggregate_quote(
                     .checked_add(normalized)
                     .ok_or(EconomicsError::ArithmeticOverflow)?;
                 valid_until_ns = valid_until_ns.min(component.source.valid_until_ns);
+                None
             }
             AdmissionTreatment::RiskBound { .. } => {
                 if let Some(deadline) = point_valuation
@@ -293,14 +316,21 @@ pub fn validate_and_aggregate_quote(
                         component_id: component.component_id,
                     });
                 }
+                if point_valuation.as_ref().is_some_and(|point| {
+                    bound_valuation.normalized_amount > point.normalized_amount
+                }) {
+                    return Err(EconomicsError::InvalidDebitRiskBound {
+                        component_id: component.component_id,
+                    });
+                }
                 core_total = core_total
                     .checked_add(bound_valuation.normalized_amount)
                     .ok_or(EconomicsError::ArithmeticOverflow)?;
                 if let Some(deadline) = bound_valuation.valid_until_ns {
                     valid_until_ns = valid_until_ns.min(deadline);
                 }
-                valuations.push(bound_valuation);
                 valid_until_ns = valid_until_ns.min(component.source.valid_until_ns);
+                Some(bound_valuation)
             }
             AdmissionTreatment::ForecastOnly => {
                 if let Some(deadline) = forecast_valid_until_ns.as_mut() {
@@ -312,9 +342,14 @@ pub fn validate_and_aggregate_quote(
                         *deadline = (*deadline).min(valuation_deadline);
                     }
                 }
+                None
             }
-        }
-        components.push(component);
+        };
+        components.push(EvaluatedEconomicsComponent {
+            component,
+            point_valuation,
+            debit_risk_bound_valuation,
+        });
     }
 
     if forecast_complete {
@@ -329,7 +364,6 @@ pub fn validate_and_aggregate_quote(
         requested_at_ns: request.requested_at_ns,
         edge_basis_policy_id: request.edge_basis_policy_id.clone(),
         components,
-        valuations,
         core_total,
         forecast_total,
         forecast_complete,
@@ -567,6 +601,54 @@ mod tests {
 
         assert_eq!(quote.core_total(), Decimal::new(-5, 0));
         assert_eq!(quote.forecast_total(), Decimal::new(50, 0));
+        let [fee, funding, reward] = quote.components() else {
+            panic!("quote must retain all three component evaluations");
+        };
+        assert_eq!(fee.component().component_id.as_str(), "fee");
+        assert_eq!(
+            fee.point_valuation()
+                .expect("guaranteed fee must retain its point valuation")
+                .normalized_amount,
+            Decimal::new(-2, 0)
+        );
+        assert_eq!(funding.component().component_id.as_str(), "funding");
+        assert_eq!(
+            funding
+                .debit_risk_bound_valuation()
+                .expect("bounded funding must retain its debit valuation")
+                .normalized_amount,
+            Decimal::new(-3, 0)
+        );
+        assert_eq!(reward.component().component_id.as_str(), "reward");
+        assert!(reward.debit_risk_bound_valuation().is_none());
+    }
+
+    #[test]
+    fn risk_bound_must_cover_the_point_debit() {
+        let mut under_reserved = component(
+            "funding",
+            Decimal::new(-10, 0),
+            AdmissionTreatment::RiskBound {
+                authority: crate::RiskBoundAuthority::VenueRateCapWithPriceStress,
+            },
+        );
+        under_reserved.debit_risk_bound = Some(
+            SignedNativeEffect::currency(Decimal::NEGATIVE_ONE, id("USD", CurrencyId::try_new))
+                .expect("negative bound should construct"),
+        );
+
+        assert!(matches!(
+            validate_and_aggregate_quote(
+                &request(),
+                VenueQuoteEstimate {
+                    authority: source(1_100),
+                    dependency_sources: Vec::new(),
+                    components: vec![under_reserved],
+                },
+                &[],
+            ),
+            Err(EconomicsError::InvalidDebitRiskBound { .. })
+        ));
     }
 
     #[test]

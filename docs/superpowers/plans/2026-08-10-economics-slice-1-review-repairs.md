@@ -555,6 +555,7 @@ Add inline tests named:
 fn venue_identity_gate_covers_capture_absence_equality_and_conflict()
 fn venue_identity_conflict_is_a_monotonic_routing_hold()
 fn venue_identity_conflict_holds_routing_without_bypassing_health_or_clock_checks()
+fn pending_cancel_identity_conflict_reports_stuck_pending_at_the_deadline()
 fn order_status_partition_covers_every_pinned_nt_variant()
 fn every_cancel_state_observation_pair_has_one_explicit_transition()
 fn callbacks_cannot_overwrite_a_newer_attempt_generation()
@@ -562,7 +563,7 @@ fn retry_escalation_recoverability_conflict_and_liveness_compose()
 fn coordinator_rejects_clock_regression_without_state_change()
 ```
 
-The identity-conflict tests must start with non-default generation, deadline, counters, routing state, and health; observe a differing venue ID against retryable and terminal cache states; assert that `RecoveryIdentityConflict { captured, observed }` is added without changing routing state, generation, deadline, counters, seed, or pre-existing health; then assert later events cause no operation or retirement while actor-clock validation and due deadline health continue, a due sibling still progresses, and the aggregate error retains both failures.
+The identity-conflict tests must start with non-default generation, deadline, counters, routing state, and health; observe a differing venue ID against retryable and terminal cache states; assert that `RecoveryIdentityConflict { captured, observed }` is added without changing routing state, generation, deadline, counters, seed, or pre-existing health; then assert later events cause no operation or retirement while actor-clock validation and due deadline health continue. A retained `PendingCancel` state must produce `StuckPendingCancel` at the deadline; other retained states produce `CancellationDeadlineExceeded` without trusting mismatched cached status.
 
 - [ ] **Step 2: Run the 24-pair test and confirm the module is absent**
 
@@ -633,7 +634,7 @@ match (captured_venue_id, cached_venue_id) {
 }
 ```
 
-Conflict runs before routing status classification, adds the conflict facet/error, and returns a routing hold without changing routing state, generation, deadline, counters, seed, or pre-existing health. Once the facet exists, all later reconciliations keep the same routing hold while actor-clock observation and due monotonic deadline health continue.
+Conflict runs before routing status classification, adds the conflict facet/error, and returns a routing hold without changing routing state, generation, deadline, counters, seed, or pre-existing health. Once the facet exists, all later reconciliations keep the same routing hold while actor-clock observation and due monotonic deadline health continue. Deadline classification uses only retained trusted routing state: `PendingCancel` maps to `StuckPendingCancel`, while every other state maps to `CancellationDeadlineExceeded`.
 
 - [ ] **Step 5: Implement exhaustive NT status classification and the 4×6 transition**
 
@@ -651,7 +652,9 @@ No callback-facing function invokes NT.
 
 - [ ] **Step 6: Implement generation, backoff, attempt counters, and health deadlines**
 
-Add `BoundExecutionEconomics::cancel_recovery_escalation_attempts()` in this step, beside its first production consumer. `begin_operation` must checked-increment generation and operation counters, calculate `operation_not_before_ns = now_ns + retry_timeout_ns`, and enter `Attempting` before releasing ownership. `settle_operation` acts only if the same generation remains `Attempting`. Every cancel/query invocation, including synchronous failure, advances the same backoff. `SkippedByPolicy` advances nothing. At the exact configured count, add `retry_escalated`; at `quote_deadline_ns`, add the appropriate liveness facet without overwriting the other facets. The same drive returns an aggregate error after processing every sibling and leaves the typed snapshots available for subsequent inspection.
+Add `BoundExecutionEconomics::cancel_recovery_escalation_attempts()` in this step, beside its first production consumer. `begin_operation` must checked-increment generation and operation counters, calculate `operation_not_before_ns = now_ns + retry_timeout_ns`, and enter `Attempting` before releasing ownership. `settle_operation` acts only if the same generation remains `Attempting`. Every cancel/query invocation, including synchronous failure, advances the same backoff. `SkippedByPolicy` advances nothing. At the exact configured count, add `retry_escalated`; at `quote_deadline_ns`, add the appropriate liveness facet without overwriting the other facets. Replace any single-winner `primary_error` selection with one composed per-record health rendering derived from the same typed snapshot returned by `resting_cancel_health()`. Its deterministic output includes every active recoverability, identity-conflict, retry-escalation, and liveness facet plus the checked total-attempt count. The same drive returns an aggregate error after processing every sibling; no second logging or publication path is added.
+
+Add an integration test named `cancel_health_aggregate_exposes_every_facet_and_processes_due_siblings`. Drive a conflicted record past its retained quote deadline through `drive_resting_order_economics` while a due sibling routes normally. Assert the returned aggregate contains both the identity conflict and the correct liveness failure, retains any pre-existing escalation/recoverability facets, and proves the sibling operation occurred. The test must fail against single-winner error selection even though the internal snapshot already contains all facets.
 
 - [ ] **Step 7: Run the coordinator core tests before integration**
 
@@ -724,7 +727,7 @@ Add:
 fn query_order_via_nt(&mut self, seed: &OrderAny) -> Result<()>;
 ```
 
-The production implementation calls only `Strategy::query_order(seed)`. Under the registry lock, reconcile current cache state and arm `Attempting`; release the lock; call cancel/query; reacquire; re-read cache; settle only the matching generation. Collect every primary error while continuing due sibling records, then return one aggregate error.
+The production implementation calls only `Strategy::query_order(seed)`. Under the registry lock, reconcile current cache state and arm `Attempting`; release the lock; call cancel/query; reacquire; re-read cache; settle only the matching generation. Collect one composed health error per affected record while continuing due siblings, then return one aggregate error containing every active facet.
 
 - [ ] **Step 12: Convert all tracked-maker origins**
 

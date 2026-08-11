@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement the externally approved PR #1544 / issue #1445 repair design so every routed NT order has one purpose-typed economics basis, one provider fee authority, and one bounded cancellation coordinator for tracked maker orders.
+**Goal:** Implement the finally approved PR #1544 / issue #1445 repair design so every routed NT order has one purpose-typed economics basis, one provider fee authority, and one bounded cancellation coordinator for tracked maker orders.
 
-**Architecture:** Keep `src/bolt_v3_order_execution.rs` as the shared routing facade, but move the two new state-heavy responsibilities into private `economics_basis` and `cancel_coordinator` submodules. Strategies supply typed value intent only; shared execution derives fills, gross value, lifecycle, admission purpose, clocks, retries, and NT operations. The approved design at `docs/superpowers/specs/2026-08-10-economics-slice-1-review-repairs-design.md` is the contract.
+**Architecture:** Keep `src/bolt_v3_order_execution.rs` as the shared routing facade, but move the two new state-heavy responsibilities into private `economics_basis` and `cancel_coordinator` submodules. Strategies supply typed value intent only; shared execution derives fills, gross value, lifecycle, admission purpose, clocks, retries, and NT operations. After written approval, `docs/superpowers/specs/2026-08-10-economics-slice-1-review-repairs-design.md` is the contract. Its finding-to-repair table is the authoritative traceability map for Tasks 8A–11.
 
 **Tech Stack:** Rust, NautilusTrader Rust API pinned by `Cargo.lock`, `rust_decimal`, TOML/Serde, existing Bolt economics/admission/evidence modules, Cargo/nextest, GitHub advisory CI.
 
@@ -17,9 +17,11 @@
 - Required config values live only in TOML. Use `cancel_retry_timeout_ms = 1000` and `cancel_recovery_escalation_attempts = 3` in every shipped economics section and fixture; Rust contains no fallback values.
 - All local Cargo commands must use `CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs'`, `CARGO_BUILD_JOBS=2`, and test commands must append `-- --test-threads=1`. `/Volumes/T9` had 2.3 TiB free when this plan was written. If it is not mounted, stop before running Cargo.
 - Prefer targeted local red/green checks. Exact-head full verification comes from advisory GitHub CI after a plain push; do not wait on CI.
-- Every failure before final-basis construction or initial route validation leaves order evidence, exposure, counters, reservations, registrations, sink calls, and venue state unchanged.
+- Every failure before final-basis construction or initial route validation leaves exposure, counters, reservations, registrations, sink calls, and venue state unchanged. It may append only the typed intent/preparation rejection evidence required by Task 9 or the forced-reduction rejection evidence required by Task 10.
 - Every live pre-sink lifetime failure drops the uncommitted admission permit and registration guard, restoring counters and reservations without calling NT.
 - Keep commits reviewable and use only behavior tests or compiler-enforced API deletion.
+
+Tasks 1–6 below are the historical implementation record through reviewed head `4e0cd663a19c95ed0a6360660c070a12452134cb`; do not re-execute them. Only Tasks 8A–12 remain active after written-spec approval.
 
 ---
 
@@ -114,6 +116,8 @@ cancel_recovery_escalation_attempts = 3
 
 Place them beside `resting_order_refresh_margin_ms` in all five config/fixture files listed above. Update the economics test-support mutation table so its widened quote horizon retains these required values without inserting a fallback.
 
+The shipped maker values are a discriminating positive case: `quote_interval_ms=1000`, `cancel_retry_timeout_ms=1000`, and `resting_order_refresh_margin_ms=5000` produce `1000 + ceil_to_cadence(1000, 1000) = 2000 < 5000`.
+
 - [ ] **Step 5: Run the config and maker-start tests**
 
 Run:
@@ -136,7 +140,7 @@ git commit -m "feat(economics): require bounded cancel recovery"
 ### Task 2: Purpose-typed scenarios and the sealed final-order basis
 
 **Files:**
-- Create: `src/bolt_v3_order_execution/economics_basis.rs`
+- Modify existing: `src/bolt_v3_order_execution/economics_basis.rs`
 - Modify: `src/bolt_v3_order_execution.rs`
 
 **Interfaces:**
@@ -539,8 +543,8 @@ git commit -m "refactor(economics): remove family fee authority"
 ### Task 5: Implement and route the exhaustive cancellation coordinator
 
 **Files:**
-- Create: `src/bolt_v3_order_execution/tracked_order_economics.rs`
-- Create: `src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs`
+- Modify existing: `src/bolt_v3_order_execution/tracked_order_economics.rs`
+- Modify existing: `src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs`
 - Modify: `src/bolt_v3_economics_runtime.rs`
 - Modify: `src/bolt_v3_order_execution.rs`
 
@@ -682,7 +686,7 @@ fn cancel_health_aggregate_reports_post_settlement_facets_once_and_processes_due
 fn synchronous_cancel_failure_settles_before_composed_health_collection()
 ```
 
-The snapshot test uses a hand-written expected error string containing the client order ID, checked total attempts, and every active facet; it also asserts a healthy snapshot produces no error. The post-settlement integration test starts with coherent venue identity A, then makes the test sink replace the cached order with identity B during the cancel call. Settlement must discover the conflict at the quote deadline, and that same `drive_resting_order_economics` result must contain the conflict and correct liveness exactly once while proving a due sibling operation occurred. The synchronous-failure test reaches escalation on the failed attempt, verifies backoff is settled before reporting, and asserts the composed health entry appears once beside the distinct sink failure. These tests fail against pre-operation-only health sampling, single-winner selection, and duplicate collection.
+The snapshot test uses a hand-written expected error string containing the client order ID, checked total attempts, and every active facet; it also asserts a healthy snapshot produces no error. The post-settlement integration test starts with coherent venue identity A, then makes the test sink replace the cached order with identity B during the cancel call. Settlement must discover the conflict at the quote deadline, and that same `drive_observed_resting_order_economics` result must contain the conflict and correct liveness exactly once while proving a due sibling operation occurred. The synchronous-failure test reaches escalation on the failed attempt, verifies backoff is settled before reporting, and asserts the composed health entry appears once beside the distinct sink failure. These tests fail against pre-operation-only health sampling, single-winner selection, and duplicate collection.
 
 - [ ] **Step 7: Run the coordinator core tests before integration**
 
@@ -698,8 +702,8 @@ Expected: all identity, status, matrix, generation, and health tests pass in the
 
 **Files:**
 - Modify: `src/bolt_v3_order_execution.rs`
-- Create: `src/bolt_v3_order_execution/tracked_order_economics.rs`
-- Move: `src/bolt_v3_order_execution/cancel_coordinator.rs` to `src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs`
+- Modify existing: `src/bolt_v3_order_execution/tracked_order_economics.rs`
+- Modify existing: `src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs`
 - Modify: `src/bolt_v3_quote_lifecycle.rs`
 - Modify: `tests/bolt_v3_binary_oracle_maker_runtime.rs`
 
@@ -913,179 +917,135 @@ git add src/strategies/binary_oracle_maker/archetype.rs src/strategies/binary_or
 git commit -m "feat(maker): drain tracked orders before stop"
 ```
 
-### Task 7: Full evidence, internal adversarial review, and exact-head publication
+### Task 7: Historical checkpoint — superseded, do not execute
 
-**Files:**
-- Verify all files changed in Tasks 1–6
-- Update: PR #1544 review record/comment only; keep the stable PR body free of transient SHA/CI status
-
-**Interfaces:**
-- Consumes: all Task 1–6 commits and the approved design.
-- Produces: clean exact head, local targeted evidence from T9, advisory CI trigger, and a fresh required-review request.
-
-- [ ] **Step 1: Run static hygiene checks before expensive verification**
-
-Run:
-
-```bash
-git diff --check ac78f8fd5f5a133d1da69db7d8e34ffe17d44de6...HEAD
-rg -n 'T[O]DO|T[B]D|F[I]XME|H[A]CK|fix[[:space:]]later|follow-[u]p' src tests config docs/superpowers/plans/2026-08-10-economics-slice-1-review-repairs.md
-rg -n 'maker_binary_fee_curve|BoltV3OrderEconomicsIntent|BoltV3OrderEconomicsSubmitInput|cancel_pending: bool' src tests
-git status --short
-```
-
-Expected: clean diff, no debt markers, no retired symbols, and no uncommitted files.
-
-- [ ] **Step 2: Run formatting and the smallest complete local suites on T9**
-
-Run:
-
-```bash
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo fmt --check
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib bolt_v3_order_execution -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test wiring_registration -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker -- --test-threads=1
-CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo clippy --locked --features test-current-evidence-inspection --lib --bins -- -D warnings
-```
-
-Expected: every command exits zero. Do not start another local Cargo command concurrently.
-
-- [ ] **Step 3: Conduct an internal adversarial review against the approved design**
-
-Inspect the full base-to-head diff and verify each design evidence row maps to a behavior test or compiler-enforced deletion. Specifically try to falsify:
-
-```text
-one final-order basis
-later-level quote residual carry
-candidate undercoverage vs final dust
-purpose/lifecycle derivation
-pre-mutation and pre-sink rollback
-provider-only fee authority
-all 24 cancellation transitions
-venue-ID conflict hold
-queryable/unqueryable recovery
-re-entrant generation safety
-cancel-all scope
-drain suppression and completion
-one actor clock
-```
-
-Repair any real finding, rerun the smallest affected test, and repeat this step until no substantive finding remains.
-
-- [ ] **Step 4: Commit any verification-only adjustments and confirm a clean head**
-
-If Step 3 changed files:
-
-```bash
-git add src/bolt_v3_config.rs src/bolt_v3_economics_runtime.rs src/bolt_v3_economics_test_support.rs src/bolt_v3_submit_admission.rs src/bolt_v3_order_execution.rs src/bolt_v3_order_execution/economics_basis.rs src/bolt_v3_order_execution/tracked_order_economics.rs src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs src/bolt_v3_market_families/mod.rs src/bolt_v3_market_families/updown.rs src/bolt_v3_market_families/static_binary_event.rs src/bolt_v3_market_families/binary_outcome.rs src/bolt_v3_quote_lifecycle.rs src/strategies/binary_oracle_edge_taker/mod.rs src/strategies/binary_oracle_edge_taker/tests/orders_admission.rs src/strategies/binary_oracle_maker/archetype.rs src/strategies/binary_oracle_maker/mod.rs tests/bolt_v3_economics_runtime.rs tests/bolt_v3_binary_oracle_maker_runtime.rs config/root.toml config/profiles/prod-btc-5m.overlay.toml tests/fixtures/bolt_v3/root.toml tests/fixtures/economics/hyperliquid/execution.toml tests/fixtures/legacy_prod_btc_5m_oracle.toml
-git commit -m "test(economics): close repair evidence"
-```
-
-Then run:
-
-```bash
-git status --short
-git rev-parse HEAD
-git diff --check ac78f8fd5f5a133d1da69db7d8e34ffe17d44de6...HEAD
-```
-
-Expected: clean status and clean diff check.
-
-- [ ] **Step 5: Push the exact head and detach from CI waiting**
-
-Run a plain push from `codex/1445-economics-cutover`:
-
-```bash
-git push
-```
-
-Record the printed head SHA. Do not wait for advisory CI; the push triggers the repository workflows.
-
-- [ ] **Step 6: Request exact-head external and required native review**
-
-Resolve GitHub node ID `U_kgDOEZMFhA` to its current login, confirm `.github/CODEOWNERS` still names that login, and request its native review on PR #1544. The review prompt must name the exact pushed head, base `ac78f8fd5f5a133d1da69db7d8e34ffe17d44de6`, pinned NT `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`, the approved design head `b22e7b213e3de41cec2ad66d8593dc09801c507d`, changed files, local T9 commands/results, and every invariant in Step 3.
-
-Do not merge. Report the head SHA and that review/CI evidence is pending; merge remains blocked until the user explicitly authorizes it and the required reviewer approves that exact head.
+Tasks 1–6 produced reviewed head `4e0cd663a19c95ed0a6360660c070a12452134cb`. The former publication and review steps in this task are retired because Tasks 8–11 move the head. Task 12 is the only remaining publication and review gate. No sequential executor may push or request review from this checkpoint.
 
 ## Post-review systematic repair addendum
 
-### Task 8: Govern the neutral core and delete retired cancellation APIs
+### Task 8A: Put the neutral core under root-workspace verification
 
 **Files:**
 - Modify: `Cargo.toml`, `.gitignore`, `justfile`, `.github/workflows/advisory.yml`
-- Modify: `src/bolt_v3_order_execution.rs`, `src/bolt_v3_quote_lifecycle.rs`
+- Delete: `crates/economics-core/Cargo.lock`
+- Preserve unchanged: `crates/backtesting-vertical-slice/Cargo.toml`, `crates/backtesting-vertical-slice/Cargo.lock`, and its isolated verification commands
 
 **Interfaces:**
-- Produces one root workspace/lockfile and explicit all-vs-exact cancellation API names.
+- Produces a root workspace containing only `bolt-v2` and `economics-core`.
+- Preserves the independent backtesting workspace so its cloud/backtest features never unify into LiveNode.
 
-- [ ] Add `crates/economics-core` as a root workspace member and make repository fmt, Clippy, and nextest select the workspace.
-- [ ] Verify `cargo metadata` includes both packages and the root lockfile resolves the core.
-- [ ] Delete the uncalled public `route_cancel_all` and `route_modify` wrappers; retain only the private sink operations needed by tracked shadow routing and maker runtime.
-- [ ] Delete the test compatibility alias and rename all exact-observation test calls.
-- [ ] Update the four quote-lifecycle comments to describe coordinator-scoped fan-out.
-- [ ] Run root/core formatting and the focused order-execution tests on T9.
+- [ ] Add a root `[workspace]` with `crates/economics-core` as a member and `crates/backtesting-vertical-slice` explicitly excluded.
+- [ ] Delete the ignored core lockfile and its `.gitignore` rule. Assert that no `crates/economics-core/Cargo.lock` remains, while the backtesting lockfile remains present.
+- [ ] Put `--workspace`/`--all` on fmt, Clippy, and nextest in both the `justfile` and advisory workflow. Keep the BTE recipes in its own workspace with its own `--locked` lockfile.
+- [ ] Verify root `cargo metadata --locked` lists `bolt-v2` and `bolt-economics-core` in the root workspace and excludes `backtesting-vertical-slice`.
+- [ ] Run workspace fmt, core unit/synthetic-extension tests, and workspace Clippy on T9, sequentially with `CARGO_BUILD_JOBS=2`.
+- [ ] Commit this workspace-governance boundary separately from cancellation cleanup.
 
-### Task 9: Compile partial risk-reducing exits before sealing
+### Task 8B: Delete retired cancellation authorities
 
 **Files:**
-- Modify: `src/bolt_v3_executable_cost.rs`
-- Modify: `src/strategies/binary_oracle_edge_taker/mod.rs`
-- Modify: `src/strategies/binary_oracle_edge_taker/config.rs`
-- Test: `src/strategies/binary_oracle_edge_taker/tests/orders_admission.rs`
-- Test: `src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs`
+- Modify: `src/bolt_v3_order_execution.rs`
+- Modify: `src/bolt_v3_order_execution/tracked_order_economics.rs`
+- Modify: `src/bolt_v3_quote_lifecycle.rs`
 
 **Interfaces:**
-- Produces `compile_bounded_risk_reducing_ioc`, returning positive executable quantity, retained levels, and worst executable price from requested quantity and configured depth.
-- Consumes the result before final `OrderAny` construction and economics sealing.
+- Leaves tracked maker per-order coordinator fan-out as the only production cancel-all authority.
+- Leaves the private fail-closed modify sink because maker routing consumes it.
 
-- [ ] Add a failing submit-path test: a ten-unit forced exit with five executable units submits five, seals five matching fill units, and leaves the residual managed.
-- [ ] Add a failing test proving zero executable depth remains fail-closed and does not mutate exposure/admission/sink state.
-- [ ] Implement the shared bounded compiler without changing exact-entry pricing.
-- [ ] Validate unsupported trigger exit templates at configuration load rather than overwriting their trigger price.
-- [ ] Split exit decision evidence from execution: decision evidence precedes fallible preparation, and preparation failure records one submitted-false evaluation.
-- [ ] Run the focused edge-taker pricing, admission, evidence, and adverse-path tests on T9.
+- [ ] Before changing this boundary, run the existing graceful-stop/coordinator tests on T9. Add a real `Trader` stop-deferral integration test if the current test calls `Strategy::stop` directly rather than exercising Trader's registered stop closure; prove timers/callbacks remain available while deferred.
+- [ ] Delete the uncalled public `route_cancel_all` and `route_modify` wrappers.
+- [ ] Delete `route_cancel_all_with_sink`, `BoltV3CancelAllRoutingOutcome`, the batch-cancel sink trait methods/implementations, and the differential-only batch test. The tracked shadow branch returns its typed policy skip directly; it does not retain a test-only production sink.
+- [ ] Delete the test compatibility alias and rename all exact-observation calls to `drive_observed_resting_order_economics`.
+- [ ] Update the four quote-lifecycle comments to describe coordinator-scoped per-order fan-out.
+- [ ] Run focused order-execution, cancellation, and maker graceful-stop tests on T9.
+- [ ] Commit this cancellation-authority boundary separately.
 
-### Task 10: Make runtime/provider authority honest
+### Task 9: Compile executable partial reductions and make exit evidence truthful
 
 **Files:**
-- Modify: `src/bolt_v3_validate/kill_switch.rs`, `src/bolt_v3_live_node/risk_admission_loss.rs`
-- Modify: `src/bolt_v3_providers/polymarket.rs`, `src/bolt_v3_providers/polymarket/economics.rs`
-- Modify: `src/bolt_v3_providers/hyperliquid/economics.rs`
+- Modify existing: `src/bolt_v3_executable_cost.rs`
+- Modify existing: `src/strategies/binary_oracle_edge_taker/mod.rs`, `config.rs`, `exposure.rs`
+- Modify: `src/bolt_v3_current_evidence/facts.rs`, `codec/exit.rs`, `codec.rs`, `record.rs`, `handles.rs`, `reader.rs`, `generated_contract.rs`
+- Modify: `config/decision-evidence-contract.toml` and current-evidence fixtures
+- Test: edge-taker order/admission/evidence/adverse-path suites and evidence codec/round-trip suites
+
+**Interfaces:**
+- Produces low-level `compile_bounded_risk_reducing_ioc` plus one shared `compile_and_seal_risk_reducing_ioc` choke point. The latter consumes the requested `OrderAny`/typed intent, canonical NT position, authoritative book, configured depth, shared venue/instrument normalization, and one validated market-IOC template; it returns the final order, retained fills, intent, and sealed economics as one typed result.
+- Produces a final quantity already accepted by shared execution and retained fill legs whose sum equals that quantity exactly; no strategy or later clamp can mutate one without rebuilding the whole result.
+- Produces typed `Intent -> Preparation -> AttemptOutcome` evidence instead of a transient `submitted` boolean.
+
+- [ ] Add failing compiler cases for full depth, thin depth, sub-increment coverage, below-minimum coverage, zero-after-alignment, and fill-leg sum equality. Assert exact-entry pricing is unchanged.
+- [ ] Add one complete config predicate for `Market + IOC + base_quantity + !post_only` with no trigger/trailing fields. Pass `is_reduce_only` through but do not use it as risk proof; typed intent plus the canonical-position clamp own that invariant. Reject every other non-post-only exit template at load time.
+- [ ] Implement the shared choke point in order execution: canonical-position clamp -> bounded book compilation -> shared venue/instrument normalization/minimum check -> final order rewrite -> exact fill derivation -> economics seal. Reject a later canonical-position mismatch instead of silently reclamping.
+- [ ] Add a failing submit-path test: a ten-unit position with five executable units submits and seals exactly five.
+- [ ] Add the complete residual event sequences:
+  - reduced-size five-unit IOC fills all five, the typed pending-exit state reconciles from the authoritative position cache/event/timer, the five-unit residual becomes `Managed`, and a later evaluation actually routes another reduction;
+  - the compiled IOC is itself partially filled and then canceled/expired, the larger residual becomes `Managed`, and a later evaluation routes another reduction.
+- [ ] Run the terminal-fill sequence with position-before-fill and fill-before-position event ordering; the timer reconciliation must close the latter if no new position callback arrives.
+- [ ] Add a canonical-position race test: if the position shrinks after compilation but before sealing/routing, reject the attempt with no second clamp, no evidence mismatch, and no admission/sink mutation.
+- [ ] Add zero-depth/preparation-failure evidence proving no exposure, admission, or sink mutation.
+- [ ] Replace the overloaded exit evidence with pre-preparation `ExitIntentDecisionFact`, final-only `ExitSubmissionDecisionFact`, and exhaustive `ExitAttemptOutcome` on `ExitEvaluationFact`. `PreparationRejected` carries a typed stage/reason and no submission linkage; every later variant carries the actual compiled linkage. Do not add a redundant standalone preparation fact.
+- [ ] Update codecs, generated contract, fixtures, census/contract entries, and round-trip tests atomically. Assert a requested quantity of ten can never be encoded as the submitted quantity when compilation produced five.
+- [ ] Implement `TerminalFillAwaitingPosition` (or an equivalent exhaustive enum state), resolving from authoritative NT cache/position events to `Managed` residual or flat; do not add a boolean latch.
+- [ ] Run focused edge-taker compiler, admission, evidence, codec, and adverse-path tests on T9.
+- [ ] Commit compiler/state-machine and evidence-schema changes as separately reviewable cohesive commits.
+
+### Task 10: Make root/runtime/provider authority honest
+
+**Files:**
+- Modify: `src/bolt_v3_config.rs`
+- Modify: `src/bolt_v3_validate.rs`, `src/bolt_v3_validate/clients.rs`, `src/bolt_v3_validate/risk.rs`, `src/bolt_v3_validate/kill_switch.rs`
+- Modify: `src/bolt_v3_providers/mod.rs`, provider execution/economics modules
+- Modify: `src/bolt_v3_order_execution.rs`, `src/bolt_v3_submit_admission.rs`
+- Modify: current-evidence admission facts/codecs/contracts/fixtures as required for a typed seal rejection
+- Modify: `src/bolt_v3_live_node/risk_admission_loss.rs` only to consume the shared typed resolver; add no mirrored predicate or message
 - Modify: shipped config and economics fixtures that own removed fields/components
-- Test: config, provider economics, and kill-switch behavior suites
+- Test: root config, shared forced-reduction router, provider economics, and kill-switch suites
 
 **Interfaces:**
-- Produces startup rejection for quote-only flattening and provider quotes based only on supported authorities.
+- Produces one loaded-config economics/flatten resolver consumed by loaded-config validation and live-node construction.
+- Produces one root-aware provider-economics validation path for every configured client.
+- Produces one shared forced-reduction pre-admission rejection recorder.
 
-- [ ] Add failing config evidence for quote-only plus enabled automatic flattening.
-- [ ] Add failing forced-reduction evidence proving seal rejection is recorded before returning.
-- [ ] Remove Polymarket `mbf`/`tbf` builder-charge construction and its config/fixture component; retain authoritative platform-fee behavior.
-- [ ] Validate the Polymarket rounding/sub-quantum pair and full economics config during load.
+- [ ] Replace the duplicated flatten prerequisite checks/messages with one pure typed resolver over `LoadedBoltV3Config`; call it after root/strategy loading and from live-node construction. Keep `validate_root_only` limited to block-local checks. Add the quote-only-economics incompatibility to the resolver rather than a third conditional block.
+- [ ] Confirm every shipped config keeps `flatten_open_positions_on_breach=false`; if any selected shipped config differs, correct it atomically and disclose the lasting behavior.
+- [ ] In `validate_clients_block(root)`, load each provider economics block through the registry and call `ExecutionEconomicsConfig::validate_common` with root reporting configuration before runtime binding, including unselected clients. Provider-local validation continues to own only provider fields.
+- [ ] Extend forced-reduction rejection evidence with a typed `EconomicsSealRejected` reason. In the shared flatten router, record exactly one rejected `ForcedReductionAdmissionFact` when sealing fails, then return; assert zero admission counters/reservations/sink calls. Callers do not mirror this path.
+- [ ] Remove Polymarket `mbf`/`tbf` builder-charge construction and its config/fixture component; retain and numerically pin authoritative platform-fee behavior.
+- [ ] Validate the Polymarket rounding/sub-quantum pair and full economics config during root load.
 - [ ] Delete dead `fee_cache_ttl_secs` and Hyperliquid aligned-product policy fields from schema and every shipped fixture.
 - [ ] Reject, rather than waive, an attached Hyperliquid builder charge for unsupported spot buys.
-- [ ] Run focused config/provider/kill-switch tests on T9.
+- [ ] Run focused root-config, provider, shared-router, admission-evidence, and kill-switch tests on T9.
+- [ ] Commit root/runtime authority and provider-formula cleanup as separate cohesive commits.
 
 ### Task 11: Close neutral-core and evidence contract gaps
 
 **Files:**
 - Modify: `crates/economics-core/src/edge.rs`, `quote.rs`, `types.rs`, `lib.rs`
 - Modify: `src/bolt_v3_economics_runtime.rs`, `src/shadow_pnl.rs`
+- Modify: maker economics scenario/policy call sites and tests
 - Modify: `src/strategies/binary_oracle_edge_taker/entry_decision.rs`
 - Modify: affected root/backtesting adapters and tests
 
 **Interfaces:**
-- Produces a currency-typed gross edge input and separates admission-authoritative core terms from forecast evidence.
+- Produces a currency-typed gross edge input, typed maker breakeven policy, and admission-authoritative resting equivalence.
 
 - [ ] Add failing core tests for gross-currency mismatch, missing guaranteed point valuation, and non-positive position quantity.
 - [ ] Introduce the typed gross amount, migrate every root/replay caller, and delete duplicate/unused core APIs.
-- [ ] Add failing resting refresh evidence showing forecast-only drift does not cancel an otherwise unchanged order.
+- [ ] Replace the maker's raw zero floor with a typed breakeven policy. Prove a negative terminal-value gross is rejected and a positive value is admitted through the same policy.
+- [ ] Add paired resting-refresh evidence: forecast-only drift does not cancel, while independently changing core quote, core edge, binding, and reservation terms still fails equivalence and produces the existing fail-closed refresh outcome.
+- [ ] Preserve refreshed forecast fields in the stored admission and return a typed forecast-drift diagnostic without admitting or de-authorizing the order.
 - [ ] Add a shadow-PnL test that strips bound economics from an admitted entry and asserts the loud error.
-- [ ] Correct the entry-state comment and invalid backtesting manifest fixture versions.
-- [ ] Run core, economics-runtime, shadow-PnL, and affected backtesting tests on T9.
+- [ ] Correct the entry-state comment and invalid backtesting manifest fixture versions without changing the isolated BTE workspace.
+- [ ] Run core, economics-runtime, maker, shadow-PnL, and affected backtesting tests on T9.
 
-### Task 12: Exact-head closure
+### Task 12: The only exact-head closure and review gate
 
-- [ ] Run `cargo fmt --all -- --check`, workspace Clippy with warnings denied, workspace nextest, and the root build using `CARGO_TARGET_DIR=/Volumes/T9/bolt-v2-target-1544-review-repairs` and `CARGO_BUILD_JOBS=2`; never run Cargo concurrently.
-- [ ] Run `git diff --check`, inspect removed-symbol call graphs, and conduct an internal adversarial review of the full base-to-head diff.
-- [ ] Commit by cohesive boundary, push the exact head, and report it without waiting on advisory CI.
-- [ ] Request fresh external and native review only after all local findings are resolved and the worktree is clean.
+- [ ] Before closure, update the stable PR body only for lasting behavior: executable partial risk reductions, truthful preparation evidence, and startup rejection of automatic flattening under quote-only economics. Do not add transient SHA/CI status.
+- [ ] Resolve the live PR base immediately before verification (`gh pr view 1544`); expected current base is `e62584045629208e81d2dce1fce608720ea01fbf`, prior reviewed head is `4e0cd663a19c95ed0a6360660c070a12452134cb`, and the repair delta is `4e0cd663...<new-head>`. Do not reuse the historical `ac78f8fd` anchor.
+- [ ] Bind the review request to the exact commit containing the finally approved design (resolve its SHA after this design review), pinned NT `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`, the exact pushed code head, and the live PR base.
+- [ ] Run `cargo fmt --all -- --check`, workspace Clippy with warnings denied, workspace nextest, and the root build using `CARGO_TARGET_DIR=/Volumes/T9/bolt-v2-target-1544-review-repairs` and `CARGO_BUILD_JOBS=2`; never run Cargo concurrently. Run BTE's own locked verification from its isolated workspace separately.
+- [ ] Run `git diff --check <live-base>...HEAD`, inspect removed-symbol call graphs, verify the finding-to-repair map, and conduct an internal adversarial review of the full base-to-head diff. Repair findings before publication.
+- [ ] Commit by cohesive boundary, confirm a clean worktree, push the exact head, and report it without waiting on advisory CI.
+- [ ] In the review request, require advisory evidence to show the root workspace and core test targets. Push and report without waiting; the reviewer verifies that evidence at the new head.
+- [ ] Request fresh external and native review only after all local findings are resolved, every applicable review comment is answered, and the exact head is pushed. Task 12 is the only review request in this plan.

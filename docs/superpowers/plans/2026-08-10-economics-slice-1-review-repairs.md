@@ -611,6 +611,7 @@ struct RestingOrderCancelHealth {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BoltV3RestingOrderCancelHealthSnapshot {
     client_order_id: ClientOrderId,
+    total_recovery_attempts: u64,
     recovery_identity_unavailable: bool,
     recovery_identity_conflict: Option<BoltV3RecoveryIdentityConflict>,
     retry_escalated: bool,
@@ -618,7 +619,7 @@ pub struct BoltV3RestingOrderCancelHealthSnapshot {
 }
 ```
 
-Define public read-only `BoltV3RecoveryIdentityConflict` and `BoltV3CancellationLivenessFailure` value types with private conflict fields and accessors. Do not encode health as one replaceable enum. The separate fields are monotonic and can coexist. `BoltV3RestingOrderCancelHealthSnapshot` exposes read-only accessors, and `BoltV3OrderEconomicsHandle::resting_cancel_health()` returns snapshots sorted by client order ID for operator logging and behavior tests without exposing mutable coordinator state.
+Define public read-only `BoltV3RecoveryIdentityConflict` and `BoltV3CancellationLivenessFailure` value types with private conflict fields and accessors. Do not encode health as one replaceable enum. The separate fields are monotonic and can coexist. `BoltV3RestingOrderCancelHealthSnapshot` exposes read-only accessors for every field, including `total_recovery_attempts()`, plus one private `runtime_error()` derived only from the snapshot. A snapshot with no active facet returns `None`; otherwise its deterministic rendering includes the client order ID, total attempts, and every active facet in recoverability, conflict, escalation, liveness order. `BoltV3OrderEconomicsHandle::resting_cancel_health()` returns the same snapshots sorted by client order ID for operator logging and behavior tests without exposing mutable coordinator state.
 
 - [ ] **Step 4: Implement the identity-only query seed and pre-classification gate**
 
@@ -652,9 +653,19 @@ No callback-facing function invokes NT.
 
 - [ ] **Step 6: Implement generation, backoff, attempt counters, and health deadlines**
 
-Add `BoundExecutionEconomics::cancel_recovery_escalation_attempts()` in this step, beside its first production consumer. `begin_operation` must checked-increment generation and operation counters, calculate `operation_not_before_ns = now_ns + retry_timeout_ns`, and enter `Attempting` before releasing ownership. `settle_operation` acts only if the same generation remains `Attempting`. Every cancel/query invocation, including synchronous failure, advances the same backoff. `SkippedByPolicy` advances nothing. At the exact configured count, add `retry_escalated`; at `quote_deadline_ns`, add the appropriate liveness facet without overwriting the other facets. Replace any single-winner `primary_error` selection with one composed per-record health rendering derived from the same typed snapshot returned by `resting_cancel_health()`. Its deterministic output includes every active recoverability, identity-conflict, retry-escalation, and liveness facet plus the checked total-attempt count. The same drive returns an aggregate error after processing every sibling; no second logging or publication path is added.
+Add `BoundExecutionEconomics::cancel_recovery_escalation_attempts()` in this step, beside its first production consumer. `begin_operation` must checked-increment generation and operation counters, calculate `operation_not_before_ns = now_ns + retry_timeout_ns`, and enter `Attempting` before releasing ownership. `settle_operation` acts only if the same generation remains `Attempting`. Every cancel/query invocation, including synchronous failure, advances the same backoff. `SkippedByPolicy` advances nothing. At the exact configured count, add `retry_escalated`; at `quote_deadline_ns`, add the appropriate liveness facet without overwriting the other facets.
 
-Add an integration test named `cancel_health_aggregate_exposes_every_facet_and_processes_due_siblings`. Drive a conflicted record past its retained quote deadline through `drive_resting_order_economics` while a due sibling routes normally. Assert the returned aggregate contains both the identity conflict and the correct liveness failure, retains any pre-existing escalation/recoverability facets, and proves the sibling operation occurred. The test must fail against single-winner error selection even though the internal snapshot already contains all facets.
+Delete `primary_error`. `RestingOrderCancelRecord::health_snapshot(client_order_id)` copies the checked total-attempt count and every health facet into the sole report type; only `BoltV3RestingOrderCancelHealthSnapshot::runtime_error()` decides whether and how to render an error. The drive calls it exactly once after each retained record reaches its final state for that iteration: after no-operation reconciliation, after `settle_synchronous_failure`, or after `settle_operation` and its cache re-read. Removed records emit no stale health. Callback reconciliation changes state only; it never publishes a competing error. The final aggregate preserves operation failures separately, processes every sibling, and contains at most one composed health entry per client order ID per drive.
+
+Add these tests:
+
+```rust
+fn composed_cancel_health_snapshot_is_the_complete_runtime_report()
+fn cancel_health_aggregate_reports_post_settlement_facets_once_and_processes_due_siblings()
+fn synchronous_cancel_failure_settles_before_composed_health_collection()
+```
+
+The snapshot test uses a hand-written expected error string containing the client order ID, checked total attempts, and every active facet; it also asserts a healthy snapshot produces no error. The post-settlement integration test starts with coherent venue identity A, then makes the test sink replace the cached order with identity B during the cancel call. Settlement must discover the conflict at the quote deadline, and that same `drive_resting_order_economics` result must contain the conflict and correct liveness exactly once while proving a due sibling operation occurred. The synchronous-failure test reaches escalation on the failed attempt, verifies backoff is settled before reporting, and asserts the composed health entry appears once beside the distinct sink failure. These tests fail against pre-operation-only health sampling, single-winner selection, and duplicate collection.
 
 - [ ] **Step 7: Run the coordinator core tests before integration**
 

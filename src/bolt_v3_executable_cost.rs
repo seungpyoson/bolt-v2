@@ -45,6 +45,10 @@ pub(crate) struct ExactSizeVwap {
     pub(crate) limit_price: f64,
     pub(crate) exact_size_filled: bool,
     pub(crate) fill_legs: Vec<ExecutableFillLeg>,
+    /// Full visible capacities for every level reached by the executable sweep.
+    /// Final-order economics truncates these capacities on the NT size lattice;
+    /// `fill_legs` remains the exact pre-rounding sizing projection.
+    pub(crate) candidate_levels: Vec<ExecutableFillLeg>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -123,6 +127,7 @@ pub(crate) fn price_exact_size_vwap(
     let mut filled_notional = ZERO_F64;
     let mut limit_price = None;
     let mut fill_legs = Vec::new();
+    let mut candidate_levels = Vec::new();
 
     match order_side {
         OrderSide::Buy => {
@@ -142,6 +147,10 @@ pub(crate) fn price_exact_size_vwap(
                 )?;
                 if remaining_notional < previous_remaining_notional {
                     limit_price = Some(price);
+                    candidate_levels.push(ExecutableFillLeg {
+                        price,
+                        quantity: *size,
+                    });
                     fill_legs.push(ExecutableFillLeg {
                         price,
                         quantity: filled_quantity - previous_filled_quantity,
@@ -169,6 +178,10 @@ pub(crate) fn price_exact_size_vwap(
                 )?;
                 if remaining_notional < previous_remaining_notional {
                     limit_price = Some(price);
+                    candidate_levels.push(ExecutableFillLeg {
+                        price,
+                        quantity: *size,
+                    });
                     fill_legs.push(ExecutableFillLeg {
                         price,
                         quantity: filled_quantity - previous_filled_quantity,
@@ -209,6 +222,7 @@ pub(crate) fn price_exact_size_vwap(
         limit_price,
         exact_size_filled: true,
         fill_legs,
+        candidate_levels,
     })
 }
 
@@ -243,6 +257,7 @@ pub(crate) fn price_exact_quantity_vwap(
     let mut filled_quantity = ZERO_F64;
     let mut filled_notional = ZERO_F64;
     let mut fill_legs = Vec::new();
+    let mut candidate_levels = Vec::new();
     match order_side {
         OrderSide::Buy => {
             for (price, available_quantity) in book.ask_levels {
@@ -258,6 +273,10 @@ pub(crate) fn price_exact_quantity_vwap(
                     &mut filled_notional,
                     &mut fill_legs,
                 )?;
+                candidate_levels.push(ExecutableFillLeg {
+                    price,
+                    quantity: *available_quantity,
+                });
                 if remaining_quantity <= ZERO_F64 {
                     break;
                 }
@@ -277,6 +296,10 @@ pub(crate) fn price_exact_quantity_vwap(
                     &mut filled_notional,
                     &mut fill_legs,
                 )?;
+                candidate_levels.push(ExecutableFillLeg {
+                    price,
+                    quantity: *available_quantity,
+                });
                 if remaining_quantity <= ZERO_F64 {
                     break;
                 }
@@ -304,6 +327,7 @@ pub(crate) fn price_exact_quantity_vwap(
         limit_price,
         exact_size_filled: true,
         fill_legs,
+        candidate_levels,
     })
 }
 
@@ -469,6 +493,20 @@ mod tests {
             (priced.fill_legs[1].quantity - (second_level_notional / second_level_price)).abs()
                 < EPSILON
         );
+        assert_eq!(
+            priced.candidate_levels,
+            vec![
+                super::ExecutableFillLeg {
+                    price: best_level_price,
+                    quantity: best_level_quantity,
+                },
+                super::ExecutableFillLeg {
+                    price: second_level_price,
+                    quantity: levels[1].1,
+                },
+            ],
+            "the final economics seal needs full executable capacity, not the partial VWAP leg"
+        );
     }
 
     #[test]
@@ -520,6 +558,19 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(
+            priced.candidate_levels,
+            vec![
+                super::ExecutableFillLeg {
+                    price: 0.60,
+                    quantity: 5.0,
+                },
+                super::ExecutableFillLeg {
+                    price: 0.50,
+                    quantity: 100.0,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -540,6 +591,7 @@ mod tests {
             limit_price: 0.50,
             exact_size_filled: true,
             fill_legs: Vec::new(),
+            candidate_levels: Vec::new(),
         };
 
         let breakdown = super::executable_cost_breakdown(&vwap, 200).expect("cost should be valid");

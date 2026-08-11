@@ -658,7 +658,7 @@ fn open_refuses_foreign_or_observation_identity_in_machine_stream() {
 
     fs::write(
         machine_path(&loaded),
-        b"{\"kind\":\"blocked_strategy_input_observation\",\"schema_version\":1,\"gate_id\":\"bolt_v3.strategy_input_snapshot\",\"gate_version\":\"current\",\"recorded_at_utc_ns\":1}\n",
+        b"{\"kind\":\"blocked_strategy_input_observation\",\"schema_version\":3,\"gate_id\":\"bolt_v3.strategy_input_snapshot\",\"gate_version\":\"current\",\"recorded_at_utc_ns\":1}\n",
     )
     .expect("observation line must be written");
     let error = DecisionEvidenceRuntime::open(&loaded)

@@ -701,7 +701,7 @@ fn builder_requires_strategy_id_and_client_id() {
         slippage_buffer_bps = 15
         risk_lambda = 0.5
         sizing_ev_reference_bps = 500
-        edge_threshold_basis_points = -20
+        edge_threshold_basis_points = 0
         exit_hysteresis_bps = 5
         forced_flat_stale_reference_ms = 1500
         forced_flat_thin_book_min_liquidity = 100.0
@@ -1062,7 +1062,7 @@ fn builder_accepts_integer_literals_for_f64_fields() {
         ("vwap_depth_limit_bps", 15),
         ("slippage_buffer_bps", 15),
         ("risk_lambda", 1),
-        ("edge_threshold_basis_points", -20),
+        ("edge_threshold_basis_points", 0),
         ("exit_hysteresis_bps", 5),
         ("pricing_kurtosis", 0),
         ("theta_decay_factor", 0),
@@ -1078,6 +1078,31 @@ fn builder_accepts_integer_literals_for_f64_fields() {
     assert!(
         errors.is_empty(),
         "expected integer literals for f64 fields to validate, got: {errors:?}"
+    );
+}
+
+#[test]
+fn builder_rejects_negative_entry_edge_threshold_before_economics_sizing() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .insert(
+            "edge_threshold_basis_points".to_string(),
+            Value::Integer(-1),
+        );
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    assert!(errors.iter().any(|error| {
+        error.field == "strategies[0].config.edge_threshold_basis_points"
+            && error.code == "out_of_range"
+    }));
+    assert!(
+        BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("negative edge threshold must fail the typed build gate")
+            .to_string()
+            .contains("edge_threshold_basis_points must be >= 0")
     );
 }
 
@@ -1134,7 +1159,7 @@ fn builder_requires_pricing_model_fields() {
         slippage_buffer_bps = 15
         risk_lambda = 0.5
         sizing_ev_reference_bps = 500
-        edge_threshold_basis_points = -20
+        edge_threshold_basis_points = 0
         exit_hysteresis_bps = 5
         forced_flat_stale_reference_ms = 1500
         forced_flat_thin_book_min_liquidity = 100.0

@@ -91,7 +91,7 @@ pub(super) fn valid_raw_config() -> Value {
         slippage_buffer_bps = 15
         risk_lambda = 0.5
         sizing_ev_reference_bps = 500
-        edge_threshold_basis_points = -20
+        edge_threshold_basis_points = 0
         exit_hysteresis_bps = 5
         realized_volatility_surface_id = "<surface_id>"
         realized_volatility_max_source_age_ms = 500
@@ -582,7 +582,7 @@ pub(super) fn test_strategy_with_decision_evidence_and_submit_admission(
             slippage_buffer_bps: 15,
             risk_lambda: 0.5,
             sizing_ev_reference_bps: 500,
-            edge_threshold_basis_points: -20,
+            edge_threshold_basis_points: 0,
             exit_hysteresis_bps: 5,
             trade_flow_window_secs: 30,
             trade_flow_max_samples: 100,

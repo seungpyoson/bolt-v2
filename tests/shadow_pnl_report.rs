@@ -902,9 +902,17 @@ fn push_trade_lines_with_snapshot_market_id(
         .parse::<Decimal>()
         .expect("fixture edge must be decimal");
     let reservation_basis = price * quantity;
-    let core_total = Decimal::ZERO - reservation_basis * fee_bps / Decimal::from(10_000);
+    let fee_rate = fee_bps / Decimal::from(10_000);
+    let core_total = Decimal::ZERO - reservation_basis * fee_rate;
     let core_edge_ratio = expected_edge_bps / Decimal::from(10_000);
     let core_net_edge = reservation_basis * core_edge_ratio;
+    let economics_at_ns = u64::try_from(trade.recorded_at_utc_ns + 2)
+        .expect("fixture economics timestamp must be positive");
+    let native_fee_effect = serde_json::json!({
+        "amount": core_total.to_string(),
+        "unit": { "kind": "currency", "currency_id": "USDC" },
+        "inventory_application": null,
+    });
     admission_record["decision"]["economics"] = serde_json::json!({
         "decision_correlation_id": trade.client_order_id,
         "core_total": core_total.to_string(),
@@ -918,6 +926,43 @@ fn push_trade_lines_with_snapshot_market_id(
         "source_snapshot_ids": ["shadow-pnl-fixture-economics"],
         "reservation_basis": reservation_basis.to_string(),
         "full_reservation_liability": (reservation_basis - core_total).to_string(),
+        "components": [{
+            "component_id": "shadow-pnl-fixture-protocol-fee",
+            "class": "charge",
+            "economic_kind": "protocol_trading",
+            "scope": {
+                "kind": "decision",
+                "decision_correlation_id": trade.client_order_id,
+            },
+            "point_estimate": {
+                "kind": "non_zero",
+                "effect": native_fee_effect.clone(),
+            },
+            "point_valuation": {
+                "native_effect": native_fee_effect,
+                "normalized_amount": core_total.to_string(),
+                "reporting_currency": "USDC",
+                "route_id": null,
+                "source_snapshot_ids": ["shadow-pnl-fixture-economics"],
+                "valued_at_ns": economics_at_ns,
+                "valid_until_ns": u64::MAX,
+            },
+            "debit_risk_bound": null,
+            "debit_risk_bound_valuation": null,
+            "treatment": { "kind": "guaranteed_conditional_on_action" },
+            "calculation_factors": [{
+                "factor_id": "fee_rate",
+                "value": fee_rate.to_string(),
+            }],
+            "formula_id": "price-times-quantity-times-rate",
+            "source": {
+                "source_id": "shadow-pnl-fixture-provider",
+                "snapshot_id": "shadow-pnl-fixture-economics",
+                "source_at_ns": economics_at_ns,
+                "fetched_at_ns": economics_at_ns,
+                "valid_until_ns": u64::MAX,
+            },
+        }],
     });
     lines.push(
         serde_json::to_string(&admission_record).expect("admission fixture should serialize"),

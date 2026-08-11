@@ -113,7 +113,7 @@ pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
 /// Artifact-local manifest version written beside each backtest result.
 pub const BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION: &str = "backtest-run-manifest.v1";
 /// Submitted run-manifest TOML schema version.
-pub const BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION: &str = "backtesting-run-manifest.v2";
+pub const BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION: &str = "backtesting-run-manifest.v1";
 
 const CATALOG_STORAGE_OPTIONS_SHADOWED: &str =
     "cannot be combined with catalog_fs_rust_storage_options";
@@ -1795,7 +1795,7 @@ impl BacktestingRunManifest {
     #[must_use]
     pub fn manifest_hash(&self) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(b"backtesting-run-manifest.v2");
+        hasher.update(b"backtesting-run-manifest.v1");
         hasher.update(
             serde_json::to_vec(self)
                 .expect("BacktestingRunManifest JSON serialization must be infallible"),
@@ -4522,7 +4522,7 @@ mod tests {
             },
         );
         assert_hash_changes("manifest_schema_version", |manifest| {
-            manifest.manifest_schema_version = "backtesting-run-manifest.v1".to_string();
+            manifest.manifest_schema_version = "backtesting-run-manifest.v0".to_string();
         });
         assert_hash_changes("target_bolt_v2_branch", |manifest| {
             manifest.target_bolt_v2_branch = "release/backtesting".to_string();
@@ -4536,6 +4536,9 @@ mod tests {
         assert_hash_changes("strategy_config_hash", |manifest| {
             manifest.strategy_config_hash =
                 "2222222222222222222222222222222222222222222222222222222222222222".to_string();
+        });
+        assert_hash_changes("economics", |manifest| {
+            manifest.economics = Some(binary_oracle_economics_source());
         });
         assert_hash_changes("catalog_hash", |manifest| {
             manifest.catalog_hash =

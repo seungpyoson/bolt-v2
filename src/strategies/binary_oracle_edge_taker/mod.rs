@@ -501,6 +501,7 @@ fn executable_submission_vwap_from_evaluation(
             limit_price: result.cost_breakdown.limit_price?,
             exact_size_filled: result.cost_breakdown.exact_size_filled,
             fill_legs: Vec::new(),
+            candidate_levels: Vec::new(),
         });
     }
     let result = match selected_side {
@@ -524,6 +525,7 @@ fn executable_submission_vwap_from_evaluation(
             .filter(|value| is_positive_finite(*value))?,
         exact_size_filled: cost.exact_size_filled,
         fill_legs: Vec::new(),
+        candidate_levels: Vec::new(),
     })
 }
 
@@ -5334,13 +5336,75 @@ impl BinaryOracleEdgeTaker {
         intent_kind: BoltV3SubmitIntentKind,
         order: &nautilus_model::orders::OrderAny,
     ) -> Result<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest> {
-        self.economics_submit_admission_from_order(
-            intent,
-            intent_kind,
-            order,
-            StrategyEconomicsInput::CompiledFinalOrderFixture,
+        let client_order_id = order.client_order_id().to_string();
+        let is_quote_quantity = order.is_quote_quantity();
+        let instrument = if is_quote_quantity {
+            Some(self.current_instrument(order.instrument_id()).with_context(|| {
+                format!(
+                    "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={client_order_id}"
+                )
+            })?)
+        } else if order.price().is_none() {
+            self.current_instrument(order.instrument_id())
+        } else {
+            None
+        };
+        let (last_quote, last_trade) = if is_quote_quantity {
+            let cache = self.cache();
+            (
+                cache.quote(&order.instrument_id()),
+                cache.trade(&order.instrument_id()),
+            )
+        } else {
+            (None, None)
+        };
+        let risk_reducing_exit_position_context = if intent_kind != BoltV3SubmitIntentKind::Entry {
+            let managed_position = self.managed_position().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "bolt-v3 submit admission risk-reducing exit requires managed position state for client_order_id={client_order_id}"
+                )
+            })?;
+            let position_quantity =
+                Decimal::from_f64(managed_position.position.quantity.as_f64()).with_context(
+                    || {
+                        format!(
+                            "bolt-v3 submit admission position quantity is not a decimal for client_order_id={client_order_id}"
+                        )
+                    },
+                )?;
+            Some((
+                managed_position.position.position_id.to_string(),
+                managed_position.position.instrument_id.to_string(),
+                managed_position.position.side,
+                position_quantity,
+            ))
+        } else {
+            None
+        };
+        let risk_reducing_exit_position = risk_reducing_exit_position_context.as_ref().map(
+            |(position_id, instrument_id, position_side, position_quantity)| {
+                BoltV3RiskReducingExitPositionInput {
+                    position_id: position_id.as_str(),
+                    instrument_id: instrument_id.as_str(),
+                    position_side: *position_side,
+                    position_quantity: *position_quantity,
+                }
+            },
+        );
+        crate::bolt_v3_submit_admission::build_submit_admission_request_from_order_for_test(
+            BoltV3SubmitAdmissionRequestInput {
+                execution_client_id: &self.config.client_id,
+                intent,
+                intent_kind,
+                order,
+                valuation: OrderValuationContext {
+                    last_quote,
+                    last_trade,
+                    instrument: instrument.as_ref(),
+                },
+                risk_reducing_exit_position,
+            },
         )
-        .map(|admission| admission.into_parts().0)
     }
 
     fn economics_submit_admission_from_order(
@@ -5454,10 +5518,21 @@ impl BinaryOracleEdgeTaker {
             #[cfg(test)]
             StrategyEconomicsInput::CompiledFinalOrderFixture => {
                 let quantity = if order.is_quote_quantity() {
-                    facts
+                    let raw_base = facts
                         .order_quantity
                         .checked_div(facts.price)
-                        .context("test economics fill quantity division failed")?
+                        .context("test economics fill quantity division failed")?;
+                    let increment = instrument
+                        .as_ref()
+                        .context("quote-quantity test economics requires instrument context")?
+                        .size_increment()
+                        .as_decimal();
+                    raw_base
+                        .checked_div(increment)
+                        .context("test economics size-increment division failed")?
+                        .ceil()
+                        .checked_mul(increment)
+                        .context("test economics size-increment multiplication failed")?
                 } else {
                     facts.order_quantity
                 };
@@ -6146,7 +6221,7 @@ impl BinaryOracleEdgeTaker {
             )
             .map_err(|reason| anyhow::anyhow!("exit fill plan is unavailable: {reason}"))?;
             let legs = sweep
-                .fill_legs
+                .candidate_levels
                 .into_iter()
                 .map(|leg| {
                     Ok(BoltV3PlannedFillLeg {
@@ -6563,7 +6638,7 @@ impl BinaryOracleEdgeTaker {
             match self.executable_entry_probe_for_side(selected_side, order_side, sized_notional) {
                 Ok(probe) => probe
                     .vwap
-                    .fill_legs
+                    .candidate_levels
                     .into_iter()
                     .map(|leg| {
                         Some(BoltV3PlannedFillLeg {

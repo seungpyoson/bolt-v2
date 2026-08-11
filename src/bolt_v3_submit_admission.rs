@@ -3794,6 +3794,18 @@ pub(crate) fn order_admission_facts(
     })
 }
 
+#[cfg(test)]
+pub(crate) fn build_submit_admission_request_from_order_for_test(
+    input: BoltV3SubmitAdmissionRequestInput<'_>,
+) -> anyhow::Result<BoltV3SubmitAdmissionRequest> {
+    let facts = order_admission_facts(&input)?;
+    Ok(submit_admission_request_from_facts(
+        input,
+        facts,
+        facts.reservation_basis,
+    ))
+}
+
 fn submit_admission_request_from_facts(
     input: BoltV3SubmitAdmissionRequestInput<'_>,
     facts: BoltV3OrderAdmissionFacts,

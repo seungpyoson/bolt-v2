@@ -217,8 +217,8 @@ fn relevant_dispositions_cannot_relabel_a_fact() {
 fn duplicate_exact_identity_pairs_are_rejected() {
     let mutated = replace_once(
         REGISTRY,
-        "id = \"submit_linked_strategy_input_snapshot_v1\"\npurpose = \"submit_linked_strategy_input_snapshot\"\nkind = \"strategy_input_snapshot\"\nschema_version = 16",
-        "id = \"submit_linked_strategy_input_snapshot_v1\"\npurpose = \"submit_linked_strategy_input_snapshot\"\nkind = \"blocked_strategy_input_observation\"\nschema_version = 1",
+        "id = \"submit_linked_strategy_input_snapshot_v1\"\npurpose = \"submit_linked_strategy_input_snapshot\"\nkind = \"strategy_input_snapshot\"\nschema_version = 18",
+        "id = \"submit_linked_strategy_input_snapshot_v1\"\npurpose = \"submit_linked_strategy_input_snapshot\"\nkind = \"blocked_strategy_input_observation\"\nschema_version = 3",
     );
     let error =
         parse_contract_registry(&mutated).expect_err("duplicate exact identity pair must fail");

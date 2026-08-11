@@ -295,6 +295,10 @@ impl BinaryOracleEdgeTakerBuilder {
             is_non_negative_finite(config.forced_flat_thin_book_min_liquidity),
             "forced_flat_thin_book_min_liquidity must be finite and >= 0"
         );
+        anyhow::ensure!(
+            config.edge_threshold_basis_points >= 0,
+            "edge_threshold_basis_points must be >= 0"
+        );
         // Fail loud at load for positive-required integer knobs. A zero
         // trade-flow sample cap makes the count-cap evict every observation,
         // permanently emptying the buffer and starving the W3 read seam.
@@ -538,6 +542,17 @@ impl BinaryOracleEdgeTakerBuilder {
             stringify!(forced_flat_thin_book_min_liquidity),
             errors,
         );
+        if table
+            .get(stringify!(edge_threshold_basis_points))
+            .and_then(Value::as_integer)
+            .is_some_and(|value| value < 0)
+        {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{}", stringify!(edge_threshold_basis_points)),
+                code: "out_of_range",
+                message: "must be >= 0".to_string(),
+            });
+        }
         Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);
         Self::validate_optional_string_field(table, field_prefix, "signal_instrument_id", errors);
         Self::validate_optional_string_field(table, field_prefix, "resolution_client_id", errors);

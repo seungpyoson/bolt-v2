@@ -232,6 +232,7 @@ mod tests {
                 limit_price: vwap_price,
                 exact_size_filled: true,
                 fill_legs: Vec::new(),
+                candidate_levels: Vec::new(),
             },
             slippage_buffer_bps,
         )

@@ -52,10 +52,12 @@ use bolt_v2::{
     },
 };
 use nautilus_common::{
-    actor::DataActorNative,
+    actor::{DataActorNative, registry::try_get_actor_unchecked},
     cache::Cache,
     clock::{Clock, TestClock},
     component::Component,
+    enums::Environment,
+    msgbus::{self, MessageBus, set_message_bus, switchboard::get_event_order_topic},
     timer::{TimeEvent, TimeEventCallback},
 };
 use nautilus_core::{UUID4, UnixNanos};
@@ -70,6 +72,7 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use nautilus_portfolio::portfolio::Portfolio;
+use nautilus_system::{ClockFactory, trader::Trader};
 use nautilus_trading::{Strategy, StrategyNative};
 use rust_decimal::Decimal;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
@@ -3308,6 +3311,115 @@ fn maker_graceful_stop_defers_until_tracked_orders_close_and_rejects_new_quotes(
     assert!(order_economics.resting_order_ids().unwrap().is_empty());
     assert!(Component::is_stopped(&maker));
     assert_eq!(maker.runtime().active_market_count(), 0);
+}
+
+#[test]
+fn maker_trader_stop_closure_defers_and_keeps_order_callbacks_live() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let order_economics = maker_order_economics_at(RUNTIME_NOW_MS.saturating_mul(1_000_000));
+    let context = StrategyBuildContext::new(
+        order_economics.clone(),
+        bolt_v2::bolt_v3_strategy_context::StrategyDecisionEvidence::maker_for_test(
+            writer.recorder(),
+        ),
+        admission,
+        BoltV3OrderExecutionPolicy::shadow(),
+        Venue::from("SIM"),
+    );
+    let maker = BinaryOracleMaker::new(maker_config_with_static_market(), context);
+
+    let trader_id = TraderId::from("TRADER-001");
+    let instance_id = UUID4::new();
+    let clock_factory = ClockFactory::new(|| {
+        let clock = TestClock::new();
+        clock.set_time(UnixNanos::from(RUNTIME_NOW_MS.saturating_mul(1_000_000)));
+        Rc::new(RefCell::new(clock))
+    });
+    let clock = clock_factory.clock();
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the active maker market");
+    }
+    let portfolio = Rc::new(RefCell::new(Portfolio::new(clock, cache.clone(), None)));
+    set_message_bus(Rc::new(RefCell::new(MessageBus::new(
+        trader_id,
+        instance_id,
+        Some("maker-stop-deferral".to_string()),
+        None,
+    ))));
+    let mut trader = Trader::new(
+        trader_id,
+        instance_id,
+        Environment::Backtest,
+        clock_factory,
+        cache.clone(),
+        portfolio,
+    );
+    trader
+        .add_strategy(maker)
+        .expect("Trader registers the maker and its stop callback");
+    let strategy_id = *trader
+        .strategy_ids()
+        .first()
+        .expect("the maker is registered");
+    trader
+        .start_strategy(&strategy_id)
+        .expect("Trader starts the registered maker");
+
+    let client_order_id = ClientOrderId::from("MAKER-TRADER-DRAIN-1");
+    let accepted_order = accepted_maker_order(client_order_id);
+    cache
+        .borrow_mut()
+        .add_order(accepted_order.clone(), None, None, false)
+        .expect("the accepted maker order is present in the NT cache");
+    order_economics
+        .reconcile_fill_void_at(
+            client_order_id,
+            Some(accepted_order.clone()),
+            RUNTIME_NOW_MS.saturating_mul(1_000_000),
+        )
+        .expect("a reopened maker order creates cancellation-only tracking");
+
+    trader
+        .stop_strategy(&strategy_id)
+        .expect("Trader invokes the maker stop callback");
+    {
+        let maker = try_get_actor_unchecked::<BinaryOracleMaker>(&strategy_id.inner())
+            .expect("the deferred maker remains registered");
+        assert!(
+            Component::is_running(&*maker),
+            "a false stop callback must leave the strategy running"
+        );
+    }
+
+    let canceled = TestOrderEventStubs::canceled(
+        &accepted_order,
+        AccountId::from("ACCOUNT-001"),
+        Some(VenueOrderId::from("VENUE-DRAIN-1")),
+    );
+    cache
+        .borrow_mut()
+        .update_order(&canceled)
+        .expect("the terminal event updates authoritative NT cache state");
+    msgbus::publish_order_event(get_event_order_topic(strategy_id), &canceled);
+
+    {
+        let maker = try_get_actor_unchecked::<BinaryOracleMaker>(&strategy_id.inner())
+            .expect("the stopped maker remains registered until Trader removes it");
+        assert!(order_economics.resting_order_ids().unwrap().is_empty());
+        assert!(
+            Component::is_stopped(&*maker),
+            "the registered callback completes the deferred stop"
+        );
+        assert_eq!(maker.runtime().active_market_count(), 0);
+    }
+    trader
+        .remove_strategy(&strategy_id)
+        .expect("the characterization test removes its registered strategy");
 }
 
 #[test]

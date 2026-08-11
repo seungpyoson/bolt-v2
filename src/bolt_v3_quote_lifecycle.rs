@@ -308,11 +308,11 @@ pub enum MarketAction {
     /// Drive one leg's single order (submit / cancel / modify that leg). Maps to
     /// a per-order NT call for that leg's client order id.
     Leg { leg: Leg, action: LifecycleAction },
-    /// Cancel every working order for the instrument, both legs — the drain /
-    /// reduce-only path. Maps to `cancel_all_orders(instrument, None)`.
+    /// Cancel every tracked working order for both legs through the shared
+    /// per-order cancellation coordinator.
     CancelAllBothLegs,
-    /// Cancel every working order on one side only. Maps to
-    /// `cancel_all_orders(instrument, Some(side))`.
+    /// Cancel every tracked working order on one side through the shared
+    /// per-order cancellation coordinator.
     CancelAllOneSide { leg: Leg },
 }
 
@@ -398,8 +398,8 @@ impl MarketQuote {
             .map(|action| MarketAction::Leg { leg, action })
     }
 
-    /// T9 — drain the whole market: cancel every working order on both legs with
-    /// no resubmit, via one `cancel_all_orders(instrument, None)` call.
+    /// T9 — drain the whole market: request coordinated per-order cancellation
+    /// for every tracked working order on both legs, with no resubmit.
     pub fn drain(&mut self) -> Option<MarketAction> {
         let yes = self.yes.request_cancel().is_some();
         let no = self.no.request_cancel().is_some();
@@ -407,7 +407,7 @@ impl MarketQuote {
     }
 
     /// T9a — cancel one side of the market (e.g. a one-sided exposure cap),
-    /// leaving the other side, via `cancel_all_orders(instrument, Some(side))`.
+    /// leaving the other side, through the per-order cancellation coordinator.
     pub fn cancel_one_side(&mut self, leg: Leg) -> Option<MarketAction> {
         self.leg_mut(leg)
             .request_cancel()

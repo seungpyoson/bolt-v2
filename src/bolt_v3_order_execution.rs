@@ -1,19 +1,14 @@
-use std::{any::type_name, cell::RefMut};
+use std::cell::RefMut;
 
 use anyhow::Result;
 use nautilus_common::actor::DataActorNative;
-use nautilus_common::{
-    factories::OrderFactory,
-    messages::execution::{
-        BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, SubmitOrderList,
-    },
-};
+use nautilus_common::factories::OrderFactory;
 use nautilus_core::Params;
 use nautilus_model::{
     enums::{OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId},
     instruments::InstrumentAny,
-    orders::{Order, OrderAny, OrderList},
+    orders::{Order, OrderAny},
     types::{Price, Quantity},
 };
 use nautilus_trading::{Strategy, StrategyNative};
@@ -52,8 +47,6 @@ mod economics_basis;
 mod tracked_order_economics;
 
 pub use economics_basis::{BoltV3FinalOrderEconomicsScenario, BoltV3TerminalValueEntry};
-#[cfg(test)]
-use tracked_order_economics::drive_observed_resting_order_economics as drive_resting_order_economics;
 use tracked_order_economics::route_tracked_cancel_all;
 pub use tracked_order_economics::{
     BoltV3CancellationLivenessFailure, BoltV3OrderEconomicsHandle, BoltV3RecoveryIdentityConflict,
@@ -142,27 +135,6 @@ pub enum BoltV3OrderExecutionMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoltV3OrderExecutionPolicy {
     mode: BoltV3OrderExecutionMode,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3NtOrderManagementContract {
-    pub order_list_type: &'static str,
-    pub submit_order_list_type: &'static str,
-    pub cancel_order_type: &'static str,
-    pub batch_cancel_orders_type: &'static str,
-    pub cancel_all_orders_type: &'static str,
-    pub modify_order_type: &'static str,
-}
-
-pub fn nt_order_management_contract() -> BoltV3NtOrderManagementContract {
-    BoltV3NtOrderManagementContract {
-        order_list_type: type_name::<OrderList>(),
-        submit_order_list_type: type_name::<SubmitOrderList>(),
-        cancel_order_type: type_name::<CancelOrder>(),
-        batch_cancel_orders_type: type_name::<BatchCancelOrders>(),
-        cancel_all_orders_type: type_name::<CancelAllOrders>(),
-        modify_order_type: type_name::<ModifyOrder>(),
-    }
 }
 
 impl BoltV3OrderExecutionPolicy {
@@ -300,29 +272,6 @@ impl BoltV3OrderExecutionPolicy {
         }
     }
 
-    pub fn route_modify<S>(
-        self,
-        strategy: &mut S,
-        client_order_id: ClientOrderId,
-        quantity: Quantity,
-        price: Price,
-        client_id: Option<ClientId>,
-        params: Option<Params>,
-    ) -> Result<BoltV3ModifyRoutingOutcome>
-    where
-        S: Strategy + StrategyNative + DataActorNative + ?Sized,
-    {
-        let mut sink = NtStrategyVenueMutationSink { strategy };
-        self.route_modify_with_sink(
-            &mut sink,
-            client_order_id,
-            quantity,
-            price,
-            client_id,
-            params,
-        )
-    }
-
     fn route_modify_with_sink<S>(
         self,
         _sink: &mut S,
@@ -362,46 +311,6 @@ impl BoltV3OrderExecutionPolicy {
                     "bolt-v3 modify skipped by execution policy: mode=shadow client_order_id={client_order_id}"
                 );
                 Ok(BoltV3ModifyRoutingOutcome::SkippedByPolicy)
-            }
-        }
-    }
-
-    pub fn route_cancel_all<S>(
-        self,
-        strategy: &mut S,
-        instrument_id: InstrumentId,
-        order_side: Option<OrderSide>,
-        client_id: Option<ClientId>,
-        params: Option<Params>,
-    ) -> Result<BoltV3CancelAllRoutingOutcome>
-    where
-        S: Strategy + StrategyNative + DataActorNative + ?Sized,
-    {
-        let mut sink = NtStrategyVenueMutationSink { strategy };
-        self.route_cancel_all_with_sink(&mut sink, instrument_id, order_side, client_id, params)
-    }
-
-    fn route_cancel_all_with_sink<S>(
-        self,
-        sink: &mut S,
-        instrument_id: InstrumentId,
-        order_side: Option<OrderSide>,
-        client_id: Option<ClientId>,
-        params: Option<Params>,
-    ) -> Result<BoltV3CancelAllRoutingOutcome>
-    where
-        S: BoltV3NtVenueMutationSink + ?Sized,
-    {
-        match self.mode {
-            BoltV3OrderExecutionMode::Live => {
-                sink.cancel_all_orders_via_nt(instrument_id, order_side, client_id, params)?;
-                Ok(BoltV3CancelAllRoutingOutcome::CanceledAll)
-            }
-            BoltV3OrderExecutionMode::Shadow => {
-                log::info!(
-                    "bolt-v3 cancel-all skipped by execution policy: mode=shadow instrument_id={instrument_id}"
-                );
-                Ok(BoltV3CancelAllRoutingOutcome::SkippedByPolicy)
             }
         }
     }
@@ -812,12 +721,6 @@ pub enum BoltV3CancelRoutingOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoltV3CancelAllRoutingOutcome {
-    CanceledAll,
-    SkippedByPolicy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3ModifyRoutingOutcome {
     Modified,
     SkippedByPolicy,
@@ -990,14 +893,6 @@ pub(crate) trait BoltV3NtVenueMutationSink {
         params: Option<Params>,
     ) -> Result<()>;
 
-    fn cancel_all_orders_via_nt(
-        &mut self,
-        instrument_id: InstrumentId,
-        order_side: Option<OrderSide>,
-        client_id: Option<ClientId>,
-        params: Option<Params>,
-    ) -> Result<()>;
-
     // The venue's in-place modify capability. Option A (#835) fail-closes the only
     // routing path (`route_modify_with_sink` refuses live modifies and the maker FSM
     // never emits a Modify while `supports_modify=false`), so this method is
@@ -1076,18 +971,6 @@ where
         )
     }
 
-    fn cancel_all_orders_via_nt(
-        &mut self,
-        instrument_id: InstrumentId,
-        _order_side: Option<OrderSide>,
-        _client_id: Option<ClientId>,
-        _params: Option<Params>,
-    ) -> Result<()> {
-        anyhow::bail!(
-            "kill switch flatten submit sink cannot cancel-all instrument_id={instrument_id}"
-        )
-    }
-
     fn modify_order_via_nt(
         &mut self,
         client_order_id: ClientOrderId,
@@ -1147,17 +1030,6 @@ where
     ) -> Result<()> {
         self.strategy
             .cancel_order(client_order_id, client_id, params)
-    }
-
-    fn cancel_all_orders_via_nt(
-        &mut self,
-        instrument_id: InstrumentId,
-        order_side: Option<OrderSide>,
-        client_id: Option<ClientId>,
-        params: Option<Params>,
-    ) -> Result<()> {
-        self.strategy
-            .cancel_all_orders(instrument_id, order_side, client_id, params)
     }
 
     fn modify_order_via_nt(
@@ -1232,17 +1104,6 @@ where
     ) -> Result<()> {
         self.strategy
             .cancel_order(client_order_id, client_id, params)
-    }
-
-    fn cancel_all_orders_via_nt(
-        &mut self,
-        instrument_id: InstrumentId,
-        order_side: Option<OrderSide>,
-        client_id: Option<ClientId>,
-        params: Option<Params>,
-    ) -> Result<()> {
-        self.strategy
-            .cancel_all_orders(instrument_id, order_side, client_id, params)
     }
 
     fn modify_order_via_nt(
@@ -1474,16 +1335,15 @@ mod tests {
     const FIXTURE_CANCEL_RETRY_TIMEOUT_NS: u64 = 1_000_000_000;
 
     use super::{
-        BoltV3CancelAllRoutingOutcome, BoltV3CancelRoutingOutcome,
-        BoltV3CancellationLivenessFailure, BoltV3FinalOrderEconomicsInput,
-        BoltV3FinalOrderEconomicsScenario, BoltV3MakerOrderRoutingContext, BoltV3MakerOrderRuntime,
-        BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode,
-        BoltV3OrderExecutionPolicy, BoltV3PlannedFillLeg, BoltV3SubmitContext,
-        BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest, BoltV3TakerEconomicsSizingInput,
-        BoltV3TerminalValueEntry, EconomicsAdmissionPurpose,
-        build_order_economics_submit_admission, clamp_risk_reducing_exit_to_venue_position,
-        order_intent_details_from_compiled_order, route_kill_switch_flatten_command_with_sink,
-        route_maker_order_command_with_runtime,
+        BoltV3CancelRoutingOutcome, BoltV3CancellationLivenessFailure,
+        BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario,
+        BoltV3MakerOrderRoutingContext, BoltV3MakerOrderRuntime, BoltV3ModifyRoutingOutcome,
+        BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy,
+        BoltV3PlannedFillLeg, BoltV3SubmitContext, BoltV3SubmitRoutingOutcome,
+        BoltV3SubmitRoutingRequest, BoltV3TakerEconomicsSizingInput, BoltV3TerminalValueEntry,
+        EconomicsAdmissionPurpose, build_order_economics_submit_admission,
+        clamp_risk_reducing_exit_to_venue_position, order_intent_details_from_compiled_order,
+        route_kill_switch_flatten_command_with_sink, route_maker_order_command_with_runtime,
     };
     use crate::{
         bolt_v3_capital_admission::{
@@ -1651,17 +1511,6 @@ mod tests {
                 .cancel_order_via_nt(client_order_id, client_id, params)
         }
 
-        fn cancel_all_orders_via_nt(
-            &mut self,
-            instrument_id: InstrumentId,
-            order_side: Option<OrderSide>,
-            client_id: Option<ClientId>,
-            params: Option<Params>,
-        ) -> Result<()> {
-            self.venue_sink
-                .cancel_all_orders_via_nt(instrument_id, order_side, client_id, params)
-        }
-
         fn modify_order_via_nt(
             &mut self,
             client_order_id: ClientOrderId,
@@ -1743,7 +1592,7 @@ mod tests {
         );
 
         let mut cancel_sink = RecordingVenueMutationSink::default();
-        let error = super::drive_resting_order_economics(
+        let error = super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut cancel_sink,
@@ -1762,7 +1611,7 @@ mod tests {
             order_economics.resting_cancel_health().unwrap()[0].recovery_identity_unavailable()
         );
 
-        super::drive_resting_order_economics(
+        super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut cancel_sink,
@@ -1814,7 +1663,7 @@ mod tests {
             .venue_sink
             .cached_order(ClientOrderId::from("HEALTHY-MAKER-YES-1"))
             .unwrap();
-        super::drive_resting_order_economics(
+        super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut runtime,
@@ -1958,7 +1807,7 @@ mod tests {
             .begin_resting_order_drain_at_ns(retry_timeout_ns / 2)
             .expect("a second cancellation origin must merge into the existing intent");
         let cached = runtime.venue_sink.cached_order(client_order_id).unwrap();
-        super::drive_resting_order_economics(
+        super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut runtime,
@@ -1969,7 +1818,7 @@ mod tests {
         .unwrap();
         assert_eq!(runtime.venue_sink.cancel_calls, 1);
 
-        super::drive_resting_order_economics(
+        super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut runtime,
@@ -2110,7 +1959,7 @@ mod tests {
             .cached_orders
             .insert(client_order_id, order.clone());
         runtime.venue_sink.actor_times_ns.push_back(4);
-        super::drive_resting_order_economics(
+        super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut runtime,
@@ -2201,7 +2050,7 @@ mod tests {
             .venue_sink
             .actor_times_ns
             .push_back(retry_timeout_ns + 1);
-        super::drive_resting_order_economics(
+        super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut runtime,
@@ -2224,7 +2073,7 @@ mod tests {
             .venue_sink
             .cached_orders
             .insert(client_order_id, terminal.clone());
-        super::drive_resting_order_economics(
+        super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut runtime,
@@ -2289,7 +2138,7 @@ mod tests {
         let first_cached = runtime.venue_sink.cached_order(first).unwrap();
         let second_cached = runtime.venue_sink.cached_order(second).unwrap();
 
-        super::drive_resting_order_economics(
+        super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut runtime,
@@ -2338,7 +2187,7 @@ mod tests {
             .insert(conflicted_id, conflicted_b);
         sink.actor_times_ns.extend([100, 100]);
 
-        let error = super::drive_resting_order_economics(
+        let error = super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut sink,
@@ -2375,7 +2224,7 @@ mod tests {
         sink.cached_orders.insert(client_order_id, order.clone());
         sink.fail_cancel_ids.insert(client_order_id);
 
-        let error = super::drive_resting_order_economics(
+        let error = super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut sink,
@@ -2407,7 +2256,7 @@ mod tests {
         };
         sink.cached_orders.insert(client_order_id, order.clone());
 
-        let error = super::drive_resting_order_economics(
+        let error = super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
             &mut sink,
@@ -2663,8 +2512,6 @@ mod tests {
                 order_side: Some(OrderSide::Buy),
             }
         );
-        assert_eq!(runtime.venue_sink.cancel_all_calls, 0);
-        assert!(runtime.venue_sink.cancel_all_requests.is_empty());
         assert_eq!(runtime.venue_sink.cancel_calls, 1);
         assert_eq!(writer.order_intents().len(), 1);
         assert_eq!(writer.admission_count(), 1);
@@ -2686,7 +2533,6 @@ mod tests {
         )
         .expect("repeated cancel-all origin should merge into the existing backoff");
 
-        assert_eq!(runtime.venue_sink.cancel_all_calls, 0);
         assert_eq!(
             runtime.venue_sink.cancel_calls, 1,
             "a repeated cancel-all origin must not bypass coordinator backoff"
@@ -2701,8 +2547,6 @@ mod tests {
         submitted_order_quantities: Vec<Quantity>,
         cancel_calls: usize,
         query_calls: usize,
-        cancel_all_calls: usize,
-        cancel_all_requests: Vec<(InstrumentId, Option<OrderSide>, Option<ClientId>)>,
         modify_calls: usize,
         modify_requests: Vec<(ClientOrderId, Quantity, Price, Option<ClientId>)>,
         fail_submits: bool,
@@ -2764,19 +2608,6 @@ mod tests {
             if let Some(replacement) = self.cancel_replacement_orders.remove(&client_order_id) {
                 self.cached_orders.insert(client_order_id, replacement);
             }
-            Ok(())
-        }
-
-        fn cancel_all_orders_via_nt(
-            &mut self,
-            instrument_id: InstrumentId,
-            order_side: Option<OrderSide>,
-            client_id: Option<ClientId>,
-            _params: Option<Params>,
-        ) -> Result<()> {
-            self.cancel_all_calls += 1;
-            self.cancel_all_requests
-                .push((instrument_id, order_side, client_id));
             Ok(())
         }
 
@@ -3812,51 +3643,6 @@ mod tests {
         assert_eq!(live_outcome, BoltV3CancelRoutingOutcome::Canceled);
         assert_eq!(shadow_outcome, BoltV3CancelRoutingOutcome::SkippedByPolicy);
         assert_eq!(sink.cancel_calls, 1);
-    }
-
-    #[test]
-    fn live_and_shadow_cancel_all_route_through_the_same_policy_boundary() {
-        let mut live_sink = RecordingVenueMutationSink::default();
-        let mut shadow_sink = RecordingVenueMutationSink::default();
-        let instrument_id = InstrumentId::from("instrument-yes.VENUE-A");
-
-        // Hold every request field constant so only execution mode can explain the differential.
-        // A counterfeit implementation that routes by side must therefore fail this test.
-        let live_outcome = BoltV3OrderExecutionPolicy::live()
-            .route_cancel_all_with_sink(
-                &mut live_sink,
-                instrument_id,
-                Some(OrderSide::Buy),
-                Some(ClientId::from("execution_client")),
-                None,
-            )
-            .expect("live cancel-all should call NT");
-        let shadow_outcome = BoltV3OrderExecutionPolicy::shadow()
-            .route_cancel_all_with_sink(
-                &mut shadow_sink,
-                instrument_id,
-                Some(OrderSide::Buy),
-                Some(ClientId::from("execution_client")),
-                None,
-            )
-            .expect("shadow cancel-all should be suppressed by policy");
-
-        assert_eq!(live_outcome, BoltV3CancelAllRoutingOutcome::CanceledAll);
-        assert_eq!(
-            shadow_outcome,
-            BoltV3CancelAllRoutingOutcome::SkippedByPolicy
-        );
-        assert_eq!(live_sink.cancel_all_calls, 1);
-        assert_eq!(
-            live_sink.cancel_all_requests,
-            vec![(
-                instrument_id,
-                Some(OrderSide::Buy),
-                Some(ClientId::from("execution_client")),
-            )]
-        );
-        assert_eq!(shadow_sink.cancel_all_calls, 0);
-        assert!(shadow_sink.cancel_all_requests.is_empty());
     }
 
     #[test]

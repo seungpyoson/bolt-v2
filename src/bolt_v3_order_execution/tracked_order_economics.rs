@@ -7,7 +7,7 @@ use anyhow::Result;
 use nautilus_common::actor::DataActorNative;
 use nautilus_model::{
     enums::{OrderSide, PositionSide as NtPositionSide},
-    identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId},
+    identifiers::{ClientOrderId, InstrumentId, PositionId},
     orders::{Order, OrderAny},
 };
 use nautilus_trading::{Strategy, StrategyNative};
@@ -515,13 +515,9 @@ where
     S: BoltV3NtVenueMutationSink + ?Sized,
 {
     if !policy.allows_venue_mutation() {
-        policy.route_cancel_all_with_sink(
-            sink,
-            instrument_id,
-            order_side,
-            Some(ClientId::from(execution_client_id)),
-            None,
-        )?;
+        log::info!(
+            "tracked maker cancellation scope skipped by execution policy: mode=shadow execution_client_id={execution_client_id} instrument_id={instrument_id} order_side={order_side:?}"
+        );
         return Ok(());
     }
     let now_ns = sink.actor_time_ns()?;

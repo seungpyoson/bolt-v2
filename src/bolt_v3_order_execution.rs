@@ -68,11 +68,11 @@ use crate::{
 mod cancel_coordinator;
 mod economics_basis;
 
+use cancel_coordinator::TrackedOrderCancellation;
 pub use cancel_coordinator::{
     BoltV3CancellationLivenessFailure, BoltV3RecoveryIdentityConflict,
     BoltV3RestingOrderCancelHealthSnapshot,
 };
-use cancel_coordinator::{NtOrderQuerySeed, RestingOrderCancelRecord};
 use economics_basis::seal_final_order_economics_basis;
 pub use economics_basis::{BoltV3FinalOrderEconomicsScenario, BoltV3TerminalValueEntry};
 
@@ -91,8 +91,7 @@ struct RestingOrderEconomicsRecord {
 #[derive(Clone, Debug)]
 struct TrackedMakerOrderRecord {
     economics: Option<RestingOrderEconomicsRecord>,
-    query_seed: NtOrderQuerySeed,
-    cancellation: Option<RestingOrderCancelRecord>,
+    cancellation: TrackedOrderCancellation,
 }
 
 struct RestingOrderRegistrationGuard<'a> {
@@ -237,7 +236,7 @@ impl BoltV3OrderEconomicsHandle {
             records.remove(&client_order_id);
             return Ok(());
         }
-        if record.cancellation.is_some() {
+        if record.cancellation.is_requested() {
             return Ok(());
         }
         let Some(economics) = record.economics.as_mut() else {
@@ -245,7 +244,7 @@ impl BoltV3OrderEconomicsHandle {
         };
         let Some(order) = cached else {
             let quote_deadline_ns = economics.admission.quote().valid_until_ns();
-            record.cancellation = Some(RestingOrderCancelRecord::new(quote_deadline_ns));
+            record.cancellation.request_intent(quote_deadline_ns);
             return Ok(());
         };
         match refresh_resting_order_economics(
@@ -268,7 +267,7 @@ impl BoltV3OrderEconomicsHandle {
                     "resting order economics requires cancellation: client_order_id={client_order_id} reason={reason:?}"
                 );
                 let quote_deadline_ns = economics.admission.quote().valid_until_ns();
-                record.cancellation = Some(RestingOrderCancelRecord::new(quote_deadline_ns));
+                record.cancellation.request_intent(quote_deadline_ns);
             }
         }
         Ok(())
@@ -303,8 +302,7 @@ impl BoltV3OrderEconomicsHandle {
                     admission,
                     authorized_quantity_ceiling,
                 }),
-                query_seed: NtOrderQuerySeed::new(order),
-                cancellation: None,
+                cancellation: TrackedOrderCancellation::new(order),
             },
         );
         Ok(RestingOrderRegistrationGuard {
@@ -2009,8 +2007,8 @@ mod tests {
         BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode,
         BoltV3OrderExecutionPolicy, BoltV3PlannedFillLeg, BoltV3SubmitContext,
         BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest, BoltV3TakerEconomicsSizingInput,
-        BoltV3TerminalValueEntry, EconomicsAdmissionPurpose, LifecyclePath, NtOrderQuerySeed,
-        RestingOrderCancelRecord, TrackedMakerOrderRecord, build_order_economics_submit_admission,
+        BoltV3TerminalValueEntry, EconomicsAdmissionPurpose, LifecyclePath,
+        TrackedMakerOrderRecord, TrackedOrderCancellation, build_order_economics_submit_admission,
         clamp_risk_reducing_exit_to_venue_position, economics_order_binding,
         order_intent_details_from_compiled_order, route_kill_switch_flatten_command_with_sink,
         route_maker_order_command_with_runtime,
@@ -2625,7 +2623,7 @@ mod tests {
             let records = order_economics.tracked_orders.read().unwrap();
             let recreated = records.get(&client_order_id).unwrap();
             assert!(recreated.economics.is_none());
-            assert!(recreated.cancellation.is_some());
+            assert!(recreated.cancellation.is_requested());
         }
         assert_eq!(
             order_economics.resting_cancel_health().unwrap()[0].liveness(),
@@ -2828,8 +2826,8 @@ mod tests {
 
         assert_eq!(runtime.venue_sink.cancel_calls, 2);
         let records = order_economics.tracked_orders.read().unwrap();
-        assert!(records.get(&first).unwrap().cancellation.is_some());
-        assert!(records.get(&second).unwrap().cancellation.is_some());
+        assert!(records.get(&first).unwrap().cancellation.is_requested());
+        assert!(records.get(&second).unwrap().cancellation.is_requested());
     }
 
     #[test]
@@ -2848,16 +2846,14 @@ mod tests {
                 conflicted_id,
                 TrackedMakerOrderRecord {
                     economics: None,
-                    query_seed: NtOrderQuerySeed::new(conflicted_a.clone()),
-                    cancellation: Some(RestingOrderCancelRecord::new(100)),
+                    cancellation: tracked_cancellation(conflicted_a.clone(), 100),
                 },
             );
             records.insert(
                 sibling_id,
                 TrackedMakerOrderRecord {
                     economics: None,
-                    query_seed: NtOrderQuerySeed::new(sibling.clone()),
-                    cancellation: Some(RestingOrderCancelRecord::new(200)),
+                    cancellation: tracked_cancellation(sibling.clone(), 200),
                 },
             );
         }
@@ -2900,8 +2896,7 @@ mod tests {
             client_order_id,
             TrackedMakerOrderRecord {
                 economics: None,
-                query_seed: NtOrderQuerySeed::new(order.clone()),
-                cancellation: Some(RestingOrderCancelRecord::new(100)),
+                cancellation: tracked_cancellation(order.clone(), 100),
             },
         );
         let mut sink = RecordingVenueMutationSink {
@@ -2938,8 +2933,7 @@ mod tests {
             client_order_id,
             TrackedMakerOrderRecord {
                 economics: None,
-                query_seed: NtOrderQuerySeed::new(order.clone()),
-                cancellation: Some(RestingOrderCancelRecord::new(100)),
+                cancellation: tracked_cancellation(order.clone(), 100),
             },
         );
         let mut sink = RecordingVenueMutationSink {
@@ -3017,8 +3011,7 @@ mod tests {
             sell_client_order_id,
             TrackedMakerOrderRecord {
                 economics: cloned_economics,
-                query_seed: NtOrderQuerySeed::new(sell.clone()),
-                cancellation: None,
+                cancellation: TrackedOrderCancellation::new(sell.clone()),
             },
         );
         runtime
@@ -3063,14 +3056,14 @@ mod tests {
                 .get(&ClientOrderId::from("MAKER-NO-ALL-1"))
                 .unwrap()
                 .cancellation
-                .is_some()
+                .is_requested()
         );
         assert!(
-            records
+            !records
                 .get(&sell_client_order_id)
                 .unwrap()
                 .cancellation
-                .is_none()
+                .is_requested()
         );
         drop(records);
 
@@ -4865,6 +4858,12 @@ mod tests {
         );
         order.apply(accepted).unwrap();
         order
+    }
+
+    fn tracked_cancellation(order: OrderAny, quote_deadline_ns: u64) -> TrackedOrderCancellation {
+        let mut cancellation = TrackedOrderCancellation::new(order);
+        cancellation.request_intent(quote_deadline_ns);
+        cancellation
     }
 
     fn post_only_limit_order(client_order_id: &str) -> OrderAny {

@@ -57,7 +57,7 @@ enum CancelEvent<'a> {
         retry_timeout_ns: u64,
         escalation_attempts: u32,
     },
-    CallbackObserved {
+    PassiveObserved {
         cached: Option<&'a OrderAny>,
         now_ns: u64,
         retry_timeout_ns: u64,
@@ -248,6 +248,30 @@ impl NtOrderQuerySeed {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct TrackedOrderCancellation {
+    query_seed: NtOrderQuerySeed,
+    intent: Option<RestingOrderCancelRecord>,
+}
+
+impl TrackedOrderCancellation {
+    pub(super) fn new(order: OrderAny) -> Self {
+        Self {
+            query_seed: NtOrderQuerySeed::new(order),
+            intent: None,
+        }
+    }
+
+    pub(super) fn request_intent(&mut self, quote_deadline_ns: u64) {
+        self.intent
+            .get_or_insert_with(|| RestingOrderCancelRecord::new(quote_deadline_ns));
+    }
+
+    pub(super) const fn is_requested(&self) -> bool {
+        self.intent.is_some()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum IdentityTransition {
     Unchanged,
@@ -329,7 +353,7 @@ impl RestingOrderCancelRecord {
                     }
                 }
             }
-            CancelEvent::CallbackObserved {
+            CancelEvent::PassiveObserved {
                 cached,
                 now_ns,
                 retry_timeout_ns,
@@ -536,9 +560,7 @@ impl BoltV3OrderEconomicsHandle {
             .as_ref()
             .map(|economics| economics.admission.quote().valid_until_ns())
             .unwrap_or(now_ns);
-        record
-            .cancellation
-            .get_or_insert_with(|| RestingOrderCancelRecord::new(quote_deadline_ns));
+        record.cancellation.request_intent(quote_deadline_ns);
         Ok(true)
     }
 
@@ -554,8 +576,9 @@ impl BoltV3OrderEconomicsHandle {
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
         let mut selected = Vec::new();
         for (client_order_id, record) in records.iter_mut() {
-            if record.query_seed.instrument_id() != instrument_id
-                || order_side.is_some_and(|side| record.query_seed.order_side() != side)
+            if record.cancellation.query_seed.instrument_id() != instrument_id
+                || order_side
+                    .is_some_and(|side| record.cancellation.query_seed.order_side() != side)
             {
                 continue;
             }
@@ -564,9 +587,7 @@ impl BoltV3OrderEconomicsHandle {
                 .as_ref()
                 .map(|economics| economics.admission.quote().valid_until_ns())
                 .unwrap_or(now_ns);
-            record
-                .cancellation
-                .get_or_insert_with(|| RestingOrderCancelRecord::new(quote_deadline_ns));
+            record.cancellation.request_intent(quote_deadline_ns);
             selected.push(*client_order_id);
         }
         Ok(selected)
@@ -581,6 +602,7 @@ impl BoltV3OrderEconomicsHandle {
             .filter_map(|(client_order_id, record)| {
                 record
                     .cancellation
+                    .intent
                     .as_ref()
                     .map(|cancel| cancel.health_snapshot(*client_order_id))
             })
@@ -637,16 +659,17 @@ impl BoltV3OrderEconomicsHandle {
             {
                 return Ok(());
             }
+            let mut cancellation = TrackedOrderCancellation::new(order.clone());
+            cancellation.request_intent(now_ns);
             entry.insert(TrackedMakerOrderRecord {
                 economics: None,
-                query_seed: NtOrderQuerySeed::new(order.clone()),
-                cancellation: Some(RestingOrderCancelRecord::new(now_ns)),
+                cancellation,
             });
         }
         let Some(record) = records.get_mut(&client_order_id) else {
             return Ok(());
         };
-        if record.cancellation.is_none()
+        if !record.cancellation.is_requested()
             && cached
                 .as_ref()
                 .is_some_and(|order| order.status() == OrderStatus::PendingCancel)
@@ -656,9 +679,10 @@ impl BoltV3OrderEconomicsHandle {
                 .as_ref()
                 .map(|economics| economics.admission.quote().valid_until_ns())
                 .unwrap_or(now_ns);
-            record.cancellation = Some(RestingOrderCancelRecord::new(quote_deadline_ns));
+            record.cancellation.request_intent(quote_deadline_ns);
         }
-        let Some(cancellation) = record.cancellation.as_mut() else {
+        let TrackedOrderCancellation { query_seed, intent } = &mut record.cancellation;
+        let Some(cancellation) = intent.as_mut() else {
             if cached.as_ref().is_some_and(|order| {
                 order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO
             }) {
@@ -667,8 +691,8 @@ impl BoltV3OrderEconomicsHandle {
             return Ok(());
         };
         let effect = cancellation.apply_event(
-            &mut record.query_seed,
-            CancelEvent::CallbackObserved {
+            query_seed,
+            CancelEvent::PassiveObserved {
                 cached: cached.as_ref(),
                 now_ns,
                 retry_timeout_ns,
@@ -793,7 +817,8 @@ impl BoltV3OrderEconomicsHandle {
             return finish_cancel_failures(failures);
         };
 
-        let Some(cancellation) = record.cancellation.as_mut() else {
+        let TrackedOrderCancellation { query_seed, intent } = &mut record.cancellation;
+        let Some(cancellation) = intent.as_mut() else {
             anyhow::bail!(
                 "armed cancellation operation lost its coordinator record: client_order_id={client_order_id}"
             );
@@ -801,13 +826,11 @@ impl BoltV3OrderEconomicsHandle {
         let effect = match completion {
             CancelOperationCompletion::Unobserved(error) => {
                 failures.push(error.to_string());
-                cancellation.apply_event(
-                    &mut record.query_seed,
-                    CancelEvent::OperationUnobserved { generation },
-                )
+                cancellation
+                    .apply_event(query_seed, CancelEvent::OperationUnobserved { generation })
             }
             CancelOperationCompletion::Observed { cached, now_ns } => cancellation.apply_event(
-                &mut record.query_seed,
+                query_seed,
                 CancelEvent::OperationSucceeded {
                     generation,
                     cached,
@@ -846,12 +869,8 @@ impl BoltV3OrderEconomicsHandle {
         let Some(record) = records.get_mut(&client_order_id) else {
             return Ok(CancelEffect::None);
         };
-        let TrackedMakerOrderRecord {
-            query_seed,
-            cancellation,
-            ..
-        } = record;
-        let Some(cancellation) = cancellation.as_mut() else {
+        let TrackedOrderCancellation { query_seed, intent } = &mut record.cancellation;
+        let Some(cancellation) = intent.as_mut() else {
             return Ok(CancelEffect::None);
         };
         let effect = if policy.allows_venue_mutation() {
@@ -867,7 +886,7 @@ impl BoltV3OrderEconomicsHandle {
         } else {
             cancellation.apply_event(
                 query_seed,
-                CancelEvent::CallbackObserved {
+                CancelEvent::PassiveObserved {
                     cached,
                     now_ns,
                     retry_timeout_ns,
@@ -894,7 +913,7 @@ impl BoltV3OrderEconomicsHandle {
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
         if let Some(error) = records
             .get(&client_order_id)
-            .and_then(|record| record.cancellation.as_ref())
+            .and_then(|record| record.cancellation.intent.as_ref())
             .and_then(|cancel| cancel.health_snapshot(client_order_id).runtime_error())
         {
             failures.push(error.to_string());

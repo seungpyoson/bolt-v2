@@ -6,10 +6,8 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 
-use super::{
-    BoltV3NtVenueMutationSink, BoltV3OrderEconomicsHandle, BoltV3OrderExecutionPolicy,
-    TrackedMakerOrderRecord,
-};
+use super::{BoltV3OrderEconomicsHandle, TrackedMakerOrderRecord};
+use crate::bolt_v3_order_execution::{BoltV3NtVenueMutationSink, BoltV3OrderExecutionPolicy};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CancelOperationKind {

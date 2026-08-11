@@ -16,8 +16,8 @@ use nautilus_common::{
 use nautilus_core::Params;
 use nautilus_model::{
     enums::{
-        OrderSide, OrderStatus, OrderType, PositionSide as NtPositionSide, TimeInForce,
-        TrailingOffsetType, TriggerType,
+        OrderSide, OrderType, PositionSide as NtPositionSide, TimeInForce, TrailingOffsetType,
+        TriggerType,
     },
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId},
     instruments::InstrumentAny,
@@ -72,9 +72,7 @@ pub use cancel_coordinator::{
     BoltV3CancellationLivenessFailure, BoltV3RecoveryIdentityConflict,
     BoltV3RestingOrderCancelHealthSnapshot,
 };
-use cancel_coordinator::{
-    CancelOperationKind, CancelTransition, NtOrderQuerySeed, RestingOrderCancelRecord,
-};
+use cancel_coordinator::{NtOrderQuerySeed, RestingOrderCancelRecord};
 use economics_basis::seal_final_order_economics_basis;
 pub use economics_basis::{BoltV3FinalOrderEconomicsScenario, BoltV3TerminalValueEntry};
 
@@ -220,63 +218,6 @@ impl BoltV3OrderEconomicsHandle {
             .collect())
     }
 
-    pub fn begin_resting_order_drain_at_ns(&self, now_ns: u64) -> Result<usize> {
-        let client_order_ids = self.resting_order_ids()?;
-        for client_order_id in &client_order_ids {
-            self.request_cancel_intent(*client_order_id, now_ns)?;
-        }
-        Ok(client_order_ids.len())
-    }
-
-    fn request_cancel_intent(&self, client_order_id: ClientOrderId, now_ns: u64) -> Result<bool> {
-        let mut records = self
-            .tracked_orders
-            .write()
-            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = records.get_mut(&client_order_id) else {
-            return Ok(false);
-        };
-        let quote_deadline_ns = record
-            .economics
-            .as_ref()
-            .map(|economics| economics.admission.quote().valid_until_ns())
-            .unwrap_or(now_ns);
-        record
-            .cancellation
-            .get_or_insert_with(|| RestingOrderCancelRecord::new(quote_deadline_ns));
-        Ok(true)
-    }
-
-    fn request_cancel_scope(
-        &self,
-        instrument_id: InstrumentId,
-        order_side: Option<OrderSide>,
-        now_ns: u64,
-    ) -> Result<Vec<ClientOrderId>> {
-        let mut records = self
-            .tracked_orders
-            .write()
-            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let mut selected = Vec::new();
-        for (client_order_id, record) in records.iter_mut() {
-            if record.query_seed.instrument_id() != instrument_id
-                || order_side.is_some_and(|side| record.query_seed.order_side() != side)
-            {
-                continue;
-            }
-            let quote_deadline_ns = record
-                .economics
-                .as_ref()
-                .map(|economics| economics.admission.quote().valid_until_ns())
-                .unwrap_or(now_ns);
-            record
-                .cancellation
-                .get_or_insert_with(|| RestingOrderCancelRecord::new(quote_deadline_ns));
-            selected.push(*client_order_id);
-        }
-        Ok(selected)
-    }
-
     fn refresh_tracked_economics(
         &self,
         client_order_id: ClientOrderId,
@@ -371,101 +312,6 @@ impl BoltV3OrderEconomicsHandle {
             client_order_id,
             committed: false,
         })
-    }
-
-    pub fn resting_cancel_health(&self) -> Result<Vec<BoltV3RestingOrderCancelHealthSnapshot>> {
-        Ok(self
-            .tracked_orders
-            .read()
-            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?
-            .iter()
-            .filter_map(|(client_order_id, record)| {
-                record
-                    .cancellation
-                    .as_ref()
-                    .map(|cancel| cancel.health_snapshot(*client_order_id))
-            })
-            .collect())
-    }
-
-    pub fn reconcile_tracked_order_at(
-        &self,
-        client_order_id: ClientOrderId,
-        cached: Option<OrderAny>,
-        now_ns: u64,
-    ) -> Result<()> {
-        self.reconcile_tracked_order_inner(client_order_id, cached, now_ns, false)
-    }
-
-    pub fn reconcile_fill_void_at(
-        &self,
-        client_order_id: ClientOrderId,
-        cached: Option<OrderAny>,
-        now_ns: u64,
-    ) -> Result<()> {
-        self.reconcile_tracked_order_inner(client_order_id, cached, now_ns, true)
-    }
-
-    fn reconcile_tracked_order_inner(
-        &self,
-        client_order_id: ClientOrderId,
-        cached: Option<OrderAny>,
-        now_ns: u64,
-        fill_void: bool,
-    ) -> Result<()> {
-        let retry_timeout_ns = self.economics.cancel_retry_timeout_ns()?;
-        let mut records = self
-            .tracked_orders
-            .write()
-            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        if let std::collections::btree_map::Entry::Vacant(entry) = records.entry(client_order_id) {
-            let Some(order) = cached.as_ref() else {
-                return Ok(());
-            };
-            if !fill_void || order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO {
-                return Ok(());
-            }
-            entry.insert(TrackedMakerOrderRecord {
-                economics: None,
-                query_seed: NtOrderQuerySeed::new(order.clone()),
-                cancellation: Some(RestingOrderCancelRecord::new(now_ns)),
-            });
-        }
-        let Some(record) = records.get_mut(&client_order_id) else {
-            return Ok(());
-        };
-        if record.cancellation.is_none()
-            && cached
-                .as_ref()
-                .is_some_and(|order| order.status() == OrderStatus::PendingCancel)
-        {
-            let quote_deadline_ns = record
-                .economics
-                .as_ref()
-                .map(|economics| economics.admission.quote().valid_until_ns())
-                .unwrap_or(now_ns);
-            record.cancellation = Some(RestingOrderCancelRecord::new(quote_deadline_ns));
-        }
-        let Some(cancellation) = record.cancellation.as_mut() else {
-            if cached.as_ref().is_some_and(|order| {
-                order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO
-            }) {
-                records.remove(&client_order_id);
-            }
-            return Ok(());
-        };
-        match cancellation.reconcile_callback(
-            &mut record.query_seed,
-            cached.as_ref(),
-            now_ns,
-            retry_timeout_ns,
-        )? {
-            CancelTransition::Remove => {
-                records.remove(&client_order_id);
-            }
-            CancelTransition::NoOperation | CancelTransition::Begin(_) => {}
-        }
-        Ok(())
     }
 
     pub fn quote_taker_sizing(
@@ -665,10 +511,6 @@ where
             })
             .collect::<Result<Vec<_>>>()?;
     }
-    let retry_timeout_ns = order_economics.economics.cancel_retry_timeout_ns()?;
-    let escalation_attempts = order_economics
-        .economics
-        .cancel_recovery_escalation_attempts();
     let mut failures = Vec::new();
     for (client_order_id, cached) in observations {
         if let Err(error) =
@@ -677,122 +519,15 @@ where
             failures.push(error.to_string());
             continue;
         }
-
-        let planned = {
-            let mut records = order_economics
-                .tracked_orders
-                .write()
-                .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-            let Some(record) = records.get_mut(&client_order_id) else {
-                continue;
-            };
-            let TrackedMakerOrderRecord {
-                query_seed,
-                cancellation,
-                ..
-            } = record;
-            let Some(cancellation) = cancellation.as_mut() else {
-                continue;
-            };
-            let result = if policy.allows_venue_mutation() {
-                cancellation.plan_drive(
-                    query_seed,
-                    cached.as_ref(),
-                    now_ns,
-                    retry_timeout_ns,
-                    escalation_attempts,
-                )
-            } else {
-                cancellation
-                    .reconcile_callback(query_seed, cached.as_ref(), now_ns, retry_timeout_ns)
-                    .map(|transition| (transition, None))
-            };
-            match result {
-                Ok((CancelTransition::Remove, _)) => {
-                    records.remove(&client_order_id);
-                    None
-                }
-                Ok((_, operation)) => operation.map(|operation| {
-                    (
-                        operation,
-                        record.query_seed.as_query_order().clone(),
-                        cancellation.primary_error(client_order_id),
-                    )
-                }),
-                Err(error) => {
-                    failures.push(error.to_string());
-                    None
-                }
-            }
-        };
-
-        let Some((operation, query_seed, health_error)) = planned else {
-            let health_error = match order_economics.tracked_orders.read() {
-                Ok(records) => records
-                    .get(&client_order_id)
-                    .and_then(|record| record.cancellation.as_ref())
-                    .and_then(|cancel| cancel.primary_error(client_order_id)),
-                Err(_) => None,
-            };
-            if let Some(error) = health_error {
-                failures.push(error.to_string());
-            }
-            continue;
-        };
-        if let Some(error) = health_error {
+        if let Err(error) = order_economics.drive_cancel_intent(
+            policy,
+            sink,
+            execution_client_id,
+            client_order_id,
+            cached.as_ref(),
+            now_ns,
+        ) {
             failures.push(error.to_string());
-        }
-
-        let operation_result = match operation.kind {
-            CancelOperationKind::Cancel => policy
-                .route_cancel_with_sink(
-                    sink,
-                    client_order_id,
-                    Some(ClientId::from(execution_client_id)),
-                    None,
-                )
-                .map(|_| ()),
-            CancelOperationKind::Query => sink.query_order_via_nt(
-                &query_seed,
-                Some(ClientId::from(execution_client_id)),
-                None,
-            ),
-        };
-        let settle_now_ns = sink.actor_time_ns()?;
-        let cached_after = sink.cached_order(client_order_id)?;
-        let mut records = order_economics
-            .tracked_orders
-            .write()
-            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = records.get_mut(&client_order_id) else {
-            if let Err(error) = operation_result {
-                failures.push(error.to_string());
-            }
-            continue;
-        };
-        if let Err(error) = operation_result {
-            if let Some(cancellation) = record.cancellation.as_mut() {
-                cancellation.settle_synchronous_failure(operation.generation);
-            }
-            failures.push(error.to_string());
-            continue;
-        }
-        let transition = match record.cancellation.as_mut() {
-            Some(cancellation) => cancellation.settle_operation(
-                operation.generation,
-                &mut record.query_seed,
-                cached_after.as_ref(),
-                settle_now_ns,
-                retry_timeout_ns,
-            ),
-            None => Ok(CancelTransition::NoOperation),
-        };
-        match transition {
-            Ok(CancelTransition::Remove) => {
-                records.remove(&client_order_id);
-            }
-            Ok(_) => {}
-            Err(error) => failures.push(error.to_string()),
         }
     }
     if failures.is_empty() {
@@ -2275,7 +2010,7 @@ mod tests {
         BoltV3OrderExecutionPolicy, BoltV3PlannedFillLeg, BoltV3SubmitContext,
         BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest, BoltV3TakerEconomicsSizingInput,
         BoltV3TerminalValueEntry, EconomicsAdmissionPurpose, LifecyclePath, NtOrderQuerySeed,
-        TrackedMakerOrderRecord, build_order_economics_submit_admission,
+        RestingOrderCancelRecord, TrackedMakerOrderRecord, build_order_economics_submit_admission,
         clamp_risk_reducing_exit_to_venue_position, economics_order_binding,
         order_intent_details_from_compiled_order, route_kill_switch_flatten_command_with_sink,
         route_maker_order_command_with_runtime,
@@ -3098,6 +2833,138 @@ mod tests {
     }
 
     #[test]
+    fn cancel_health_aggregate_reports_post_settlement_facets_once_and_processes_due_siblings() {
+        let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
+            "maker_execution_client",
+        );
+        let conflicted_id = ClientOrderId::from("HEALTH-POST-A");
+        let sibling_id = ClientOrderId::from("HEALTH-POST-B");
+        let conflicted_a = accepted_limit_order("HEALTH-POST-A", "VENUE-A");
+        let conflicted_b = accepted_limit_order("HEALTH-POST-A", "VENUE-B");
+        let sibling = accepted_limit_order("HEALTH-POST-B", "VENUE-SIBLING");
+        {
+            let mut records = order_economics.tracked_orders.write().unwrap();
+            records.insert(
+                conflicted_id,
+                TrackedMakerOrderRecord {
+                    economics: None,
+                    query_seed: NtOrderQuerySeed::new(conflicted_a.clone()),
+                    cancellation: Some(RestingOrderCancelRecord::new(100)),
+                },
+            );
+            records.insert(
+                sibling_id,
+                TrackedMakerOrderRecord {
+                    economics: None,
+                    query_seed: NtOrderQuerySeed::new(sibling.clone()),
+                    cancellation: Some(RestingOrderCancelRecord::new(200)),
+                },
+            );
+        }
+        let mut sink = RecordingVenueMutationSink::default();
+        sink.cached_orders
+            .insert(conflicted_id, conflicted_a.clone());
+        sink.cached_orders.insert(sibling_id, sibling.clone());
+        sink.cancel_replacement_orders
+            .insert(conflicted_id, conflicted_b);
+        sink.actor_times_ns.extend([100, 100]);
+
+        let error = super::drive_resting_order_economics(
+            &order_economics,
+            BoltV3OrderExecutionPolicy::live(),
+            &mut sink,
+            "maker_execution_client",
+            vec![
+                (conflicted_id, Some(conflicted_a)),
+                (sibling_id, Some(sibling)),
+            ],
+            100,
+        )
+        .expect_err("post-settlement health must be reported by the initiating drive");
+        let message = error.to_string();
+
+        assert_eq!(sink.cancel_calls, 2, "the due sibling must still route");
+        assert!(message.contains("recovery_identity_conflict={captured=VENUE-A,observed=VENUE-B}"));
+        assert!(message.contains("liveness=CancellationDeadlineExceeded"));
+        assert_eq!(message.matches("client_order_id=HEALTH-POST-A").count(), 1);
+    }
+
+    #[test]
+    fn synchronous_cancel_failure_settles_before_composed_health_collection() {
+        let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
+            "maker_execution_client",
+        );
+        let client_order_id = ClientOrderId::from("HEALTH-SYNC-FAIL");
+        let order = accepted_limit_order("HEALTH-SYNC-FAIL", "VENUE-SYNC-FAIL");
+        order_economics.tracked_orders.write().unwrap().insert(
+            client_order_id,
+            TrackedMakerOrderRecord {
+                economics: None,
+                query_seed: NtOrderQuerySeed::new(order.clone()),
+                cancellation: Some(RestingOrderCancelRecord::new(100)),
+            },
+        );
+        let mut sink = RecordingVenueMutationSink {
+            fail_actor_time: true,
+            ..RecordingVenueMutationSink::default()
+        };
+        sink.cached_orders.insert(client_order_id, order.clone());
+        sink.fail_cancel_ids.insert(client_order_id);
+
+        let error = super::drive_resting_order_economics(
+            &order_economics,
+            BoltV3OrderExecutionPolicy::live(),
+            &mut sink,
+            "maker_execution_client",
+            vec![(client_order_id, Some(order))],
+            100,
+        )
+        .expect_err("synchronous failure must settle without a post-operation observation");
+        let message = error.to_string();
+
+        assert!(message.contains("synthetic NT cancel failure: HEALTH-SYNC-FAIL"));
+        assert!(message.contains("liveness=CancellationDeadlineExceeded"));
+        assert!(!message.contains("synthetic actor-time failure"));
+    }
+
+    #[test]
+    fn post_operation_observation_failure_settles_before_health_collection() {
+        let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
+            "maker_execution_client",
+        );
+        let client_order_id = ClientOrderId::from("HEALTH-OBSERVE-FAIL");
+        let order = accepted_limit_order("HEALTH-OBSERVE-FAIL", "VENUE-OBSERVE-FAIL");
+        order_economics.tracked_orders.write().unwrap().insert(
+            client_order_id,
+            TrackedMakerOrderRecord {
+                economics: None,
+                query_seed: NtOrderQuerySeed::new(order.clone()),
+                cancellation: Some(RestingOrderCancelRecord::new(100)),
+            },
+        );
+        let mut sink = RecordingVenueMutationSink {
+            fail_actor_time: true,
+            ..RecordingVenueMutationSink::default()
+        };
+        sink.cached_orders.insert(client_order_id, order.clone());
+
+        let error = super::drive_resting_order_economics(
+            &order_economics,
+            BoltV3OrderExecutionPolicy::live(),
+            &mut sink,
+            "maker_execution_client",
+            vec![(client_order_id, Some(order))],
+            100,
+        )
+        .expect_err("post-operation observation failure must settle the armed generation");
+        let message = error.to_string();
+
+        assert_eq!(sink.cancel_calls, 1);
+        assert!(message.contains("synthetic actor-time failure"));
+        assert!(message.contains("liveness=CancellationDeadlineExceeded"));
+    }
+
+    #[test]
     fn one_side_cancel_all_marks_only_matching_records_after_nt_accepts() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
@@ -3240,11 +3107,16 @@ mod tests {
         modify_calls: usize,
         modify_requests: Vec<(ClientOrderId, Quantity, Price, Option<ClientId>)>,
         fail_submits: bool,
+        fail_actor_time: bool,
         fail_cancel_ids: BTreeSet<ClientOrderId>,
+        cancel_replacement_orders: BTreeMap<ClientOrderId, OrderAny>,
     }
 
     impl BoltV3NtVenueMutationSink for RecordingVenueMutationSink {
         fn actor_time_ns(&mut self) -> Result<u64> {
+            if self.fail_actor_time {
+                anyhow::bail!("synthetic actor-time failure");
+            }
             Ok(self.actor_times_ns.pop_front().unwrap_or(1))
         }
 
@@ -3285,6 +3157,9 @@ mod tests {
             self.cancel_calls += 1;
             if self.fail_cancel_ids.contains(&client_order_id) {
                 anyhow::bail!("synthetic NT cancel failure: {client_order_id}");
+            }
+            if let Some(replacement) = self.cancel_replacement_orders.remove(&client_order_id) {
+                self.cached_orders.insert(client_order_id, replacement);
             }
             Ok(())
         }
@@ -4977,6 +4852,19 @@ mod tests {
             )
             .expect("limit order should be valid"),
         )
+    }
+
+    fn accepted_limit_order(client_order_id: &str, venue_order_id: &str) -> OrderAny {
+        let mut order = limit_order(client_order_id);
+        let submitted = TestOrderEventStubs::submitted(&order, AccountId::from("ACCOUNT-001"));
+        order.apply(submitted).unwrap();
+        let accepted = TestOrderEventStubs::accepted(
+            &order,
+            AccountId::from("ACCOUNT-001"),
+            VenueOrderId::from(venue_order_id),
+        );
+        order.apply(accepted).unwrap();
+        order
     }
 
     fn post_only_limit_order(client_order_id: &str) -> OrderAny {

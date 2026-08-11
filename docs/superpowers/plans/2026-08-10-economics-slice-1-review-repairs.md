@@ -545,7 +545,7 @@ git commit -m "refactor(economics): remove family fee authority"
 
 **Interfaces:**
 - Consumes: Task 1 retry configuration, immutable `OrderAny` query seed, current NT cache snapshots, and actor nanoseconds.
-- Produces: `BoundExecutionEconomics::cancel_recovery_escalation_attempts()`, private `NtOrderQuerySeed`, `CancelRoutingState`, `CancelObservation`, `CancelOperation`, `RestingOrderCancelHealth`, `RestingOrderCancelRecord`, public read-only `BoltV3RestingOrderCancelHealthSnapshot`, exhaustive identity gate, exhaustive 4×6 transition function, and the only tracked-maker cancel/query routing path.
+- Produces: `BoundExecutionEconomics::cancel_recovery_escalation_attempts()`, private `NtOrderQuerySeed`, `CancelRoutingState`, `CancelObservation`, `CancelEvent`, `CancelEffect`, `RestingOrderCancelHealth`, `RestingOrderCancelRecord`, public read-only `BoltV3RestingOrderCancelHealthSnapshot`, exhaustive identity gate, exhaustive 4×6 transition function, one event-reducer state-mutation interface, and the only tracked-maker cancel/query effect runner.
 
 - [ ] **Step 1: Write table-driven tests for identity, observations, and all 24 transitions**
 
@@ -611,7 +611,7 @@ struct RestingOrderCancelHealth {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BoltV3RestingOrderCancelHealthSnapshot {
     client_order_id: ClientOrderId,
-    total_recovery_attempts: u64,
+    total_recovery_attempts: u32,
     recovery_identity_unavailable: bool,
     recovery_identity_conflict: Option<BoltV3RecoveryIdentityConflict>,
     retry_escalated: bool,
@@ -639,7 +639,7 @@ Conflict runs before routing status classification, adds the conflict facet/erro
 
 - [ ] **Step 5: Implement exhaustive NT status classification and the 4×6 transition**
 
-Match all 15 pinned `OrderStatus` variants without `_`. Classify positive-leaves partial fills as retryable and zero-leaves/closed orders as terminal. Implement one exhaustive `(CancelRoutingState, CancelObservation)` match containing the 24 approved cells. The transition returns only:
+Match all 15 pinned `OrderStatus` variants without `_`. Classify positive-leaves partial fills as retryable and zero-leaves/closed orders as terminal. Implement one exhaustive `(CancelRoutingState, CancelObservation)` match containing the 24 approved cells. The internal transition returns only:
 
 ```rust
 enum CancelTransition {
@@ -651,11 +651,23 @@ enum CancelTransition {
 
 No callback-facing function invokes NT.
 
+Wrap that transition in one private reducer:
+
+```rust
+fn apply_event(
+    &mut self,
+    seed: &mut NtOrderQuerySeed,
+    event: CancelEvent<'_>,
+) -> Result<CancelEffect>;
+```
+
+`CancelEvent` has only timer observation, callback observation, matching-generation operation success, and matching-generation operation-unobserved variants. Unobserved covers both synchronous NT routing failure and post-routing actor-clock/cache observation failure, and settles the already-armed generation before reporting. A matching operation-success event whose reconciliation fails must also settle its still-active generation to the armed backoff before returning the error. `CancelEffect` has only no-op, remove, cancel, and query variants. Delete separate plan, callback-reconcile, success-settle, and failure-settle methods. Tests and production integration use the same reducer interface; only the effect runner invokes NT.
+
 - [ ] **Step 6: Implement generation, backoff, attempt counters, and health deadlines**
 
-Add `BoundExecutionEconomics::cancel_recovery_escalation_attempts()` in this step, beside its first production consumer. `begin_operation` must checked-increment generation and operation counters, calculate `operation_not_before_ns = now_ns + retry_timeout_ns`, and enter `Attempting` before releasing ownership. `settle_operation` acts only if the same generation remains `Attempting`. Every cancel/query invocation, including synchronous failure, advances the same backoff. `SkippedByPolicy` advances nothing. At the exact configured count, add `retry_escalated`; at `quote_deadline_ns`, add the appropriate liveness facet without overwriting the other facets.
+Add `BoundExecutionEconomics::cancel_recovery_escalation_attempts()` in this step, beside its first production consumer. The timer event must checked-increment generation and operation counters, calculate `operation_not_before_ns = now_ns + retry_timeout_ns`, enter `Attempting`, and return one effect before releasing ownership. Operation-success and operation-unobserved events act only if the same generation remains `Attempting`; unobserved settles to the already-armed backoff. Every cancel/query effect, including a synchronous NT failure, advances the same backoff. `SkippedByPolicy` produces no timer event and advances nothing. At the exact configured count, add `retry_escalated`; at `quote_deadline_ns`, add the appropriate liveness facet without overwriting the other facets.
 
-Delete `primary_error`. `RestingOrderCancelRecord::health_snapshot(client_order_id)` copies the checked total-attempt count and every health facet into the sole report type; only `BoltV3RestingOrderCancelHealthSnapshot::runtime_error()` decides whether and how to render an error. The drive calls it exactly once after each retained record reaches its final state for that iteration: after no-operation reconciliation, after `settle_synchronous_failure`, or after `settle_operation` and its cache re-read. Removed records emit no stale health. Callback reconciliation changes state only; it never publishes a competing error. The final aggregate preserves operation failures separately, processes every sibling, and contains at most one composed health entry per client order ID per drive.
+Delete `primary_error`. `RestingOrderCancelRecord::health_snapshot(client_order_id)` copies the checked total-attempt count and every health facet into the sole report type; only `BoltV3RestingOrderCancelHealthSnapshot::runtime_error()` decides whether and how to render an error. The effect runner calls it exactly once after each retained record reaches its final state for that iteration: after a no-op timer event, after an operation-unobserved event, or after an operation-success event and its cache re-read. Removed records emit no stale health. Callback events change state only; they never publish a competing error. The final aggregate preserves operation failures separately, processes every sibling, and contains at most one composed health entry per client order ID per drive.
 
 Add these tests:
 
@@ -738,7 +750,7 @@ Add:
 fn query_order_via_nt(&mut self, seed: &OrderAny) -> Result<()>;
 ```
 
-The production implementation calls only `Strategy::query_order(seed)`. Under the registry lock, reconcile current cache state and arm `Attempting`; release the lock; call cancel/query; reacquire; re-read cache; settle only the matching generation. Collect one composed health error per affected record while continuing due siblings, then return one aggregate error containing every active facet.
+The production implementation calls only `Strategy::query_order(seed)`. Under the registry lock, feed a timer event into the reducer and receive at most one effect; release the lock; execute only that effect; reacquire; re-read cache; feed the matching-generation operation result back into the same reducer. The runner never reads or mutates coordinator state directly. Collect one composed health error per affected record while continuing due siblings, then return one aggregate error containing every active facet.
 
 - [ ] **Step 12: Convert all tracked-maker origins**
 

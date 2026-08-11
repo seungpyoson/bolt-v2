@@ -4,7 +4,7 @@
 
 **Goal:** Implement the finally approved PR #1544 / issue #1445 repair design so every routed NT order has one purpose-typed economics basis, one provider fee authority, and one bounded cancellation coordinator for tracked maker orders.
 
-**Architecture:** Keep `src/bolt_v3_order_execution.rs` as the shared routing facade, but move the two new state-heavy responsibilities into private `economics_basis` and `cancel_coordinator` submodules. Strategies supply typed value intent only; shared execution derives fills, gross value, lifecycle, admission purpose, clocks, retries, and NT operations. After written approval, `docs/superpowers/specs/2026-08-10-economics-slice-1-review-repairs-design.md` is the contract. Its finding-to-repair table is the authoritative traceability map for Tasks 8A–11.
+**Architecture:** Keep `src/bolt_v3_order_execution.rs` as the shared routing facade, with final-basis ownership in private `economics_basis` and cancellation ownership in private `cancel_coordinator`. The facade owns one typed submit-attempt result. The edge taker owns only its strategy-local, generation-checked exit exposure reducer and causal position fence; it does not own execution, fillability, normalization, admission, or sink classification. Strategies supply typed value intent only; shared execution derives fills, gross value, lifecycle, admission purpose, clocks, retries, and NT operations. After written approval, `docs/superpowers/specs/2026-08-10-economics-slice-1-review-repairs-design.md` is the contract. Its finding-to-repair table is the authoritative traceability map for Tasks 8A–12.
 
 **Tech Stack:** Rust, NautilusTrader Rust API pinned by `Cargo.lock`, `rust_decimal`, TOML/Serde, existing Bolt economics/admission/evidence modules, Cargo/nextest, GitHub advisory CI.
 
@@ -954,6 +954,7 @@ Tasks 1–6 produced reviewed head `4e0cd663a19c95ed0a6360660c070a12452134cb`. T
 
 - [ ] Before changing this boundary, run the existing graceful-stop/coordinator tests on T9. Add a real `Trader` stop-deferral integration test if the current test calls `Strategy::stop` directly rather than exercising Trader's registered stop closure; prove timers/callbacks remain available while deferred.
 - [ ] Delete the uncalled public `route_cancel_all` and `route_modify` wrappers.
+- [ ] Delete the caller-less public `BoltV3NtOrderManagementContract` and `nt_order_management_contract()` census plus imports used only by that census; retired batch-cancel types must not remain advertised through a public dead-code escape hatch.
 - [ ] Delete `route_cancel_all_with_sink`, `BoltV3CancelAllRoutingOutcome`, the batch-cancel sink trait methods/implementations, and the differential-only batch test. The tracked shadow branch returns its typed policy skip directly; it does not retain a test-only production sink.
 - [ ] Delete the test compatibility alias and rename all exact-observation calls to `drive_observed_resting_order_economics`.
 - [ ] Update the four quote-lifecycle comments to describe coordinator-scoped per-order fan-out.
@@ -964,6 +965,7 @@ Tasks 1–6 produced reviewed head `4e0cd663a19c95ed0a6360660c070a12452134cb`. T
 
 **Files:**
 - Modify existing: `src/bolt_v3_executable_cost.rs`
+- Modify existing: `src/bolt_v3_order_execution.rs`, `src/bolt_v3_order_execution/economics_basis.rs`, `src/bolt_v3_order_execution/tracked_order_economics.rs`, `src/bolt_v3_submit_admission.rs`
 - Modify existing: `src/strategies/binary_oracle_edge_taker/mod.rs`, `config.rs`, `exposure.rs`
 - Modify: `src/bolt_v3_current_evidence/facts.rs`, `codec/exit.rs`, `codec.rs`, `record.rs`, `handles.rs`, `reader.rs`, `generated_contract.rs`
 - Modify: `config/decision-evidence-contract.toml` and current-evidence fixtures
@@ -972,7 +974,8 @@ Tasks 1–6 produced reviewed head `4e0cd663a19c95ed0a6360660c070a12452134cb`. T
 **Interfaces:**
 - Produces low-level `compile_bounded_risk_reducing_ioc` plus one shared `compile_and_seal_risk_reducing_ioc` choke point. The latter consumes the requested `OrderAny`/typed intent, canonical NT position, authoritative book, configured depth, shared venue/instrument normalization, and one validated market-IOC template; it returns the final order, retained fills, intent, and sealed economics as one typed result.
 - Produces a final quantity already accepted by shared execution and retained fill legs whose sum equals that quantity exactly; no strategy or later clamp can mutate one without rebuilding the whole result.
-- Produces typed `Intent -> Preparation -> AttemptOutcome` evidence instead of a transient `submitted` boolean.
+- Replaces `Result<BoltV3SubmitRoutingOutcome>` with one exhaustive shared `BoltV3SubmitAttemptOutcome` that classifies route validation, intent-evidence rejection, admission rejection, policy skip, pre-sink rejection, sink rejection, and submission at their source. Every submit caller migrates; there is no compatibility result path or caller-side string/downcast classification.
+- Produces typed `Intent -> PreparedOrder -> AttemptOutcome` evidence instead of a transient `submitted` boolean, and one generation-checked exposure reducer in which only `Submitted` commits `ExitPending`.
 
 - [ ] Add failing compiler cases for full depth, thin depth, sub-increment coverage, below-minimum coverage, zero-after-alignment, and fill-leg sum equality. Assert exact-entry pricing is unchanged.
 - [ ] Add one complete config predicate for `Market + IOC + base_quantity + !post_only` with no trigger/trailing fields. Pass `is_reduce_only` through but do not use it as risk proof; typed intent plus the canonical-position clamp own that invariant. Reject every other non-post-only exit template at load time.
@@ -981,12 +984,16 @@ Tasks 1–6 produced reviewed head `4e0cd663a19c95ed0a6360660c070a12452134cb`. T
 - [ ] Add the complete residual event sequences:
   - reduced-size five-unit IOC fills all five, the typed pending-exit state reconciles from the authoritative position cache/event/timer, the five-unit residual becomes `Managed`, and a later evaluation actually routes another reduction;
   - the compiled IOC is itself partially filled and then canceled/expired, the larger residual becomes `Managed`, and a later evaluation routes another reduction.
-- [ ] Run the terminal-fill sequence with position-before-fill and fill-before-position event ordering; the timer reconciliation must close the latter if no new position callback arrives.
+- [ ] Implement a typed `PositionReductionFence` in `TerminalFillAwaitingPosition` carrying the position/order identity, compiled and cumulatively filled quantities, terminal trade/event identity and timestamp, and a pre-submit canonical position stamp containing quantity, `ts_last`, and last-event identity. Checked arithmetic derives the maximum residual. Cache absence, generic timestamp advance, or smaller quantity alone is not terminal proof. Release only when the cached position contains the terminal trade ID or its last position event is explicitly reconciliation-marked, at/after the terminal fill, distinct from the captured event stamp, and within the maximum-residual bound; a cached closed position must satisfy the same causal proof.
+- [ ] Run the terminal-fill sequence with position-before-fill and fill-before-position event ordering. Add the pinned-NT reconciliation case where `project_reconciliation_fill(..., apply_position=false)` makes the order terminal while position quantity/stamp remain unchanged: an immediate timer must remain awaiting and route nothing; unrelated later position activity must also remain awaiting; after a causally newer reconciliation-marked position cache update with no callback, the next timer remanages exactly five and the next evaluation routes only five. Duplicate reconciliation is idempotent.
 - [ ] Add a canonical-position race test: if the position shrinks after compilation but before sealing/routing, reject the attempt with no second clamp, no evidence mismatch, and no admission/sink mutation.
 - [ ] Add zero-depth/preparation-failure evidence proving no exposure, admission, or sink mutation.
-- [ ] Replace the overloaded exit evidence with pre-preparation `ExitIntentDecisionFact`, final-only `ExitSubmissionDecisionFact`, and exhaustive `ExitAttemptOutcome` on `ExitEvaluationFact`. `PreparationRejected` carries a typed stage/reason and no submission linkage; every later variant carries the actual compiled linkage. Do not add a redundant standalone preparation fact.
-- [ ] Update codecs, generated contract, fixtures, census/contract entries, and round-trip tests atomically. Assert a requested quantity of ten can never be encoded as the submitted quantity when compilation produced five.
-- [ ] Implement `TerminalFillAwaitingPosition` (or an equivalent exhaustive enum state), resolving from authoritative NT cache/position events to `Managed` residual or flat; do not add a boolean latch.
+- [ ] Replace the overloaded exit evidence with pre-preparation `ExitIntentDecisionFact`, prepared-only `ExitPreparedOrderFact`, and exhaustive `ExitAttemptOutcome` on `ExitEvaluationFact`. `PreparationRejected` carries a typed stage/reason and no prepared/submitted linkage. Route, intent-evidence, admission, policy, pre-sink, and sink outcomes carry `PreparedOrderLinkage`; only `Submitted` carries the distinct `SubmittedOrderLinkage`. Do not add a redundant standalone preparation-result fact.
+- [ ] Replace the shared submit `anyhow::Result` boundary with the exhaustive typed outcome and map each failure where it originates. Inject every route phase independently and assert its exact typed outcome, linkage kind, counter/reservation rollback, sink count, and evidence; no string parsing or downcasts are allowed.
+- [ ] Migrate resting-submit registration to the same typed outcome, superseding the historical Task 5 closure signature: retain the provisional tracked record only on `Submitted`; remove it on every other variant without erasing that variant. Reentrant callback state remains generation-authoritative.
+- [ ] Add an exhaustive generation-checked exit-attempt reducer: arm `ExitAttempting` before routing; every non-submitted outcome returns the same generation to `Managed`; only `Submitted` commits `ExitPending`; a synchronous callback that advances state cannot be overwritten by the route return. Replace the current shadow latch test with `PolicySkipped` evidence, zero sink/capacity mutation, `Managed` exposure, and a later eligible exit attempt.
+- [ ] Update codecs, generated contract, fixtures, census/contract entries, and round-trip tests atomically. Assert a requested quantity of ten can never be encoded as the submitted quantity when compilation produced five, and a prepared-but-skipped client order ID can never be decoded as a submitted-order linkage.
+- [ ] Implement `TerminalFillAwaitingPosition` and its causal fence as an exhaustive enum state resolved by one cache/position-event/timer reducer; do not add a boolean latch or an unfenced "cache is current" conditional.
 - [ ] Run focused edge-taker compiler, admission, evidence, codec, and adverse-path tests on T9.
 - [ ] Commit compiler/state-machine and evidence-schema changes as separately reviewable cohesive commits.
 
@@ -1041,6 +1048,7 @@ Tasks 1–6 produced reviewed head `4e0cd663a19c95ed0a6360660c070a12452134cb`. T
 
 ### Task 12: The only exact-head closure and review gate
 
+- [ ] Confirm by direct plan inspection that Tasks 1–11 contain no active push, publication, or review request; Task 7 remains historical/inert and Task 12 is the sole authority.
 - [ ] Before closure, update the stable PR body only for lasting behavior: executable partial risk reductions, truthful preparation evidence, and startup rejection of automatic flattening under quote-only economics. Do not add transient SHA/CI status.
 - [ ] Resolve the live PR base immediately before verification (`gh pr view 1544`); expected current base is `e62584045629208e81d2dce1fce608720ea01fbf`, prior reviewed head is `4e0cd663a19c95ed0a6360660c070a12452134cb`, and the repair delta is `4e0cd663...<new-head>`. Do not reuse the historical `ac78f8fd` anchor.
 - [ ] Bind the review request to the exact commit containing the finally approved design (resolve its SHA after this design review), pinned NT `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`, the exact pushed code head, and the live PR base.

@@ -539,13 +539,14 @@ git commit -m "refactor(economics): remove family fee authority"
 ### Task 5: Implement and route the exhaustive cancellation coordinator
 
 **Files:**
-- Create: `src/bolt_v3_order_execution/cancel_coordinator.rs`
+- Create: `src/bolt_v3_order_execution/tracked_order_economics.rs`
+- Create: `src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs`
 - Modify: `src/bolt_v3_economics_runtime.rs`
 - Modify: `src/bolt_v3_order_execution.rs`
 
 **Interfaces:**
 - Consumes: Task 1 retry configuration, immutable `OrderAny` query seed, current NT cache snapshots, and actor nanoseconds.
-- Produces: `BoundExecutionEconomics::cancel_recovery_escalation_attempts()`, private `NtOrderQuerySeed`, `CancelRoutingState`, `CancelObservation`, `CancelEvent`, `CancelEffect`, `RestingOrderCancelHealth`, `RestingOrderCancelRecord`, public read-only `BoltV3RestingOrderCancelHealthSnapshot`, exhaustive identity gate, exhaustive 4×6 transition function, one event-reducer state-mutation interface, and the only tracked-maker cancel/query effect runner.
+- Produces: a public re-exported `BoltV3OrderEconomicsHandle` whose fields and complete tracked-order aggregate are private to `tracked_order_economics`; `BoundExecutionEconomics::cancel_recovery_escalation_attempts()`; private `NtOrderQuerySeed`, `CancelRoutingState`, `CancelObservation`, `CancelEvent`, `CancelEffect`, `RestingOrderCancelHealth`, and `RestingOrderCancelRecord`; public read-only `BoltV3RestingOrderCancelHealthSnapshot`; exhaustive identity gate; exhaustive 4×6 transition function; one event-reducer state-mutation interface; and the only tracked-maker cancel/query effect runner.
 
 - [ ] **Step 1: Write table-driven tests for identity, observations, and all 24 transitions**
 
@@ -663,7 +664,9 @@ fn apply_event(
 
 `CancelEvent` has only routing-capable timer observation, passive observation, matching-generation operation success, and matching-generation operation-unobserved variants. Callbacks and policy-suppressed timer drives both use the explicitly non-routing passive event; event names describe authority, not call-site provenance. Unobserved covers both synchronous NT routing failure and post-routing actor-clock/cache observation failure, and settles the already-armed generation before reporting. A matching operation-success event whose reconciliation fails must also settle its still-active generation to the armed backoff before returning the error. `CancelEffect` has only no-op, remove, cancel, and query variants. Delete separate plan, callback-reconcile, success-settle, and failure-settle methods. Tests and production integration use the same reducer interface; only the effect runner invokes NT.
 
-Put the private query seed and optional coordinator record inside one `TrackedOrderCancellation` owner. Every cancellation origin calls its sole `request_intent(quote_deadline_ns)` method; no caller may construct or replace the optional coordinator record directly. Normal resting registration constructs an owner without an intent, while running-state fill-void reconciliation constructs the same owner and immediately requests one. This makes generation/deadline/backoff preservation compiler-owned rather than a call-site convention.
+Define `BoltV3OrderEconomicsHandle`, the registry lock/map, `TrackedMakerOrderRecord`, `RestingOrderEconomicsRecord`, registration rollback guard, private query seed, and optional coordinator record inside `tracked_order_economics.rs`. The parent `bolt_v3_order_execution.rs` re-exports the handle and health value types but cannot name or access any field or record type. A handle clone shares the same private registry. The parent receives semantic methods only and never receives a mutable record, mutable-registry callback, registry constructor, or partial-record constructor.
+
+Inside that aggregate, put the private query seed and optional coordinator record inside one `TrackedOrderCancellation` owner. Every cancellation origin calls its sole `request_intent(quote_deadline_ns)` method; no caller may construct or replace the optional coordinator record directly. Normal resting registration constructs an owner without an intent, while running-state fill-void reconciliation constructs the same owner and immediately requests one. Keep the cancellation reducer in `tracked_order_economics/cancel_coordinator.rs`; do not move economics registration or refresh into that reducer file. This makes generation/deadline/backoff preservation compiler-owned rather than a call-site convention without creating a cancellation monolith.
 
 - [ ] **Step 6: Implement generation, backoff, attempt counters, and health deadlines**
 
@@ -691,16 +694,18 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: all identity, status, matrix, generation, and health tests pass in the working tree. Do not commit until the routing integration below consumes the coordinator and removes the old boolean path.
 
-#### Routing integration within Task 5: remove the old cancellation path atomically
+#### Routing integration within Task 5: replace the tracked-order aggregate atomically
 
 **Files:**
 - Modify: `src/bolt_v3_order_execution.rs`
+- Create: `src/bolt_v3_order_execution/tracked_order_economics.rs`
+- Move: `src/bolt_v3_order_execution/cancel_coordinator.rs` to `src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs`
 - Modify: `src/bolt_v3_quote_lifecycle.rs`
 - Modify: `tests/bolt_v3_binary_oracle_maker_runtime.rs`
 
 **Interfaces:**
 - Consumes: the Task 5 coordinator plans defined above and the Task 3 actor-time sink.
-- Produces: one tracked-maker registry with optional cancellation intent, NT-native query recovery, generation-safe cancel/query execution, exact cancel-all scope, and sibling-isolated aggregate errors.
+- Produces: one privately owned tracked-maker economics handle and registry, optional cancellation intent, NT-native query recovery, generation-safe cancel/query execution, exact cancel-all scope, and sibling-isolated aggregate errors. `bolt_v3_order_execution.rs` contains no tracked record fields, registry access, cancellation constructors, or tracked-maker effect runner.
 
 - [ ] **Step 8: Add integration tests for intent creation, query recovery, re-entry, and scope**
 
@@ -709,6 +714,7 @@ Add behavior tests named:
 ```rust
 fn healthy_resting_order_survives_timer_drives_without_a_cancel_intent()
 fn every_cancel_origin_merges_into_one_tracked_intent()
+fn repeated_cancel_origins_preserve_the_first_deadline_and_backoff()
 fn missing_unqueryable_order_performs_no_nt_operation_and_becomes_loud()
 fn captured_identity_routes_query_and_only_authoritative_cache_state_retires()
 fn synchronous_pending_rejection_and_terminal_callbacks_cannot_duplicate_or_overwrite()
@@ -728,21 +734,22 @@ Run:
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test maker_taker healthy_resting_order_survives_timer_drives_without_a_cancel_intent -- --test-threads=1
 ```
 
-Expected: missing coordinator registry/API.
+Expected: the current parent-owned registry permits direct record construction/replacement or the wished-for semantic API does not exist.
 
-- [ ] **Step 10: Replace `cancel_pending` with one atomic tracked-order registry**
+- [ ] **Step 10: Move the complete public handle and aggregate behind one module boundary**
 
-Keep one lock around records shaped as:
+Move `BoltV3OrderEconomicsHandle` itself into `tracked_order_economics.rs` and re-export it from `bolt_v3_order_execution.rs`. Keep one private lock around records shaped as:
 
 ```rust
 struct TrackedMakerOrderRecord {
     economics: Option<RestingOrderEconomicsRecord>,
-    query_seed: NtOrderQuerySeed,
-    cancellation: Option<RestingOrderCancelRecord>,
+    cancellation: TrackedOrderCancellation,
 }
 ```
 
-Healthy resting registrations have `cancellation: None`. Fill-void recovery may insert `economics: None` with one cancellation intent. Terminal reconciliation removes the entire record. Registration stores exact instrument, side, and the submitted `OrderAny` seed. Duplicate client IDs fail before sink mutation.
+The handle constructor is the only complete-aggregate constructor and initializes an empty private registry. Healthy resting registrations hold an owner with no intent. Fill-void recovery may insert `economics: None` through a semantic aggregate operation that creates one immediate intent. Terminal reconciliation removes the entire record. Registration stores exact instrument, side, and the submitted `OrderAny` seed. Duplicate client IDs fail before sink mutation. The registration guard and its rollback map access stay private to this module.
+
+Move every current direct `economics` and `tracked_orders` access behind semantic methods. Parent production and parent tests must not import `TrackedMakerOrderRecord`, `TrackedOrderCancellation`, `RestingOrderCancelRecord`, `NtOrderQuerySeed`, the registry map, or the registration guard. Tests that previously inserted or inspected records directly must drive registration, cancellation origins, callbacks, timers, and read-only health/ID snapshots through the same API as production.
 
 - [ ] **Step 11: Extend the NT sink with query and execute plans outside the lock**
 
@@ -753,6 +760,8 @@ fn query_order_via_nt(&mut self, seed: &OrderAny) -> Result<()>;
 ```
 
 The production implementation calls only `Strategy::query_order(seed)`. Under the registry lock, feed a timer event into the reducer and receive at most one effect; release the lock; execute only that effect; reacquire; re-read cache; feed the matching-generation operation result back into the same reducer. The runner never reads or mutates coordinator state directly. Collect one composed health error per affected record while continuing due siblings, then return one aggregate error containing every active facet.
+
+The known regression `maker_submit_routes_through_shared_execution_policy_and_admission` must assert the canonical composed facet `recovery_identity_unavailable=true`, not the retired prose `identity unavailable`, while retaining the typed health assertion. Run this exact test red before changing the assertion and green afterward.
 
 - [ ] **Step 12: Convert all tracked-maker origins**
 
@@ -799,7 +808,7 @@ Expected: all focused tests pass; cancel/query counts remain bounded.
 - [ ] **Step 16: Commit the coordinator and its only routing authority together**
 
 ```bash
-git add src/bolt_v3_economics_runtime.rs src/bolt_v3_order_execution.rs src/bolt_v3_order_execution/cancel_coordinator.rs src/bolt_v3_quote_lifecycle.rs tests/bolt_v3_binary_oracle_maker_runtime.rs
+git add src/bolt_v3_economics_runtime.rs src/bolt_v3_order_execution.rs src/bolt_v3_order_execution/tracked_order_economics.rs src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs src/bolt_v3_quote_lifecycle.rs tests/bolt_v3_binary_oracle_maker_runtime.rs
 git commit -m "refactor(maker): centralize tracked order cancellation"
 ```
 
@@ -965,7 +974,7 @@ Repair any real finding, rerun the smallest affected test, and repeat this step 
 If Step 3 changed files:
 
 ```bash
-git add src/bolt_v3_config.rs src/bolt_v3_economics_runtime.rs src/bolt_v3_economics_test_support.rs src/bolt_v3_submit_admission.rs src/bolt_v3_order_execution.rs src/bolt_v3_order_execution/economics_basis.rs src/bolt_v3_order_execution/cancel_coordinator.rs src/bolt_v3_market_families/mod.rs src/bolt_v3_market_families/updown.rs src/bolt_v3_market_families/static_binary_event.rs src/bolt_v3_market_families/binary_outcome.rs src/bolt_v3_quote_lifecycle.rs src/strategies/binary_oracle_edge_taker/mod.rs src/strategies/binary_oracle_edge_taker/tests/orders_admission.rs src/strategies/binary_oracle_maker/archetype.rs src/strategies/binary_oracle_maker/mod.rs tests/bolt_v3_economics_runtime.rs tests/bolt_v3_binary_oracle_maker_runtime.rs config/root.toml config/profiles/prod-btc-5m.overlay.toml tests/fixtures/bolt_v3/root.toml tests/fixtures/economics/hyperliquid/execution.toml tests/fixtures/legacy_prod_btc_5m_oracle.toml
+git add src/bolt_v3_config.rs src/bolt_v3_economics_runtime.rs src/bolt_v3_economics_test_support.rs src/bolt_v3_submit_admission.rs src/bolt_v3_order_execution.rs src/bolt_v3_order_execution/economics_basis.rs src/bolt_v3_order_execution/tracked_order_economics.rs src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs src/bolt_v3_market_families/mod.rs src/bolt_v3_market_families/updown.rs src/bolt_v3_market_families/static_binary_event.rs src/bolt_v3_market_families/binary_outcome.rs src/bolt_v3_quote_lifecycle.rs src/strategies/binary_oracle_edge_taker/mod.rs src/strategies/binary_oracle_edge_taker/tests/orders_admission.rs src/strategies/binary_oracle_maker/archetype.rs src/strategies/binary_oracle_maker/mod.rs tests/bolt_v3_economics_runtime.rs tests/bolt_v3_binary_oracle_maker_runtime.rs config/root.toml config/profiles/prod-btc-5m.overlay.toml tests/fixtures/bolt_v3/root.toml tests/fixtures/economics/hyperliquid/execution.toml tests/fixtures/legacy_prod_btc_5m_oracle.toml
 git commit -m "test(economics): close repair evidence"
 ```
 

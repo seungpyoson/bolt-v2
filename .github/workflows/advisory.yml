@@ -53,7 +53,7 @@ jobs:
       - name: fmt
         run: |
           set -x
-          cargo fmt --check
+          cargo fmt --all --check
 
       - name: fmt (backtesting vertical slice)
         if: ${{ !cancelled() }}
@@ -160,7 +160,7 @@ jobs:
       - name: clippy
         run: |
           set -x
-          cargo clippy --locked --features test-current-evidence-inspection --lib --bins -- -D warnings
+          cargo clippy --workspace --locked --features test-current-evidence-inspection --lib --bins -- -D warnings
 
       - name: clippy (backtesting vertical slice)
         if: ${{ !cancelled() }}
@@ -240,7 +240,7 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           set -x
-          mold -run cargo nextest run --locked --no-fail-fast --features test-current-evidence-inspection
+          mold -run cargo nextest run --workspace --locked --no-fail-fast --features test-current-evidence-inspection
 
       - name: test (backtesting vertical slice)
         if: ${{ !cancelled() }}

@@ -5,6 +5,11 @@ edition = "2024"
 publish = false
 autotests = false
 
+[workspace]
+members = ["crates/economics-core"]
+exclude = ["crates/backtesting-vertical-slice"]
+resolver = "3"
+
 [[test]]
 name = "iv"
 path = "tests/iv.rs"

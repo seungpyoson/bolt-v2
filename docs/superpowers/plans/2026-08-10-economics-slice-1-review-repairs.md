@@ -1006,3 +1006,86 @@ Record the printed head SHA. Do not wait for advisory CI; the push triggers the 
 Resolve GitHub node ID `U_kgDOEZMFhA` to its current login, confirm `.github/CODEOWNERS` still names that login, and request its native review on PR #1544. The review prompt must name the exact pushed head, base `ac78f8fd5f5a133d1da69db7d8e34ffe17d44de6`, pinned NT `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`, the approved design head `b22e7b213e3de41cec2ad66d8593dc09801c507d`, changed files, local T9 commands/results, and every invariant in Step 3.
 
 Do not merge. Report the head SHA and that review/CI evidence is pending; merge remains blocked until the user explicitly authorizes it and the required reviewer approves that exact head.
+
+## Post-review systematic repair addendum
+
+### Task 8: Govern the neutral core and delete retired cancellation APIs
+
+**Files:**
+- Modify: `Cargo.toml`, `.gitignore`, `justfile`, `.github/workflows/advisory.yml`
+- Modify: `src/bolt_v3_order_execution.rs`, `src/bolt_v3_quote_lifecycle.rs`
+
+**Interfaces:**
+- Produces one root workspace/lockfile and explicit all-vs-exact cancellation API names.
+
+- [ ] Add `crates/economics-core` as a root workspace member and make repository fmt, Clippy, and nextest select the workspace.
+- [ ] Verify `cargo metadata` includes both packages and the root lockfile resolves the core.
+- [ ] Delete the uncalled public `route_cancel_all` and `route_modify` wrappers; retain only the private sink operations needed by tracked shadow routing and maker runtime.
+- [ ] Delete the test compatibility alias and rename all exact-observation test calls.
+- [ ] Update the four quote-lifecycle comments to describe coordinator-scoped fan-out.
+- [ ] Run root/core formatting and the focused order-execution tests on T9.
+
+### Task 9: Compile partial risk-reducing exits before sealing
+
+**Files:**
+- Modify: `src/bolt_v3_executable_cost.rs`
+- Modify: `src/strategies/binary_oracle_edge_taker/mod.rs`
+- Modify: `src/strategies/binary_oracle_edge_taker/config.rs`
+- Test: `src/strategies/binary_oracle_edge_taker/tests/orders_admission.rs`
+- Test: `src/strategies/binary_oracle_edge_taker/tests/source_evidence.rs`
+
+**Interfaces:**
+- Produces `compile_bounded_risk_reducing_ioc`, returning positive executable quantity, retained levels, and worst executable price from requested quantity and configured depth.
+- Consumes the result before final `OrderAny` construction and economics sealing.
+
+- [ ] Add a failing submit-path test: a ten-unit forced exit with five executable units submits five, seals five matching fill units, and leaves the residual managed.
+- [ ] Add a failing test proving zero executable depth remains fail-closed and does not mutate exposure/admission/sink state.
+- [ ] Implement the shared bounded compiler without changing exact-entry pricing.
+- [ ] Validate unsupported trigger exit templates at configuration load rather than overwriting their trigger price.
+- [ ] Split exit decision evidence from execution: decision evidence precedes fallible preparation, and preparation failure records one submitted-false evaluation.
+- [ ] Run the focused edge-taker pricing, admission, evidence, and adverse-path tests on T9.
+
+### Task 10: Make runtime/provider authority honest
+
+**Files:**
+- Modify: `src/bolt_v3_validate/kill_switch.rs`, `src/bolt_v3_live_node/risk_admission_loss.rs`
+- Modify: `src/bolt_v3_providers/polymarket.rs`, `src/bolt_v3_providers/polymarket/economics.rs`
+- Modify: `src/bolt_v3_providers/hyperliquid/economics.rs`
+- Modify: shipped config and economics fixtures that own removed fields/components
+- Test: config, provider economics, and kill-switch behavior suites
+
+**Interfaces:**
+- Produces startup rejection for quote-only flattening and provider quotes based only on supported authorities.
+
+- [ ] Add failing config evidence for quote-only plus enabled automatic flattening.
+- [ ] Add failing forced-reduction evidence proving seal rejection is recorded before returning.
+- [ ] Remove Polymarket `mbf`/`tbf` builder-charge construction and its config/fixture component; retain authoritative platform-fee behavior.
+- [ ] Validate the Polymarket rounding/sub-quantum pair and full economics config during load.
+- [ ] Delete dead `fee_cache_ttl_secs` and Hyperliquid aligned-product policy fields from schema and every shipped fixture.
+- [ ] Reject, rather than waive, an attached Hyperliquid builder charge for unsupported spot buys.
+- [ ] Run focused config/provider/kill-switch tests on T9.
+
+### Task 11: Close neutral-core and evidence contract gaps
+
+**Files:**
+- Modify: `crates/economics-core/src/edge.rs`, `quote.rs`, `types.rs`, `lib.rs`
+- Modify: `src/bolt_v3_economics_runtime.rs`, `src/shadow_pnl.rs`
+- Modify: `src/strategies/binary_oracle_edge_taker/entry_decision.rs`
+- Modify: affected root/backtesting adapters and tests
+
+**Interfaces:**
+- Produces a currency-typed gross edge input and separates admission-authoritative core terms from forecast evidence.
+
+- [ ] Add failing core tests for gross-currency mismatch, missing guaranteed point valuation, and non-positive position quantity.
+- [ ] Introduce the typed gross amount, migrate every root/replay caller, and delete duplicate/unused core APIs.
+- [ ] Add failing resting refresh evidence showing forecast-only drift does not cancel an otherwise unchanged order.
+- [ ] Add a shadow-PnL test that strips bound economics from an admitted entry and asserts the loud error.
+- [ ] Correct the entry-state comment and invalid backtesting manifest fixture versions.
+- [ ] Run core, economics-runtime, shadow-PnL, and affected backtesting tests on T9.
+
+### Task 12: Exact-head closure
+
+- [ ] Run `cargo fmt --all -- --check`, workspace Clippy with warnings denied, workspace nextest, and the root build using `CARGO_TARGET_DIR=/Volumes/T9/bolt-v2-target-1544-review-repairs` and `CARGO_BUILD_JOBS=2`; never run Cargo concurrently.
+- [ ] Run `git diff --check`, inspect removed-symbol call graphs, and conduct an internal adversarial review of the full base-to-head diff.
+- [ ] Commit by cohesive boundary, push the exact head, and report it without waiting on advisory CI.
+- [ ] Request fresh external and native review only after all local findings are resolved and the worktree is clean.

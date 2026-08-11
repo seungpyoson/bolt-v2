@@ -223,6 +223,34 @@ Tests are behavioral; no source-scanning test is added.
 
 Existing fail-before-mutation admission and resting-refresh tests remain regression evidence. Deletion of obsolete public paths is established by compilation and reviewer diff/symbol inspection, not by testing source text.
 
+## Final external-review closure
+
+The final review exposed four boundary defects that are repaired together rather than as local conditionals.
+
+### Governed neutral core
+
+The repository root is the Cargo workspace root and `crates/economics-core` is an explicit member. The root lockfile is the only lockfile. Repository `fmt`, Clippy, test, and advisory-CI commands select the workspace, so the neutral core's unit and synthetic-extension tests cannot be green locally while absent from exact-head CI.
+
+The core also makes reporting currency part of gross expected value. `fold_net_edge` accepts a typed gross amount and rejects a currency that differs from the quote reporting currency. Required guaranteed components fail at the point of aggregation when their point valuation is absent. Duplicate stale-source validation and unused public admission helpers are deleted; non-positive position quantity and missing holding horizon remain distinct typed errors.
+
+### One tracked-order cancellation authority
+
+The public `route_cancel_all` and `route_modify` convenience wrappers are deleted. Tracked maker scope cancellation remains the only production cancel-all route and fans out through the per-order coordinator; the private batch sink survives only for shadow-policy behavior and differential tests. Quote-lifecycle documentation names coordinator scope rather than NT's batch API. Tests call `drive_observed_resting_order_economics` by its exact name; the ambiguous compatibility alias is deleted.
+
+### Executable risk-reduction compilation
+
+A shared execution compiler, not the strategy, converts a requested market-IOC risk-reducing quantity plus the authoritative book and configured depth bound into the largest positive executable quantity, its retained fill levels, and its worst executable price. Full depth returns the requested quantity; thin depth returns the covered quantity instead of rejecting the whole reduction. The final `OrderAny` is built or clamped to that compiled quantity before the sealed economics basis is constructed, so candidate fills still exactly cover the submitted order. An empty or invalid executable book remains fail-closed. Unsupported trigger exit shapes fail configuration validation instead of having their trigger price overwritten by a current-book sweep.
+
+Exit evaluation and execution become explicit phases. The strategy records the normalized exit decision before the fallible shared compiler/economics preparation, then records exit-evaluation evidence with `submitted=false` on every preparation failure. Venue routing remains after valid decision evidence, a sealed final basis, and admission. A partial IOC result leaves the residual position under the existing terminal/expiry remanagement path for a later reduction attempt.
+
+### Honest runtime and provider authority
+
+`quote_only` has no live authoritative publisher. Startup therefore rejects `flatten_open_positions_on_breach=true` while any selected execution economics binding remains quote-only; the kill switch cannot advertise automatic flattening that its seal can never authorize. A forced-reduction seal rejection still records the typed rejected-admission fact before returning the error.
+
+Polymarket models only authoritative platform fees in Slice 1. Market `mbf`/`tbf` metadata does not create a Bolt builder charge, and the builder component/config fixtures are deleted. Fee rounding and sub-quantum behavior are validated as one coherent pair, and provider economics configuration is validated during config loading rather than deferred until scope construction. Hyperliquid drops unused aligned-product policy inputs, and an attached builder charge on an unsupported spot-buy shape fails closed instead of being silently waived. Dead provider cache knobs are removed from schema, shipped TOML, and fixtures.
+
+Forecast-only drift is evidence, not admission authority: resting-order equivalence compares the core quote, core edge, binding, and reservation terms that authorized the order, while forecast changes are recorded without forcing cancellation. Shadow-PnL and manifest fixtures gain fail-closed behavioral coverage for their newly introduced contracts.
+
 ## Non-goals
 
 This repair does not implement actual economics ledgers, supplemental venue actuals, lifecycle or transfer actuals, reporting closure, live economics publication, or live execution. Those remain outside Slice 1. It also does not claim retry durability across process death or forced process termination.

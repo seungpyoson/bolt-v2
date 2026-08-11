@@ -553,7 +553,8 @@ Add inline tests named:
 
 ```rust
 fn venue_identity_gate_covers_capture_absence_equality_and_conflict()
-fn venue_identity_conflict_is_a_monotonic_fail_atomic_hold()
+fn venue_identity_conflict_is_a_monotonic_routing_hold()
+fn venue_identity_conflict_holds_routing_without_bypassing_health_or_clock_checks()
 fn order_status_partition_covers_every_pinned_nt_variant()
 fn every_cancel_state_observation_pair_has_one_explicit_transition()
 fn callbacks_cannot_overwrite_a_newer_attempt_generation()
@@ -561,7 +562,7 @@ fn retry_escalation_recoverability_conflict_and_liveness_compose()
 fn coordinator_rejects_clock_regression_without_state_change()
 ```
 
-The identity-conflict test must start with non-default generation, deadline, counters, routing state, and health; observe a differing venue ID against retryable and terminal cache states; assert only `RecoveryIdentityConflict { captured, observed }` is added; then assert later events cause no operation or retirement while a due sibling still progresses and the aggregate error retains both failures.
+The identity-conflict tests must start with non-default generation, deadline, counters, routing state, and health; observe a differing venue ID against retryable and terminal cache states; assert that `RecoveryIdentityConflict { captured, observed }` is added without changing routing state, generation, deadline, counters, seed, or pre-existing health; then assert later events cause no operation or retirement while actor-clock validation and due deadline health continue, a due sibling still progresses, and the aggregate error retains both failures.
 
 - [ ] **Step 2: Run the 24-pair test and confirm the module is absent**
 
@@ -632,7 +633,7 @@ match (captured_venue_id, cached_venue_id) {
 }
 ```
 
-Conflict runs before status classification, adds the conflict facet/error, and returns a routing hold without changing any existing field. Once the facet exists, all later reconciliations return the same hold.
+Conflict runs before routing status classification, adds the conflict facet/error, and returns a routing hold without changing routing state, generation, deadline, counters, seed, or pre-existing health. Once the facet exists, all later reconciliations keep the same routing hold while actor-clock observation and due monotonic deadline health continue.
 
 - [ ] **Step 5: Implement exhaustive NT status classification and the 4×6 transition**
 

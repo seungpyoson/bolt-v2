@@ -310,19 +310,19 @@ impl RestingOrderCancelRecord {
         now_ns: u64,
         retry_timeout_ns: u64,
     ) -> Result<CancelTransition> {
-        if self.health.recovery_identity_conflict.is_some() {
-            return Ok(CancelTransition::NoOperation);
-        }
         if self.last_observed_ns.is_some_and(|prior| now_ns < prior) {
             anyhow::bail!(
                 "resting cancellation actor clock regressed: prior_ns={} observed_ns={now_ns}",
                 self.last_observed_ns.unwrap_or_default()
             );
         }
+        if self.health.recovery_identity_conflict.is_some() {
+            return Ok(self.observe_identity_conflict_hold(now_ns));
+        }
         match seed.reconcile_cached_identity(cached)? {
             IdentityTransition::Conflict(conflict) => {
                 self.health.recovery_identity_conflict = Some(conflict);
-                return Ok(CancelTransition::NoOperation);
+                return Ok(self.observe_identity_conflict_hold(now_ns));
             }
             IdentityTransition::Unchanged
             | IdentityTransition::Captured
@@ -357,6 +357,16 @@ impl RestingOrderCancelRecord {
         self.routing_state = next_state;
         self.last_observed_ns = Some(now_ns);
         Ok(transition)
+    }
+
+    fn observe_identity_conflict_hold(&mut self, now_ns: u64) -> CancelTransition {
+        if now_ns >= self.quote_deadline_ns {
+            self.health
+                .liveness
+                .get_or_insert(BoltV3CancellationLivenessFailure::CancellationDeadlineExceeded);
+        }
+        self.last_observed_ns = Some(now_ns);
+        CancelTransition::NoOperation
     }
 
     fn begin_operation(
@@ -619,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn venue_identity_conflict_is_a_monotonic_fail_atomic_hold() {
+    fn venue_identity_conflict_is_a_monotonic_routing_hold() {
         let accepted_a = accepted_order("identity-conflict", "VENUE-A");
         let accepted_b = accepted_order("identity-conflict", "VENUE-B");
         let mut seed = NtOrderQuerySeed::new(accepted_a.clone());
@@ -644,7 +654,7 @@ mod tests {
             record.total_recovery_attempts,
             before.total_recovery_attempts
         );
-        assert_eq!(record.last_observed_ns, before.last_observed_ns);
+        assert_eq!(record.last_observed_ns, Some(30));
         assert!(record.health.retry_escalated);
         assert!(record.health.recovery_identity_conflict.is_some());
 
@@ -661,6 +671,46 @@ mod tests {
         assert_eq!(transition, CancelTransition::NoOperation);
         assert!(operation.is_none());
         assert_eq!(record.routing_state, before.routing_state);
+        assert_eq!(record.last_observed_ns, Some(40));
+    }
+
+    #[test]
+    fn venue_identity_conflict_holds_routing_without_bypassing_health_or_clock_checks() {
+        let accepted_a = accepted_order("identity-conflict-health", "VENUE-A");
+        let accepted_b = accepted_order("identity-conflict-health", "VENUE-B");
+        let mut seed = NtOrderQuerySeed::new(accepted_a);
+        let mut record = RestingOrderCancelRecord::new(100);
+        record.routing_state = CancelRoutingState::Backoff { not_before_ns: 40 };
+        record.last_observed_ns = Some(20);
+
+        let (transition, operation) = record
+            .plan_drive(&mut seed, Some(&accepted_b), 30, 10, 3)
+            .unwrap();
+        assert_eq!(transition, CancelTransition::NoOperation);
+        assert!(operation.is_none());
+        let health = record.health_snapshot(ClientOrderId::from("identity-conflict-health"));
+        assert!(health.recovery_identity_conflict().is_some());
+        assert_eq!(health.liveness(), None);
+
+        let (transition, operation) = record
+            .plan_drive(&mut seed, Some(&accepted_b), 100, 10, 3)
+            .unwrap();
+        assert_eq!(transition, CancelTransition::NoOperation);
+        assert!(operation.is_none());
+        let health = record.health_snapshot(ClientOrderId::from("identity-conflict-health"));
+        assert_eq!(
+            health.liveness(),
+            Some(BoltV3CancellationLivenessFailure::CancellationDeadlineExceeded)
+        );
+        assert_eq!(
+            record.routing_state,
+            CancelRoutingState::Backoff { not_before_ns: 40 }
+        );
+
+        let error = record
+            .plan_drive(&mut seed, Some(&accepted_b), 19, 10, 3)
+            .unwrap_err();
+        assert!(error.to_string().contains("clock regressed"));
     }
 
     #[test]

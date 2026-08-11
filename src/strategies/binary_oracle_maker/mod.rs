@@ -1354,7 +1354,7 @@ impl DataActor for BinaryOracleMaker {
                         .checked_mul(NANOS_PER_MILLI_U64)
                         .ok_or_else(|| anyhow::anyhow!("maker drain clock overflow"))?,
                 )?;
-                let drive_result = order_economics.drive_resting_order_economics_at_ms(
+                let drive_result = order_economics.drive_all_resting_order_economics_at_ms(
                     execution_policy,
                     self,
                     execution_client_id.as_str(),
@@ -1363,7 +1363,7 @@ impl DataActor for BinaryOracleMaker {
                 self.complete_draining_if_empty()?;
                 return drive_result;
             }
-            order_economics.drive_resting_order_economics_at_ms(
+            order_economics.drive_all_resting_order_economics_at_ms(
                 execution_policy,
                 self,
                 execution_client_id.as_str(),

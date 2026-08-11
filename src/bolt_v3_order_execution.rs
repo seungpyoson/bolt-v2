@@ -53,7 +53,7 @@ mod tracked_order_economics;
 
 pub use economics_basis::{BoltV3FinalOrderEconomicsScenario, BoltV3TerminalValueEntry};
 #[cfg(test)]
-use tracked_order_economics::drive_resting_order_economics;
+use tracked_order_economics::drive_observed_resting_order_economics as drive_resting_order_economics;
 use tracked_order_economics::route_tracked_cancel_all;
 pub use tracked_order_economics::{
     BoltV3CancellationLivenessFailure, BoltV3OrderEconomicsHandle, BoltV3RecoveryIdentityConflict,
@@ -2424,6 +2424,157 @@ mod tests {
     }
 
     #[test]
+    fn empty_cancel_all_scope_does_not_reconcile_uncovered_orders() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            writer.clone(),
+            live_submit_cap_for_client("maker_execution_client"),
+        ));
+        let mut runtime = RecordingMakerRuntime::new();
+        let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
+            "maker_execution_client",
+        );
+        let client_order_id = ClientOrderId::from("MAKER-NO-EMPTY-SCOPE");
+        let submit = MakerCompiledOrderCommand::Submit {
+            leg: Leg::No,
+            template: Box::new(maker_limit_post_only_template()),
+            inputs: NtOrderBuildInputs {
+                instrument_id: InstrumentId::from("NO.INSTRUMENT"),
+                order_side: OrderSide::Buy,
+                quantity: Quantity::new(2.0, 2),
+                price: Some(Price::new(0.40, 2)),
+                client_order_id,
+            },
+            fallback_price: Price::new(0.40, 2),
+        };
+        route_maker_order_command_with_runtime(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut runtime,
+            writer.as_ref(),
+            admission.as_ref(),
+            maker_routing_context(&order_economics),
+            MakerOrderDispatchInput {
+                command: &submit,
+                submit_order_prefix: "maker_submit",
+            },
+        )
+        .expect("maker submit should establish an unrelated tracked order");
+        runtime.venue_sink.cached_orders.remove(&client_order_id);
+
+        let mismatched_scope = MakerCompiledOrderCommand::CancelAll {
+            leg: Some(Leg::No),
+            instrument_id: InstrumentId::from("NO.INSTRUMENT"),
+            order_side: Some(OrderSide::Sell),
+        };
+        route_maker_order_command_with_runtime(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut runtime,
+            writer.as_ref(),
+            admission.as_ref(),
+            maker_routing_context(&order_economics),
+            MakerOrderDispatchInput {
+                command: &mismatched_scope,
+                submit_order_prefix: "maker_submit",
+            },
+        )
+        .expect("an empty cancel-all scope must remain an exact no-op");
+
+        assert_eq!(runtime.venue_sink.cancel_calls, 0);
+        assert_eq!(runtime.venue_sink.query_calls, 0);
+        assert!(order_economics.resting_cancel_health().unwrap().is_empty());
+        assert_eq!(
+            order_economics.resting_order_ids().unwrap(),
+            vec![client_order_id]
+        );
+    }
+
+    #[test]
+    fn cancel_all_cache_failure_does_not_widen_to_uncovered_orders() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            writer.clone(),
+            BTreeMap::from([(
+                "maker_execution_client".to_string(),
+                BoltV3LiveSubmitApprovalLimits {
+                    max_order_count: 2,
+                    max_order_notional: Decimal::new(100, 0),
+                },
+            )]),
+        ));
+        let mut runtime = RecordingMakerRuntime::new();
+        let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
+            "maker_execution_client",
+        );
+        let selected_id = ClientOrderId::from("A-SELECTED-CACHE-FAIL");
+        let uncovered_id = ClientOrderId::from("Z-UNCOVERED-MISSING");
+        for (leg, instrument_id, client_order_id) in [
+            (Leg::Yes, "YES.INSTRUMENT", selected_id),
+            (Leg::No, "NO.INSTRUMENT", uncovered_id),
+        ] {
+            let submit = MakerCompiledOrderCommand::Submit {
+                leg,
+                template: Box::new(maker_limit_post_only_template()),
+                inputs: NtOrderBuildInputs {
+                    instrument_id: InstrumentId::from(instrument_id),
+                    order_side: OrderSide::Buy,
+                    quantity: Quantity::new(2.0, 2),
+                    price: Some(Price::new(0.40, 2)),
+                    client_order_id,
+                },
+                fallback_price: Price::new(0.40, 2),
+            };
+            route_maker_order_command_with_runtime(
+                BoltV3OrderExecutionPolicy::live(),
+                &mut runtime,
+                writer.as_ref(),
+                admission.as_ref(),
+                maker_routing_context(&order_economics),
+                MakerOrderDispatchInput {
+                    command: &submit,
+                    submit_order_prefix: "maker_submit",
+                },
+            )
+            .expect("maker submit should establish tracked cancel-all records");
+        }
+        runtime.venue_sink.cached_orders.remove(&uncovered_id);
+        runtime
+            .venue_sink
+            .fail_cached_order_once
+            .insert(selected_id);
+
+        let selected_scope = MakerCompiledOrderCommand::CancelAll {
+            leg: Some(Leg::Yes),
+            instrument_id: InstrumentId::from("YES.INSTRUMENT"),
+            order_side: Some(OrderSide::Buy),
+        };
+        let error = route_maker_order_command_with_runtime(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut runtime,
+            writer.as_ref(),
+            admission.as_ref(),
+            maker_routing_context(&order_economics),
+            MakerOrderDispatchInput {
+                command: &selected_scope,
+                submit_order_prefix: "maker_submit",
+            },
+        )
+        .expect_err("the selected cache-read failure must remain scoped");
+
+        assert!(error.to_string().contains("synthetic cached-order failure"));
+        assert_eq!(runtime.venue_sink.cancel_calls, 0);
+        assert_eq!(runtime.venue_sink.query_calls, 0);
+        assert_eq!(
+            order_economics
+                .resting_cancel_health()
+                .unwrap()
+                .into_iter()
+                .map(|health| health.client_order_id())
+                .collect::<Vec<_>>(),
+            vec![selected_id]
+        );
+    }
+
+    #[test]
     fn one_side_cancel_all_marks_only_matching_records_after_nt_accepts() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
@@ -2556,6 +2707,7 @@ mod tests {
         modify_requests: Vec<(ClientOrderId, Quantity, Price, Option<ClientId>)>,
         fail_submits: bool,
         fail_actor_time: bool,
+        fail_cached_order_once: BTreeSet<ClientOrderId>,
         fail_cancel_ids: BTreeSet<ClientOrderId>,
         cancel_replacement_orders: BTreeMap<ClientOrderId, OrderAny>,
     }
@@ -2569,7 +2721,10 @@ mod tests {
         }
 
         fn cached_order(&mut self, client_order_id: ClientOrderId) -> Result<Option<OrderAny>> {
-            Ok(self.cached_orders.get(&client_order_id).cloned())
+            match self.fail_cached_order_once.remove(&client_order_id) {
+                true => anyhow::bail!("synthetic cached-order failure: {client_order_id}"),
+                false => Ok(self.cached_orders.get(&client_order_id).cloned()),
+            }
         }
 
         fn query_order_via_nt(

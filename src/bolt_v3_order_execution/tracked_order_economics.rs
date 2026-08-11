@@ -95,7 +95,7 @@ impl BoltV3OrderEconomicsHandle {
         Ok(())
     }
 
-    pub fn drive_resting_order_economics_at_ms<S>(
+    pub fn drive_all_resting_order_economics_at_ms<S>(
         &self,
         policy: BoltV3OrderExecutionPolicy,
         strategy: &mut S,
@@ -117,7 +117,7 @@ impl BoltV3OrderEconomicsHandle {
             })
             .collect();
         let mut sink = NtStrategyVenueMutationSink { strategy };
-        drive_resting_order_economics(
+        drive_observed_resting_order_economics(
             self,
             policy,
             &mut sink,
@@ -269,7 +269,7 @@ impl BoltV3OrderEconomicsHandle {
             return Ok(());
         }
         let cached = sink.cached_order(client_order_id)?;
-        drive_resting_order_economics(
+        drive_observed_resting_order_economics(
             self,
             policy,
             sink,
@@ -463,27 +463,17 @@ pub fn build_order_economics_submit_admission(
     )
 }
 
-pub(super) fn drive_resting_order_economics<S>(
+pub(super) fn drive_observed_resting_order_economics<S>(
     order_economics: &BoltV3OrderEconomicsHandle,
     policy: BoltV3OrderExecutionPolicy,
     sink: &mut S,
     execution_client_id: &str,
-    mut observations: Vec<(ClientOrderId, Option<OrderAny>)>,
+    observations: Vec<(ClientOrderId, Option<OrderAny>)>,
     now_ns: u64,
 ) -> Result<()>
 where
     S: BoltV3NtVenueMutationSink + ?Sized,
 {
-    if observations.is_empty() {
-        observations = order_economics
-            .resting_order_ids()?
-            .into_iter()
-            .map(|client_order_id| {
-                sink.cached_order(client_order_id)
-                    .map(|order| (client_order_id, order))
-            })
-            .collect::<Result<Vec<_>>>()?;
-    }
     let mut failures = Vec::new();
     for (client_order_id, cached) in observations {
         if let Err(error) =
@@ -544,7 +534,7 @@ where
             Err(error) => failures.push(error.to_string()),
         }
     }
-    if let Err(error) = drive_resting_order_economics(
+    if let Err(error) = drive_observed_resting_order_economics(
         order_economics,
         policy,
         sink,

@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     rc::Rc,
     sync::{Arc, Mutex, Weak},
 };
@@ -12,8 +12,8 @@ use nautilus_common::{
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
-    enums::PositionSideSpecified,
-    identifiers::{AccountId, ClientId, InstrumentId, PositionId, Venue},
+    enums::{OmsType, PositionSide, PositionSideSpecified},
+    identifiers::{AccountId, ClientId, InstrumentId, PositionId, TradeId, Venue},
     reports::PositionStatusReport,
 };
 use rust_decimal::Decimal;
@@ -89,6 +89,87 @@ pub struct BoltV3PositionAuthorityCapability {
     feed: BoltV3PositionAuthorityFeed,
     execution_client_id: ClientId,
     account_id: AccountId,
+    oms_type: OmsType,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BoltV3CanonicalPositionAuthority {
+    signed_quantity: Decimal,
+    side: PositionSideSpecified,
+    trade_ids: BTreeSet<TradeId>,
+    target_scope: BoltV3CanonicalPositionTargetScope,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoltV3CanonicalPositionTargetScope {
+    Exact,
+    AmbiguousNettingAggregate,
+}
+
+impl BoltV3CanonicalPositionAuthority {
+    pub(crate) fn is_exact_target(&self) -> bool {
+        self.target_scope == BoltV3CanonicalPositionTargetScope::Exact
+    }
+
+    pub(crate) fn signed_quantity(&self) -> Decimal {
+        self.signed_quantity
+    }
+
+    pub(crate) fn side(&self) -> PositionSideSpecified {
+        self.side
+    }
+
+    pub(crate) fn trade_ids(&self) -> &BTreeSet<TradeId> {
+        &self.trade_ids
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exact_for_test(
+        signed_quantity: Decimal,
+        side: PositionSideSpecified,
+        trade_ids: BTreeSet<TradeId>,
+    ) -> Self {
+        Self {
+            signed_quantity,
+            side,
+            trade_ids,
+            target_scope: BoltV3CanonicalPositionTargetScope::Exact,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ambiguous_for_test(
+        signed_quantity: Decimal,
+        side: PositionSideSpecified,
+        trade_ids: BTreeSet<TradeId>,
+    ) -> Self {
+        Self {
+            signed_quantity,
+            side,
+            trade_ids,
+            target_scope: BoltV3CanonicalPositionTargetScope::AmbiguousNettingAggregate,
+        }
+    }
+}
+
+pub(crate) struct BoltV3SealedPositionAuthority {
+    canonical: BoltV3CanonicalPositionAuthority,
+    lease: BoltV3PositionAuthorityLease,
+}
+
+impl BoltV3SealedPositionAuthority {
+    pub(crate) fn canonical(&self) -> &BoltV3CanonicalPositionAuthority {
+        &self.canonical
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        BoltV3CanonicalPositionAuthority,
+        BoltV3PositionAuthorityLease,
+    ) {
+        (self.canonical, self.lease)
+    }
 }
 
 /// Owns the canonical position-authority feed and its raw NT report subscription.
@@ -106,51 +187,105 @@ impl BoltV3PositionAuthorityCapability {
         feed: BoltV3PositionAuthorityFeed,
         execution_client_id: ClientId,
         account_id: AccountId,
+        oms_type: OmsType,
     ) -> Self {
         Self {
             feed,
             execution_client_id,
             account_id,
+            oms_type,
         }
     }
 
-    pub(crate) fn acquire(
+    fn venue_position_id(&self, position_id: PositionId) -> Result<Option<PositionId>> {
+        match self.oms_type {
+            OmsType::Hedging => Ok(Some(position_id)),
+            OmsType::Netting => Ok(None),
+            OmsType::Unspecified => {
+                anyhow::bail!("position authority requires a specified OMS type")
+            }
+        }
+    }
+
+    pub(crate) fn acquire_for_position(
         &self,
+        position_id: PositionId,
         instrument_id: InstrumentId,
-        venue_position_id: Option<PositionId>,
     ) -> Result<BoltV3PositionAuthorityLease> {
         self.feed.acquire(BoltV3PositionAuthorityKey::new(
             self.execution_client_id,
             self.account_id,
             instrument_id,
-            venue_position_id,
+            self.venue_position_id(position_id)?,
         ))
     }
 
-    pub(crate) fn canonical_signed_position(
+    pub(crate) fn canonical_position(
         &self,
         position_id: PositionId,
         instrument_id: InstrumentId,
-    ) -> Result<Decimal> {
+    ) -> Result<Option<BoltV3CanonicalPositionAuthority>> {
         let cache = self.feed.cache.borrow();
-        let position = cache
-            .position(&position_id)
+        let Some(position) = cache.position(&position_id) else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            position.account_id == self.account_id && position.instrument_id == instrument_id,
+            "position authority cache identity mismatch: position_id={position_id} expected_account={} observed_account={} expected_instrument={instrument_id} observed_instrument={}",
+            self.account_id,
+            position.account_id,
+            position.instrument_id,
+        );
+        let side = match position.side {
+            PositionSide::Long => PositionSideSpecified::Long,
+            PositionSide::Short => PositionSideSpecified::Short,
+            PositionSide::Flat => PositionSideSpecified::Flat,
+            PositionSide::NoPositionSide => {
+                anyhow::bail!("canonical position authority has no specified side")
+            }
+        };
+        let target_scope = match self.oms_type {
+            OmsType::Hedging => BoltV3CanonicalPositionTargetScope::Exact,
+            OmsType::Netting => {
+                let matching_positions = cache.positions(
+                    Some(&instrument_id.venue),
+                    Some(&instrument_id),
+                    None,
+                    Some(&self.account_id),
+                    None,
+                );
+                if matching_positions.len() == 1 && matching_positions[0].id == position_id {
+                    BoltV3CanonicalPositionTargetScope::Exact
+                } else {
+                    BoltV3CanonicalPositionTargetScope::AmbiguousNettingAggregate
+                }
+            }
+            OmsType::Unspecified => {
+                anyhow::bail!("position authority requires a specified OMS type")
+            }
+        };
+        Ok(Some(BoltV3CanonicalPositionAuthority {
+            signed_quantity: position.signed_decimal_qty(),
+            side,
+            trade_ids: position.trade_ids().into_iter().collect(),
+            target_scope,
+        }))
+    }
+
+    pub(crate) fn acquire_canonical_position(
+        &self,
+        position_id: PositionId,
+        instrument_id: InstrumentId,
+    ) -> Result<BoltV3SealedPositionAuthority> {
+        let lease = self.acquire_for_position(position_id, instrument_id)?;
+        let canonical = self
+            .canonical_position(position_id, instrument_id)?
             .with_context(|| {
                 format!(
                     "position authority cache is missing position_id={position_id} instrument_id={instrument_id}"
                 )
             })?;
-        anyhow::ensure!(
-            position.account_id == self.account_id
-                && position.instrument_id == instrument_id
-                && position.is_open(),
-            "position authority cache identity mismatch: position_id={position_id} expected_account={} observed_account={} expected_instrument={instrument_id} observed_instrument={} open={}",
-            self.account_id,
-            position.account_id,
-            position.instrument_id,
-            position.is_open()
-        );
-        Ok(position.signed_decimal_qty())
+        Ok(BoltV3SealedPositionAuthority { canonical, lease })
     }
 
     #[cfg(test)]

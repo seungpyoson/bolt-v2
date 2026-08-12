@@ -340,10 +340,13 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
     ));
     assert_eq!(
         strategy
-            .canonical_position_authority(position_id, instrument_id)
+            .context
+            .position_authority()
+            .expect("projected terminal requires position authority")
+            .canonical_position(position_id, instrument_id)
             .expect("projected terminal position read should succeed")
             .expect("projected terminal must retain the stale cached position")
-            .signed_quantity,
+            .signed_quantity(),
         Decimal::new(10, 0),
         "order-only reconciliation must not masquerade as position causality"
     );
@@ -356,9 +359,6 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
         Quantity::zero(2),
         1_100,
     );
-    let canonical = strategy
-        .canonical_position_authority(position_id, instrument_id)
-        .expect("converged flat position read should succeed");
     let authority = strategy
         .exposure
         .exit_pending_snapshot()
@@ -366,7 +366,12 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
         .authority;
     assert_eq!(
         authority
-            .release(canonical.as_ref())
+            .release(
+                strategy
+                    .context
+                    .position_authority()
+                    .expect("converged flat release requires position authority"),
+            )
             .expect("exact flat cache/report convergence should be evaluable"),
         crate::bolt_v3_order_execution::BoltV3PositionReductionRelease::Flat
     );
@@ -400,7 +405,12 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
     );
     assert_eq!(
         authority
-            .release(canonical.as_ref())
+            .release(
+                strategy
+                    .context
+                    .position_authority()
+                    .expect("repeated terminal release requires position authority"),
+            )
             .expect("repeated terminal observation must preserve established proof"),
         crate::bolt_v3_order_execution::BoltV3PositionReductionRelease::Flat
     );

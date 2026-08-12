@@ -213,17 +213,16 @@ use crate::{
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransition,
     bolt_v3_order_execution::{
-        BoltV3CanonicalPositionAuthority, BoltV3CompileAndSealRiskReducingIocInput,
-        BoltV3ExitAuthorityRecoveryHandle, BoltV3ExitAuthorityRecoveryRelease,
-        BoltV3ExitOrderAuthorityHandle, BoltV3ExitOrderCorrection,
-        BoltV3ExitOrderLifecycleReduction, BoltV3FinalOrderEconomicsInput,
-        BoltV3FinalOrderEconomicsScenario, BoltV3PlannedFillLeg, BoltV3PositionReductionRelease,
-        BoltV3RecoveredExitCause, BoltV3RiskReducingIocPreparationStage, BoltV3SubmitAttemptKind,
-        BoltV3SubmitAttemptOutcome, BoltV3SubmitAttemptState, BoltV3SubmitContext,
-        BoltV3SubmitRoutingRequest, BoltV3TakerEconomicsSizingInput, BoltV3TerminalValueEntry,
-        BoltV3TerminalValueEntryPolicy, build_order_economics_submit_admission,
-        compile_and_seal_risk_reducing_ioc, order_intent_details_from_compiled_order,
-        prepared_order_linkage,
+        BoltV3CompileAndSealRiskReducingIocInput, BoltV3ExitAuthorityRecoveryHandle,
+        BoltV3ExitAuthorityRecoveryRelease, BoltV3ExitOrderAuthorityHandle,
+        BoltV3ExitOrderCorrection, BoltV3ExitOrderLifecycleReduction,
+        BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario, BoltV3PlannedFillLeg,
+        BoltV3PositionReductionRelease, BoltV3RecoveredExitCause,
+        BoltV3RiskReducingIocPreparationStage, BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome,
+        BoltV3SubmitAttemptState, BoltV3SubmitContext, BoltV3SubmitRoutingRequest,
+        BoltV3TakerEconomicsSizingInput, BoltV3TerminalValueEntry, BoltV3TerminalValueEntryPolicy,
+        build_order_economics_submit_admission, compile_and_seal_risk_reducing_ioc,
+        order_intent_details_from_compiled_order, prepared_order_linkage,
     },
     bolt_v3_order_intent::{
         MarketQuoteBuyQuantityError, make_market_quote_buy_quantity, normalize_base_order_quantity,
@@ -2716,41 +2715,22 @@ impl BinaryOracleEdgeTaker {
             .context
             .position_authority()
             .ok_or_else(|| anyhow::anyhow!("recovered exit requires position authority"))?;
-        let venue_position_id = self.exit_authority_venue_position_id(position_id)?;
-        let lease = position_authority.acquire(instrument_id, venue_position_id)?;
-        let canonical = match self.canonical_position_authority(position_id, instrument_id)? {
-            Some(canonical) => canonical,
-            None => anyhow::bail!("recovered exit requires a canonical NT position"),
-        };
+        let sealed_position_authority =
+            position_authority.acquire_canonical_position(position_id, instrument_id)?;
         let authority = BoltV3ExitOrderAuthorityHandle::recovered(
             cause,
             pending_exit.client_order_id,
             instrument_id,
             position_id,
-            canonical.signed_quantity,
-            canonical.side,
             &order,
-            lease,
+            sealed_position_authority,
         )?;
-        authority.refresh_recovered_baseline(Some(&canonical))?;
+        authority.refresh_recovered_baseline(position_authority)?;
         Ok(ExitPendingState {
             position,
             pending_exit,
             authority,
         })
-    }
-
-    fn exit_authority_venue_position_id(
-        &self,
-        position_id: PositionId,
-    ) -> Result<Option<PositionId>> {
-        match parse_configured_oms_type(CONFIG_FIELD_OMS_TYPE, &self.config.oms_type)? {
-            nautilus_model::enums::OmsType::Hedging => Ok(Some(position_id)),
-            nautilus_model::enums::OmsType::Netting => Ok(None),
-            nautilus_model::enums::OmsType::Unspecified => {
-                anyhow::bail!("exit authority requires a specified OMS type")
-            }
-        }
     }
 
     fn acquire_exit_authority_flat_recovery(
@@ -2762,11 +2742,7 @@ impl BinaryOracleEdgeTaker {
             .context
             .position_authority()
             .ok_or_else(|| anyhow::anyhow!("exit recovery requires position authority"))?;
-        BoltV3ExitAuthorityRecoveryHandle::acquire(
-            capability,
-            instrument_id,
-            self.exit_authority_venue_position_id(position_id)?,
-        )
+        BoltV3ExitAuthorityRecoveryHandle::acquire(capability, instrument_id, position_id)
     }
 
     fn adopt_restart_open_exit_order_from_cache(
@@ -5138,88 +5114,21 @@ impl BinaryOracleEdgeTaker {
         });
     }
 
-    fn canonical_position_authority(
-        &self,
-        position_id: PositionId,
-        instrument_id: InstrumentId,
-    ) -> Result<Option<BoltV3CanonicalPositionAuthority>> {
-        let cache = self.cache();
-        let Some(position) = cache.position(&position_id) else {
-            return Ok(None);
-        };
-        anyhow::ensure!(
-            position.instrument_id == instrument_id,
-            "canonical exit position instrument identity mismatch"
-        );
-        let side = match position.side {
-            PositionSide::Long => nautilus_model::enums::PositionSideSpecified::Long,
-            PositionSide::Short => nautilus_model::enums::PositionSideSpecified::Short,
-            PositionSide::Flat => nautilus_model::enums::PositionSideSpecified::Flat,
-            PositionSide::NoPositionSide => {
-                anyhow::bail!("canonical exit position has no specified side")
-            }
-        };
-        let target_scope = match parse_configured_oms_type(
-            CONFIG_FIELD_OMS_TYPE,
-            &self.config.oms_type,
-        )? {
-            nautilus_model::enums::OmsType::Hedging => {
-                crate::bolt_v3_order_execution::BoltV3CanonicalPositionTargetScope::Exact
-            }
-            nautilus_model::enums::OmsType::Netting => {
-                let matching_positions = cache.positions(
-                    Some(&instrument_id.venue),
-                    Some(&instrument_id),
-                    None,
-                    Some(&position.account_id),
-                    None,
-                );
-                if matching_positions.len() == 1 && matching_positions[0].id == position_id {
-                    crate::bolt_v3_order_execution::BoltV3CanonicalPositionTargetScope::Exact
-                } else {
-                    crate::bolt_v3_order_execution::BoltV3CanonicalPositionTargetScope::AmbiguousNettingAggregate
-                }
-            }
-            nautilus_model::enums::OmsType::Unspecified => {
-                anyhow::bail!("canonical exit position requires a specified OMS type")
-            }
-        };
-        Ok(Some(BoltV3CanonicalPositionAuthority {
-            signed_quantity: position.signed_decimal_qty(),
-            side,
-            trade_ids: position.trade_ids().into_iter().collect(),
-            target_scope,
-        }))
-    }
-
     fn refresh_exit_authority_baseline(&self) {
         let Some(exit_pending) = self.exposure.exit_pending_snapshot() else {
             return;
         };
-        let Some(position_id) = exit_pending.pending_exit.position_id else {
+        let Some(position_authority) = self.context.position_authority() else {
+            log::error!(
+                "binary_oracle_edge_taker recovered exit baseline lacks position authority: strategy_id={} client_order_id={}",
+                self.config.strategy_id,
+                exit_pending.pending_exit.client_order_id,
+            );
             return;
-        };
-        let Some(instrument_id) = exit_pending
-            .position
-            .as_ref()
-            .map(|position| position.instrument_id)
-        else {
-            return;
-        };
-        let canonical = match self.canonical_position_authority(position_id, instrument_id) {
-            Ok(canonical) => canonical,
-            Err(error) => {
-                log::error!(
-                    "binary_oracle_edge_taker recovered exit baseline cache read failed: strategy_id={} client_order_id={} error={error:#}",
-                    self.config.strategy_id,
-                    exit_pending.pending_exit.client_order_id,
-                );
-                return;
-            }
         };
         if let Err(error) = exit_pending
             .authority
-            .refresh_recovered_baseline(canonical.as_ref())
+            .refresh_recovered_baseline(position_authority)
         {
             log::error!(
                 "binary_oracle_edge_taker recovered exit baseline remains unavailable: strategy_id={} client_order_id={} error={error:#}",
@@ -5271,13 +5180,11 @@ impl BinaryOracleEdgeTaker {
                 *cause,
             ),
             ExitAuthorityRecoveryPlan::Resume(authority) => (|| {
-                let canonical = self
-                    .canonical_position_authority(position_id, hold.instrument_id)
-                    .and_then(|canonical| {
-                        canonical
-                            .context("exit authority recovery still lacks its canonical position")
-                    })?;
-                authority.refresh_recovered_baseline(Some(&canonical))?;
+                let position_authority = self
+                    .context
+                    .position_authority()
+                    .context("exit authority recovery still lacks position authority")?;
+                authority.refresh_recovered_baseline(position_authority)?;
                 Ok(ExitPendingState {
                     position: hold.position.clone(),
                     pending_exit: hold.pending_exit.clone(),
@@ -5374,18 +5281,15 @@ impl BinaryOracleEdgeTaker {
         let ExitAuthorityFlatRecovery::Armed(authority) = &hold.flat_recovery else {
             return false;
         };
-        let canonical = match self.canonical_position_authority(position_id, hold.instrument_id) {
-            Ok(canonical) => canonical,
-            Err(error) => {
-                log::error!(
-                    "binary_oracle_edge_taker exit recovery flat proof could not read canonical position: strategy_id={} client_order_id={} error={error:#}",
-                    self.config.strategy_id,
-                    hold.pending_exit.client_order_id,
-                );
-                return false;
-            }
+        let Some(position_authority) = self.context.position_authority() else {
+            log::error!(
+                "binary_oracle_edge_taker exit recovery flat proof lacks position authority: strategy_id={} client_order_id={}",
+                self.config.strategy_id,
+                hold.pending_exit.client_order_id,
+            );
+            return false;
         };
-        let release = match authority.release_flat(canonical.as_ref()) {
+        let release = match authority.release_flat(position_authority) {
             Ok(release) => release,
             Err(error) => {
                 log::error!(
@@ -5442,18 +5346,15 @@ impl BinaryOracleEdgeTaker {
         else {
             return false;
         };
-        let canonical = match self.canonical_position_authority(position_id, instrument_id) {
-            Ok(canonical) => canonical,
-            Err(error) => {
-                log::error!(
-                    "binary_oracle_edge_taker canonical position authority read failed: strategy_id={} client_order_id={} error={error:#}",
-                    self.config.strategy_id,
-                    exit_pending.pending_exit.client_order_id,
-                );
-                return false;
-            }
+        let Some(position_authority) = self.context.position_authority() else {
+            log::error!(
+                "binary_oracle_edge_taker terminal exit lacks position authority: strategy_id={} client_order_id={}",
+                self.config.strategy_id,
+                exit_pending.pending_exit.client_order_id,
+            );
+            return false;
         };
-        let release = match exit_pending.authority.release(canonical.as_ref()) {
+        let release = match exit_pending.authority.release(position_authority) {
             Ok(release) => release,
             Err(error) => {
                 log::error!(
@@ -7330,19 +7231,6 @@ impl BinaryOracleEdgeTaker {
                 failure,
             ));
         };
-        let original_signed_position_quantity = match managed_position.position.side {
-            PositionSide::Long => managed_position.position.quantity.as_decimal(),
-            PositionSide::Short => -managed_position.position.quantity.as_decimal(),
-            PositionSide::Flat | PositionSide::NoPositionSide => {
-                let failure =
-                    anyhow::anyhow!("exit submission requires a non-flat canonical position");
-                return Ok(rejected_exit_preparation(
-                    decision,
-                    ExitPreparationStage::PositionAuthority,
-                    failure,
-                ));
-            }
-        };
         let prediction_market_outcome = match managed_position.position.lifecycle.outcome_side() {
             Some(OutcomeSide::Up) => PredictionMarketOutcomeSide::Yes,
             Some(OutcomeSide::Down) => PredictionMarketOutcomeSide::No,
@@ -7382,17 +7270,6 @@ impl BinaryOracleEdgeTaker {
                 failure,
             ));
         };
-        let venue_position_id =
-            match self.exit_authority_venue_position_id(managed_position.position.position_id) {
-                Ok(venue_position_id) => venue_position_id,
-                Err(failure) => {
-                    return Ok(rejected_exit_preparation(
-                        decision,
-                        ExitPreparationStage::OrderTemplate,
-                        failure,
-                    ));
-                }
-            };
         let compiled =
             match compile_and_seal_risk_reducing_ioc(BoltV3CompileAndSealRiskReducingIocInput {
                 economics: self.context.order_economics(),
@@ -7405,7 +7282,6 @@ impl BinaryOracleEdgeTaker {
                 requested_order: order,
                 position_id: managed_position.position.position_id,
                 position_authority,
-                venue_position_id,
                 position_side: managed_position.position.side,
                 prediction_market_outcome,
                 stored_entry_cost_per_unit: entry_cost,
@@ -7422,7 +7298,7 @@ impl BinaryOracleEdgeTaker {
                     ));
                 }
             };
-        let (intent, order, sealed, compiled, position_authority_lease) = compiled.into_parts();
+        let (intent, order, sealed, compiled, sealed_position_authority) = compiled.into_parts();
         let quantity = compiled.quantity;
         let price = compiled.worst_executable_price;
         decision.quantity = Some(quantity);
@@ -7431,10 +7307,8 @@ impl BinaryOracleEdgeTaker {
             client_order_id,
             instrument_id,
             managed_position.position.position_id,
-            original_signed_position_quantity,
-            managed_position.position.side.as_specified(),
             quantity,
-            position_authority_lease,
+            sealed_position_authority,
         ) {
             Ok(authority) => authority,
             Err(failure) => {

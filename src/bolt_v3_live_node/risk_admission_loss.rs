@@ -3,14 +3,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use nautilus_common::{
-    factories::OrderFactory,
-    messages::execution::{SubmitOrder, TradingCommand},
-};
-use nautilus_model::{events::OrderEventAny, identifiers::PositionId};
 use tokio::sync::Notify;
 
-use crate::bolt_v3_current_evidence::OrderExecutionEvidence;
+use super::*;
 #[cfg(test)]
 use crate::bolt_v3_current_evidence::{DecisionEvidenceRecorder, DecisionEvidenceStatusView};
 use crate::bolt_v3_operator_health::BoltV3OperatorHealthTransitionEmitter;
@@ -18,48 +13,11 @@ use crate::bolt_v3_provider_collateral_allowance::{
     ProviderCollateralAllowanceCaptureFailureEvidence,
     provider_collateral_allowance_capture_failure_parts,
 };
-use crate::{
-    bolt_v3_config::KillSwitchFlattenConfigBlock,
-    bolt_v3_economics_runtime::{AuthoritativeEconomicsInputStore, bind_execution_economics},
-    bolt_v3_kill_switch_flatten::{
-        BoltV3KillSwitchFlattenCandidate, BoltV3KillSwitchFlattenCommand,
-        BoltV3KillSwitchFlattenPlan, BoltV3KillSwitchFlattenPlanRequest,
-        BoltV3KillSwitchFlattenPolicy, BoltV3KillSwitchFlattenPositionEvidenceKind,
-        BoltV3KillSwitchFlattenPositionState, BoltV3KillSwitchFlattenRouteKind,
-        BoltV3KillSwitchFlattenRouteProof, BoltV3KillSwitchFlattenSnapshot,
-        BoltV3KillSwitchFlattenSupervisor,
-    },
-    bolt_v3_order_execution::{
-        BoltV3KillSwitchFlattenRoutingContext, BoltV3NtSubmitOnlySink, BoltV3OrderEconomicsHandle,
-        BoltV3OrderExecutionPolicy, BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome,
-        route_kill_switch_flatten_command_with_sink,
-    },
-    bolt_v3_order_intent::NtOrderTemplate,
-    bolt_v3_submit_admission::{
-        BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
-    },
-    bolt_v3_validate::{LoadedKillSwitchFlattenResolution, resolve_loaded_kill_switch_flatten},
-};
-
-use super::*;
 
 const OPERATOR_HEALTH_REASON_PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE: &str =
     stringify!(provider_collateral_allowance_capture_failure);
 const OPERATOR_HEALTH_REASON_PROVIDER_COLLATERAL_ALLOWANCE_RUNTIME_FAILURE: &str =
     stringify!(provider_collateral_allowance_runtime_failure);
-
-struct ClosureKillSwitchFlattenExecutor<F: Fn(&KillSwitchLossAction) -> Result<()>> {
-    execute_flatten: F,
-}
-
-impl<F> KillSwitchFlattenExecutor for ClosureKillSwitchFlattenExecutor<F>
-where
-    F: Fn(&KillSwitchLossAction) -> Result<()>,
-{
-    fn execute_flatten(&self, action: &KillSwitchLossAction) -> Result<()> {
-        (self.execute_flatten)(action)
-    }
-}
 
 pub(super) struct BoltV3ProviderCollateralAllowanceRuntimeConfig {
     pub(super) source: Arc<
@@ -707,21 +665,14 @@ impl<F: Fn()> TradingStateController for ClosureTradingStateController<F> {
     }
 }
 
-trait KillSwitchFlattenExecutor {
-    fn execute_flatten(&self, action: &KillSwitchLossAction) -> Result<()>;
-}
-
 /// Hard kill-switch loss-action sink that drives the NT runtime on a durable
 /// daily-realized loss breach.
 ///
 /// On a fresh `FlattenPositions` halt it moves the NT risk engine to
-/// `Reducing`, then optionally routes the validated flatten commands through
-/// the shared execution policy. Flatten failures are logged and evidenced by the
-/// route where possible, but this sink never returns them to the durable halt
-/// state machine: flatten is an effect of a halt, not the halt-state owner.
+/// `Reducing`. Live flatten submission is rejected during config loading while
+/// the only supported economics slice is `quote_only`.
 struct NtReducingLossActionSink {
     trading_state: Rc<dyn TradingStateController>,
-    flatten_executor: Option<Rc<dyn KillSwitchFlattenExecutor>>,
     dispatched_halts: RefCell<BTreeSet<String>>,
 }
 
@@ -729,18 +680,6 @@ impl NtReducingLossActionSink {
     fn new(trading_state: Rc<dyn TradingStateController>) -> Self {
         Self {
             trading_state,
-            flatten_executor: None,
-            dispatched_halts: RefCell::new(BTreeSet::new()),
-        }
-    }
-
-    fn with_flatten_executor(
-        trading_state: Rc<dyn TradingStateController>,
-        flatten_executor: Rc<dyn KillSwitchFlattenExecutor>,
-    ) -> Self {
-        Self {
-            trading_state,
-            flatten_executor: Some(flatten_executor),
             dispatched_halts: RefCell::new(BTreeSet::new()),
         }
     }
@@ -755,350 +694,10 @@ impl KillSwitchLossActionSink for NtReducingLossActionSink {
             return Ok(());
         }
         self.trading_state.enter_reducing();
-        if let Some(flatten_executor) = self.flatten_executor.as_ref()
-            && let Err(error) = flatten_executor.execute_flatten(&action)
-        {
-            log::error!(
-                "kill switch flatten action failed after reducing latch: halt_id={} action_id={}: {error:#}",
-                action.halt_id,
-                action.action_id
-            );
-        }
         self.dispatched_halts
             .borrow_mut()
             .insert(action.halt_id.clone());
         Ok(())
-    }
-}
-
-fn live_node_kill_switch_flatten_executor(
-    loaded: &LoadedBoltV3Config,
-    node: &LiveNode,
-    decision_evidence: OrderExecutionEvidence,
-    submit_admission: Arc<BoltV3SubmitAdmissionState>,
-    economics_inputs: &AuthoritativeEconomicsInputStore,
-) -> Result<Option<Rc<dyn KillSwitchFlattenExecutor>>, BoltV3LiveNodeError> {
-    let Some(kill_switch) = loaded
-        .root
-        .risk
-        .kill_switch
-        .as_ref()
-        .filter(|kill_switch| kill_switch.enabled)
-    else {
-        return Ok(None);
-    };
-    let forced_policy = kill_switch_forced_reduction_policy_from_config(kill_switch)
-        .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
-    submit_admission.configure_kill_switch_forced_reduction_policy(forced_policy);
-
-    let (flatten, execution_clients_by_venue) = match resolve_loaded_kill_switch_flatten(loaded)
-        .map_err(|error| {
-            BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(error.to_string()))
-        })? {
-        LoadedKillSwitchFlattenResolution::Disabled => return Ok(None),
-        LoadedKillSwitchFlattenResolution::Enabled {
-            flatten,
-            execution_clients_by_venue,
-        } => (flatten, execution_clients_by_venue),
-    };
-
-    let flatten_policy = flatten_policy_from_config(flatten)
-        .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
-    let order_template = flatten_order_template_from_config(flatten);
-    let economics_by_venue = execution_clients_by_venue
-        .iter()
-        .map(|(venue, execution_client_id)| {
-            bind_execution_economics(loaded, execution_client_id, economics_inputs)
-                .map(|economics| (*venue, BoltV3OrderEconomicsHandle::new(economics)))
-                .map_err(|error| {
-                    BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
-                        "kill switch flatten economics binding failed for execution client `{execution_client_id}`: {error}"
-                    ))
-                })
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let cache = node.kernel().cache();
-    let risk_engine = node.kernel().risk_engine().clone();
-    let clock = node.kernel().clock();
-    let trader_id = node.kernel().trader_id();
-    let order_execution_policy =
-        BoltV3OrderExecutionPolicy::from_mode(loaded.root.runtime.order_execution_mode);
-    let config_sha256 = loaded.config_bundle_checksum.clone();
-    let policy_sha256 = kill_switch.forced_reduction_policy_sha256.clone();
-    let executor = ClosureKillSwitchFlattenExecutor {
-        execute_flatten: move |action: &KillSwitchLossAction| {
-            let observed_at_unix_nanos = current_unix_nanos()?;
-            let candidates = kill_switch_flatten_candidates_from_cache(
-                &cache.borrow(),
-                action,
-                observed_at_unix_nanos,
-            )?;
-            let snapshot =
-                BoltV3KillSwitchFlattenSnapshot::new(candidates).map_err(domain_error)?;
-            let claim = BoltV3KillSwitchForcedReductionClaim::new(
-                action.halt_id.clone(),
-                action.action_id.clone(),
-                policy_sha256.clone(),
-            )
-            .map_err(domain_error)?;
-            let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(
-                BoltV3KillSwitchFlattenPlanRequest {
-                    kill_switch_state: KillSwitchState::Flattening {
-                        halt_id: action.halt_id.clone(),
-                    },
-                    nt_trading_state: TradingState::Reducing,
-                    action_id: action.action_id.clone(),
-                    config_sha256: config_sha256.clone(),
-                    policy_sha256: policy_sha256.clone(),
-                    source_timestamp_unix_nanos: observed_at_unix_nanos,
-                    policy: flatten_policy,
-                    snapshot,
-                    observed_at_unix_nanos,
-                    route_proof: BoltV3KillSwitchFlattenRouteProof::new(
-                        BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
-                    ),
-                    order_template: order_template.clone(),
-                    forced_reduction_claim: claim,
-                },
-            )
-            .map_err(domain_error)?;
-
-            let report = route_planned_kill_switch_flatten_commands(&plan, |command| {
-                let instrument = {
-                    let cache = cache.borrow();
-                    cache.instrument(&command.instrument_id()).cloned()
-                };
-                let venue = command.instrument_id().venue;
-                let mut order_factory = OrderFactory::new(
-                    trader_id,
-                    command.strategy_id(),
-                    None,
-                    None,
-                    clock.clone(),
-                    false,
-                    true,
-                );
-                let mut sink = BoltV3NtSubmitOnlySink::new(
-                    clock.borrow().timestamp_ns().as_u64(),
-                    |order, context| {
-                        if order.status() != nautilus_model::enums::OrderStatus::Initialized {
-                            anyhow::bail!(
-                                "kill switch flatten order denied before NT risk engine: invalid status for {}, expected INITIALIZED",
-                                order.client_order_id()
-                            );
-                        }
-                        {
-                            cache.borrow_mut().add_order(
-                                order.clone(),
-                                context.position_id,
-                                context.client_id,
-                                true,
-                            )?;
-                        }
-                        publish_order_initialized(&order);
-                        let params = context.params.filter(|params| !params.is_empty());
-                        let command = SubmitOrder::new(
-                            trader_id,
-                            context.client_id,
-                            order.strategy_id(),
-                            order.instrument_id(),
-                            order.client_order_id(),
-                            order.init_event().clone(),
-                            order.exec_algorithm_id(),
-                            context.position_id,
-                            params,
-                            UUID4::new(),
-                            clock.borrow().timestamp_ns(),
-                            None,
-                        );
-                        risk_engine
-                            .borrow_mut()
-                            .execute(TradingCommand::SubmitOrder(command));
-                        Ok(())
-                    },
-                );
-                route_kill_switch_flatten_command_with_sink(
-                    order_execution_policy,
-                    &mut sink,
-                    &mut order_factory,
-                    &decision_evidence,
-                    submit_admission.as_ref(),
-                    BoltV3KillSwitchFlattenRoutingContext {
-                        execution_client_id: execution_clients_by_venue
-                            .get(&venue)
-                            .map(|client_id| client_id.as_str()),
-                        instrument: instrument.as_ref(),
-                        order_economics: economics_by_venue.get(&venue),
-                    },
-                    command,
-                )
-            });
-            report.require_all_submitted()?;
-            Ok(())
-        },
-    };
-
-    Ok(Some(Rc::new(executor)))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BoltV3KillSwitchFlattenCommandAttempt {
-    position_id: PositionId,
-    instrument_id: InstrumentId,
-    outcome: BoltV3SubmitAttemptOutcome,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BoltV3KillSwitchFlattenExecutionReport {
-    halt_id: String,
-    attempts: Vec<BoltV3KillSwitchFlattenCommandAttempt>,
-}
-
-impl BoltV3KillSwitchFlattenExecutionReport {
-    fn require_all_submitted(&self) -> Result<()> {
-        let failures = self
-            .attempts
-            .iter()
-            .filter(|attempt| attempt.outcome.kind() != BoltV3SubmitAttemptKind::Submitted)
-            .map(|attempt| {
-                format!(
-                    "position_id={} instrument_id={} outcome={:?} diagnostic={}",
-                    attempt.position_id,
-                    attempt.instrument_id,
-                    attempt.outcome.kind(),
-                    attempt.outcome.diagnostic().unwrap_or("none")
-                )
-            })
-            .collect::<Vec<_>>();
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            anyhow::bail!(
-                "kill switch flatten command failures: halt_id={} failures={}",
-                self.halt_id,
-                failures.join(" | ")
-            )
-        }
-    }
-}
-
-fn route_planned_kill_switch_flatten_commands<F>(
-    plan: &BoltV3KillSwitchFlattenPlan,
-    mut route_command: F,
-) -> BoltV3KillSwitchFlattenExecutionReport
-where
-    F: FnMut(&BoltV3KillSwitchFlattenCommand) -> BoltV3SubmitAttemptOutcome,
-{
-    let mut attempts = Vec::with_capacity(plan.commands().len());
-    for command in plan.commands() {
-        let outcome = route_command(command);
-        if outcome.kind() != BoltV3SubmitAttemptKind::Submitted {
-            log::error!(
-                "kill switch flatten command did not submit: halt_id={} action_id={} position_id={} instrument_id={} outcome={:?} diagnostic={}",
-                command.halt_id(),
-                command.action_id(),
-                command.position_id(),
-                command.instrument_id(),
-                outcome.kind(),
-                outcome.diagnostic().unwrap_or("none")
-            );
-        }
-        attempts.push(BoltV3KillSwitchFlattenCommandAttempt {
-            position_id: command.position_id(),
-            instrument_id: command.instrument_id(),
-            outcome,
-        });
-    }
-    BoltV3KillSwitchFlattenExecutionReport {
-        halt_id: plan.halt_id().to_string(),
-        attempts,
-    }
-}
-
-fn publish_order_initialized(order: &OrderAny) {
-    let event = OrderEventAny::Initialized(order.init_event().clone());
-    let topic = format!("events.order.{}", order.strategy_id());
-    msgbus::publish_order_event(topic.into(), &event);
-}
-
-fn kill_switch_flatten_candidates_from_cache(
-    cache: &nautilus_common::cache::Cache,
-    action: &KillSwitchLossAction,
-    observed_at_unix_nanos: u64,
-) -> Result<Vec<BoltV3KillSwitchFlattenCandidate>> {
-    let mut candidates = Vec::new();
-    for account_id in &action.account_ids {
-        let account_id = AccountId::from(account_id.as_str());
-        for instrument_id in &action.instrument_ids {
-            let instrument_id = InstrumentId::from_str(instrument_id)?;
-            for position in
-                cache.positions_open(None, Some(&instrument_id), None, Some(&account_id), None)
-            {
-                let source_timestamp_unix_nanos = position.ts_last.as_u64();
-                let source_timestamp_unix_nanos = if source_timestamp_unix_nanos == 0 {
-                    observed_at_unix_nanos
-                } else {
-                    source_timestamp_unix_nanos
-                };
-                candidates.push(
-                    BoltV3KillSwitchFlattenCandidate::from_nt_position_state(
-                        BoltV3KillSwitchFlattenPositionState {
-                            evidence_kind:
-                                BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
-                            account_id: position.account_id,
-                            instrument_id: position.instrument_id,
-                            strategy_id: position.strategy_id,
-                            position_id: position.id,
-                            position_side: position.side,
-                            quantity: position.quantity,
-                            source_timestamp_unix_nanos,
-                        },
-                    )
-                    .map_err(domain_error)?,
-                );
-            }
-        }
-    }
-    Ok(candidates)
-}
-
-fn domain_error(error: impl std::fmt::Debug) -> anyhow::Error {
-    anyhow::anyhow!("{error:?}")
-}
-
-fn kill_switch_forced_reduction_policy_from_config(
-    kill_switch: &crate::bolt_v3_config::KillSwitchConfigBlock,
-) -> Result<BoltV3KillSwitchForcedReductionPolicy> {
-    let max_notional = parse_decimal_string(&kill_switch.forced_reduction_max_notional_per_order)
-        .map_err(|reason| anyhow::anyhow!("{reason}"))?;
-    BoltV3KillSwitchForcedReductionPolicy::new(
-        kill_switch.forced_reduction_policy_sha256.clone(),
-        kill_switch.forced_reduction_max_live_order_count,
-        max_notional,
-    )
-    .map_err(|error| anyhow::anyhow!("{error:?}"))
-}
-
-fn flatten_policy_from_config(
-    _flatten: &KillSwitchFlattenConfigBlock,
-) -> Result<BoltV3KillSwitchFlattenPolicy> {
-    Ok(BoltV3KillSwitchFlattenPolicy::new())
-}
-
-fn flatten_order_template_from_config(flatten: &KillSwitchFlattenConfigBlock) -> NtOrderTemplate {
-    NtOrderTemplate {
-        order_type: flatten.order_type,
-        time_in_force: flatten.time_in_force,
-        expire_time: None,
-        trigger_price: None,
-        activation_price: None,
-        trigger_type: None,
-        trigger_instrument_id: None,
-        trailing_offset: None,
-        trailing_offset_type: None,
-        is_post_only: flatten.is_post_only,
-        is_reduce_only: flatten.is_reduce_only,
-        is_quote_quantity: flatten.is_quote_quantity,
     }
 }
 
@@ -1113,9 +712,7 @@ fn flatten_order_template_from_config(flatten: &KillSwitchFlattenConfigBlock) ->
 pub(super) fn configure_bolt_v3_kill_switch_loss_protection(
     loaded: &LoadedBoltV3Config,
     node: &LiveNode,
-    decision_evidence: impl Into<OrderExecutionEvidence>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
-    economics_inputs: &AuthoritativeEconomicsInputStore,
 ) -> Result<Option<Rc<RefCell<KillSwitchLossProtection>>>, BoltV3LiveNodeError> {
     let Some(kill_switch) = loaded
         .root
@@ -1148,20 +745,8 @@ pub(super) fn configure_bolt_v3_kill_switch_loss_protection(
                 .set_trading_state(TradingState::Reducing);
         },
     });
-    let flatten_executor = live_node_kill_switch_flatten_executor(
-        loaded,
-        node,
-        decision_evidence.into(),
-        submit_admission.clone(),
-        economics_inputs,
-    )?;
-    let action_sink: Rc<dyn KillSwitchLossActionSink> = match flatten_executor {
-        Some(flatten_executor) => Rc::new(NtReducingLossActionSink::with_flatten_executor(
-            trading_state,
-            flatten_executor,
-        )),
-        None => Rc::new(NtReducingLossActionSink::new(trading_state)),
-    };
+    let action_sink: Rc<dyn KillSwitchLossActionSink> =
+        Rc::new(NtReducingLossActionSink::new(trading_state));
     let mut protection =
         KillSwitchLossProtection::new(config, submit_admission, store, action_sink)
             .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
@@ -1359,50 +944,27 @@ mod tests {
 
     use crate::{
         bolt_v3_capital_admission::{
-            CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
-            ProductAdmissionSnapshot, ProductKind,
+            CapitalAdmissionPolicy, PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot,
+            ProductKind,
         },
         bolt_v3_capital_admission_runtime_feed::{
             CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
             POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE,
         },
-        bolt_v3_capital_admission_state::{
-            OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
-            ProviderCollateralAllowanceSnapshot,
-        },
+        bolt_v3_capital_admission_state::ProviderCollateralAllowanceSnapshot,
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
         bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind},
         bolt_v3_kill_switch_store::{KillSwitchRecoveryState, KillSwitchStore},
-        bolt_v3_order_execution::{
-            BoltV3KillSwitchFlattenRoutingContext, BoltV3NtSubmitOnlySink,
-            BoltV3OrderExecutionPolicy, route_kill_switch_flatten_command_with_sink,
-        },
-        bolt_v3_order_intent::NtOrderTemplate,
         bolt_v3_provider_collateral_allowance::{
             ProviderCollateralAllowanceCaptureEndpoint,
             ProviderCollateralAllowanceCaptureEndpointError,
             ProviderCollateralAllowanceCaptureErrorClass,
         },
         bolt_v3_submit_admission::{
-            BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
             BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
-            BoltV3SubmitCapitalAdmissionNtComponents,
         },
     };
-    use anyhow::Result;
-    use nautilus_common::{
-        clock::{Clock, TestClock},
-        factories::OrderFactory,
-    };
-    use nautilus_core::UnixNanos;
-    use nautilus_model::{
-        enums::{AssetClass, OrderType, PositionSide, TimeInForce, TradingState},
-        identifiers::{AccountId, InstrumentId, PositionId, StrategyId, Symbol, TraderId},
-        instruments::{BinaryOption, InstrumentAny},
-        orders::Order,
-        types::{Currency, Price, Quantity},
-    };
-    use ustr::Ustr;
+    use nautilus_model::identifiers::AccountId;
 
     #[test]
     fn provider_collateral_allowance_capture_failure_evidence_uses_production_endpoint_error_parts()
@@ -1579,214 +1141,17 @@ mod tests {
     }
 
     #[test]
-    fn nt_reducing_loss_action_sink_routes_flatten_executor_once_per_halt() {
+    fn nt_reducing_loss_action_sink_enters_reducing_once_per_halt() {
         let trading_state = Rc::new(RecordingTradingStateController::default());
-        let flatten_executor = Rc::new(RecordingFlattenExecutor::recording());
-        let sink = NtReducingLossActionSink::with_flatten_executor(
-            trading_state.clone(),
-            flatten_executor.clone(),
-        );
+        let sink = NtReducingLossActionSink::new(trading_state.clone());
         let action = test_flatten_action("halt-001");
 
         sink.emit(action.clone())
-            .expect("flatten action should not degrade halt dispatch");
+            .expect("flatten action should enter reducing");
         sink.emit(action)
             .expect("duplicate halt action should stay idempotent");
 
         assert_eq!(trading_state.enter_reducing_calls(), 1);
-        let actions = flatten_executor.actions();
-        assert_eq!(actions.len(), 1);
-        assert_eq!(actions[0].halt_id, "halt-001");
-        assert_eq!(actions[0].kind, KillSwitchLossActionKind::FlattenPositions);
-    }
-
-    #[test]
-    fn nt_reducing_loss_action_sink_does_not_return_flatten_executor_failure() {
-        let trading_state = Rc::new(RecordingTradingStateController::default());
-        let flatten_executor = Rc::new(RecordingFlattenExecutor::failing());
-        let sink = NtReducingLossActionSink::with_flatten_executor(
-            trading_state.clone(),
-            flatten_executor.clone(),
-        );
-
-        sink.emit(test_flatten_action("halt-002"))
-            .expect("flatten effect failure must not degrade durable halt dispatch");
-
-        assert_eq!(trading_state.enter_reducing_calls(), 1);
-        assert_eq!(flatten_executor.actions().len(), 1);
-    }
-
-    #[test]
-    fn triggered_halt_without_flatten_executor_has_zero_submits_but_wired_sink_submits_clamped() {
-        let pre_wiring_writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let pre_wiring_executor = Rc::new(RoutingFlattenExecutor::new(
-            pre_wiring_writer.clone(),
-            Decimal::new(3, 0),
-        ));
-        let pre_wiring_setup_facts = pre_wiring_writer
-            .recorded_facts()
-            .expect("pre-wiring setup evidence should decode");
-        assert!(matches!(
-            pre_wiring_setup_facts.as_slice(),
-            [crate::bolt_v3_current_evidence::CurrentFact::CapitalAdmissionRebuild(_)]
-        ));
-        let pre_wiring_trading_state = Rc::new(RecordingTradingStateController::default());
-        let pre_wiring_sink = NtReducingLossActionSink::new(pre_wiring_trading_state.clone());
-        pre_wiring_sink
-            .emit(test_flatten_action("halt-pre-wiring"))
-            .expect("pre-wiring sink should only latch NT reducing");
-
-        assert_eq!(pre_wiring_trading_state.enter_reducing_calls(), 1);
-        assert_eq!(pre_wiring_executor.submitted_quantities(), Vec::new());
-        assert_eq!(
-            pre_wiring_writer
-                .recorded_facts()
-                .expect("post-action current evidence should decode"),
-            pre_wiring_setup_facts,
-            "an unwired flatten action must not add decision evidence"
-        );
-
-        let writer = Arc::new(DecisionEvidenceRecorder::recording());
-        let wired_executor = Rc::new(RoutingFlattenExecutor::new(
-            writer.clone(),
-            Decimal::new(3, 0),
-        ));
-        let wired_setup_fact_count = writer
-            .recorded_facts()
-            .expect("wired setup evidence should decode")
-            .len();
-        let wired_trading_state = Rc::new(RecordingTradingStateController::default());
-        let wired_sink = NtReducingLossActionSink::with_flatten_executor(
-            wired_trading_state.clone(),
-            wired_executor.clone(),
-        );
-
-        wired_sink
-            .emit(test_flatten_action("halt-wired"))
-            .expect("wired sink should not degrade halt state when flatten routes");
-
-        assert_eq!(wired_trading_state.enter_reducing_calls(), 1);
-        assert_eq!(
-            wired_executor.submitted_quantities(),
-            vec![Quantity::new(3.0, 2)]
-        );
-        let facts = writer
-            .recorded_facts()
-            .expect("flatten current evidence should decode");
-        let action_facts = &facts[wired_setup_fact_count..];
-        let records = action_facts
-            .iter()
-            .filter_map(|fact| match fact {
-                crate::bolt_v3_current_evidence::CurrentFact::RiskReducingExitOrderIntent(
-                    record,
-                ) => Some(record),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            records[0].details.clamp_outcome,
-            Some(
-                crate::bolt_v3_current_evidence::OrderIntentClampOutcome::Clamped {
-                    original_quantity: Quantity::new(5.0, 2).as_decimal().to_string(),
-                }
-            )
-        );
-        let admission_decisions = action_facts
-            .iter()
-            .filter_map(|fact| match fact {
-                crate::bolt_v3_current_evidence::CurrentFact::ForcedReductionAdmission(record) => {
-                    Some(record)
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(admission_decisions.len(), 1);
-        assert_eq!(
-            admission_decisions[0].outcome,
-            crate::bolt_v3_current_evidence::AdmissionDecisionOutcome::Admitted
-        );
-    }
-
-    #[test]
-    fn planned_flatten_command_routing_continues_after_command_failure() {
-        let plan = two_command_flatten_plan("halt-loop");
-        let mut routed_positions = Vec::new();
-
-        let report = route_planned_kill_switch_flatten_commands(&plan, |command| {
-            routed_positions.push(command.position_id().to_string());
-            if command.position_id() == PositionId::from("POSITION-001") {
-                BoltV3SubmitAttemptOutcome::rejected_for_test(
-                    BoltV3SubmitAttemptKind::RouteValidationRejected,
-                    "synthetic first command failure",
-                )
-            } else {
-                BoltV3SubmitAttemptOutcome::submitted_for_test()
-            }
-        });
-        let error = report
-            .require_all_submitted()
-            .expect_err("one command failure should return a loud aggregate error");
-
-        assert_eq!(
-            routed_positions,
-            vec!["POSITION-001".to_string(), "POSITION-002".to_string()]
-        );
-        assert!(
-            error
-                .to_string()
-                .contains("kill switch flatten command failures"),
-            "unexpected aggregate error: {error:#}"
-        );
-        assert!(
-            error.to_string().contains("POSITION-001"),
-            "aggregate error should name the failed position: {error:#}"
-        );
-    }
-
-    #[test]
-    fn only_submitted_is_a_successful_kill_switch_flatten_outcome() {
-        let plan = two_command_flatten_plan("halt-outcome-matrix");
-        let non_submitted = [
-            BoltV3SubmitAttemptKind::RouteValidationRejected,
-            BoltV3SubmitAttemptKind::IntentEvidenceRejected,
-            BoltV3SubmitAttemptKind::AdmissionRejected,
-            BoltV3SubmitAttemptKind::PolicySkipped,
-            BoltV3SubmitAttemptKind::PreSinkRejected,
-            BoltV3SubmitAttemptKind::SinkRejected,
-        ];
-
-        for kind in non_submitted {
-            let report = route_planned_kill_switch_flatten_commands(&plan, |_| match kind {
-                BoltV3SubmitAttemptKind::PolicySkipped => {
-                    BoltV3SubmitAttemptOutcome::policy_skipped_for_test()
-                }
-                BoltV3SubmitAttemptKind::RouteValidationRejected
-                | BoltV3SubmitAttemptKind::IntentEvidenceRejected
-                | BoltV3SubmitAttemptKind::AdmissionRejected
-                | BoltV3SubmitAttemptKind::PreSinkRejected
-                | BoltV3SubmitAttemptKind::SinkRejected => {
-                    BoltV3SubmitAttemptOutcome::rejected_for_test(kind, "injected rejection")
-                }
-                BoltV3SubmitAttemptKind::Submitted => unreachable!(),
-            });
-            assert!(
-                report
-                    .attempts
-                    .iter()
-                    .all(|attempt| attempt.outcome.kind() == kind)
-            );
-            report
-                .require_all_submitted()
-                .expect_err("every non-submitted route outcome must remain a flatten failure");
-        }
-
-        let submitted = route_planned_kill_switch_flatten_commands(&plan, |_| {
-            BoltV3SubmitAttemptOutcome::submitted_for_test()
-        });
-        submitted
-            .require_all_submitted()
-            .expect("Submitted is the sole successful flatten outcome");
     }
 
     #[test]
@@ -1935,357 +1300,6 @@ mod tests {
         fn enter_reducing(&self) {
             *self.enter_reducing_calls.borrow_mut() += 1;
         }
-    }
-
-    struct RecordingFlattenExecutor {
-        actions: RefCell<Vec<KillSwitchLossAction>>,
-        fail: bool,
-    }
-
-    impl RecordingFlattenExecutor {
-        fn recording() -> Self {
-            Self {
-                actions: RefCell::new(Vec::new()),
-                fail: false,
-            }
-        }
-
-        fn failing() -> Self {
-            Self {
-                actions: RefCell::new(Vec::new()),
-                fail: true,
-            }
-        }
-
-        fn actions(&self) -> Vec<KillSwitchLossAction> {
-            self.actions.borrow().clone()
-        }
-    }
-
-    impl KillSwitchFlattenExecutor for RecordingFlattenExecutor {
-        fn execute_flatten(&self, action: &KillSwitchLossAction) -> Result<()> {
-            self.actions.borrow_mut().push(action.clone());
-            if self.fail {
-                anyhow::bail!("synthetic flatten executor failure");
-            }
-            Ok(())
-        }
-    }
-
-    fn two_command_flatten_plan(halt_id: &str) -> BoltV3KillSwitchFlattenPlan {
-        let claim = BoltV3KillSwitchForcedReductionClaim::new(
-            halt_id.to_string(),
-            "flatten-positions",
-            "a".repeat(64),
-        )
-        .expect("forced reduction claim should be valid");
-        let first = flatten_candidate("POSITION-001");
-        let second = flatten_candidate("POSITION-002");
-        BoltV3KillSwitchFlattenSupervisor::plan_flatten(BoltV3KillSwitchFlattenPlanRequest {
-            kill_switch_state: KillSwitchState::Flattening {
-                halt_id: halt_id.to_string(),
-            },
-            nt_trading_state: TradingState::Reducing,
-            action_id: "flatten-positions".to_string(),
-            config_sha256: "b".repeat(64),
-            policy_sha256: "a".repeat(64),
-            source_timestamp_unix_nanos: 2,
-            policy: BoltV3KillSwitchFlattenPolicy::new(),
-            snapshot: BoltV3KillSwitchFlattenSnapshot::new(vec![first, second])
-                .expect("flatten snapshot should be valid"),
-            observed_at_unix_nanos: 2,
-            route_proof: BoltV3KillSwitchFlattenRouteProof::new(
-                BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
-            ),
-            order_template: flatten_market_template(),
-            forced_reduction_claim: claim,
-        })
-        .expect("two open positions should produce commands")
-    }
-
-    fn flatten_candidate(position_id: &str) -> BoltV3KillSwitchFlattenCandidate {
-        BoltV3KillSwitchFlattenCandidate::from_nt_position_state(
-            BoltV3KillSwitchFlattenPositionState {
-                evidence_kind: BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
-                account_id: AccountId::from("ACCOUNT-001"),
-                instrument_id: InstrumentId::from("instrument-yes.VENUE-A"),
-                strategy_id: StrategyId::from("strategy-a"),
-                position_id: PositionId::from(position_id),
-                position_side: PositionSide::Long,
-                quantity: Quantity::new(5.0, 2),
-                source_timestamp_unix_nanos: 1,
-            },
-        )
-        .expect("flatten candidate should be valid")
-    }
-
-    struct RoutingFlattenExecutor {
-        writer: Arc<DecisionEvidenceRecorder>,
-        admission: Arc<BoltV3SubmitAdmissionState>,
-        submitted_quantities: Rc<RefCell<Vec<Quantity>>>,
-    }
-
-    impl RoutingFlattenExecutor {
-        fn new(writer: Arc<DecisionEvidenceRecorder>, venue_position: Decimal) -> Self {
-            let admission = flatten_admission_with_yes_position(writer.clone(), venue_position);
-            Self {
-                writer,
-                admission,
-                submitted_quantities: Rc::new(RefCell::new(Vec::new())),
-            }
-        }
-
-        fn submitted_quantities(&self) -> Vec<Quantity> {
-            self.submitted_quantities.borrow().clone()
-        }
-    }
-
-    impl KillSwitchFlattenExecutor for RoutingFlattenExecutor {
-        fn execute_flatten(&self, action: &KillSwitchLossAction) -> Result<()> {
-            self.admission
-                .replace_kill_switch_state(KillSwitchState::Flattening {
-                    halt_id: action.halt_id.clone(),
-                });
-            let claim = BoltV3KillSwitchForcedReductionClaim::new(
-                action.halt_id.clone(),
-                action.action_id.clone(),
-                "a".repeat(64),
-            )
-            .expect("forced reduction claim should be valid");
-            let candidate = BoltV3KillSwitchFlattenCandidate::from_nt_position_state(
-                BoltV3KillSwitchFlattenPositionState {
-                    evidence_kind: BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
-                    account_id: AccountId::from(action.account_ids[0].as_str()),
-                    instrument_id: InstrumentId::from(action.instrument_ids[0].as_str()),
-                    strategy_id: StrategyId::from("strategy-a"),
-                    position_id: PositionId::from("POSITION-001"),
-                    position_side: PositionSide::Long,
-                    quantity: Quantity::new(5.0, 2),
-                    source_timestamp_unix_nanos: 1,
-                },
-            )
-            .expect("flatten candidate should be valid");
-            let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(
-                BoltV3KillSwitchFlattenPlanRequest {
-                    kill_switch_state: KillSwitchState::Flattening {
-                        halt_id: action.halt_id.clone(),
-                    },
-                    nt_trading_state: TradingState::Reducing,
-                    action_id: action.action_id.clone(),
-                    config_sha256: "b".repeat(64),
-                    policy_sha256: "a".repeat(64),
-                    source_timestamp_unix_nanos: 2,
-                    policy: BoltV3KillSwitchFlattenPolicy::new(),
-                    snapshot: BoltV3KillSwitchFlattenSnapshot::new(vec![candidate])
-                        .expect("flatten snapshot should be valid"),
-                    observed_at_unix_nanos: 2,
-                    route_proof: BoltV3KillSwitchFlattenRouteProof::new(
-                        BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
-                    ),
-                    order_template: flatten_market_template(),
-                    forced_reduction_claim: claim,
-                },
-            )
-            .expect("flatten plan should produce commands");
-            let command = plan
-                .commands()
-                .first()
-                .expect("open position should produce a command");
-            let mut order_factory = flatten_order_factory(command.strategy_id());
-            let instrument = flatten_binary_option(command.instrument_id());
-            let submitted_quantities = self.submitted_quantities.clone();
-            let mut sink = BoltV3NtSubmitOnlySink::new(
-                command.source_timestamp_unix_nanos(),
-                move |order, _context| {
-                    submitted_quantities.borrow_mut().push(order.quantity());
-                    Ok(())
-                },
-            );
-
-            let outcome = route_kill_switch_flatten_command_with_sink(
-                BoltV3OrderExecutionPolicy::live(),
-                &mut sink,
-                &mut order_factory,
-                self.writer.as_ref(),
-                self.admission.as_ref(),
-                BoltV3KillSwitchFlattenRoutingContext {
-                    execution_client_id: Some("execution_client"),
-                    instrument: Some(&instrument),
-                    order_economics: Some(test_order_economics()),
-                },
-                command,
-            );
-            if outcome.kind() != BoltV3SubmitAttemptKind::Submitted {
-                anyhow::bail!(
-                    "flatten route did not submit: outcome={:?} diagnostic={}",
-                    outcome.kind(),
-                    outcome.diagnostic().unwrap_or("none")
-                );
-            }
-            Ok(())
-        }
-    }
-
-    fn test_order_economics() -> &'static crate::bolt_v3_order_execution::BoltV3OrderEconomicsHandle
-    {
-        static HANDLE: std::sync::OnceLock<
-            crate::bolt_v3_order_execution::BoltV3OrderEconomicsHandle,
-        > = std::sync::OnceLock::new();
-        HANDLE.get_or_init(|| {
-            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client")
-        })
-    }
-
-    fn flatten_admission_with_yes_position(
-        writer: Arc<DecisionEvidenceRecorder>,
-        yes_position: Decimal,
-    ) -> Arc<BoltV3SubmitAdmissionState> {
-        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
-            writer,
-            flatten_capital_admission_config(),
-        ));
-        let mut components = flatten_capital_admission_components();
-        let ProductAdmissionSnapshot::PredictionMarketBinary(product) =
-            &mut components.product_state;
-        product.source = POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string();
-        product.yes_position = yes_position;
-        admission.update_capital_admission_nt_components(components);
-        admission.configure_kill_switch_forced_reduction_policy(
-            BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 2, Decimal::new(10, 0))
-                .expect("forced reduction policy should be valid"),
-        );
-        let rebuild =
-            admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1);
-        assert!(rebuild.accepted);
-        admission
-    }
-
-    fn flatten_capital_admission_config() -> BoltV3SubmitCapitalAdmissionConfig {
-        BoltV3SubmitCapitalAdmissionConfig {
-            venue_id: "VENUE-A".to_string(),
-            account_id: "ACCOUNT-001".to_string(),
-            product_kind: ProductKind::PredictionMarketBinary,
-            collateral_currency: "USD".to_string(),
-            capital_pool: CapitalPoolSnapshot {
-                source: "test-capital-pool".to_string(),
-                observed_at_ns: 0,
-                pool_id: "pool-1".to_string(),
-                max_pool_liability: Decimal::new(10, 0),
-                committed_liability: Decimal::ZERO,
-                max_snapshot_age_ns: u64::MAX,
-            },
-            policy: CapitalAdmissionPolicy {
-                min_remaining_pool_balance: None,
-                fee_slippage_policy: Some(FeeSlippagePolicy {
-                    max_fee_liability: Decimal::new(10, 2),
-                    max_slippage_liability: Decimal::new(20, 2),
-                }),
-            },
-        }
-    }
-
-    fn flatten_capital_admission_components() -> BoltV3SubmitCapitalAdmissionNtComponents {
-        BoltV3SubmitCapitalAdmissionNtComponents {
-            source: "nt_capital_admission_state".to_string(),
-            observed_at_ns: 0,
-            portfolio: PortfolioCapitalAdmissionSnapshot {
-                source: "nt_portfolio_snapshot".to_string(),
-                observed_at_ns: 0,
-                venue_id: "VENUE-A".to_string(),
-                account_id: "ACCOUNT-001".to_string(),
-                collateral_currency: "USD".to_string(),
-                free_collateral: Decimal::new(100, 0),
-                total_equity: Decimal::new(100, 0),
-            },
-            provider_collateral_allowance: ProviderCollateralAllowanceSnapshot {
-                source: "nt_account_free_collateral".to_string(),
-                observed_at_ns: 0,
-                venue_id: "VENUE-A".to_string(),
-                account_id: "ACCOUNT-001".to_string(),
-                collateral_currency: "USD".to_string(),
-                collateral_allowance: Decimal::new(100, 0),
-            },
-            order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
-                source: "nt_open_order_cache".to_string(),
-                observed_at_ns: 0,
-                open_order_count: 0,
-                all_open_orders_attributed: true,
-            },
-            product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
-                PredictionMarketAdmissionSnapshot {
-                    source: "nt_prediction_market_snapshot".to_string(),
-                    observed_at_ns: 0,
-                    yes_instrument_id: "instrument-yes.VENUE-A".to_string(),
-                    no_instrument_id: "instrument-no.VENUE-A".to_string(),
-                    yes_position: Decimal::ZERO,
-                    no_position: Decimal::ZERO,
-                    collateral_allowance: Decimal::new(100, 0),
-                    collateral_coupled_group_id: "group-1".to_string(),
-                },
-            ),
-            loss_snapshot: None,
-        }
-    }
-
-    fn flatten_market_template() -> NtOrderTemplate {
-        NtOrderTemplate {
-            order_type: OrderType::Market,
-            time_in_force: TimeInForce::Ioc,
-            expire_time: None,
-            trigger_price: None,
-            activation_price: None,
-            trigger_type: None,
-            trigger_instrument_id: None,
-            trailing_offset: None,
-            trailing_offset_type: None,
-            is_post_only: false,
-            is_reduce_only: true,
-            is_quote_quantity: false,
-        }
-    }
-
-    fn flatten_order_factory(strategy_id: StrategyId) -> OrderFactory {
-        let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
-        OrderFactory::new(
-            TraderId::new("TRADER-001"),
-            strategy_id,
-            None,
-            None,
-            clock,
-            false,
-            true,
-        )
-    }
-
-    fn flatten_binary_option(instrument_id: InstrumentId) -> InstrumentAny {
-        InstrumentAny::BinaryOption(BinaryOption::new(
-            instrument_id,
-            Symbol::from("instrument-yes"),
-            AssetClass::Alternative,
-            Currency::USD(),
-            UnixNanos::from(1_u64),
-            UnixNanos::from(2_u64),
-            2,
-            2,
-            Price::from("0.01"),
-            Quantity::from("0.01"),
-            Some(Ustr::from("YES")),
-            None,
-            None,
-            Some(Quantity::from("0.01")),
-            None,
-            None,
-            Some(Price::from("1.00")),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            UnixNanos::from(1_u64),
-            UnixNanos::from(1_u64),
-        ))
     }
 
     fn test_flatten_action(halt_id: &str) -> KillSwitchLossAction {

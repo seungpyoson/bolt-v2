@@ -834,6 +834,15 @@ fn raw_execution_client_id(raw_config: &toml::Value) -> Result<&str> {
         .context("binary-oracle config client_id is required for execution economics")
 }
 
+fn raw_oms_type(raw_config: &toml::Value) -> Result<nautilus_model::enums::OmsType> {
+    raw_config
+        .get("oms_type")
+        .and_then(toml::Value::as_str)
+        .context("binary-oracle config oms_type is required for position authority")?
+        .parse()
+        .context("binary-oracle config oms_type is invalid for position authority")
+}
+
 fn manifest_order_economics(
     manifest: &BacktestingRunManifest,
     loaded: &LoadedBoltV3Config,
@@ -883,8 +892,13 @@ fn attach_position_authority(
     let runtime = prepare_position_authority_runtime(loaded, engine.kernel().cache())
         .context("prepare shared position-authority runtime")?;
     let execution_client_id = ClientId::from(raw_execution_client_id(raw_config)?);
-    let capability = bind_position_authority_capability(loaded, &runtime, execution_client_id)
-        .context("bind replay strategy position-authority capability")?;
+    let capability = bind_position_authority_capability(
+        loaded,
+        &runtime,
+        execution_client_id,
+        raw_oms_type(raw_config)?,
+    )
+    .context("bind replay strategy position-authority capability")?;
     Ok((build_context.with_position_authority(capability), runtime))
 }
 

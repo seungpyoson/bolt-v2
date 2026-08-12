@@ -30,6 +30,7 @@ use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_common::{actor::DataActorNative, cache::Cache, component::Component};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
+    enums::OmsType,
     identifiers::{AccountId, ClientId, StrategyId, Venue},
     types::Currency,
 };
@@ -481,6 +482,7 @@ impl<'a> StrategyRegistrationContext<'a> {
                     feed,
                     execution_client,
                     strategy.config.execution_client_id,
+                    strategy.config.oms_type,
                 )
                 .map_err(|error| binding_error(strategy, error.to_string()))
             })
@@ -620,6 +622,7 @@ pub fn bind_position_authority_capability(
     loaded: &LoadedBoltV3Config,
     runtime: &BoltV3PositionAuthorityRuntime,
     execution_client_id: ClientId,
+    oms_type: OmsType,
 ) -> anyhow::Result<BoltV3PositionAuthorityCapability> {
     let client = loaded
         .root
@@ -630,13 +633,14 @@ pub fn bind_position_authority_capability(
                 "position authority execution client is not loaded: execution_client_id={execution_client_id}"
             )
         })?;
-    bind_position_authority_feed(runtime.feed(), client, execution_client_id)
+    bind_position_authority_feed(runtime.feed(), client, execution_client_id, oms_type)
 }
 
 fn bind_position_authority_feed(
     feed: BoltV3PositionAuthorityFeed,
     client: &ClientBlock,
     execution_client_id: ClientId,
+    oms_type: OmsType,
 ) -> anyhow::Result<BoltV3PositionAuthorityCapability> {
     let account_id = execution_account_id_from_client(client).ok_or_else(|| {
         anyhow::anyhow!(
@@ -647,6 +651,7 @@ fn bind_position_authority_feed(
         feed,
         execution_client_id,
         AccountId::from(account_id),
+        oms_type,
     ))
 }
 

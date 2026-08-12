@@ -22,9 +22,9 @@
 //!   without entering the NT runner loop from the build path
 //! - wires the existing `crate::nt_runtime_capture` from the
 //!   `[persistence]` / `[persistence.streaming]` blocks
-//! - permits only the kill-switch forced-reduction flatten effect to hand an
-//!   already-admitted order to NT risk execution; ordinary strategy order
-//!   construction and policy stay outside this module
+//! - rejects automatic kill-switch flattening during config loading while the
+//!   supported economics slice is `quote_only`; this module owns no flatten
+//!   executor or alternate order-submit path
 //! - installs module-level logger filters from provider-owned bindings
 //!   that suppress NT credential info logs even when the root TOML log
 //!   level is `INFO`
@@ -3453,20 +3453,15 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         }
     };
     // Configure the durable kill-switch loss-protection accumulator after
-    // strategies are registered (its flatten targets are the registered NT
-    // strategy ids) and seed it from the durable store. `seed_from_store` can
+    // strategies are registered and seed it from the durable store.
+    // `seed_from_store` can
     // fail closed (e.g. an armed durable record with no loss snapshot becomes
     // `FailedManualIntervention`) and override the kill-switch state established
     // above by `recover_kill_switch_state_before_live_node_build`, so re-sync NT
     // trading state from the final loss-protection state — otherwise a
     // fail-closed seed would latch admission while leaving NT trading `Active`.
-    let loss_protection = configure_bolt_v3_kill_switch_loss_protection(
-        loaded,
-        &node,
-        evidence_runtime.order_execution_evidence(),
-        submit_admission.clone(),
-        &economics_inputs,
-    )?;
+    let loss_protection =
+        configure_bolt_v3_kill_switch_loss_protection(loaded, &node, submit_admission.clone())?;
     debug_assert!(
         !settlement_runtime_sink_backends.loss_protection() || loss_protection.is_some(),
         "kill-switch settlement sink backend must match loss-protection construction"

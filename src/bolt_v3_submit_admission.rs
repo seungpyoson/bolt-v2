@@ -1795,28 +1795,6 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
-    pub(crate) fn record_forced_reduction_economics_seal_rejection(
-        &self,
-        input: BoltV3SubmitAdmissionRequestInput<'_>,
-        facts: BoltV3OrderAdmissionFacts,
-        observed_at_ns: u64,
-    ) -> Result<(), BoltV3SubmitAdmissionError> {
-        let request = submit_admission_request_from_facts(input, facts, facts.reservation_basis);
-        let evaluation = BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::EconomicsSealRejected),
-            observed_at_ns,
-        );
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned");
-        self.record_admission_decision(&mut inner, &request, &evaluation, None, observed_at_ns)
-            .map(|_| ())
-            .map_err(|error| BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                reason: format!("{error:#}"),
-            })
-    }
-
     pub(crate) fn evaluate_and_record_without_consuming_capacity_with_economics_at(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
@@ -3390,14 +3368,6 @@ impl BoltV3EconomicsSubmitAdmission {
             self.economics,
             self.required_remaining_margin_ns,
         )
-    }
-
-    pub(crate) fn with_kill_switch_forced_reduction(
-        mut self,
-        claim: BoltV3KillSwitchForcedReductionClaim,
-    ) -> Self {
-        self.request.kill_switch_forced_reduction = Some(claim);
-        self
     }
 
     pub(crate) fn with_compiled_order_admission_evidence(

@@ -1422,7 +1422,7 @@ pub fn apply_backtest_config_override(
 
     errors.extend(validate_root_only(&loaded.root));
     errors.extend(validate_strategies(&loaded.root, &loaded.strategies));
-    if let Err(error) = crate::bolt_v3_validate::resolve_loaded_kill_switch_flatten(&loaded) {
+    if let Err(error) = crate::bolt_v3_validate::validate_loaded_kill_switch_flatten(&loaded) {
         errors.push(error.to_string());
     }
     if !errors.is_empty() {
@@ -1586,7 +1586,7 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
         root,
         strategies,
     };
-    if let Err(error) = crate::bolt_v3_validate::resolve_loaded_kill_switch_flatten(&loaded) {
+    if let Err(error) = crate::bolt_v3_validate::validate_loaded_kill_switch_flatten(&loaded) {
         return Err(BoltV3ConfigError::Validation(BoltV3ValidationError::new(
             vec![error.to_string()],
         )));

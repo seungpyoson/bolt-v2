@@ -440,10 +440,13 @@ fn partial_exit_fill_then_expire_restores_managed_residual_position() {
     assert!(matches!(strategy.exposure, ExposureState::ExitPending(_)));
     assert_eq!(
         strategy
-            .canonical_position_authority(position_id, instrument_id)
+            .context
+            .position_authority()
+            .expect("projected fill requires position authority")
+            .canonical_position(position_id, instrument_id)
             .expect("canonical projected-fill position read should succeed")
             .expect("projected-fill position should remain cached")
-            .signed_quantity,
+            .signed_quantity(),
         Decimal::new(10, 0),
         "an order-only projected fill must not pretend that NT position state advanced"
     );
@@ -3723,9 +3726,9 @@ fn exposure_exit_pending_stores_only_intent_correlation_and_bolt_context() {
         .context
         .position_authority()
         .expect("fixture strategy should have position authority")
-        .acquire(instrument_id, None)
+        .acquire_for_position(position_id, instrument_id)
         .expect("fixture exit authority lease should acquire");
-    let authority = BoltV3ExitOrderAuthorityHandle::recovered(
+    let authority = BoltV3ExitOrderAuthorityHandle::recovered_for_test(
         BoltV3RecoveredExitCause::StartupAdoption,
         client_order_id,
         instrument_id,

@@ -17,7 +17,7 @@ use nautilus_common::{
     runner::{DataCommandSender, get_data_cmd_sender, replace_data_cmd_sender},
 };
 use nautilus_model::{
-    enums::PositionSideSpecified,
+    enums::{OmsType, PositionSideSpecified},
     identifiers::{AccountId, ClientId},
     reports::PositionStatusReport,
 };
@@ -160,7 +160,7 @@ fn fixture_position_authority_capability_with_cache(
         cache,
     )
     .expect("fixture position authority attribution should build");
-    BoltV3PositionAuthorityCapability::new(feed, execution_client_id, account_id)
+    BoltV3PositionAuthorityCapability::new(feed, execution_client_id, account_id, OmsType::Netting)
 }
 
 pub(super) fn fixture_position_authority_capability(
@@ -1545,7 +1545,7 @@ pub(super) fn set_exit_pending(
         .context
         .position_authority()
         .expect("fixture strategy should have position authority")
-        .acquire(position.instrument_id, None)
+        .acquire_for_position(position.position_id, position.instrument_id)
         .expect("fixture exit authority lease should acquire");
     let order = seed_nt_working_exit_order(
         strategy,
@@ -1555,16 +1555,18 @@ pub(super) fn set_exit_pending(
         position.quantity,
     );
     let authority = match origin {
-        ManagedPositionOrigin::StrategyEntry => BoltV3ExitOrderAuthorityHandle::locally_submitted(
-            client_order_id,
-            position.instrument_id,
-            position.position_id,
-            position.quantity.as_decimal(),
-            position.side.as_specified(),
-            position.quantity,
-            lease,
-        )
-        .expect("fixture local exit authority should build"),
+        ManagedPositionOrigin::StrategyEntry => {
+            BoltV3ExitOrderAuthorityHandle::locally_submitted_for_test(
+                client_order_id,
+                position.instrument_id,
+                position.position_id,
+                position.quantity.as_decimal(),
+                position.side.as_specified(),
+                position.quantity,
+                lease,
+            )
+            .expect("fixture local exit authority should build")
+        }
         ManagedPositionOrigin::RecoveryBootstrap => {
             observe_position_authority_report(
                 strategy,
@@ -1573,7 +1575,7 @@ pub(super) fn set_exit_pending(
                 position.quantity,
                 975,
             );
-            let authority = BoltV3ExitOrderAuthorityHandle::recovered(
+            let authority = BoltV3ExitOrderAuthorityHandle::recovered_for_test(
                 BoltV3RecoveredExitCause::StartupAdoption,
                 client_order_id,
                 position.instrument_id,
@@ -1584,11 +1586,13 @@ pub(super) fn set_exit_pending(
                 lease,
             )
             .expect("fixture recovered exit authority should build");
-            let canonical = strategy
-                .canonical_position_authority(position.position_id, position.instrument_id)
-                .expect("fixture canonical position read should succeed");
             authority
-                .refresh_recovered_baseline(canonical.as_ref())
+                .refresh_recovered_baseline(
+                    strategy
+                        .context
+                        .position_authority()
+                        .expect("fixture strategy should have position authority"),
+                )
                 .expect("fixture recovered baseline should establish");
             authority
         }

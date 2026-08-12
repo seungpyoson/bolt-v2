@@ -532,7 +532,7 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - `state_path` is a non-empty root-relative path with no `..` components; `max_state_file_bytes` is positive and bounds both startup reads and writes, so oversized evidence fails closed instead of being read unbounded
 - before setting `enabled = true` on a fresh install, keep the block disabled, replace placeholder scopes with deployment values, run `bolt-v2 ops init-kill-switch-store --config <root.toml>`, then enable; the command creates the initial `Armed` + zero-loss snapshot at `state_path` and refuses to overwrite any existing store
 - `max_utc_daily_realized_loss` is a positive decimal string for the durable UTC-daily realized-loss accumulator; the first realized-PnL observation binds the accumulator to one settlement currency, and later mixed-currency observations fail closed to `FailedManualIntervention` with `mixed_settlement_currency` instead of being netted
-- `flatten_open_positions_on_breach` may be `true` only when `[risk.kill_switch.flatten]` is enabled with `route_kind = "live_node_command_router"`; halt-triggered flatten commands route through the shared submit policy as kill-switch forced reductions
+- `flatten_open_positions_on_breach = true` is rejected by loaded-config validation while the supported economics slice is `quote_only`; no automatic flatten submit route is constructed
 - `action_retry_interval_ms` and `action_retry_timeout_ms` are positive retry timing values for proof-only halt action persistence/retry bookkeeping; interval must be `<=` timeout
 - `mandatory_proof_max_age_ms` and `manual_reset_evidence_max_age_ms` bound operator reset proof freshness
 - `forced_reduction_policy_sha256` must be a 64-character SHA-256 hex digest; forced-reduction claims must match it
@@ -548,14 +548,14 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 ##### `[risk.kill_switch.flatten]`
 
 - required: no; when absent or `enabled = false`, no flatten-supervisor proof model is enabled
-- `route_kind` must be `per_strategy_action_port` or `live_node_command_router`; live flatten requires `live_node_command_router`
-- NT cache membership is the flatten position proof; position age does not block emergency flatten submissions
+- `route_kind` must be `per_strategy_action_port` or `live_node_command_router` at the block-schema boundary; neither value grants a live flatten submit route while economics remains `quote_only`
+- NT cache membership is the proof input for the inert flatten plan; position age is not part of that proof, and the plan grants no submit authority
 - `max_live_order_count` must be positive when enabled
 - `max_live_order_count` must be `<= risk.kill_switch.forced_reduction_max_live_order_count`
 - `max_notional_per_order` is a positive decimal string and must be `<= risk.kill_switch.forced_reduction_max_notional_per_order`
 - `order_type`, `time_in_force`, and `is_post_only` are the proof order-template fields checked by the shared NT order-template validator
 - `is_reduce_only` must be `true` and `is_quote_quantity` must be `false`
-- live-node-routed flatten commands build reduce-only forced-reduction submits with the halt id/action id/policy-SHA claim, then submit through the shared order-execution and submit-admission path. The venue-position clamp records the sizing outcome in `order_intent.clamp_outcome`; a zero venue position is a loud rejected no-op with `clamp_outcome = {"status":"rejected"}`.
+- flatten configuration remains proof/planning input only in the `quote_only` slice. Loaded-config validation rejects automatic flattening before LiveNode construction; the live flatten executor, submit-only sink, and secondary venue-position clamp are absent.
 
 #### NautilusTrader risk-engine bypass (removed config field)
 

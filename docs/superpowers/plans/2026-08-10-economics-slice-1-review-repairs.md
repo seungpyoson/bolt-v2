@@ -1048,14 +1048,14 @@ Tasks 1–6 produced reviewed head `4e0cd663a19c95ed0a6360660c070a12452134cb`. T
 **Interfaces:**
 - Produces a currency-typed gross edge input, typed maker breakeven policy, and admission-authoritative resting equivalence.
 
-- [ ] Add failing core tests for gross-currency mismatch, missing guaranteed point valuation, and non-positive position quantity.
-- [ ] Introduce the typed gross amount, migrate every root/replay caller, and delete duplicate/unused core APIs.
-- [ ] Replace the maker's raw zero floor with a typed breakeven policy. Prove a negative terminal-value gross is rejected and a positive value is admitted through the same policy.
-- [ ] Add paired resting-refresh evidence: forecast-only drift does not cancel, while independently changing core quote, core edge, binding, and reservation terms still fails equivalence and produces the existing fail-closed refresh outcome.
-- [ ] Preserve refreshed forecast fields in the stored admission and return a typed forecast-drift diagnostic without admitting or de-authorizing the order.
-- [ ] Add a shadow-PnL test that strips bound economics from an admitted entry and asserts the loud error.
-- [ ] Correct the entry-state comment and invalid backtesting manifest fixture versions without changing the isolated BTE workspace.
-- [ ] Run core, economics-runtime, maker, shadow-PnL, and affected backtesting tests on T9.
+- [x] Add failing core tests for gross-currency mismatch, missing guaranteed point valuation, and non-positive position quantity.
+- [x] Introduce the typed gross amount, migrate every root/replay caller, and delete duplicate/unused core APIs.
+- [x] Replace the maker's raw zero floor with a typed breakeven policy. Prove a negative terminal-value gross is rejected and a positive value is admitted through the same policy.
+- [x] Add paired resting-refresh evidence: forecast-only drift does not cancel, while independently changing core quote, core edge, binding, and reservation terms still fails equivalence and produces the existing fail-closed refresh outcome.
+- [x] Preserve refreshed forecast fields in the stored admission and return a typed forecast-drift diagnostic without admitting or de-authorizing the order.
+- [x] Add a shadow-PnL test that strips bound economics from an admitted entry and asserts the loud error.
+- [x] Correct the entry-state comment and invalid backtesting manifest fixture versions without changing the isolated BTE workspace.
+- [x] Run core, economics-runtime, maker, shadow-PnL, and affected backtesting tests on T9.
 
 ### Task 12: The only exact-head closure and review gate
 

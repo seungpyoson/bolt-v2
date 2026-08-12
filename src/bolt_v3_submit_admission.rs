@@ -216,6 +216,9 @@ fn admission_outcome_key(outcome: &AdmissionDecisionOutcome) -> &'static str {
         AdmissionDecisionOutcome::Rejected(
             AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
         ) => "rejected_kill_switch_forced_reduction_cap_exceeded",
+        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::EconomicsSealRejected) => {
+            "rejected_economics_seal"
+        }
         AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CapitalAdmission) => {
             "rejected_capital_admission"
         }
@@ -1786,7 +1789,32 @@ impl BoltV3SubmitAdmissionState {
             AdmissionDecisionOutcome::Rejected(
                 AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
             ) => Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded),
+            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::EconomicsSealRejected) => {
+                Err(BoltV3SubmitAdmissionError::EconomicsSealRejected)
+            }
         }
+    }
+
+    pub(crate) fn record_forced_reduction_economics_seal_rejection(
+        &self,
+        input: BoltV3SubmitAdmissionRequestInput<'_>,
+        facts: BoltV3OrderAdmissionFacts,
+        observed_at_ns: u64,
+    ) -> Result<(), BoltV3SubmitAdmissionError> {
+        let request = submit_admission_request_from_facts(input, facts, facts.reservation_basis);
+        let evaluation = BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::EconomicsSealRejected),
+            observed_at_ns,
+        );
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        self.record_admission_decision(&mut inner, &request, &evaluation, None, observed_at_ns)
+            .map(|_| ())
+            .map_err(|error| BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                reason: format!("{error:#}"),
+            })
     }
 
     pub(crate) fn evaluate_and_record_without_consuming_capacity_with_economics_at(
@@ -2234,6 +2262,9 @@ impl BoltV3SubmitAdmissionState {
             AdmissionDecisionOutcome::Rejected(
                 AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
             ) => Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded),
+            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::EconomicsSealRejected) => {
+                Err(BoltV3SubmitAdmissionError::EconomicsSealRejected)
+            }
         }
     }
 
@@ -2743,6 +2774,9 @@ fn submit_admission_error_from_outcome(
         AdmissionDecisionOutcome::Rejected(
             AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
         ) => BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded,
+        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::EconomicsSealRejected) => {
+            BoltV3SubmitAdmissionError::EconomicsSealRejected
+        }
     }
 }
 
@@ -4133,6 +4167,7 @@ pub enum BoltV3SubmitAdmissionError {
     },
     KillSwitchForcedReductionProofInvalid,
     KillSwitchForcedReductionCapExceeded,
+    EconomicsSealRejected,
     EvidenceWriteFailed {
         reason: String,
     },
@@ -4223,6 +4258,9 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
                 f,
                 "bolt-v3 submit admission kill-switch forced reduction cap is exceeded"
             ),
+            Self::EconomicsSealRejected => {
+                write!(f, "bolt-v3 submit admission economics seal was rejected")
+            }
             Self::EvidenceWriteFailed { reason } => {
                 write!(
                     f,

@@ -403,6 +403,7 @@ pub enum AdmissionRejectionReason {
     CountCapExhausted,
     KillSwitchForcedReductionProofInvalid,
     KillSwitchForcedReductionCapExceeded,
+    EconomicsSealRejected,
     CapitalAdmission,
 }
 

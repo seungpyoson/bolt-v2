@@ -1065,6 +1065,7 @@ mod tests {
                 "kill_switch_forced_reduction_proof_invalid",
             KillSwitchForcedReductionCapExceeded =>
                 "kill_switch_forced_reduction_cap_exceeded",
+            EconomicsSealRejected => "economics_seal_rejected",
             CapitalAdmission => "capital_admission"
         ]
     );

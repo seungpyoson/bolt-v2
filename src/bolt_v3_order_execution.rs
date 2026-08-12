@@ -2450,11 +2450,27 @@ where
         facts.order_quantity,
     ) {
         Ok(position) => position,
-        Err(error) => return BoltV3SubmitAttemptOutcome::route_validation_rejected(error),
+        Err(error) => {
+            return reject_forced_reduction_economics_seal(
+                submit_admission,
+                admission_input,
+                facts,
+                command.source_timestamp_unix_nanos(),
+                error,
+            );
+        }
     };
     let scenario = match BoltV3FinalOrderEconomicsScenario::forced_reduction(position) {
         Ok(scenario) => scenario,
-        Err(error) => return BoltV3SubmitAttemptOutcome::route_validation_rejected(error),
+        Err(error) => {
+            return reject_forced_reduction_economics_seal(
+                submit_admission,
+                admission_input,
+                facts,
+                command.source_timestamp_unix_nanos(),
+                error,
+            );
+        }
     };
     let sealed = match build_order_economics_submit_admission(
         order_economics,
@@ -2462,7 +2478,7 @@ where
             execution_client_id,
             intent: &intent,
             order: &order,
-            valuation: admission_input.valuation,
+            valuation: admission_input.valuation.clone(),
             risk_reducing_exit_position: None,
             scenario,
             candidate_fill_levels: vec![BoltV3PlannedFillLeg {
@@ -2474,7 +2490,15 @@ where
         },
     ) {
         Ok(sealed) => sealed,
-        Err(error) => return BoltV3SubmitAttemptOutcome::route_validation_rejected(error),
+        Err(error) => {
+            return reject_forced_reduction_economics_seal(
+                submit_admission,
+                admission_input,
+                facts,
+                command.source_timestamp_unix_nanos(),
+                error,
+            );
+        }
     }
     .with_kill_switch_forced_reduction(command.forced_reduction_claim().clone());
 
@@ -2492,6 +2516,28 @@ where
             command.position_id(),
         ),
     )
+}
+
+fn reject_forced_reduction_economics_seal(
+    submit_admission: &BoltV3SubmitAdmissionState,
+    admission_input: BoltV3SubmitAdmissionRequestInput<'_>,
+    facts: crate::bolt_v3_submit_admission::BoltV3OrderAdmissionFacts,
+    observed_at_ns: u64,
+    seal_error: anyhow::Error,
+) -> BoltV3SubmitAttemptOutcome {
+    if let Err(evidence_error) = submit_admission.record_forced_reduction_economics_seal_rejection(
+        admission_input,
+        facts,
+        observed_at_ns,
+    ) {
+        return BoltV3SubmitAttemptOutcome::rejected(
+            BoltV3SubmitRejectionKind::IntentEvidence,
+            anyhow::anyhow!(
+                "forced-reduction economics seal rejected but its evidence write failed; seal_error={seal_error:#}; evidence_error={evidence_error}"
+            ),
+        );
+    }
+    BoltV3SubmitAttemptOutcome::route_validation_rejected(seal_error)
 }
 
 fn flatten_client_order_id(command: &BoltV3KillSwitchFlattenCommand) -> ClientOrderId {
@@ -6099,6 +6145,56 @@ mod tests {
     }
 
     #[test]
+    fn kill_switch_economics_seal_failure_records_one_rejection_without_mutation() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = provider_collateral_allowance_admission_with_yes_position(
+            writer.clone(),
+            Decimal::new(3, 0),
+        );
+        admission.configure_kill_switch_forced_reduction_policy(
+            BoltV3KillSwitchForcedReductionPolicy::new("a".repeat(64), 1, Decimal::new(10, 0))
+                .expect("forced reduction policy should be valid"),
+        );
+        reconcile_no_live_forced_reductions(admission.as_ref(), 2);
+        let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
+        let command = flatten_command_for_halt("halt-seal", "POSITION-SEAL");
+        let missing_authority =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_without_authority_for(
+                "execution_client",
+                "instrument-yes.VENUE-A",
+            );
+        let mut sink = RecordingVenueMutationSink::default();
+        let mut order_factory = generic_order_factory();
+
+        let outcome = route_one_flatten_command_with_economics(
+            admission.as_ref(),
+            writer.as_ref(),
+            &instrument,
+            &mut sink,
+            &mut order_factory,
+            &command,
+            &missing_authority,
+        );
+
+        assert_eq!(
+            outcome.kind(),
+            BoltV3SubmitAttemptKind::RouteValidationRejected
+        );
+        assert_eq!(sink.submit_calls, 0);
+        assert_eq!(sink.cancel_calls, 0);
+        assert_eq!(sink.modify_calls, 0);
+        assert_eq!(admission.admitted_order_count(), 0);
+        let facts = writer.forced_reduction_admissions();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0].outcome,
+            crate::bolt_v3_current_evidence::AdmissionDecisionOutcome::Rejected(
+                crate::bolt_v3_current_evidence::AdmissionRejectionReason::EconomicsSealRejected,
+            )
+        );
+    }
+
+    #[test]
     fn two_halt_cycles_require_reconciled_terminal_absence_before_second_submit() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = provider_collateral_allowance_admission_with_yes_position(
@@ -6725,6 +6821,27 @@ mod tests {
         order_factory: &mut OrderFactory,
         command: &crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
     ) -> BoltV3SubmitAttemptOutcome {
+        route_one_flatten_command_with_economics(
+            admission,
+            writer,
+            instrument,
+            sink,
+            order_factory,
+            command,
+            kill_switch_order_economics(),
+        )
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    fn route_one_flatten_command_with_economics(
+        admission: &BoltV3SubmitAdmissionState,
+        writer: &DecisionEvidenceRecorder,
+        instrument: &InstrumentAny,
+        sink: &mut RecordingVenueMutationSink,
+        order_factory: &mut OrderFactory,
+        command: &crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenCommand,
+        order_economics: &super::BoltV3OrderEconomicsHandle,
+    ) -> BoltV3SubmitAttemptOutcome {
         admission.replace_kill_switch_state(KillSwitchState::Flattening {
             halt_id: command.halt_id().to_string(),
         });
@@ -6738,7 +6855,7 @@ mod tests {
             super::BoltV3KillSwitchFlattenRoutingContext {
                 execution_client_id: Some("execution_client"),
                 instrument: Some(instrument),
-                order_economics: Some(kill_switch_order_economics()),
+                order_economics: Some(order_economics),
             },
             command,
         )

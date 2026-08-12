@@ -26,6 +26,21 @@ fn fixture_order_economics_with_platform_fee(
     execution_client_id: &str,
     platform_fee_rate: f64,
 ) -> BoltV3OrderEconomicsHandle {
+    fixture_order_economics_with_platform_fee_except(execution_client_id, platform_fee_rate, None)
+}
+
+pub(crate) fn fixture_order_economics_without_authority_for(
+    execution_client_id: &str,
+    instrument_id: &str,
+) -> BoltV3OrderEconomicsHandle {
+    fixture_order_economics_with_platform_fee_except(execution_client_id, 0.03, Some(instrument_id))
+}
+
+fn fixture_order_economics_with_platform_fee_except(
+    execution_client_id: &str,
+    platform_fee_rate: f64,
+    excluded_instrument_id: Option<&str>,
+) -> BoltV3OrderEconomicsHandle {
     let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
         "tests/fixtures/bolt_v3/root.toml",
     ))
@@ -153,6 +168,7 @@ fn fixture_order_economics_with_platform_fee(
     ];
     let inputs = instruments
         .into_iter()
+        .filter(|(instrument_id, _)| Some(*instrument_id) != excluded_instrument_id)
         .map(|(instrument_id, provider_instrument_id)| {
             authoritative_economics_input(
                 execution_client_id,

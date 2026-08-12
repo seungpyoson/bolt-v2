@@ -1000,6 +1000,7 @@ macro_rules! define_rejection_outcome {
             CountCapExhausted,
             KillSwitchForcedReductionProofInvalid,
             KillSwitchForcedReductionCapExceeded,
+            EconomicsSealRejected,
             CapitalAdmission,
         }
 
@@ -1023,6 +1024,7 @@ macro_rules! define_rejection_outcome {
                     AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded => {
                         Self::KillSwitchForcedReductionCapExceeded
                     }
+                    AdmissionRejectionReason::EconomicsSealRejected => Self::EconomicsSealRejected,
                     AdmissionRejectionReason::CapitalAdmission => Self::CapitalAdmission,
                 }
             }
@@ -1046,6 +1048,7 @@ macro_rules! define_rejection_outcome {
                     Self::KillSwitchForcedReductionCapExceeded => {
                         AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded
                     }
+                    Self::EconomicsSealRejected => AdmissionRejectionReason::EconomicsSealRejected,
                     Self::CapitalAdmission => AdmissionRejectionReason::CapitalAdmission,
                 }
             }

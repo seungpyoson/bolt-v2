@@ -309,6 +309,7 @@ enum AdmissionRejectionV1 {
     CountCapExhausted,
     KillSwitchForcedReductionProofInvalid,
     KillSwitchForcedReductionCapExceeded,
+    EconomicsSealRejected,
     CapitalAdmission,
 }
 
@@ -332,6 +333,7 @@ impl AdmissionRejectionV1 {
             AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded => {
                 Self::KillSwitchForcedReductionCapExceeded
             }
+            AdmissionRejectionReason::EconomicsSealRejected => Self::EconomicsSealRejected,
             AdmissionRejectionReason::CapitalAdmission => Self::CapitalAdmission,
         }
     }
@@ -355,6 +357,7 @@ impl AdmissionRejectionV1 {
             Self::KillSwitchForcedReductionCapExceeded => {
                 AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded
             }
+            Self::EconomicsSealRejected => AdmissionRejectionReason::EconomicsSealRejected,
             Self::CapitalAdmission => AdmissionRejectionReason::CapitalAdmission,
         }
     }

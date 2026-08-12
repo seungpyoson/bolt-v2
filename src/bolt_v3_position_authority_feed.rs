@@ -247,17 +247,21 @@ impl BoltV3PositionAuthorityCapability {
         let target_scope = match self.oms_type {
             OmsType::Hedging => BoltV3CanonicalPositionTargetScope::Exact,
             OmsType::Netting => {
-                let matching_positions = cache.positions(
+                let matching_open_positions = cache.positions_open(
                     Some(&instrument_id.venue),
                     Some(&instrument_id),
                     None,
                     Some(&self.account_id),
                     None,
                 );
-                if matching_positions.len() == 1 && matching_positions[0].id == position_id {
-                    BoltV3CanonicalPositionTargetScope::Exact
-                } else {
-                    BoltV3CanonicalPositionTargetScope::AmbiguousNettingAggregate
+                match (position.is_open(), matching_open_positions.as_slice()) {
+                    (true, [only_open]) if only_open.id == position_id => {
+                        BoltV3CanonicalPositionTargetScope::Exact
+                    }
+                    (false, []) => BoltV3CanonicalPositionTargetScope::Exact,
+                    (true, _) | (false, _) => {
+                        BoltV3CanonicalPositionTargetScope::AmbiguousNettingAggregate
+                    }
                 }
             }
             OmsType::Unspecified => {

@@ -2825,21 +2825,29 @@ mod tests {
 
     const FIXTURE_CANCEL_RETRY_TIMEOUT_NS: u64 = 1_000_000_000;
 
-    fn position_authority_with_canonical_position(
+    #[derive(Clone, Copy)]
+    enum NettingPositionFixtureState {
+        Open,
+        Closed,
+    }
+
+    fn cache_netting_position(
+        cache: &Rc<RefCell<nautilus_common::cache::Cache>>,
         instrument: &InstrumentAny,
+        account_id: AccountId,
         position_id: PositionId,
         quantity: Quantity,
-    ) -> BoltV3PositionAuthorityCapability {
-        let account_id = AccountId::from("ACCOUNT-001");
-        let execution_client_id = ClientId::from("execution_client");
-        let mut fill = OrderFilled::new(
+        state: NettingPositionFixtureState,
+    ) -> Option<TradeId> {
+        let strategy_id = StrategyId::from(format!("STRATEGY-{position_id}"));
+        let mut entry_fill = OrderFilled::new(
             TraderId::from("TRADER-001"),
-            StrategyId::from("STRATEGY-001"),
+            strategy_id,
             instrument.id(),
-            ClientOrderId::from("ENTRY-001"),
-            VenueOrderId::from("VENUE-ENTRY-001"),
+            ClientOrderId::from(format!("ENTRY-{position_id}")),
+            VenueOrderId::from(format!("VENUE-ENTRY-{position_id}")),
             account_id,
-            TradeId::from("ENTRY-TRADE-001"),
+            TradeId::from(format!("ENTRY-TRADE-{position_id}")),
             OrderSide::Buy,
             OrderType::Market,
             quantity,
@@ -2854,13 +2862,56 @@ mod tests {
             Some(Money::new(0.0, Currency::USDC())),
             None,
         );
-        fill.position_id = Some(position_id);
-        let position = Position::new(instrument, fill);
-        let cache = Rc::new(RefCell::new(nautilus_common::cache::Cache::default()));
+        entry_fill.position_id = Some(position_id);
+        let mut position = Position::new(instrument, entry_fill);
         cache
             .borrow_mut()
             .add_position(&position, OmsType::Netting)
-            .expect("position authority fixture should cache its canonical position");
+            .expect("position authority fixture should cache its open position");
+
+        match state {
+            NettingPositionFixtureState::Open => None,
+            NettingPositionFixtureState::Closed => {
+                let close_trade_id = TradeId::from(format!("CLOSE-TRADE-{position_id}"));
+                let mut close_fill = OrderFilled::new(
+                    TraderId::from("TRADER-001"),
+                    strategy_id,
+                    instrument.id(),
+                    ClientOrderId::from(format!("CLOSE-{position_id}")),
+                    VenueOrderId::from(format!("VENUE-CLOSE-{position_id}")),
+                    account_id,
+                    close_trade_id,
+                    OrderSide::Sell,
+                    OrderType::Market,
+                    quantity,
+                    Price::new(0.40, instrument.price_precision()),
+                    Currency::USDC(),
+                    LiquiditySide::Taker,
+                    nautilus_core::UUID4::new(),
+                    UnixNanos::from(2_u64),
+                    UnixNanos::from(2_u64),
+                    false,
+                    None,
+                    Some(Money::new(0.0, Currency::USDC())),
+                    None,
+                );
+                close_fill.position_id = Some(position_id);
+                position.apply(&close_fill);
+                cache
+                    .borrow_mut()
+                    .update_position(&position)
+                    .expect("position authority fixture should cache its closed position");
+                Some(close_trade_id)
+            }
+        }
+    }
+
+    fn position_authority_from_cache(
+        instrument: &InstrumentAny,
+        cache: Rc<RefCell<nautilus_common::cache::Cache>>,
+    ) -> BoltV3PositionAuthorityCapability {
+        let account_id = AccountId::from("ACCOUNT-001");
+        let execution_client_id = ClientId::from("execution_client");
         let feed = BoltV3PositionAuthorityFeed::try_new_with_cache(
             [(account_id, execution_client_id, instrument.id().venue)],
             cache,
@@ -2874,67 +2925,70 @@ mod tests {
         )
     }
 
+    fn position_authority_with_canonical_position(
+        instrument: &InstrumentAny,
+        position_id: PositionId,
+        quantity: Quantity,
+    ) -> BoltV3PositionAuthorityCapability {
+        let account_id = AccountId::from("ACCOUNT-001");
+        let cache = Rc::new(RefCell::new(nautilus_common::cache::Cache::default()));
+        cache_netting_position(
+            &cache,
+            instrument,
+            account_id,
+            position_id,
+            quantity,
+            NettingPositionFixtureState::Open,
+        );
+        position_authority_from_cache(instrument, cache)
+    }
+
     fn position_authority_with_ambiguous_netting_positions(
         instrument: &InstrumentAny,
         target_position_id: PositionId,
         other_position_id: PositionId,
     ) -> BoltV3PositionAuthorityCapability {
         let account_id = AccountId::from("ACCOUNT-001");
-        let execution_client_id = ClientId::from("execution_client");
         let cache = Rc::new(RefCell::new(nautilus_common::cache::Cache::default()));
-        for (position_id, client_order_id, venue_order_id, trade_id) in [
-            (
-                target_position_id,
-                "ENTRY-TARGET",
-                "VENUE-ENTRY-TARGET",
-                "ENTRY-TRADE-TARGET",
-            ),
-            (
-                other_position_id,
-                "ENTRY-OTHER",
-                "VENUE-ENTRY-OTHER",
-                "ENTRY-TRADE-OTHER",
-            ),
-        ] {
-            let mut fill = OrderFilled::new(
-                TraderId::from("TRADER-001"),
-                StrategyId::from("STRATEGY-001"),
-                instrument.id(),
-                ClientOrderId::from(client_order_id),
-                VenueOrderId::from(venue_order_id),
+        for position_id in [target_position_id, other_position_id] {
+            cache_netting_position(
+                &cache,
+                instrument,
                 account_id,
-                TradeId::from(trade_id),
-                OrderSide::Buy,
-                OrderType::Market,
+                position_id,
                 Quantity::new(10.0, 2),
-                Price::new(0.40, instrument.price_precision()),
-                Currency::USDC(),
-                LiquiditySide::Taker,
-                nautilus_core::UUID4::new(),
-                UnixNanos::from(1_u64),
-                UnixNanos::from(1_u64),
-                false,
-                None,
-                Some(Money::new(0.0, Currency::USDC())),
-                None,
+                NettingPositionFixtureState::Open,
             );
-            fill.position_id = Some(position_id);
-            let position = Position::new(instrument, fill);
-            cache
-                .borrow_mut()
-                .add_position(&position, OmsType::Netting)
-                .expect("ambiguous position fixture should cache each netting position");
         }
-        let feed = BoltV3PositionAuthorityFeed::try_new_with_cache(
-            [(account_id, execution_client_id, instrument.id().venue)],
-            cache,
-        )
-        .expect("position authority fixture should build");
-        BoltV3PositionAuthorityCapability::new(
-            feed,
-            execution_client_id,
+        position_authority_from_cache(instrument, cache)
+    }
+
+    fn position_authority_with_closed_netting_history(
+        instrument: &InstrumentAny,
+        target_position_id: PositionId,
+        target_state: NettingPositionFixtureState,
+    ) -> (BoltV3PositionAuthorityCapability, Option<TradeId>) {
+        let account_id = AccountId::from("ACCOUNT-001");
+        let cache = Rc::new(RefCell::new(nautilus_common::cache::Cache::default()));
+        let target_close_trade_id = cache_netting_position(
+            &cache,
+            instrument,
             account_id,
-            OmsType::Netting,
+            target_position_id,
+            Quantity::new(10.0, 2),
+            target_state,
+        );
+        cache_netting_position(
+            &cache,
+            instrument,
+            account_id,
+            PositionId::from("POSITION-HISTORY"),
+            Quantity::new(10.0, 2),
+            NettingPositionFixtureState::Closed,
+        );
+        (
+            position_authority_from_cache(instrument, cache),
+            target_close_trade_id,
         )
     }
 
@@ -4824,6 +4878,88 @@ mod tests {
             BoltV3PositionReductionRelease::Residual {
                 signed_quantity: Decimal::new(8, 0)
             }
+        );
+    }
+
+    #[test]
+    fn closed_netting_history_does_not_block_the_only_open_target_reduction() {
+        let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
+        let target_position_id = PositionId::from("POSITION-TARGET");
+        let order = market_exit_order(
+            "O-19700101-000000-001-CLOSED-HISTORY",
+            Quantity::new(10.0, 2),
+        );
+        let intent = exit_intent_for_order(&order);
+        let bid_levels = BTreeMap::from([(Price::new(0.60, 2), 3.0), (Price::new(0.50, 2), 2.0)]);
+        let ask_levels = BTreeMap::from([(Price::new(0.70, 2), 100.0)]);
+        let (position_authority, target_close_trade_id) =
+            position_authority_with_closed_netting_history(
+                &instrument,
+                target_position_id,
+                NettingPositionFixtureState::Open,
+            );
+        assert_eq!(target_close_trade_id, None);
+
+        let compiled =
+            compile_and_seal_risk_reducing_ioc(BoltV3CompileAndSealRiskReducingIocInput {
+                economics: kill_switch_order_economics(),
+                execution_venue: Venue::from("POLYMARKET"),
+                execution_client_id: "execution_client",
+                instrument: &instrument,
+                book: crate::bolt_v3_executable_cost::ExecutableBookQuote {
+                    best_bid: Some(0.60),
+                    best_ask: Some(0.70),
+                    bid_levels: &bid_levels,
+                    ask_levels: &ask_levels,
+                },
+                vwap_depth_limit_bps: 2_000,
+                intent,
+                requested_order: order,
+                position_id: target_position_id,
+                position_authority: &position_authority,
+                position_side: PositionSide::Long,
+                prediction_market_outcome: PredictionMarketOutcomeSide::Yes,
+                stored_entry_cost_per_unit: Decimal::new(40, 2),
+                requested_at_ns: 1,
+                decision_correlation_id: "decision-closed-history",
+            })
+            .expect("closed history must not make the sole open target ambiguous");
+
+        let (_, compiled_order, _, _, _) = compiled.into_parts();
+        assert_eq!(compiled_order.quantity(), Quantity::new(5.0, 2));
+    }
+
+    #[test]
+    fn closed_netting_target_releases_flat_when_no_open_sibling_remains() {
+        let instrument = binary_option_with_max_price(InstrumentId::from("instrument-yes.VENUE-A"));
+        let target_position_id = PositionId::from("POSITION-TARGET");
+        let (position_authority, target_close_trade_id) =
+            position_authority_with_closed_netting_history(
+                &instrument,
+                target_position_id,
+                NettingPositionFixtureState::Closed,
+            );
+        let target_close_trade_id =
+            target_close_trade_id.expect("closed target fixture must expose its closing trade");
+        let sealed = position_authority
+            .acquire_canonical_position(target_position_id, instrument.id())
+            .expect("closed target authority should remain available");
+        let (canonical, lease) = sealed.into_parts();
+        let fence = BoltV3PositionReductionFence::local(
+            &lease,
+            Decimal::new(10, 0),
+            PositionSideSpecified::Long,
+            Decimal::new(10, 0),
+            BTreeSet::from([target_close_trade_id]),
+            BoltV3FillSetProof::Eligible,
+            2,
+            0,
+        )
+        .expect("flat release fence should build");
+
+        assert_eq!(
+            fence.release(&lease, Some(&canonical)).unwrap(),
+            BoltV3PositionReductionRelease::Flat
         );
     }
 

@@ -221,8 +221,9 @@ use crate::{
         BoltV3RecoveredExitCause, BoltV3RiskReducingIocPreparationStage, BoltV3SubmitAttemptKind,
         BoltV3SubmitAttemptOutcome, BoltV3SubmitAttemptState, BoltV3SubmitContext,
         BoltV3SubmitRoutingRequest, BoltV3TakerEconomicsSizingInput, BoltV3TerminalValueEntry,
-        build_order_economics_submit_admission, compile_and_seal_risk_reducing_ioc,
-        order_intent_details_from_compiled_order, prepared_order_linkage,
+        BoltV3TerminalValueEntryPolicy, build_order_economics_submit_admission,
+        compile_and_seal_risk_reducing_ioc, order_intent_details_from_compiled_order,
+        prepared_order_linkage,
     },
     bolt_v3_order_intent::{
         MarketQuoteBuyQuantityError, make_market_quote_buy_quantity, normalize_base_order_quantity,
@@ -4382,7 +4383,7 @@ impl BinaryOracleEdgeTaker {
         let minimum_core_edge_ratio = Decimal::from_f64(minimum_edge_bps / BPS_DENOMINATOR)?;
         let terminal_value_entry = BoltV3TerminalValueEntry::try_new(
             Decimal::from_f64(edge.adjusted_probability)?,
-            minimum_core_edge_ratio,
+            BoltV3TerminalValueEntryPolicy::MinimumCoreEdgeRatio(minimum_core_edge_ratio),
         )
         .ok()?;
         let requested_at_ns = now_ms.checked_mul(NANOS_PER_MILLI_U64)?;
@@ -6611,7 +6612,7 @@ impl BinaryOracleEdgeTaker {
                                     .price
                                     .checked_add(Decimal::ONE)
                                     .context("test terminal value overflow")?,
-                                Decimal::ZERO,
+                                BoltV3TerminalValueEntryPolicy::Breakeven,
                             )?,
                         )
                     }
@@ -7971,7 +7972,7 @@ impl BinaryOracleEdgeTaker {
             StrategyEconomicsInput::TerminalEntry {
                 terminal_value_entry: BoltV3TerminalValueEntry::try_new(
                     terminal_value_per_unit,
-                    minimum_core_edge_ratio,
+                    BoltV3TerminalValueEntryPolicy::MinimumCoreEdgeRatio(minimum_core_edge_ratio),
                 )?,
                 candidate_fill_levels: decision.planned_fill_legs.clone(),
             },

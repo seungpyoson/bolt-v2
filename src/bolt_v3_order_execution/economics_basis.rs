@@ -18,6 +18,27 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BoltV3TerminalValueEntryPolicy {
+    Breakeven,
+    MinimumCoreEdgeRatio(Decimal),
+}
+
+impl BoltV3TerminalValueEntryPolicy {
+    fn minimum_core_edge_ratio(&self) -> Result<Decimal> {
+        match self {
+            Self::Breakeven => Ok(Decimal::ZERO),
+            Self::MinimumCoreEdgeRatio(value) => {
+                anyhow::ensure!(
+                    *value >= Decimal::ZERO,
+                    "terminal-value entry requires a non-negative minimum core edge ratio"
+                );
+                Ok(*value)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BoltV3TerminalValueEntry {
     expected_terminal_value_per_unit: Decimal,
     minimum_core_edge_ratio: Decimal,
@@ -26,16 +47,13 @@ pub struct BoltV3TerminalValueEntry {
 impl BoltV3TerminalValueEntry {
     pub fn try_new(
         expected_terminal_value_per_unit: Decimal,
-        minimum_core_edge_ratio: Decimal,
+        policy: BoltV3TerminalValueEntryPolicy,
     ) -> Result<Self> {
         anyhow::ensure!(
             expected_terminal_value_per_unit > Decimal::ZERO,
             "terminal-value entry requires a positive expected terminal value per unit"
         );
-        anyhow::ensure!(
-            minimum_core_edge_ratio >= Decimal::ZERO,
-            "terminal-value entry requires a non-negative minimum core edge ratio"
-        );
+        let minimum_core_edge_ratio = policy.minimum_core_edge_ratio()?;
         Ok(Self {
             expected_terminal_value_per_unit,
             minimum_core_edge_ratio,
@@ -507,7 +525,8 @@ mod tests {
     use ustr::Ustr;
 
     use super::{
-        BoltV3FinalOrderEconomicsScenario, BoltV3TerminalValueEntry, normalize_final_fill_levels,
+        BoltV3FinalOrderEconomicsScenario, BoltV3TerminalValueEntry,
+        BoltV3TerminalValueEntryPolicy, normalize_final_fill_levels,
     };
     use crate::{
         bolt_v3_order_execution::{BoltV3PlannedFillLeg, economics_order_binding},
@@ -641,8 +660,11 @@ mod tests {
         )
         .expect("over-cover should truncate to the final base quantity");
         let scenario = BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
-            BoltV3TerminalValueEntry::try_new(Decimal::new(70, 2), Decimal::ZERO)
-                .expect("terminal entry should construct"),
+            BoltV3TerminalValueEntry::try_new(
+                Decimal::new(70, 2),
+                BoltV3TerminalValueEntryPolicy::Breakeven,
+            )
+            .expect("terminal entry should construct"),
         );
 
         assert_eq!(plan.legs().len(), 1);
@@ -759,8 +781,11 @@ mod tests {
     fn final_basis_rejects_side_scenario_and_limit_mismatches() {
         let sell = limit_order("basis-side", OrderSide::Sell, "1.00", "0.50", false);
         let terminal = BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
-            BoltV3TerminalValueEntry::try_new(Decimal::new(70, 2), Decimal::ZERO)
-                .expect("terminal entry should construct"),
+            BoltV3TerminalValueEntry::try_new(
+                Decimal::new(70, 2),
+                BoltV3TerminalValueEntryPolicy::Breakeven,
+            )
+            .expect("terminal entry should construct"),
         );
         assert!(terminal.validate_order_shape(&sell).is_err());
 

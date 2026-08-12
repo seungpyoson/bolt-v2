@@ -11,7 +11,8 @@ use bolt_v2::{
     bolt_v3_order_execution::{
         BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario,
         BoltV3OrderEconomicsHandle, BoltV3PlannedFillLeg, BoltV3TerminalValueEntry,
-        build_order_economics_submit_admission, order_intent_details_from_compiled_order,
+        BoltV3TerminalValueEntryPolicy, build_order_economics_submit_admission,
+        order_intent_details_from_compiled_order,
     },
     bolt_v3_providers::{
         hyperliquid::{
@@ -568,8 +569,11 @@ fn final_nautilus_order_routes_through_its_exact_provider_authority() {
             valuation: OrderValuationContext::empty(),
             risk_reducing_exit_position: None,
             scenario: BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
-                BoltV3TerminalValueEntry::try_new(Decimal::new(6, 1), Decimal::ZERO)
-                    .expect("terminal value should construct"),
+                BoltV3TerminalValueEntry::try_new(
+                    Decimal::new(6, 1),
+                    BoltV3TerminalValueEntryPolicy::Breakeven,
+                )
+                .expect("terminal value should construct"),
             ),
             candidate_fill_levels: vec![BoltV3PlannedFillLeg {
                 price: Decimal::new(5, 1),
@@ -896,16 +900,21 @@ fn resting_maker_economics_refreshes_before_expiry_without_changing_terms() {
         ),
         RestingOrderEconomicsRefresh::NotDue
     );
-    let RestingOrderEconomicsRefresh::Refreshed(refreshed) = refresh_resting_order_economics(
+    let RestingOrderEconomicsRefresh::Refreshed {
+        admission: refreshed,
+        forecast_drift,
+    } = refresh_resting_order_economics(
         &bound,
         &prior,
         Decimal::from(5),
         Decimal::TEN,
         true,
         26_000_000_000,
-    ) else {
+    )
+    else {
         panic!("unchanged authoritative terms should refresh the resting order");
     };
+    assert_eq!(forecast_drift, None);
     assert_eq!(refreshed.request().requested_at_ns, 26_000_000_000);
     assert_eq!(
         refreshed.request().planned_fill_legs[0].quantity,

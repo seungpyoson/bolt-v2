@@ -70,7 +70,7 @@ use crate::{
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
-        BoltV3MakerOrderRoutingContext, BoltV3TerminalValueEntry,
+        BoltV3MakerOrderRoutingContext, BoltV3TerminalValueEntry, BoltV3TerminalValueEntryPolicy,
         route_maker_order_command as route_maker_order_command_through_policy,
     },
     bolt_v3_order_intent::NtOrderTemplate,
@@ -410,7 +410,7 @@ fn maker_command_terminal_value_entry(
     );
     Ok(Some(BoltV3TerminalValueEntry::try_new(
         outcome_probability,
-        Decimal::ZERO,
+        BoltV3TerminalValueEntryPolicy::Breakeven,
     )?))
 }
 

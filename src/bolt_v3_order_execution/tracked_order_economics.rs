@@ -492,7 +492,15 @@ impl BoltV3OrderEconomicsHandle {
             RestingOrderEconomicsRefresh::Complete => {
                 registry.remove_record(&client_order_id);
             }
-            RestingOrderEconomicsRefresh::Refreshed(admission) => {
+            RestingOrderEconomicsRefresh::Refreshed {
+                admission,
+                forecast_drift,
+            } => {
+                if let Some(drift) = forecast_drift {
+                    log::info!(
+                        "resting order forecast economics changed without changing admission authority: client_order_id={client_order_id} drift={drift:?}"
+                    );
+                }
                 economics.admission = *admission;
             }
             RestingOrderEconomicsRefresh::CancelRequired(reason) => {
@@ -921,7 +929,7 @@ mod tests {
     };
     use crate::{
         bolt_v3_order_execution::{
-            BoltV3PlannedFillLeg, BoltV3TerminalValueEntry,
+            BoltV3PlannedFillLeg, BoltV3TerminalValueEntry, BoltV3TerminalValueEntryPolicy,
             order_intent_details_from_compiled_order,
         },
         bolt_v3_submit_admission::OrderValuationContext,
@@ -1344,8 +1352,11 @@ mod tests {
                 valuation: OrderValuationContext::empty(),
                 risk_reducing_exit_position: None,
                 scenario: BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
-                    BoltV3TerminalValueEntry::try_new(Decimal::new(7, 1), Decimal::ZERO)
-                        .expect("terminal value should construct"),
+                    BoltV3TerminalValueEntry::try_new(
+                        Decimal::new(7, 1),
+                        BoltV3TerminalValueEntryPolicy::Breakeven,
+                    )
+                    .expect("terminal value should construct"),
                 ),
                 candidate_fill_levels: vec![BoltV3PlannedFillLeg {
                     price: Decimal::new(5, 1),

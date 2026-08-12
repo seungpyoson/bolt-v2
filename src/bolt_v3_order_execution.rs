@@ -62,7 +62,9 @@ use crate::{
 mod economics_basis;
 mod tracked_order_economics;
 
-pub use economics_basis::{BoltV3FinalOrderEconomicsScenario, BoltV3TerminalValueEntry};
+pub use economics_basis::{
+    BoltV3FinalOrderEconomicsScenario, BoltV3TerminalValueEntry, BoltV3TerminalValueEntryPolicy,
+};
 use tracked_order_economics::route_tracked_cancel_all;
 pub use tracked_order_economics::{
     BoltV3CancellationLivenessFailure, BoltV3OrderEconomicsHandle, BoltV3RecoveryIdentityConflict,
@@ -3073,11 +3075,11 @@ mod tests {
         BoltV3PlannedFillLeg, BoltV3PositionReductionFence, BoltV3PositionReductionRelease,
         BoltV3RecoveredExitCause, BoltV3RestingSubmitTransactionOutcome, BoltV3SubmitAttemptKind,
         BoltV3SubmitAttemptOutcome, BoltV3SubmitContext, BoltV3SubmitRoutingRequest,
-        BoltV3TakerEconomicsSizingInput, BoltV3TerminalValueEntry, EconomicsAdmissionPurpose,
-        build_order_economics_submit_admission, clamp_risk_reducing_exit_to_venue_position,
-        compile_and_seal_risk_reducing_ioc, compile_bounded_risk_reducing_ioc_for_execution,
-        order_intent_details_from_compiled_order, route_kill_switch_flatten_command_with_sink,
-        route_maker_order_command_with_runtime,
+        BoltV3TakerEconomicsSizingInput, BoltV3TerminalValueEntry, BoltV3TerminalValueEntryPolicy,
+        EconomicsAdmissionPurpose, build_order_economics_submit_admission,
+        clamp_risk_reducing_exit_to_venue_position, compile_and_seal_risk_reducing_ioc,
+        compile_bounded_risk_reducing_ioc_for_execution, order_intent_details_from_compiled_order,
+        route_kill_switch_flatten_command_with_sink, route_maker_order_command_with_runtime,
     };
     use crate::{
         bolt_v3_capital_admission::{
@@ -6633,8 +6635,11 @@ mod tests {
             execution_client_id: "maker_execution_client",
             order_economics,
             terminal_value_entry: Some(
-                BoltV3TerminalValueEntry::try_new(Decimal::ONE, Decimal::ZERO)
-                    .expect("maker terminal value should construct"),
+                BoltV3TerminalValueEntry::try_new(
+                    Decimal::ONE,
+                    BoltV3TerminalValueEntryPolicy::Breakeven,
+                )
+                .expect("maker terminal value should construct"),
             ),
         }
     }
@@ -7024,9 +7029,11 @@ mod tests {
     fn edge_candidate_and_final_entry_share_terminal_value_scenario() {
         let economics =
             crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
-        let terminal_value_entry =
-            BoltV3TerminalValueEntry::try_new(Decimal::new(7, 1), Decimal::ZERO)
-                .expect("terminal value should construct");
+        let terminal_value_entry = BoltV3TerminalValueEntry::try_new(
+            Decimal::new(7, 1),
+            BoltV3TerminalValueEntryPolicy::Breakeven,
+        )
+        .expect("terminal value should construct");
         let candidate_fill_levels = vec![BoltV3PlannedFillLeg {
             price: Decimal::new(5, 1),
             quantity: Decimal::ONE,
@@ -7100,8 +7107,11 @@ mod tests {
                 valuation: OrderValuationContext::empty(),
                 risk_reducing_exit_position: None,
                 scenario: BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
-                    BoltV3TerminalValueEntry::try_new(Decimal::new(7, 1), Decimal::ZERO)
-                        .expect("terminal value should construct"),
+                    BoltV3TerminalValueEntry::try_new(
+                        Decimal::new(7, 1),
+                        BoltV3TerminalValueEntryPolicy::Breakeven,
+                    )
+                    .expect("terminal value should construct"),
                 ),
                 candidate_fill_levels: vec![BoltV3PlannedFillLeg {
                     price: Decimal::new(5, 1),
@@ -7129,6 +7139,37 @@ mod tests {
         assert_eq!(
             sealed.economics().purpose(),
             EconomicsAdmissionPurpose::TradingEdge
+        );
+
+        let rejected = build_order_economics_submit_admission(
+            &economics,
+            BoltV3FinalOrderEconomicsInput {
+                execution_client_id: "execution_client",
+                intent: &intent,
+                order: &order,
+                valuation: OrderValuationContext::empty(),
+                risk_reducing_exit_position: None,
+                scenario: BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
+                    BoltV3TerminalValueEntry::try_new(
+                        Decimal::new(4, 1),
+                        BoltV3TerminalValueEntryPolicy::Breakeven,
+                    )
+                    .expect("negative-gross terminal value should remain a valid scenario"),
+                ),
+                candidate_fill_levels: vec![BoltV3PlannedFillLeg {
+                    price: Decimal::new(5, 1),
+                    quantity: Decimal::ONE,
+                }],
+                requested_at_ns: 1,
+                decision_correlation_id: "maker-negative-terminal-entry",
+            },
+        )
+        .expect_err("maker breakeven policy must reject negative terminal gross");
+        assert!(
+            rejected
+                .to_string()
+                .contains("does not exceed required minimum 0"),
+            "{rejected:#}"
         );
     }
 

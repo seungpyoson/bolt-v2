@@ -151,8 +151,11 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
             &command,
             "maker_submit",
             Some(
-                BoltV3TerminalValueEntry::try_new(Decimal::new(9, 1), Decimal::ZERO)
-                    .expect("maker terminal value should construct"),
+                BoltV3TerminalValueEntry::try_new(
+                    Decimal::new(9, 1),
+                    bolt_v2::bolt_v3_order_execution::BoltV3TerminalValueEntryPolicy::Breakeven,
+                )
+                .expect("maker terminal value should construct"),
             ),
         )
         .expect("maker submit should route through shared execution context");
@@ -1888,8 +1891,11 @@ fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
             terminal_value_entry: Some(
-                BoltV3TerminalValueEntry::try_new(Decimal::ONE, Decimal::ZERO)
-                    .expect("maker terminal value should construct"),
+                BoltV3TerminalValueEntry::try_new(
+                    Decimal::ONE,
+                    bolt_v2::bolt_v3_order_execution::BoltV3TerminalValueEntryPolicy::Breakeven,
+                )
+                .expect("maker terminal value should construct"),
             ),
         })
         .expect("maker should route pre-paid replacement submit through shared context");

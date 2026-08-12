@@ -1602,7 +1602,7 @@ fn forced_flat_submit_cancels_resting_entry_and_converges_if_entry_fill_callback
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         )
-        .with_position_authority(fixture_position_authority_capability());
+        .with_position_authority(fixture_position_authority_capability(&strategy));
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
@@ -2468,7 +2468,7 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         )
-        .with_position_authority(fixture_position_authority_capability());
+        .with_position_authority(fixture_position_authority_capability(&strategy));
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;

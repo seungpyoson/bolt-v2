@@ -160,7 +160,7 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
 }
 
 #[test]
-fn authoritative_position_close_cools_the_closed_market_before_delayed_exit_fill() {
+fn position_close_keeps_exit_fenced_until_delayed_fill_authority_converges() {
     let mut strategy = ready_to_trade_strategy();
     let tracked_instrument = selected_entry_instrument(&strategy);
     let exit_client_order_id = ClientOrderId::from("EXIT-DELAYED");
@@ -183,19 +183,56 @@ fn authoritative_position_close_cools_the_closed_market_before_delayed_exit_fill
     strategy.on_position_closed(position_closed_event(tracked_instrument, position_id));
 
     assert!(
-        strategy.market_in_cooldown("MKT-1", 1_000),
-        "the NT position-close event must cool the closed market without retaining a shadow exit order"
+        !strategy.market_in_cooldown("MKT-1", 1_000),
+        "a position-close callback alone cannot bypass the pending exit's causal authority fence"
     );
     assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
 
-    strategy.on_order_filled(&order_filled_event(
+    let mut delayed_fill = order_filled_event_with_details(
         exit_client_order_id,
         tracked_instrument,
-        position_id,
-    ));
+        Some(position_id),
+        OrderSide::Sell,
+    );
+    delayed_fill.trade_id = nautilus_model::identifiers::TradeId::from("TRADE-DELAYED-EXIT");
+    delayed_fill.ts_event = UnixNanos::from(1_100_u64);
+    delayed_fill.ts_init = UnixNanos::from(1_100_u64);
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Filled(delayed_fill.clone()),
+    );
+    strategy.on_order_filled(&delayed_fill);
 
-    assert!(strategy.market_in_cooldown("MKT-1", 1_000));
-    assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::TerminalExitAwaitingPosition(_)
+    ));
+    assert_eq!(
+        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
+        Some(exit_client_order_id),
+        "the delayed terminal fill must remain correlated until position authority converges"
+    );
+
+    observe_position_authority_report(
+        &strategy,
+        tracked_instrument,
+        nautilus_model::enums::PositionSideSpecified::Flat,
+        Quantity::zero(2),
+        1_200,
+    );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("delayed-exit-position-authority"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_200_u64),
+            UnixNanos::from(1_200_u64),
+        ),
+    )
+    .expect("the timer should release the causally proven flat position");
+
+    assert!(strategy.market_in_cooldown("MKT-1", 1_200));
+    assert!(!strategy.market_in_cooldown("MKT-2", 1_200));
     assert!(pending_exit_snapshot(&strategy).is_none());
 }
 

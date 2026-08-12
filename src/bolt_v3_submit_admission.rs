@@ -3098,16 +3098,6 @@ impl BoltV3RiskReducingExitProof {
     }
 }
 
-impl BoltV3SubmitIntentKind {
-    pub fn is_venue_position_exit_clamp_eligible(self) -> bool {
-        matches!(
-            self,
-            BoltV3SubmitIntentKind::RiskReducingExit
-                | BoltV3SubmitIntentKind::KillSwitchForcedReduction
-        )
-    }
-}
-
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionRequest {
     pub strategy_id: String,

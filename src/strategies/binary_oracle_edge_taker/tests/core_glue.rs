@@ -49,20 +49,24 @@ fn decision_evidence_failure_rejects_before_nt_submit() {
         &order,
     );
 
-    let error = strategy
+    let outcome = strategy
         .submit_order_with_decision_evidence(
             intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect_err("evidence failure must reject before NT submit");
+        .expect("economics preparation should reach the typed submit boundary");
 
+    assert_eq!(
+        outcome.kind(),
+        BoltV3SubmitAttemptKind::IntentEvidenceRejected
+    );
     assert!(
-        error
-            .to_string()
-            .contains("evidence commit indeterminate during write"),
-        "{error:#}"
+        outcome.diagnostic().is_some_and(
+            |diagnostic| diagnostic.contains("evidence commit indeterminate during write")
+        ),
+        "{outcome:?}"
     );
 }
 

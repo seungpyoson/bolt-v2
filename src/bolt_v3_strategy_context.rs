@@ -179,7 +179,7 @@ impl StrategyBuildContext {
         &self.order_economics
     }
 
-    pub(crate) fn with_position_authority(
+    pub fn with_position_authority(
         mut self,
         position_authority: BoltV3PositionAuthorityCapability,
     ) -> Self {

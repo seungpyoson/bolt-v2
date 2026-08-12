@@ -53,6 +53,9 @@ pub enum ExecutionOrderCause {
 #[derive(Clone)]
 pub struct ExecutionOrderTrace {
     pub cause: ExecutionOrderCause,
+    /// Canonical quantity owned by NT after any execution-time clipping.
+    /// `SubmittedOrderTrace::quantity` remains the original requested bound.
+    pub effective_quantity: Quantity,
     pub fills: Vec<OrderFilled>,
 }
 
@@ -283,6 +286,22 @@ pub fn validate_execution_contract(
                 submitted_order.quantity,
                 submitted_order.quote_quantity,
             )?;
+            ensure!(
+                !order.effective_quantity.is_zero()
+                    && order.effective_quantity.precision == size_precision
+                    && (order.effective_quantity.as_decimal() % size_increment).is_zero(),
+                "effective execution quantity does not use instrument precision and increment"
+            );
+            ensure!(
+                order.effective_quantity <= requested_base,
+                "effective execution quantity exceeds the submitted quantity"
+            );
+            if submitted_order.quote_quantity {
+                ensure!(
+                    order.effective_quantity == requested_base,
+                    "quote-denominated entry was clipped after canonical conversion"
+                );
+            }
             match (submitted_order.quote_quantity, quote_conversion) {
                 (true, Some(update)) => {
                     ensure!(
@@ -335,7 +354,8 @@ pub fn validate_execution_contract(
                 }
                 (false, None) => {}
             }
-            let expected = independent_market_sweep(executable_book, side, requested_base)?;
+            let expected =
+                independent_market_sweep(executable_book, side, order.effective_quantity)?;
             let observed_quantity = order
                 .fills
                 .iter()
@@ -353,8 +373,18 @@ pub fn validate_execution_contract(
                 "observed normal-order fills do not equal the executable book at submission"
             );
             ensure!(
-                observed_quantity == requested_base.as_decimal(),
-                "normal-order fill quantity does not equal the effective submitted quantity"
+                observed_quantity == order.effective_quantity.as_decimal(),
+                "normal-order fill quantity does not equal NT's effective execution quantity"
+            );
+        } else {
+            let observed_quantity = order
+                .fills
+                .iter()
+                .map(|fill| fill.last_qty.as_decimal())
+                .sum::<Decimal>();
+            ensure!(
+                observed_quantity == order.effective_quantity.as_decimal(),
+                "settlement fill quantity does not equal NT's effective execution quantity"
             );
         }
 
@@ -545,10 +575,6 @@ pub fn validate_execution_contract(
                 ensure!(
                     !submitted_order.quote_quantity,
                     "#789 reduction must be base-denominated"
-                );
-                ensure!(
-                    normal_exit_fill_count == 0,
-                    "#789 lifecycle is restricted to a single normal reduction order"
                 );
                 ensure!(
                     !exposure.is_zero(),
@@ -837,6 +863,7 @@ mod tests {
                         submitted_order: submitted_order(&entry_fill, Quantity::from("1.14"), true),
                         quote_conversion: Some(Box::new(entry_conversion)),
                     },
+                    effective_quantity: Quantity::from("2.71"),
                     fills: vec![entry_fill],
                 },
                 ExecutionOrderTrace {
@@ -855,12 +882,14 @@ mod tests {
                         ),
                         quote_conversion: None,
                     },
+                    effective_quantity: Quantity::from("2.00"),
                     fills: vec![normal_exit],
                 },
                 ExecutionOrderTrace {
                     cause: ExecutionOrderCause::Settlement {
                         declared_price: Price::from("1.000"),
                     },
+                    effective_quantity: Quantity::from("0.71"),
                     fills: vec![settlement],
                 },
             ],
@@ -1590,7 +1619,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_multiple_normal_reduction_orders() {
+    fn accepts_multiple_normal_reduction_orders_for_residual_management() {
         let mut fixture = fixture();
         let instrument_id = fixture.instrument.id();
         let position_id = fixture.position_effects[0].position_id;
@@ -1620,6 +1649,7 @@ mod tests {
                 ),
                 quote_conversion: None,
             },
+            effective_quantity: Quantity::from("0.50"),
             fills: vec![first_reduction_fill],
         };
         let second_reduction_fill = test_fill(
@@ -1649,6 +1679,7 @@ mod tests {
                     ),
                     quote_conversion: None,
                 },
+                effective_quantity: Quantity::from("1.50"),
                 fills: vec![second_reduction_fill],
             },
         );
@@ -1678,9 +1709,53 @@ mod tests {
             .account_cash_after_fills
             .insert(1, Money::from("999999.07680000 USDC"));
 
+        let report = validate_execution_contract(&fixture.trace())
+            .expect("residual management may use more than one reducing IOC");
+        assert_eq!(report.normal_exit_fill_count, 2);
+    }
+
+    #[test]
+    fn accepts_nt_clipped_effective_reduction_quantity() {
+        let mut fixture = fixture();
+        let ExecutionOrderCause::Submitted {
+            submitted_order, ..
+        } = &mut fixture.orders[1].cause
+        else {
+            panic!("fixture reduction must be submitted");
+        };
+        submitted_order.quantity = Quantity::from("2.01");
+
+        let report = validate_execution_contract(&fixture.trace())
+            .expect("NT may clip a reducing IOC below its requested bound");
+        assert_eq!(report.normal_exit_fill_count, 1);
+    }
+
+    #[test]
+    fn rejects_effective_quantity_that_diverges_from_fills() {
+        let mut fixture = fixture();
+        fixture.orders[1].effective_quantity = Quantity::from("2.01");
+        let ExecutionOrderCause::Submitted {
+            executable_book,
+            submitted_order,
+            ..
+        } = &mut fixture.orders[1].cause
+        else {
+            panic!("fixture reduction must be submitted");
+        };
+        **executable_book =
+            one_level_book(fixture.instrument.id(), OrderSide::Buy, "0.430", "2.01", 2);
+        submitted_order.quantity = Quantity::from("2.01");
+
         let error = validate_execution_contract(&fixture.trace())
-            .expect_err("#789 must reject a second normal reduction order");
-        assert!(error.to_string().contains("single normal reduction"));
+            .expect_err("effective quantity must remain bound to causal fills");
+        assert!(
+            error
+                .to_string()
+                .contains("observed normal-order fills do not equal")
+                || error
+                    .to_string()
+                    .contains("fill quantity does not equal NT's effective")
+        );
     }
 
     #[test]
@@ -1697,6 +1772,7 @@ mod tests {
             submitted_order.quantity = Quantity::from("3.00");
         }
         fixture.orders[1].fills[0].last_qty = Quantity::from("3.00");
+        fixture.orders[1].effective_quantity = Quantity::from("3.00");
         let error = validate_execution_contract(&fixture.trace()).expect_err("reversal");
         assert!(error.to_string().contains("reverses or reopens"));
     }
@@ -1746,6 +1822,7 @@ mod tests {
     fn rejects_incomplete_terminal_close_at_terminal_quantity_guard() {
         let mut fixture = fixture();
         fixture.orders[2].fills[0].last_qty = Quantity::from("0.70");
+        fixture.orders[2].effective_quantity = Quantity::from("0.70");
         fixture.position_effects[2].kind = PositionEffectKind::Changed;
         fixture.position_effects[2].side = PositionSide::Long;
         fixture.position_effects[2].signed_quantity = 0.01;
@@ -1962,6 +2039,7 @@ mod tests {
                 .quantity = Quantity::from("2.714");
         }
         fixture.orders[0].fills[0].last_qty = Quantity::from("2.714");
+        fixture.orders[0].effective_quantity = Quantity::from("2.714");
         fixture.position_effects[0].signed_quantity = 2.714;
         fixture.position_effects[0].quantity = Quantity::from("2.714");
         fixture.position_effects[0].last_quantity = Quantity::from("2.714");
@@ -1976,10 +2054,12 @@ mod tests {
             submitted_order.quantity = Quantity::from("2.000");
         }
         fixture.orders[1].fills[0].last_qty = Quantity::from("2.000");
+        fixture.orders[1].effective_quantity = Quantity::from("2.000");
         fixture.position_effects[1].signed_quantity = 0.714;
         fixture.position_effects[1].quantity = Quantity::from("0.714");
         fixture.position_effects[1].last_quantity = Quantity::from("2.000");
         fixture.orders[2].fills[0].last_qty = Quantity::from("0.714");
+        fixture.orders[2].effective_quantity = Quantity::from("0.714");
         fixture.position_effects[2].signed_quantity = 0.0;
         fixture.position_effects[2].quantity = Quantity::from("0.000");
         fixture.position_effects[2].last_quantity = Quantity::from("0.714");

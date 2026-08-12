@@ -22,12 +22,12 @@ use crate::bolt_v3_iv::{
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::{BoltV3OrderEconomicsHandle, BoltV3OrderExecutionPolicy};
 use crate::bolt_v3_position_authority_feed::{
-    BoltV3PositionAuthorityCapability, BoltV3PositionAuthorityFeed,
+    BoltV3PositionAuthorityCapability, BoltV3PositionAuthorityFeed, BoltV3PositionAuthorityRuntime,
 };
 use crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle;
 use crate::bolt_v3_strategy_context::{StrategyBuildContext, StrategyDecisionEvidence};
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
-use nautilus_common::{actor::DataActorNative, component::Component};
+use nautilus_common::{actor::DataActorNative, cache::Cache, component::Component};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     identifiers::{AccountId, ClientId, StrategyId, Venue},
@@ -477,22 +477,12 @@ impl<'a> StrategyRegistrationContext<'a> {
                 .map_err(|error| binding_error(strategy, error.to_string()))?;
         let position_authority = position_authority
             .map(|feed| {
-                execution_account_id_from_client(execution_client)
-                    .map(|account_id| {
-                        BoltV3PositionAuthorityCapability::new(
-                            feed,
-                            strategy.config.execution_client_id,
-                            AccountId::from(account_id),
-                        )
-                    })
-                    .ok_or_else(|| {
-                        binding_error(
-                            strategy,
-                            format!(
-                                "position authority requires execution account id for execution_client_id `{execution_client_id}`"
-                            ),
-                        )
-                    })
+                bind_position_authority_feed(
+                    feed,
+                    execution_client,
+                    strategy.config.execution_client_id,
+                )
+                .map_err(|error| binding_error(strategy, error.to_string()))
             })
             .transpose()?;
 
@@ -589,6 +579,75 @@ pub fn prepare_strategy_client_routes(
     strategy: &LoadedStrategy,
 ) -> Result<PreparedStrategyClientRoutes, BoltV3StrategyRegistrationError> {
     Ok(resolve_strategy_client_routes(loaded, strategy)?.prepared)
+}
+
+/// Builds the one position-authority runtime shared by every loaded strategy.
+pub fn prepare_position_authority_runtime(
+    loaded: &LoadedBoltV3Config,
+    cache: Rc<RefCell<Cache>>,
+) -> anyhow::Result<BoltV3PositionAuthorityRuntime> {
+    let bindings = loaded
+        .strategies
+        .iter()
+        .map(|strategy| {
+            let execution_client_id = strategy.config.execution_client_id;
+            let client = loaded
+                .root
+                .clients
+                .get(execution_client_id.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "position authority execution client is not loaded: execution_client_id={execution_client_id}"
+                    )
+                })?;
+            Ok(execution_account_id_from_client(client).map(|account_id| {
+                (
+                    AccountId::from(account_id),
+                    execution_client_id,
+                    client.venue,
+                )
+            }))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    BoltV3PositionAuthorityRuntime::try_new(bindings, cache)
+}
+
+/// Binds one strategy execution client to the shared position-authority runtime.
+pub fn bind_position_authority_capability(
+    loaded: &LoadedBoltV3Config,
+    runtime: &BoltV3PositionAuthorityRuntime,
+    execution_client_id: ClientId,
+) -> anyhow::Result<BoltV3PositionAuthorityCapability> {
+    let client = loaded
+        .root
+        .clients
+        .get(execution_client_id.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "position authority execution client is not loaded: execution_client_id={execution_client_id}"
+            )
+        })?;
+    bind_position_authority_feed(runtime.feed(), client, execution_client_id)
+}
+
+fn bind_position_authority_feed(
+    feed: BoltV3PositionAuthorityFeed,
+    client: &ClientBlock,
+    execution_client_id: ClientId,
+) -> anyhow::Result<BoltV3PositionAuthorityCapability> {
+    let account_id = execution_account_id_from_client(client).ok_or_else(|| {
+        anyhow::anyhow!(
+            "position authority requires execution account id for execution_client_id `{execution_client_id}`"
+        )
+    })?;
+    Ok(BoltV3PositionAuthorityCapability::new(
+        feed,
+        execution_client_id,
+        AccountId::from(account_id),
+    ))
 }
 
 fn resolve_settlement_capability(

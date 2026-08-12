@@ -1,11 +1,14 @@
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
+    rc::Rc,
     sync::{Arc, Mutex, Weak},
 };
 
 use anyhow::{Context, Result};
-use nautilus_common::msgbus::{
-    self, MStr, Pattern, ShareableMessageHandler, switchboard::MessagingSwitchboard,
+use nautilus_common::{
+    cache::Cache,
+    msgbus::{self, MStr, Pattern, ShareableMessageHandler, switchboard::MessagingSwitchboard},
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
@@ -78,13 +81,24 @@ pub(crate) struct BoltV3PositionAuthorityLeaseObservation {
 #[derive(Clone)]
 pub struct BoltV3PositionAuthorityFeed {
     inner: Arc<Mutex<PositionAuthorityFeedState>>,
+    cache: Rc<RefCell<Cache>>,
 }
 
 #[derive(Clone)]
-pub(crate) struct BoltV3PositionAuthorityCapability {
+pub struct BoltV3PositionAuthorityCapability {
     feed: BoltV3PositionAuthorityFeed,
     execution_client_id: ClientId,
     account_id: AccountId,
+}
+
+/// Owns the canonical position-authority feed and its raw NT report subscription.
+///
+/// Composition roots retain this value for exactly as long as strategies may
+/// acquire or reconcile position-authority leases. The feed and subscription
+/// cannot be constructed independently outside this module.
+pub struct BoltV3PositionAuthorityRuntime {
+    feed: BoltV3PositionAuthorityFeed,
+    _subscription: BoltV3PositionAuthorityFeedSubscription,
 }
 
 impl BoltV3PositionAuthorityCapability {
@@ -113,9 +127,53 @@ impl BoltV3PositionAuthorityCapability {
         ))
     }
 
+    pub(crate) fn canonical_signed_position(
+        &self,
+        position_id: PositionId,
+        instrument_id: InstrumentId,
+    ) -> Result<Decimal> {
+        let cache = self.feed.cache.borrow();
+        let position = cache
+            .position(&position_id)
+            .with_context(|| {
+                format!(
+                    "position authority cache is missing position_id={position_id} instrument_id={instrument_id}"
+                )
+            })?;
+        anyhow::ensure!(
+            position.account_id == self.account_id
+                && position.instrument_id == instrument_id
+                && position.is_open(),
+            "position authority cache identity mismatch: position_id={position_id} expected_account={} observed_account={} expected_instrument={instrument_id} observed_instrument={} open={}",
+            self.account_id,
+            position.account_id,
+            position.instrument_id,
+            position.is_open()
+        );
+        Ok(position.signed_decimal_qty())
+    }
+
     #[cfg(test)]
     pub(crate) fn observe_for_test(&self, report: &PositionStatusReport) -> Result<()> {
         self.feed.observe(report)
+    }
+}
+
+impl BoltV3PositionAuthorityRuntime {
+    pub(crate) fn try_new(
+        bindings: impl IntoIterator<Item = (AccountId, ClientId, Venue)>,
+        cache: Rc<RefCell<Cache>>,
+    ) -> Result<Self> {
+        let feed = BoltV3PositionAuthorityFeed::try_new_with_cache(bindings, cache)?;
+        let subscription = feed.subscribe();
+        Ok(Self {
+            feed,
+            _subscription: subscription,
+        })
+    }
+
+    pub(crate) fn feed(&self) -> BoltV3PositionAuthorityFeed {
+        self.feed.clone()
     }
 }
 
@@ -138,8 +196,16 @@ struct PositionAuthorityAccountBinding {
 }
 
 impl BoltV3PositionAuthorityFeed {
+    #[cfg(test)]
     pub(crate) fn try_new(
         bindings: impl IntoIterator<Item = (AccountId, ClientId, Venue)>,
+    ) -> Result<Self> {
+        Self::try_new_with_cache(bindings, Rc::new(RefCell::new(Cache::default())))
+    }
+
+    pub(crate) fn try_new_with_cache(
+        bindings: impl IntoIterator<Item = (AccountId, ClientId, Venue)>,
+        cache: Rc<RefCell<Cache>>,
     ) -> Result<Self> {
         let mut client_by_account = BTreeMap::new();
         for (account_id, execution_client_id, venue) in bindings {
@@ -164,6 +230,7 @@ impl BoltV3PositionAuthorityFeed {
                 client_by_account,
                 keys: BTreeMap::new(),
             })),
+            cache,
         })
     }
 
@@ -235,7 +302,7 @@ impl BoltV3PositionAuthorityFeed {
         Ok(())
     }
 
-    pub(crate) fn subscribe(&self) -> BoltV3PositionAuthorityFeedSubscription {
+    fn subscribe(&self) -> BoltV3PositionAuthorityFeedSubscription {
         let pattern: MStr<Pattern> =
             MessagingSwitchboard::reconciliation_raw_position_status_report_topic()
                 .as_str()
@@ -424,7 +491,7 @@ impl Drop for BoltV3PositionAuthorityLease {
     }
 }
 
-pub(crate) struct BoltV3PositionAuthorityFeedSubscription {
+struct BoltV3PositionAuthorityFeedSubscription {
     pattern: MStr<Pattern>,
     handler: Option<ShareableMessageHandler>,
 }

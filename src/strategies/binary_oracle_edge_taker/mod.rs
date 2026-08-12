@@ -254,7 +254,8 @@ use crate::{
     bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequestInput,
-        BoltV3SubmitIntentKind, OrderValuationContext, limit_notional_exceeds_sized_notional,
+        BoltV3SubmitIntentKind, OrderValuationContext, PredictionMarketOutcomeSide,
+        limit_notional_exceeds_sized_notional,
     },
     bolt_v3_taker_pricing::{
         FastSpotObservation, TakerPricingConfig, TakerPricingRequest,
@@ -6336,27 +6337,6 @@ impl BinaryOracleEdgeTaker {
         nautilus_model::orders::OrderAny,
         crate::bolt_v3_submit_admission::BoltV3EconomicsSubmitAdmission,
     )> {
-        let decision_evidence = self
-            .context
-            .order_execution_evidence()
-            .expect("edge-taker strategy must own order-intent evidence");
-        let (intent, order) =
-            match crate::bolt_v3_order_execution::clamp_risk_reducing_exit_to_venue_position(
-                self.context.submit_admission_arc().as_ref(),
-                intent_kind,
-                intent,
-                order,
-            ) {
-                Ok(clamped) => clamped,
-                Err(error) => {
-                    crate::bolt_v3_order_execution::record_order_intent(
-                        &decision_evidence,
-                        intent_kind,
-                        error.intent().clone(),
-                    )?;
-                    return Err(error.into_error());
-                }
-            };
         let sealed = self.economics_submit_admission_from_order(
             &intent,
             intent_kind,
@@ -7363,6 +7343,20 @@ impl BinaryOracleEdgeTaker {
                 ));
             }
         };
+        let prediction_market_outcome = match managed_position.position.lifecycle.outcome_side() {
+            Some(OutcomeSide::Up) => PredictionMarketOutcomeSide::Yes,
+            Some(OutcomeSide::Down) => PredictionMarketOutcomeSide::No,
+            None => {
+                let failure = anyhow::anyhow!(
+                    "exit submission requires a canonical prediction-market outcome"
+                );
+                return Ok(rejected_exit_preparation(
+                    decision,
+                    ExitPreparationStage::PositionAuthority,
+                    failure,
+                ));
+            }
+        };
         let intent = order_intent_details_from_compiled_order(
             self.config.strategy_id.clone(),
             requested_price.to_string(),
@@ -7402,7 +7396,6 @@ impl BinaryOracleEdgeTaker {
         let compiled =
             match compile_and_seal_risk_reducing_ioc(BoltV3CompileAndSealRiskReducingIocInput {
                 economics: self.context.order_economics(),
-                submit_admission: self.context.submit_admission_arc().as_ref(),
                 execution_venue: self.context.execution_venue(),
                 execution_client_id: &self.config.client_id,
                 instrument: &instrument,
@@ -7414,6 +7407,7 @@ impl BinaryOracleEdgeTaker {
                 position_authority,
                 venue_position_id,
                 position_side: managed_position.position.side,
+                prediction_market_outcome,
                 stored_entry_cost_per_unit: entry_cost,
                 requested_at_ns: now_ms.saturating_mul(NANOS_PER_MILLI_U64),
                 decision_correlation_id: client_order_id.as_str(),

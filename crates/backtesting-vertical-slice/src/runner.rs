@@ -37,10 +37,13 @@ use bolt_v2::{
     bolt_v3_order_execution::{
         BoltV3OrderEconomicsHandle, BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy,
     },
+    bolt_v3_position_authority_feed::BoltV3PositionAuthorityRuntime,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_strategy_context::{StrategyBuildContext, StrategyDecisionEvidence},
     bolt_v3_strategy_registration::{
-        StrategyPreparationConfig, prepare_strategy_client_routes, register_prepared_strategy_batch,
+        StrategyPreparationConfig, bind_position_authority_capability,
+        prepare_position_authority_runtime, prepare_strategy_client_routes,
+        register_prepared_strategy_batch,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     economics::{CurrencyId, SnapshotId, SourceIdentity},
@@ -696,6 +699,7 @@ struct AddedManifestStrategy {
     run_guard_writer: Option<Arc<BacktestDecisionEvidenceWriter>>,
     resolved_config_hash: Option<String>,
     resolved_config_bytes: Option<Vec<u8>>,
+    _position_authority_runtime: Option<BoltV3PositionAuthorityRuntime>,
 }
 
 #[derive(Serialize)]
@@ -870,6 +874,20 @@ fn manifest_order_economics(
     Ok(BoltV3OrderEconomicsHandle::new(economics))
 }
 
+fn attach_position_authority(
+    build_context: StrategyBuildContext,
+    loaded: &LoadedBoltV3Config,
+    raw_config: &toml::Value,
+    engine: &BacktestEngine,
+) -> Result<(StrategyBuildContext, BoltV3PositionAuthorityRuntime)> {
+    let runtime = prepare_position_authority_runtime(loaded, engine.kernel().cache())
+        .context("prepare shared position-authority runtime")?;
+    let execution_client_id = ClientId::from(raw_execution_client_id(raw_config)?);
+    let capability = bind_position_authority_capability(loaded, &runtime, execution_client_id)
+        .context("bind replay strategy position-authority capability")?;
+    Ok((build_context.with_position_authority(capability), runtime))
+}
+
 fn manifest_authority_table(
     table: &BTreeMap<String, ManifestEconomicsAuthorityValue>,
 ) -> toml::Value {
@@ -993,15 +1011,17 @@ fn inline_manifest_strategy_config(strategy: &StrategySource) -> Result<toml::Va
         .with_context(|| format!("invalid {PARAM_CONFIG_TOML}"))
 }
 
-fn register_manifest_binary_oracle_strategy(
+fn register_manifest_binary_oracle_maker(
     engine: &mut BacktestEngine,
     manifest: &BacktestingRunManifest,
-    registry_key: &str,
+    loaded: &LoadedBoltV3Config,
     raw_config: &toml::Value,
     order_economics: BoltV3OrderEconomicsHandle,
     order_execution_mode: BoltV3OrderExecutionMode,
-    realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
-) -> Result<Arc<BacktestDecisionEvidenceWriter>> {
+) -> Result<(
+    Arc<BacktestDecisionEvidenceWriter>,
+    BoltV3PositionAuthorityRuntime,
+)> {
     let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::new(
         manifest_evidence_reject_episode_max_count(&manifest.strategy)?,
         manifest_evidence_read_max_bytes(&manifest.strategy)?,
@@ -1009,23 +1029,22 @@ fn register_manifest_binary_oracle_strategy(
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new(
         run_guard_writer.submit_admission_evidence(),
     ));
-    let mut build_context = StrategyBuildContext::new(
+    let build_context = StrategyBuildContext::new(
         order_economics,
-        run_guard_writer.strategy_evidence(registry_key)?,
+        run_guard_writer.strategy_evidence(STRATEGY_BINARY_ORACLE_MAKER)?,
         submit_admission,
         BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
         Venue::from(manifest.venue.nt_venue.as_str()),
     );
-    if let Some(runtime) = realized_volatility_runtime {
-        build_context = build_context.with_realized_volatility_runtime(runtime);
-    }
+    let (build_context, position_authority_runtime) =
+        attach_position_authority(build_context, loaded, raw_config, engine)?;
     let registry = production_strategy_registry().context("build production strategy registry")?;
     let prepared = registry
-        .prepare_strategy(registry_key, raw_config, &build_context)
-        .with_context(|| format!("prepare {registry_key} strategy through production registry"))?;
+        .prepare_strategy(STRATEGY_BINARY_ORACLE_MAKER, raw_config, &build_context)
+        .context("prepare binary_oracle_maker strategy through production registry")?;
     register_prepared_strategy_batch(engine.kernel().trader(), vec![prepared])
-        .with_context(|| format!("register {registry_key} prepared strategy batch"))?;
-    Ok(run_guard_writer)
+        .context("register binary_oracle_maker prepared strategy batch")?;
+    Ok((run_guard_writer, position_authority_runtime))
 }
 
 /// Add the manifest-selected compiled Rust strategy to the engine.
@@ -1148,13 +1167,15 @@ fn add_manifest_strategy(
                 run_guard_writer.submit_admission_evidence(),
             ));
             let order_economics = manifest_order_economics(manifest, &loaded, &raw_config)?;
-            let mut build_context = StrategyBuildContext::new(
+            let build_context = StrategyBuildContext::new(
                 order_economics,
                 run_guard_writer.strategy_evidence(STRATEGY_BINARY_ORACLE_EDGE_TAKER)?,
                 submit_admission,
                 BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
                 Venue::from(manifest.venue.nt_venue.as_str()),
             );
+            let (mut build_context, position_authority_runtime) =
+                attach_position_authority(build_context, &loaded, &raw_config, engine)?;
             if let Some(runtime) = realized_volatility_runtime {
                 build_context = build_context.with_realized_volatility_runtime(runtime);
             }
@@ -1174,6 +1195,7 @@ fn add_manifest_strategy(
                 run_guard_writer: Some(run_guard_writer),
                 resolved_config_hash: Some(resolved_config_hash),
                 resolved_config_bytes: Some(resolved_config_bytes),
+                _position_authority_runtime: Some(position_authority_runtime),
             })
         }
         STRATEGY_BINARY_ORACLE_MAKER => {
@@ -1185,20 +1207,21 @@ fn add_manifest_strategy(
             let raw_config = inline_manifest_strategy_config(strategy)?;
             let loaded = load_manifest_economics_config(manifest)?;
             let order_economics = manifest_order_economics(manifest, &loaded, &raw_config)?;
-            let run_guard_writer = register_manifest_binary_oracle_strategy(
-                engine,
-                manifest,
-                STRATEGY_BINARY_ORACLE_MAKER,
-                &raw_config,
-                order_economics,
-                order_execution_mode,
-                None,
-            )?;
+            let (run_guard_writer, position_authority_runtime) =
+                register_manifest_binary_oracle_maker(
+                    engine,
+                    manifest,
+                    &loaded,
+                    &raw_config,
+                    order_economics,
+                    order_execution_mode,
+                )?;
             Ok(AddedManifestStrategy {
                 config_override_report: None,
                 run_guard_writer: Some(run_guard_writer),
                 resolved_config_hash: None,
                 resolved_config_bytes: None,
+                _position_authority_runtime: Some(position_authority_runtime),
             })
         }
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => {
@@ -1278,7 +1301,6 @@ pub struct OrderTerminalRecord {
     pub leaves_qty: Quantity,
     pub initialized_quantity: Quantity,
     pub initialized_quote_quantity: bool,
-    pub effective_quantity: Quantity,
     pub current_quote_quantity: bool,
     pub trade_ids: Vec<TradeId>,
     pub commissions: Vec<(Currency, Money)>,
@@ -1759,7 +1781,6 @@ fn capture_order_terminals(engine: &BacktestEngine) -> Result<Vec<OrderTerminalR
                 leaves_qty: order.leaves_qty(),
                 initialized_quantity: initialized.quantity,
                 initialized_quote_quantity: initialized.quote_quantity,
-                effective_quantity: order.quantity(),
                 current_quote_quantity: order.is_quote_quantity(),
                 trade_ids: order.trade_ids().into_iter().copied().collect(),
                 commissions: {
@@ -4249,12 +4270,28 @@ mod tests {
             .collect()
     }
 
+    #[derive(Clone, Copy)]
+    enum Issue789ExecutionQuantityPolicy {
+        Exact,
+        ReducibleIocBound,
+    }
+
+    impl Issue789ExecutionQuantityPolicy {
+        fn accepts(self, requested: Quantity, effective: Quantity) -> bool {
+            match self {
+                Self::Exact => effective == requested,
+                Self::ReducibleIocBound => effective <= requested,
+            }
+        }
+    }
+
     fn ensure_issue_789_terminal_order_matches(
         terminal: &super::OrderTerminalRecord,
         initialized: &nautilus_model::events::OrderInitialized,
         configured_account_id: AccountId,
         position_id: PositionId,
-        expected_effective_quantity: Quantity,
+        requested_effective_quantity: Quantity,
+        quantity_policy: Issue789ExecutionQuantityPolicy,
         fills: &[nautilus_model::events::OrderFilled],
     ) -> Result<()> {
         let filled_decimal = fills
@@ -4262,7 +4299,7 @@ mod tests {
             .map(|fill| fill.last_qty.as_decimal())
             .sum::<Decimal>();
         let expected_filled_quantity =
-            Quantity::from_decimal_dp(filled_decimal, expected_effective_quantity.precision)
+            Quantity::from_decimal_dp(filled_decimal, terminal.quantity.precision)
                 .map_err(anyhow::Error::msg)
                 .context("#789 terminal filled quantity is not representable")?;
         let first_fill = fills
@@ -4272,9 +4309,11 @@ mod tests {
         let expected_commissions = issue_789_commission_projection(fills)?;
         let expected_fills = fills.iter().map(issue_789_proof_fill).collect::<Vec<_>>();
         ensure!(
-            expected_filled_quantity == expected_effective_quantity,
-            "terminal order {} is not fully filled",
-            initialized.client_order_id
+            quantity_policy.accepts(requested_effective_quantity, terminal.quantity),
+            "terminal order {} has invalid execution-time quantity: requested={} effective={}",
+            initialized.client_order_id,
+            requested_effective_quantity,
+            terminal.quantity,
         );
         ensure!(
             terminal.trader_id == initialized.trader_id
@@ -4287,12 +4326,11 @@ mod tests {
                 && terminal.order_side == initialized.order_side
                 && terminal.order_type == initialized.order_type
                 && terminal.status == OrderStatus::Filled
-                && terminal.quantity == expected_effective_quantity
                 && terminal.filled_qty == expected_filled_quantity
+                && terminal.quantity == expected_filled_quantity
                 && terminal.leaves_qty.is_zero()
                 && terminal.initialized_quantity == initialized.quantity
                 && terminal.initialized_quote_quantity == initialized.quote_quantity
-                && terminal.effective_quantity == expected_effective_quantity
                 && !terminal.current_quote_quantity
                 && terminal.trade_ids == expected_trade_ids
                 && terminal.commissions == expected_commissions
@@ -5740,7 +5778,6 @@ mod tests {
             leaves_qty: Quantity::zero(fill.last_qty.precision),
             initialized_quantity: initialized.quantity,
             initialized_quote_quantity: initialized.quote_quantity,
-            effective_quantity: fill.last_qty,
             current_quote_quantity: false,
             trade_ids: vec![fill.trade_id],
             commissions: vec![(
@@ -5762,6 +5799,7 @@ mod tests {
             fills[0].account_id,
             fills[0].position_id.expect("test fill position"),
             initialized.quantity,
+            Issue789ExecutionQuantityPolicy::Exact,
             &fills,
         )
         .expect("complete terminal order projection must match");
@@ -5802,7 +5840,6 @@ mod tests {
             Box::new(|terminal| terminal.leaves_qty = Quantity::from("1.00")),
             Box::new(|terminal| terminal.initialized_quantity = Quantity::from("2.00")),
             Box::new(|terminal| terminal.initialized_quote_quantity = true),
-            Box::new(|terminal| terminal.effective_quantity = Quantity::from("2.00")),
             Box::new(|terminal| terminal.current_quote_quantity = true),
             Box::new(|terminal| terminal.trade_ids.clear()),
             Box::new(|terminal| {
@@ -5825,6 +5862,7 @@ mod tests {
                 fills[0].account_id,
                 fills[0].position_id.expect("test fill position"),
                 initialized.quantity,
+                Issue789ExecutionQuantityPolicy::Exact,
                 &fills,
             )
             .expect_err("terminal order projection drift must fail closed");
@@ -5835,18 +5873,18 @@ mod tests {
     fn issue_789_terminal_order_rejects_filled_status_with_partial_quantity() {
         let (mut terminal, initialized, fills) = test_issue_789_terminal_order();
         terminal.quantity = Quantity::from("2.00");
-        terminal.effective_quantity = Quantity::from("2.00");
 
         let error = ensure_issue_789_terminal_order_matches(
             &terminal,
             &initialized,
             fills[0].account_id,
             fills[0].position_id.expect("test fill position"),
-            terminal.effective_quantity,
+            terminal.quantity,
+            Issue789ExecutionQuantityPolicy::Exact,
             &fills,
         )
         .expect_err("Filled requires the complete effective quantity");
-        assert!(error.to_string().contains("fully filled"));
+        assert!(error.to_string().contains("complete causal projection"));
     }
 
     #[test]
@@ -6959,8 +6997,23 @@ mod tests {
                     declared_price: close.1.close_price,
                 }
             };
+            let effective_quantity = output
+                .order_terminals
+                .iter()
+                .find(|terminal| terminal.client_order_id == fills[0].client_order_id)
+                .map(|terminal| terminal.quantity)
+                .with_context(|| {
+                    format!(
+                        "missing terminal effective quantity for {}",
+                        fills[0].client_order_id
+                    )
+                })?;
             ordered_fills.extend(fills.iter().cloned());
-            orders.push(crate::execution_contract::ExecutionOrderTrace { cause, fills });
+            orders.push(crate::execution_contract::ExecutionOrderTrace {
+                cause,
+                effective_quantity,
+                fills,
+            });
         }
         let settlement_receipt_seq = settlement_receipt_seq
             .context("#789 lifecycle has no terminal InstrumentClose receipt")?;
@@ -7057,7 +7110,7 @@ mod tests {
                 .iter()
                 .find(|terminal| terminal.client_order_id == client_order_id)
                 .with_context(|| format!("missing terminal order projection {client_order_id}"))?;
-            let (initialized, expected_effective_quantity) = match &order.cause {
+            let (initialized, requested_effective_quantity, quantity_policy) = match &order.cause {
                 crate::execution_contract::ExecutionOrderCause::Submitted {
                     submitted_order,
                     quote_conversion,
@@ -7072,7 +7125,15 @@ mod tests {
                     let effective_quantity = quote_conversion
                         .as_ref()
                         .map_or(submitted_order.quantity, |update| update.quantity);
-                    (&submit.order_init, effective_quantity)
+                    (
+                        &submit.order_init,
+                        effective_quantity,
+                        if submitted_order.quote_quantity {
+                            Issue789ExecutionQuantityPolicy::Exact
+                        } else {
+                            Issue789ExecutionQuantityPolicy::ReducibleIocBound
+                        },
+                    )
                 }
                 crate::execution_contract::ExecutionOrderCause::Settlement { .. } => {
                     let initialized = &order_initializations
@@ -7081,7 +7142,11 @@ mod tests {
                             format!("missing settlement OrderInitialized {client_order_id}")
                         })?
                         .1;
-                    (initialized, initialized.quantity)
+                    (
+                        initialized,
+                        initialized.quantity,
+                        Issue789ExecutionQuantityPolicy::Exact,
+                    )
                 }
             };
             ensure_issue_789_terminal_order_matches(
@@ -7089,7 +7154,8 @@ mod tests {
                 initialized,
                 configured_account_id,
                 position.id,
-                expected_effective_quantity,
+                requested_effective_quantity,
+                quantity_policy,
                 &order.fills,
             )?;
         }

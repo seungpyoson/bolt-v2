@@ -150,16 +150,23 @@ pub(super) fn recording_decision_evidence()
     Arc::new(crate::bolt_v3_current_evidence::DecisionEvidenceRecorder::recording())
 }
 
-pub(super) fn fixture_position_authority_capability() -> BoltV3PositionAuthorityCapability {
+fn fixture_position_authority_capability_with_cache(
+    cache: Rc<RefCell<Cache>>,
+) -> BoltV3PositionAuthorityCapability {
     let execution_client_id = ClientId::from("POLYMARKET");
-    let account_id = AccountId::from(fixture_settlement_account_id().as_str());
-    let feed = BoltV3PositionAuthorityFeed::try_new([(
-        account_id,
-        execution_client_id,
-        fixture_execution_venue(),
-    )])
+    let account_id = AccountId::from("TEST-ACCOUNT");
+    let feed = BoltV3PositionAuthorityFeed::try_new_with_cache(
+        [(account_id, execution_client_id, fixture_execution_venue())],
+        cache,
+    )
     .expect("fixture position authority attribution should build");
     BoltV3PositionAuthorityCapability::new(feed, execution_client_id, account_id)
+}
+
+pub(super) fn fixture_position_authority_capability(
+    strategy: &BinaryOracleEdgeTaker,
+) -> BoltV3PositionAuthorityCapability {
+    fixture_position_authority_capability_with_cache(strategy.cache_rc())
 }
 
 pub(super) fn failing_decision_evidence()
@@ -354,8 +361,17 @@ pub(super) fn register_test_strategy_with_clock(
     )));
     strategy
         .core
-        .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
+        .register(
+            TraderId::from("TRADER-001"),
+            clock,
+            cache.clone(),
+            portfolio,
+        )
         .expect("test strategy should register with NT core");
+    strategy.context = strategy
+        .context
+        .clone()
+        .with_position_authority(fixture_position_authority_capability_with_cache(cache));
     record_registered_test_clock(&cache_handle, &clock_handle);
     (cache_handle, clock_handle)
 }
@@ -624,7 +640,6 @@ pub(super) fn test_strategy_with_decision_evidence_and_submit_admission(
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         )
-        .with_position_authority(fixture_position_authority_capability())
         .with_settlement_account_id(Some(fixture_settlement_account_id()))
         .with_settlement_currency(Some(fixture_settlement_currency()))
         .with_settlement_health_transition_emitter(Some(
@@ -1088,7 +1103,7 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     )
-    .with_position_authority(fixture_position_authority_capability())
+    .with_position_authority(fixture_position_authority_capability(&strategy))
     .with_settlement_account_id(Some(fixture_settlement_account_id()))
     .with_settlement_currency(Some(fixture_settlement_currency()))
     .with_settlement_health_transition_emitter(Some(noop_settlement_health_transition_emitter()));
@@ -1693,7 +1708,7 @@ pub(super) fn observe_position_authority_report(
         .position_authority()
         .expect("fixture strategy should have position authority")
         .observe_for_test(&PositionStatusReport::new(
-            AccountId::from(fixture_settlement_account_id().as_str()),
+            AccountId::from("TEST-ACCOUNT"),
             instrument_id,
             position_side,
             quantity,

@@ -325,6 +325,8 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
         OrderSide::Sell,
     );
     terminal_fill.trade_id = TradeId::from("TRADE-RESTART-PROJECTED-TERMINAL");
+    terminal_fill.ts_event = UnixNanos::from(1_002_u64);
+    terminal_fill.ts_init = UnixNanos::from(1_002_u64);
     apply_exit_order_event_to_nt_cache(&mut strategy, OrderEventAny::Filled(terminal_fill.clone()));
     strategy.on_order_filled(&terminal_fill);
     assert_eq!(
@@ -357,12 +359,13 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
     let canonical = strategy
         .canonical_position_authority(position_id, instrument_id)
         .expect("converged flat position read should succeed");
+    let authority = strategy
+        .exposure
+        .exit_pending_snapshot()
+        .expect("recovered terminal exit remains tracked before timer reconciliation")
+        .authority;
     assert_eq!(
-        strategy
-            .exposure
-            .exit_pending_snapshot()
-            .expect("recovered terminal exit remains tracked before timer reconciliation")
-            .authority
+        authority
             .release(canonical.as_ref())
             .expect("exact flat cache/report convergence should be evaluable"),
         crate::bolt_v3_order_execution::BoltV3PositionReductionRelease::Flat
@@ -380,6 +383,27 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
         classify_cached_exit_order_lifecycle(cached_exit.status()),
         CachedExitOrderLifecycle::Terminal { .. }
     ));
+    assert_eq!(
+        cached_exit.ts_last(),
+        terminal_fill.ts_event,
+        "the repeated cache observation must represent the same terminal event"
+    );
+    assert_eq!(
+        authority
+            .observe_order(
+                &cached_exit,
+                cached_exit.ts_last().as_u64(),
+                BoltV3ExitOrderCorrection::Unchanged,
+            )
+            .expect("repeated terminal observation should remain valid"),
+        crate::bolt_v3_order_execution::BoltV3ExitOrderLifecycleReduction::TerminalAwaitingPosition
+    );
+    assert_eq!(
+        authority
+            .release(canonical.as_ref())
+            .expect("repeated terminal observation must preserve established proof"),
+        crate::bolt_v3_order_execution::BoltV3PositionReductionRelease::Flat
+    );
     assert!(strategy.event_instrument_matches_held_exposure(instrument_id));
     strategy.reconcile_cached_exit_order_on_timer();
 

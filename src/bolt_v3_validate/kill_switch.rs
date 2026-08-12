@@ -1,5 +1,195 @@
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum KillSwitchFlattenResolutionError {
+    MissingEnabledBlock,
+    UnsupportedRouteKind,
+}
+
+impl std::fmt::Display for KillSwitchFlattenResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingEnabledBlock => f.write_str(
+                "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.enabled=true",
+            ),
+            Self::UnsupportedRouteKind => f.write_str(
+                "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.route_kind=live_node_command_router",
+            ),
+        }
+    }
+}
+
+enum KillSwitchFlattenBlockResolution<'a> {
+    Disabled,
+    Enabled(&'a KillSwitchFlattenConfigBlock),
+}
+
+fn resolve_kill_switch_flatten_block(
+    block: &KillSwitchConfigBlock,
+) -> Result<KillSwitchFlattenBlockResolution<'_>, KillSwitchFlattenResolutionError> {
+    if !block.enabled || !block.flatten_open_positions_on_breach {
+        return Ok(KillSwitchFlattenBlockResolution::Disabled);
+    }
+    let flatten = block
+        .flatten
+        .as_ref()
+        .filter(|flatten| flatten.enabled)
+        .ok_or(KillSwitchFlattenResolutionError::MissingEnabledBlock)?;
+    if flatten.route_kind != KillSwitchFlattenRouteKindConfig::LiveNodeCommandRouter {
+        return Err(KillSwitchFlattenResolutionError::UnsupportedRouteKind);
+    }
+    Ok(KillSwitchFlattenBlockResolution::Enabled(flatten))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LoadedKillSwitchFlattenResolution<'a> {
+    Disabled,
+    Enabled {
+        flatten: &'a KillSwitchFlattenConfigBlock,
+        execution_clients_by_venue: BTreeMap<Venue, String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LoadedKillSwitchFlattenResolutionError {
+    InvalidBlock(KillSwitchFlattenResolutionError),
+    DuplicateExecutionClient {
+        venue: Venue,
+        first_client: String,
+        second_client: String,
+    },
+    UnsupportedProvider {
+        client_id: String,
+        provider_key: String,
+    },
+    ProviderWithoutEconomics {
+        client_id: String,
+        provider_key: String,
+    },
+    InvalidEconomics {
+        client_id: String,
+        message: String,
+    },
+    MissingEconomics {
+        client_id: String,
+    },
+    QuoteOnlyEconomics {
+        client_id: String,
+    },
+}
+
+impl std::fmt::Display for LoadedKillSwitchFlattenResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidBlock(error) => error.fmt(f),
+            Self::DuplicateExecutionClient {
+                venue,
+                first_client,
+                second_client,
+            } => write!(
+                f,
+                "kill switch flatten requires one execution client per venue; venue={venue} clients={first_client},{second_client}"
+            ),
+            Self::UnsupportedProvider {
+                client_id,
+                provider_key,
+            } => write!(
+                f,
+                "kill switch flatten execution client `{client_id}` uses unsupported provider `{provider_key}`"
+            ),
+            Self::ProviderWithoutEconomics {
+                client_id,
+                provider_key,
+            } => write!(
+                f,
+                "kill switch flatten execution client `{client_id}` provider `{provider_key}` has no economics binding"
+            ),
+            Self::InvalidEconomics { client_id, message } => write!(
+                f,
+                "kill switch flatten execution client `{client_id}` has invalid economics: {message}"
+            ),
+            Self::MissingEconomics { client_id } => write!(
+                f,
+                "kill switch flatten execution client `{client_id}` has no economics config"
+            ),
+            Self::QuoteOnlyEconomics { client_id } => write!(
+                f,
+                "kill switch flatten execution client `{client_id}` cannot route forced reductions while economics_slice=quote_only"
+            ),
+        }
+    }
+}
+
+pub(crate) fn resolve_loaded_kill_switch_flatten(
+    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
+) -> Result<LoadedKillSwitchFlattenResolution<'_>, LoadedKillSwitchFlattenResolutionError> {
+    let Some(block) = loaded.root.risk.kill_switch.as_ref() else {
+        return Ok(LoadedKillSwitchFlattenResolution::Disabled);
+    };
+    let flatten = match resolve_kill_switch_flatten_block(block)
+        .map_err(LoadedKillSwitchFlattenResolutionError::InvalidBlock)?
+    {
+        KillSwitchFlattenBlockResolution::Disabled => {
+            return Ok(LoadedKillSwitchFlattenResolution::Disabled);
+        }
+        KillSwitchFlattenBlockResolution::Enabled(flatten) => flatten,
+    };
+
+    let mut execution_clients_by_venue = BTreeMap::new();
+    for (client_id, client) in &loaded.root.clients {
+        let Some(execution) = client.execution.as_ref() else {
+            continue;
+        };
+        let venue = Venue::from(client.venue.as_str());
+        if let Some(first_client) = execution_clients_by_venue.insert(venue, client_id.clone()) {
+            return Err(
+                LoadedKillSwitchFlattenResolutionError::DuplicateExecutionClient {
+                    venue,
+                    first_client,
+                    second_client: client_id.clone(),
+                },
+            );
+        }
+        let binding = crate::bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
+            .ok_or_else(
+                || LoadedKillSwitchFlattenResolutionError::UnsupportedProvider {
+                    client_id: client_id.clone(),
+                    provider_key: client.venue.to_string(),
+                },
+            )?;
+        let economics_binding = binding.execution_economics.ok_or_else(|| {
+            LoadedKillSwitchFlattenResolutionError::ProviderWithoutEconomics {
+                client_id: client_id.clone(),
+                provider_key: binding.key.to_string(),
+            }
+        })?;
+        let economics = economics_binding
+            .load_and_validate(execution)
+            .map_err(
+                |message| LoadedKillSwitchFlattenResolutionError::InvalidEconomics {
+                    client_id: client_id.clone(),
+                    message,
+                },
+            )?
+            .ok_or_else(
+                || LoadedKillSwitchFlattenResolutionError::MissingEconomics {
+                    client_id: client_id.clone(),
+                },
+            )?;
+        match economics.economics_slice {
+            crate::bolt_v3_config::EconomicsSliceConfig::QuoteOnly => {
+                return Err(LoadedKillSwitchFlattenResolutionError::QuoteOnlyEconomics {
+                    client_id: client_id.clone(),
+                });
+            }
+        }
+    }
+    Ok(LoadedKillSwitchFlattenResolution::Enabled {
+        flatten,
+        execution_clients_by_venue,
+    })
+}
+
 pub(super) fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
     let mut errors = validate_kill_switch_store_bootstrap_fields(block);
     if !block.enabled {
@@ -16,21 +206,8 @@ pub(super) fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<S
             block.max_utc_daily_realized_loss
         )),
     }
-    if block.flatten_open_positions_on_breach {
-        match block.flatten.as_ref() {
-            Some(flatten) if flatten.enabled => {
-                if flatten.route_kind != KillSwitchFlattenRouteKindConfig::LiveNodeCommandRouter {
-                    errors.push(
-                        "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.route_kind=live_node_command_router"
-                            .to_string(),
-                    );
-                }
-            }
-            _ => errors.push(
-                "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.enabled=true"
-                    .to_string(),
-            ),
-        }
+    if let Err(error) = resolve_kill_switch_flatten_block(block) {
+        errors.push(error.to_string());
     }
     if block.action_retry_interval_ms == 0 {
         errors.push("risk.kill_switch.action_retry_interval_ms must be positive".to_string());

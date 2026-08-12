@@ -638,43 +638,7 @@ fn adapter_config_from_toml(
     user_fees: &HyperliquidUserFeesSnapshot,
     product: &HyperliquidProductEconomicsSnapshot,
 ) -> Result<HyperliquidEconomicsConfig, String> {
-    if config.routing_attachment_policy != EconomicsRoutingAttachmentPolicy::Forbidden {
-        return Err("Hyperliquid Slice 1 requires routing attachments to be forbidden".to_string());
-    }
-    let expected_sources = if config.carry_surfaces.contains(product_surface_id) {
-        ["account_fees", "funding", "product_metadata"].as_slice()
-    } else {
-        ["account_fees", "product_metadata"].as_slice()
-    };
-    if config
-        .sources
-        .keys()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        != expected_sources
-        || config
-            .formula
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            != [
-                "growth_mode_scale",
-                "hip3_at_or_above_deployer_share",
-                "hip3_at_or_above_threshold_multiplier",
-                "hip3_below_threshold_base",
-                "hip3_scale_threshold",
-                "stable_pair_scale",
-            ]
-        || config
-            .quote_components
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            != ["protocol"]
-        || config.assets.keys().map(String::as_str).collect::<Vec<_>>() != ["settlement"]
-    {
-        return Err("Hyperliquid economics contains unsupported authority keys".to_string());
-    }
+    validate_execution_economics_config(config)?;
     let policy_id = config
         .product_surface_policies
         .get(product_surface_id)
@@ -724,7 +688,6 @@ fn adapter_config_from_toml(
             config,
             "hip3_at_or_above_threshold_multiplier",
         )?,
-        hip3_at_or_above_deployer_share: config_decimal(config, "hip3_at_or_above_deployer_share")?,
         edge_basis_resolver_id: config_id(&edge_basis.resolver_id, FormulaId::try_new)?,
         edge_basis_product_metadata_source: config_id(
             &edge_basis.product_metadata_source,
@@ -733,6 +696,84 @@ fn adapter_config_from_toml(
         edge_basis_policy_version: edge_basis.policy_version,
         carry,
     })
+}
+
+pub(crate) fn validate_execution_economics_config(
+    config: &ExecutionEconomicsConfig,
+) -> Result<(), String> {
+    if config.routing_attachment_policy != EconomicsRoutingAttachmentPolicy::Forbidden {
+        return Err("Hyperliquid Slice 1 requires routing attachments to be forbidden".to_string());
+    }
+    let expected_sources = if config.carry_surfaces.is_empty() {
+        ["account_fees", "product_metadata"].as_slice()
+    } else {
+        ["account_fees", "funding", "product_metadata"].as_slice()
+    };
+    if config
+        .sources
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        != expected_sources
+        || config
+            .formula
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            != [
+                "growth_mode_scale",
+                "hip3_at_or_above_threshold_multiplier",
+                "hip3_below_threshold_base",
+                "hip3_scale_threshold",
+                "stable_pair_scale",
+            ]
+        || config
+            .quote_components
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            != ["protocol"]
+        || config.assets.keys().map(String::as_str).collect::<Vec<_>>() != ["settlement"]
+        || config.carry.is_some() != !config.carry_surfaces.is_empty()
+        || config
+            .carry_surfaces
+            .iter()
+            .any(|surface| !config.product_surface_policies.contains_key(surface))
+    {
+        return Err("Hyperliquid economics contains unsupported authority keys".to_string());
+    }
+    let stable_pair_scale = config_decimal(config, "stable_pair_scale")?;
+    let growth_mode_scale = config_decimal(config, "growth_mode_scale")?;
+    let hip3_scale_threshold = config_decimal(config, "hip3_scale_threshold")?;
+    let hip3_below_threshold_base = config_decimal(config, "hip3_below_threshold_base")?;
+    let hip3_at_or_above_threshold_multiplier =
+        config_decimal(config, "hip3_at_or_above_threshold_multiplier")?;
+    if stable_pair_scale < Decimal::ZERO
+        || growth_mode_scale < Decimal::ZERO
+        || hip3_scale_threshold <= Decimal::ZERO
+        || hip3_below_threshold_base < Decimal::ZERO
+        || hip3_at_or_above_threshold_multiplier < Decimal::ZERO
+    {
+        return Err("Hyperliquid economics formula values are invalid".to_string());
+    }
+    let protocol = &config.quote_components["protocol"];
+    config_id(&protocol.component_id, EconomicComponentId::try_new)?;
+    config_id(&protocol.formula_id, FormulaId::try_new)?;
+    config_id(&protocol.rate_factor_id, FormulaId::try_new)?;
+    config_id(&config.assets["settlement"].currency, CurrencyId::try_new)?;
+    let product_metadata_source = &config.sources["product_metadata"];
+    for edge_basis in config.edge_basis.values() {
+        config_id(&edge_basis.resolver_id, FormulaId::try_new)?;
+        if &edge_basis.product_metadata_source != product_metadata_source {
+            return Err(
+                "Hyperliquid edge-basis metadata source must match product_metadata".to_string(),
+            );
+        }
+    }
+    if let Some(carry) = &config.carry {
+        carry_policy_from_toml(carry)?;
+    }
+    Ok(())
 }
 
 fn carry_policy_from_toml(
@@ -828,7 +869,6 @@ pub struct HyperliquidEconomicsConfig {
     pub hip3_scale_threshold: Decimal,
     pub hip3_below_threshold_base: Decimal,
     pub hip3_at_or_above_threshold_multiplier: Decimal,
-    pub hip3_at_or_above_deployer_share: Decimal,
     pub edge_basis_resolver_id: FormulaId,
     pub edge_basis_product_metadata_source: SourceIdentity,
     pub edge_basis_policy_version: u64,
@@ -855,6 +895,7 @@ pub enum HyperliquidEconomicsError {
     InvalidCarryBound,
     MissingBuilderApproval,
     BuilderApprovalInsufficient,
+    UnsupportedAttachedBuilderForSpotBuy,
     ArithmeticOverflow,
     InvalidEffect(EconomicsError),
 }
@@ -882,6 +923,9 @@ impl std::fmt::Display for HyperliquidEconomicsError {
             }
             Self::BuilderApprovalInsufficient => {
                 f.write_str("Hyperliquid builder fee exceeds the approved maximum")
+            }
+            Self::UnsupportedAttachedBuilderForSpotBuy => {
+                f.write_str("Hyperliquid spot buys do not support attached builder charges")
             }
             Self::ArithmeticOverflow => f.write_str("Hyperliquid economics arithmetic overflowed"),
             Self::InvalidEffect(error) => error.fmt(f),
@@ -923,8 +967,6 @@ impl HyperliquidEconomicsAdapter {
             || config.hip3_scale_threshold <= Decimal::ZERO
             || config.hip3_below_threshold_base < Decimal::ZERO
             || config.hip3_at_or_above_threshold_multiplier < Decimal::ZERO
-            || config.hip3_at_or_above_deployer_share < Decimal::ZERO
-            || config.hip3_at_or_above_deployer_share > Decimal::ONE
             || config.carry.as_ref().is_some_and(|carry| {
                 carry.funding_interval_ns == 0
                     || carry.funding_schedule_phase_ns >= carry.funding_interval_ns
@@ -1145,10 +1187,13 @@ impl HyperliquidEconomicsAdapter {
         if attached != &routing.attachment_id {
             return Err(HyperliquidEconomicsError::InvalidRequestScope);
         }
-        Ok(!matches!(
+        if matches!(
             (&self.product.kind, request.order_side),
             (HyperliquidProductKind::Spot { .. }, OrderSide::Buy)
-        ))
+        ) {
+            return Err(HyperliquidEconomicsError::UnsupportedAttachedBuilderForSpotBuy);
+        }
+        Ok(true)
     }
 
     fn builder_effect(
@@ -1351,7 +1396,8 @@ impl VenueEconomicsAdapter for HyperliquidEconomicsAdapter {
             HyperliquidEconomicsError::InvalidRequestScope => {
                 VenueEconomicsUnavailable::RequestScopeMismatch
             }
-            HyperliquidEconomicsError::UnsupportedAlignedQuoteShape => {
+            HyperliquidEconomicsError::UnsupportedAlignedQuoteShape
+            | HyperliquidEconomicsError::UnsupportedAttachedBuilderForSpotBuy => {
                 VenueEconomicsUnavailable::UnsupportedProductEconomics
             }
             HyperliquidEconomicsError::MissingBuilderApproval => {
@@ -1464,7 +1510,6 @@ mod tests {
             hip3_scale_threshold: Decimal::ONE,
             hip3_below_threshold_base: Decimal::ONE,
             hip3_at_or_above_threshold_multiplier: Decimal::from(2),
-            hip3_at_or_above_deployer_share: Decimal::new(5, 1),
             edge_basis_resolver_id: id("product-metadata", FormulaId::try_new),
             edge_basis_product_metadata_source: id(
                 "hyperliquid-product-metadata",
@@ -1743,7 +1788,7 @@ mod tests {
     }
 
     #[test]
-    fn builder_requires_current_approval_and_skips_spot_buys() {
+    fn builder_requires_current_approval_and_rejects_unsupported_spot_buys() {
         let adapter = HyperliquidEconomicsAdapter::try_new(
             config(),
             user_fees(metadata("user-fees", "fees-1")),
@@ -1760,12 +1805,8 @@ mod tests {
             false,
         );
         assert_eq!(
-            adapter
-                .quote(&buy)
-                .expect("spot buy should quote")
-                .components
-                .len(),
-            1
+            adapter.quote(&buy),
+            Err(HyperliquidEconomicsError::UnsupportedAttachedBuilderForSpotBuy)
         );
         let sell = request(
             "HYPE-hUSD",

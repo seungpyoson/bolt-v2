@@ -22,6 +22,15 @@ pub(super) fn validate_clients_block(root: &BoltV3RootConfig) -> Vec<String> {
         let validation_client = client_with_root_chainlink_feed_catalog(root, client);
         let client = validation_client.as_ref().unwrap_or(client);
         errors.extend(crate::bolt_v3_providers::validate_client_block(key, client));
+        errors.extend(
+            crate::bolt_v3_providers::validate_client_execution_economics(
+                key,
+                client,
+                root.economics
+                    .as_ref()
+                    .map(|economics| &economics.reporting),
+            ),
+        );
         errors.extend(validate_reference_reconnect_timeout_exceeds_startup_bound(
             root, key, client,
         ));

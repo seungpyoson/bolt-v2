@@ -406,6 +406,7 @@ pub(crate) enum NtReconnectBudgetCapability {
 #[derive(Clone, Copy)]
 pub(crate) struct ProviderExecutionEconomicsBinding {
     pub load_config: fn(&toml::Value) -> Result<Option<ExecutionEconomicsConfig>, String>,
+    pub validate_config: fn(&ExecutionEconomicsConfig) -> Result<(), String>,
     pub build_replay_authority: for<'a> fn(
         ProviderEconomicsReplayAuthorityBuildContext<'a>,
     ) -> Result<
@@ -415,6 +416,19 @@ pub(crate) struct ProviderExecutionEconomicsBinding {
     pub build_adapter: for<'a> fn(
         ProviderEconomicsAdapterBuildContext<'a>,
     ) -> Result<BuiltProviderEconomicsAdapter, String>,
+}
+
+impl ProviderExecutionEconomicsBinding {
+    pub(crate) fn load_and_validate(
+        self,
+        execution: &toml::Value,
+    ) -> Result<Option<ExecutionEconomicsConfig>, String> {
+        let Some(config) = (self.load_config)(execution)? else {
+            return Ok(None);
+        };
+        (self.validate_config)(&config)?;
+        Ok(Some(config))
+    }
 }
 
 pub(crate) struct ProviderEconomicsReplayAuthorityBuildContext<'a> {
@@ -677,6 +691,7 @@ still lose positions inside the engine",
         write_product_submit_proof_artifact: None,
         execution_economics: Some(ProviderExecutionEconomicsBinding {
             load_config: polymarket::execution_economics_config,
+            validate_config: polymarket::validate_execution_economics_config,
             build_replay_authority: polymarket::build_replay_economics_authority,
             build_adapter: polymarket::build_execution_economics_adapter,
         }),
@@ -733,6 +748,7 @@ still lose positions inside the engine",
         write_product_submit_proof_artifact: Some(hyperliquid::write_product_submit_proof_artifact),
         execution_economics: Some(ProviderExecutionEconomicsBinding {
             load_config: hyperliquid::execution_economics_config,
+            validate_config: hyperliquid::validate_execution_economics_config,
             build_replay_authority: hyperliquid::build_replay_economics_authority,
             build_adapter: hyperliquid::build_execution_economics_adapter,
         }),
@@ -1178,6 +1194,46 @@ pub fn validate_client_block(key: &str, client: &ClientBlock) -> Vec<String> {
             client.venue.as_str()
         )],
     }
+}
+
+/// Load and validate a configured client's provider-owned economics schema at
+/// root-config validation time. This is the same registry authority used by
+/// runtime binding, so selected and unselected clients cannot disagree about
+/// which provider formulas are supported.
+pub(crate) fn validate_client_execution_economics(
+    key: &str,
+    client: &ClientBlock,
+    reporting: Option<&crate::bolt_v3_config::EconomicsReportingConfig>,
+) -> Vec<String> {
+    let Some(execution) = client.execution.as_ref() else {
+        return Vec::new();
+    };
+    let Some(binding) = binding_for_provider_key(client.venue.as_str()) else {
+        return Vec::new();
+    };
+    let Some(economics_binding) = binding.execution_economics else {
+        return Vec::new();
+    };
+    let config = match economics_binding.load_and_validate(execution) {
+        Ok(Some(config)) => config,
+        Ok(None) => return Vec::new(),
+        Err(message) => {
+            return vec![format!(
+                "clients.{key}.execution.economics is invalid for provider `{}`: {message}",
+                binding.key
+            )];
+        }
+    };
+    let Some(reporting) = reporting else {
+        return vec![format!(
+            "clients.{key}.execution.economics requires the root [economics.reporting] block"
+        )];
+    };
+    config
+        .validate_common(reporting)
+        .into_iter()
+        .map(|message| format!("clients.{key}.execution.economics: {message}"))
+        .collect()
 }
 
 fn validate_required_secret_blocks(

@@ -1390,7 +1390,8 @@ pub fn bind_execution_economics(
             execution_client_id: execution_client_id.to_string(),
         }
     })?;
-    let config = (economics_binding.load_config)(execution)
+    let config = economics_binding
+        .load_and_validate(execution)
         .map_err(
             |message| EconomicsRuntimeBindingError::InvalidExecutionConfig {
                 execution_client_id: execution_client_id.to_string(),

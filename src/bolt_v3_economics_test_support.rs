@@ -123,7 +123,6 @@ fn fixture_order_economics_with_platform_fee_except(
             source_at_ns: 0,
             fetched_at_ns: 0,
             valid_until_ns: u64::MAX,
-            builder_attachment_id: None,
         },
         &market_info.to_string(),
     )

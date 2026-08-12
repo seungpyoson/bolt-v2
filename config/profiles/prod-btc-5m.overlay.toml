@@ -96,7 +96,6 @@ http_timeout_secs = 60
 max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
-fee_cache_ttl_secs = 300
 provider_collateral_allowance_poll_interval_ms = 1000
 transport_backend = "sockudo"
 
@@ -117,7 +116,7 @@ schedule = "clob_market_info"
 
 [client_execution.polymarket_main.economics.formula]
 fee_round_decimal_places = "5"
-fee_rounding_mode = "midpoint_away_from_zero"
+fee_rounding_mode = "to_zero"
 sub_fee_quantum_behavior = "round_to_zero"
 
 [client_execution.polymarket_main.economics.quote_components.platform]

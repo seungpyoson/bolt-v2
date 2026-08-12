@@ -39,7 +39,6 @@ growth_mode_scale = "0.1"
 hip3_scale_threshold = "1"
 hip3_below_threshold_base = "1"
 hip3_at_or_above_threshold_multiplier = "2"
-hip3_at_or_above_deployer_share = "0.5"
 
 [economics.quote_components.protocol]
 component_id = "hyperliquid-protocol-execution"

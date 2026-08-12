@@ -1422,6 +1422,9 @@ pub fn apply_backtest_config_override(
 
     errors.extend(validate_root_only(&loaded.root));
     errors.extend(validate_strategies(&loaded.root, &loaded.strategies));
+    if let Err(error) = crate::bolt_v3_validate::resolve_loaded_kill_switch_flatten(&loaded) {
+        errors.push(error.to_string());
+    }
     if !errors.is_empty() {
         return Err(BoltV3ValidationError::new(errors));
     }
@@ -1577,12 +1580,18 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
         )));
     }
 
-    Ok(LoadedBoltV3Config {
+    let loaded = LoadedBoltV3Config {
         root_path: root_path.to_path_buf(),
         config_bundle_checksum: config_bundle_checksum(&root_text, &strategy_texts),
         root,
         strategies,
-    })
+    };
+    if let Err(error) = crate::bolt_v3_validate::resolve_loaded_kill_switch_flatten(&loaded) {
+        return Err(BoltV3ConfigError::Validation(BoltV3ValidationError::new(
+            vec![error.to_string()],
+        )));
+    }
+    Ok(loaded)
 }
 
 pub const GENERATED_LIVE_CONFIG_MARKER_PREFIX: &str = "# bolt-v2:generated-live-config format=";

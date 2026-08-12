@@ -251,7 +251,6 @@ fn authoritative_input_without_valuation_for(
             source_at_ns: 900,
             fetched_at_ns: 950,
             valid_until_ns: 2_000,
-            builder_attachment_id: None,
         },
         include_str!("fixtures/economics/polymarket/fee_enabled.json"),
     )
@@ -277,7 +276,6 @@ fn authoritative_refresh_input(
             source_at_ns: 900,
             fetched_at_ns: 950,
             valid_until_ns,
-            builder_attachment_id: None,
         },
         market_info_json,
     )

@@ -34,10 +34,13 @@ pub use adapter_signing_source::materialize_clob_v2_adapter_signing_source_from_
 pub use balance_allowance_cache::sync_clob_v2_balance_allowance_cache_from_configured_account;
 pub use economics::{
     FeeRoundingMode, PolymarketEconomicsAdapter, PolymarketEconomicsConfig,
-    PolymarketEconomicsError, PolymarketMarketInfoSnapshot, PolymarketRoutingEconomicsConfig,
-    PolymarketSnapshotMetadata, authoritative_economics_input,
+    PolymarketEconomicsError, PolymarketMarketInfoSnapshot, PolymarketSnapshotMetadata,
+    authoritative_economics_input,
 };
-pub(crate) use economics::{build_execution_economics_adapter, build_replay_economics_authority};
+pub(crate) use economics::{
+    build_execution_economics_adapter, build_replay_economics_authority,
+    validate_execution_economics_config,
+};
 pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
 pub use provider_collateral_allowance_runtime_source::{
     PolymarketProviderCollateralAllowanceBuildError, PolymarketProviderCollateralAllowanceInput,
@@ -240,7 +243,6 @@ pub struct PolymarketExecutionConfig {
     pub max_retries: u64,
     pub retry_delay_initial_ms: u64,
     pub retry_delay_max_ms: u64,
-    pub fee_cache_ttl_secs: u64,
     pub provider_collateral_allowance_poll_interval_ms: Option<u64>,
     pub transport_backend: TransportBackend,
     pub on_chain_collateral: Option<PolymarketOnChainCollateralConfig>,
@@ -519,7 +521,6 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
         ("max_retries", execution.max_retries),
         ("retry_delay_initial_ms", execution.retry_delay_initial_ms),
         ("retry_delay_max_ms", execution.retry_delay_max_ms),
-        ("fee_cache_ttl_secs", execution.fee_cache_ttl_secs),
     ];
     for (field, value) in positive_fields {
         if *value == 0 {

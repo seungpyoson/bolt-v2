@@ -44,7 +44,7 @@ use std::{
 
 use nautilus_model::{
     enums::{BarAggregation, BarIntervalType},
-    identifiers::{AccountId, ClientOrderId, InstrumentId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, Venue},
 };
 use rust_decimal::Decimal;
 
@@ -95,6 +95,9 @@ use chainlink_data_streams::{
 use clients::{validate_aws_block, validate_clients_block};
 use gate_providers::validate_gate_providers;
 use kill_switch::validate_kill_switch_block;
+pub(crate) use kill_switch::{
+    LoadedKillSwitchFlattenResolution, resolve_loaded_kill_switch_flatten,
+};
 use nt_blocks::validate_nautilus_block;
 use persistence::{validate_nt_reconciliation_authority, validate_persistence_block};
 use rate_limit::validate_order_rate_within_venue_egress;

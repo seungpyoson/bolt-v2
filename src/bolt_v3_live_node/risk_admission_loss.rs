@@ -19,7 +19,7 @@ use crate::bolt_v3_provider_collateral_allowance::{
     provider_collateral_allowance_capture_failure_parts,
 };
 use crate::{
-    bolt_v3_config::{KillSwitchFlattenConfigBlock, KillSwitchFlattenRouteKindConfig},
+    bolt_v3_config::KillSwitchFlattenConfigBlock,
     bolt_v3_economics_runtime::{AuthoritativeEconomicsInputStore, bind_execution_economics},
     bolt_v3_kill_switch_flatten::{
         BoltV3KillSwitchFlattenCandidate, BoltV3KillSwitchFlattenCommand,
@@ -38,6 +38,7 @@ use crate::{
     bolt_v3_submit_admission::{
         BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
     },
+    bolt_v3_validate::{LoadedKillSwitchFlattenResolution, resolve_loaded_kill_switch_flatten},
 };
 
 use super::*;
@@ -790,32 +791,20 @@ fn live_node_kill_switch_flatten_executor(
         .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
     submit_admission.configure_kill_switch_forced_reduction_policy(forced_policy);
 
-    if !kill_switch.flatten_open_positions_on_breach {
-        return Ok(None);
-    }
-
-    let flatten = kill_switch
-        .flatten
-        .as_ref()
-        .filter(|flatten| flatten.enabled)
-        .ok_or_else(|| {
-            BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
-                "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.enabled=true"
-            ))
-        })?;
-    if flatten.route_kind != KillSwitchFlattenRouteKindConfig::LiveNodeCommandRouter {
-        return Err(BoltV3LiveNodeError::KillSwitchLossProtection(
-            anyhow::anyhow!(
-                "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.route_kind=live_node_command_router"
-            ),
-        ));
-    }
+    let (flatten, execution_clients_by_venue) = match resolve_loaded_kill_switch_flatten(loaded)
+        .map_err(|error| {
+            BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(error.to_string()))
+        })? {
+        LoadedKillSwitchFlattenResolution::Disabled => return Ok(None),
+        LoadedKillSwitchFlattenResolution::Enabled {
+            flatten,
+            execution_clients_by_venue,
+        } => (flatten, execution_clients_by_venue),
+    };
 
     let flatten_policy = flatten_policy_from_config(flatten)
         .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
     let order_template = flatten_order_template_from_config(flatten);
-    let execution_clients_by_venue = execution_clients_by_venue(loaded)
-        .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
     let economics_by_venue = execution_clients_by_venue
         .iter()
         .map(|(venue, execution_client_id)| {
@@ -1111,24 +1100,6 @@ fn flatten_order_template_from_config(flatten: &KillSwitchFlattenConfigBlock) ->
         is_reduce_only: flatten.is_reduce_only,
         is_quote_quantity: flatten.is_quote_quantity,
     }
-}
-
-fn execution_clients_by_venue(loaded: &LoadedBoltV3Config) -> Result<BTreeMap<Venue, String>> {
-    let mut clients_by_venue = BTreeMap::new();
-    for (client_key, client) in loaded
-        .root
-        .clients
-        .iter()
-        .filter(|(_, client)| client.execution.is_some())
-    {
-        let venue = Venue::from(client.venue.as_str());
-        if let Some(existing) = clients_by_venue.insert(venue, client_key.clone()) {
-            anyhow::bail!(
-                "kill switch flatten requires one execution client per venue; venue={venue} clients={existing},{client_key}"
-            );
-        }
-    }
-    Ok(clients_by_venue)
 }
 
 /// Configures the durable kill-switch loss-protection accumulator from the

@@ -28,7 +28,6 @@ pub fn polymarket_inputs(loaded: &LoadedBoltV3Config) -> AuthoritativeEconomicsI
             source_at_ns: 900,
             fetched_at_ns: 950,
             valid_until_ns: 2_000,
-            builder_attachment_id: None,
         },
         include_str!("../fixtures/economics/polymarket/fee_free.json"),
     )
@@ -83,7 +82,6 @@ pub fn polymarket_order_economics_for(
             source_at_ns,
             fetched_at_ns: source_at_ns,
             valid_until_ns: u64::MAX,
-            builder_attachment_id: None,
         },
         include_str!("../fixtures/economics/polymarket/fee_free.json"),
     )

@@ -12,7 +12,10 @@ pub use economics::{
     HyperliquidProductEconomicsSnapshot, HyperliquidProductKind, HyperliquidRoutingEconomicsConfig,
     HyperliquidSnapshotMetadata, HyperliquidUserFeesSnapshot, authoritative_economics_input,
 };
-pub(crate) use economics::{build_execution_economics_adapter, build_replay_economics_authority};
+pub(crate) use economics::{
+    build_execution_economics_adapter, build_replay_economics_authority,
+    validate_execution_economics_config,
+};
 
 use std::{
     any::Any,

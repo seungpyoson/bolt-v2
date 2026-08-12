@@ -1006,7 +1006,7 @@ Tasks 1–6 produced reviewed head `4e0cd663a19c95ed0a6360660c070a12452134cb`. T
 - [x] Migrate the isolated backtesting run guard from the retired submission-decision event to the intent/prepared phase model. Count exit intent and hold exactly once as decisions; consume prepared-order events without incrementing the decision count, so an intent followed by preparation cannot double-count.
 - [x] Implement `TerminalExitAwaitingPosition` and its causal fence as an exhaustive enum state resolved by one fill/fill-void/terminal-order/cache/position-event/timer reducer. Match every pending-exit origin, recovered cause, order terminal kind including cached `Voided`, correction state, and position opened/changed/closed trigger without a wildcard. Only authoritative zero cumulative fill with no later correction bypasses the fence; do not add a boolean latch, optional lease, direct `PositionClosed -> Flat`, fill-void shortcut, or unfenced "cache is current" conditional.
 - [x] Run focused edge-taker compiler, admission, evidence, codec, and adverse-path tests on T9.
-- [ ] Commit the compiler, state-machine, submit-outcome, and evidence-schema migration atomically; these interdependent types must not be split into non-compiling commits.
+- [x] Commit the compiler, state-machine, submit-outcome, and evidence-schema migration atomically; these interdependent types must not be split into non-compiling commits.
 
 ### Task 10: Make root/runtime/provider authority honest
 

@@ -2,28 +2,69 @@ use rust_decimal::Decimal;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EconomicsError {
-    EmptyIdentifier { field: &'static str },
-    NonCanonicalIdentifier { field: &'static str },
-    NonPositiveValue { field: &'static str },
+    EmptyIdentifier {
+        field: &'static str,
+    },
+    NonCanonicalIdentifier {
+        field: &'static str,
+    },
+    NonPositiveValue {
+        field: &'static str,
+    },
     ZeroNativeEffect,
     InvalidPlannedFill,
     MissingHoldingHorizon,
-    MissingDebitRiskBound { component_id: EconomicComponentId },
-    InvalidDebitRiskBound { component_id: EconomicComponentId },
-    DuplicateComponent { component_id: EconomicComponentId },
-    DuplicateCalculationFactor { factor_id: FormulaId },
-    EconomicClassSignMismatch { component_id: EconomicComponentId },
-    EffectScopeMismatch { component_id: EconomicComponentId },
-    InvalidSourceTimeline { source_id: SourceIdentity },
-    StaleSource { source_id: SourceIdentity },
-    MissingValuation { from: NativeUnitId, to: CurrencyId },
-    ContradictoryValuation { from: NativeUnitId, to: CurrencyId },
-    InvalidValuationRoute { route_id: ValuationRouteId },
-    StaleValuation { route_id: ValuationRouteId },
+    MissingDebitRiskBound {
+        component_id: EconomicComponentId,
+    },
+    InvalidDebitRiskBound {
+        component_id: EconomicComponentId,
+    },
+    DuplicateComponent {
+        component_id: EconomicComponentId,
+    },
+    DuplicateCalculationFactor {
+        factor_id: FormulaId,
+    },
+    EconomicClassSignMismatch {
+        component_id: EconomicComponentId,
+    },
+    EffectScopeMismatch {
+        component_id: EconomicComponentId,
+    },
+    InvalidSourceTimeline {
+        source_id: SourceIdentity,
+    },
+    StaleSource {
+        source_id: SourceIdentity,
+    },
+    MissingValuation {
+        from: NativeUnitId,
+        to: CurrencyId,
+    },
+    ContradictoryValuation {
+        from: NativeUnitId,
+        to: CurrencyId,
+    },
+    InvalidValuationRoute {
+        route_id: ValuationRouteId,
+    },
+    StaleValuation {
+        route_id: ValuationRouteId,
+    },
     EdgeBasisPolicyMismatch,
     EdgeBasisScopeMismatch,
     StaleEdgeBasis,
-    RequiredCapabilityStale { valid_until_ns: u64 },
+    GrossCurrencyMismatch {
+        gross_currency: CurrencyId,
+        reporting_currency: CurrencyId,
+    },
+    MissingGuaranteedPointValuation {
+        component_id: EconomicComponentId,
+    },
+    RequiredCapabilityStale {
+        valid_until_ns: u64,
+    },
     ArithmeticOverflow,
 }
 
@@ -93,6 +134,17 @@ impl std::fmt::Display for EconomicsError {
                 f.write_str("economics edge-basis scope does not match the quote")
             }
             Self::StaleEdgeBasis => f.write_str("economics edge basis is stale"),
+            Self::GrossCurrencyMismatch {
+                gross_currency,
+                reporting_currency,
+            } => write!(
+                f,
+                "economics gross currency {gross_currency} does not match reporting currency {reporting_currency}"
+            ),
+            Self::MissingGuaranteedPointValuation { component_id } => write!(
+                f,
+                "economics guaranteed component {component_id} has no point valuation"
+            ),
             Self::RequiredCapabilityStale { valid_until_ns } => write!(
                 f,
                 "economics required capability expired at {valid_until_ns}"
@@ -376,12 +428,6 @@ pub struct EstimatedEffect {
     pub calculation_factors: Vec<CalculationFactor>,
     pub formula_id: FormulaId,
     pub source: SourceValidity,
-}
-
-impl EstimatedEffect {
-    pub fn authorizes_admission(&self) -> bool {
-        !matches!(self.admission_treatment, AdmissionTreatment::ForecastOnly)
-    }
 }
 
 #[cfg(test)]

@@ -5,7 +5,9 @@ mod quote;
 mod types;
 mod valuation;
 
-pub use edge::{EdgeBasisAmount, EdgeBasisEvidence, NetEdgeQuote, fold_net_edge};
+pub use edge::{
+    EdgeBasisAmount, EdgeBasisEvidence, GrossExpectedValue, NetEdgeQuote, fold_net_edge,
+};
 pub use health::EconomicsCapabilityHealth;
 pub use ports::{VenueEconomicsAdapter, VenueEconomicsUnavailable, VenueEdgeBasisEstimate};
 pub use quote::{

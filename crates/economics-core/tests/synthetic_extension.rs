@@ -122,7 +122,10 @@ fn new_venue_and_non_nautilus_substrate_use_only_the_neutral_contract() {
         .resolve_edge_basis(&request, notional)
         .expect("synthetic venue should resolve its edge basis");
     let edge = fold_net_edge(
-        Decimal::from(2),
+        bolt_economics_core::GrossExpectedValue::new(
+            Decimal::from(2),
+            request.reporting_currency.clone(),
+        ),
         &quote,
         EdgeBasisEvidence {
             policy_id: request.edge_basis_policy_id.clone(),

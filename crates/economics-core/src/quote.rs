@@ -33,10 +33,15 @@ pub struct EconomicsQuoteRequest {
 impl EconomicsQuoteRequest {
     pub fn validate(&self) -> Result<(), EconomicsError> {
         PlannedFillNotional::from_legs(&self.planned_fill_legs)?;
-        if let Some(position) = &self.position
-            && (position.quantity <= Decimal::ZERO || position.holding_horizon_ns == 0)
-        {
-            return Err(EconomicsError::MissingHoldingHorizon);
+        if let Some(position) = &self.position {
+            if position.quantity <= Decimal::ZERO {
+                return Err(EconomicsError::NonPositiveValue {
+                    field: "position_quantity",
+                });
+            }
+            if position.holding_horizon_ns == 0 {
+                return Err(EconomicsError::MissingHoldingHorizon);
+            }
         }
         Ok(())
     }
@@ -183,9 +188,9 @@ pub fn validate_and_aggregate_quote(
     routes: &[ValuationRoute],
 ) -> Result<EconomicsQuote, EconomicsError> {
     request.validate()?;
-    validate_required_source(request.requested_at_ns, &estimate.authority)?;
+    validate_component_source(request.requested_at_ns, &estimate.authority)?;
     for source in &estimate.dependency_sources {
-        validate_required_source(request.requested_at_ns, source)?;
+        validate_component_source(request.requested_at_ns, source)?;
     }
 
     let mut component_ids = HashSet::new();
@@ -277,10 +282,7 @@ pub fn validate_and_aggregate_quote(
                 {
                     valid_until_ns = valid_until_ns.min(deadline);
                 }
-                let normalized = point_valuation
-                    .as_ref()
-                    .map(|valuation| valuation.normalized_amount)
-                    .unwrap_or(Decimal::ZERO);
+                let normalized = guaranteed_point_amount(&component, point_valuation.as_ref())?;
                 core_total = core_total
                     .checked_add(normalized)
                     .ok_or(EconomicsError::ArithmeticOverflow)?;
@@ -410,19 +412,6 @@ fn validate_component_scope(
     Ok(())
 }
 
-fn validate_required_source(
-    requested_at_ns: u64,
-    source: &SourceValidity,
-) -> Result<(), EconomicsError> {
-    validate_component_source(requested_at_ns, source)?;
-    if source.valid_until_ns < requested_at_ns {
-        return Err(EconomicsError::StaleSource {
-            source_id: source.source.clone(),
-        });
-    }
-    Ok(())
-}
-
 fn validate_component_source(
     requested_at_ns: u64,
     source: &SourceValidity,
@@ -441,6 +430,17 @@ fn validate_component_source(
         });
     }
     Ok(())
+}
+
+fn guaranteed_point_amount(
+    component: &EstimatedEffect,
+    point_valuation: Option<&ValuationEvidence>,
+) -> Result<Decimal, EconomicsError> {
+    point_valuation
+        .map(|valuation| valuation.normalized_amount)
+        .ok_or_else(|| EconomicsError::MissingGuaranteedPointValuation {
+            component_id: component.component_id.clone(),
+        })
 }
 
 fn validate_factors(component: &EstimatedEffect) -> Result<(), EconomicsError> {
@@ -806,6 +806,30 @@ mod tests {
         assert_eq!(
             request.validate(),
             Err(EconomicsError::MissingHoldingHorizon)
+        );
+
+        request.position.as_mut().unwrap().holding_horizon_ns = 100;
+        request.position.as_mut().unwrap().quantity = Decimal::ZERO;
+        assert_eq!(
+            request.validate(),
+            Err(EconomicsError::NonPositiveValue {
+                field: "position_quantity"
+            })
+        );
+    }
+
+    #[test]
+    fn guaranteed_component_requires_a_point_valuation_at_the_use_site() {
+        let component = component(
+            "fee",
+            Decimal::NEGATIVE_ONE,
+            AdmissionTreatment::GuaranteedConditionalOnAction,
+        );
+        assert_eq!(
+            guaranteed_point_amount(&component, None),
+            Err(EconomicsError::MissingGuaranteedPointValuation {
+                component_id: id("fee", EconomicComponentId::try_new)
+            })
         );
     }
 }

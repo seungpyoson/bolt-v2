@@ -1,9 +1,32 @@
 use rust_decimal::Decimal;
 
 use crate::{
-    EconomicScope, EconomicsError, EconomicsQuote, EdgeBasisPolicyId, FormulaId, SnapshotId,
-    SourceIdentity,
+    CurrencyId, EconomicScope, EconomicsError, EconomicsQuote, EdgeBasisPolicyId, FormulaId,
+    SnapshotId, SourceIdentity,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrossExpectedValue {
+    amount: Decimal,
+    currency_id: CurrencyId,
+}
+
+impl GrossExpectedValue {
+    pub fn new(amount: Decimal, currency_id: CurrencyId) -> Self {
+        Self {
+            amount,
+            currency_id,
+        }
+    }
+
+    pub const fn amount(&self) -> Decimal {
+        self.amount
+    }
+
+    pub const fn currency_id(&self) -> &CurrencyId {
+        &self.currency_id
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeBasisAmount(Decimal);
@@ -46,10 +69,16 @@ pub struct NetEdgeQuote {
 }
 
 pub fn fold_net_edge(
-    gross_expected_value: Decimal,
+    gross_expected_value: GrossExpectedValue,
     quote: &EconomicsQuote,
     basis: EdgeBasisEvidence,
 ) -> Result<NetEdgeQuote, EconomicsError> {
+    if gross_expected_value.currency_id() != quote.reporting_currency() {
+        return Err(EconomicsError::GrossCurrencyMismatch {
+            gross_currency: gross_expected_value.currency_id().clone(),
+            reporting_currency: quote.reporting_currency().clone(),
+        });
+    }
     if basis.policy_id != *quote.edge_basis_policy_id() {
         return Err(EconomicsError::EdgeBasisPolicyMismatch);
     }
@@ -64,6 +93,7 @@ pub fn fold_net_edge(
     if basis.valid_until_ns < quote.requested_at_ns() {
         return Err(EconomicsError::StaleEdgeBasis);
     }
+    let gross_expected_value = gross_expected_value.amount();
     let core_net_edge = gross_expected_value
         .checked_add(quote.core_total())
         .ok_or(EconomicsError::ArithmeticOverflow)?;
@@ -154,8 +184,12 @@ mod tests {
             source_snapshot_ids: vec![id("product-1", SnapshotId::try_new)],
             valid_until_ns: 1_100,
         };
-        let edge = fold_net_edge(Decimal::new(5, 0), &quote, basis.clone())
-            .expect("matching basis should fold");
+        let edge = fold_net_edge(
+            GrossExpectedValue::new(Decimal::new(5, 0), id("USD", crate::CurrencyId::try_new)),
+            &quote,
+            basis.clone(),
+        )
+        .expect("matching basis should fold");
         assert_eq!(edge.core_net_edge, Decimal::new(5, 0));
         assert_eq!(edge.core_edge_ratio, Decimal::new(5, 2));
 
@@ -164,7 +198,11 @@ mod tests {
             ..basis.clone()
         };
         assert_eq!(
-            fold_net_edge(Decimal::ONE, &quote, mismatched),
+            fold_net_edge(
+                GrossExpectedValue::new(Decimal::ONE, id("USD", crate::CurrencyId::try_new),),
+                &quote,
+                mismatched,
+            ),
             Err(EconomicsError::EdgeBasisPolicyMismatch)
         );
 
@@ -175,8 +213,80 @@ mod tests {
             ..basis
         };
         assert_eq!(
-            fold_net_edge(Decimal::ONE, &quote, foreign_scope),
+            fold_net_edge(
+                GrossExpectedValue::new(Decimal::ONE, id("USD", crate::CurrencyId::try_new),),
+                &quote,
+                foreign_scope,
+            ),
             Err(EconomicsError::EdgeBasisScopeMismatch)
+        );
+    }
+
+    #[test]
+    fn fold_rejects_gross_value_in_a_different_currency() {
+        let policy_id = id("basis", EdgeBasisPolicyId::try_new);
+        let request = EconomicsQuoteRequest {
+            execution_client_id: id("execution", ExecutionClientId::try_new),
+            account_id: id("account", AccountId::try_new),
+            instrument_id: id("instrument", EconomicsInstrumentId::try_new),
+            product_surface_id: id("surface", ProductSurfaceId::try_new),
+            order_side: OrderSide::Buy,
+            liquidity_role: LiquidityRole::Taker,
+            planned_fill_legs: vec![PlannedFillLeg {
+                price: Decimal::ONE,
+                quantity: Decimal::ONE,
+            }],
+            routing: RoutingContext {
+                attached_charge: None,
+            },
+            position: None,
+            lifecycle_path: LifecyclePath::PlannedExit,
+            reporting_policy_id: id("reporting", ReportingPolicyId::try_new),
+            reporting_currency: id("USD", crate::CurrencyId::try_new),
+            edge_basis_policy_id: policy_id.clone(),
+            requested_at_ns: 1_000,
+            decision_correlation_id: id("decision", DecisionCorrelationId::try_new),
+        };
+        let quote = validate_and_aggregate_quote(
+            &request,
+            VenueQuoteEstimate {
+                authority: SourceValidity {
+                    source: id("schedule", SourceIdentity::try_new),
+                    snapshot_id: id("schedule-1", SnapshotId::try_new),
+                    source_at_ns: 900,
+                    fetched_at_ns: 950,
+                    valid_until_ns: 1_100,
+                },
+                dependency_sources: Vec::new(),
+                components: Vec::new(),
+            },
+            &[],
+        )
+        .expect("empty fee-free quote should aggregate");
+        let basis = EdgeBasisEvidence {
+            policy_id,
+            resolver_id: id("resolver", FormulaId::try_new),
+            product_metadata_source: id("product", SourceIdentity::try_new),
+            policy_version: 1,
+            normalized_amount: EdgeBasisAmount::try_new(Decimal::ONE)
+                .expect("positive basis should construct"),
+            scope: EconomicScope::Decision {
+                decision_correlation_id: id("decision", DecisionCorrelationId::try_new),
+            },
+            source_snapshot_ids: vec![id("product-1", SnapshotId::try_new)],
+            valid_until_ns: 1_100,
+        };
+
+        assert_eq!(
+            fold_net_edge(
+                GrossExpectedValue::new(Decimal::ONE, id("EUR", crate::CurrencyId::try_new),),
+                &quote,
+                basis,
+            ),
+            Err(EconomicsError::GrossCurrencyMismatch {
+                gross_currency: id("EUR", crate::CurrencyId::try_new),
+                reporting_currency: id("USD", crate::CurrencyId::try_new),
+            })
         );
     }
 }

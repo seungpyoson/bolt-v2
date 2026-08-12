@@ -206,7 +206,12 @@ mod tests {
             valid_until_ns: 999,
         };
         assert!(matches!(
-            value_with_routes(&effect, &currency("USD"), &[route.clone()], 1_000),
+            value_with_routes(
+                &effect,
+                &currency("USD"),
+                std::slice::from_ref(&route),
+                1_000
+            ),
             Err(EconomicsError::StaleValuation { .. })
         ));
         assert!(matches!(

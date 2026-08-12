@@ -1025,16 +1025,16 @@ Tasks 1–6 produced reviewed head `4e0cd663a19c95ed0a6360660c070a12452134cb`. T
 - Produces one root-aware provider-economics validation path for every configured client.
 - Produces one shared forced-reduction pre-admission rejection recorder.
 
-- [ ] Replace the duplicated flatten prerequisite checks/messages with one pure typed resolver over `LoadedBoltV3Config`; call it after root/strategy loading and from live-node construction. Keep `validate_root_only` limited to block-local checks. Add the quote-only-economics incompatibility to the resolver rather than a third conditional block.
-- [ ] Confirm every shipped config keeps `flatten_open_positions_on_breach=false`; if any selected shipped config differs, correct it atomically and disclose the lasting behavior.
-- [ ] In `validate_clients_block(root)`, load each provider economics block through the registry and call `ExecutionEconomicsConfig::validate_common` with root reporting configuration before runtime binding, including unselected clients. Provider-local validation continues to own only provider fields.
-- [ ] Extend forced-reduction rejection evidence with a typed `EconomicsSealRejected` reason. In the shared flatten router, record exactly one rejected `ForcedReductionAdmissionFact` when sealing fails, then return; assert zero admission counters/reservations/sink calls. Callers do not mirror this path.
-- [ ] Remove Polymarket `mbf`/`tbf` builder-charge construction and its config/fixture component; retain and numerically pin authoritative platform-fee behavior.
-- [ ] Validate the Polymarket rounding/sub-quantum pair and full economics config during root load.
-- [ ] Delete dead `fee_cache_ttl_secs` and Hyperliquid aligned-product policy fields from schema and every shipped fixture.
-- [ ] Reject, rather than waive, an attached Hyperliquid builder charge for unsupported spot buys.
-- [ ] Run focused root-config, provider, shared-router, admission-evidence, and kill-switch tests on T9.
-- [ ] Commit root/runtime authority and provider-formula cleanup as separate cohesive commits.
+- [x] Replace the duplicated flatten prerequisite checks/messages with one pure typed resolver over `LoadedBoltV3Config`; call it after root/strategy loading and from live-node construction. Keep `validate_root_only` limited to block-local checks. Add the quote-only-economics incompatibility to the resolver rather than a third conditional block.
+- [x] Confirm every shipped config keeps `flatten_open_positions_on_breach=false`; if any selected shipped config differs, correct it atomically and disclose the lasting behavior.
+- [x] In `validate_clients_block(root)`, load each provider economics block through the registry and call `ExecutionEconomicsConfig::validate_common` with root reporting configuration before runtime binding, including unselected clients. Provider-local validation continues to own only provider fields.
+- [x] Extend forced-reduction rejection evidence with a typed `EconomicsSealRejected` reason. In the shared flatten router, record exactly one rejected `ForcedReductionAdmissionFact` when sealing fails, then return; assert zero admission counters/reservations/sink calls. Callers do not mirror this path.
+- [x] Remove Polymarket `mbf`/`tbf` builder-charge construction and its config/fixture component; retain and numerically pin authoritative platform-fee behavior.
+- [x] Validate the Polymarket rounding/sub-quantum pair and full economics config during root load.
+- [x] Delete dead `fee_cache_ttl_secs` and Hyperliquid aligned-product policy fields from schema and every shipped fixture.
+- [x] Reject, rather than waive, an attached Hyperliquid builder charge for unsupported spot buys.
+- [x] Run focused root-config, provider, shared-router, admission-evidence, and kill-switch tests on T9.
+- [x] Commit root/runtime authority and provider-formula cleanup as separate cohesive commits.
 
 ### Task 11: Close neutral-core and evidence contract gaps
 

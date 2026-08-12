@@ -305,7 +305,7 @@ buyer_side_values = ["buy"]
 seller_side_values = ["sell"]
 
 [manifest]
-manifest_schema_version = "backtesting-run-manifest.v2"
+manifest_schema_version = "backtesting-run-manifest.v1"
 run_id = "stale-run"
 target_bolt_v2_branch = "main"
 target_bolt_v2_ref = "refs/heads/main"

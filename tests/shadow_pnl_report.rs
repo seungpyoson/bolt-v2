@@ -759,6 +759,67 @@ fn shadow_pnl_report_rejects_admitted_entry_without_order_intent() {
     );
 }
 
+#[test]
+fn shadow_pnl_report_rejects_admitted_entry_without_bound_economics() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+    let client_order_id = "client-order-no-economics";
+    let mut lines = Vec::new();
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 1,
+            client_order_id,
+            market_id: "market-btc",
+            instrument_id: "BTC-UP.POLYMARKET",
+            selected_side: "up",
+            expected_edge_basis_points: "150",
+            execution_component_rate_basis_points: "100",
+            price: "0.40",
+            quantity: "10",
+        },
+    );
+    let mut admission: serde_json::Value =
+        serde_json::from_str(&lines[2]).expect("admission fixture should decode");
+    admission["decision"]["economics"] = serde_json::Value::Null;
+    lines[2] = serde_json::to_string(&admission).expect("admission fixture should encode");
+    std::fs::write(&evidence_path, lines.join("\n") + "\n").expect("fixture evidence should write");
+    std::fs::write(
+        &settlements_path,
+        serde_json::to_string(&serde_json::json!({
+            "settlement_date": "2026-06-10",
+            "asset": "BTC",
+            "market_id": "market-btc",
+            "instrument_id": "BTC-UP.POLYMARKET",
+            "winning_side": "up",
+            "settlement_price": "1.00"
+        }))
+        .expect("settlement fixture should serialize")
+            + "\n",
+    )
+    .expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(
+        stderr.contains("missing bound economics for admitted entry client-order-no-economics"),
+        "{stderr}"
+    );
+}
+
 fn fixture_evidence_jsonl() -> String {
     let mut lines = Vec::new();
     push_trade_lines(

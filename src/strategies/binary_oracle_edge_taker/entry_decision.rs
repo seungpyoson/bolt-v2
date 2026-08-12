@@ -353,7 +353,7 @@ pub(super) const fn blocked_strategy_input_canonical_state(
 /// The entry-skip producer's semantic state, from the closed registry.
 ///
 /// The novelty axis is the skip reason itself, which is what the registry's
-/// twenty-state domain enumerates. Exhaustive for the same reason as above.
+/// nineteen-state domain enumerates. Exhaustive for the same reason as above.
 pub(super) const fn entry_skip_canonical_state(
     reason: EvidenceEntrySkipReason,
 ) -> EvidenceCanonicalState {

@@ -43,7 +43,10 @@ use crate::{
     bolt_v3_maker_market_selection::MakerMarketPortfolioPolicy,
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
-    bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
+    bolt_v3_maker_order_dispatch::{
+        MakerOrderCommandFailure, MakerOrderCommandFailureKind, MakerOrderDispatchInput,
+        MakerOrderDispatchOutcome,
+    },
     bolt_v3_maker_order_plan::{
         MakerLegBinding, MakerMarketActionOrderInput, maker_order_plan_from_market_action,
     },
@@ -545,12 +548,14 @@ impl BinaryOracleMaker {
         command: &MakerCompiledOrderCommand,
         submit_order_prefix: &str,
         terminal_value_entry: Option<BoltV3TerminalValueEntry>,
-    ) -> Result<MakerOrderDispatchOutcome> {
+    ) -> std::result::Result<MakerOrderDispatchOutcome, MakerOrderCommandFailure> {
         if matches!(
             command,
             MakerCompiledOrderCommand::Submit { .. } | MakerCompiledOrderCommand::Modify { .. }
         ) {
-            self.ensure_accepting_new_quotes()?;
+            self.ensure_accepting_new_quotes().map_err(|error| {
+                MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Lifecycle, error)
+            })?;
         }
         let policy = self.context.order_execution_policy();
         let decision_evidence = self
@@ -730,7 +735,14 @@ impl BinaryOracleMaker {
             let mut route_command =
                 |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
                     let terminal_value_entry =
-                        maker_command_terminal_value_entry(command, fair_probability_up)?;
+                        maker_command_terminal_value_entry(command, fair_probability_up).map_err(
+                            |error| {
+                                MakerOrderCommandFailure::new(
+                                    MakerOrderCommandFailureKind::SubmitPreparation,
+                                    error,
+                                )
+                            },
+                        )?;
                     self.route_maker_order_command(
                         command,
                         submit_order_prefix,
@@ -878,12 +890,12 @@ impl BinaryOracleMaker {
                 submit_order_prefix,
             },
         )?;
-        // A routing error is now per-leg data, not a `?` abort; fail loud here to
+        // A command failure is now per-leg data, not a `?` abort; fail loud here to
         // preserve this reference-quote route's prior fail-closed behavior.
         if let Some(error) = quote_route
             .orders
             .as_ref()
-            .and_then(|orders| orders.routing_error())
+            .and_then(|orders| orders.command_failure())
         {
             anyhow::bail!(
                 "binary_oracle_maker reference-quote leg order routing failed: error={error}"
@@ -935,9 +947,9 @@ impl BinaryOracleMaker {
             },
             &mut route_command,
         )?;
-        // A routing error is now per-leg data, not a `?` abort; fail loud here to
+        // A command failure is now per-leg data, not a `?` abort; fail loud here to
         // preserve this market-action route's prior fail-closed behavior.
-        if let Some(error) = orders.routing_error() {
+        if let Some(error) = orders.command_failure() {
             anyhow::bail!(
                 "binary_oracle_maker market-action leg order routing failed: error={error}"
             );
@@ -1291,7 +1303,7 @@ impl BinaryOracleMaker {
             // this fail-loud check, so a partial two-leg dispatch never orphans the
             // sibling leg's assigned identity from the runtime's view. The MarketQuote
             // FSM and requote budget remain advanced consistently with that outcome.
-            if let Some(error) = orders.routing_error() {
+            if let Some(error) = orders.command_failure() {
                 anyhow::bail!(
                     "binary_oracle_maker leg order routing failed after identity reconcile: market_key={market_key} error={error}"
                 );

@@ -427,7 +427,10 @@ fn normalize_base_quantity(
     finish_normalized_plan(order, retained, Decimal::ZERO)
 }
 
-fn floor_to_size_increment(value: Decimal, instrument: &InstrumentAny) -> Result<Decimal> {
+pub(super) fn floor_to_size_increment(
+    value: Decimal,
+    instrument: &InstrumentAny,
+) -> Result<Decimal> {
     let increment = instrument.size_increment().as_decimal();
     anyhow::ensure!(
         increment > Decimal::ZERO,

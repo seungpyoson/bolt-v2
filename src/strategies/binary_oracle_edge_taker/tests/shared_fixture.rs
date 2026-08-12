@@ -7,11 +7,19 @@ pub(super) use crate::bolt_v3_current_evidence::{
     AdmissionRejectionReason, CurrentFact, EntrySkipReason, ExitBlockedReason, ExitTriggerSource,
     RealizedVolAggregation, RealizedVolPricingComponent, RvGateResult,
 };
+use crate::bolt_v3_position_authority_feed::{
+    BoltV3PositionAuthorityCapability, BoltV3PositionAuthorityFeed,
+};
 use nautilus_common::{
     actor::DataActorNative,
     messages::data::DataCommand,
     msgbus::TypedIntoHandler,
     runner::{DataCommandSender, get_data_cmd_sender, replace_data_cmd_sender},
+};
+use nautilus_model::{
+    enums::PositionSideSpecified,
+    identifiers::{AccountId, ClientId},
+    reports::PositionStatusReport,
 };
 use nautilus_trading::Strategy;
 
@@ -140,6 +148,18 @@ pub(super) fn valid_raw_config() -> Value {
 pub(super) fn recording_decision_evidence()
 -> Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder> {
     Arc::new(crate::bolt_v3_current_evidence::DecisionEvidenceRecorder::recording())
+}
+
+pub(super) fn fixture_position_authority_capability() -> BoltV3PositionAuthorityCapability {
+    let execution_client_id = ClientId::from("POLYMARKET");
+    let account_id = AccountId::from(fixture_settlement_account_id().as_str());
+    let feed = BoltV3PositionAuthorityFeed::try_new([(
+        account_id,
+        execution_client_id,
+        fixture_execution_venue(),
+    )])
+    .expect("fixture position authority attribution should build");
+    BoltV3PositionAuthorityCapability::new(feed, execution_client_id, account_id)
 }
 
 pub(super) fn failing_decision_evidence()
@@ -604,6 +624,7 @@ pub(super) fn test_strategy_with_decision_evidence_and_submit_admission(
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
         )
+        .with_position_authority(fixture_position_authority_capability())
         .with_settlement_account_id(Some(fixture_settlement_account_id()))
         .with_settlement_currency(Some(fixture_settlement_currency()))
         .with_settlement_health_transition_emitter(Some(
@@ -768,6 +789,155 @@ pub(super) fn submit_admission_with_provider_cap(
     )
 }
 
+pub(super) fn submit_admission_with_canonical_position(
+    decision_evidence: Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
+    yes_instrument_id: InstrumentId,
+    no_instrument_id: InstrumentId,
+    yes_position: Decimal,
+) -> Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState> {
+    submit_admission_with_limits_and_canonical_position(
+        decision_evidence,
+        BTreeMap::new(),
+        yes_instrument_id,
+        no_instrument_id,
+        yes_position,
+        Decimal::ZERO,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+pub(super) fn submit_admission_with_provider_cap_and_canonical_position(
+    max_notional_per_order: Decimal,
+    decision_evidence: Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
+    yes_instrument_id: InstrumentId,
+    no_instrument_id: InstrumentId,
+    yes_position: Decimal,
+    no_position: Decimal,
+) -> Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState> {
+    let mut limits = BTreeMap::new();
+    limits.insert(
+        "POLYMARKET".to_string(),
+        crate::bolt_v3_submit_admission::BoltV3LiveSubmitApprovalLimits {
+            max_order_count: 1,
+            max_order_notional: max_notional_per_order,
+        },
+    );
+    submit_admission_with_limits_and_canonical_position(
+        decision_evidence,
+        limits,
+        yes_instrument_id,
+        no_instrument_id,
+        yes_position,
+        no_position,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+fn submit_admission_with_limits_and_canonical_position(
+    decision_evidence: Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
+    live_submit_approval_limits: BTreeMap<
+        String,
+        crate::bolt_v3_submit_admission::BoltV3LiveSubmitApprovalLimits,
+    >,
+    yes_instrument_id: InstrumentId,
+    no_instrument_id: InstrumentId,
+    yes_position: Decimal,
+    no_position: Decimal,
+) -> Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState> {
+    use crate::{
+        bolt_v3_capital_admission::{
+            CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
+            ProductAdmissionSnapshot, ProductKind,
+        },
+        bolt_v3_capital_admission_state::{
+            OrderLifecycleCapitalAdmissionSnapshot,
+            POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE,
+            PortfolioCapitalAdmissionSnapshot, ProviderCollateralAllowanceSnapshot,
+        },
+        bolt_v3_capital_reservation::CapitalPoolSnapshot,
+        bolt_v3_submit_admission::{
+            BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
+            BoltV3SubmitCapitalAdmissionNtComponents,
+        },
+    };
+
+    let venue_id = fixture_execution_venue().to_string();
+    let account_id = fixture_settlement_account_id();
+    let collateral_currency = fixture_settlement_currency().to_string();
+    let admission = Arc::new(
+        BoltV3SubmitAdmissionState::new_with_live_submit_limits_and_optional_controls(
+            decision_evidence,
+            live_submit_approval_limits,
+            None,
+            Some(BoltV3SubmitCapitalAdmissionConfig {
+                venue_id: venue_id.clone(),
+                account_id: account_id.clone(),
+                product_kind: ProductKind::PredictionMarketBinary,
+                collateral_currency: collateral_currency.clone(),
+                capital_pool: CapitalPoolSnapshot {
+                    source: "test-capital-pool".to_string(),
+                    observed_at_ns: 0,
+                    pool_id: "test-capital-pool".to_string(),
+                    max_pool_liability: Decimal::new(100_000, 0),
+                    committed_liability: Decimal::ZERO,
+                    max_snapshot_age_ns: u64::MAX,
+                },
+                policy: CapitalAdmissionPolicy {
+                    min_remaining_pool_balance: None,
+                    fee_slippage_policy: Some(FeeSlippagePolicy {
+                        max_fee_liability: Decimal::new(100_000, 0),
+                        max_slippage_liability: Decimal::new(100_000, 0),
+                    }),
+                },
+            }),
+        ),
+    );
+    admission.update_capital_admission_nt_components(BoltV3SubmitCapitalAdmissionNtComponents {
+        source: "nt-capital-admission-state".to_string(),
+        observed_at_ns: 0,
+        portfolio: PortfolioCapitalAdmissionSnapshot {
+            source: "nt-portfolio-snapshot".to_string(),
+            observed_at_ns: 0,
+            venue_id: venue_id.clone(),
+            account_id: account_id.clone(),
+            collateral_currency: collateral_currency.clone(),
+            free_collateral: Decimal::new(100_000, 0),
+            total_equity: Decimal::new(100_000, 0),
+        },
+        provider_collateral_allowance: ProviderCollateralAllowanceSnapshot {
+            source: POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string(),
+            observed_at_ns: 0,
+            venue_id,
+            account_id,
+            collateral_currency,
+            collateral_allowance: Decimal::new(100_000, 0),
+        },
+        order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
+            source: "nt-open-order-cache".to_string(),
+            observed_at_ns: 0,
+            open_order_count: 0,
+            all_open_orders_attributed: true,
+        },
+        product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+            PredictionMarketAdmissionSnapshot {
+                source: "nt-prediction-market-snapshot".to_string(),
+                observed_at_ns: 0,
+                yes_instrument_id: yes_instrument_id.to_string(),
+                no_instrument_id: no_instrument_id.to_string(),
+                yes_position,
+                no_position,
+                collateral_allowance: Decimal::new(100_000, 0),
+                collateral_coupled_group_id: "test-market".to_string(),
+            },
+        ),
+        loss_snapshot: None,
+    });
+    let rebuild =
+        admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1);
+    assert!(rebuild.accepted, "canonical test position should reconcile");
+    admission
+}
+
 pub(super) fn configure_supported_market_quote_entry_order(strategy: &mut BinaryOracleEdgeTaker) {
     strategy.config.entry_order.order_type = OrderType::Market;
     strategy.config.entry_order.time_in_force = TimeInForce::Fok;
@@ -918,6 +1088,7 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         fixture_execution_venue(),
     )
+    .with_position_authority(fixture_position_authority_capability())
     .with_settlement_account_id(Some(fixture_settlement_account_id()))
     .with_settlement_currency(Some(fixture_settlement_currency()))
     .with_settlement_health_transition_emitter(Some(noop_settlement_health_transition_emitter()));
@@ -1355,6 +1526,58 @@ pub(super) fn set_exit_pending(
         position.quantity,
         position.avg_px_open,
     );
+    let lease = strategy
+        .context
+        .position_authority()
+        .expect("fixture strategy should have position authority")
+        .acquire(position.instrument_id, None)
+        .expect("fixture exit authority lease should acquire");
+    let order = seed_nt_working_exit_order(
+        strategy,
+        client_order_id,
+        position.instrument_id,
+        position.position_id,
+        position.quantity,
+    );
+    let authority = match origin {
+        ManagedPositionOrigin::StrategyEntry => BoltV3ExitOrderAuthorityHandle::locally_submitted(
+            client_order_id,
+            position.instrument_id,
+            position.position_id,
+            position.quantity.as_decimal(),
+            position.side.as_specified(),
+            position.quantity,
+            lease,
+        )
+        .expect("fixture local exit authority should build"),
+        ManagedPositionOrigin::RecoveryBootstrap => {
+            observe_position_authority_report(
+                strategy,
+                position.instrument_id,
+                position.side.as_specified(),
+                position.quantity,
+                975,
+            );
+            let authority = BoltV3ExitOrderAuthorityHandle::recovered(
+                BoltV3RecoveredExitCause::StartupAdoption,
+                client_order_id,
+                position.instrument_id,
+                position.position_id,
+                position.quantity.as_decimal(),
+                position.side.as_specified(),
+                &order,
+                lease,
+            )
+            .expect("fixture recovered exit authority should build");
+            let canonical = strategy
+                .canonical_position_authority(position.position_id, position.instrument_id)
+                .expect("fixture canonical position read should succeed");
+            authority
+                .refresh_recovered_baseline(canonical.as_ref())
+                .expect("fixture recovered baseline should establish");
+            authority
+        }
+    };
     strategy.exposure = ExposureState::ExitPending(ExitPendingState {
         pending_exit: PendingExitState {
             client_order_id,
@@ -1363,7 +1586,155 @@ pub(super) fn set_exit_pending(
             position_id: Some(position.position_id),
         },
         position: Some(managed_position_context(position, origin, None)),
+        authority,
     });
+}
+
+fn seed_nt_working_exit_order(
+    strategy: &mut BinaryOracleEdgeTaker,
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+    position_id: PositionId,
+    quantity: Quantity,
+) -> nautilus_model::orders::OrderAny {
+    let order = recovered_exit_order(client_order_id, instrument_id, quantity);
+    seed_nt_working_order(strategy, order, position_id)
+}
+
+pub(super) fn seed_nt_working_order(
+    strategy: &mut BinaryOracleEdgeTaker,
+    order: nautilus_model::orders::OrderAny,
+    position_id: PositionId,
+) -> nautilus_model::orders::OrderAny {
+    let client_order_id = order.client_order_id();
+    let instrument_id = order.instrument_id();
+    let account_id = AccountId::from(fixture_settlement_account_id().as_str());
+    let cache = register_test_strategy(strategy);
+    let mut cache = cache.borrow_mut();
+    cache
+        .add_order(
+            order.clone(),
+            Some(position_id),
+            Some(ClientId::from(strategy.config.client_id.as_str())),
+            true,
+        )
+        .expect("test cache should accept working exit order");
+    cache
+        .update_order(&nautilus_model::events::OrderEventAny::Submitted(
+            nautilus_model::events::OrderSubmitted::new(
+                order.trader_id(),
+                order.strategy_id(),
+                instrument_id,
+                client_order_id,
+                account_id,
+                nautilus_core::UUID4::new(),
+                UnixNanos::from(900_u64),
+                UnixNanos::from(900_u64),
+            ),
+        ))
+        .expect("test cache should submit working exit order");
+    cache
+        .update_order(&nautilus_model::events::OrderEventAny::Accepted(
+            nautilus_model::events::OrderAccepted::new(
+                order.trader_id(),
+                order.strategy_id(),
+                instrument_id,
+                client_order_id,
+                nautilus_model::identifiers::VenueOrderId::from("V-EXIT-001"),
+                account_id,
+                nautilus_core::UUID4::new(),
+                UnixNanos::from(950_u64),
+                UnixNanos::from(950_u64),
+                false,
+            ),
+        ))
+        .expect("test cache should accept working exit order");
+    cache
+        .order_owned(&client_order_id)
+        .expect("test cache should retain working exit order")
+}
+
+pub(super) fn apply_exit_order_event_to_nt_cache(
+    strategy: &mut BinaryOracleEdgeTaker,
+    event: nautilus_model::events::OrderEventAny,
+) {
+    register_test_strategy(strategy)
+        .borrow_mut()
+        .update_order(&event)
+        .expect("test cache should apply exit order event");
+}
+
+pub(super) fn apply_exit_fill_to_nt_position(
+    strategy: &mut BinaryOracleEdgeTaker,
+    position_id: PositionId,
+    fill: &nautilus_model::events::OrderFilled,
+) {
+    let cache = register_test_strategy(strategy);
+    let mut position = cache
+        .borrow()
+        .position_owned(&position_id)
+        .expect("test cache should contain the exit position");
+    position.apply(fill);
+    cache
+        .borrow_mut()
+        .update_position(&position)
+        .expect("test cache should apply the exit fill to the position");
+}
+
+pub(super) fn observe_position_authority_report(
+    strategy: &BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+    position_side: PositionSideSpecified,
+    quantity: Quantity,
+    ts_last_ns: u64,
+) {
+    strategy
+        .context
+        .position_authority()
+        .expect("fixture strategy should have position authority")
+        .observe_for_test(&PositionStatusReport::new(
+            AccountId::from(fixture_settlement_account_id().as_str()),
+            instrument_id,
+            position_side,
+            quantity,
+            UnixNanos::from(ts_last_ns),
+            UnixNanos::from(ts_last_ns),
+            None,
+            None,
+            None,
+        ))
+        .expect("fixture position authority report should be accepted");
+}
+
+pub(super) fn recovered_exit_order(
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+    quantity: Quantity,
+) -> nautilus_model::orders::OrderAny {
+    nautilus_model::orders::OrderAny::Market(
+        nautilus_model::orders::MarketOrder::new_checked(
+            nautilus_model::identifiers::TraderId::from("TRADER-001"),
+            StrategyId::from("BINARYORACLEEDGETAKER-001"),
+            instrument_id,
+            client_order_id,
+            OrderSide::Sell,
+            quantity,
+            TimeInForce::Ioc,
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_u64),
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("fixture recovered exit order should construct"),
+    )
 }
 
 pub(super) fn set_blind_recovery(
@@ -1398,11 +1769,11 @@ pub(super) fn managed_position_snapshot(
     strategy.managed_position().map(|managed| managed.position)
 }
 
-pub(super) fn pending_exit_ref(strategy: &BinaryOracleEdgeTaker) -> Option<&PendingExitState> {
+pub(super) fn pending_exit_snapshot(strategy: &BinaryOracleEdgeTaker) -> Option<PendingExitState> {
     strategy
         .exposure
-        .exit_pending()
-        .map(|exit_pending| &exit_pending.pending_exit)
+        .exit_pending_snapshot()
+        .map(|exit_pending| exit_pending.pending_exit)
 }
 
 pub(super) fn assert_foreign_venue_blind_recovery(strategy: &BinaryOracleEdgeTaker) {
@@ -1814,6 +2185,41 @@ pub(super) fn order_canceled_event(
         )),
         Some(nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT")),
     )
+}
+
+pub(super) fn order_fill_voided_event(
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+    position_id: PositionId,
+    trade_id: nautilus_model::identifiers::TradeId,
+    voided_qty: Quantity,
+    ts_event_ns: u64,
+) -> nautilus_model::events::OrderFillVoided {
+    nautilus_model::events::order::spec::OrderFillVoidedSpec::builder()
+        .trader_id(nautilus_model::identifiers::TraderId::from("TRADER-001"))
+        .strategy_id(StrategyId::from("BINARYORACLEEDGETAKER-001"))
+        .instrument_id(instrument_id)
+        .client_order_id(client_order_id)
+        .venue_order_id(nautilus_model::identifiers::VenueOrderId::from(
+            "V-ORDER-001",
+        ))
+        .account_id(AccountId::from("TEST-ACCOUNT"))
+        .trade_id(trade_id)
+        .voided_qty(voided_qty)
+        .commission_voided(nautilus_model::types::Money::new(
+            0.0,
+            nautilus_model::types::Currency::USDC(),
+        ))
+        .order_side(OrderSide::Sell)
+        .order_type(OrderType::Limit)
+        .last_px(Price::new(0.45, 2))
+        .currency(nautilus_model::types::Currency::USDC())
+        .liquidity_side(nautilus_model::enums::LiquiditySide::Taker)
+        .position_id(position_id)
+        .is_reopened(true)
+        .ts_event(UnixNanos::from(ts_event_ns))
+        .ts_init(UnixNanos::from(ts_event_ns))
+        .build()
 }
 
 pub(super) fn order_rejected_event(

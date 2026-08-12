@@ -196,7 +196,7 @@ fn authoritative_position_close_cools_the_closed_market_before_delayed_exit_fill
 
     assert!(strategy.market_in_cooldown("MKT-1", 1_000));
     assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
-    assert!(pending_exit_ref(&strategy).is_none());
+    assert!(pending_exit_snapshot(&strategy).is_none());
 }
 
 #[test]

@@ -3,7 +3,10 @@ use bolt_v2::{
     bolt_v3_config::ReferencePriceProvider,
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig, UsableMu},
-    bolt_v3_maker_order_dispatch::{MakerOrderCommandSink, MakerOrderDispatchOutcome},
+    bolt_v3_maker_order_dispatch::{
+        MakerOrderCommandFailure, MakerOrderCommandFailureKind, MakerOrderCommandSink,
+        MakerOrderDispatchOutcome,
+    },
     bolt_v3_maker_order_plan::{
         MakerLegBinding, MakerMarketActionOrderInput, MakerOrderIntent,
         maker_order_intent_from_market_action, maker_order_plan_from_market_action,
@@ -21,6 +24,7 @@ use bolt_v2::{
         maker_reference_current_price_fair_value_decision, plan_maker_runtime_quote,
     },
     bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
+    bolt_v3_order_execution::BoltV3RestingSubmitTransactionOutcome,
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
     bolt_v3_realized_volatility::{
@@ -594,11 +598,11 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
 
     assert_eq!(
         dispatched.yes.dispatch,
-        Some(MakerOrderDispatchOutcome::Submitted {
-            leg: Leg::Yes,
-            instrument_id: InstrumentId::from("YES.RUNTIME"),
-            client_order_id: ClientOrderId::from("MAKER-YES-1"),
-            price: Price::new(
+        Some(MakerOrderDispatchOutcome::submitted_for_test(
+            Leg::Yes,
+            InstrumentId::from("YES.RUNTIME"),
+            ClientOrderId::from("MAKER-YES-1"),
+            Price::new(
                 decision
                     .quote_plan
                     .as_ref()
@@ -608,16 +612,16 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
                     .price,
                 2
             ),
-            quantity: Quantity::new(2.0, 2),
-        })
+            Quantity::new(2.0, 2),
+        ))
     );
     assert_eq!(
         dispatched.no.dispatch,
-        Some(MakerOrderDispatchOutcome::Submitted {
-            leg: Leg::No,
-            instrument_id: InstrumentId::from("NO.RUNTIME"),
-            client_order_id: ClientOrderId::from("MAKER-NO-1"),
-            price: Price::new(
+        Some(MakerOrderDispatchOutcome::submitted_for_test(
+            Leg::No,
+            InstrumentId::from("NO.RUNTIME"),
+            ClientOrderId::from("MAKER-NO-1"),
+            Price::new(
                 decision
                     .quote_plan
                     .as_ref()
@@ -627,8 +631,8 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
                     .price,
                 2
             ),
-            quantity: Quantity::new(3.0, 2),
-        })
+            Quantity::new(3.0, 2),
+        ))
     );
     assert_eq!(
         sink.submitted_client_order_ids(),
@@ -640,11 +644,11 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
 }
 
 #[test]
-fn runtime_quote_order_plan_reconciles_yes_then_surfaces_no_leg_routing_error() {
+fn runtime_quote_order_plan_reconciles_yes_then_surfaces_no_leg_command_failure() {
     // A two-leg dispatch where the YES leg routes but the NO leg's command router
-    // returns an error. Fix F turns that per-leg routing error into data instead of a
+    // returns an error. Fix F turns that per-leg command failure into data instead of a
     // `?` abort: the dispatcher returns Ok with a partial outcome (YES dispatched, NO
-    // carrying its routing error) so the caller can reconcile the YES identity before
+    // carrying its command failure) so the caller can reconcile the YES identity before
     // failing loud, rather than orphaning it. Differential: under the prior `?`-abort
     // behavior the dispatcher returns Err and the `.expect` below panics.
     let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
@@ -677,23 +681,26 @@ fn runtime_quote_order_plan_reconciles_yes_then_surfaces_no_leg_routing_error() 
         &mut |_command, _submit_order_prefix| {
             route_calls += 1;
             if route_calls == 1 {
-                Ok(MakerOrderDispatchOutcome::Submitted {
-                    leg: Leg::Yes,
-                    instrument_id: InstrumentId::from("YES.RUNTIME"),
-                    client_order_id: ClientOrderId::from("MAKER-YES-1"),
-                    price: Price::new(0.40, 2),
-                    quantity: Quantity::new(2.0, 2),
-                })
+                Ok(MakerOrderDispatchOutcome::submitted_for_test(
+                    Leg::Yes,
+                    InstrumentId::from("YES.RUNTIME"),
+                    ClientOrderId::from("MAKER-YES-1"),
+                    Price::new(0.40, 2),
+                    Quantity::new(2.0, 2),
+                ))
             } else {
-                anyhow::bail!("simulated NO-leg routing failure")
+                Err(MakerOrderCommandFailure::for_test(
+                    MakerOrderCommandFailureKind::SubmitPreparation,
+                    "simulated NO-leg routing failure",
+                ))
             }
         },
     )
-    .expect("a per-leg routing error is data, not a dispatcher abort");
+    .expect("a per-leg command failure is data, not a dispatcher abort");
 
     assert_eq!(
         route_calls, 2,
-        "YES routes, then NO is attempted because YES had no routing error"
+        "YES routes, then NO is attempted because YES had no command failure"
     );
     assert!(
         dispatched.yes.dispatch.is_some(),
@@ -704,23 +711,23 @@ fn runtime_quote_order_plan_reconciles_yes_then_surfaces_no_leg_routing_error() 
         "the NO leg did not dispatch"
     );
     assert!(
-        dispatched.no.routing_error.is_some(),
-        "the NO leg captured its routing error as data"
+        dispatched.no.command_failure.is_some(),
+        "the NO leg captured its command failure as data"
     );
     assert_eq!(
-        dispatched.routing_error(),
-        dispatched.no.routing_error.as_deref(),
-        "the combined routing_error surfaces the NO-leg failure for the caller to fail loud on"
+        dispatched.command_failure(),
+        dispatched.no.command_failure.as_ref(),
+        "the combined command failure surfaces the NO-leg failure for the caller to fail loud on"
     );
 }
 
 #[test]
-fn runtime_quote_order_plan_short_circuits_no_leg_when_yes_leg_routing_fails() {
+fn runtime_quote_order_plan_short_circuits_no_leg_when_yes_leg_command_fails() {
     // The mirror of the YES-then-NO reconcile, covering the opposite branch: the YES
     // leg's command router fails on its first (and only) call. Because the YES leg
-    // carries a routing error, the dispatcher short-circuits and synthesizes an empty
+    // carries a command failure, the dispatcher short-circuits and synthesizes an empty
     // NO leg rather than attempting its route, returning Ok with a partial outcome
-    // whose combined routing_error surfaces the YES failure for the caller to fail
+    // whose combined command failure surfaces the YES failure for the caller to fail
     // loud on. Differential: if the short-circuit were dropped (the NO leg routed
     // unconditionally) route_calls would be 2; if the YES error were `?`-aborted the
     // `.expect` below would panic.
@@ -753,31 +760,34 @@ fn runtime_quote_order_plan_short_circuits_no_leg_when_yes_leg_routing_fails() {
         },
         &mut |_command, _submit_order_prefix| {
             route_calls += 1;
-            anyhow::bail!("simulated YES-leg routing failure")
+            Err(MakerOrderCommandFailure::for_test(
+                MakerOrderCommandFailureKind::SubmitPreparation,
+                "simulated YES-leg routing failure",
+            ))
         },
     )
-    .expect("a per-leg routing error is data, not a dispatcher abort");
+    .expect("a per-leg command failure is data, not a dispatcher abort");
 
     assert_eq!(
         route_calls, 1,
         "the YES routing failure short-circuits the NO leg, which is never attempted"
     );
     assert!(
-        dispatched.yes.routing_error.is_some(),
-        "the YES leg captured its routing error as data"
+        dispatched.yes.command_failure.is_some(),
+        "the YES leg captured its command failure as data"
     );
     assert!(
         dispatched.no.dispatch.is_none(),
         "the NO leg is synthesized empty when YES fails"
     );
     assert!(
-        dispatched.no.routing_error.is_none(),
-        "the synthesized NO leg carries no routing error of its own"
+        dispatched.no.command_failure.is_none(),
+        "the synthesized NO leg carries no command failure of its own"
     );
     assert_eq!(
-        dispatched.routing_error(),
-        dispatched.yes.routing_error.as_deref(),
-        "the combined routing_error surfaces the YES-leg failure for the caller to fail loud on"
+        dispatched.command_failure(),
+        dispatched.yes.command_failure.as_ref(),
+        "the combined command failure surfaces the YES-leg failure for the caller to fail loud on"
     );
 }
 
@@ -1229,13 +1239,35 @@ impl RecordingMakerOrderSink {
 }
 
 impl MakerOrderCommandSink for RecordingMakerOrderSink {
+    type PreparedSubmit = OrderAny;
+
     fn order_factory(&mut self) -> RefMut<'_, OrderFactory> {
         self.order_factory.borrow_mut()
     }
 
-    fn submit_maker_order(&mut self, order: OrderAny) -> Result<()> {
+    fn prepare_maker_order(&mut self, order: OrderAny) -> Result<Self::PreparedSubmit> {
+        Ok(order)
+    }
+
+    fn submit_maker_order(
+        &mut self,
+        order: Self::PreparedSubmit,
+    ) -> BoltV3RestingSubmitTransactionOutcome {
+        let instrument_id = order.instrument_id();
+        let order_side = order.order_side();
+        let price = order
+            .price()
+            .expect("maker runtime quotes must be priced limit orders");
+        let quantity = order.quantity();
+        let client_order_id = order.client_order_id();
         self.submitted.push(order);
-        Ok(())
+        BoltV3RestingSubmitTransactionOutcome::submitted_with_linkage_for_test(
+            instrument_id,
+            order_side,
+            price,
+            quantity,
+            client_order_id,
+        )
     }
 
     fn cancel_maker_order(

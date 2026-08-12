@@ -21,13 +21,16 @@ use crate::bolt_v3_iv::{
 };
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
 use crate::bolt_v3_order_execution::{BoltV3OrderEconomicsHandle, BoltV3OrderExecutionPolicy};
+use crate::bolt_v3_position_authority_feed::{
+    BoltV3PositionAuthorityCapability, BoltV3PositionAuthorityFeed,
+};
 use crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle;
 use crate::bolt_v3_strategy_context::{StrategyBuildContext, StrategyDecisionEvidence};
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_common::{actor::DataActorNative, component::Component};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    identifiers::{ClientId, StrategyId, Venue},
+    identifiers::{AccountId, ClientId, StrategyId, Venue},
     types::Currency,
 };
 use nautilus_system::trader::Trader;
@@ -219,6 +222,7 @@ pub struct BoltV3StrategyExecutionControls {
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
     pub economics_inputs: AuthoritativeEconomicsInputStore,
+    pub position_authority: Option<BoltV3PositionAuthorityFeed>,
     pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
     pub settlement_recovery: Option<Arc<SettlementRecoveryFacts>>,
     pub booking_recovery: Option<Arc<BookingRecoveryFacts>>,
@@ -262,6 +266,7 @@ pub struct StrategyRegistrationContext<'a> {
     client_routes: PreparedStrategyClientRoutes,
     execution_venue: Venue,
     order_economics: BoltV3OrderEconomicsHandle,
+    position_authority: Option<BoltV3PositionAuthorityCapability>,
     settlement: Option<StrategyRegistrationSettlementResources>,
 }
 
@@ -425,6 +430,7 @@ impl<'a> StrategyRegistrationContext<'a> {
             submit_admission,
             order_execution_policy,
             economics_inputs,
+            position_authority,
             settlement_runtime_sink,
             settlement_recovery,
             booking_recovery,
@@ -469,6 +475,26 @@ impl<'a> StrategyRegistrationContext<'a> {
         let execution_economics =
             bind_execution_economics(loaded, execution_client_id, &economics_inputs)
                 .map_err(|error| binding_error(strategy, error.to_string()))?;
+        let position_authority = position_authority
+            .map(|feed| {
+                execution_account_id_from_client(execution_client)
+                    .map(|account_id| {
+                        BoltV3PositionAuthorityCapability::new(
+                            feed,
+                            strategy.config.execution_client_id,
+                            AccountId::from(account_id),
+                        )
+                    })
+                    .ok_or_else(|| {
+                        binding_error(
+                            strategy,
+                            format!(
+                                "position authority requires execution account id for execution_client_id `{execution_client_id}`"
+                            ),
+                        )
+                    })
+            })
+            .transpose()?;
 
         Ok(Self {
             strategy,
@@ -483,6 +509,7 @@ impl<'a> StrategyRegistrationContext<'a> {
             client_routes,
             execution_venue,
             order_economics: BoltV3OrderEconomicsHandle::new(execution_economics),
+            position_authority,
             settlement,
         })
     }
@@ -614,6 +641,9 @@ pub fn assemble_strategy_build_context(
         context.order_execution_policy,
         execution_venue,
     );
+    if let Some(position_authority) = &context.position_authority {
+        build_context = build_context.with_position_authority(position_authority.clone());
+    }
     if let Some(realized_volatility_runtime) = &context.realized_volatility_runtime {
         build_context =
             build_context.with_realized_volatility_runtime(realized_volatility_runtime.clone());

@@ -248,7 +248,7 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
         ManagedPositionOrigin::StrategyEntry,
     );
     register_test_strategy_with_active_instruments(&mut strategy);
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
     assert!(
         decision.instrument_id.is_some()
             && decision.order_side.is_some()

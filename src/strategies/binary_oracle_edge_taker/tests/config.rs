@@ -98,6 +98,52 @@ fn raw_with_entry_order_field(field: &'static str, value: Value) -> Value {
     raw
 }
 
+fn unsupported_executable_exit_order_shape_cases() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            stringify!(order_type),
+            Value::String(stringify!(limit).to_string()),
+        ),
+        (
+            stringify!(time_in_force),
+            Value::String(stringify!(gtc).to_string()),
+        ),
+        (stringify!(is_post_only), Value::Boolean(true)),
+        (stringify!(is_quote_quantity), Value::Boolean(true)),
+        (stringify!(trigger_price), Value::Float(1.0)),
+        (stringify!(activation_price), Value::Float(1.0)),
+        (
+            stringify!(trigger_type),
+            Value::String(stringify!(mark_price).to_string()),
+        ),
+        (
+            stringify!(trigger_instrument_id),
+            Value::String("TRIGGER.POLYMARKET".to_string()),
+        ),
+        (stringify!(trailing_offset), Value::Float(1.0)),
+        (
+            stringify!(trailing_offset_type),
+            Value::String(stringify!(price).to_string()),
+        ),
+    ]
+}
+
+fn raw_with_exit_order_field(
+    order_field: &'static str,
+    field: &'static str,
+    value: Value,
+) -> Value {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .get_mut(order_field)
+        .expect("valid config must include selected exit order")
+        .as_table_mut()
+        .expect("selected exit order must be a table")
+        .insert(field.to_string(), value);
+    raw
+}
+
 #[test]
 fn parse_config_accepts_market_fok_quote_quantity_entry_order() {
     let parsed =
@@ -446,6 +492,61 @@ fn validate_config_rejects_unsupported_executable_entry_order_shapes() {
                         .contains("must be buy/long market FOK quote-quantity without")
             }),
             "`{field}` must reject unsupported executable entry shape: {errors:#?}"
+        );
+    }
+}
+
+#[test]
+fn parse_config_rejects_unsupported_normal_and_forced_exit_shapes() {
+    for order_field in [stringify!(exit_order), stringify!(forced_exit_order)] {
+        for (field, value) in unsupported_executable_exit_order_shape_cases() {
+            let raw = raw_with_exit_order_field(order_field, field, value);
+
+            let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+                .expect_err("unsupported executable exit shape must fail at parse-time");
+            assert!(
+                err.to_string()
+                    .contains("must be market IOC base-quantity without post-only"),
+                "parse error for `{order_field}.{field}` should name executable exit shape: {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn validate_config_rejects_unsupported_normal_and_forced_exit_shapes() {
+    for order_field in [stringify!(exit_order), stringify!(forced_exit_order)] {
+        for (field, value) in unsupported_executable_exit_order_shape_cases() {
+            let raw = raw_with_exit_order_field(order_field, field, value);
+            let mut errors = Vec::new();
+
+            BinaryOracleEdgeTakerBuilder::validate_config(
+                &raw,
+                "strategies[0].config",
+                &mut errors,
+            );
+
+            assert!(
+                errors.iter().any(|error| {
+                    error.field == format!("strategies[0].config.{order_field}")
+                        && error.code == "unsupported_executable_exit_order_shape"
+                }),
+                "`{order_field}.{field}` must reject unsupported executable exit shape: {errors:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn exit_shape_passes_reduce_only_through_without_using_it_as_proof() {
+    for order_field in [stringify!(exit_order), stringify!(forced_exit_order)] {
+        let raw = raw_with_exit_order_field(
+            order_field,
+            stringify!(is_reduce_only),
+            Value::Boolean(true),
+        );
+        BinaryOracleEdgeTakerBuilder::parse_config(&raw).expect(
+            "reduce-only is venue metadata and must not define the supported execution shape",
         );
     }
 }

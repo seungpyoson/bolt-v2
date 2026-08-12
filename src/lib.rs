@@ -91,6 +91,7 @@ pub mod bolt_v3_outcome_group_proofs;
 pub mod bolt_v3_outcome_group_scanner;
 pub mod bolt_v3_outcome_group_sources;
 pub mod bolt_v3_outcome_groups;
+pub mod bolt_v3_position_authority_feed;
 pub mod bolt_v3_position_contract;
 pub mod bolt_v3_prediction_market_instrument;
 pub mod bolt_v3_prod_profile;

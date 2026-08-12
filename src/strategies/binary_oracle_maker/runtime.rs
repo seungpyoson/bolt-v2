@@ -635,8 +635,10 @@ fn rotate_leg_identity(
     dispatch: Option<&MakerOrderDispatchOutcome>,
 ) {
     match dispatch {
-        Some(MakerOrderDispatchOutcome::Submitted { .. }) => {
-            binding.active_order = binding.next_order.take();
+        Some(MakerOrderDispatchOutcome::SubmitAttempt { transaction, .. }) => {
+            if transaction.is_submitted() {
+                binding.active_order = binding.next_order.take();
+            }
         }
         Some(
             MakerOrderDispatchOutcome::Canceled { .. }
@@ -777,20 +779,20 @@ mod tests {
             "configured-market",
             &MakerRuntimeOrderDispatchOutcome {
                 yes: crate::bolt_v3_maker_runtime_order::MakerRuntimeLegOrderDispatchOutcome {
-                    dispatch: Some(MakerOrderDispatchOutcome::Submitted {
-                        leg: Leg::Yes,
-                        instrument_id: InstrumentId::from("yes-token.POLYMARKET"),
-                        client_order_id: ClientOrderId::from("001-configured-market-1000-yes-1",),
-                        price: Price::new(0.40, 2),
-                        quantity: Quantity::new(1.0, 0),
-                    }),
+                    dispatch: Some(MakerOrderDispatchOutcome::submitted_for_test(
+                        Leg::Yes,
+                        InstrumentId::from("yes-token.POLYMARKET"),
+                        ClientOrderId::from("001-configured-market-1000-yes-1"),
+                        Price::new(0.40, 2),
+                        Quantity::new(1.0, 0),
+                    )),
                     blocked_by: None,
-                    routing_error: None,
+                    command_failure: None,
                 },
                 no: crate::bolt_v3_maker_runtime_order::MakerRuntimeLegOrderDispatchOutcome {
                     dispatch: None,
                     blocked_by: None,
-                    routing_error: None,
+                    command_failure: None,
                 },
             },
         ));
@@ -926,13 +928,13 @@ mod tests {
         binding.next_order = Some(minted.clone());
         rotate_leg_identity(
             &mut binding,
-            Some(&MakerOrderDispatchOutcome::Submitted {
-                leg: Leg::Yes,
-                instrument_id: InstrumentId::from("YES.SIM"),
-                client_order_id: ClientOrderId::from("001-m-yes-1"),
-                price: Price::new(0.40, 2),
-                quantity: Quantity::new(1.0, 0),
-            }),
+            Some(&MakerOrderDispatchOutcome::submitted_for_test(
+                Leg::Yes,
+                InstrumentId::from("YES.SIM"),
+                ClientOrderId::from("001-m-yes-1"),
+                Price::new(0.40, 2),
+                Quantity::new(1.0, 0),
+            )),
         );
         assert_eq!(binding.active_order, Some(minted));
         assert_eq!(

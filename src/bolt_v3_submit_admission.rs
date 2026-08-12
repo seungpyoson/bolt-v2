@@ -3168,12 +3168,14 @@ fn reservation_fill_update_matches(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3CompiledOrderKind {
     Limit,
+    Market,
 }
 
 impl BoltV3CompiledOrderKind {
     fn to_capital_admission(self) -> IntentOrderKind {
         match self {
             Self::Limit => IntentOrderKind::Limit,
+            Self::Market => IntentOrderKind::Market,
         }
     }
 }
@@ -3372,6 +3374,29 @@ impl BoltV3EconomicsSubmitAdmission {
     ) -> Self {
         self.request.kill_switch_forced_reduction = Some(claim);
         self
+    }
+
+    pub(crate) fn with_compiled_order_admission_evidence(
+        mut self,
+        evidence: BoltV3CompiledOrderAdmissionEvidence,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            self.request.admission_evidence.is_none(),
+            "compiled-order admission evidence is single-authority"
+        );
+        let expected_side = match self.request.order_side {
+            OrderSide::Buy => BoltV3CompiledOrderSide::Buy,
+            OrderSide::Sell => BoltV3CompiledOrderSide::Sell,
+            OrderSide::NoOrderSide => {
+                anyhow::bail!("compiled-order admission evidence requires a sided order")
+            }
+        };
+        anyhow::ensure!(
+            evidence.side == expected_side && evidence.quantity == self.request.order_quantity,
+            "compiled-order admission evidence does not bind the final order"
+        );
+        self.request.admission_evidence = Some(evidence);
+        Ok(self)
     }
 }
 

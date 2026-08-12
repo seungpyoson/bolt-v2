@@ -7,7 +7,7 @@ use nautilus_common::{
     factories::OrderFactory,
     messages::execution::{SubmitOrder, TradingCommand},
 };
-use nautilus_model::events::OrderEventAny;
+use nautilus_model::{events::OrderEventAny, identifiers::PositionId};
 use tokio::sync::Notify;
 
 use crate::bolt_v3_current_evidence::OrderExecutionEvidence;
@@ -31,7 +31,8 @@ use crate::{
     },
     bolt_v3_order_execution::{
         BoltV3KillSwitchFlattenRoutingContext, BoltV3NtSubmitOnlySink, BoltV3OrderEconomicsHandle,
-        BoltV3OrderExecutionPolicy, route_kill_switch_flatten_command_with_sink,
+        BoltV3OrderExecutionPolicy, BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome,
+        route_kill_switch_flatten_command_with_sink,
     },
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_submit_admission::{
@@ -873,29 +874,12 @@ fn live_node_kill_switch_flatten_executor(
             )
             .map_err(domain_error)?;
 
-            route_planned_kill_switch_flatten_commands(&plan, |command| {
+            let report = route_planned_kill_switch_flatten_commands(&plan, |command| {
                 let instrument = {
                     let cache = cache.borrow();
                     cache.instrument(&command.instrument_id()).cloned()
-                }
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "kill switch flatten instrument not found in NT cache: instrument_id={}",
-                        command.instrument_id()
-                    )
-                })?;
+                };
                 let venue = command.instrument_id().venue;
-                let execution_client_id = execution_clients_by_venue
-                    .get(&venue)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "kill switch flatten execution client not configured for venue={venue}"
-                        )
-                    })?
-                    .as_str();
-                let order_economics = economics_by_venue.get(&venue).ok_or_else(|| {
-                    anyhow::anyhow!("kill switch flatten economics not bound for venue={venue}")
-                })?;
                 let mut order_factory = OrderFactory::new(
                     trader_id,
                     command.strategy_id(),
@@ -944,10 +928,6 @@ fn live_node_kill_switch_flatten_executor(
                         Ok(())
                     },
                 );
-                let fallback_price = instrument
-                    .max_price()
-                    .map(|price| price.to_string())
-                    .unwrap_or_else(|| Decimal::ZERO.to_string());
                 route_kill_switch_flatten_command_with_sink(
                     order_execution_policy,
                     &mut sink,
@@ -955,15 +935,16 @@ fn live_node_kill_switch_flatten_executor(
                     &decision_evidence,
                     submit_admission.as_ref(),
                     BoltV3KillSwitchFlattenRoutingContext {
-                        execution_client_id,
-                        fallback_price: fallback_price.as_str(),
-                        instrument: Some(&instrument),
-                        order_economics,
+                        execution_client_id: execution_clients_by_venue
+                            .get(&venue)
+                            .map(|client_id| client_id.as_str()),
+                        instrument: instrument.as_ref(),
+                        order_economics: economics_by_venue.get(&venue),
                     },
                     command,
-                )?;
-                Ok(())
-            })?;
+                )
+            });
+            report.require_all_submitted()?;
             Ok(())
         },
     };
@@ -971,38 +952,77 @@ fn live_node_kill_switch_flatten_executor(
     Ok(Some(Rc::new(executor)))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoltV3KillSwitchFlattenCommandAttempt {
+    position_id: PositionId,
+    instrument_id: InstrumentId,
+    outcome: BoltV3SubmitAttemptOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoltV3KillSwitchFlattenExecutionReport {
+    halt_id: String,
+    attempts: Vec<BoltV3KillSwitchFlattenCommandAttempt>,
+}
+
+impl BoltV3KillSwitchFlattenExecutionReport {
+    fn require_all_submitted(&self) -> Result<()> {
+        let failures = self
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.outcome.kind() != BoltV3SubmitAttemptKind::Submitted)
+            .map(|attempt| {
+                format!(
+                    "position_id={} instrument_id={} outcome={:?} diagnostic={}",
+                    attempt.position_id,
+                    attempt.instrument_id,
+                    attempt.outcome.kind(),
+                    attempt.outcome.diagnostic().unwrap_or("none")
+                )
+            })
+            .collect::<Vec<_>>();
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "kill switch flatten command failures: halt_id={} failures={}",
+                self.halt_id,
+                failures.join(" | ")
+            )
+        }
+    }
+}
+
 fn route_planned_kill_switch_flatten_commands<F>(
     plan: &BoltV3KillSwitchFlattenPlan,
     mut route_command: F,
-) -> Result<()>
+) -> BoltV3KillSwitchFlattenExecutionReport
 where
-    F: FnMut(&BoltV3KillSwitchFlattenCommand) -> Result<()>,
+    F: FnMut(&BoltV3KillSwitchFlattenCommand) -> BoltV3SubmitAttemptOutcome,
 {
-    let mut failures = Vec::new();
+    let mut attempts = Vec::with_capacity(plan.commands().len());
     for command in plan.commands() {
-        if let Err(error) = route_command(command) {
+        let outcome = route_command(command);
+        if outcome.kind() != BoltV3SubmitAttemptKind::Submitted {
             log::error!(
-                "kill switch flatten command failed: halt_id={} action_id={} position_id={} instrument_id={}: {error:#}",
+                "kill switch flatten command did not submit: halt_id={} action_id={} position_id={} instrument_id={} outcome={:?} diagnostic={}",
                 command.halt_id(),
                 command.action_id(),
                 command.position_id(),
-                command.instrument_id()
+                command.instrument_id(),
+                outcome.kind(),
+                outcome.diagnostic().unwrap_or("none")
             );
-            failures.push(format!(
-                "position_id={} instrument_id={}: {error:#}",
-                command.position_id(),
-                command.instrument_id()
-            ));
         }
+        attempts.push(BoltV3KillSwitchFlattenCommandAttempt {
+            position_id: command.position_id(),
+            instrument_id: command.instrument_id(),
+            outcome,
+        });
     }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "kill switch flatten command failures: halt_id={} failures={}",
-            plan.halt_id(),
-            failures.join(" | ")
-        )
+    BoltV3KillSwitchFlattenExecutionReport {
+        halt_id: plan.halt_id().to_string(),
+        attempts,
     }
 }
 
@@ -1722,14 +1742,20 @@ mod tests {
         let plan = two_command_flatten_plan("halt-loop");
         let mut routed_positions = Vec::new();
 
-        let error = route_planned_kill_switch_flatten_commands(&plan, |command| {
+        let report = route_planned_kill_switch_flatten_commands(&plan, |command| {
             routed_positions.push(command.position_id().to_string());
             if command.position_id() == PositionId::from("POSITION-001") {
-                anyhow::bail!("synthetic first command failure");
+                BoltV3SubmitAttemptOutcome::rejected_for_test(
+                    BoltV3SubmitAttemptKind::RouteValidationRejected,
+                    "synthetic first command failure",
+                )
+            } else {
+                BoltV3SubmitAttemptOutcome::submitted_for_test()
             }
-            Ok(())
-        })
-        .expect_err("one command failure should return a loud aggregate error");
+        });
+        let error = report
+            .require_all_submitted()
+            .expect_err("one command failure should return a loud aggregate error");
 
         assert_eq!(
             routed_positions,
@@ -1745,6 +1771,51 @@ mod tests {
             error.to_string().contains("POSITION-001"),
             "aggregate error should name the failed position: {error:#}"
         );
+    }
+
+    #[test]
+    fn only_submitted_is_a_successful_kill_switch_flatten_outcome() {
+        let plan = two_command_flatten_plan("halt-outcome-matrix");
+        let non_submitted = [
+            BoltV3SubmitAttemptKind::RouteValidationRejected,
+            BoltV3SubmitAttemptKind::IntentEvidenceRejected,
+            BoltV3SubmitAttemptKind::AdmissionRejected,
+            BoltV3SubmitAttemptKind::PolicySkipped,
+            BoltV3SubmitAttemptKind::PreSinkRejected,
+            BoltV3SubmitAttemptKind::SinkRejected,
+        ];
+
+        for kind in non_submitted {
+            let report = route_planned_kill_switch_flatten_commands(&plan, |_| match kind {
+                BoltV3SubmitAttemptKind::PolicySkipped => {
+                    BoltV3SubmitAttemptOutcome::policy_skipped_for_test()
+                }
+                BoltV3SubmitAttemptKind::RouteValidationRejected
+                | BoltV3SubmitAttemptKind::IntentEvidenceRejected
+                | BoltV3SubmitAttemptKind::AdmissionRejected
+                | BoltV3SubmitAttemptKind::PreSinkRejected
+                | BoltV3SubmitAttemptKind::SinkRejected => {
+                    BoltV3SubmitAttemptOutcome::rejected_for_test(kind, "injected rejection")
+                }
+                BoltV3SubmitAttemptKind::Submitted => unreachable!(),
+            });
+            assert!(
+                report
+                    .attempts
+                    .iter()
+                    .all(|attempt| attempt.outcome.kind() == kind)
+            );
+            report
+                .require_all_submitted()
+                .expect_err("every non-submitted route outcome must remain a flatten failure");
+        }
+
+        let submitted = route_planned_kill_switch_flatten_commands(&plan, |_| {
+            BoltV3SubmitAttemptOutcome::submitted_for_test()
+        });
+        submitted
+            .require_all_submitted()
+            .expect("Submitted is the sole successful flatten outcome");
     }
 
     #[test]
@@ -2060,20 +2131,26 @@ mod tests {
                 },
             );
 
-            route_kill_switch_flatten_command_with_sink(
+            let outcome = route_kill_switch_flatten_command_with_sink(
                 BoltV3OrderExecutionPolicy::live(),
                 &mut sink,
                 &mut order_factory,
                 self.writer.as_ref(),
                 self.admission.as_ref(),
                 BoltV3KillSwitchFlattenRoutingContext {
-                    execution_client_id: "execution_client",
-                    fallback_price: "1",
+                    execution_client_id: Some("execution_client"),
                     instrument: Some(&instrument),
-                    order_economics: test_order_economics(),
+                    order_economics: Some(test_order_economics()),
                 },
                 command,
-            )?;
+            );
+            if outcome.kind() != BoltV3SubmitAttemptKind::Submitted {
+                anyhow::bail!(
+                    "flatten route did not submit: outcome={:?} diagnostic={}",
+                    outcome.kind(),
+                    outcome.diagnostic().unwrap_or("none")
+                );
+            }
             Ok(())
         }
     }

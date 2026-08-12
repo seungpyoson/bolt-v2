@@ -11,8 +11,9 @@ use crate::{
     bolt_v3_quoting::QuoteSide,
 };
 use nautilus_model::{
+    enums::PositionSideSpecified,
     events::{OrderAccepted, OrderEventAny, OrderSubmitted},
-    identifiers::{AccountId, VenueOrderId},
+    identifiers::{AccountId, TradeId, VenueOrderId},
     position::Position,
 };
 use nautilus_trading::Strategy;
@@ -190,6 +191,8 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
         OrderSide::Sell,
     );
     fill.last_qty = Quantity::new(4.0, 2);
+    fill.trade_id = TradeId::from("TRADE-PROJECTED-PARTIAL-ADVERSE");
+    apply_exit_order_event_to_nt_cache(&mut strategy, OrderEventAny::Filled(fill.clone()));
     strategy.on_order_filled(&fill);
     seed_nt_open_position(
         &mut strategy,
@@ -198,7 +201,21 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
         Quantity::new(6.0, 2),
         open_position.avg_px_open,
     );
-    strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+    let expired = order_expired_event(exit_client_order_id, instrument_id);
+    apply_exit_order_event_to_nt_cache(&mut strategy, OrderEventAny::Expired(expired.clone()));
+    strategy.on_order_expired(expired);
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::TerminalExitAwaitingPosition(_)
+    ));
+    observe_position_authority_report(
+        &strategy,
+        instrument_id,
+        PositionSideSpecified::Long,
+        Quantity::new(6.0, 2),
+        2_000,
+    );
+    emit_time_event_at(&mut strategy, 2);
 
     // halt-loudly is deliberately NOT an acceptable terminal for partial-fill
     // residuals — the residual is known, so it must be re-managed; spec
@@ -296,22 +313,82 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
     strategy.bootstrap_recovery_from_cache();
 
     assert_eq!(
-        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
         Some(exit_client_order_id),
         "{RESTART_OPEN_EXIT_PINNED_FAILURE}: bootstrap must adopt the open exit order before a subsequent fill can be attributed"
     );
 
-    strategy.on_order_filled(&order_filled_event_with_details(
+    let mut terminal_fill = order_filled_event_with_details(
         exit_client_order_id,
         instrument_id,
         Some(position_id),
         OrderSide::Sell,
-    ));
+    );
+    terminal_fill.trade_id = TradeId::from("TRADE-RESTART-PROJECTED-TERMINAL");
+    apply_exit_order_event_to_nt_cache(&mut strategy, OrderEventAny::Filled(terminal_fill.clone()));
+    strategy.on_order_filled(&terminal_fill);
     assert_eq!(
-        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
         Some(exit_client_order_id),
         "{RESTART_OPEN_EXIT_PINNED_FAILURE}: a fill event must not replace NT position truth or lose exit-order correlation"
     );
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::TerminalExitAwaitingPosition(_)
+    ));
+    assert_eq!(
+        strategy
+            .canonical_position_authority(position_id, instrument_id)
+            .expect("projected terminal position read should succeed")
+            .expect("projected terminal must retain the stale cached position")
+            .signed_quantity,
+        Decimal::new(10, 0),
+        "order-only reconciliation must not masquerade as position causality"
+    );
+
+    close_nt_position(&mut strategy, position_id);
+    observe_position_authority_report(
+        &strategy,
+        instrument_id,
+        PositionSideSpecified::Flat,
+        Quantity::zero(2),
+        1_100,
+    );
+    let canonical = strategy
+        .canonical_position_authority(position_id, instrument_id)
+        .expect("converged flat position read should succeed");
+    assert_eq!(
+        strategy
+            .exposure
+            .exit_pending_snapshot()
+            .expect("recovered terminal exit remains tracked before timer reconciliation")
+            .authority
+            .release(canonical.as_ref())
+            .expect("exact flat cache/report convergence should be evaluable"),
+        crate::bolt_v3_order_execution::BoltV3PositionReductionRelease::Flat
+    );
+    let cached_exit = strategy
+        .cache()
+        .order(&exit_client_order_id)
+        .expect("recovered terminal order should remain cached");
+    assert!(
+        cached_exit.is_closed(),
+        "cached status={:?}",
+        cached_exit.status()
+    );
+    assert!(matches!(
+        classify_cached_exit_order_lifecycle(cached_exit.status()),
+        CachedExitOrderLifecycle::Terminal { .. }
+    ));
+    assert!(strategy.event_instrument_matches_held_exposure(instrument_id));
+    strategy.reconcile_cached_exit_order_on_timer();
+
+    assert!(
+        matches!(strategy.exposure, ExposureState::Flat),
+        "recovered projected terminal should release after exact flat cache/report convergence; exposure={:?}",
+        strategy.exposure
+    );
+    assert!(pending_exit_snapshot(&strategy).is_none());
 }
 
 #[test]
@@ -1377,7 +1454,9 @@ fn terminal_after_settlement_stays_flat_and_does_not_double_book() {
 
     emit_resolution_update(&mut strategy, 3_101.0);
     assert!(matches!(strategy.exposure, ExposureState::Flat));
-    strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+    let expired = order_expired_event(exit_client_order_id, instrument_id);
+    apply_exit_order_event_to_nt_cache(&mut strategy, OrderEventAny::Expired(expired.clone()));
+    strategy.on_order_expired(expired);
 
     let events = evidence
         .recorded_facts()
@@ -1423,7 +1502,9 @@ fn terminal_before_settlement_remanages_residual_then_books_residual_settlement(
         position.avg_px_open,
     );
 
-    strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+    let expired = order_expired_event(exit_client_order_id, instrument_id);
+    apply_exit_order_event_to_nt_cache(&mut strategy, OrderEventAny::Expired(expired.clone()));
+    strategy.on_order_expired(expired);
     assert!(
         matches!(&strategy.exposure, ExposureState::Managed(_))
             && managed_position_snapshot(&strategy)

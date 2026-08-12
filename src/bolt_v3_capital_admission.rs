@@ -46,6 +46,7 @@ pub enum IntentSide {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntentOrderKind {
     Limit,
+    Market,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

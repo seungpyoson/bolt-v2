@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use nautilus_model::enums::PositionSideSpecified;
 use nautilus_trading::Strategy;
 use std::sync::Arc;
 
@@ -57,11 +58,24 @@ fn position_events_update_live_position_state() {
         ClientOrderId::from("EXIT-001"),
         ManagedPositionOrigin::RecoveryBootstrap,
     );
+    let expired_event = order_expired_event(ClientOrderId::from("EXIT-001"), instrument_id);
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Expired(expired_event.clone()),
+    );
+    strategy.on_order_expired(expired_event);
     close_nt_position(&mut strategy, position_id);
+    observe_position_authority_report(
+        &strategy,
+        instrument_id,
+        PositionSideSpecified::Flat,
+        Quantity::zero(2),
+        1_100,
+    );
     strategy.on_position_closed(position_closed_event(instrument_id, position_id));
 
     assert!(strategy.managed_position().is_none());
-    assert!(pending_exit_ref(&strategy).is_none());
+    assert!(pending_exit_snapshot(&strategy).is_none());
     assert!(!strategy.exposure.is_recovering());
 }
 
@@ -139,23 +153,55 @@ fn exit_fill_keeps_pending_exit_until_position_closed() {
         ManagedPositionOrigin::StrategyEntry,
     );
 
-    strategy.on_order_filled(&order_filled_event(
+    let mut fill = order_filled_event_with_details(
         exit_client_order_id,
         instrument_id,
-        position_id,
-    ));
+        Some(position_id),
+        OrderSide::Sell,
+    );
+    fill.trade_id = nautilus_model::identifiers::TradeId::from("TRADE-EXIT-FULL");
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Filled(fill.clone()),
+    );
+    strategy.on_order_filled(&fill);
 
     assert_eq!(
-        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
         Some(exit_client_order_id)
     );
     assert!(strategy.managed_position().is_some());
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::TerminalExitAwaitingPosition(_)
+    ));
 
     close_nt_position(&mut strategy, position_id);
     strategy.on_position_closed(position_closed_event(instrument_id, position_id));
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::TerminalExitAwaitingPosition(_)
+    ));
+    observe_position_authority_report(
+        &strategy,
+        instrument_id,
+        PositionSideSpecified::Flat,
+        Quantity::zero(2),
+        1_100,
+    );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("exit-authority-reconcile"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_100_u64),
+            UnixNanos::from(1_100_u64),
+        ),
+    )
+    .expect("timer should release the causally proven flat position");
 
     assert!(strategy.managed_position().is_none());
-    assert!(pending_exit_ref(&strategy).is_none());
+    assert!(pending_exit_snapshot(&strategy).is_none());
 }
 
 #[test]
@@ -199,7 +245,7 @@ fn position_change_preserves_pending_exit_correlation() {
 
     let exit_pending = strategy
         .exposure
-        .exit_pending()
+        .exit_pending_snapshot()
         .expect("position change should keep exit pending");
     assert_eq!(
         exit_pending.pending_exit.client_order_id,
@@ -242,7 +288,7 @@ fn unrelated_position_close_does_not_clear_pending_exit_before_fill() {
     ));
 
     assert_eq!(
-        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
         Some(ClientOrderId::from("EXIT-001"))
     );
     assert!(strategy.managed_position().is_some());
@@ -277,7 +323,7 @@ fn unrelated_position_close_does_not_clear_pending_exit_after_fill_event() {
     ));
 
     assert_eq!(
-        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
         Some(ClientOrderId::from("EXIT-001"))
     );
     assert!(strategy.managed_position().is_some());
@@ -302,8 +348,13 @@ fn exit_pending_state_clears_on_cancel_reject_and_expire() {
         exit_client_order_id,
         ManagedPositionOrigin::StrategyEntry,
     );
-    canceled.on_order_canceled(&order_canceled_event(exit_client_order_id, instrument_id));
-    assert!(pending_exit_ref(&canceled).is_none());
+    let canceled_event = order_canceled_event(exit_client_order_id, instrument_id);
+    apply_exit_order_event_to_nt_cache(
+        &mut canceled,
+        nautilus_model::events::OrderEventAny::Canceled(canceled_event.clone()),
+    );
+    canceled.on_order_canceled(&canceled_event);
+    assert!(pending_exit_snapshot(&canceled).is_none());
     assert!(canceled.managed_position().is_some());
 
     let mut rejected = ready_to_trade_strategy();
@@ -320,8 +371,13 @@ fn exit_pending_state_clears_on_cancel_reject_and_expire() {
         exit_client_order_id,
         ManagedPositionOrigin::StrategyEntry,
     );
-    rejected.on_order_rejected(order_rejected_event(exit_client_order_id, instrument_id));
-    assert!(pending_exit_ref(&rejected).is_none());
+    let rejected_event = order_rejected_event(exit_client_order_id, instrument_id);
+    apply_exit_order_event_to_nt_cache(
+        &mut rejected,
+        nautilus_model::events::OrderEventAny::Rejected(rejected_event.clone()),
+    );
+    rejected.on_order_rejected(rejected_event);
+    assert!(pending_exit_snapshot(&rejected).is_none());
     assert!(rejected.managed_position().is_some());
 
     let mut expired = ready_to_trade_strategy();
@@ -338,8 +394,13 @@ fn exit_pending_state_clears_on_cancel_reject_and_expire() {
         exit_client_order_id,
         ManagedPositionOrigin::StrategyEntry,
     );
-    expired.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
-    assert!(pending_exit_ref(&expired).is_none());
+    let expired_event = order_expired_event(exit_client_order_id, instrument_id);
+    apply_exit_order_event_to_nt_cache(
+        &mut expired,
+        nautilus_model::events::OrderEventAny::Expired(expired_event.clone()),
+    );
+    expired.on_order_expired(expired_event);
+    assert!(pending_exit_snapshot(&expired).is_none());
     assert!(expired.managed_position().is_some());
 }
 
@@ -370,7 +431,34 @@ fn partial_exit_fill_then_expire_restores_managed_residual_position() {
         OrderSide::Sell,
     );
     fill.last_qty = Quantity::new(4.0, 2);
+    fill.trade_id = nautilus_model::identifiers::TradeId::from("TRADE-EXIT-PARTIAL");
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Filled(fill.clone()),
+    );
     strategy.on_order_filled(&fill);
+    assert!(matches!(strategy.exposure, ExposureState::ExitPending(_)));
+    assert_eq!(
+        strategy
+            .canonical_position_authority(position_id, instrument_id)
+            .expect("canonical projected-fill position read should succeed")
+            .expect("projected-fill position should remain cached")
+            .signed_quantity,
+        Decimal::new(10, 0),
+        "an order-only projected fill must not pretend that NT position state advanced"
+    );
+
+    let expired_event = order_expired_event(exit_client_order_id, instrument_id);
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Expired(expired_event.clone()),
+    );
+    strategy.on_order_expired(expired_event);
+
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::TerminalExitAwaitingPosition(_)
+    ));
     seed_nt_open_position(
         &mut strategy,
         instrument_id,
@@ -378,21 +466,25 @@ fn partial_exit_fill_then_expire_restores_managed_residual_position() {
         Quantity::new(6.0, 2),
         0.45,
     );
-    strategy.materialize_position_from_event(
-        PositionMaterializationSpec {
-            instrument_id,
-            position_id,
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(6.0, 2),
-            avg_px_open: 0.45,
-        },
-        0,
+    observe_position_authority_report(
+        &strategy,
+        instrument_id,
+        PositionSideSpecified::Long,
+        Quantity::new(6.0, 2),
+        1_100,
     );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("exit-authority-reconcile"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_100_u64),
+            UnixNanos::from(1_100_u64),
+        ),
+    )
+    .expect("timer should reconcile callback-free cache convergence");
 
-    strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
-
-    assert!(pending_exit_ref(&strategy).is_none());
+    assert!(pending_exit_snapshot(&strategy).is_none());
     assert_eq!(
         strategy.exposure_occupancy(),
         Some(ExposureOccupancy::ManagedPosition)
@@ -401,6 +493,650 @@ fn partial_exit_fill_then_expire_restores_managed_residual_position() {
         managed_position_snapshot(&strategy).map(|position| position.quantity),
         Some(Quantity::new(6.0, 2))
     );
+}
+
+#[test]
+fn projected_partial_exit_fill_then_cancel_waits_for_timer_authority() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-PROJECTED-PARTIAL-CANCEL");
+    let exit_client_order_id = ClientOrderId::from("EXIT-PROJECTED-PARTIAL-CANCEL");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        exit_client_order_id,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    let mut fill = order_filled_event_with_details(
+        exit_client_order_id,
+        instrument_id,
+        Some(position_id),
+        OrderSide::Sell,
+    );
+    fill.last_qty = Quantity::new(4.0, 2);
+    fill.trade_id = nautilus_model::identifiers::TradeId::from("TRADE-PROJECTED-CANCEL");
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Filled(fill.clone()),
+    );
+    strategy.on_order_filled(&fill);
+    assert!(matches!(strategy.exposure, ExposureState::ExitPending(_)));
+
+    let canceled_event = order_canceled_event(exit_client_order_id, instrument_id);
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Canceled(canceled_event.clone()),
+    );
+    strategy.on_order_canceled(&canceled_event);
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::TerminalExitAwaitingPosition(_)
+    ));
+
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(6.0, 2),
+        0.45,
+    );
+    observe_position_authority_report(
+        &strategy,
+        instrument_id,
+        PositionSideSpecified::Long,
+        Quantity::new(6.0, 2),
+        1_100,
+    );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("exit-authority-reconcile"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_100_u64),
+            UnixNanos::from(1_100_u64),
+        ),
+    )
+    .expect("timer should reconcile callback-free cache convergence");
+
+    assert_eq!(
+        managed_position_snapshot(&strategy).map(|position| position.quantity),
+        Some(Quantity::new(6.0, 2))
+    );
+    assert!(pending_exit_snapshot(&strategy).is_none());
+}
+
+#[test]
+fn fill_void_without_cached_order_enters_non_routing_authority_hold() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let client_order_id = ClientOrderId::from("EXIT-FILL-VOID-MISSING-CACHE");
+    let position_id = PositionId::from("P-FILL-VOID-MISSING-CACHE");
+    let event = order_fill_voided_event(
+        client_order_id,
+        instrument_id,
+        position_id,
+        nautilus_model::identifiers::TradeId::from("TRADE-FILL-VOID-MISSING-CACHE"),
+        Quantity::new(1.0, 2),
+        1_000,
+    );
+
+    strategy.on_order_fill_voided(&event);
+
+    let ExposureState::ExitAuthorityRecoveryHold(hold) = &strategy.exposure else {
+        panic!(
+            "missing cached correction authority must be retained as a recovery hold: {:?}",
+            strategy.exposure
+        );
+    };
+    assert_eq!(hold.pending_exit.client_order_id, client_order_id);
+    assert_eq!(hold.pending_exit.position_id, Some(position_id));
+
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(1.0, 2),
+        0.45,
+    );
+    strategy.on_position_opened(position_opened_event(
+        instrument_id,
+        position_id,
+        Quantity::new(1.0, 2),
+        0.45,
+    ));
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::ExitAuthorityRecoveryHold(_)
+    ));
+    close_nt_position(&mut strategy, position_id);
+    strategy.on_position_closed(position_closed_event(instrument_id, position_id));
+    assert!(
+        matches!(
+            strategy.exposure,
+            ExposureState::ExitAuthorityRecoveryHold(_)
+        ),
+        "position callbacks cannot clear a hold without reconstructed order authority"
+    );
+
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("exit-authority-recovery-hold"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_100_u64),
+            UnixNanos::from(1_100_u64),
+        ),
+    )
+    .expect("recovery timer should remain fail closed without the cached order");
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::ExitAuthorityRecoveryHold(_)
+    ));
+
+    observe_position_authority_report(
+        &strategy,
+        instrument_id,
+        PositionSideSpecified::Flat,
+        Quantity::zero(2),
+        1_200,
+    );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("exit-authority-recovery-flat-proof"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_200_u64),
+            UnixNanos::from(1_200_u64),
+        ),
+    )
+    .expect("a fresh exact-key flat report matching the cache should release the hold");
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+}
+
+#[test]
+fn fill_void_without_position_identity_keeps_the_hold_until_exact_attribution_arrives() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-FILL-VOID-LATE-ATTRIBUTION");
+    let client_order_id = ClientOrderId::from("EXIT-FILL-VOID-LATE-ATTRIBUTION");
+    let mut event = order_fill_voided_event(
+        client_order_id,
+        instrument_id,
+        position_id,
+        nautilus_model::identifiers::TradeId::from("TRADE-FILL-VOID-LATE-ATTRIBUTION"),
+        Quantity::new(1.0, 2),
+        1_000,
+    );
+    event.position_id = None;
+
+    strategy.on_order_fill_voided(&event);
+    assert_eq!(
+        strategy
+            .exposure
+            .exit_authority_recovery_hold()
+            .and_then(|hold| hold.pending_exit.position_id),
+        None
+    );
+
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(1.0, 2),
+        0.45,
+    );
+    strategy.on_position_opened(position_opened_event(
+        instrument_id,
+        position_id,
+        Quantity::new(1.0, 2),
+        0.45,
+    ));
+
+    let hold = strategy
+        .exposure
+        .exit_authority_recovery_hold()
+        .expect("the exact position event must attribute, not clear, the recovery hold");
+    assert_eq!(hold.pending_exit.position_id, Some(position_id));
+}
+
+#[test]
+fn terminal_callback_with_missing_cached_exit_enters_hold_and_resumes_exact_authority() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-TERMINAL-MISSING-CACHE");
+    let client_order_id = ClientOrderId::from("EXIT-TERMINAL-MISSING-CACHE");
+    let quantity = Quantity::new(10.0, 2);
+    let open_position =
+        materialize_configured_position(&mut strategy, instrument_id, position_id, quantity, 0.45);
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        client_order_id,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    register_test_strategy(&mut strategy).borrow_mut().reset();
+
+    strategy.on_order_canceled(&order_canceled_event(client_order_id, instrument_id));
+
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::ExitAuthorityRecoveryHold(_)
+    ));
+
+    seed_nt_open_position(&mut strategy, instrument_id, position_id, quantity, 0.45);
+    seed_nt_working_order(
+        &mut strategy,
+        recovered_exit_order(client_order_id, instrument_id, quantity),
+        position_id,
+    );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("terminal-missing-cache-recovery"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_100_u64),
+            UnixNanos::from(1_100_u64),
+        ),
+    )
+    .expect("fresh exact cached order should restore the retained exit authority");
+
+    assert!(matches!(strategy.exposure, ExposureState::ExitPending(_)));
+    let canceled = order_canceled_event(client_order_id, instrument_id);
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Canceled(canceled.clone()),
+    );
+    strategy.on_order_canceled(&canceled);
+    assert_eq!(
+        managed_position_snapshot(&strategy).map(|position| position.quantity),
+        Some(quantity)
+    );
+}
+
+#[test]
+fn timer_cache_loss_moves_working_exit_into_the_same_non_routing_hold() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-TIMER-MISSING-CACHE");
+    let client_order_id = ClientOrderId::from("EXIT-TIMER-MISSING-CACHE");
+    let quantity = Quantity::new(10.0, 2);
+    let open_position =
+        materialize_configured_position(&mut strategy, instrument_id, position_id, quantity, 0.45);
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        client_order_id,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    register_test_strategy(&mut strategy).borrow_mut().reset();
+
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("timer-missing-cache-hold"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_100_u64),
+            UnixNanos::from(1_100_u64),
+        ),
+    )
+    .expect("cache loss should become a typed non-routing hold");
+
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::ExitAuthorityRecoveryHold(_)
+    ));
+    assert_eq!(
+        strategy
+            .exposure
+            .exit_authority_recovery_hold()
+            .map(|hold| hold.pending_exit.client_order_id),
+        Some(client_order_id)
+    );
+}
+
+#[test]
+fn timer_quantity_conflict_moves_exit_into_the_same_non_routing_hold() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-TIMER-QUANTITY-CONFLICT");
+    let client_order_id = ClientOrderId::from("EXIT-TIMER-QUANTITY-CONFLICT");
+    let authorized_quantity = Quantity::new(10.0, 2);
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        authorized_quantity,
+        0.45,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        client_order_id,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    register_test_strategy(&mut strategy).borrow_mut().reset();
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        authorized_quantity,
+        0.45,
+    );
+    seed_nt_working_order(
+        &mut strategy,
+        recovered_exit_order(client_order_id, instrument_id, Quantity::new(9.0, 2)),
+        position_id,
+    );
+
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("timer-quantity-conflict-hold"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_100_u64),
+            UnixNanos::from(1_100_u64),
+        ),
+    )
+    .expect("an order-authority conflict should be held without routing");
+
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::ExitAuthorityRecoveryHold(_)
+    ));
+
+    close_nt_position(&mut strategy, position_id);
+    observe_position_authority_report(
+        &strategy,
+        instrument_id,
+        PositionSideSpecified::Flat,
+        Quantity::zero(2),
+        1_200,
+    );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("timer-quantity-conflict-flat-report"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_200_u64),
+            UnixNanos::from(1_200_u64),
+        ),
+    )
+    .expect("a flat report must not authorize past a still-working conflicting order");
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::ExitAuthorityRecoveryHold(_)
+    ));
+}
+
+#[test]
+fn timer_reconciles_a_missed_fill_void_that_reopens_the_exit_order() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-MISSED-FILL-VOID");
+    let client_order_id = ClientOrderId::from("EXIT-MISSED-FILL-VOID");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        client_order_id,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    let trade_id = nautilus_model::identifiers::TradeId::from("TRADE-MISSED-FILL-VOID");
+    let mut fill = order_filled_event_with_details(
+        client_order_id,
+        instrument_id,
+        Some(position_id),
+        OrderSide::Sell,
+    );
+    fill.trade_id = trade_id;
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Filled(fill.clone()),
+    );
+    strategy.on_order_filled(&fill);
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::TerminalExitAwaitingPosition(_)
+    ));
+
+    let fill_voided = order_fill_voided_event(
+        client_order_id,
+        instrument_id,
+        position_id,
+        trade_id,
+        Quantity::new(10.0, 2),
+        1_100,
+    );
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::FillVoided(fill_voided),
+    );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("missed-fill-void-reconcile"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_100_u64),
+            UnixNanos::from(1_100_u64),
+        ),
+    )
+    .expect("timer should reconcile the reopened cached order");
+
+    assert!(
+        matches!(strategy.exposure, ExposureState::ExitPending(_)),
+        "a missed fill-void callback must not leave a reopened order terminal-fenced: {:?}",
+        strategy.exposure
+    );
+}
+
+#[test]
+fn timer_fences_a_cached_voided_exit_until_post_correction_position_authority() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-CACHED-VOIDED");
+    let client_order_id = ClientOrderId::from("EXIT-CACHED-VOIDED");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        client_order_id,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    let trade_id = nautilus_model::identifiers::TradeId::from("TRADE-CACHED-VOIDED");
+    let mut fill = order_filled_event_with_details(
+        client_order_id,
+        instrument_id,
+        Some(position_id),
+        OrderSide::Sell,
+    );
+    fill.last_qty = Quantity::new(10.0, 2);
+    fill.trade_id = trade_id;
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Filled(fill),
+    );
+    let mut fill_voided = order_fill_voided_event(
+        client_order_id,
+        instrument_id,
+        position_id,
+        trade_id,
+        Quantity::new(10.0, 2),
+        1_100,
+    );
+    fill_voided.is_reopened = false;
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::FillVoided(fill_voided),
+    );
+    assert_eq!(
+        strategy
+            .cache()
+            .order(&client_order_id)
+            .expect("voided exit should remain cached")
+            .status(),
+        OrderStatus::Voided
+    );
+
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("cached-voided-reconcile"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_100_u64),
+            UnixNanos::from(1_100_u64),
+        ),
+    )
+    .expect("timer should classify cached Voided as a correction");
+    assert!(
+        matches!(
+            strategy.exposure,
+            ExposureState::TerminalExitAwaitingPosition(_)
+        ),
+        "a corrected zero-fill order cannot use the zero-fill shortcut"
+    );
+
+    observe_position_authority_report(
+        &strategy,
+        instrument_id,
+        PositionSideSpecified::Long,
+        Quantity::new(10.0, 2),
+        1_200,
+    );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("cached-voided-authority"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_200_u64),
+            UnixNanos::from(1_200_u64),
+        ),
+    )
+    .expect("post-correction authority should release the exact residual");
+    assert_eq!(
+        managed_position_snapshot(&strategy).map(|position| position.quantity),
+        Some(Quantity::new(10.0, 2))
+    );
+}
+
+#[test]
+fn fill_void_after_terminal_release_reconstructs_recovered_exit_authority() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-FILL-VOID-AFTER-RELEASE");
+    let client_order_id = ClientOrderId::from("EXIT-FILL-VOID-AFTER-RELEASE");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        client_order_id,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    let trade_id = nautilus_model::identifiers::TradeId::from("TRADE-FILL-VOID-AFTER-RELEASE");
+    let mut fill = order_filled_event_with_details(
+        client_order_id,
+        instrument_id,
+        Some(position_id),
+        OrderSide::Sell,
+    );
+    fill.trade_id = trade_id;
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Filled(fill.clone()),
+    );
+    strategy.on_order_filled(&fill);
+    close_nt_position(&mut strategy, position_id);
+    observe_position_authority_report(
+        &strategy,
+        instrument_id,
+        PositionSideSpecified::Flat,
+        Quantity::zero(2),
+        1_100,
+    );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("terminal-release-before-fill-void"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_100_u64),
+            UnixNanos::from(1_100_u64),
+        ),
+    )
+    .expect("terminal exit should release before the correction");
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+
+    let fill_voided = order_fill_voided_event(
+        client_order_id,
+        instrument_id,
+        position_id,
+        trade_id,
+        Quantity::new(10.0, 2),
+        1_200,
+    );
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::FillVoided(fill_voided.clone()),
+    );
+    strategy.on_order_fill_voided(&fill_voided);
+
+    assert!(
+        matches!(strategy.exposure, ExposureState::ExitPending(_)),
+        "a post-release fill void must reconstruct recovered authority for the reopened order: {:?}",
+        strategy.exposure
+    );
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    observe_position_authority_report(
+        &strategy,
+        instrument_id,
+        PositionSideSpecified::Long,
+        Quantity::new(10.0, 2),
+        1_300,
+    );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("fill-void-recovered-baseline"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_300_u64),
+            UnixNanos::from(1_300_u64),
+        ),
+    )
+    .expect("timer should establish the post-correction recovered baseline");
+    assert!(matches!(strategy.exposure, ExposureState::ExitPending(_)));
 }
 
 #[test]
@@ -662,7 +1398,7 @@ fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
         strategy.book_subscriptions.tracked_position_instrument_id,
         Some(instrument_a)
     );
-    let decision = strategy.exit_submission_decision_at(2_000);
+    let decision = strategy.exit_intent_decision_at(2_000);
     assert_eq!(decision.instrument_id, Some(instrument_a));
     assert_eq!(decision.order_side, Some(OrderSide::Sell));
     assert!(
@@ -739,7 +1475,7 @@ fn managed_partial_entry_blocks_normal_exit_until_entry_order_resolves() {
             position_quantity,
         );
 
-        let decision = strategy.exit_submission_decision_at(1_200);
+        let decision = strategy.exit_intent_decision_at(1_200);
 
         assert_eq!(
             decision.blocked_reason,
@@ -789,7 +1525,7 @@ fn forced_flat_exit_submits_despite_resting_pending_entry() {
             .position
             .quantity;
 
-        let decision = strategy.exit_submission_decision_at(1_200);
+        let decision = strategy.exit_intent_decision_at(1_200);
 
         assert_eq!(decision.blocked_reason, None, "{instrument_id}");
         assert_eq!(decision.evaluation.blocked_reason, None, "{instrument_id}");
@@ -829,22 +1565,44 @@ fn forced_flat_exit_submits_despite_resting_pending_entry() {
 }
 
 #[test]
-fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
+fn forced_flat_submit_cancels_resting_entry_and_converges_if_entry_fill_callback_races() {
     let configured_instruments =
         configured_outcome_instruments(&ready_to_trade_strategy_with_bound_economics());
     for instrument_id in configured_instruments {
-        let submit_admission = submit_admission_with_provider_cap(
+        let mut strategy = ready_to_trade_strategy_with_bound_economics();
+        let yes_instrument_id = strategy
+            .active
+            .books
+            .up
+            .instrument_id
+            .expect("fixture should bind the yes instrument");
+        let no_instrument_id = strategy
+            .active
+            .books
+            .down
+            .instrument_id
+            .expect("fixture should bind the no instrument");
+        let canonical_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+        let (yes_position, no_position) = match instrument_id == yes_instrument_id {
+            true => (canonical_quantity.as_decimal(), Decimal::ZERO),
+            false => (Decimal::ZERO, canonical_quantity.as_decimal()),
+        };
+        let submit_admission = submit_admission_with_provider_cap_and_canonical_position(
             Decimal::new(10_000, 0),
             recording_decision_evidence(),
+            yes_instrument_id,
+            no_instrument_id,
+            yes_position,
+            no_position,
         );
-        let mut strategy = ready_to_trade_strategy_with_bound_economics();
         strategy.context = StrategyBuildContext::new(
             fixture_order_economics(),
             recording_decision_evidence(),
             submit_admission,
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
-        );
+        )
+        .with_position_authority(fixture_position_authority_capability());
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
@@ -926,25 +1684,60 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
             "forced-flat exit should still submit after the entry cancel request: {instrument_id}"
         );
 
+        let exit_order = risk_messages
+            .iter()
+            .find_map(|message| match message {
+                TradingCommand::SubmitOrder(command)
+                    if command.client_order_id == exit_client_order_id =>
+                {
+                    Some(
+                        nautilus_model::orders::OrderAny::from_events(vec![
+                            nautilus_model::events::OrderEventAny::Initialized(
+                                command.order_init.clone(),
+                            ),
+                        ])
+                        .expect("submitted exit command should replay into an order"),
+                    )
+                }
+                _ => None,
+            })
+            .expect("forced-flat submit should expose its final order");
+        let exit_order = seed_nt_working_order(&mut strategy, exit_order, position_id);
+
         strategy.on_order_filled(&order_filled_event(
             entry_client_order_id,
             instrument_id,
             position_id,
         ));
-        strategy.on_order_filled(&order_filled_event_with_details(
+        let mut exit_fill = order_filled_event_with_details(
             exit_client_order_id,
             instrument_id,
             Some(position_id),
             OrderSide::Sell,
-        ));
-        strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+        );
+        exit_fill.order_type = exit_order.order_type();
+        exit_fill.last_qty = exit_order.quantity();
+        exit_fill.trade_id = nautilus_model::identifiers::TradeId::from("TRADE-FORCED-EXIT");
+        apply_exit_order_event_to_nt_cache(
+            &mut strategy,
+            nautilus_model::events::OrderEventAny::Filled(exit_fill.clone()),
+        );
+        apply_exit_fill_to_nt_position(&mut strategy, position_id, &exit_fill);
+        strategy.on_order_filled(&exit_fill);
 
-        assert!(
-            strategy.managed_position().is_some(),
-            "entry remainder fill racing the first forced-flat exit should recover to managed residual exposure: {instrument_id}"
+        let expected_residual = position_quantity - exit_order.quantity();
+
+        assert_eq!(
+            expected_residual.as_decimal(),
+            Decimal::ZERO,
+            "this fixture must exercise a full forced-flat reduction: {instrument_id}",
         );
         assert!(
-            strategy.exposure.exit_pending().is_none(),
+            strategy.managed_position().is_none(),
+            "a causally applied full forced-flat fill must leave no managed exposure: {instrument_id}",
+        );
+        assert!(
+            strategy.exposure.exit_pending_snapshot().is_none(),
             "terminal forced-flat exit with residual exposure must not stay exit-pending forever: {instrument_id}"
         );
     }
@@ -995,7 +1788,7 @@ fn non_resting_entry_fill_does_not_keep_pending_entry_from_cache_state() {
         None
     );
     assert_eq!(
-        strategy.exit_submission_decision_at(1_200).blocked_reason,
+        strategy.exit_intent_decision_at(1_200).blocked_reason,
         Some(EvidenceExitBlockedReason::ExitHold)
     );
 }
@@ -1642,18 +2435,40 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
     let configured_instruments =
         configured_outcome_instruments(&ready_to_trade_strategy_with_bound_economics());
     for instrument_id in configured_instruments {
-        let submit_admission = submit_admission_with_provider_cap(
+        let mut strategy = ready_to_trade_strategy_with_bound_economics();
+        let yes_instrument_id = strategy
+            .active
+            .books
+            .up
+            .instrument_id
+            .expect("fixture should bind the yes instrument");
+        let no_instrument_id = strategy
+            .active
+            .books
+            .down
+            .instrument_id
+            .expect("fixture should bind the no instrument");
+        let canonical_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+        let (yes_position, no_position) = match instrument_id == yes_instrument_id {
+            true => (canonical_quantity.as_decimal(), Decimal::ZERO),
+            false => (Decimal::ZERO, canonical_quantity.as_decimal()),
+        };
+        let submit_admission = submit_admission_with_provider_cap_and_canonical_position(
             Decimal::new(10_000, 0),
             recording_decision_evidence(),
+            yes_instrument_id,
+            no_instrument_id,
+            yes_position,
+            no_position,
         );
-        let mut strategy = ready_to_trade_strategy_with_bound_economics();
         strategy.context = StrategyBuildContext::new(
             fixture_order_economics(),
             recording_decision_evidence(),
             submit_admission,
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             fixture_execution_venue(),
-        );
+        )
+        .with_position_authority(fixture_position_authority_capability());
         configure_limit_base_entry_order(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
@@ -2710,7 +3525,7 @@ fn taker_hardening_guards_are_entry_only_and_do_not_block_exits() {
         );
 
         // ...but the exit still submits.
-        let decision = strategy.exit_submission_decision_at(1_200);
+        let decision = strategy.exit_intent_decision_at(1_200);
         assert_eq!(decision.blocked_reason, None, "{instrument_id}");
         assert_eq!(
             decision.forced_flat_reasons,
@@ -2806,7 +3621,7 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 2_000);
 
-    let decision = strategy.exit_submission_decision_at(2_000);
+    let decision = strategy.exit_intent_decision_at(2_000);
     let fields = strategy.exit_evaluation_log_fields_at(
         2_000,
         ExitEvaluationTriggerContext::unknown(2_000),
@@ -2852,7 +3667,7 @@ fn unknown_recovered_position_lifecycle_blocks_instead_of_liquidating_by_default
         ManagedPositionOrigin::RecoveryBootstrap,
     );
 
-    let decision = strategy.exit_submission_decision_at(2_000);
+    let decision = strategy.exit_intent_decision_at(2_000);
 
     assert_eq!(decision.evaluation.exit_decision, None);
     assert_eq!(decision.instrument_id, None);
@@ -2901,6 +3716,26 @@ fn exposure_entry_reconcile_pending_preserves_context_and_blocks_new_entries() {
 fn exposure_exit_pending_stores_only_intent_correlation_and_bolt_context() {
     let strategy = ready_to_trade_strategy();
     let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+    let client_order_id = ClientOrderId::from("EXIT-STATE-001");
+    let position_id = PositionId::from("P-EXIT-STATE-001");
+    let quantity = Quantity::new(10.0, 2);
+    let lease = strategy
+        .context
+        .position_authority()
+        .expect("fixture strategy should have position authority")
+        .acquire(instrument_id, None)
+        .expect("fixture exit authority lease should acquire");
+    let authority = BoltV3ExitOrderAuthorityHandle::recovered(
+        BoltV3RecoveredExitCause::StartupAdoption,
+        client_order_id,
+        instrument_id,
+        position_id,
+        quantity.as_decimal(),
+        PositionSideSpecified::Long,
+        &recovered_exit_order(client_order_id, instrument_id, quantity),
+        lease,
+    )
+    .expect("fixture exit authority should build");
     let context = managed_position_context(
         OpenPositionState {
             lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
@@ -2913,10 +3748,10 @@ fn exposure_exit_pending_stores_only_intent_correlation_and_bolt_context() {
                 Some(300),
             ),
             instrument_id,
-            position_id: PositionId::from("P-EXIT-STATE-001"),
+            position_id,
             entry_order_side: OrderSide::Buy,
             side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
+            quantity,
             avg_px_open: 0.450,
             book: strategy.active.books.up.clone(),
         },
@@ -2926,11 +3761,12 @@ fn exposure_exit_pending_stores_only_intent_correlation_and_bolt_context() {
     let exit_pending = ExitPendingState {
         position: Some(context),
         pending_exit: PendingExitState {
-            client_order_id: ClientOrderId::from("EXIT-STATE-001"),
+            client_order_id,
             submitted_at_ms: Some(1_000),
             market_id: Some("MKT-1".to_string()),
-            position_id: Some(PositionId::from("P-EXIT-STATE-001")),
+            position_id: Some(position_id),
         },
+        authority,
     };
 
     assert_eq!(
@@ -2944,6 +3780,64 @@ fn exposure_exit_pending_stores_only_intent_correlation_and_bolt_context() {
             .map(|state| state.position_id),
         Some(PositionId::from("P-EXIT-STATE-001"))
     );
+}
+
+#[test]
+fn stale_exit_route_return_cannot_overwrite_a_synchronous_terminal_transition() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-EXIT-ATTEMPT-GENERATION"),
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut strategy,
+        position,
+        ClientOrderId::from("EXIT-ATTEMPT-GENERATION"),
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    let exit = strategy
+        .exposure
+        .exit_pending_snapshot()
+        .expect("fixture should create exit authority");
+    let managed = exit
+        .position
+        .clone()
+        .expect("local attempt must retain its managed position");
+    strategy.exposure = ExposureState::ExitAttempting(ExitAttemptingState {
+        generation: 41,
+        managed,
+        pending_exit: exit.pending_exit.clone(),
+        authority: exit.authority.clone(),
+    });
+
+    // Models the cache-first synchronous NT callback that advances the attempt
+    // while the raw submit leaf is still on the stack.
+    strategy.exposure = ExposureState::TerminalExitAwaitingPosition(exit.clone());
+    strategy.resolve_exit_attempt(41, ExitAttemptDisposition::NonSubmitted);
+
+    assert_eq!(
+        strategy.exposure,
+        ExposureState::TerminalExitAwaitingPosition(exit),
+        "the callback-owned terminal fence must win over the stale route return"
+    );
+}
+
+#[test]
+fn exit_attempt_generation_overflow_fails_without_mutating_exposure() {
+    let mut strategy = ready_to_trade_strategy();
+    strategy.next_exit_attempt_generation = u64::MAX;
+    let before = strategy.exposure.clone();
+
+    let failure = strategy
+        .allocate_exit_attempt_generation()
+        .expect_err("checked generation overflow must fail closed");
+
+    assert!(failure.to_string().contains("generation overflow"));
+    assert_eq!(strategy.exposure, before);
 }
 
 #[test]

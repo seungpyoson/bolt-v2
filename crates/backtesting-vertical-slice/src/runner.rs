@@ -328,10 +328,11 @@ impl BacktestDecisionEvidenceWriter {
                         state.submit_fill_count += 1;
                     }
                     BacktestRunGuardEvent::EntrySkipObservation(_) => state.entry_skip_count += 1,
-                    BacktestRunGuardEvent::ExitSubmissionDecision(_)
+                    BacktestRunGuardEvent::ExitIntentDecision(_)
                     | BacktestRunGuardEvent::ExitHoldDecision(_) => {
                         state.exit_decision_count += 1;
                     }
+                    BacktestRunGuardEvent::ExitPreparedOrder(_) => {}
                     BacktestRunGuardEvent::LossGovernorHalt(_) => {
                         state.loss_governor_halt_count += 1;
                     }
@@ -3045,6 +3046,32 @@ mod tests {
                 .and_then(|snapshot| snapshot.spot_price.as_deref()),
             Some("200")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn backtest_guard_counts_exit_intent_once_without_counting_preparation() -> Result<()> {
+        let writer = BacktestDecisionEvidenceWriter::new(
+            4,
+            PositiveFiniteEvidenceReadCap::new(1_048_576)
+                .expect("test evidence cap must be positive and finite"),
+        )?;
+        let intent = include_str!(
+            "../../../tests/fixtures/bolt_v3/current_evidence/positive/exit_intent_decision.jsonl"
+        )
+        .lines()
+        .next()
+        .expect("exit-intent fixture must contain a line");
+        let prepared = include_str!(
+            "../../../tests/fixtures/bolt_v3/current_evidence/positive/exit_prepared_order.jsonl"
+        )
+        .lines()
+        .next()
+        .expect("exit-prepared fixture must contain a line");
+        fs::write(writer.machine.as_path(), format!("{intent}\n{prepared}\n"))?;
+
+        let state = writer.state()?;
+        assert_eq!(state.exit_decision_count, 1);
         Ok(())
     }
 

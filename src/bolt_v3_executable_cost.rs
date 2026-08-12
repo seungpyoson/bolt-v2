@@ -226,7 +226,16 @@ pub(crate) fn price_exact_size_vwap(
     })
 }
 
-pub(crate) fn price_exact_quantity_vwap(
+pub(crate) fn compile_bounded_risk_reducing_ioc(
+    book: &ExecutableBookQuote<'_>,
+    order_side: OrderSide,
+    requested_quantity: f64,
+    vwap_depth_limit_bps: u64,
+) -> Result<ExactSizeVwap, ExecutableCostBlockReason> {
+    price_bounded_quantity_vwap(book, order_side, requested_quantity, vwap_depth_limit_bps)
+}
+
+fn price_bounded_quantity_vwap(
     book: &ExecutableBookQuote<'_>,
     order_side: OrderSide,
     requested_quantity: f64,
@@ -265,7 +274,7 @@ pub(crate) fn price_exact_quantity_vwap(
                 if price > allowed_limit {
                     break;
                 }
-                consume_exact_quantity_level(
+                consume_quantity_level(
                     price,
                     *available_quantity,
                     &mut remaining_quantity,
@@ -288,7 +297,7 @@ pub(crate) fn price_exact_quantity_vwap(
                 if price < allowed_limit {
                     break;
                 }
-                consume_exact_quantity_level(
+                consume_quantity_level(
                     price,
                     *available_quantity,
                     &mut remaining_quantity,
@@ -307,9 +316,8 @@ pub(crate) fn price_exact_quantity_vwap(
         }
         _ => return Err(ExecutableCostBlockReason::UnsupportedOrderShape),
     }
-    if remaining_quantity > notional_float_tolerance(requested_quantity)
-        || !is_positive_finite(filled_quantity)
-    {
+    let exact_size_filled = remaining_quantity <= notional_float_tolerance(requested_quantity);
+    if !is_positive_finite(filled_quantity) {
         return Err(ExecutableCostBlockReason::InsufficientDepth);
     }
     let vwap_price = filled_notional / filled_quantity;
@@ -325,13 +333,13 @@ pub(crate) fn price_exact_quantity_vwap(
         vwap_price,
         vwap_quantity: filled_quantity,
         limit_price,
-        exact_size_filled: true,
+        exact_size_filled,
         fill_legs,
         candidate_levels,
     })
 }
 
-fn consume_exact_quantity_level(
+fn consume_quantity_level(
     price: f64,
     available_quantity: f64,
     remaining_quantity: &mut f64,
@@ -536,51 +544,56 @@ mod tests {
     }
 
     #[test]
-    fn exact_quantity_sell_preserves_every_consumed_bid_level() {
-        let book = priced_book_with_levels(&[(0.60, 5.0), (0.50, 100.0)], &[(0.70, 100.0)]);
+    fn bounded_risk_reduction_preserves_full_depth_behavior() {
+        let book = priced_book_with_levels(&[(0.60, 5.0), (0.50, 5.0)], &[(0.70, 100.0)]);
 
-        let priced = super::price_exact_quantity_vwap(&book.quote(), OrderSide::Sell, 10.0, 2_000)
-            .expect("exact exit quantity should fill across visible bid levels");
+        let compiled =
+            super::compile_bounded_risk_reducing_ioc(&book.quote(), OrderSide::Sell, 10.0, 2_000)
+                .expect("full executable depth should compile the requested reduction");
 
-        assert_eq!(priced.limit_price, 0.50);
-        assert_eq!(priced.vwap_quantity, 10.0);
-        assert!((priced.vwap_price - 0.55).abs() < EPSILON);
+        assert!(compiled.exact_size_filled);
+        assert_eq!(compiled.vwap_quantity, 10.0);
+        assert_eq!(compiled.limit_price, 0.50);
         assert_eq!(
-            priced.fill_legs,
-            vec![
-                super::ExecutableFillLeg {
-                    price: 0.60,
-                    quantity: 5.0,
-                },
-                super::ExecutableFillLeg {
-                    price: 0.50,
-                    quantity: 5.0,
-                },
-            ]
-        );
-        assert_eq!(
-            priced.candidate_levels,
-            vec![
-                super::ExecutableFillLeg {
-                    price: 0.60,
-                    quantity: 5.0,
-                },
-                super::ExecutableFillLeg {
-                    price: 0.50,
-                    quantity: 100.0,
-                },
-            ]
+            compiled
+                .fill_legs
+                .iter()
+                .map(|leg| leg.quantity)
+                .sum::<f64>(),
+            10.0
         );
     }
 
     #[test]
-    fn exact_quantity_sweep_rejects_incomplete_visible_depth() {
-        let book = priced_book_with_levels(&[(0.60, 5.0)], &[(0.70, 100.0)]);
+    fn bounded_risk_reduction_compiles_largest_positive_thin_book_quantity() {
+        let book = priced_book_with_levels(&[(0.60, 3.0), (0.50, 2.0)], &[(0.70, 100.0)]);
 
-        let reason = super::price_exact_quantity_vwap(&book.quote(), OrderSide::Sell, 10.0, 2_000)
-            .expect_err("an exit without complete planned levels must fail closed");
+        let compiled =
+            super::compile_bounded_risk_reducing_ioc(&book.quote(), OrderSide::Sell, 10.0, 2_000)
+                .expect("thin executable depth should still compile a partial reduction");
 
-        assert_eq!(reason, super::ExecutableCostBlockReason::InsufficientDepth);
+        assert!(!compiled.exact_size_filled);
+        assert_eq!(compiled.vwap_quantity, 5.0);
+        assert_eq!(compiled.limit_price, 0.50);
+        assert_eq!(
+            compiled
+                .fill_legs
+                .iter()
+                .map(|leg| leg.quantity)
+                .sum::<f64>(),
+            5.0
+        );
+    }
+
+    #[test]
+    fn bounded_risk_reduction_still_rejects_empty_executable_depth() {
+        let book = priced_book_with_levels(&[], &[(0.70, 100.0)]);
+
+        let reason =
+            super::compile_bounded_risk_reducing_ioc(&book.quote(), OrderSide::Sell, 10.0, 2_000)
+                .expect_err("an empty executable side cannot reduce risk");
+
+        assert_eq!(reason, super::ExecutableCostBlockReason::MissingOrderBook);
     }
 
     #[test]

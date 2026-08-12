@@ -15,6 +15,7 @@ use crate::{
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter,
     bolt_v3_order_execution::{BoltV3OrderEconomicsHandle, BoltV3OrderExecutionPolicy},
+    bolt_v3_position_authority_feed::BoltV3PositionAuthorityCapability,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle,
@@ -76,6 +77,7 @@ pub struct StrategyBuildContext {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     order_execution_policy: BoltV3OrderExecutionPolicy,
     execution_venue: Venue,
+    position_authority: Option<BoltV3PositionAuthorityCapability>,
     realized_volatility: Option<RealizedVolatilityCapability>,
     settlement: Option<SettlementCapability>,
 }
@@ -167,6 +169,7 @@ impl StrategyBuildContext {
             submit_admission,
             order_execution_policy,
             execution_venue,
+            position_authority: None,
             realized_volatility: None,
             settlement: None,
         }
@@ -174,6 +177,18 @@ impl StrategyBuildContext {
 
     pub fn order_economics(&self) -> &BoltV3OrderEconomicsHandle {
         &self.order_economics
+    }
+
+    pub(crate) fn with_position_authority(
+        mut self,
+        position_authority: BoltV3PositionAuthorityCapability,
+    ) -> Self {
+        self.position_authority = Some(position_authority);
+        self
+    }
+
+    pub(crate) fn position_authority(&self) -> Option<&BoltV3PositionAuthorityCapability> {
+        self.position_authority.as_ref()
     }
 
     #[cfg(test)]

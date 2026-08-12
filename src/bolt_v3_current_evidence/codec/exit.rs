@@ -12,9 +12,10 @@ use super::{
 };
 use crate::bolt_v3_current_evidence::{
     facts::{
-        ExitBlockedReason, ExitDecisionDetails, ExitEvaluationDecision, ExitEvaluationFact,
-        ExitHoldDecisionFact, ExitHoldOutcome, ExitSubmissionDecisionFact, ExitSubmissionOutcome,
-        ExitTriggerSource,
+        ExitAttemptOutcome, ExitBlockedReason, ExitDecisionDetails, ExitEvaluationFact,
+        ExitHoldDecisionFact, ExitHoldOutcome, ExitIntentDecisionFact, ExitIntentOutcome,
+        ExitPreparationStage, ExitPreparedOrderFact, ExitTriggerSource, PreparedOrderLinkage,
+        SubmissionLinkage, SubmittedOrderLinkage,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -22,13 +23,24 @@ use crate::bolt_v3_current_evidence::{
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExitSubmissionLineV1 {
+struct ExitPreparedOrderLineV1 {
     schema_version: u32,
     recorded_at_utc_ns: i64,
     gate_id: String,
     gate_version: String,
     kind: String,
-    exit_decision: ExitSubmissionWireV1,
+    exit_prepared_order: ExitPreparedOrderWireV1,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExitIntentLineV1 {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: String,
+    gate_version: String,
+    kind: String,
+    exit_intent: ExitIntentWireV1,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -55,10 +67,17 @@ struct ExitEvaluationLineV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExitSubmissionWireV1 {
+struct ExitPreparedOrderWireV1 {
     details: ExitDecisionDetailsWireV1,
-    outcome: ExitSubmissionOutcomeV1,
-    submission: SubmissionLinkageWireV1,
+    outcome: ExitIntentOutcomeV1,
+    prepared_order: SubmissionLinkageWireV1,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExitIntentWireV1 {
+    details: ExitDecisionDetailsWireV1,
+    outcome: ExitIntentOutcomeV1,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,7 +143,6 @@ struct ExitEvaluationWireV1 {
     position_id: Option<String>,
     market_id: Option<String>,
     instrument_id: Option<String>,
-    client_order_id: Option<String>,
     exit_eval_now_ms: i64,
     exit_trigger_source: ExitTriggerSourceV1,
     trigger_ts_event_ms: Option<i64>,
@@ -149,13 +167,13 @@ struct ExitEvaluationWireV1 {
     uncertainty_band_probability: Option<String>,
     hold_ev_bps: Option<String>,
     exit_ev_bps: Option<String>,
-    decision: ExitEvaluationDecisionV1,
+    outcome: ExitAttemptOutcomeV1,
     forced_flat_reasons: Vec<ForcedFlatReasonV1>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum ExitSubmissionOutcomeV1 {
+enum ExitIntentOutcomeV1 {
     Exit,
     ExitFailClosed,
 }
@@ -196,52 +214,125 @@ enum ExitTriggerSourceV1 {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ExitPreparationStageV1 {
+    OrderTemplate,
+    InstrumentAuthority,
+    PositionAuthority,
+    ExecutableLiquidity,
+    EconomicsSeal,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
-enum ExitEvaluationDecisionV1 {
-    Submission {
-        outcome: ExitSubmissionOutcomeV1,
-    },
-    Hold {
+enum ExitAttemptOutcomeV1 {
+    Held {
         outcome: ExitHoldOutcomeV1,
-        blocked_reason: Option<ExitBlockedReasonV1>,
+    },
+    Blocked {
+        blocked_reason: ExitBlockedReasonV1,
+    },
+    PreparationRejected {
+        stage: ExitPreparationStageV1,
+        reason: String,
+    },
+    RouteRejected {
+        prepared_order: SubmissionLinkageWireV1,
+        reason: String,
+    },
+    IntentEvidenceRejected {
+        prepared_order: SubmissionLinkageWireV1,
+        reason: String,
+    },
+    AdmissionRejected {
+        prepared_order: SubmissionLinkageWireV1,
+        reason: String,
+    },
+    PolicySkipped {
+        prepared_order: SubmissionLinkageWireV1,
+    },
+    PreSinkRejected {
+        prepared_order: SubmissionLinkageWireV1,
+        reason: String,
+    },
+    SinkRejected {
+        prepared_order: SubmissionLinkageWireV1,
+        reason: String,
+    },
+    Submitted {
+        submitted_order: SubmissionLinkageWireV1,
     },
 }
 
-pub(super) fn encode_submission(
-    fact: ExitSubmissionDecisionFact,
+pub(super) fn encode_intent(
+    fact: ExitIntentDecisionFact,
     recorded_at_utc_ns: i64,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
     validate_recorded_at(recorded_at_utc_ns)?;
-    let purpose = KnownPurpose::ExitSubmissionDecision;
+    let purpose = KnownPurpose::ExitIntentDecision;
     let descriptor = super::current_line_descriptor(purpose);
-    let wire = ExitSubmissionWireV1::try_from(fact).map_err(RecordFailure::Rejected)?;
+    let wire = ExitIntentWireV1::try_from(fact).map_err(RecordFailure::Rejected)?;
     encode_line(
         purpose,
-        &ExitSubmissionLineV1 {
+        &ExitIntentLineV1 {
             schema_version: descriptor.schema_version,
             recorded_at_utc_ns,
             gate_id: descriptor.gate_id.to_string(),
             gate_version: env!("CARGO_PKG_VERSION").to_string(),
             kind: descriptor.kind.to_string(),
-            exit_decision: wire,
+            exit_intent: wire,
         },
     )
 }
 
-pub(super) fn decode_submission(
-    line: &str,
-    line_number: usize,
-) -> Result<ExitSubmissionDecisionFact> {
-    let decoded: ExitSubmissionLineV1 = decode(line, line_number)?;
+pub(super) fn decode_intent(line: &str, line_number: usize) -> Result<ExitIntentDecisionFact> {
+    let decoded: ExitIntentLineV1 = decode(line, line_number)?;
     validate_envelope(
-        KnownIdentity::ExitSubmissionDecisionV1,
+        KnownIdentity::ExitIntentDecisionV1,
         &decoded.kind,
         decoded.schema_version,
         &decoded.gate_id,
         decoded.recorded_at_utc_ns,
         line_number,
     )?;
-    decoded.exit_decision.try_into()
+    decoded.exit_intent.try_into()
+}
+
+pub(super) fn encode_prepared_order(
+    fact: ExitPreparedOrderFact,
+    recorded_at_utc_ns: i64,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    validate_recorded_at(recorded_at_utc_ns)?;
+    let purpose = KnownPurpose::ExitPreparedOrder;
+    let descriptor = super::current_line_descriptor(purpose);
+    let wire = ExitPreparedOrderWireV1::try_from(fact).map_err(RecordFailure::Rejected)?;
+    encode_line(
+        purpose,
+        &ExitPreparedOrderLineV1 {
+            schema_version: descriptor.schema_version,
+            recorded_at_utc_ns,
+            gate_id: descriptor.gate_id.to_string(),
+            gate_version: env!("CARGO_PKG_VERSION").to_string(),
+            kind: descriptor.kind.to_string(),
+            exit_prepared_order: wire,
+        },
+    )
+}
+
+pub(super) fn decode_prepared_order(
+    line: &str,
+    line_number: usize,
+) -> Result<ExitPreparedOrderFact> {
+    let decoded: ExitPreparedOrderLineV1 = decode(line, line_number)?;
+    validate_envelope(
+        KnownIdentity::ExitPreparedOrderV1,
+        &decoded.kind,
+        decoded.schema_version,
+        &decoded.gate_id,
+        decoded.recorded_at_utc_ns,
+        line_number,
+    )?;
+    decoded.exit_prepared_order.try_into()
 }
 
 pub(super) fn encode_hold(
@@ -312,26 +403,50 @@ pub(super) fn decode_evaluation(line: &str, line_number: usize) -> Result<ExitEv
     decoded.exit_evaluation.try_into()
 }
 
-impl TryFrom<ExitSubmissionDecisionFact> for ExitSubmissionWireV1 {
+impl TryFrom<ExitPreparedOrderFact> for ExitPreparedOrderWireV1 {
     type Error = anyhow::Error;
 
-    fn try_from(value: ExitSubmissionDecisionFact) -> Result<Self> {
+    fn try_from(value: ExitPreparedOrderFact) -> Result<Self> {
         Ok(Self {
             details: value.details.try_into()?,
             outcome: value.outcome.into(),
-            submission: value.submission.try_into()?,
+            prepared_order: SubmissionLinkage::from(value.prepared_order).try_into()?,
         })
     }
 }
 
-impl TryFrom<ExitSubmissionWireV1> for ExitSubmissionDecisionFact {
+impl TryFrom<ExitPreparedOrderWireV1> for ExitPreparedOrderFact {
     type Error = anyhow::Error;
 
-    fn try_from(value: ExitSubmissionWireV1) -> Result<Self> {
+    fn try_from(value: ExitPreparedOrderWireV1) -> Result<Self> {
         Ok(Self {
             details: value.details.try_into()?,
             outcome: value.outcome.into(),
-            submission: value.submission.try_into()?,
+            prepared_order: PreparedOrderLinkage::from(SubmissionLinkage::try_from(
+                value.prepared_order,
+            )?),
+        })
+    }
+}
+
+impl TryFrom<ExitIntentDecisionFact> for ExitIntentWireV1 {
+    type Error = anyhow::Error;
+
+    fn try_from(value: ExitIntentDecisionFact) -> Result<Self> {
+        Ok(Self {
+            details: value.details.try_into()?,
+            outcome: value.outcome.into(),
+        })
+    }
+}
+
+impl TryFrom<ExitIntentWireV1> for ExitIntentDecisionFact {
+    type Error = anyhow::Error;
+
+    fn try_from(value: ExitIntentWireV1) -> Result<Self> {
+        Ok(Self {
+            details: value.details.try_into()?,
+            outcome: value.outcome.into(),
         })
     }
 }
@@ -547,7 +662,6 @@ impl TryFrom<ExitEvaluationFact> for ExitEvaluationWireV1 {
             position_id: optional_text(value.position_id, "position_id")?,
             market_id: optional_text(value.market_id, "market_id")?,
             instrument_id: optional_text(value.instrument_id, "instrument_id")?,
-            client_order_id: optional_text(value.client_order_id, "client_order_id")?,
             exit_eval_now_ms: value.exit_eval_now_ms,
             exit_trigger_source: value.exit_trigger_source.into(),
             trigger_ts_event_ms: value.trigger_ts_event_ms,
@@ -585,7 +699,7 @@ impl TryFrom<ExitEvaluationFact> for ExitEvaluationWireV1 {
             )?,
             hold_ev_bps: optional_number(value.hold_ev_bps, "hold_ev_bps")?,
             exit_ev_bps: optional_number(value.exit_ev_bps, "exit_ev_bps")?,
-            decision: value.decision.try_into()?,
+            outcome: value.outcome.try_into()?,
             forced_flat_reasons: value
                 .forced_flat_reasons
                 .into_iter()
@@ -603,7 +717,6 @@ impl TryFrom<ExitEvaluationWireV1> for ExitEvaluationFact {
             position_id: optional_text(value.position_id, "position_id")?,
             market_id: optional_text(value.market_id, "market_id")?,
             instrument_id: optional_text(value.instrument_id, "instrument_id")?,
-            client_order_id: optional_text(value.client_order_id, "client_order_id")?,
             exit_eval_now_ms: value.exit_eval_now_ms,
             exit_trigger_source: value.exit_trigger_source.into(),
             trigger_ts_event_ms: value.trigger_ts_event_ms,
@@ -641,7 +754,7 @@ impl TryFrom<ExitEvaluationWireV1> for ExitEvaluationFact {
             )?,
             hold_ev_bps: optional_number(value.hold_ev_bps, "hold_ev_bps")?,
             exit_ev_bps: optional_number(value.exit_ev_bps, "exit_ev_bps")?,
-            decision: value.decision.try_into()?,
+            outcome: value.outcome.try_into()?,
             forced_flat_reasons: value
                 .forced_flat_reasons
                 .into_iter()
@@ -653,50 +766,144 @@ impl TryFrom<ExitEvaluationWireV1> for ExitEvaluationFact {
     }
 }
 
-impl TryFrom<ExitEvaluationDecision> for ExitEvaluationDecisionV1 {
+impl TryFrom<ExitAttemptOutcome> for ExitAttemptOutcomeV1 {
     type Error = anyhow::Error;
 
-    fn try_from(value: ExitEvaluationDecision) -> Result<Self> {
+    fn try_from(value: ExitAttemptOutcome) -> Result<Self> {
         Ok(match value {
-            ExitEvaluationDecision::Submission { outcome } => Self::Submission {
+            ExitAttemptOutcome::Held { outcome } => Self::Held {
                 outcome: outcome.into(),
             },
-            ExitEvaluationDecision::Hold {
-                outcome,
-                blocked_reason,
-            } => {
-                validate_hold_shape(outcome, blocked_reason)?;
-                Self::Hold {
-                    outcome: outcome.into(),
-                    blocked_reason: blocked_reason.map(Into::into),
+            ExitAttemptOutcome::Blocked { blocked_reason } => Self::Blocked {
+                blocked_reason: blocked_reason.into(),
+            },
+            ExitAttemptOutcome::PreparationRejected { stage, reason } => {
+                Self::PreparationRejected {
+                    stage: stage.into(),
+                    reason: required_text(reason, "preparation_rejected.reason")?,
                 }
             }
+            ExitAttemptOutcome::RouteRejected {
+                prepared_order,
+                reason,
+            } => Self::RouteRejected {
+                prepared_order: prepared_linkage_to_wire(prepared_order)?,
+                reason: required_text(reason, "route_rejected.reason")?,
+            },
+            ExitAttemptOutcome::IntentEvidenceRejected {
+                prepared_order,
+                reason,
+            } => Self::IntentEvidenceRejected {
+                prepared_order: prepared_linkage_to_wire(prepared_order)?,
+                reason: required_text(reason, "intent_evidence_rejected.reason")?,
+            },
+            ExitAttemptOutcome::AdmissionRejected {
+                prepared_order,
+                reason,
+            } => Self::AdmissionRejected {
+                prepared_order: prepared_linkage_to_wire(prepared_order)?,
+                reason: required_text(reason, "admission_rejected.reason")?,
+            },
+            ExitAttemptOutcome::PolicySkipped { prepared_order } => Self::PolicySkipped {
+                prepared_order: prepared_linkage_to_wire(prepared_order)?,
+            },
+            ExitAttemptOutcome::PreSinkRejected {
+                prepared_order,
+                reason,
+            } => Self::PreSinkRejected {
+                prepared_order: prepared_linkage_to_wire(prepared_order)?,
+                reason: required_text(reason, "pre_sink_rejected.reason")?,
+            },
+            ExitAttemptOutcome::SinkRejected {
+                prepared_order,
+                reason,
+            } => Self::SinkRejected {
+                prepared_order: prepared_linkage_to_wire(prepared_order)?,
+                reason: required_text(reason, "sink_rejected.reason")?,
+            },
+            ExitAttemptOutcome::Submitted { submitted_order } => Self::Submitted {
+                submitted_order: submitted_linkage_to_wire(submitted_order)?,
+            },
         })
     }
 }
 
-impl TryFrom<ExitEvaluationDecisionV1> for ExitEvaluationDecision {
+impl TryFrom<ExitAttemptOutcomeV1> for ExitAttemptOutcome {
     type Error = anyhow::Error;
 
-    fn try_from(value: ExitEvaluationDecisionV1) -> Result<Self> {
+    fn try_from(value: ExitAttemptOutcomeV1) -> Result<Self> {
         Ok(match value {
-            ExitEvaluationDecisionV1::Submission { outcome } => Self::Submission {
+            ExitAttemptOutcomeV1::Held { outcome } => Self::Held {
                 outcome: outcome.into(),
             },
-            ExitEvaluationDecisionV1::Hold {
-                outcome,
-                blocked_reason,
-            } => {
-                let outcome = outcome.into();
-                let blocked_reason = blocked_reason.map(Into::into);
-                validate_hold_shape(outcome, blocked_reason)?;
-                Self::Hold {
-                    outcome,
-                    blocked_reason,
+            ExitAttemptOutcomeV1::Blocked { blocked_reason } => Self::Blocked {
+                blocked_reason: blocked_reason.into(),
+            },
+            ExitAttemptOutcomeV1::PreparationRejected { stage, reason } => {
+                Self::PreparationRejected {
+                    stage: stage.into(),
+                    reason: required_text(reason, "preparation_rejected.reason")?,
                 }
             }
+            ExitAttemptOutcomeV1::RouteRejected {
+                prepared_order,
+                reason,
+            } => Self::RouteRejected {
+                prepared_order: prepared_linkage_from_wire(prepared_order)?,
+                reason: required_text(reason, "route_rejected.reason")?,
+            },
+            ExitAttemptOutcomeV1::IntentEvidenceRejected {
+                prepared_order,
+                reason,
+            } => Self::IntentEvidenceRejected {
+                prepared_order: prepared_linkage_from_wire(prepared_order)?,
+                reason: required_text(reason, "intent_evidence_rejected.reason")?,
+            },
+            ExitAttemptOutcomeV1::AdmissionRejected {
+                prepared_order,
+                reason,
+            } => Self::AdmissionRejected {
+                prepared_order: prepared_linkage_from_wire(prepared_order)?,
+                reason: required_text(reason, "admission_rejected.reason")?,
+            },
+            ExitAttemptOutcomeV1::PolicySkipped { prepared_order } => Self::PolicySkipped {
+                prepared_order: prepared_linkage_from_wire(prepared_order)?,
+            },
+            ExitAttemptOutcomeV1::PreSinkRejected {
+                prepared_order,
+                reason,
+            } => Self::PreSinkRejected {
+                prepared_order: prepared_linkage_from_wire(prepared_order)?,
+                reason: required_text(reason, "pre_sink_rejected.reason")?,
+            },
+            ExitAttemptOutcomeV1::SinkRejected {
+                prepared_order,
+                reason,
+            } => Self::SinkRejected {
+                prepared_order: prepared_linkage_from_wire(prepared_order)?,
+                reason: required_text(reason, "sink_rejected.reason")?,
+            },
+            ExitAttemptOutcomeV1::Submitted { submitted_order } => Self::Submitted {
+                submitted_order: submitted_linkage_from_wire(submitted_order)?,
+            },
         })
     }
+}
+
+fn prepared_linkage_to_wire(value: PreparedOrderLinkage) -> Result<SubmissionLinkageWireV1> {
+    SubmissionLinkage::from(value).try_into()
+}
+
+fn prepared_linkage_from_wire(value: SubmissionLinkageWireV1) -> Result<PreparedOrderLinkage> {
+    Ok(SubmissionLinkage::try_from(value)?.into())
+}
+
+fn submitted_linkage_to_wire(value: SubmittedOrderLinkage) -> Result<SubmissionLinkageWireV1> {
+    SubmissionLinkage::from(value).try_into()
+}
+
+fn submitted_linkage_from_wire(value: SubmissionLinkageWireV1) -> Result<SubmittedOrderLinkage> {
+    Ok(SubmissionLinkage::try_from(value)?.into())
 }
 
 macro_rules! bidirectional_unit_enum {
@@ -715,11 +922,22 @@ macro_rules! bidirectional_unit_enum {
 }
 
 bidirectional_unit_enum!(
-    ExitSubmissionOutcome,
-    ExitSubmissionOutcomeV1,
+    ExitIntentOutcome,
+    ExitIntentOutcomeV1,
     [Exit, ExitFailClosed]
 );
 bidirectional_unit_enum!(ExitHoldOutcome, ExitHoldOutcomeV1, [Hold, Blocked]);
+bidirectional_unit_enum!(
+    ExitPreparationStage,
+    ExitPreparationStageV1,
+    [
+        OrderTemplate,
+        InstrumentAuthority,
+        PositionAuthority,
+        ExecutableLiquidity,
+        EconomicsSeal
+    ]
+);
 bidirectional_unit_enum!(
     ExitTriggerSource,
     ExitTriggerSourceV1,

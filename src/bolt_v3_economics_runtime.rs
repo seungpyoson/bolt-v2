@@ -656,6 +656,15 @@ impl EconomicsAdmission {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_planned_fill_legs_for_test(
+        mut self,
+        planned_fill_legs: Vec<crate::economics::PlannedFillLeg>,
+    ) -> Self {
+        self.request.planned_fill_legs = planned_fill_legs;
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn for_routing_test_with_validity(
         execution_client_id: &str,
         instrument_id: &str,

@@ -339,18 +339,21 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
         );
     understated_intent.price = "0.50".to_string();
 
-    let error = strategy
+    let outcome = strategy
         .submit_order_with_decision_evidence(
             understated_intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect_err("compiled order notional above cap must reject before NT submit");
+        .expect("admission rejection should remain a typed route outcome");
 
+    assert_eq!(outcome.kind(), BoltV3SubmitAttemptKind::AdmissionRejected);
     assert!(
-        error.to_string().contains("notional cap is exceeded"),
-        "{error:#}"
+        outcome
+            .diagnostic()
+            .is_some_and(|reason| reason.contains("notional cap is exceeded")),
+        "{outcome:?}"
     );
     assert_eq!(submit_admission.admitted_order_count(), 0);
 }
@@ -951,18 +954,21 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
         &order,
     );
 
-    let error = strategy
+    let outcome = strategy
         .submit_order_with_decision_evidence(
             intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect_err("fee-inclusive over-cap notional must reject before NT submit");
+        .expect("admission rejection should remain a typed route outcome");
 
+    assert_eq!(outcome.kind(), BoltV3SubmitAttemptKind::AdmissionRejected);
     assert!(
-        error.to_string().contains("notional cap is exceeded"),
-        "{error:#}"
+        outcome
+            .diagnostic()
+            .is_some_and(|reason| reason.contains("notional cap is exceeded")),
+        "{outcome:?}"
     );
     assert_eq!(submit_admission.admitted_order_count(), 0);
 }
@@ -1126,18 +1132,21 @@ fn bound_economics_liability_rejects_between_raw_and_full_cost() {
         &order,
     );
 
-    let error = strategy
+    let outcome = strategy
         .submit_order_with_decision_evidence(
             intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect_err("bound economics full liability must reject before NT submit");
+        .expect("admission rejection should remain a typed route outcome");
 
+    assert_eq!(outcome.kind(), BoltV3SubmitAttemptKind::AdmissionRejected);
     assert!(
-        error.to_string().contains("notional cap is exceeded"),
-        "{error:#}"
+        outcome
+            .diagnostic()
+            .is_some_and(|reason| reason.contains("notional cap is exceeded")),
+        "{outcome:?}"
     );
     assert_eq!(submit_admission.admitted_order_count(), 0);
 }
@@ -1194,17 +1203,20 @@ fn bound_economics_liability_cannot_fall_back_to_raw_order_notional() {
         &order,
     );
 
-    let error = strategy
+    let outcome = strategy
         .submit_order_with_decision_evidence(
             intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect_err("bound economics must not fall back to raw order notional");
+        .expect("admission rejection should remain a typed route outcome");
+    assert_eq!(outcome.kind(), BoltV3SubmitAttemptKind::AdmissionRejected);
     assert!(
-        error.to_string().contains("notional cap is exceeded"),
-        "{error:#}"
+        outcome
+            .diagnostic()
+            .is_some_and(|reason| reason.contains("notional cap is exceeded")),
+        "{outcome:?}"
     );
     assert_eq!(
         submit_admission.admitted_order_count(),
@@ -1282,18 +1294,21 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
         &order,
     );
 
-    let error = strategy
+    let outcome = strategy
         .submit_order_with_decision_evidence(
             intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect_err("exhausted count cap must reject before NT submit");
+        .expect("admission rejection should remain a typed route outcome");
 
+    assert_eq!(outcome.kind(), BoltV3SubmitAttemptKind::AdmissionRejected);
     assert!(
-        error.to_string().contains("order count cap is exhausted"),
-        "{error:#}"
+        outcome
+            .diagnostic()
+            .is_some_and(|reason| reason.contains("order count cap is exhausted")),
+        "{outcome:?}"
     );
     assert_eq!(submit_admission.admitted_order_count(), 1);
 }
@@ -1490,7 +1505,7 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
         ManagedPositionOrigin::StrategyEntry,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert!(decision.forced_flat_reasons.is_empty());
     assert_eq!(decision.order_side, Some(OrderSide::Sell));
@@ -1523,7 +1538,7 @@ fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used()
         ManagedPositionOrigin::StrategyEntry,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert_eq!(
         decision.blocked_reason,
@@ -1604,7 +1619,7 @@ fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
         ManagedPositionOrigin::StrategyEntry,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert_eq!(decision.forced_flat_reasons, vec![ForcedFlatReason::Freeze]);
     assert_eq!(decision.order_type, Some(OrderType::Market));
@@ -1640,7 +1655,7 @@ fn forced_flat_exit_order_object_uses_configured_ioc_market_shape() {
         open_position,
         ManagedPositionOrigin::StrategyEntry,
     );
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
     let price = Price::new(
         decision
             .price
@@ -1702,7 +1717,7 @@ fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
         open_position,
         ManagedPositionOrigin::StrategyEntry,
     );
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
     let price = Price::new(
         decision
             .price
@@ -1888,29 +1903,8 @@ fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
 
 #[test]
 fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
-    let mut raw = valid_raw_config();
-    let exit_order = raw
-        .as_table_mut()
-        .expect("valid config must be a table")
-        .get_mut("exit_order")
-        .expect("valid config should include exit_order")
-        .as_table_mut()
-        .expect("exit_order should be a table");
-    exit_order.insert(
-        "order_type".to_string(),
-        Value::String("stop_market".to_string()),
-    );
-    exit_order.insert(
-        "time_in_force".to_string(),
-        Value::String("gtc".to_string()),
-    );
-    exit_order.insert("trigger_price".to_string(), Value::Float(0.52));
-    exit_order.insert(
-        "trigger_instrument_id".to_string(),
-        Value::String("TRIGGER.SOURCE".to_string()),
-    );
-    let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
-        .expect("trigger_instrument_id should parse through runtime config");
+    let config = BinaryOracleEdgeTakerBuilder::parse_config(&valid_raw_config())
+        .expect("canonical runtime config should parse");
     let context = StrategyBuildContext::new(
         fixture_order_economics(),
         recording_decision_evidence(),
@@ -1925,12 +1919,16 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     let _cache = register_test_strategy(&mut strategy);
     let trigger_instrument_id = InstrumentId::from("TRIGGER.SOURCE");
+    strategy.config.entry_order.order_type = OrderType::StopMarket;
+    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+    strategy.config.entry_order.trigger_price = Some(0.52);
+    strategy.config.entry_order.trigger_instrument_id = Some(trigger_instrument_id);
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
     let order = strategy
-        .build_configured_exit_order(
+        .build_configured_entry_order(
             instrument_id,
-            OrderSide::Sell,
+            OrderSide::Buy,
             Quantity::new(2.0, 2),
             Price::new(0.40, 2),
             ClientOrderId::from("O-19700101-000000-001-021-1"),
@@ -1945,20 +1943,8 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
 
 #[test]
 fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
-    let mut raw = valid_raw_config();
-    let exit_order = raw
-        .as_table_mut()
-        .expect("valid config must be a table")
-        .get_mut("exit_order")
-        .expect("valid config should include exit_order")
-        .as_table_mut()
-        .expect("exit_order should be a table");
-    exit_order.insert(
-        "trigger_instrument_id".to_string(),
-        Value::String("TRIGGER.SOURCE".to_string()),
-    );
-    let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
-        .expect("trigger_instrument_id should parse through runtime config");
+    let config = BinaryOracleEdgeTakerBuilder::parse_config(&valid_raw_config())
+        .expect("canonical runtime config should parse");
     let context = StrategyBuildContext::new(
         fixture_order_economics(),
         recording_decision_evidence(),
@@ -1972,12 +1958,13 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
     );
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     let _cache = register_test_strategy(&mut strategy);
+    strategy.config.entry_order.trigger_instrument_id = Some(InstrumentId::from("TRIGGER.SOURCE"));
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
     let error = strategy
-        .build_configured_exit_order(
+        .build_configured_entry_order(
             instrument_id,
-            OrderSide::Sell,
+            OrderSide::Buy,
             Quantity::new(2.0, 2),
             Price::new(0.40, 2),
             ClientOrderId::from("O-19700101-000000-001-022-1"),
@@ -2629,7 +2616,7 @@ fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
         ManagedPositionOrigin::StrategyEntry,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert_eq!(decision.blocked_reason, None);
     assert_eq!(decision.forced_flat_reasons, vec![ForcedFlatReason::Freeze]);
@@ -2661,7 +2648,7 @@ fn stop_market_exit_ev_uses_trigger_price_instead_of_live_book() {
         ManagedPositionOrigin::StrategyEntry,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
     let exit_ev_bps = decision
         .evaluation
         .exit_ev_bps
@@ -2811,7 +2798,7 @@ fn quarantined_legacy_short_position_blocks_exit_submission() {
         UnsupportedObservedReason::BootstrappedUnsupportedContract,
     );
 
-    let decision = strategy.exit_submission_decision_at(2_000);
+    let decision = strategy.exit_intent_decision_at(2_000);
 
     assert_eq!(decision.evaluation.exit_decision, None);
     assert_eq!(decision.instrument_id, None);
@@ -2829,7 +2816,7 @@ fn quarantined_legacy_short_position_blocks_exit_submission() {
 }
 
 #[test]
-fn task6_exit_submission_decision_forced_flat_submits_for_open_up_position() {
+fn forced_flat_exit_intent_submits_for_open_up_position() {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.active.phase = SelectionPhase::Freeze;
     let open_position = OpenPositionState {
@@ -2856,7 +2843,7 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_up_position() {
         ManagedPositionOrigin::StrategyEntry,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert_eq!(decision.order_side, Some(OrderSide::Sell));
     assert_eq!(
@@ -2869,7 +2856,7 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_up_position() {
 }
 
 #[test]
-fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
+fn forced_flat_exit_intent_submits_for_open_down_position() {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.active.phase = SelectionPhase::Freeze;
     let open_position = OpenPositionState {
@@ -2896,7 +2883,7 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
         ManagedPositionOrigin::StrategyEntry,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert_eq!(decision.order_side, Some(OrderSide::Sell));
     assert_eq!(
@@ -2909,7 +2896,7 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
 }
 
 #[test]
-fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
+fn exit_intent_uses_live_hold_vs_exit_boundary() {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
@@ -2941,7 +2928,7 @@ fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert!(decision.forced_flat_reasons.is_empty());
     assert_eq!(decision.order_side, Some(OrderSide::Sell));

@@ -224,6 +224,9 @@ use crate::{
         BoltV3OrderRejectObserverFeed, OrderRejectObserverFeedSubscription,
         subscribe_order_reject_observer_feed_with_health_emitter,
     },
+    bolt_v3_position_authority_feed::{
+        BoltV3PositionAuthorityFeed, BoltV3PositionAuthorityFeedSubscription,
+    },
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderRuntimeApprovals, ReferencePriceIdentifierKind, reference_price_provider_metadata,
@@ -345,6 +348,7 @@ pub struct BoltV3LiveNodeRuntime {
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
+    position_authority_feed_subscription: Option<BoltV3PositionAuthorityFeedSubscription>,
     capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
     submit_admission_nt_projection_subscription: Option<SubmitAdmissionNtProjectionSubscription>,
     submit_admission_nt_projection_trigger: Option<Rc<dyn Fn()>>,
@@ -452,6 +456,7 @@ struct BoltV3LiveNodeRuntimeFeeds {
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
+    position_authority_feed_subscription: Option<BoltV3PositionAuthorityFeedSubscription>,
     capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
     submit_admission_nt_projection_subscription: Option<SubmitAdmissionNtProjectionSubscription>,
     submit_admission_nt_projection_trigger: Option<Rc<dyn Fn()>>,
@@ -477,6 +482,7 @@ struct BoltV3DecisionEvidenceProducerGuards {
     loss_protection_guards: BoltV3LossProtectionRuntimeGuards,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
+    position_authority_feed_subscription: Option<BoltV3PositionAuthorityFeedSubscription>,
     submit_admission_nt_projection_subscription: Option<SubmitAdmissionNtProjectionSubscription>,
     provider_collateral_allowance_runtime_guard:
         Option<BoltV3ProviderCollateralAllowanceRuntimeGuard>,
@@ -497,11 +503,13 @@ impl BoltV3DecisionEvidenceProducerStopper for BoltV3DecisionEvidenceProducerGua
                 loss_protection_guards,
                 loss_runtime_feed_subscription,
                 order_reject_observer_feed_subscription,
+                position_authority_feed_subscription,
                 submit_admission_nt_projection_subscription,
                 provider_collateral_allowance_runtime_guard,
             } = self;
             drop(loss_runtime_feed_subscription);
             drop(order_reject_observer_feed_subscription);
+            drop(position_authority_feed_subscription);
             drop(submit_admission_nt_projection_subscription);
             if let Some(guard) = provider_collateral_allowance_runtime_guard {
                 guard.stop_and_join();
@@ -863,6 +871,7 @@ impl BoltV3LiveNodeRuntime {
             loss_runtime_feed_subscription: feeds.loss_runtime_feed_subscription,
             order_reject_observer_feed: feeds.order_reject_observer_feed,
             order_reject_observer_feed_subscription: feeds.order_reject_observer_feed_subscription,
+            position_authority_feed_subscription: feeds.position_authority_feed_subscription,
             capital_admission_runtime_feed: feeds.capital_admission_runtime_feed,
             submit_admission_nt_projection_subscription: feeds
                 .submit_admission_nt_projection_subscription,
@@ -1415,6 +1424,7 @@ impl BoltV3LiveNodeRuntime {
             order_reject_observer_feed_subscription: self
                 .order_reject_observer_feed_subscription
                 .take(),
+            position_authority_feed_subscription: self.position_authority_feed_subscription.take(),
             submit_admission_nt_projection_subscription: self
                 .submit_admission_nt_projection_subscription
                 .take(),
@@ -3317,10 +3327,13 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let booking_recovery = Some(Arc::clone(&booking_recovery));
     let economics_inputs =
         crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default();
+    let position_authority = position_authority_feed_from_loaded(loaded)?;
+    let position_authority_feed_subscription = Some(position_authority.subscribe());
     let strategy_execution_controls = BoltV3StrategyExecutionControls {
         submit_admission: submit_admission.clone(),
         order_execution_policy,
         economics_inputs: economics_inputs.clone(),
+        position_authority: Some(position_authority),
         settlement_runtime_sink,
         settlement_recovery,
         booking_recovery,
@@ -3489,6 +3502,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             loss_runtime_feed_subscription,
             order_reject_observer_feed,
             order_reject_observer_feed_subscription,
+            position_authority_feed_subscription,
             capital_admission_runtime_feed,
             submit_admission_nt_projection_subscription,
             submit_admission_nt_projection_trigger,
@@ -3630,6 +3644,44 @@ fn execution_account_id(client: &ClientBlock) -> Option<&str> {
         .as_table()?
         .get(stringify!(account_id))?
         .as_str()
+}
+
+fn position_authority_feed_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<BoltV3PositionAuthorityFeed, BoltV3LiveNodeError> {
+    let bindings = loaded
+        .strategies
+        .iter()
+        .map(|strategy| {
+            let execution_client_id = strategy.config.execution_client_id;
+            let client = loaded
+                .root
+                .clients
+                .get(execution_client_id.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "position authority execution client is not loaded: execution_client_id={execution_client_id}"
+                    )
+                })?;
+            Ok(execution_account_id(client).map(|account_id| {
+                (
+                    AccountId::from(account_id),
+                    execution_client_id,
+                    client.venue,
+                )
+            }))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|bindings| bindings.into_iter().flatten().collect::<Vec<_>>())
+        .and_then(BoltV3PositionAuthorityFeed::try_new)
+        .map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(
+                BoltV3StrategyRegistrationError::Evidence {
+                    message: format!("position authority feed construction failed: {error:#}"),
+                },
+            )
+        })?;
+    Ok(bindings)
 }
 
 #[cfg(test)]

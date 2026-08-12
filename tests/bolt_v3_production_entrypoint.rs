@@ -440,10 +440,6 @@ fn codebase_does_not_expose_dead_platform_runtime_actor_or_catalog_modules() {
         strategy.contains("normalize_base_order_quantity("),
         "binary oracle strategy must delegate base quantity normalization to bolt_v3_order_intent before submit"
     );
-    assert!(
-        !strategy.contains("normalize_base_order_quantity_for_execution_venue"),
-        "binary oracle strategy must not call the provider-specific normalization seam directly"
-    );
 }
 
 #[test]

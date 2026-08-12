@@ -78,6 +78,7 @@ fn strategy_registration_test_runtime(
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             economics_inputs: support::economics::polymarket_inputs(loaded),
+            position_authority: None,
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,
@@ -191,6 +192,34 @@ fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &st
     assert!(
         BinaryOracleEdgeTakerBuilder::build_typed(raw, &context).is_err(),
         "{label} entry runtime table must not parse into the strategy config"
+    );
+}
+
+fn assert_unsupported_executable_exit_order_shape(raw: &toml::Value, label: &str) {
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(
+        raw,
+        "strategies.configured_updown_main.parameters.runtime",
+        &mut errors,
+    );
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies.configured_updown_main.parameters.runtime.exit_order"
+                && error.code == "unsupported_executable_exit_order_shape"
+        }),
+        "{label} exit runtime table should reject unsupported executable exit shape: {errors:?}"
+    );
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let context = StrategyBuildContext::new(
+        test_order_economics(),
+        writer.recorder(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+        support::fixture_execution_venue(),
+    );
+    assert!(
+        BinaryOracleEdgeTakerBuilder::build_typed(raw, &context).is_err(),
+        "{label} exit runtime table must not parse into the strategy config"
     );
 }
 
@@ -830,6 +859,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             economics_inputs: support::economics::polymarket_inputs(&loaded),
+            position_authority: None,
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,
@@ -1006,6 +1036,7 @@ fn assert_invalid_second_execution_route_fails_before_binding_preparation(
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             economics_inputs: support::economics::polymarket_inputs(&loaded),
+            position_authority: None,
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,
@@ -1412,6 +1443,7 @@ fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
             economics_inputs: support::economics::polymarket_inputs(&loaded),
+            position_authority: None,
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,
@@ -1888,7 +1920,7 @@ fn binary_oracle_runtime_mapping_rejects_market_if_touched_entry_order_runtime_s
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_market_if_touched_exit_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -1945,26 +1977,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
         Some(false)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "MarketIfTouched exit runtime table should validate: {errors:?}"
-    );
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let context = StrategyBuildContext::new(
-        test_order_economics(),
-        writer.recorder(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
-        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
-        .expect("MarketIfTouched exit runtime table should parse into the strategy config");
+    assert_unsupported_executable_exit_order_shape(&raw, "MarketIfTouched");
 }
 
 #[test]
@@ -2040,7 +2053,7 @@ fn binary_oracle_runtime_mapping_rejects_trailing_stop_market_entry_order_runtim
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_trailing_stop_market_exit_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -2107,26 +2120,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
         Some("ticks")
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "TrailingStopMarket exit runtime table should validate: {errors:?}"
-    );
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let context = StrategyBuildContext::new(
-        test_order_economics(),
-        writer.recorder(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
-        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
-        .expect("TrailingStopMarket exit runtime table should parse into the strategy config");
+    assert_unsupported_executable_exit_order_shape(&raw, "TrailingStopMarket");
 }
 
 #[test]
@@ -2294,7 +2288,7 @@ fn binary_oracle_runtime_mapping_preserves_post_only_gtc_exit_order() {
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_stop_limit_exit_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -2343,30 +2337,11 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
         Some(true)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "StopLimit exit runtime table should validate: {errors:?}"
-    );
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let context = StrategyBuildContext::new(
-        test_order_economics(),
-        writer.recorder(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
-        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
-        .expect("StopLimit exit runtime table should parse into the strategy config");
+    assert_unsupported_executable_exit_order_shape(&raw, "StopLimit");
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_limit_if_touched_exit_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -2415,26 +2390,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
         Some(true)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "LimitIfTouched exit runtime table should validate: {errors:?}"
-    );
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let context = StrategyBuildContext::new(
-        test_order_economics(),
-        writer.recorder(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
-        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
-        .expect("LimitIfTouched exit runtime table should parse into the strategy config");
+    assert_unsupported_executable_exit_order_shape(&raw, "LimitIfTouched");
 }
 
 #[test]

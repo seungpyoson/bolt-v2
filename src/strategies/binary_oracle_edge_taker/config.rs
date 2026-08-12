@@ -268,6 +268,8 @@ const UNKNOWN_FIELD_CODE: &str = stringify!(unknown_field);
 const INVALID_INSTRUMENT_ID_CODE: &str = stringify!(invalid_instrument_id);
 const UNSUPPORTED_EXECUTABLE_ENTRY_ORDER_SHAPE_CODE: &str =
     stringify!(unsupported_executable_entry_order_shape);
+const UNSUPPORTED_EXECUTABLE_EXIT_ORDER_SHAPE_CODE: &str =
+    stringify!(unsupported_executable_exit_order_shape);
 const ORDER_SIDE_BUY_VALUE: &str = stringify!(buy);
 const POSITION_SIDE_LONG_VALUE: &str = stringify!(long);
 
@@ -338,6 +340,7 @@ impl BinaryOracleEdgeTakerBuilder {
         }
         Self::ensure_bps_runtime_knobs_within_full_scale(&config)?;
         Self::ensure_executable_entry_order_shape(&config)?;
+        Self::ensure_executable_exit_order_shapes(&config)?;
         Self::ensure_configured_instrument_id_fields_parse(&config)?;
         Ok(config)
     }
@@ -395,6 +398,32 @@ impl BinaryOracleEdgeTakerBuilder {
             && !order.is_post_only
             && !order.is_reduce_only
             && order.is_quote_quantity
+            && order.trigger_price.is_none()
+            && order.activation_price.is_none()
+            && order.trigger_type.is_none()
+            && order.trigger_instrument_id.is_none()
+            && order.trailing_offset.is_none()
+            && order.trailing_offset_type.is_none()
+    }
+
+    fn ensure_executable_exit_order_shapes(config: &BinaryOracleEdgeTakerConfig) -> Result<()> {
+        for (field, order) in [
+            (EXIT_ORDER_FIELD, &config.exit_order),
+            (FORCED_EXIT_ORDER_FIELD, &config.forced_exit_order),
+        ] {
+            anyhow::ensure!(
+                Self::exit_order_shape_supported(order),
+                "{field} must be market IOC base-quantity without post-only, trigger, or trailing fields"
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn exit_order_shape_supported(order: &BinaryOracleEdgeTakerOrderConfig) -> bool {
+        order.order_type == OrderType::Market
+            && order.time_in_force == TimeInForce::Ioc
+            && !order.is_post_only
+            && !order.is_quote_quantity
             && order.trigger_price.is_none()
             && order.activation_price.is_none()
             && order.trigger_type.is_none()
@@ -650,6 +679,7 @@ impl BinaryOracleEdgeTakerBuilder {
             errors,
         );
         Self::validate_executable_entry_order_shape(table, field_prefix, errors);
+        Self::validate_executable_exit_order_shapes(table, field_prefix, errors);
         Self::validate_slippage_buffer_covers_vwap_depth(table, field_prefix, errors);
         Self::validate_rotating_market_family(table, field_prefix, errors);
         Self::validate_static_binary_event_runtime_fields(table, field_prefix, errors);
@@ -703,6 +733,28 @@ impl BinaryOracleEdgeTakerBuilder {
                 code: UNSUPPORTED_EXECUTABLE_ENTRY_ORDER_SHAPE_CODE,
                 message: "must be buy/long market FOK quote-quantity without post-only, reduce-only, trigger, or trailing fields".to_string(),
             });
+        }
+    }
+
+    fn validate_executable_exit_order_shapes(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        for field in [EXIT_ORDER_FIELD, FORCED_EXIT_ORDER_FIELD] {
+            let Some(order) = table.get(field).and_then(Value::as_table) else {
+                continue;
+            };
+            let supported = Value::Table(order.clone())
+                .try_into::<BinaryOracleEdgeTakerOrderConfig>()
+                .is_ok_and(|order| Self::exit_order_shape_supported(&order));
+            if !supported {
+                errors.push(ValidationError {
+                    field: format!("{field_prefix}.{field}"),
+                    code: UNSUPPORTED_EXECUTABLE_EXIT_ORDER_SHAPE_CODE,
+                    message: "must be market IOC base-quantity without post-only, trigger, or trailing fields".to_string(),
+                });
+            }
         }
     }
 

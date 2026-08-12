@@ -6,7 +6,7 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 
-use super::{BoltV3OrderEconomicsHandle, TrackedMakerOrderRecord};
+use super::{BoltV3OrderEconomicsHandle, RestingRegistrationState, TrackedMakerOrderRecord};
 use crate::bolt_v3_order_execution::{BoltV3NtVenueMutationSink, BoltV3OrderExecutionPolicy};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -546,11 +546,11 @@ impl BoltV3OrderEconomicsHandle {
         client_order_id: ClientOrderId,
         now_ns: u64,
     ) -> Result<bool> {
-        let mut records = self
+        let mut registry = self
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = records.get_mut(&client_order_id) else {
+        let Some(record) = registry.records.get_mut(&client_order_id) else {
             return Ok(false);
         };
         let quote_deadline_ns = record
@@ -568,12 +568,12 @@ impl BoltV3OrderEconomicsHandle {
         order_side: Option<OrderSide>,
         now_ns: u64,
     ) -> Result<Vec<ClientOrderId>> {
-        let mut records = self
+        let mut registry = self
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
         let mut selected = Vec::new();
-        for (client_order_id, record) in records.iter_mut() {
+        for (client_order_id, record) in &mut registry.records {
             if record.cancellation.query_seed.instrument_id() != instrument_id
                 || order_side
                     .is_some_and(|side| record.cancellation.query_seed.order_side() != side)
@@ -596,6 +596,7 @@ impl BoltV3OrderEconomicsHandle {
             .tracked_orders
             .read()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?
+            .records
             .iter()
             .filter_map(|(client_order_id, record)| {
                 record
@@ -643,11 +644,11 @@ impl BoltV3OrderEconomicsHandle {
         origin: CancelCallbackOrigin,
     ) -> Result<()> {
         let retry_timeout_ns = self.economics.cancel_retry_timeout_ns()?;
-        let mut records = self
+        let mut registry = self
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        if let std::collections::btree_map::Entry::Vacant(entry) = records.entry(client_order_id) {
+        if !registry.records.contains_key(&client_order_id) {
             let Some(order) = cached.as_ref() else {
                 return Ok(());
             };
@@ -659,12 +660,20 @@ impl BoltV3OrderEconomicsHandle {
             }
             let mut cancellation = TrackedOrderCancellation::new(order.clone());
             cancellation.request_intent(now_ns);
-            entry.insert(TrackedMakerOrderRecord {
-                economics: None,
-                cancellation,
-            });
+            let generation = registry
+                .allocate_generation()
+                .ok_or_else(|| anyhow::anyhow!("resting economics recovery generation overflow"))?;
+            registry.records.insert(
+                client_order_id,
+                TrackedMakerOrderRecord {
+                    registration_generation: generation,
+                    registration_state: RestingRegistrationState::Committed,
+                    economics: None,
+                    cancellation,
+                },
+            );
         }
-        let Some(record) = records.get_mut(&client_order_id) else {
+        let Some(record) = registry.records.get_mut(&client_order_id) else {
             return Ok(());
         };
         if !record.cancellation.is_requested()
@@ -684,7 +693,7 @@ impl BoltV3OrderEconomicsHandle {
             if cached.as_ref().is_some_and(|order| {
                 order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO
             }) {
-                records.remove(&client_order_id);
+                registry.remove_record(&client_order_id);
             }
             return Ok(());
         };
@@ -698,7 +707,7 @@ impl BoltV3OrderEconomicsHandle {
         )?;
         match effect {
             CancelEffect::Remove => {
-                records.remove(&client_order_id);
+                registry.remove_record(&client_order_id);
             }
             CancelEffect::None => {}
             CancelEffect::Cancel { .. } | CancelEffect::Query { .. } => {
@@ -804,11 +813,11 @@ impl BoltV3OrderEconomicsHandle {
         retry_timeout_ns: u64,
     ) -> Result<()> {
         let mut failures = Vec::new();
-        let mut records = self
+        let mut registry = self
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = records.get_mut(&client_order_id) else {
+        let Some(record) = registry.records.get_mut(&client_order_id) else {
             if let CancelOperationCompletion::Unobserved(error) = completion {
                 failures.push(error.to_string());
             }
@@ -839,7 +848,7 @@ impl BoltV3OrderEconomicsHandle {
         };
         match effect {
             Ok(CancelEffect::Remove) => {
-                records.remove(&client_order_id);
+                registry.remove_record(&client_order_id);
             }
             Ok(CancelEffect::None) => {}
             Ok(CancelEffect::Cancel { .. } | CancelEffect::Query { .. }) => {
@@ -847,7 +856,7 @@ impl BoltV3OrderEconomicsHandle {
             }
             Err(error) => failures.push(error.to_string()),
         }
-        drop(records);
+        drop(registry);
         self.finish_cancel_drive(client_order_id, failures)
     }
 
@@ -860,11 +869,11 @@ impl BoltV3OrderEconomicsHandle {
         retry_timeout_ns: u64,
         escalation_attempts: u32,
     ) -> Result<CancelEffect> {
-        let mut records = self
+        let mut registry = self
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = records.get_mut(&client_order_id) else {
+        let Some(record) = registry.records.get_mut(&client_order_id) else {
             return Ok(CancelEffect::None);
         };
         let TrackedOrderCancellation { query_seed, intent } = &mut record.cancellation;
@@ -893,7 +902,7 @@ impl BoltV3OrderEconomicsHandle {
         }?;
         match effect {
             CancelEffect::Remove => {
-                records.remove(&client_order_id);
+                registry.remove_record(&client_order_id);
                 Ok(CancelEffect::Remove)
             }
             other => Ok(other),
@@ -905,11 +914,12 @@ impl BoltV3OrderEconomicsHandle {
         client_order_id: ClientOrderId,
         mut failures: Vec<String>,
     ) -> Result<()> {
-        let records = self
+        let registry = self
             .tracked_orders
             .read()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        if let Some(error) = records
+        if let Some(error) = registry
+            .records
             .get(&client_order_id)
             .and_then(|record| record.cancellation.intent.as_ref())
             .and_then(|cancel| cancel.health_snapshot(client_order_id).runtime_error())

@@ -71,10 +71,10 @@ fn replace_producer_field(
 fn current_contract_is_closed_and_deterministic() {
     let contract = parse_contract_registry(REGISTRY).expect("current contract must parse");
     assert_eq!(contract.consumer_count(), 5);
-    assert_eq!(contract.producer_count(), 24);
-    assert_eq!(contract.purpose_count(), 23);
-    assert_eq!(contract.identity_count(), 23);
-    assert_eq!(contract.fact_count(), 23);
+    assert_eq!(contract.producer_count(), 25);
+    assert_eq!(contract.purpose_count(), 24);
+    assert_eq!(contract.identity_count(), 24);
+    assert_eq!(contract.fact_count(), 24);
     assert_eq!(contract.census_disposition_count(), 20);
     let (disposition, current_producers) = contract
         .census_disposition("submit_reservation_metadata")

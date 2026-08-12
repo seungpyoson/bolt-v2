@@ -159,13 +159,13 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
 
     assert_eq!(
         outcome,
-        MakerOrderDispatchOutcome::Submitted {
-            leg: Leg::Yes,
-            instrument_id: InstrumentId::from("YES.RUNTIME"),
-            client_order_id: ClientOrderId::from("MAKER-YES-1"),
-            price: Price::new(0.40, 2),
-            quantity: Quantity::new(2.0, 2),
-        }
+        MakerOrderDispatchOutcome::policy_skipped_for_test(
+            Leg::Yes,
+            InstrumentId::from("YES.RUNTIME"),
+            ClientOrderId::from("MAKER-YES-1"),
+            Price::new(0.40, 2),
+            Quantity::new(2.0, 2),
+        )
     );
     assert_eq!(admission.admitted_order_count(), 0);
     assert_eq!(writer.records().len(), 1);
@@ -275,19 +275,20 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
         .runtime()
         .market(MARKET_KEY)
         .expect("the routed market remains active");
-    let assert_runtime_submit = |dispatch: &MakerOrderDispatchOutcome,
-                                 leg: Leg,
-                                 price: Price,
-                                 quantity: Quantity| {
-        let MakerOrderDispatchOutcome::Submitted {
+    let assert_runtime_policy_skip = |dispatch: &MakerOrderDispatchOutcome,
+                                      leg: Leg,
+                                      price: Price,
+                                      quantity: Quantity| {
+        let MakerOrderDispatchOutcome::SubmitAttempt {
             leg: dispatched_leg,
             instrument_id,
-            client_order_id,
+            prepared_client_order_id,
             price: dispatched_price,
             quantity: dispatched_quantity,
+            transaction,
         } = dispatch
         else {
-            panic!("expected a submitted runtime leg, got {dispatch:?}");
+            panic!("expected a runtime submit attempt, got {dispatch:?}");
         };
         assert_eq!(*dispatched_leg, leg);
         assert_eq!(
@@ -295,26 +296,34 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
             runtime_market.leg_binding(leg).instrument_id,
             "the route must target the active runtime binding, never a caller-supplied instrument"
         );
+        assert!(runtime_market.leg_binding(leg).active_order.is_none());
         assert_eq!(
             runtime_market
                 .leg_binding(leg)
-                .active_order
+                .next_order
                 .as_ref()
-                .expect("the dispatched identity must be reconciled into the runtime")
+                .expect("a policy skip retains the prepared identity")
                 .client_order_id()
                 .as_str(),
-            client_order_id.as_str()
+            prepared_client_order_id.as_str()
         );
         assert_eq!(*dispatched_price, price);
         assert_eq!(*dispatched_quantity, quantity);
+        assert!(matches!(
+            transaction,
+            bolt_v2::bolt_v3_order_execution::BoltV3RestingSubmitTransactionOutcome::Attempt(
+                outcome
+            ) if outcome.kind()
+                == bolt_v2::bolt_v3_order_execution::BoltV3SubmitAttemptKind::PolicySkipped
+        ));
     };
-    assert_runtime_submit(
+    assert_runtime_policy_skip(
         yes_dispatch,
         Leg::Yes,
         Price::new(quote_plan.targets.leg_a.price, 2),
         Quantity::new(2.0, 2),
     );
-    assert_runtime_submit(
+    assert_runtime_policy_skip(
         no_dispatch,
         Leg::No,
         Price::new(quote_plan.targets.leg_b.price, 2),
@@ -1396,11 +1405,11 @@ fn maker_runtime_metadata_identity_round_trip_prunes_each_predecessor_episode() 
         .runtime()
         .market(RUNTIME_MARKET_KEY)
         .expect("the first identity remains active");
-    let yes_active = before_correction
+    let yes_next = before_correction
         .leg_binding(Leg::Yes)
-        .active_order
+        .next_order
         .clone()
-        .expect("the admitted YES leg has an active handle");
+        .expect("the policy-skipped YES leg retains its pending handle");
     let no_next = before_correction
         .leg_binding(Leg::No)
         .next_order
@@ -1424,8 +1433,8 @@ fn maker_runtime_metadata_identity_round_trip_prunes_each_predecessor_episode() 
             .market(RUNTIME_MARKET_KEY)
             .expect("the corrected identity is active")
             .leg_binding(Leg::Yes)
-            .active_order,
-        Some(yes_active.clone())
+            .next_order,
+        Some(yes_next.clone())
     );
     assert_eq!(
         maker
@@ -1457,7 +1466,7 @@ fn maker_runtime_metadata_identity_round_trip_prunes_each_predecessor_episode() 
         .runtime()
         .market(RUNTIME_MARKET_KEY)
         .expect("the corrected identity remains active");
-    let yes_after_b = after_b.leg_binding(Leg::Yes).active_order.clone();
+    let yes_after_b = after_b.leg_binding(Leg::Yes).next_order.clone();
     let no_after_b = after_b.leg_binding(Leg::No).next_order.clone();
 
     refresh_maker_instruments(&mut maker, &cache, runtime_static_instruments());
@@ -1466,7 +1475,7 @@ fn maker_runtime_metadata_identity_round_trip_prunes_each_predecessor_episode() 
         .market(RUNTIME_MARKET_KEY)
         .expect("the original metadata identity is active again");
     assert_eq!(reverted.concrete_identity(), identity_a);
-    assert_eq!(reverted.leg_binding(Leg::Yes).active_order, yes_after_b);
+    assert_eq!(reverted.leg_binding(Leg::Yes).next_order, yes_after_b);
     assert_eq!(reverted.leg_binding(Leg::No).next_order, no_after_b);
     maker
         .run_quote_cycle(
@@ -1887,13 +1896,13 @@ fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
 
     assert_eq!(
         outcome.order.dispatch,
-        Some(MakerOrderDispatchOutcome::Submitted {
-            leg: Leg::Yes,
-            instrument_id: InstrumentId::from("YES.RUNTIME"),
-            client_order_id: ClientOrderId::from("MAKER-YES-2"),
-            price: Price::new(targets.leg_a.price, 2),
-            quantity: Quantity::new(quote_set.yes_quantity, 2),
-        })
+        Some(MakerOrderDispatchOutcome::policy_skipped_for_test(
+            Leg::Yes,
+            InstrumentId::from("YES.RUNTIME"),
+            ClientOrderId::from("MAKER-YES-2"),
+            Price::new(targets.leg_a.price, 2),
+            Quantity::new(quote_set.yes_quantity, 2),
+        ))
     );
     assert_eq!(
         budget.submit_commands_in_window(),
@@ -3755,11 +3764,22 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
         .expect("a fresh market quote cycle dispatches leg order intent");
     let no_id = InstrumentId::from(RUNTIME_NO_INSTRUMENT);
     match &orders.yes.dispatch {
-        Some(MakerOrderDispatchOutcome::Submitted { instrument_id, .. }) => {
+        Some(MakerOrderDispatchOutcome::SubmitAttempt {
+            instrument_id,
+            transaction,
+            ..
+        }) => {
             assert_eq!(
                 *instrument_id, yes_id,
                 "the YES leg intent must target the resolved YES instrument"
             );
+            assert!(matches!(
+                transaction,
+                bolt_v2::bolt_v3_order_execution::BoltV3RestingSubmitTransactionOutcome::Attempt(
+                    outcome
+                ) if outcome.kind()
+                    == bolt_v2::bolt_v3_order_execution::BoltV3SubmitAttemptKind::PolicySkipped
+            ));
         }
         other => panic!("expected a YES submit intent in shadow, got {other:?}"),
     }
@@ -3767,38 +3787,50 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
     // only the YES leg would let a regression that dropped the NO-leg rotation, or
     // transposed both rotations onto YES, ship green.
     match &orders.no.dispatch {
-        Some(MakerOrderDispatchOutcome::Submitted { instrument_id, .. }) => {
+        Some(MakerOrderDispatchOutcome::SubmitAttempt {
+            instrument_id,
+            transaction,
+            ..
+        }) => {
             assert_eq!(
                 *instrument_id, no_id,
                 "the NO leg intent must target the resolved NO instrument"
             );
+            assert!(matches!(
+                transaction,
+                bolt_v2::bolt_v3_order_execution::BoltV3RestingSubmitTransactionOutcome::Attempt(
+                    outcome
+                ) if outcome.kind()
+                    == bolt_v2::bolt_v3_order_execution::BoltV3SubmitAttemptKind::PolicySkipped
+            ));
         }
         other => panic!("expected a NO submit intent in shadow, got {other:?}"),
     }
     // Shadow chokepoint: intent emitted, nothing admitted to the venue.
     assert_eq!(admission.admitted_order_count(), 0);
 
-    // The dispatched identity rotated from `next` to `active` on BOTH legs; the next
-    // slot is consumed so the following cycle mints a fresh generation.
+    // A policy skip is not a submission: neither leg may fabricate an active order,
+    // and each pre-minted identity remains in `next_order` for a later eligible
+    // attempt.
     let market_runtime = maker
         .runtime()
         .market(RUNTIME_MARKET_KEY)
         .expect("the market is still active after the cycle");
     assert!(
-        market_runtime.leg_binding(Leg::Yes).active_order.is_some(),
-        "a submitted YES intent must rotate the minted identity to active"
+        market_runtime.leg_binding(Leg::Yes).active_order.is_none(),
+        "a policy-skipped YES intent must not fabricate an active order"
     );
     assert!(
-        market_runtime.leg_binding(Leg::Yes).next_order.is_none(),
-        "the minted next YES identity is consumed by the submit"
+        market_runtime.leg_binding(Leg::Yes).next_order.is_some(),
+        "the minted next YES identity remains available after a policy skip"
     );
     assert!(
-        market_runtime.leg_binding(Leg::No).active_order.is_some(),
-        "a submitted NO intent must rotate the minted identity to active"
+        market_runtime.leg_binding(Leg::No).active_order.is_none(),
+        "a policy-skipped NO intent must not fabricate an active order"
     );
     assert!(
-        market_runtime.leg_binding(Leg::No).next_order.is_none(),
-        "the minted next NO identity is consumed by the submit"
+        market_runtime.leg_binding(Leg::No).next_order.is_some(),
+        "the minted next NO identity remains available after a policy skip"
     );
 }
 

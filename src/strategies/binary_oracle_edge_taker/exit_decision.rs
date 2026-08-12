@@ -56,7 +56,7 @@ pub(super) struct ExitRealizedVolatilityGateReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct ExitSubmissionDecision {
+pub(super) struct ExitIntentDecision {
     pub(super) evaluation: ExitEvaluation,
     pub(super) instrument_id: Option<InstrumentId>,
     pub(super) order_type: Option<OrderType>,
@@ -156,7 +156,7 @@ impl ExitEvaluationTriggerContext {
     }
 }
 
-impl ExitSubmissionDecision {
+impl ExitIntentDecision {
     pub(super) fn execution_config(&self) -> Option<ExitOrderExecutionConfig> {
         Some(ExitOrderExecutionConfig {
             side: self.order_side?,

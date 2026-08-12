@@ -2008,7 +2008,7 @@ fn exit_hold_ev_does_not_require_uncertainty_band_components() {
     strategy.pricing.last_lead_gap_probability = None;
     strategy.pricing.last_jitter_penalty_probability = None;
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert!(decision.evaluation.hold_ev_bps.is_some());
     assert!(decision.evaluation.exit_ev_bps.is_some());

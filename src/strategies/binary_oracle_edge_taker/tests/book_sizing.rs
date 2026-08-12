@@ -177,7 +177,7 @@ fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
     strategy.active.books.up.liquidity_available = Some(5_000.0);
     strategy.active.books.down.liquidity_available = Some(5_000.0);
 
-    let decision = strategy.exit_submission_decision_at(2_000);
+    let decision = strategy.exit_intent_decision_at(2_000);
 
     assert!(
         decision

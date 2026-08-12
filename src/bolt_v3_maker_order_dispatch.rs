@@ -16,8 +16,9 @@ use nautilus_model::{
 };
 
 use crate::{
-    bolt_v3_maker_order_compile::MakerCompiledOrderCommand, bolt_v3_order_intent::build_nt_order,
-    bolt_v3_quote_lifecycle::Leg,
+    bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
+    bolt_v3_order_execution::BoltV3RestingSubmitTransactionOutcome,
+    bolt_v3_order_intent::build_nt_order, bolt_v3_quote_lifecycle::Leg,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -26,14 +27,15 @@ pub struct MakerOrderDispatchInput<'a> {
     pub submit_order_prefix: &'a str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MakerOrderDispatchOutcome {
-    Submitted {
+    SubmitAttempt {
         leg: Leg,
         instrument_id: InstrumentId,
-        client_order_id: ClientOrderId,
+        prepared_client_order_id: ClientOrderId,
         price: Price,
         quantity: Quantity,
+        transaction: BoltV3RestingSubmitTransactionOutcome,
     },
     Canceled {
         leg: Leg,
@@ -54,10 +56,118 @@ pub enum MakerOrderDispatchOutcome {
     },
 }
 
+#[cfg(any(test, feature = "test-current-evidence-inspection"))]
+impl MakerOrderDispatchOutcome {
+    #[must_use]
+    pub fn submitted_for_test(
+        leg: Leg,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        price: Price,
+        quantity: Quantity,
+    ) -> Self {
+        Self::SubmitAttempt {
+            leg,
+            instrument_id,
+            prepared_client_order_id: client_order_id,
+            price,
+            quantity,
+            transaction: BoltV3RestingSubmitTransactionOutcome::submitted_with_linkage_for_test(
+                instrument_id,
+                OrderSide::Buy,
+                price,
+                quantity,
+                client_order_id,
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn policy_skipped_for_test(
+        leg: Leg,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        price: Price,
+        quantity: Quantity,
+    ) -> Self {
+        Self::SubmitAttempt {
+            leg,
+            instrument_id,
+            prepared_client_order_id: client_order_id,
+            price,
+            quantity,
+            transaction: BoltV3RestingSubmitTransactionOutcome::policy_skipped_for_test(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MakerOrderCommandFailureKind {
+    Lifecycle,
+    Build,
+    SubmitPreparation,
+    Cancel,
+    CancelAll,
+    Modify,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MakerOrderCommandFailure {
+    kind: MakerOrderCommandFailureKind,
+    diagnostic: String,
+}
+
+impl MakerOrderCommandFailure {
+    pub(crate) fn new(kind: MakerOrderCommandFailureKind, error: impl std::fmt::Display) -> Self {
+        Self {
+            kind,
+            diagnostic: error.to_string(),
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> MakerOrderCommandFailureKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub fn diagnostic(&self) -> &str {
+        &self.diagnostic
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[must_use]
+    pub fn for_test(kind: MakerOrderCommandFailureKind, diagnostic: impl Into<String>) -> Self {
+        Self {
+            kind,
+            diagnostic: diagnostic.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for MakerOrderCommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "maker command {:?} failure: {}",
+            self.kind, self.diagnostic
+        )
+    }
+}
+
+impl std::error::Error for MakerOrderCommandFailure {}
+
 pub trait MakerOrderCommandSink {
+    type PreparedSubmit;
+
     fn order_factory(&mut self) -> RefMut<'_, OrderFactory>;
 
-    fn submit_maker_order(&mut self, order: OrderAny) -> Result<()>;
+    fn prepare_maker_order(&mut self, order: OrderAny) -> Result<Self::PreparedSubmit>;
+
+    fn submit_maker_order(
+        &mut self,
+        prepared: Self::PreparedSubmit,
+    ) -> BoltV3RestingSubmitTransactionOutcome;
 
     fn cancel_maker_order(
         &mut self,
@@ -86,7 +196,7 @@ pub trait MakerOrderCommandSink {
 pub fn dispatch_maker_order_command(
     input: MakerOrderDispatchInput<'_>,
     sink: &mut impl MakerOrderCommandSink,
-) -> Result<MakerOrderDispatchOutcome> {
+) -> std::result::Result<MakerOrderDispatchOutcome, MakerOrderCommandFailure> {
     match input.command {
         MakerCompiledOrderCommand::Submit {
             leg,
@@ -104,19 +214,29 @@ pub fn dispatch_maker_order_command(
                     input.submit_order_prefix,
                     template,
                     *inputs,
-                )?
+                )
+                .map_err(|error| {
+                    MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Build, error)
+                })?
             };
-            let client_order_id = order.client_order_id();
+            let prepared_client_order_id = order.client_order_id();
             let instrument_id = order.instrument_id();
             let price = order.price().unwrap_or(*fallback_price);
             let quantity = order.quantity();
-            sink.submit_maker_order(order)?;
-            Ok(MakerOrderDispatchOutcome::Submitted {
+            let prepared = sink.prepare_maker_order(order).map_err(|error| {
+                MakerOrderCommandFailure::new(
+                    MakerOrderCommandFailureKind::SubmitPreparation,
+                    error,
+                )
+            })?;
+            let transaction = sink.submit_maker_order(prepared);
+            Ok(MakerOrderDispatchOutcome::SubmitAttempt {
                 leg: *leg,
                 instrument_id,
-                client_order_id,
+                prepared_client_order_id,
                 price,
                 quantity,
+                transaction,
             })
         }
         MakerCompiledOrderCommand::Cancel {
@@ -124,7 +244,10 @@ pub fn dispatch_maker_order_command(
             instrument_id,
             client_order_id,
         } => {
-            sink.cancel_maker_order(*leg, *instrument_id, *client_order_id)?;
+            sink.cancel_maker_order(*leg, *instrument_id, *client_order_id)
+                .map_err(|error| {
+                    MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Cancel, error)
+                })?;
             Ok(MakerOrderDispatchOutcome::Canceled {
                 leg: *leg,
                 instrument_id: *instrument_id,
@@ -136,7 +259,10 @@ pub fn dispatch_maker_order_command(
             instrument_id,
             order_side,
         } => {
-            sink.cancel_all_maker_orders(*leg, *instrument_id, *order_side)?;
+            sink.cancel_all_maker_orders(*leg, *instrument_id, *order_side)
+                .map_err(|error| {
+                    MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::CancelAll, error)
+                })?;
             Ok(MakerOrderDispatchOutcome::CanceledAll {
                 leg: *leg,
                 instrument_id: *instrument_id,
@@ -150,7 +276,10 @@ pub fn dispatch_maker_order_command(
             price,
             quantity,
         } => {
-            sink.modify_maker_order(*leg, *instrument_id, *client_order_id, *price, *quantity)?;
+            sink.modify_maker_order(*leg, *instrument_id, *client_order_id, *price, *quantity)
+                .map_err(|error| {
+                    MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Modify, error)
+                })?;
             Ok(MakerOrderDispatchOutcome::Modified {
                 leg: *leg,
                 instrument_id: *instrument_id,

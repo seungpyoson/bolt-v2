@@ -1060,16 +1060,100 @@ pub struct ExitDecisionDetails {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExitSubmissionOutcome {
+pub enum ExitIntentOutcome {
     Exit,
     ExitFailClosed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExitSubmissionDecisionFact {
+pub struct ExitIntentDecisionFact {
     pub details: ExitDecisionDetails,
-    pub outcome: ExitSubmissionOutcome,
-    pub submission: SubmissionLinkage,
+    pub outcome: ExitIntentOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedOrderLinkage {
+    pub instrument_id: String,
+    pub order_side: EvidenceOrderSide,
+    pub price: String,
+    pub quantity: String,
+    pub client_order_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmittedOrderLinkage {
+    pub instrument_id: String,
+    pub order_side: EvidenceOrderSide,
+    pub price: String,
+    pub quantity: String,
+    pub client_order_id: String,
+}
+
+impl From<SubmissionLinkage> for PreparedOrderLinkage {
+    fn from(value: SubmissionLinkage) -> Self {
+        Self {
+            instrument_id: value.instrument_id,
+            order_side: value.order_side,
+            price: value.price,
+            quantity: value.quantity,
+            client_order_id: value.client_order_id,
+        }
+    }
+}
+
+impl From<PreparedOrderLinkage> for SubmissionLinkage {
+    fn from(value: PreparedOrderLinkage) -> Self {
+        Self {
+            instrument_id: value.instrument_id,
+            order_side: value.order_side,
+            price: value.price,
+            quantity: value.quantity,
+            client_order_id: value.client_order_id,
+        }
+    }
+}
+
+impl From<PreparedOrderLinkage> for SubmittedOrderLinkage {
+    fn from(value: PreparedOrderLinkage) -> Self {
+        Self {
+            instrument_id: value.instrument_id,
+            order_side: value.order_side,
+            price: value.price,
+            quantity: value.quantity,
+            client_order_id: value.client_order_id,
+        }
+    }
+}
+
+impl From<SubmittedOrderLinkage> for SubmissionLinkage {
+    fn from(value: SubmittedOrderLinkage) -> Self {
+        Self {
+            instrument_id: value.instrument_id,
+            order_side: value.order_side,
+            price: value.price,
+            quantity: value.quantity,
+            client_order_id: value.client_order_id,
+        }
+    }
+}
+
+impl From<SubmissionLinkage> for SubmittedOrderLinkage {
+    fn from(value: SubmissionLinkage) -> Self {
+        Self {
+            instrument_id: value.instrument_id,
+            order_side: value.order_side,
+            price: value.price,
+            quantity: value.quantity,
+            client_order_id: value.client_order_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitPreparedOrderFact {
+    pub details: ExitDecisionDetails,
+    pub outcome: ExitIntentOutcome,
+    pub prepared_order: PreparedOrderLinkage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1086,13 +1170,51 @@ pub struct ExitHoldDecisionFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExitEvaluationDecision {
-    Submission {
-        outcome: ExitSubmissionOutcome,
-    },
-    Hold {
+pub enum ExitPreparationStage {
+    OrderTemplate,
+    InstrumentAuthority,
+    PositionAuthority,
+    ExecutableLiquidity,
+    EconomicsSeal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExitAttemptOutcome {
+    Held {
         outcome: ExitHoldOutcome,
-        blocked_reason: Option<ExitBlockedReason>,
+    },
+    Blocked {
+        blocked_reason: ExitBlockedReason,
+    },
+    PreparationRejected {
+        stage: ExitPreparationStage,
+        reason: String,
+    },
+    RouteRejected {
+        prepared_order: PreparedOrderLinkage,
+        reason: String,
+    },
+    IntentEvidenceRejected {
+        prepared_order: PreparedOrderLinkage,
+        reason: String,
+    },
+    AdmissionRejected {
+        prepared_order: PreparedOrderLinkage,
+        reason: String,
+    },
+    PolicySkipped {
+        prepared_order: PreparedOrderLinkage,
+    },
+    PreSinkRejected {
+        prepared_order: PreparedOrderLinkage,
+        reason: String,
+    },
+    SinkRejected {
+        prepared_order: PreparedOrderLinkage,
+        reason: String,
+    },
+    Submitted {
+        submitted_order: SubmittedOrderLinkage,
     },
 }
 
@@ -1101,7 +1223,6 @@ pub struct ExitEvaluationFact {
     pub position_id: Option<String>,
     pub market_id: Option<String>,
     pub instrument_id: Option<String>,
-    pub client_order_id: Option<String>,
     pub exit_eval_now_ms: i64,
     pub exit_trigger_source: ExitTriggerSource,
     pub trigger_ts_event_ms: Option<i64>,
@@ -1126,7 +1247,7 @@ pub struct ExitEvaluationFact {
     pub uncertainty_band_probability: Option<String>,
     pub hold_ev_bps: Option<String>,
     pub exit_ev_bps: Option<String>,
-    pub decision: ExitEvaluationDecision,
+    pub outcome: ExitAttemptOutcome,
     pub forced_flat_reasons: Vec<ForcedFlatReason>,
 }
 
@@ -1649,7 +1770,8 @@ mod current_fact {
         CapitalAdmissionRebuild(CapitalAdmissionRebuildFact),
         SubmitReservationFill(SubmitReservationFillFact),
         EntrySkipObservation(Box<EntrySkipFact>),
-        ExitSubmissionDecision(Box<ExitSubmissionDecisionFact>),
+        ExitIntentDecision(Box<ExitIntentDecisionFact>),
+        ExitPreparedOrder(Box<ExitPreparedOrderFact>),
         ExitHoldDecision(Box<ExitHoldDecisionFact>),
         ExitEvaluation(Box<ExitEvaluationFact>),
         LossGovernorHalt(LossGovernorHaltFact),
@@ -1681,7 +1803,8 @@ mod current_fact {
                 Self::CapitalAdmissionRebuild(_) => KnownFact::CapitalAdmissionRebuildV1,
                 Self::SubmitReservationFill(_) => KnownFact::SubmitReservationFillV1,
                 Self::EntrySkipObservation(_) => KnownFact::EntrySkipObservationV1,
-                Self::ExitSubmissionDecision(_) => KnownFact::ExitSubmissionDecisionV1,
+                Self::ExitIntentDecision(_) => KnownFact::ExitIntentDecisionV1,
+                Self::ExitPreparedOrder(_) => KnownFact::ExitPreparedOrderV1,
                 Self::ExitHoldDecision(_) => KnownFact::ExitHoldDecisionV1,
                 Self::ExitEvaluation(_) => KnownFact::ExitEvaluationV1,
                 Self::LossGovernorHalt(_) => KnownFact::LossGovernorHaltV1,

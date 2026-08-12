@@ -167,14 +167,24 @@ current_identity = "entry_skip_observation_v1"
 current_fact = "entry_skip_observation_v1"
 
 [[purposes]]
-id = "exit_submission_decision"
+id = "exit_intent_decision"
 owner = "bolt_v3_decision_evidence"
 duties = ["action"]
 effect_policy = "risk_reducing_continues"
 sink = "machine"
 novelty_capability = "prohibited"
-current_identity = "exit_submission_decision_v1"
-current_fact = "exit_submission_decision_v1"
+current_identity = "exit_intent_decision_v1"
+current_fact = "exit_intent_decision_v1"
+
+[[purposes]]
+id = "exit_prepared_order"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "risk_reducing_continues"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "exit_prepared_order_v1"
+current_fact = "exit_prepared_order_v1"
 
 [[purposes]]
 id = "exit_hold_decision"
@@ -329,7 +339,7 @@ current_producers = ["edge_taker_entry_skip"]
 [[census_dispositions]]
 ancestor = "exit_decision"
 disposition = "inherited"
-current_producers = ["edge_taker_exit_submit_decision", "edge_taker_exit_hold_decision"]
+current_producers = ["edge_taker_exit_intent_decision", "edge_taker_exit_prepared_order", "edge_taker_exit_hold_decision"]
 
 [[census_dispositions]]
 ancestor = "exit_evaluation"
@@ -560,14 +570,25 @@ dedupe_key_evidence = "EvidenceEpisodeId binds stable strategy, target, venue an
 census_ancestor = "entry_skip"
 
 [[producers]]
-id = "edge_taker_exit_submit_decision"
-purpose = "exit_submission_decision"
+id = "edge_taker_exit_intent_decision"
+purpose = "exit_intent_decision"
 classification = "already-deduped"
 runtime_wiring = "wired"
 reviewed_runtime_triggers = ["startup", "quote", "book", "timer"]
-call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_decision_once"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_intent_or_hold_once"]
 repeat_semantics = "current last-key guard suppresses only adjacent repeats and re-emits A-B-A; migrate to the closed exit-outcome domain"
 dedupe_key_evidence = "current key includes market and position identity plus semantic outcome; the required monotone state excludes volatile timing fields"
+census_ancestor = "exit_decision"
+
+[[producers]]
+id = "edge_taker_exit_prepared_order"
+purpose = "exit_prepared_order"
+classification = "already-deduped"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "quote", "book", "timer"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_prepared_order"]
+repeat_semantics = "one fact per successfully prepared exit attempt; no cross-attempt suppression"
+dedupe_key_evidence = "each prepared fact is bound to the final prepared client order identity"
 census_ancestor = "exit_decision"
 
 [[producers]]
@@ -576,7 +597,7 @@ purpose = "exit_hold_decision"
 classification = "already-deduped"
 runtime_wiring = "wired"
 reviewed_runtime_triggers = ["startup", "quote", "book", "timer"]
-call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_decision_once"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_intent_or_hold_once"]
 repeat_semantics = "current last-key guard suppresses only adjacent repeats and re-emits A-B-A; migrate to the closed exit-outcome domain"
 dedupe_key_evidence = "current key includes market and position identity plus semantic outcome; the required monotone state excludes volatile timing fields"
 census_ancestor = "exit_decision"
@@ -772,9 +793,16 @@ schema_version = 18
 gate_id = "bolt_v3.entry_skip"
 
 [[identities]]
-id = "exit_submission_decision_v1"
-purpose = "exit_submission_decision"
-kind = "exit_submission_decision"
+id = "exit_intent_decision_v1"
+purpose = "exit_intent_decision"
+kind = "exit_intent_decision"
+schema_version = 1
+gate_id = "bolt_v3.exit_decision"
+
+[[identities]]
+id = "exit_prepared_order_v1"
+purpose = "exit_prepared_order"
+kind = "exit_prepared_order"
 schema_version = 2
 gate_id = "bolt_v3.exit_decision"
 
@@ -895,8 +923,12 @@ id = "entry_skip_observation_v1"
 identity = "entry_skip_observation_v1"
 
 [[facts]]
-id = "exit_submission_decision_v1"
-identity = "exit_submission_decision_v1"
+id = "exit_intent_decision_v1"
+identity = "exit_intent_decision_v1"
+
+[[facts]]
+id = "exit_prepared_order_v1"
+identity = "exit_prepared_order_v1"
 
 [[facts]]
 id = "exit_hold_decision_v1"
@@ -1248,25 +1280,49 @@ action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "exit_submission_decision_v1"
+fact = "exit_intent_decision_v1"
 consumer = "reservation_recovery_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "exit_submission_decision_v1"
+fact = "exit_intent_decision_v1"
 consumer = "settlement_recovery_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "exit_submission_decision_v1"
+fact = "exit_intent_decision_v1"
 consumer = "booking_recovery_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "exit_submission_decision_v1"
+fact = "exit_intent_decision_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_prepared_order_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_prepared_order_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_prepared_order_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_prepared_order_v1"
 consumer = "shadow_pnl_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
@@ -1570,10 +1626,16 @@ action = "relevant"
 event_variant = "entry_skip_observation_v1"
 
 [[dispositions]]
-fact = "exit_submission_decision_v1"
+fact = "exit_intent_decision_v1"
 consumer = "backtest_run_guard_v1"
 action = "relevant"
-event_variant = "exit_submission_decision_v1"
+event_variant = "exit_intent_decision_v1"
+
+[[dispositions]]
+fact = "exit_prepared_order_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "exit_prepared_order_v1"
 
 [[dispositions]]
 fact = "exit_hold_decision_v1"

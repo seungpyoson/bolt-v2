@@ -226,7 +226,7 @@ fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
         result.is_ok(),
         "book-delta submit failures must be logged and contained inside the strategy actor: {result:#?}"
     );
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
 }
 
 #[test]
@@ -309,7 +309,10 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
         result.is_ok(),
         "book-delta exit submit failures must be logged and contained inside the strategy actor: {result:#?}"
     );
-    assert!(matches!(strategy.exposure, ExposureState::Managed(_)));
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::Managed(_)
+    ));
     assert_eq!(strategy.last_reported_exposure_occupancy.get(), None);
 }
 

@@ -119,6 +119,19 @@ pub struct RuntimeBlock {
     pub order_execution_mode: crate::bolt_v3_order_execution::BoltV3OrderExecutionMode,
 }
 
+/// Required bounds for historically attributed exit-correction obligations.
+///
+/// Both limits are operator-owned configuration. `NonZeroU32` makes an absent
+/// capacity impossible to reinterpret as an in-code default and rejects zero
+/// at TOML load.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExposureObligationLimits {
+    pub max_count: NonZeroU32,
+    pub max_history_events_per_obligation: NonZeroU32,
+    pub max_released_exit_provenance_count: NonZeroU32,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NautilusBlock {

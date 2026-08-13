@@ -14,7 +14,9 @@ use nautilus_model::{
 use serde::Deserialize;
 use toml::Value;
 
-use crate::bolt_v3_strategy_context::StrategyBuildContext;
+use crate::{
+    bolt_v3_config::ExposureObligationLimits, bolt_v3_strategy_context::StrategyBuildContext,
+};
 
 use crate::{
     bolt_v3_config::ReferencePriceBlock,
@@ -86,6 +88,7 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             forced_flat_thin_book_min_liquidity: f64 => Float;
             lead_agreement_min_corr: f64 => Float;
             lead_jitter_max_ms: u64 => Integer;
+            exposure_obligations: ExposureObligationLimits => Table;
         }
     };
 }

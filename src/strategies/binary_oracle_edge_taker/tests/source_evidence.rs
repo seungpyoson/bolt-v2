@@ -1258,7 +1258,7 @@ fn rv_clock_domain_amendment_submit_evidence_cannot_veto_admitted_order() {
         "the admitted order must reach submit routing"
     );
     assert!(
-        matches!(&strategy.exposure, ExposureState::PendingEntry(_)),
+        matches!(strategy.exposure.state(), ExposureState::PendingEntry(_)),
         "submitted routing must retain pending entry exposure"
     );
     let events = evidence
@@ -1356,7 +1356,7 @@ fn submit_snapshot_failure_clears_pending_entry_and_never_reaches_submit_admissi
         "{error:#}"
     );
     assert!(
-        !matches!(strategy.exposure, ExposureState::PendingEntry(_)),
+        !matches!(strategy.exposure.state(), ExposureState::PendingEntry(_)),
         "snapshot failure must clear strategy-local pending-entry state"
     );
     assert_eq!(
@@ -1400,7 +1400,7 @@ fn final_basis_failure_precedes_edge_evidence_exposure_and_admission_mutation() 
             .contains("planned fill level must be positive")
     );
     assert!(
-        !matches!(strategy.exposure, ExposureState::PendingEntry(_)),
+        !matches!(strategy.exposure.state(), ExposureState::PendingEntry(_)),
         "basis failure must precede pending-entry exposure"
     );
     assert_eq!(submit_admission.admitted_order_count(), 0);
@@ -3037,8 +3037,11 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
 #[test]
 fn terminal_close_reclaims_exit_decision_for_reused_position_identity() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    let reused_exposure = strategy.exposure.clone();
-    let (instrument_id, position_id) = match &reused_exposure {
+    let reused_context = strategy
+        .exposure
+        .managed_position_context()
+        .expect("exit fixture must begin managed");
+    let (instrument_id, position_id) = match strategy.exposure.state() {
         ExposureState::Managed(position) => (position.instrument_id, position.position_id),
         other => panic!("exit fixture must begin managed, got {other:?}"),
     };
@@ -3067,7 +3070,11 @@ fn terminal_close_reclaims_exit_decision_for_reused_position_identity() {
     // NT netting reuses `{instrument}-{strategy}` as PositionId. Recreate the
     // same logical position identity and prove its first decision is not
     // suppressed by the predecessor's last one.
-    strategy.exposure = reused_exposure;
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ExactlyOne(reused_context),
+        )));
     strategy
         .record_exit_intent_or_hold_once(1_202, trigger, &decision)
         .expect("the reused position identity should record its first decision");
@@ -3533,15 +3540,18 @@ fn executable_liquidity_failure_records_rejection_before_exposure_admission_or_r
     strategy
         .pricing
         .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
-    let managed = strategy
+    let mut managed = strategy
         .exposure
-        .managed_position_context_mut()
+        .managed_position_context()
         .expect("exit evidence fixture should start with managed exposure");
     managed.book.bid_levels.clear();
     assert!(
         managed.book.best_bid.is_some(),
         "the fixture must retain a decision price while executable depth is absent"
     );
+    strategy.exposure.reduce(ExposureEvent::PositionTruth(
+        PositionTruthEvent::RefreshContext(managed),
+    ));
 
     let error = strategy
         .try_submit_exit_order_for_trigger(
@@ -4157,10 +4167,21 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     hold.blocked_reason = None;
     decisions.push(strategy.exit_intent_decision_from_evaluation(hold));
 
-    let saved_exposure = strategy.exposure.clone();
-    strategy.exposure = ExposureState::Flat;
+    let saved_exposure = strategy
+        .exposure
+        .managed_position_context()
+        .expect("fixture should retain managed exposure");
+    strategy.exposure.reduce(ExposureEvent::SettlementEffect(
+        SettlementEffectEvent::ReleaseFlat {
+            episode: saved_exposure.episode.clone(),
+        },
+    ));
     decisions.push(strategy.exit_intent_decision_from_evaluation(base.clone()));
-    strategy.exposure = saved_exposure;
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ExactlyOne(saved_exposure),
+        )));
 
     let saved_exit_order = strategy.config.exit_order.clone();
     strategy.config.exit_order.side = "not-an-order-side".to_string();

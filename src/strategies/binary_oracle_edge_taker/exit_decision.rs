@@ -338,6 +338,8 @@ pub(super) const fn exit_block_reason_label(reason: EvidenceExitBlockedReason) -
         }
         EvidenceExitBlockedReason::ExitPriceMissing => "exit_price_missing",
         EvidenceExitBlockedReason::ExitQuantityNotPositive => "exit_quantity_not_positive",
+        EvidenceExitBlockedReason::RecoveryHoldOccupied => "recovery_hold_occupied",
+        EvidenceExitBlockedReason::StaleGeneration => "stale_generation",
     }
 }
 

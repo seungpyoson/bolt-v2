@@ -1010,6 +1010,8 @@ pub enum ExitBlockedReason {
     ExitQuoteQuantityUnsupported,
     ExitPriceMissing,
     ExitQuantityNotPositive,
+    RecoveryHoldOccupied,
+    StaleGeneration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1327,6 +1329,15 @@ pub enum OrderLifecycleTransition {
     OrderExpired,
     OrderFilled,
     ReconcileQueryFailed,
+    ExposureQuarantined,
+    PositionIdentityConflict,
+    ReplacementAdopted,
+    CanonicalPositionAwaiting,
+    CanonicalPositionMultiplicity,
+    OperationSinkUnknownEntered,
+    OperationSinkUnknownResolved,
+    HistoricalExitCorrectionDeferred,
+    ExposureObligationSaturated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1338,6 +1349,10 @@ pub enum OrderLifecycleOutcome {
     UnsupportedObserved,
     BlindRecovery,
     Flat,
+    Quarantined,
+    ReplacementConflict,
+    OperationSinkUnknown,
+    ObligationSaturated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1353,6 +1368,8 @@ pub enum OrderLifecycleSource {
     SettlementEvidenceRecovery,
     SettlementBookingTerminal,
     ReconcilePass,
+    OrderFillVoided,
+    PositionClosed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -204,11 +204,11 @@ fn position_close_keeps_exit_fenced_until_delayed_fill_authority_converges() {
     strategy.on_order_filled(&delayed_fill);
 
     assert!(matches!(
-        strategy.exposure,
+        strategy.exposure.state(),
         ExposureState::TerminalExitAwaitingPosition(_)
     ));
     assert_eq!(
-        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
+        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id()),
         Some(exit_client_order_id),
         "the delayed terminal fill must remain correlated until position authority converges"
     );
@@ -697,6 +697,7 @@ fn tracked_market_lifecycle_is_retained_after_cooldown_expiry() {
     let mut strategy = ready_to_trade_strategy();
     let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
     let open_position = OpenPositionState {
+        episode: position_episode_for_test(tracked_instrument, PositionId::from("P-LIFECYCLE-001")),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Up),

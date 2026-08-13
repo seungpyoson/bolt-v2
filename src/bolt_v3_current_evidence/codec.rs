@@ -1315,6 +1315,8 @@ mod tests {
             ExitQuoteQuantityUnsupported => "exit_quote_quantity_unsupported",
             ExitPriceMissing => "exit_price_missing",
             ExitQuantityNotPositive => "exit_quantity_not_positive"
+            , RecoveryHoldOccupied => "recovery_hold_occupied"
+            , StaleGeneration => "stale_generation"
         ]
     );
     unit_wire_coverage!(
@@ -1405,6 +1407,15 @@ mod tests {
             OrderExpired => "order_expired",
             OrderFilled => "order_filled",
             ReconcileQueryFailed => "reconcile_query_failed"
+            , ExposureQuarantined => "exposure_quarantined"
+            , PositionIdentityConflict => "position_identity_conflict"
+            , ReplacementAdopted => "replacement_adopted"
+            , CanonicalPositionAwaiting => "canonical_position_awaiting"
+            , CanonicalPositionMultiplicity => "canonical_position_multiplicity"
+            , OperationSinkUnknownEntered => "operation_sink_unknown_entered"
+            , OperationSinkUnknownResolved => "operation_sink_unknown_resolved"
+            , HistoricalExitCorrectionDeferred => "historical_exit_correction_deferred"
+            , ExposureObligationSaturated => "exposure_obligation_saturated"
         ]
     );
     unit_wire_coverage!(
@@ -1417,6 +1428,10 @@ mod tests {
             UnsupportedObserved => "unsupported_observed",
             BlindRecovery => "blind_recovery",
             Flat => "flat"
+            , Quarantined => "quarantined"
+            , ReplacementConflict => "replacement_conflict"
+            , OperationSinkUnknown => "operation_sink_unknown"
+            , ObligationSaturated => "obligation_saturated"
         ]
     );
 
@@ -4191,6 +4206,34 @@ mod tests {
             )
             .expect("encoded terminal settlement must decode"),
             expected_terminal
+        );
+
+        let mut retained_exit = terminal();
+        retained_exit.lifecycle.outcome = OrderLifecycleOutcome::ExitPending;
+        let retained_record =
+            <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::encode(
+                &retained_exit,
+                14,
+            )
+            .expect("terminal settlement may retain governed exit authority");
+        let retained_line = std::str::from_utf8(retained_record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        assert_eq!(
+            <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::decode(
+                retained_line,
+                1,
+            )
+            .expect("retained exit terminal settlement must decode"),
+            retained_exit
+        );
+
+        let mut invalid = terminal();
+        invalid.lifecycle.outcome = OrderLifecycleOutcome::Managed;
+        assert!(
+            <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::encode(&invalid, 15)
+                .is_err(),
+            "terminal settlement cannot claim a nonterminal managed outcome"
         );
     }
 

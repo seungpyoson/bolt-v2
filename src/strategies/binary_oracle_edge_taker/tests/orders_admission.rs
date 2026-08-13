@@ -2786,6 +2786,10 @@ fn quarantined_legacy_short_position_blocks_exit_submission() {
     set_unsupported_observed(
         &mut strategy,
         OpenPositionState {
+            episode: position_episode_for_test(
+                instrument_id,
+                PositionId::from("P-LEGACY-SHORT-001"),
+            ),
             lifecycle: BoltV3PositionMarketLifecycle::missing(),
             instrument_id,
             position_id: PositionId::from("P-LEGACY-SHORT-001"),
@@ -2820,6 +2824,10 @@ fn forced_flat_exit_intent_submits_for_open_up_position() {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.active.phase = SelectionPhase::Freeze;
     let open_position = OpenPositionState {
+        episode: position_episode_for_test(
+            strategy.active.books.up.instrument_id.unwrap(),
+            PositionId::from("P-UP-001"),
+        ),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Up),
@@ -2860,6 +2868,10 @@ fn forced_flat_exit_intent_submits_for_open_down_position() {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.active.phase = SelectionPhase::Freeze;
     let open_position = OpenPositionState {
+        episode: position_episode_for_test(
+            strategy.active.books.down.instrument_id.unwrap(),
+            PositionId::from("P-DOWN-001"),
+        ),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Down),
@@ -2899,6 +2911,10 @@ fn forced_flat_exit_intent_submits_for_open_down_position() {
 fn exit_intent_uses_live_hold_vs_exit_boundary() {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let open_position = OpenPositionState {
+        episode: position_episode_for_test(
+            strategy.active.books.up.instrument_id.unwrap(),
+            PositionId::from("P-UP-002"),
+        ),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Up),

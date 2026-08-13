@@ -200,6 +200,8 @@ enum ExitBlockedReasonV1 {
     ExitQuoteQuantityUnsupported,
     ExitPriceMissing,
     ExitQuantityNotPositive,
+    RecoveryHoldOccupied,
+    StaleGeneration,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -965,7 +967,9 @@ bidirectional_unit_enum!(
         ExitOrderConfigInvalid,
         ExitQuoteQuantityUnsupported,
         ExitPriceMissing,
-        ExitQuantityNotPositive
+        ExitQuantityNotPositive,
+        RecoveryHoldOccupied,
+        StaleGeneration
     ]
 );
 

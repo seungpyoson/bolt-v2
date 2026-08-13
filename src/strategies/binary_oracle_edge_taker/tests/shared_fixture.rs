@@ -115,6 +115,11 @@ pub(super) fn valid_raw_config() -> Value {
         lead_agreement_min_corr = 0.8
         lead_jitter_max_ms = 250
 
+        [exposure_obligations]
+        max_count = 64
+        max_history_events_per_obligation = 256
+        max_released_exit_provenance_count = 256
+
         [entry_order]
         side = "buy"
         position_side = "long"
@@ -631,6 +636,13 @@ pub(super) fn test_strategy_with_decision_evidence_and_submit_admission(
             forced_flat_thin_book_min_liquidity: 100.0,
             lead_agreement_min_corr: 0.8,
             lead_jitter_max_ms: 250,
+            exposure_obligations: crate::bolt_v3_config::ExposureObligationLimits {
+                max_count: std::num::NonZeroU32::new(64).expect("test obligation count limit"),
+                max_history_events_per_obligation: std::num::NonZeroU32::new(256)
+                    .expect("test obligation history limit"),
+                max_released_exit_provenance_count: std::num::NonZeroU32::new(256)
+                    .expect("test released-exit provenance limit"),
+            },
             reference_current_price: None,
         },
         StrategyBuildContext::new(
@@ -1131,6 +1143,7 @@ pub(super) fn configured_position_probe(
     strategy: &mut BinaryOracleEdgeTaker,
     instrument_id: InstrumentId,
 ) -> OpenPositionState {
+    let position_id = PositionId::from("P-SIDE-PROBE");
     let book = if strategy.active.books.up.instrument_id == Some(instrument_id) {
         strategy.active.books.up.clone()
     } else if strategy.active.books.down.instrument_id == Some(instrument_id) {
@@ -1139,9 +1152,10 @@ pub(super) fn configured_position_probe(
         OutcomeBookState::from_instrument_id(instrument_id)
     };
     OpenPositionState {
+        episode: position_episode_for_test(instrument_id, position_id),
         lifecycle: active_fixture_lifecycle_for_instrument(strategy, instrument_id),
         instrument_id,
-        position_id: PositionId::from("P-SIDE-PROBE"),
+        position_id,
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(1.0, 2),
@@ -1177,8 +1191,11 @@ fn seed_managed_position_lifecycle_from_active_fixture(
     instrument_id: InstrumentId,
 ) {
     let lifecycle = active_fixture_lifecycle_for_instrument(strategy, instrument_id);
-    if let Some(managed) = strategy.exposure.managed_position_context_mut() {
+    if let Some(mut managed) = strategy.exposure.managed_position_context() {
         managed.lifecycle = lifecycle;
+        strategy.exposure.reduce(ExposureEvent::PositionTruth(
+            PositionTruthEvent::RefreshContext(managed),
+        ));
     }
     strategy.sync_exposure_context_from_active();
 }
@@ -1340,8 +1357,15 @@ pub(super) fn seed_nt_open_position_with_details(
                 strategy.active.interval_end_ms.unwrap_or(301_000),
             )
         });
+    let opening_order_id = strategy
+        .pending_entry()
+        .filter(|pending| pending.instrument_id == instrument_id)
+        .map_or_else(
+            || ClientOrderId::from(format!("ENTRY-{position_id}").as_str()),
+            |pending| pending.client_order_id,
+        );
     let mut fill = order_filled_event_with_details(
-        ClientOrderId::from(format!("ENTRY-{position_id}").as_str()),
+        opening_order_id,
         instrument_id,
         Some(position_id),
         entry_order_side,
@@ -1410,6 +1434,8 @@ pub(super) fn materialize_configured_position(
             side: PositionSide::Long,
             quantity,
             avg_px_open,
+            opening_order_id: ClientOrderId::from(format!("ENTRY-{position_id}").as_str()),
+            ts_opened_ns: 1,
         },
         0,
     );
@@ -1437,7 +1463,9 @@ pub(super) fn configured_outcome_instruments(
 }
 
 pub(super) fn set_pending_entry(strategy: &mut BinaryOracleEdgeTaker, pending: PendingEntryState) {
-    strategy.exposure = ExposureState::PendingEntry(pending);
+    strategy.exposure.reduce(ExposureEvent::EntryLifecycle(
+        EntryLifecycleEvent::RestorePending(pending),
+    ));
 }
 
 pub(super) fn set_entry_reconcile_pending(
@@ -1445,7 +1473,9 @@ pub(super) fn set_entry_reconcile_pending(
     pending: PendingEntryState,
     reason: EntryReconcileReason,
 ) {
-    strategy.exposure = ExposureState::EntryReconcilePending { pending, reason };
+    strategy.exposure.reduce(ExposureEvent::EntryLifecycle(
+        EntryLifecycleEvent::Reconcile { pending, reason },
+    ));
 }
 
 pub(super) fn set_entry_reconcile_pending_after_fill(
@@ -1453,7 +1483,9 @@ pub(super) fn set_entry_reconcile_pending_after_fill(
     pending: PendingEntryState,
     reason: EntryReconcileReason,
 ) {
-    strategy.exposure = ExposureState::EntryReconcilePending { pending, reason };
+    strategy.exposure.reduce(ExposureEvent::EntryLifecycle(
+        EntryLifecycleEvent::Reconcile { pending, reason },
+    ));
 }
 
 pub(super) fn set_managed_position(
@@ -1468,7 +1500,13 @@ pub(super) fn set_managed_position(
         position.quantity,
         position.avg_px_open,
     );
-    strategy.exposure = ExposureState::Managed(managed_position_context(position, origin, None));
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ExactlyOne(managed_position_context(
+                position, origin, None,
+            )),
+        )));
 }
 
 pub(super) fn set_managed_position_with_pending_entry(
@@ -1484,11 +1522,15 @@ pub(super) fn set_managed_position_with_pending_entry(
         position.quantity,
         position.avg_px_open,
     );
-    strategy.exposure = ExposureState::Managed(managed_position_context(
-        position,
-        origin,
-        Some(pending_entry),
-    ));
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ExactlyOne(managed_position_context(
+                position,
+                origin,
+                Some(pending_entry),
+            )),
+        )));
 }
 
 pub(super) fn materialize_managed_position_with_resting_pending_entry(
@@ -1519,12 +1561,9 @@ pub(super) fn materialize_managed_position_with_resting_pending_entry(
         .expect("ready-to-trade fixture should expose an ask");
     set_pending_entry(strategy, pending);
     seed_nt_open_position(strategy, instrument_id, position_id, quantity, avg_px_open);
-    strategy.on_position_opened(position_opened_event(
-        instrument_id,
-        position_id,
-        quantity,
-        avg_px_open,
-    ));
+    let mut opened = position_opened_event(instrument_id, position_id, quantity, avg_px_open);
+    opened.opening_order_id = client_order_id;
+    strategy.on_position_opened(opened);
     (instrument_id, client_order_id)
 }
 
@@ -1560,6 +1599,7 @@ pub(super) fn set_exit_pending(
                 client_order_id,
                 position.instrument_id,
                 position.position_id,
+                position.episode.clone(),
                 position.quantity.as_decimal(),
                 position.side.as_specified(),
                 position.quantity,
@@ -1575,11 +1615,12 @@ pub(super) fn set_exit_pending(
                 position.quantity,
                 975,
             );
-            let authority = BoltV3ExitOrderAuthorityHandle::recovered_for_test(
+            let mut authority = BoltV3ExitOrderAuthorityHandle::recovered_for_test(
                 BoltV3RecoveredExitCause::StartupAdoption,
                 client_order_id,
                 position.instrument_id,
                 position.position_id,
+                position.episode.clone(),
                 position.quantity.as_decimal(),
                 position.side.as_specified(),
                 &order,
@@ -1597,16 +1638,15 @@ pub(super) fn set_exit_pending(
             authority
         }
     };
-    strategy.exposure = ExposureState::ExitPending(ExitPendingState {
-        pending_exit: PendingExitState {
-            client_order_id,
-            submitted_at_ms: Some(1_000),
-            market_id: position.lifecycle.market_id_owned(),
-            position_id: Some(position.position_id),
-        },
-        position: Some(managed_position_context(position, origin, None)),
-        authority,
-    });
+    strategy.exposure.reduce(ExposureEvent::BootstrapAdoption(
+        BootstrapAdoptionEvent::ExitPending(ExitPendingState {
+            pending_exit: PendingExitState {
+                submitted_at_ms: Some(1_000),
+            },
+            position: managed_position_context(position, origin, None),
+            authority,
+        }),
+    ));
 }
 
 fn seed_nt_working_exit_order(
@@ -1760,7 +1800,9 @@ pub(super) fn set_blind_recovery(
     strategy: &mut BinaryOracleEdgeTaker,
     reason: BlindRecoveryReason,
 ) {
-    strategy.exposure = ExposureState::BlindRecovery(BlindRecoveryState { reason });
+    strategy.exposure.reduce(ExposureEvent::BootstrapAdoption(
+        BootstrapAdoptionEvent::BlindRecovery(BlindRecoveryState::authority_free(reason)),
+    ));
 }
 
 pub(super) fn set_unsupported_observed(
@@ -1776,10 +1818,16 @@ pub(super) fn set_unsupported_observed(
         observed.avg_px_open,
         observed.entry_order_side,
     );
-    strategy.exposure = ExposureState::UnsupportedObserved(UnsupportedObservedState {
-        context: managed_position_context(observed, ManagedPositionOrigin::RecoveryBootstrap, None),
-        reason,
-    });
+    strategy.exposure.reduce(ExposureEvent::BootstrapAdoption(
+        BootstrapAdoptionEvent::Unsupported(UnsupportedObservedState {
+            context: managed_position_context(
+                observed,
+                ManagedPositionOrigin::RecoveryBootstrap,
+                None,
+            ),
+            reason,
+        }),
+    ));
 }
 
 pub(super) fn managed_position_snapshot(
@@ -1788,19 +1836,17 @@ pub(super) fn managed_position_snapshot(
     strategy.managed_position().map(|managed| managed.position)
 }
 
-pub(super) fn pending_exit_snapshot(strategy: &BinaryOracleEdgeTaker) -> Option<PendingExitState> {
-    strategy
-        .exposure
-        .exit_pending_snapshot()
-        .map(|exit_pending| exit_pending.pending_exit)
+pub(super) fn pending_exit_snapshot(strategy: &BinaryOracleEdgeTaker) -> Option<ExitPendingState> {
+    strategy.exposure.exit_pending_snapshot()
 }
 
 pub(super) fn assert_foreign_venue_blind_recovery(strategy: &BinaryOracleEdgeTaker) {
     assert!(
         matches!(
-            strategy.exposure,
+            strategy.exposure.state(),
             ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+                reason: BlindRecoveryReason::ForeignVenuePosition { .. },
+                ..
             })
         ),
         "foreign-venue terminal event must be quarantined to blind recovery, got {:?}",
@@ -2123,7 +2169,7 @@ pub(super) fn position_opened_event_with_details(
         instrument_id,
         position_id,
         account_id: nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT"),
-        opening_order_id: ClientOrderId::from("ENTRY-001"),
+        opening_order_id: ClientOrderId::from(format!("ENTRY-{position_id}").as_str()),
         entry,
         side,
         signed_qty: quantity.as_f64(),
@@ -2133,8 +2179,8 @@ pub(super) fn position_opened_event_with_details(
         currency: nautilus_model::types::Currency::USDC(),
         avg_px_open,
         event_id: nautilus_core::UUID4::new(),
-        ts_event: nautilus_core::UnixNanos::from(1_u64),
-        ts_init: nautilus_core::UnixNanos::from(1_u64),
+        ts_event: nautilus_core::UnixNanos::from(1_000_u64),
+        ts_init: nautilus_core::UnixNanos::from(1_000_u64),
     }
 }
 
@@ -2315,7 +2361,7 @@ pub(super) fn position_closed_event(
         instrument_id,
         position_id,
         account_id: nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT"),
-        opening_order_id: ClientOrderId::from("ENTRY-001"),
+        opening_order_id: ClientOrderId::from(format!("ENTRY-{position_id}").as_str()),
         closing_order_id: Some(ClientOrderId::from("EXIT-001")),
         entry: OrderSide::Buy,
         side: PositionSide::Long,
@@ -2335,7 +2381,7 @@ pub(super) fn position_closed_event(
         ),
         duration: nautilus_core::nanos::DurationNanos::from(1_u64),
         event_id: nautilus_core::UUID4::new(),
-        ts_opened: nautilus_core::UnixNanos::from(1_u64),
+        ts_opened: nautilus_core::UnixNanos::from(1_000_u64),
         ts_closed: Some(nautilus_core::UnixNanos::from(2_u64)),
         ts_event: nautilus_core::UnixNanos::from(2_u64),
         ts_init: nautilus_core::UnixNanos::from(2_u64),

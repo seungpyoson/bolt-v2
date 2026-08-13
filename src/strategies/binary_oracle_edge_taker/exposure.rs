@@ -1,14 +1,25 @@
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    rc::{Rc, Weak},
+};
+
+use anyhow::Result;
+
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
-    identifiers::{ClientOrderId, InstrumentId, PositionId, Venue},
+    identifiers::{ClientOrderId, InstrumentId, PositionId, TradeId, Venue},
     types::Quantity,
 };
 
 use crate::{
     bolt_v3_book_sizing::OutcomeBookState,
+    bolt_v3_config::ExposureObligationLimits,
     bolt_v3_numeric::is_positive_finite,
     bolt_v3_order_execution::{
-        BoltV3ExitAuthorityRecoveryHandle, BoltV3ExitOrderAuthorityHandle, BoltV3RecoveredExitCause,
+        BoltV3ExitAuthorityRecoveryHandle, BoltV3ExitOrderAuthorityHandle,
+        BoltV3ExitOrderCorrection, BoltV3PositionEpisodeFingerprint, BoltV3RecoveredExitCause,
+        BoltV3RouteAttemptCompletion, BoltV3RouteAttemptParticipant,
     },
     bolt_v3_position_contract::{
         BoltV3PositionMarketLifecycle, expected_exit_order_side_for_position,
@@ -16,8 +27,242 @@ use crate::{
     },
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum ExposureStateKind {
+    Flat,
+    PendingEntry,
+    EntryReconcilePending,
+    Managed,
+    ExitAttempting,
+    ExitPending,
+    TerminalExitAwaitingPosition,
+    ExitAuthorityRecoveryHold,
+    UnsupportedObserved,
+    BlindRecovery,
+    OperationSinkUnknown,
+    ObligationSaturated,
+    ReplacementConflict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ExposureTransitionOutcome {
+    Applied {
+        from: ExposureStateKind,
+        to: ExposureStateKind,
+    },
+    Preserved {
+        state: ExposureStateKind,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ExposureOperationKind {
+    EntryRoute,
+    ExitRoute,
+    Bootstrap,
+    Correction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ExposureOperationBlockedReason {
+    Unoccupied,
+    PendingEntryOccupied,
+    EntryReconcileOccupied,
+    ManagedOccupied,
+    ExitAttemptOccupied,
+    ExitPendingOccupied,
+    RecoveryHoldOccupied,
+    UnsupportedOccupied,
+    BlindRecoveryOccupied,
+    ReplacementConflictOccupied,
+    SinkUnknownOccupied,
+    ObligationSaturated,
+    OperationAlreadyArmed,
+    StaleGeneration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ExposureOperationRejection {
+    pub(super) operation: ExposureOperationKind,
+    pub(super) reason: ExposureOperationBlockedReason,
+    pub(super) state: ExposureStateKind,
+    pub(super) requested_generation: u64,
+    pub(super) current_generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum EntryLifecycleEvent {
+    #[cfg(test)]
+    RestorePending(PendingEntryState),
+    Reconcile {
+        pending: PendingEntryState,
+        reason: EntryReconcileReason,
+    },
+    ReleaseFlat,
+    ClearManagedPending {
+        client_order_id: ClientOrderId,
+        instrument_id: InstrumentId,
+    },
+    RefreshPending(PendingEntryState),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum ExitLifecycleEvent {
+    Pending(ExitPendingState),
+    TerminalAwaitingPosition(ExitPendingState),
+    RecoveryHold(ExitAuthorityRecoveryHoldState),
+    RefreshAuthority(BoltV3ExitOrderAuthorityHandle),
+    Residual(ManagedPositionContext),
+    ReleaseFlat,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum PositionTruthEvent {
+    Canonical(CanonicalPositionProjection),
+    AuthorizedRecovery(CanonicalPositionProjection),
+    EntryTerminalMaterialization {
+        client_order_id: ClientOrderId,
+        managed: ManagedPositionContext,
+    },
+    AuthenticatedEpisodeRebase {
+        before: PositionEpisodeFingerprint,
+        authenticated_order_id: ClientOrderId,
+        authenticated_fill_id: TradeId,
+        rebased: Option<ManagedPositionContext>,
+        replay_segment_continuous: bool,
+    },
+    RefreshContext(ManagedPositionContext),
+    Unsupported(UnsupportedObservedState),
+    BlindRecovery(BlindRecoveryState),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum CanonicalPositionProjection {
+    None,
+    ExactlyOne(ManagedPositionContext),
+    Multiple {
+        count: usize,
+        recovery: BlindRecoveryState,
+    },
+    ProbeFailed {
+        diagnostic: String,
+        recovery: BlindRecoveryState,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum PositionClosedEvent {
+    Observed { episode: PositionEpisodeFingerprint },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum TimerReconciliationEvent {
+    Pending(ExitPendingState),
+    TerminalAwaitingPosition(ExitPendingState),
+    RecoveryHold(ExitAuthorityRecoveryHoldState),
+    ReleaseFlat,
+    BlindRecovery(BlindRecoveryState),
+    SinkUnknown(SinkUnknownResolution),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum SinkUnknownResolution {
+    Submitted,
+    Terminal {
+        residual: Option<ManagedPositionContext>,
+    },
+    Filled {
+        managed: ManagedPositionContext,
+    },
+    ProvenAbsent,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum BootstrapAdoptionEvent {
+    Flat,
+    Managed(ManagedPositionContext),
+    Unsupported(UnsupportedObservedState),
+    ExitPending(ExitPendingState),
+    BlindRecovery(BlindRecoveryState),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum SettlementEffectEvent {
+    ReleaseFlat { episode: PositionEpisodeFingerprint },
+    BlindRecovery(BlindRecoveryState),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum ExposureEvent {
+    EntryLifecycle(EntryLifecycleEvent),
+    ExitLifecycle(ExitLifecycleEvent),
+    UntrackedOrder(UntrackedOrderEvent),
+    PositionTruth(PositionTruthEvent),
+    PositionClosed(PositionClosedEvent),
+    TimerReconciliation(TimerReconciliationEvent),
+    BootstrapAdoption(BootstrapAdoptionEvent),
+    SettlementEffect(SettlementEffectEvent),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum UntrackedOrderEvent {
+    Quarantine {
+        client_order_id: ClientOrderId,
+        instrument_id: InstrumentId,
+    },
+    HistoricalExitCorrection(HistoricalExitCorrection),
+    HistoricalExitObservation(HistoricalExitObservation),
+    ResolveHistoricalExitCorrection {
+        client_order_id: ClientOrderId,
+    },
+    ObligationSaturated {
+        client_order_id: ClientOrderId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HistoricalExitCorrection {
+    pub(super) client_order_id: ClientOrderId,
+    pub(super) instrument_id: InstrumentId,
+    pub(super) trade_id: TradeId,
+    pub(super) voided_quantity: Quantity,
+    pub(super) ts_event_ns: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum HistoricalExitObservationKey {
+    Fill(TradeId),
+    Lifecycle { ts_event_ns: u64, terminal: bool },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct HistoricalExitObservation {
+    pub(super) client_order_id: ClientOrderId,
+    pub(super) instrument_id: InstrumentId,
+    pub(super) key: HistoricalExitObservationKey,
+    pub(super) observation: ExitRecoveryObservation,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ReleasedExitProvenance {
+    pub(super) client_order_id: ClientOrderId,
+    pub(super) episode: PositionEpisodeFingerprint,
+    pub(super) position: ManagedPositionContext,
+    pub(super) observed_fill_ids: BTreeSet<TradeId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct DeferredExitObligation {
+    pub(super) provenance: ReleasedExitProvenance,
+    pub(super) history: BTreeMap<TradeId, HistoricalExitCorrection>,
+    pub(super) observations: BTreeMap<HistoricalExitObservationKey, ExitRecoveryObservation>,
+}
+
+pub(super) type PositionEpisodeFingerprint = BoltV3PositionEpisodeFingerprint;
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct OpenPositionState {
+    pub(super) episode: PositionEpisodeFingerprint,
     pub(super) lifecycle: BoltV3PositionMarketLifecycle,
     pub(super) instrument_id: InstrumentId,
     pub(super) position_id: PositionId,
@@ -39,10 +284,7 @@ pub(super) struct PendingEntryState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PendingExitState {
-    pub(super) client_order_id: ClientOrderId,
     pub(super) submitted_at_ms: Option<u64>,
-    pub(super) market_id: Option<String>,
-    pub(super) position_id: Option<PositionId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,12 +295,16 @@ pub(super) enum ManagedPositionOrigin {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ManagedPositionContext {
+    pub(super) episode: PositionEpisodeFingerprint,
+    pub(super) episode_fill_ids: BTreeSet<TradeId>,
     pub(super) lifecycle: BoltV3PositionMarketLifecycle,
     pub(super) instrument_id: InstrumentId,
     pub(super) position_id: PositionId,
     pub(super) book: OutcomeBookState,
     pub(super) origin: ManagedPositionOrigin,
     pub(super) pending_entry: Option<PendingEntryState>,
+    pub(super) episode_close_seen: bool,
+    pub(super) canonical_none_seen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,9 +316,31 @@ pub(super) struct ManagedPositionState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ExitPendingState {
-    pub(super) position: Option<ManagedPositionContext>,
+    pub(super) position: ManagedPositionContext,
     pub(super) pending_exit: PendingExitState,
     pub(super) authority: BoltV3ExitOrderAuthorityHandle,
+}
+
+impl ExitPendingState {
+    pub(super) fn client_order_id(&self) -> ClientOrderId {
+        self.authority.client_order_id()
+    }
+
+    pub(super) fn instrument_id(&self) -> InstrumentId {
+        self.authority.instrument_id()
+    }
+
+    pub(super) fn position_id(&self) -> PositionId {
+        self.authority.position_id()
+    }
+
+    pub(super) fn episode(&self) -> PositionEpisodeFingerprint {
+        self.authority.episode()
+    }
+
+    pub(super) fn market_id(&self) -> Option<String> {
+        self.position.lifecycle.market_id_owned()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,7 +354,7 @@ pub(super) struct ExitAttemptingState {
 impl ExitAttemptingState {
     pub(super) fn snapshot(&self) -> ExitPendingState {
         ExitPendingState {
-            position: Some(self.managed.clone()),
+            position: self.managed.clone(),
             pending_exit: self.pending_exit.clone(),
             authority: self.authority.clone(),
         }
@@ -94,7 +362,7 @@ impl ExitAttemptingState {
 
     pub(super) fn into_pending(self) -> ExitPendingState {
         ExitPendingState {
-            position: Some(self.managed),
+            position: self.managed,
             pending_exit: self.pending_exit,
             authority: self.authority,
         }
@@ -103,17 +371,62 @@ impl ExitAttemptingState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ExitAuthorityRecoveryHoldState {
-    pub(super) position: Option<ManagedPositionContext>,
-    pub(super) instrument_id: InstrumentId,
+    pub(super) position: ManagedPositionContext,
     pub(super) pending_exit: PendingExitState,
     pub(super) plan: ExitAuthorityRecoveryPlan,
     pub(super) flat_recovery: ExitAuthorityFlatRecovery,
+    pub(super) observations: BTreeMap<HistoricalExitObservationKey, ExitRecoveryObservation>,
+}
+
+impl ExitAuthorityRecoveryHoldState {
+    pub(super) fn client_order_id(&self) -> ClientOrderId {
+        self.plan.client_order_id()
+    }
+
+    pub(super) fn instrument_id(&self) -> InstrumentId {
+        self.position.episode.instrument_id
+    }
+
+    pub(super) fn position_id(&self) -> PositionId {
+        self.position.episode.position_id
+    }
+
+    pub(super) fn episode(&self) -> PositionEpisodeFingerprint {
+        self.position.episode.clone()
+    }
+
+    pub(super) fn market_id(&self) -> Option<String> {
+        self.position.lifecycle.market_id_owned()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum ExitAuthorityRecoveryPlan {
-    Reconstruct(BoltV3RecoveredExitCause),
+    Reconstruct {
+        cause: BoltV3RecoveredExitCause,
+        client_order_id: ClientOrderId,
+    },
     Resume(BoltV3ExitOrderAuthorityHandle),
+}
+
+impl ExitAuthorityRecoveryPlan {
+    pub(super) fn client_order_id(&self) -> ClientOrderId {
+        match self {
+            Self::Reconstruct {
+                client_order_id, ..
+            } => *client_order_id,
+            Self::Resume(authority) => authority.client_order_id(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ExitRecoveryObservation {
+    pub(super) ts_event_ns: u64,
+    pub(super) trade_ids: BTreeSet<TradeId>,
+    pub(super) effective_filled_quantity: Quantity,
+    pub(super) terminal: bool,
+    pub(super) correction: BoltV3ExitOrderCorrection,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -171,6 +484,7 @@ pub(super) enum BlindRecoveryReason {
         instrument_id: InstrumentId,
     },
     ForeignVenuePosition {
+        instrument_id: InstrumentId,
         instrument_venue: Venue,
         execution_venue: Venue,
     },
@@ -185,6 +499,281 @@ pub(super) struct UnsupportedObservedState {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct BlindRecoveryState {
     pub(super) reason: BlindRecoveryReason,
+    pub(super) provenance: BlindRecoveryProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum BlindRecoveryProvenance {
+    IdentityBearing {
+        recorded_episode: PositionEpisodeFingerprint,
+        retained_authority: Option<Box<ExposureState>>,
+    },
+    ProbeClass {
+        retained_authority: Option<Box<ExposureState>>,
+    },
+    RestartAdoption {
+        instrument_id: InstrumentId,
+        order_ids: Vec<ClientOrderId>,
+        retained_authority: Option<Box<ExposureState>>,
+    },
+    ForeignVenue {
+        instrument_id: InstrumentId,
+        retained_authority: Option<Box<ExposureState>>,
+    },
+}
+
+impl BlindRecoveryState {
+    pub(super) fn authority_free(reason: BlindRecoveryReason) -> Self {
+        let provenance = match &reason {
+            BlindRecoveryReason::InvalidBootstrappedPosition { .. }
+            | BlindRecoveryReason::InvalidLivePosition { .. } => {
+                panic!("identity-bearing recovery requires a recorded episode")
+            }
+            BlindRecoveryReason::CacheProbeFailed
+            | BlindRecoveryReason::MultipleOpenPositions { .. }
+            | BlindRecoveryReason::SettlementEvidenceRecoveryFailed => {
+                BlindRecoveryProvenance::ProbeClass {
+                    retained_authority: None,
+                }
+            }
+            BlindRecoveryReason::AmbiguousRestartOpenExitOrders { instrument_id, .. }
+            | BlindRecoveryReason::UnattributedRestartOpenExitOrder { instrument_id } => {
+                panic!(
+                    "restart-adoption recovery for {instrument_id} requires the observed order identities"
+                )
+            }
+            BlindRecoveryReason::ForeignVenuePosition { instrument_id, .. } => {
+                BlindRecoveryProvenance::ForeignVenue {
+                    instrument_id: *instrument_id,
+                    retained_authority: None,
+                }
+            }
+        };
+        Self { reason, provenance }
+    }
+
+    pub(super) fn restart_adoption(
+        reason: BlindRecoveryReason,
+        instrument_id: InstrumentId,
+        order_ids: Vec<ClientOrderId>,
+    ) -> Self {
+        assert!(
+            !order_ids.is_empty(),
+            "restart-adoption recovery requires at least one observed order identity"
+        );
+        assert!(
+            matches!(
+                reason,
+                BlindRecoveryReason::AmbiguousRestartOpenExitOrders {
+                    instrument_id: reason_instrument_id,
+                    ..
+                } | BlindRecoveryReason::UnattributedRestartOpenExitOrder {
+                    instrument_id: reason_instrument_id,
+                } if reason_instrument_id == instrument_id
+            ),
+            "restart-adoption reason must match its recorded instrument"
+        );
+        Self {
+            reason,
+            provenance: BlindRecoveryProvenance::RestartAdoption {
+                instrument_id,
+                order_ids,
+                retained_authority: None,
+            },
+        }
+    }
+
+    pub(super) fn with_recorded_episode(
+        reason: BlindRecoveryReason,
+        episode: PositionEpisodeFingerprint,
+    ) -> Self {
+        Self {
+            reason,
+            provenance: BlindRecoveryProvenance::IdentityBearing {
+                recorded_episode: episode,
+                retained_authority: None,
+            },
+        }
+    }
+
+    fn retain_authority(&mut self, state: ExposureState) {
+        let retained = match &mut self.provenance {
+            BlindRecoveryProvenance::IdentityBearing {
+                retained_authority, ..
+            }
+            | BlindRecoveryProvenance::ProbeClass { retained_authority }
+            | BlindRecoveryProvenance::RestartAdoption {
+                retained_authority, ..
+            }
+            | BlindRecoveryProvenance::ForeignVenue {
+                retained_authority, ..
+            } => retained_authority,
+        };
+        if retained.is_none() && !matches!(state, ExposureState::Flat) {
+            *retained = Some(Box::new(state));
+        }
+    }
+
+    fn retained_authority(&self) -> Option<&ExposureState> {
+        match &self.provenance {
+            BlindRecoveryProvenance::IdentityBearing {
+                retained_authority, ..
+            }
+            | BlindRecoveryProvenance::ProbeClass { retained_authority }
+            | BlindRecoveryProvenance::RestartAdoption {
+                retained_authority, ..
+            }
+            | BlindRecoveryProvenance::ForeignVenue {
+                retained_authority, ..
+            } => retained_authority.as_deref(),
+        }
+    }
+
+    fn retained_authority_mut(&mut self) -> Option<&mut Box<ExposureState>> {
+        match &mut self.provenance {
+            BlindRecoveryProvenance::IdentityBearing {
+                retained_authority, ..
+            }
+            | BlindRecoveryProvenance::ProbeClass { retained_authority }
+            | BlindRecoveryProvenance::RestartAdoption {
+                retained_authority, ..
+            }
+            | BlindRecoveryProvenance::ForeignVenue {
+                retained_authority, ..
+            } => retained_authority.as_mut(),
+        }
+    }
+
+    fn authorizes_exactly_one(&self, managed: &ManagedPositionContext) -> bool {
+        if let Some(retained) = self.retained_authority() {
+            return retained
+                .tracked_position_context()
+                .is_some_and(|context| context.episode == managed.episode)
+                || retained.pending_entry().is_some_and(|pending| {
+                    pending.instrument_id == managed.instrument_id
+                        && pending.client_order_id == managed.episode.opening_order_id
+                });
+        }
+        match &self.provenance {
+            BlindRecoveryProvenance::ProbeClass { .. } => true,
+            BlindRecoveryProvenance::IdentityBearing {
+                recorded_episode: episode,
+                ..
+            } => episode == &managed.episode,
+            BlindRecoveryProvenance::ForeignVenue { instrument_id, .. } => {
+                instrument_id != &managed.instrument_id
+            }
+            BlindRecoveryProvenance::RestartAdoption { instrument_id, .. } => {
+                instrument_id == &managed.instrument_id
+            }
+        }
+    }
+
+    fn authorizes_none(&self) -> bool {
+        if let Some(retained) = self.retained_authority() {
+            return match retained {
+                ExposureState::Flat => true,
+                ExposureState::Managed(context) => context.episode_close_seen,
+                ExposureState::UnsupportedObserved(observed) => observed.context.episode_close_seen,
+                ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            };
+        }
+        matches!(
+            self.provenance,
+            BlindRecoveryProvenance::ProbeClass { .. }
+                | BlindRecoveryProvenance::ForeignVenue { .. }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum RouteOperationPayload {
+    Entry(PendingEntryState),
+    Exit(ExitAttemptingState),
+}
+
+impl RouteOperationPayload {
+    fn operation(&self) -> ExposureOperationKind {
+        match self {
+            Self::Entry(_) => ExposureOperationKind::EntryRoute,
+            Self::Exit(_) => ExposureOperationKind::ExitRoute,
+        }
+    }
+
+    fn client_order_id(&self) -> ClientOrderId {
+        match self {
+            Self::Entry(pending) => pending.client_order_id,
+            Self::Exit(attempt) => attempt.authority.client_order_id(),
+        }
+    }
+
+    fn instrument_id(&self) -> InstrumentId {
+        match self {
+            Self::Entry(pending) => pending.instrument_id,
+            Self::Exit(attempt) => attempt.managed.instrument_id,
+        }
+    }
+
+    fn position_context(&self) -> Option<&ManagedPositionContext> {
+        match self {
+            Self::Entry(_) => None,
+            Self::Exit(attempt) => Some(&attempt.managed),
+        }
+    }
+
+    fn market_id(&self) -> Option<String> {
+        match self {
+            Self::Entry(pending) => pending.lifecycle.market_id_owned(),
+            Self::Exit(attempt) => attempt.managed.lifecycle.market_id_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct OperationSinkUnknownState {
+    pub(super) operation: ExposureOperationKind,
+    pub(super) generation: u64,
+    pub(super) client_order_id: ClientOrderId,
+    pub(super) attempted: RouteOperationPayload,
+    pub(super) prior: Box<ExposureState>,
+}
+
+impl OperationSinkUnknownState {
+    pub(super) fn instrument_id(&self) -> InstrumentId {
+        self.attempted.instrument_id()
+    }
+
+    pub(super) fn position_context(&self) -> Option<&ManagedPositionContext> {
+        self.attempted.position_context()
+    }
+
+    pub(super) fn market_id(&self) -> Option<String> {
+        self.attempted.market_id()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ObligationSaturatedState {
+    pub(super) retained: Box<ExposureState>,
+    pub(super) client_order_id: ClientOrderId,
+    pub(super) obligation_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ReplacementConflictState {
+    pub(super) retained: ManagedPositionContext,
+    pub(super) candidate: ManagedPositionContext,
+    pub(super) retained_close_seen: bool,
+    pub(super) candidate_visible: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -202,9 +791,2682 @@ pub(super) enum ExposureState {
     ExitAuthorityRecoveryHold(ExitAuthorityRecoveryHoldState),
     UnsupportedObserved(UnsupportedObservedState),
     BlindRecovery(BlindRecoveryState),
+    OperationSinkUnknown(OperationSinkUnknownState),
+    ObligationSaturated(ObligationSaturatedState),
+    ReplacementConflict(ReplacementConflictState),
+}
+
+/// The strategy's sole exposure mutation authority.
+///
+/// `state` is deliberately private and there is no mutable state projection.
+/// Every variant change and context refresh enters through [`Self::reduce`].
+#[derive(Debug, Clone, PartialEq)]
+struct GovernedExposureInner {
+    state: ExposureState,
+    generation: u64,
+    limits: ExposureObligationLimits,
+    quarantined_orders: BTreeMap<ClientOrderId, UntrackedOrderEvent>,
+    released_exits: BTreeMap<ClientOrderId, ReleasedExitProvenance>,
+    obligations: BTreeMap<ClientOrderId, DeferredExitObligation>,
+    identity_conflict: Option<IdentityConflict>,
+    replacement_adoption: Option<ReplacementAdoption>,
+    last_outcome: ExposureTransitionOutcome,
+    operation_arm: Option<OperationArm>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct IdentityConflict {
+    pub(super) retained: ExposureStateKind,
+    pub(super) retained_episode: Option<PositionEpisodeFingerprint>,
+    pub(super) candidate: ManagedPositionContext,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ReplacementAdoption {
+    pub(super) retained_episode: PositionEpisodeFingerprint,
+    pub(super) adopted: ManagedPositionContext,
+    pub(super) cause: ReplacementAdoptionCause,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReplacementAdoptionCause {
+    CanonicalCloseConjunction,
+    AuthenticatedCorrection,
+}
+
+impl GovernedExposureInner {
+    fn new(limits: ExposureObligationLimits) -> Self {
+        Self {
+            state: ExposureState::Flat,
+            generation: 0,
+            limits,
+            quarantined_orders: BTreeMap::new(),
+            released_exits: BTreeMap::new(),
+            obligations: BTreeMap::new(),
+            identity_conflict: None,
+            replacement_adoption: None,
+            last_outcome: ExposureTransitionOutcome::Preserved {
+                state: ExposureStateKind::Flat,
+            },
+            operation_arm: None,
+        }
+    }
+
+    fn reduce(&mut self, event: ExposureEvent) -> ExposureTransitionOutcome {
+        self.replacement_adoption = None;
+        let from = self.state.kind();
+        let changed = match event {
+            ExposureEvent::EntryLifecycle(event) => self.reduce_entry_lifecycle(event),
+            ExposureEvent::ExitLifecycle(event) => self.reduce_exit_lifecycle(event),
+            ExposureEvent::UntrackedOrder(event) => match event {
+                UntrackedOrderEvent::Quarantine {
+                    client_order_id,
+                    instrument_id,
+                } => {
+                    self.quarantined_orders.insert(
+                        client_order_id,
+                        UntrackedOrderEvent::Quarantine {
+                            client_order_id,
+                            instrument_id,
+                        },
+                    );
+                    false
+                }
+                UntrackedOrderEvent::HistoricalExitCorrection(correction) => {
+                    self.reduce_historical_exit_correction(correction)
+                }
+                UntrackedOrderEvent::HistoricalExitObservation(observation) => {
+                    self.reduce_historical_exit_observation(observation)
+                }
+                UntrackedOrderEvent::ResolveHistoricalExitCorrection { client_order_id } => {
+                    self.obligations.remove(&client_order_id).is_some()
+                }
+                UntrackedOrderEvent::ObligationSaturated { client_order_id } => {
+                    self.enter_obligation_saturation(client_order_id)
+                }
+            },
+            ExposureEvent::PositionTruth(event) => self.reduce_position_truth(event),
+            ExposureEvent::PositionClosed(event) => self.reduce_position_closed(event),
+            ExposureEvent::TimerReconciliation(event) => self.reduce_timer_reconciliation(event),
+            ExposureEvent::BootstrapAdoption(event) => self.reduce_bootstrap_adoption(event),
+            ExposureEvent::SettlementEffect(event) => self.reduce_settlement_effect(event),
+        };
+        let to = self.state.kind();
+        let outcome = if changed {
+            self.generation = self
+                .generation
+                .checked_add(1)
+                .expect("validated exposure generation space exhausted");
+            ExposureTransitionOutcome::Applied { from, to }
+        } else {
+            ExposureTransitionOutcome::Preserved { state: to }
+        };
+        if changed {
+            self.operation_arm = None;
+        }
+        self.last_outcome = outcome;
+        outcome
+    }
+
+    fn replace(&mut self, next: ExposureState) -> bool {
+        if self.state == next {
+            return false;
+        }
+        if matches!(
+            next,
+            ExposureState::Flat | ExposureState::Managed(_) | ExposureState::PendingEntry(_)
+        ) && let Some(provenance) = released_exit_provenance(&self.state)
+        {
+            if !self
+                .released_exits
+                .contains_key(&provenance.client_order_id)
+                && self.released_exits.len()
+                    >= self.limits.max_released_exit_provenance_count.get() as usize
+            {
+                let client_order_id = provenance.client_order_id;
+                let retained = self.state.clone();
+                self.state = ExposureState::ObligationSaturated(ObligationSaturatedState {
+                    retained: Box::new(retained),
+                    client_order_id,
+                    obligation_count: self.released_exits.len(),
+                });
+                return true;
+            }
+            self.released_exits
+                .insert(provenance.client_order_id, provenance);
+        }
+        self.state = next;
+        true
+    }
+
+    fn replace_from_operation(&mut self, next: ExposureState) {
+        let from = self.state.kind();
+        let changed = self.state != next;
+        self.state = next;
+        let to = self.state.kind();
+        self.last_outcome = if changed {
+            ExposureTransitionOutcome::Applied { from, to }
+        } else {
+            ExposureTransitionOutcome::Preserved { state: to }
+        };
+    }
+
+    fn enter_obligation_saturation(&mut self, client_order_id: ClientOrderId) -> bool {
+        if matches!(self.state, ExposureState::ObligationSaturated(_)) {
+            return false;
+        }
+        let retained = self.state.clone();
+        self.state = ExposureState::ObligationSaturated(ObligationSaturatedState {
+            retained: Box::new(retained),
+            client_order_id,
+            obligation_count: self.obligations.len(),
+        });
+        true
+    }
+
+    fn reduce_historical_exit_correction(&mut self, correction: HistoricalExitCorrection) -> bool {
+        let Some(provenance) = self
+            .released_exits
+            .get(&correction.client_order_id)
+            .filter(|provenance| provenance.episode.instrument_id == correction.instrument_id)
+            .cloned()
+        else {
+            self.quarantined_orders.insert(
+                correction.client_order_id,
+                UntrackedOrderEvent::Quarantine {
+                    client_order_id: correction.client_order_id,
+                    instrument_id: correction.instrument_id,
+                },
+            );
+            return false;
+        };
+        if self
+            .obligations
+            .get(&correction.client_order_id)
+            .is_some_and(|obligation| obligation.history.contains_key(&correction.trade_id))
+        {
+            return false;
+        }
+        let max_count = self.limits.max_count.get() as usize;
+        let max_history = self.limits.max_history_events_per_obligation.get() as usize;
+        let creates_obligation = !self.obligations.contains_key(&correction.client_order_id);
+        let history_full = self
+            .obligations
+            .get(&correction.client_order_id)
+            .is_some_and(|obligation| {
+                obligation.history.len() + obligation.observations.len() >= max_history
+            });
+        if (creates_obligation && self.obligations.len() >= max_count) || history_full {
+            return self.enter_obligation_saturation(correction.client_order_id);
+        }
+        self.obligations
+            .entry(correction.client_order_id)
+            .or_insert_with(|| DeferredExitObligation {
+                provenance,
+                history: BTreeMap::new(),
+                observations: BTreeMap::new(),
+            })
+            .history
+            .insert(correction.trade_id, correction);
+        true
+    }
+
+    fn reduce_historical_exit_observation(
+        &mut self,
+        observation: HistoricalExitObservation,
+    ) -> bool {
+        let historically_attributed = self
+            .released_exits
+            .get(&observation.client_order_id)
+            .filter(|provenance| provenance.episode.instrument_id == observation.instrument_id)
+            .is_some();
+        if !historically_attributed {
+            self.quarantined_orders.insert(
+                observation.client_order_id,
+                UntrackedOrderEvent::Quarantine {
+                    client_order_id: observation.client_order_id,
+                    instrument_id: observation.instrument_id,
+                },
+            );
+            return false;
+        }
+        if !self.obligations.contains_key(&observation.client_order_id) {
+            return false;
+        }
+        let existing = self
+            .obligations
+            .get(&observation.client_order_id)
+            .and_then(|obligation| obligation.observations.get(&observation.key));
+        if existing.is_some_and(|current| current == &observation.observation) {
+            return false;
+        }
+        let replaces_existing = existing.is_some();
+        let max_history = self.limits.max_history_events_per_obligation.get() as usize;
+        let history_full = self
+            .obligations
+            .get(&observation.client_order_id)
+            .is_some_and(|obligation| {
+                obligation.history.len() + obligation.observations.len() >= max_history
+            });
+        if !replaces_existing && history_full {
+            return self.enter_obligation_saturation(observation.client_order_id);
+        }
+        self.obligations
+            .get_mut(&observation.client_order_id)
+            .expect("historical observation requires an existing obligation")
+            .observations
+            .insert(observation.key, observation.observation);
+        true
+    }
+
+    fn enter_blind_recovery(&mut self, mut recovery: BlindRecoveryState) -> bool {
+        if matches!(self.state, ExposureState::BlindRecovery(_)) {
+            return false;
+        }
+        self.identity_conflict = None;
+        recovery.retain_authority(self.state.clone());
+        self.replace(ExposureState::BlindRecovery(recovery))
+    }
+
+    fn reduce_entry_lifecycle(&mut self, event: EntryLifecycleEvent) -> bool {
+        match &mut self.state {
+            ExposureState::BlindRecovery(recovery) => {
+                return recovery
+                    .retained_authority_mut()
+                    .is_some_and(|retained| reduce_retained_entry_lifecycle(retained, event));
+            }
+            ExposureState::ObligationSaturated(saturated) => {
+                return reduce_retained_entry_lifecycle(&mut saturated.retained, event);
+            }
+            ExposureState::Flat
+            | ExposureState::PendingEntry(_)
+            | ExposureState::EntryReconcilePending { .. }
+            | ExposureState::Managed(_)
+            | ExposureState::ExitAttempting(_)
+            | ExposureState::ExitPending(_)
+            | ExposureState::TerminalExitAwaitingPosition(_)
+            | ExposureState::ExitAuthorityRecoveryHold(_)
+            | ExposureState::UnsupportedObserved(_)
+            | ExposureState::OperationSinkUnknown(_)
+            | ExposureState::ReplacementConflict(_) => {}
+        }
+        match event {
+            #[cfg(test)]
+            EntryLifecycleEvent::RestorePending(pending) => match &self.state {
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. } => {
+                    self.replace(ExposureState::PendingEntry(pending))
+                }
+                ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            EntryLifecycleEvent::Reconcile { pending, reason } => match &self.state {
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. } => {
+                    self.replace(ExposureState::EntryReconcilePending { pending, reason })
+                }
+                ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            EntryLifecycleEvent::ReleaseFlat => match &self.state {
+                ExposureState::PendingEntry(_) | ExposureState::EntryReconcilePending { .. } => {
+                    let next = self
+                        .identity_conflict
+                        .take()
+                        .filter(|conflict| {
+                            matches!(
+                                conflict.retained,
+                                ExposureStateKind::PendingEntry
+                                    | ExposureStateKind::EntryReconcilePending
+                            )
+                        })
+                        .map_or(ExposureState::Flat, |conflict| {
+                            ExposureState::Managed(conflict.candidate)
+                        });
+                    self.replace(next)
+                }
+                ExposureState::Flat
+                | ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            EntryLifecycleEvent::ClearManagedPending {
+                client_order_id,
+                instrument_id,
+            } => self.clear_managed_pending(client_order_id, instrument_id),
+            EntryLifecycleEvent::RefreshPending(pending) => match &mut self.state {
+                ExposureState::PendingEntry(current)
+                | ExposureState::EntryReconcilePending {
+                    pending: current, ..
+                } if current.client_order_id == pending.client_order_id
+                    && current.instrument_id == pending.instrument_id =>
+                {
+                    *current = pending;
+                    true
+                }
+                ExposureState::Managed(context)
+                | ExposureState::ExitAttempting(ExitAttemptingState {
+                    managed: context, ..
+                }) => {
+                    let Some(current) = context.pending_entry.as_mut() else {
+                        return false;
+                    };
+                    if current.client_order_id != pending.client_order_id
+                        || current.instrument_id != pending.instrument_id
+                    {
+                        return false;
+                    }
+                    *current = pending;
+                    true
+                }
+                ExposureState::ExitPending(exit)
+                | ExposureState::TerminalExitAwaitingPosition(exit) => {
+                    let Some(current) = exit.position.pending_entry.as_mut() else {
+                        return false;
+                    };
+                    if current.client_order_id != pending.client_order_id
+                        || current.instrument_id != pending.instrument_id
+                    {
+                        return false;
+                    }
+                    *current = pending;
+                    true
+                }
+                ExposureState::ExitAuthorityRecoveryHold(hold) => {
+                    let Some(current) = hold.position.pending_entry.as_mut() else {
+                        return false;
+                    };
+                    if current.client_order_id != pending.client_order_id
+                        || current.instrument_id != pending.instrument_id
+                    {
+                        return false;
+                    }
+                    *current = pending;
+                    true
+                }
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+        }
+    }
+
+    fn clear_managed_pending(
+        &mut self,
+        client_order_id: ClientOrderId,
+        instrument_id: InstrumentId,
+    ) -> bool {
+        let context = match &mut self.state {
+            ExposureState::Managed(context) => Some(context),
+            ExposureState::ExitAttempting(attempt) => Some(&mut attempt.managed),
+            ExposureState::ExitPending(exit)
+            | ExposureState::TerminalExitAwaitingPosition(exit) => Some(&mut exit.position),
+            ExposureState::ExitAuthorityRecoveryHold(hold) => Some(&mut hold.position),
+            ExposureState::Flat
+            | ExposureState::PendingEntry(_)
+            | ExposureState::EntryReconcilePending { .. }
+            | ExposureState::UnsupportedObserved(_)
+            | ExposureState::BlindRecovery(_)
+            | ExposureState::OperationSinkUnknown(_)
+            | ExposureState::ObligationSaturated(_)
+            | ExposureState::ReplacementConflict(_) => None,
+        };
+        let Some(context) = context else {
+            return false;
+        };
+        if context.instrument_id != instrument_id
+            || !context
+                .pending_entry
+                .as_ref()
+                .is_some_and(|pending| pending.client_order_id == client_order_id)
+        {
+            return false;
+        }
+        context.pending_entry = None;
+        true
+    }
+
+    fn reduce_exit_lifecycle(&mut self, event: ExitLifecycleEvent) -> bool {
+        let prior_state = self.state.clone();
+        if let ExposureState::BlindRecovery(recovery) = &mut self.state {
+            let Some(retained) = recovery.retained_authority_mut() else {
+                return false;
+            };
+            let (changed, provenance) =
+                reduce_retained_exit_lifecycle_with_provenance(retained, event);
+            if let Some(provenance) = provenance {
+                if !self
+                    .released_exits
+                    .contains_key(&provenance.client_order_id)
+                    && self.released_exits.len()
+                        >= self.limits.max_released_exit_provenance_count.get() as usize
+                {
+                    self.state = ExposureState::ObligationSaturated(ObligationSaturatedState {
+                        retained: Box::new(prior_state),
+                        client_order_id: provenance.client_order_id,
+                        obligation_count: self.released_exits.len(),
+                    });
+                    return true;
+                }
+                self.released_exits
+                    .insert(provenance.client_order_id, provenance);
+            }
+            return changed;
+        }
+        if let ExposureState::ObligationSaturated(saturated) = &mut self.state {
+            let (changed, provenance) =
+                reduce_retained_exit_lifecycle_with_provenance(&mut saturated.retained, event);
+            if let Some(provenance) = provenance {
+                if !self
+                    .released_exits
+                    .contains_key(&provenance.client_order_id)
+                    && self.released_exits.len()
+                        >= self.limits.max_released_exit_provenance_count.get() as usize
+                {
+                    self.state = prior_state;
+                    return false;
+                }
+                self.released_exits
+                    .insert(provenance.client_order_id, provenance);
+            }
+            return changed;
+        }
+        match event {
+            ExitLifecycleEvent::Pending(pending) => match &self.state {
+                ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::Flat => self.replace(ExposureState::ExitPending(pending)),
+                ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            ExitLifecycleEvent::TerminalAwaitingPosition(pending) => match &self.state {
+                ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_) => {
+                    self.replace(ExposureState::TerminalExitAwaitingPosition(pending))
+                }
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            ExitLifecycleEvent::RecoveryHold(hold) => match &self.state {
+                ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::Flat
+                | ExposureState::Managed(_) => {
+                    self.replace(ExposureState::ExitAuthorityRecoveryHold(hold))
+                }
+                ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            ExitLifecycleEvent::RefreshAuthority(authority) => match &mut self.state {
+                ExposureState::ExitPending(exit)
+                | ExposureState::TerminalExitAwaitingPosition(exit)
+                    if exit.client_order_id() == authority.client_order_id() =>
+                {
+                    if exit.authority == authority {
+                        false
+                    } else {
+                        exit.authority = authority;
+                        true
+                    }
+                }
+                ExposureState::ExitAuthorityRecoveryHold(hold)
+                    if hold.client_order_id() == authority.client_order_id() =>
+                {
+                    let ExitAuthorityRecoveryPlan::Resume(current) = &mut hold.plan else {
+                        return false;
+                    };
+                    if *current == authority {
+                        false
+                    } else {
+                        *current = authority;
+                        true
+                    }
+                }
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            ExitLifecycleEvent::Residual(managed) => match &self.state {
+                ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_) => {
+                    self.replace(ExposureState::Managed(managed))
+                }
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            ExitLifecycleEvent::ReleaseFlat => match &self.state {
+                ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_) => self.replace(ExposureState::Flat),
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+        }
+    }
+
+    fn reduce_position_truth(&mut self, event: PositionTruthEvent) -> bool {
+        match event {
+            PositionTruthEvent::Canonical(projection) => {
+                self.reduce_canonical_projection(projection)
+            }
+            PositionTruthEvent::AuthorizedRecovery(projection) => {
+                self.reduce_authorized_recovery(projection)
+            }
+            PositionTruthEvent::EntryTerminalMaterialization {
+                client_order_id,
+                managed,
+            } => self.reduce_entry_terminal_materialization(client_order_id, managed),
+            PositionTruthEvent::AuthenticatedEpisodeRebase {
+                before,
+                authenticated_order_id,
+                authenticated_fill_id,
+                rebased,
+                replay_segment_continuous,
+            } => self.reduce_authenticated_episode_rebase(
+                before,
+                authenticated_order_id,
+                authenticated_fill_id,
+                rebased,
+                replay_segment_continuous,
+            ),
+            PositionTruthEvent::RefreshContext(context) => self.refresh_context(context),
+            PositionTruthEvent::Unsupported(observed) => match &self.state {
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::UnsupportedObserved(_) => {
+                    self.replace(ExposureState::UnsupportedObserved(observed))
+                }
+                ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            PositionTruthEvent::BlindRecovery(recovery) => self.enter_blind_recovery(recovery),
+        }
+    }
+
+    fn reduce_canonical_projection(&mut self, projection: CanonicalPositionProjection) -> bool {
+        match projection {
+            CanonicalPositionProjection::None => match &mut self.state {
+                ExposureState::Managed(context) => {
+                    context.canonical_none_seen = true;
+                    if context.episode_close_seen {
+                        self.state = context
+                            .pending_entry
+                            .clone()
+                            .map_or(ExposureState::Flat, ExposureState::PendingEntry);
+                    }
+                    true
+                }
+                ExposureState::UnsupportedObserved(observed) => {
+                    observed.context.canonical_none_seen = true;
+                    if observed.context.episode_close_seen {
+                        self.state = ExposureState::Flat;
+                    }
+                    true
+                }
+                ExposureState::ReplacementConflict(conflict) => {
+                    conflict.candidate_visible = false;
+                    if conflict.retained_close_seen {
+                        self.state = ExposureState::Flat;
+                    }
+                    true
+                }
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_) => false,
+            },
+            CanonicalPositionProjection::ExactlyOne(managed) => match &mut self.state {
+                ExposureState::ReplacementConflict(conflict)
+                    if conflict.retained.episode == managed.episode =>
+                {
+                    let mut retained = managed;
+                    retained.episode_close_seen = conflict.retained.episode_close_seen;
+                    retained.canonical_none_seen = conflict.retained.canonical_none_seen;
+                    self.state = ExposureState::Managed(retained);
+                    true
+                }
+                ExposureState::ReplacementConflict(conflict)
+                    if conflict.candidate.episode == managed.episode =>
+                {
+                    conflict.candidate = managed;
+                    conflict.candidate_visible = true;
+                    if conflict.retained_close_seen {
+                        self.state = ExposureState::Managed(conflict.candidate.clone());
+                    }
+                    true
+                }
+                ExposureState::ReplacementConflict(conflict) => {
+                    conflict.candidate = managed;
+                    conflict.candidate_visible = true;
+                    if conflict.retained_close_seen {
+                        self.state = ExposureState::Managed(conflict.candidate.clone());
+                    }
+                    true
+                }
+                ExposureState::BlindRecovery(_) => false,
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_) => self.apply_managed_truth(managed),
+            },
+            CanonicalPositionProjection::Multiple { recovery, .. }
+            | CanonicalPositionProjection::ProbeFailed { recovery, .. } => {
+                self.enter_blind_recovery(recovery)
+            }
+        }
+    }
+
+    fn reduce_authorized_recovery(&mut self, projection: CanonicalPositionProjection) -> bool {
+        match projection {
+            CanonicalPositionProjection::None => match &self.state {
+                ExposureState::BlindRecovery(recovery) if recovery.authorizes_none() => {
+                    self.identity_conflict = None;
+                    self.state = ExposureState::Flat;
+                    true
+                }
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            CanonicalPositionProjection::ExactlyOne(managed) => match &self.state {
+                ExposureState::BlindRecovery(recovery)
+                    if recovery.authorizes_exactly_one(&managed) =>
+                {
+                    let changed = self.apply_managed_truth(managed);
+                    if changed {
+                        self.identity_conflict = None;
+                    }
+                    changed
+                }
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            CanonicalPositionProjection::Multiple { recovery, .. }
+            | CanonicalPositionProjection::ProbeFailed { recovery, .. } => {
+                self.enter_blind_recovery(recovery)
+            }
+        }
+    }
+
+    fn refresh_context(&mut self, mut refreshed: ManagedPositionContext) -> bool {
+        let current = match &mut self.state {
+            ExposureState::Managed(current) => Some(current),
+            ExposureState::ExitAttempting(attempt) => Some(&mut attempt.managed),
+            ExposureState::ExitPending(exit)
+            | ExposureState::TerminalExitAwaitingPosition(exit) => Some(&mut exit.position),
+            ExposureState::ExitAuthorityRecoveryHold(hold) => Some(&mut hold.position),
+            ExposureState::UnsupportedObserved(observed) => Some(&mut observed.context),
+            ExposureState::Flat
+            | ExposureState::PendingEntry(_)
+            | ExposureState::EntryReconcilePending { .. }
+            | ExposureState::BlindRecovery(_)
+            | ExposureState::OperationSinkUnknown(_)
+            | ExposureState::ObligationSaturated(_)
+            | ExposureState::ReplacementConflict(_) => None,
+        };
+        let Some(current) = current else {
+            return false;
+        };
+        if current.episode != refreshed.episode {
+            return false;
+        }
+        refreshed.episode_close_seen = current.episode_close_seen;
+        refreshed.canonical_none_seen = current.canonical_none_seen;
+        *current = refreshed;
+        true
+    }
+
+    fn reduce_entry_terminal_materialization(
+        &mut self,
+        client_order_id: ClientOrderId,
+        managed: ManagedPositionContext,
+    ) -> bool {
+        let matching_pending = match &self.state {
+            ExposureState::PendingEntry(pending)
+            | ExposureState::EntryReconcilePending { pending, .. } => {
+                pending.client_order_id == client_order_id
+                    && pending.instrument_id == managed.instrument_id
+            }
+            ExposureState::BlindRecovery(recovery) => recovery
+                .retained_authority()
+                .and_then(ExposureState::pending_entry)
+                .is_some_and(|pending| {
+                    pending.client_order_id == client_order_id
+                        && pending.instrument_id == managed.instrument_id
+                }),
+            ExposureState::Flat
+            | ExposureState::Managed(_)
+            | ExposureState::ExitAttempting(_)
+            | ExposureState::ExitPending(_)
+            | ExposureState::TerminalExitAwaitingPosition(_)
+            | ExposureState::ExitAuthorityRecoveryHold(_)
+            | ExposureState::UnsupportedObserved(_)
+            | ExposureState::OperationSinkUnknown(_)
+            | ExposureState::ObligationSaturated(_)
+            | ExposureState::ReplacementConflict(_) => false,
+        };
+        if !matching_pending {
+            return match &self.state {
+                ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::BlindRecovery(_) => self.record_identity_conflict(managed),
+                ExposureState::Flat
+                | ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            };
+        }
+        self.identity_conflict = None;
+        match &mut self.state {
+            ExposureState::PendingEntry(_) | ExposureState::EntryReconcilePending { .. } => {
+                self.state = ExposureState::Managed(managed);
+            }
+            ExposureState::BlindRecovery(recovery) => {
+                if let Some(retained) = recovery.retained_authority_mut() {
+                    **retained = ExposureState::Managed(managed);
+                }
+            }
+            ExposureState::Flat
+            | ExposureState::Managed(_)
+            | ExposureState::ExitAttempting(_)
+            | ExposureState::ExitPending(_)
+            | ExposureState::TerminalExitAwaitingPosition(_)
+            | ExposureState::ExitAuthorityRecoveryHold(_)
+            | ExposureState::UnsupportedObserved(_)
+            | ExposureState::OperationSinkUnknown(_)
+            | ExposureState::ObligationSaturated(_)
+            | ExposureState::ReplacementConflict(_) => unreachable!("matching state checked"),
+        }
+        true
+    }
+
+    fn reduce_authenticated_episode_rebase(
+        &mut self,
+        before: PositionEpisodeFingerprint,
+        authenticated_order_id: ClientOrderId,
+        authenticated_fill_id: TradeId,
+        rebased: Option<ManagedPositionContext>,
+        replay_segment_continuous: bool,
+    ) -> bool {
+        if authenticated_order_id != before.opening_order_id {
+            return false;
+        }
+        let retained_fill_ids = self.episode_fill_ids(&before);
+        if !retained_fill_ids.contains(&authenticated_fill_id) {
+            return false;
+        }
+
+        if replay_segment_continuous {
+            let Some(mut rebased) = rebased else {
+                return false;
+            };
+            if rebased.episode.instrument_id != before.instrument_id
+                || rebased.episode.position_id != before.position_id
+                || retained_fill_ids.is_disjoint(&rebased.episode_fill_ids)
+            {
+                return false;
+            }
+            rebased.episode_close_seen = false;
+            rebased.canonical_none_seen = false;
+            let after = rebased.episode.clone();
+            let mut changed = rebase_state_episode(&mut self.state, &before, &rebased);
+            for provenance in self.released_exits.values_mut() {
+                if provenance.episode == before {
+                    provenance.episode = after.clone();
+                    provenance.position = rebased.clone();
+                    changed = true;
+                }
+            }
+            for obligation in self.obligations.values_mut() {
+                if obligation.provenance.episode == before {
+                    obligation.provenance.episode = after.clone();
+                    obligation.provenance.position = rebased.clone();
+                    changed = true;
+                }
+            }
+            changed
+        } else {
+            let retained_episode = before.clone();
+            let adopted = rebased.clone();
+            let mut changed = correction_close_state_episode(&mut self.state, &before);
+            let released_before = self.released_exits.len();
+            self.released_exits
+                .retain(|_, provenance| provenance.episode != before);
+            changed |= self.released_exits.len() != released_before;
+            let obligations_before = self.obligations.len();
+            self.obligations
+                .retain(|_, obligation| obligation.provenance.episode != before);
+            changed |= self.obligations.len() != obligations_before;
+            if let Some(adopted) = adopted
+                && adopted.episode != retained_episode
+                && matches!(self.state, ExposureState::Flat)
+            {
+                changed |= self.apply_managed_truth(adopted.clone());
+                self.replacement_adoption = Some(ReplacementAdoption {
+                    retained_episode,
+                    adopted,
+                    cause: ReplacementAdoptionCause::AuthenticatedCorrection,
+                });
+            }
+            changed
+        }
+    }
+
+    fn episode_fill_ids(&self, episode: &PositionEpisodeFingerprint) -> BTreeSet<TradeId> {
+        let mut fill_ids = BTreeSet::new();
+        collect_state_episode_fill_ids(&self.state, episode, &mut fill_ids);
+        for provenance in self.released_exits.values() {
+            if &provenance.episode == episode {
+                fill_ids.extend(provenance.position.episode_fill_ids.iter().copied());
+            }
+        }
+        for obligation in self.obligations.values() {
+            if &obligation.provenance.episode == episode {
+                fill_ids.extend(
+                    obligation
+                        .provenance
+                        .position
+                        .episode_fill_ids
+                        .iter()
+                        .copied(),
+                );
+            }
+        }
+        fill_ids
+    }
+
+    fn record_identity_conflict(&mut self, candidate: ManagedPositionContext) -> bool {
+        let retained_episode = self
+            .state
+            .tracked_position_context()
+            .map(|context| context.episode.clone());
+        self.identity_conflict = Some(IdentityConflict {
+            retained: self.state.kind(),
+            retained_episode,
+            candidate,
+        });
+        true
+    }
+
+    fn apply_managed_truth(&mut self, managed: ManagedPositionContext) -> bool {
+        match &mut self.state {
+            ExposureState::Flat => {
+                self.identity_conflict = None;
+                self.state = ExposureState::Managed(managed);
+                true
+            }
+            ExposureState::PendingEntry(_) | ExposureState::EntryReconcilePending { .. } => {
+                self.record_identity_conflict(managed)
+            }
+            ExposureState::Managed(current) if current.episode == managed.episode => {
+                let mut managed = managed;
+                managed.episode_close_seen = current.episode_close_seen;
+                managed.canonical_none_seen = current.canonical_none_seen;
+                *current = managed;
+                self.identity_conflict = None;
+                true
+            }
+            ExposureState::ExitAttempting(attempt)
+                if attempt.managed.episode == managed.episode =>
+            {
+                let mut managed = managed;
+                managed.episode_close_seen = attempt.managed.episode_close_seen;
+                managed.canonical_none_seen = attempt.managed.canonical_none_seen;
+                attempt.managed = managed;
+                self.identity_conflict = None;
+                true
+            }
+            ExposureState::ExitPending(exit)
+            | ExposureState::TerminalExitAwaitingPosition(exit)
+                if exit.episode() == managed.episode =>
+            {
+                let mut managed = managed;
+                managed.episode_close_seen = exit.position.episode_close_seen;
+                managed.canonical_none_seen = exit.position.canonical_none_seen;
+                exit.position = managed;
+                self.identity_conflict = None;
+                true
+            }
+            ExposureState::ExitAuthorityRecoveryHold(hold)
+                if hold.position.episode == managed.episode =>
+            {
+                let mut managed = managed;
+                managed.episode_close_seen = hold.position.episode_close_seen;
+                managed.canonical_none_seen = hold.position.canonical_none_seen;
+                hold.position = managed;
+                self.identity_conflict = None;
+                true
+            }
+            ExposureState::UnsupportedObserved(observed)
+                if observed.context.episode == managed.episode =>
+            {
+                let mut managed = managed;
+                managed.episode_close_seen = observed.context.episode_close_seen;
+                managed.canonical_none_seen = observed.context.canonical_none_seen;
+                observed.context = managed;
+                self.identity_conflict = None;
+                true
+            }
+            ExposureState::BlindRecovery(recovery) if recovery.authorizes_exactly_one(&managed) => {
+                if let Some(retained) = recovery.retained_authority().cloned() {
+                    self.state = retained;
+                    if self.refresh_context(managed.clone()) {
+                        true
+                    } else if self.state.pending_entry().is_some_and(|pending| {
+                        pending.instrument_id == managed.instrument_id
+                            && pending.client_order_id == managed.episode.opening_order_id
+                    }) {
+                        self.state = ExposureState::Managed(managed);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    self.state = ExposureState::Managed(managed);
+                    true
+                }
+            }
+            ExposureState::Managed(current) => {
+                self.state = if current.episode_close_seen {
+                    self.identity_conflict = Some(IdentityConflict {
+                        retained: ExposureStateKind::Managed,
+                        retained_episode: Some(current.episode.clone()),
+                        candidate: managed.clone(),
+                    });
+                    self.replacement_adoption = Some(ReplacementAdoption {
+                        retained_episode: current.episode.clone(),
+                        adopted: managed.clone(),
+                        cause: ReplacementAdoptionCause::CanonicalCloseConjunction,
+                    });
+                    ExposureState::Managed(managed)
+                } else {
+                    ExposureState::ReplacementConflict(ReplacementConflictState {
+                        retained: current.clone(),
+                        candidate: managed,
+                        retained_close_seen: false,
+                        candidate_visible: true,
+                    })
+                };
+                true
+            }
+            ExposureState::ExitAttempting(_)
+            | ExposureState::ExitPending(_)
+            | ExposureState::TerminalExitAwaitingPosition(_)
+            | ExposureState::ExitAuthorityRecoveryHold(_)
+            | ExposureState::UnsupportedObserved(_) => self.record_identity_conflict(managed),
+            ExposureState::BlindRecovery(_)
+            | ExposureState::OperationSinkUnknown(_)
+            | ExposureState::ObligationSaturated(_)
+            | ExposureState::ReplacementConflict(_) => false,
+        }
+    }
+
+    fn reduce_position_closed(&mut self, event: PositionClosedEvent) -> bool {
+        match event {
+            PositionClosedEvent::Observed { episode } => match &mut self.state {
+                ExposureState::Managed(context) if context.episode == episode => {
+                    context.episode_close_seen = true;
+                    if context.canonical_none_seen {
+                        self.state = context
+                            .pending_entry
+                            .clone()
+                            .map_or(ExposureState::Flat, ExposureState::PendingEntry);
+                    }
+                    true
+                }
+                ExposureState::UnsupportedObserved(observed)
+                    if observed.context.episode == episode =>
+                {
+                    observed.context.episode_close_seen = true;
+                    if observed.context.canonical_none_seen {
+                        self.state = ExposureState::Flat;
+                    }
+                    true
+                }
+                ExposureState::ReplacementConflict(conflict)
+                    if conflict.retained.episode == episode =>
+                {
+                    conflict.retained_close_seen = true;
+                    if conflict.candidate_visible {
+                        self.replacement_adoption = Some(ReplacementAdoption {
+                            retained_episode: conflict.retained.episode.clone(),
+                            adopted: conflict.candidate.clone(),
+                            cause: ReplacementAdoptionCause::CanonicalCloseConjunction,
+                        });
+                        self.state = ExposureState::Managed(conflict.candidate.clone());
+                    } else {
+                        self.state = ExposureState::Flat;
+                    }
+                    true
+                }
+                ExposureState::ExitAttempting(attempt) if attempt.managed.episode == episode => {
+                    attempt.managed.episode_close_seen = true;
+                    true
+                }
+                ExposureState::ExitPending(exit)
+                | ExposureState::TerminalExitAwaitingPosition(exit)
+                    if exit.episode() == episode =>
+                {
+                    exit.position.episode_close_seen = true;
+                    true
+                }
+                ExposureState::ExitAuthorityRecoveryHold(hold) if hold.episode() == episode => {
+                    hold.position.episode_close_seen = true;
+                    true
+                }
+                ExposureState::BlindRecovery(recovery) => recovery
+                    .retained_authority_mut()
+                    .is_some_and(|retained| observe_position_close(retained, &episode)),
+                ExposureState::ObligationSaturated(saturated) => {
+                    observe_position_close(&mut saturated.retained, &episode)
+                }
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+        }
+    }
+
+    fn reduce_timer_reconciliation(&mut self, event: TimerReconciliationEvent) -> bool {
+        match event {
+            TimerReconciliationEvent::Pending(state) => {
+                self.reduce_exit_lifecycle(ExitLifecycleEvent::Pending(state))
+            }
+            TimerReconciliationEvent::TerminalAwaitingPosition(state) => {
+                self.reduce_exit_lifecycle(ExitLifecycleEvent::TerminalAwaitingPosition(state))
+            }
+            TimerReconciliationEvent::RecoveryHold(state) => {
+                self.reduce_exit_lifecycle(ExitLifecycleEvent::RecoveryHold(state))
+            }
+            TimerReconciliationEvent::ReleaseFlat => {
+                self.reduce_exit_lifecycle(ExitLifecycleEvent::ReleaseFlat)
+            }
+            TimerReconciliationEvent::BlindRecovery(state) => self.enter_blind_recovery(state),
+            TimerReconciliationEvent::SinkUnknown(resolution) => match &mut self.state {
+                ExposureState::OperationSinkUnknown(unknown) => {
+                    let next = sink_unknown_resolution_state(unknown, resolution);
+                    self.replace(next)
+                }
+                ExposureState::BlindRecovery(recovery) => {
+                    let Some(retained) = recovery.retained_authority_mut() else {
+                        return false;
+                    };
+                    let ExposureState::OperationSinkUnknown(unknown) = &**retained else {
+                        return false;
+                    };
+                    **retained = sink_unknown_resolution_state(unknown, resolution);
+                    true
+                }
+                ExposureState::ObligationSaturated(saturated) => {
+                    let ExposureState::OperationSinkUnknown(unknown) = &*saturated.retained else {
+                        return false;
+                    };
+                    saturated.retained =
+                        Box::new(sink_unknown_resolution_state(unknown, resolution));
+                    true
+                }
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+        }
+    }
+
+    fn reduce_bootstrap_adoption(&mut self, event: BootstrapAdoptionEvent) -> bool {
+        match event {
+            BootstrapAdoptionEvent::Flat => self.replace(ExposureState::Flat),
+            BootstrapAdoptionEvent::Managed(state) => match &self.state {
+                ExposureState::Flat | ExposureState::BlindRecovery(_) => {
+                    self.replace(ExposureState::Managed(state))
+                }
+                ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            BootstrapAdoptionEvent::Unsupported(state) => match &self.state {
+                ExposureState::Flat | ExposureState::BlindRecovery(_) => {
+                    self.replace(ExposureState::UnsupportedObserved(state))
+                }
+                ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            BootstrapAdoptionEvent::ExitPending(state) => match &self.state {
+                ExposureState::Flat
+                | ExposureState::Managed(_)
+                | ExposureState::BlindRecovery(_) => {
+                    self.replace(ExposureState::ExitPending(state))
+                }
+                ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            BootstrapAdoptionEvent::BlindRecovery(state) => self.enter_blind_recovery(state),
+        }
+    }
+
+    fn reduce_settlement_effect(&mut self, event: SettlementEffectEvent) -> bool {
+        match event {
+            SettlementEffectEvent::ReleaseFlat { episode } => match &self.state {
+                ExposureState::Managed(managed) if managed.episode == episode => {
+                    self.replace(ExposureState::Flat)
+                }
+                ExposureState::UnsupportedObserved(unsupported)
+                    if unsupported.context.episode == episode =>
+                {
+                    self.replace(ExposureState::Flat)
+                }
+                ExposureState::Flat
+                | ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::Managed(_)
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            },
+            SettlementEffectEvent::BlindRecovery(state) => self.enter_blind_recovery(state),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperationArmPhase {
+    Provisional,
+    Consumed,
+    SinkInvoked,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct OperationArm {
+    operation: ExposureOperationKind,
+    generation: u64,
+    prior_generation: u64,
+    prior: ExposureState,
+    payload: Option<RouteOperationPayload>,
+    phase: OperationArmPhase,
+}
+
+pub(super) struct GovernedExposure {
+    inner: Rc<RefCell<GovernedExposureInner>>,
+}
+
+impl std::fmt::Debug for GovernedExposure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("GovernedExposure")
+            .field(&*self.inner.borrow())
+            .finish()
+    }
+}
+
+impl Clone for GovernedExposure {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(self.inner.borrow().clone())),
+        }
+    }
+}
+
+impl PartialEq for GovernedExposure {
+    fn eq(&self, other: &Self) -> bool {
+        *self.inner.borrow() == *other.inner.borrow()
+    }
+}
+
+impl GovernedExposure {
+    pub(super) fn new(limits: ExposureObligationLimits) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(GovernedExposureInner::new(limits))),
+        }
+    }
+
+    pub(super) fn state(&self) -> ExposureState {
+        self.inner.borrow().state.clone()
+    }
+
+    pub(super) fn generation(&self) -> u64 {
+        self.inner.borrow().generation
+    }
+
+    #[cfg(test)]
+    pub(super) fn last_outcome(&self) -> ExposureTransitionOutcome {
+        self.inner.borrow().last_outcome
+    }
+
+    #[cfg(test)]
+    pub(super) fn quarantined_order(&self, client_order_id: &ClientOrderId) -> bool {
+        self.inner
+            .borrow()
+            .quarantined_orders
+            .contains_key(client_order_id)
+    }
+
+    pub(super) fn limits(&self) -> ExposureObligationLimits {
+        self.inner.borrow().limits
+    }
+
+    pub(super) fn identity_conflict(&self) -> Option<IdentityConflict> {
+        self.inner.borrow().identity_conflict.clone()
+    }
+
+    pub(super) fn replacement_adoption(&self) -> Option<ReplacementAdoption> {
+        self.inner.borrow().replacement_adoption.clone()
+    }
+
+    pub(super) fn released_exit(
+        &self,
+        client_order_id: &ClientOrderId,
+    ) -> Option<ReleasedExitProvenance> {
+        self.inner
+            .borrow()
+            .released_exits
+            .get(client_order_id)
+            .cloned()
+    }
+
+    pub(super) fn released_exit_for_episode(
+        &self,
+        episode: &PositionEpisodeFingerprint,
+    ) -> Option<ReleasedExitProvenance> {
+        self.inner
+            .borrow()
+            .released_exits
+            .values()
+            .find(|provenance| &provenance.episode == episode)
+            .cloned()
+    }
+
+    #[cfg(test)]
+    pub(super) fn released_exit_count(&self) -> usize {
+        self.inner.borrow().released_exits.len()
+    }
+
+    pub(super) fn authenticated_episode_for_fill_void(
+        &self,
+        client_order_id: ClientOrderId,
+        trade_id: TradeId,
+    ) -> Option<PositionEpisodeFingerprint> {
+        let inner = self.inner.borrow();
+        let mut episodes = Vec::new();
+        collect_state_episode_identities(&inner.state, client_order_id, trade_id, &mut episodes);
+        for provenance in inner.released_exits.values() {
+            collect_context_episode_identity(
+                &provenance.position,
+                client_order_id,
+                trade_id,
+                &mut episodes,
+            );
+        }
+        for obligation in inner.obligations.values() {
+            collect_context_episode_identity(
+                &obligation.provenance.position,
+                client_order_id,
+                trade_id,
+                &mut episodes,
+            );
+        }
+        (episodes.len() == 1).then(|| episodes.remove(0))
+    }
+
+    pub(super) fn replay_segment_continuous(
+        &self,
+        before: &PositionEpisodeFingerprint,
+        rebased: &ManagedPositionContext,
+    ) -> bool {
+        let retained = self.inner.borrow().episode_fill_ids(before);
+        rebased.episode.instrument_id == before.instrument_id
+            && rebased.episode.position_id == before.position_id
+            && !retained.is_disjoint(&rebased.episode_fill_ids)
+    }
+
+    pub(super) fn ready_historical_exit_obligation(&self) -> Option<DeferredExitObligation> {
+        let inner = self.inner.borrow();
+        inner
+            .obligations
+            .values()
+            .find(|obligation| match &inner.state {
+                ExposureState::Flat => true,
+                ExposureState::Managed(managed) => managed.episode == obligation.provenance.episode,
+                ExposureState::PendingEntry(_)
+                | ExposureState::EntryReconcilePending { .. }
+                | ExposureState::ExitAttempting(_)
+                | ExposureState::ExitPending(_)
+                | ExposureState::TerminalExitAwaitingPosition(_)
+                | ExposureState::ExitAuthorityRecoveryHold(_)
+                | ExposureState::UnsupportedObserved(_)
+                | ExposureState::BlindRecovery(_)
+                | ExposureState::OperationSinkUnknown(_)
+                | ExposureState::ObligationSaturated(_)
+                | ExposureState::ReplacementConflict(_) => false,
+            })
+            .cloned()
+    }
+
+    pub(super) fn deferred_obligation(
+        &self,
+        client_order_id: &ClientOrderId,
+    ) -> Option<DeferredExitObligation> {
+        self.inner
+            .borrow()
+            .obligations
+            .get(client_order_id)
+            .cloned()
+    }
+
+    pub(super) fn reduce(&self, event: ExposureEvent) -> ExposureTransitionOutcome {
+        self.inner.borrow_mut().reduce(event)
+    }
+
+    pub(super) fn saturate_with_current_state(
+        &self,
+        client_order_id: ClientOrderId,
+    ) -> ExposureTransitionOutcome {
+        self.reduce(ExposureEvent::UntrackedOrder(
+            UntrackedOrderEvent::ObligationSaturated { client_order_id },
+        ))
+    }
+
+    pub(super) fn pending_entry(&self) -> Option<PendingEntryState> {
+        self.inner.borrow().state.pending_entry().cloned()
+    }
+
+    pub(super) fn managed_position_context(&self) -> Option<ManagedPositionContext> {
+        self.inner
+            .borrow()
+            .state
+            .managed_position_context()
+            .cloned()
+    }
+
+    pub(super) fn tracked_position_context(&self) -> Option<ManagedPositionContext> {
+        self.inner
+            .borrow()
+            .state
+            .tracked_position_context()
+            .cloned()
+    }
+
+    pub(super) fn held_instrument_id(&self) -> Option<InstrumentId> {
+        self.inner.borrow().state.held_instrument_id()
+    }
+
+    pub(super) fn exit_pending_snapshot(&self) -> Option<ExitPendingState> {
+        self.inner.borrow().state.exit_pending_snapshot()
+    }
+
+    pub(super) fn exit_lifecycle(&self) -> Option<(ExitLifecyclePhase, ExitPendingState)> {
+        self.inner.borrow().state.exit_lifecycle()
+    }
+
+    pub(super) fn exit_authority_recovery_hold(&self) -> Option<ExitAuthorityRecoveryHoldState> {
+        self.inner
+            .borrow()
+            .state
+            .exit_authority_recovery_hold()
+            .cloned()
+    }
+
+    pub(super) fn operation_sink_unknown(&self) -> Option<OperationSinkUnknownState> {
+        self.inner.borrow().state.operation_sink_unknown().cloned()
+    }
+
+    pub(super) fn occupancy(&self) -> Option<ExposureOccupancy> {
+        let inner = self.inner.borrow();
+        if inner.operation_arm.is_some() {
+            return Some(ExposureOccupancy::BlindRecovery);
+        }
+        inner.state.occupancy()
+    }
+
+    #[cfg(test)]
+    pub(super) fn blocks_new_entries(&self) -> bool {
+        let inner = self.inner.borrow();
+        inner.operation_arm.is_some() || inner.state.blocks_new_entries()
+    }
+
+    pub(super) fn is_recovering(&self) -> bool {
+        self.inner.borrow().state.is_recovering()
+    }
+
+    pub(super) fn current_position_market_id(&self) -> Option<String> {
+        self.inner.borrow().state.current_position_market_id()
+    }
+
+    pub(super) fn request_entry_operation(
+        &self,
+        expected_generation: u64,
+    ) -> Result<EntryOperationGrant, ExposureOperationRejection> {
+        self.request_operation(ExposureOperationKind::EntryRoute, expected_generation)
+            .map(EntryOperationGrant)
+    }
+
+    pub(super) fn request_exit_operation(
+        &self,
+        expected_generation: u64,
+    ) -> Result<ExitOperationGrant, ExposureOperationRejection> {
+        self.request_operation(ExposureOperationKind::ExitRoute, expected_generation)
+            .map(ExitOperationGrant)
+    }
+
+    pub(super) fn request_bootstrap_operation(
+        &self,
+        expected_generation: u64,
+    ) -> Result<BootstrapOperationGrant, ExposureOperationRejection> {
+        self.request_operation(ExposureOperationKind::Bootstrap, expected_generation)
+            .map(BootstrapOperationGrant)
+    }
+
+    pub(super) fn request_correction_operation(
+        &self,
+        expected_generation: u64,
+    ) -> Result<CorrectionOperationGrant, ExposureOperationRejection> {
+        self.request_operation(ExposureOperationKind::Correction, expected_generation)
+            .map(CorrectionOperationGrant)
+    }
+
+    fn request_operation(
+        &self,
+        operation: ExposureOperationKind,
+        expected_generation: u64,
+    ) -> Result<ExposureOperationGrant, ExposureOperationRejection> {
+        let mut inner = self.inner.borrow_mut();
+        let state = inner.state.kind();
+        let rejection = |reason, current_generation| ExposureOperationRejection {
+            operation,
+            reason,
+            state,
+            requested_generation: expected_generation,
+            current_generation,
+        };
+        if expected_generation != inner.generation {
+            return Err(rejection(
+                ExposureOperationBlockedReason::StaleGeneration,
+                inner.generation,
+            ));
+        }
+        if inner.operation_arm.is_some() {
+            return Err(rejection(
+                ExposureOperationBlockedReason::OperationAlreadyArmed,
+                inner.generation,
+            ));
+        }
+        let allowed = match operation {
+            ExposureOperationKind::EntryRoute => matches!(inner.state, ExposureState::Flat),
+            ExposureOperationKind::ExitRoute => {
+                matches!(inner.state, ExposureState::Managed(_))
+            }
+            ExposureOperationKind::Bootstrap => {
+                matches!(
+                    inner.state,
+                    ExposureState::Flat
+                        | ExposureState::Managed(_)
+                        | ExposureState::BlindRecovery(_)
+                )
+            }
+            ExposureOperationKind::Correction => {
+                matches!(inner.state, ExposureState::Flat | ExposureState::Managed(_))
+            }
+        };
+        if !allowed {
+            return Err(rejection(
+                blocked_reason_for_state(&inner.state),
+                inner.generation,
+            ));
+        }
+        let prior_generation = inner.generation;
+        let generation = prior_generation
+            .checked_add(1)
+            .expect("validated exposure generation space exhausted");
+        inner.generation = generation;
+        inner.operation_arm = Some(OperationArm {
+            operation,
+            generation,
+            prior_generation,
+            prior: inner.state.clone(),
+            payload: None,
+            phase: OperationArmPhase::Provisional,
+        });
+        Ok(ExposureOperationGrant {
+            inner: Rc::downgrade(&self.inner),
+            operation,
+            generation,
+            complete: false,
+        })
+    }
+}
+
+fn blocked_reason_for_state(state: &ExposureState) -> ExposureOperationBlockedReason {
+    match state {
+        ExposureState::Flat => ExposureOperationBlockedReason::Unoccupied,
+        ExposureState::PendingEntry(_) => ExposureOperationBlockedReason::PendingEntryOccupied,
+        ExposureState::EntryReconcilePending { .. } => {
+            ExposureOperationBlockedReason::EntryReconcileOccupied
+        }
+        ExposureState::Managed(_) => ExposureOperationBlockedReason::ManagedOccupied,
+        ExposureState::ExitAttempting(_) => ExposureOperationBlockedReason::ExitAttemptOccupied,
+        ExposureState::ExitPending(_) | ExposureState::TerminalExitAwaitingPosition(_) => {
+            ExposureOperationBlockedReason::ExitPendingOccupied
+        }
+        ExposureState::ExitAuthorityRecoveryHold(_) => {
+            ExposureOperationBlockedReason::RecoveryHoldOccupied
+        }
+        ExposureState::UnsupportedObserved(_) => {
+            ExposureOperationBlockedReason::UnsupportedOccupied
+        }
+        ExposureState::BlindRecovery(_) => ExposureOperationBlockedReason::BlindRecoveryOccupied,
+        ExposureState::OperationSinkUnknown(_) => {
+            ExposureOperationBlockedReason::SinkUnknownOccupied
+        }
+        ExposureState::ObligationSaturated(_) => {
+            ExposureOperationBlockedReason::ObligationSaturated
+        }
+        ExposureState::ReplacementConflict(_) => {
+            ExposureOperationBlockedReason::ReplacementConflictOccupied
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ExposureOperationGrant {
+    inner: Weak<RefCell<GovernedExposureInner>>,
+    operation: ExposureOperationKind,
+    generation: u64,
+    complete: bool,
+}
+
+impl ExposureOperationGrant {
+    fn bind_route_payload(&mut self, payload: RouteOperationPayload) -> Result<()> {
+        anyhow::ensure!(
+            payload.operation() == self.operation,
+            "exposure route grant operation does not match its payload"
+        );
+        let inner = self
+            .inner
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("exposure authority no longer exists"))?;
+        let mut inner = inner.borrow_mut();
+        let Some(arm) = inner.operation_arm.as_mut() else {
+            anyhow::bail!("exposure route grant is stale");
+        };
+        anyhow::ensure!(
+            arm.generation == self.generation && arm.operation == self.operation,
+            "exposure route grant generation is stale"
+        );
+        anyhow::ensure!(
+            arm.payload.is_none(),
+            "exposure route grant is already bound"
+        );
+        arm.payload = Some(payload);
+        Ok(())
+    }
+
+    fn rollback(&mut self) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        let mut inner = inner.borrow_mut();
+        let Some(arm) = inner.operation_arm.as_ref() else {
+            return;
+        };
+        if arm.generation != self.generation || arm.operation != self.operation {
+            return;
+        }
+        let arm = inner
+            .operation_arm
+            .take()
+            .expect("matching exposure operation arm must still exist");
+        match arm.phase {
+            OperationArmPhase::Provisional | OperationArmPhase::Consumed => {
+                inner.replace_from_operation(arm.prior);
+                inner.generation = arm.prior_generation;
+            }
+            OperationArmPhase::SinkInvoked => {
+                let payload = arm
+                    .payload
+                    .expect("sink-invoked exposure operation must carry its route payload");
+                inner.replace_from_operation(ExposureState::OperationSinkUnknown(
+                    OperationSinkUnknownState {
+                        operation: arm.operation,
+                        generation: arm.generation,
+                        client_order_id: payload.client_order_id(),
+                        attempted: payload,
+                        prior: Box::new(arm.prior),
+                    },
+                ));
+                inner.generation = arm
+                    .generation
+                    .checked_add(1)
+                    .expect("validated exposure generation space exhausted");
+            }
+        }
+    }
+
+    fn commit_reducer_event(&mut self, event: ExposureEvent) -> ExposureTransitionOutcome {
+        let inner = self
+            .inner
+            .upgrade()
+            .expect("exposure authority must outlive reducer operation grant");
+        let mut inner = inner.borrow_mut();
+        if !inner.operation_arm.as_ref().is_some_and(|arm| {
+            arm.generation == self.generation
+                && arm.operation == self.operation
+                && arm.phase == OperationArmPhase::Provisional
+        }) {
+            self.complete = true;
+            return ExposureTransitionOutcome::Preserved {
+                state: inner.state.kind(),
+            };
+        }
+        let outcome = inner.reduce(event);
+        if inner
+            .operation_arm
+            .as_ref()
+            .is_some_and(|arm| arm.generation == self.generation && arm.operation == self.operation)
+        {
+            let arm = inner
+                .operation_arm
+                .take()
+                .expect("matching reducer operation arm must still exist");
+            inner.replace_from_operation(arm.prior);
+            inner.generation = arm.prior_generation;
+        }
+        self.complete = true;
+        outcome
+    }
+}
+
+impl Drop for ExposureOperationGrant {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.rollback();
+        }
+    }
+}
+
+impl BoltV3RouteAttemptParticipant for ExposureOperationGrant {
+    fn consume_at_pre_sink(&mut self) -> Result<()> {
+        let inner = self
+            .inner
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("exposure authority no longer exists"))?;
+        let mut inner = inner.borrow_mut();
+        let Some(arm) = inner.operation_arm.as_mut() else {
+            anyhow::bail!("exposure route grant is stale");
+        };
+        anyhow::ensure!(
+            arm.generation == self.generation && arm.operation == self.operation,
+            "exposure route grant generation is stale"
+        );
+        anyhow::ensure!(
+            arm.phase == OperationArmPhase::Provisional,
+            "exposure route grant was consumed more than once"
+        );
+        let payload = arm
+            .payload
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("exposure route grant has no bound payload"))?;
+        arm.phase = OperationArmPhase::Consumed;
+        let next = match payload {
+            RouteOperationPayload::Entry(pending) => ExposureState::PendingEntry(pending),
+            RouteOperationPayload::Exit(attempt) => ExposureState::ExitAttempting(attempt),
+        };
+        inner.replace_from_operation(next);
+        Ok(())
+    }
+
+    fn mark_sink_invoked(&mut self) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        let mut inner = inner.borrow_mut();
+        if let Some(arm) = inner.operation_arm.as_mut()
+            && arm.generation == self.generation
+            && arm.operation == self.operation
+            && arm.phase == OperationArmPhase::Consumed
+        {
+            arm.phase = OperationArmPhase::SinkInvoked;
+        }
+    }
+
+    fn complete(&mut self, completion: BoltV3RouteAttemptCompletion) {
+        let Some(inner) = self.inner.upgrade() else {
+            self.complete = true;
+            return;
+        };
+        let mut inner = inner.borrow_mut();
+        let Some(arm) = inner.operation_arm.as_ref() else {
+            self.complete = true;
+            return;
+        };
+        if arm.generation != self.generation || arm.operation != self.operation {
+            self.complete = true;
+            return;
+        }
+        let arm = inner
+            .operation_arm
+            .take()
+            .expect("matching exposure operation arm must still exist");
+        match completion {
+            BoltV3RouteAttemptCompletion::Submitted => {
+                if let RouteOperationPayload::Exit(attempt) = arm
+                    .payload
+                    .expect("submitted exposure operation must carry its route payload")
+                {
+                    inner
+                        .replace_from_operation(ExposureState::ExitPending(attempt.into_pending()));
+                }
+                inner.generation = arm
+                    .generation
+                    .checked_add(1)
+                    .expect("validated exposure generation space exhausted");
+            }
+            BoltV3RouteAttemptCompletion::SinkRejected => {
+                let payload = arm
+                    .payload
+                    .expect("sink-rejected exposure operation must carry its route payload");
+                inner.replace_from_operation(ExposureState::OperationSinkUnknown(
+                    OperationSinkUnknownState {
+                        operation: arm.operation,
+                        generation: arm.generation,
+                        client_order_id: payload.client_order_id(),
+                        attempted: payload,
+                        prior: Box::new(arm.prior),
+                    },
+                ));
+                inner.generation = arm
+                    .generation
+                    .checked_add(1)
+                    .expect("validated exposure generation space exhausted");
+            }
+        }
+        self.complete = true;
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct EntryOperationGrant(ExposureOperationGrant);
+
+impl EntryOperationGrant {
+    #[cfg(test)]
+    pub(super) fn generation(&self) -> u64 {
+        self.0.generation
+    }
+
+    pub(super) fn bind(
+        mut self,
+        pending: PendingEntryState,
+    ) -> Result<Box<dyn BoltV3RouteAttemptParticipant>> {
+        self.0
+            .bind_route_payload(RouteOperationPayload::Entry(pending))?;
+        Ok(Box::new(self.0))
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct ExitOperationGrant(ExposureOperationGrant);
+
+impl ExitOperationGrant {
+    pub(super) fn generation(&self) -> u64 {
+        self.0.generation
+    }
+
+    pub(super) fn bind(
+        mut self,
+        attempt: ExitAttemptingState,
+    ) -> Result<Box<dyn BoltV3RouteAttemptParticipant>> {
+        self.0
+            .bind_route_payload(RouteOperationPayload::Exit(attempt))?;
+        Ok(Box::new(self.0))
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct BootstrapOperationGrant(ExposureOperationGrant);
+
+impl BootstrapOperationGrant {
+    pub(super) fn commit(mut self, event: BootstrapAdoptionEvent) -> ExposureTransitionOutcome {
+        self.0
+            .commit_reducer_event(ExposureEvent::BootstrapAdoption(event))
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct CorrectionOperationGrant(ExposureOperationGrant);
+
+impl CorrectionOperationGrant {
+    pub(super) fn commit(mut self, event: ExposureEvent) -> ExposureTransitionOutcome {
+        self.0.commit_reducer_event(event)
+    }
+}
+
+fn observe_position_close(state: &mut ExposureState, episode: &PositionEpisodeFingerprint) -> bool {
+    match state {
+        ExposureState::Managed(context) if &context.episode == episode => {
+            context.episode_close_seen = true;
+            true
+        }
+        ExposureState::UnsupportedObserved(observed) if &observed.context.episode == episode => {
+            observed.context.episode_close_seen = true;
+            true
+        }
+        ExposureState::ExitAttempting(attempt) if &attempt.managed.episode == episode => {
+            attempt.managed.episode_close_seen = true;
+            true
+        }
+        ExposureState::ExitPending(exit) | ExposureState::TerminalExitAwaitingPosition(exit)
+            if &exit.position.episode == episode =>
+        {
+            exit.position.episode_close_seen = true;
+            true
+        }
+        ExposureState::ExitAuthorityRecoveryHold(hold) if &hold.position.episode == episode => {
+            hold.position.episode_close_seen = true;
+            true
+        }
+        ExposureState::Flat
+        | ExposureState::PendingEntry(_)
+        | ExposureState::EntryReconcilePending { .. }
+        | ExposureState::Managed(_)
+        | ExposureState::ExitAttempting(_)
+        | ExposureState::ExitPending(_)
+        | ExposureState::TerminalExitAwaitingPosition(_)
+        | ExposureState::ExitAuthorityRecoveryHold(_)
+        | ExposureState::UnsupportedObserved(_)
+        | ExposureState::BlindRecovery(_)
+        | ExposureState::OperationSinkUnknown(_)
+        | ExposureState::ObligationSaturated(_)
+        | ExposureState::ReplacementConflict(_) => false,
+    }
+}
+
+fn collect_state_episode_fill_ids(
+    state: &ExposureState,
+    episode: &PositionEpisodeFingerprint,
+    fill_ids: &mut BTreeSet<TradeId>,
+) {
+    let mut collect = |context: &ManagedPositionContext| {
+        if &context.episode == episode {
+            fill_ids.extend(context.episode_fill_ids.iter().copied());
+        }
+    };
+    match state {
+        ExposureState::Managed(context) => collect(context),
+        ExposureState::ExitAttempting(attempt) => collect(&attempt.managed),
+        ExposureState::ExitPending(exit) | ExposureState::TerminalExitAwaitingPosition(exit) => {
+            collect(&exit.position);
+        }
+        ExposureState::ExitAuthorityRecoveryHold(hold) => collect(&hold.position),
+        ExposureState::UnsupportedObserved(observed) => collect(&observed.context),
+        ExposureState::BlindRecovery(recovery) => {
+            if let Some(retained) = recovery.retained_authority() {
+                collect_state_episode_fill_ids(retained, episode, fill_ids);
+            }
+        }
+        ExposureState::OperationSinkUnknown(unknown) => {
+            collect_state_episode_fill_ids(&unknown.prior, episode, fill_ids);
+        }
+        ExposureState::ObligationSaturated(saturated) => {
+            collect_state_episode_fill_ids(&saturated.retained, episode, fill_ids);
+        }
+        ExposureState::ReplacementConflict(conflict) => {
+            collect(&conflict.retained);
+            collect(&conflict.candidate);
+        }
+        ExposureState::Flat
+        | ExposureState::PendingEntry(_)
+        | ExposureState::EntryReconcilePending { .. } => {}
+    }
+}
+
+fn collect_context_episode_identity(
+    context: &ManagedPositionContext,
+    client_order_id: ClientOrderId,
+    trade_id: TradeId,
+    episodes: &mut Vec<PositionEpisodeFingerprint>,
+) {
+    if context.episode.opening_order_id == client_order_id
+        && context.episode_fill_ids.contains(&trade_id)
+        && !episodes.contains(&context.episode)
+    {
+        episodes.push(context.episode.clone());
+    }
+}
+
+fn collect_state_episode_identities(
+    state: &ExposureState,
+    client_order_id: ClientOrderId,
+    trade_id: TradeId,
+    episodes: &mut Vec<PositionEpisodeFingerprint>,
+) {
+    match state {
+        ExposureState::Managed(context) => {
+            collect_context_episode_identity(context, client_order_id, trade_id, episodes);
+        }
+        ExposureState::ExitAttempting(attempt) => {
+            collect_context_episode_identity(&attempt.managed, client_order_id, trade_id, episodes)
+        }
+        ExposureState::ExitPending(exit) | ExposureState::TerminalExitAwaitingPosition(exit) => {
+            collect_context_episode_identity(&exit.position, client_order_id, trade_id, episodes);
+        }
+        ExposureState::ExitAuthorityRecoveryHold(hold) => {
+            collect_context_episode_identity(&hold.position, client_order_id, trade_id, episodes)
+        }
+        ExposureState::UnsupportedObserved(observed) => {
+            collect_context_episode_identity(&observed.context, client_order_id, trade_id, episodes)
+        }
+        ExposureState::BlindRecovery(recovery) => {
+            if let Some(retained) = recovery.retained_authority() {
+                collect_state_episode_identities(retained, client_order_id, trade_id, episodes);
+            }
+        }
+        ExposureState::OperationSinkUnknown(unknown) => {
+            collect_state_episode_identities(&unknown.prior, client_order_id, trade_id, episodes)
+        }
+        ExposureState::ObligationSaturated(saturated) => collect_state_episode_identities(
+            &saturated.retained,
+            client_order_id,
+            trade_id,
+            episodes,
+        ),
+        ExposureState::ReplacementConflict(conflict) => {
+            collect_context_episode_identity(
+                &conflict.retained,
+                client_order_id,
+                trade_id,
+                episodes,
+            );
+            collect_context_episode_identity(
+                &conflict.candidate,
+                client_order_id,
+                trade_id,
+                episodes,
+            );
+        }
+        ExposureState::Flat
+        | ExposureState::PendingEntry(_)
+        | ExposureState::EntryReconcilePending { .. } => {}
+    }
+}
+
+fn rebase_managed_context(
+    context: &mut ManagedPositionContext,
+    before: &PositionEpisodeFingerprint,
+    rebased: &ManagedPositionContext,
+) -> bool {
+    if &context.episode != before {
+        return false;
+    }
+    let pending_entry = context.pending_entry.clone();
+    *context = rebased.clone();
+    context.pending_entry = pending_entry;
+    context.episode_close_seen = false;
+    context.canonical_none_seen = false;
+    true
+}
+
+fn reduce_retained_entry_lifecycle(state: &mut ExposureState, event: EntryLifecycleEvent) -> bool {
+    match event {
+        #[cfg(test)]
+        EntryLifecycleEvent::RestorePending(pending) => {
+            if matches!(
+                state,
+                ExposureState::Flat
+                    | ExposureState::PendingEntry(_)
+                    | ExposureState::EntryReconcilePending { .. }
+            ) {
+                *state = ExposureState::PendingEntry(pending);
+                true
+            } else {
+                false
+            }
+        }
+        EntryLifecycleEvent::Reconcile { pending, reason } => {
+            if matches!(
+                state,
+                ExposureState::Flat
+                    | ExposureState::PendingEntry(_)
+                    | ExposureState::EntryReconcilePending { .. }
+            ) {
+                *state = ExposureState::EntryReconcilePending { pending, reason };
+                true
+            } else {
+                false
+            }
+        }
+        EntryLifecycleEvent::ReleaseFlat => {
+            if matches!(
+                state,
+                ExposureState::PendingEntry(_) | ExposureState::EntryReconcilePending { .. }
+            ) {
+                *state = ExposureState::Flat;
+                true
+            } else {
+                false
+            }
+        }
+        EntryLifecycleEvent::ClearManagedPending {
+            client_order_id,
+            instrument_id,
+        } => clear_managed_pending_in_state(state, client_order_id, instrument_id),
+        EntryLifecycleEvent::RefreshPending(pending) => refresh_pending_in_state(state, pending),
+    }
+}
+
+fn clear_managed_pending_in_state(
+    state: &mut ExposureState,
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+) -> bool {
+    let context = match state {
+        ExposureState::Managed(context) => Some(context),
+        ExposureState::ExitAttempting(attempt) => Some(&mut attempt.managed),
+        ExposureState::ExitPending(exit) | ExposureState::TerminalExitAwaitingPosition(exit) => {
+            Some(&mut exit.position)
+        }
+        ExposureState::ExitAuthorityRecoveryHold(hold) => Some(&mut hold.position),
+        ExposureState::BlindRecovery(recovery) => {
+            return recovery.retained_authority_mut().is_some_and(|retained| {
+                clear_managed_pending_in_state(retained, client_order_id, instrument_id)
+            });
+        }
+        ExposureState::Flat
+        | ExposureState::PendingEntry(_)
+        | ExposureState::EntryReconcilePending { .. }
+        | ExposureState::UnsupportedObserved(_)
+        | ExposureState::OperationSinkUnknown(_)
+        | ExposureState::ObligationSaturated(_)
+        | ExposureState::ReplacementConflict(_) => None,
+    };
+    let Some(context) = context else {
+        return false;
+    };
+    if context.instrument_id != instrument_id
+        || !context
+            .pending_entry
+            .as_ref()
+            .is_some_and(|pending| pending.client_order_id == client_order_id)
+    {
+        return false;
+    }
+    context.pending_entry = None;
+    true
+}
+
+fn refresh_pending_in_state(state: &mut ExposureState, pending: PendingEntryState) -> bool {
+    match state {
+        ExposureState::PendingEntry(current)
+        | ExposureState::EntryReconcilePending {
+            pending: current, ..
+        } if current.client_order_id == pending.client_order_id
+            && current.instrument_id == pending.instrument_id =>
+        {
+            *current = pending;
+            true
+        }
+        ExposureState::Managed(context)
+        | ExposureState::ExitAttempting(ExitAttemptingState {
+            managed: context, ..
+        }) => refresh_context_pending_entry(context, pending),
+        ExposureState::ExitPending(exit) | ExposureState::TerminalExitAwaitingPosition(exit) => {
+            refresh_context_pending_entry(&mut exit.position, pending)
+        }
+        ExposureState::ExitAuthorityRecoveryHold(hold) => {
+            refresh_context_pending_entry(&mut hold.position, pending)
+        }
+        ExposureState::BlindRecovery(recovery) => recovery
+            .retained_authority_mut()
+            .is_some_and(|retained| refresh_pending_in_state(retained, pending)),
+        ExposureState::Flat
+        | ExposureState::PendingEntry(_)
+        | ExposureState::EntryReconcilePending { .. }
+        | ExposureState::UnsupportedObserved(_)
+        | ExposureState::OperationSinkUnknown(_)
+        | ExposureState::ObligationSaturated(_)
+        | ExposureState::ReplacementConflict(_) => false,
+    }
+}
+
+fn refresh_context_pending_entry(
+    context: &mut ManagedPositionContext,
+    pending: PendingEntryState,
+) -> bool {
+    let Some(current) = context.pending_entry.as_mut() else {
+        return false;
+    };
+    if current.client_order_id != pending.client_order_id
+        || current.instrument_id != pending.instrument_id
+    {
+        return false;
+    }
+    *current = pending;
+    true
+}
+
+fn reduce_retained_exit_lifecycle(state: &mut ExposureState, event: ExitLifecycleEvent) -> bool {
+    match event {
+        ExitLifecycleEvent::Pending(pending) => {
+            if matches!(
+                state,
+                ExposureState::ExitAttempting(_)
+                    | ExposureState::ExitPending(_)
+                    | ExposureState::TerminalExitAwaitingPosition(_)
+                    | ExposureState::ExitAuthorityRecoveryHold(_)
+                    | ExposureState::Flat
+            ) {
+                *state = ExposureState::ExitPending(pending);
+                true
+            } else {
+                false
+            }
+        }
+        ExitLifecycleEvent::TerminalAwaitingPosition(pending) => {
+            if matches!(
+                state,
+                ExposureState::ExitAttempting(_)
+                    | ExposureState::ExitPending(_)
+                    | ExposureState::TerminalExitAwaitingPosition(_)
+                    | ExposureState::ExitAuthorityRecoveryHold(_)
+            ) {
+                *state = ExposureState::TerminalExitAwaitingPosition(pending);
+                true
+            } else {
+                false
+            }
+        }
+        ExitLifecycleEvent::RecoveryHold(hold) => {
+            if state
+                .tracked_position_context()
+                .is_some_and(|context| context.episode == hold.position.episode)
+            {
+                *state = ExposureState::ExitAuthorityRecoveryHold(hold);
+                true
+            } else {
+                false
+            }
+        }
+        ExitLifecycleEvent::RefreshAuthority(authority) => match state {
+            ExposureState::ExitPending(exit)
+            | ExposureState::TerminalExitAwaitingPosition(exit)
+                if exit.client_order_id() == authority.client_order_id() =>
+            {
+                if exit.authority == authority {
+                    false
+                } else {
+                    exit.authority = authority;
+                    true
+                }
+            }
+            ExposureState::ExitAuthorityRecoveryHold(hold)
+                if hold.client_order_id() == authority.client_order_id() =>
+            {
+                let ExitAuthorityRecoveryPlan::Resume(current) = &mut hold.plan else {
+                    return false;
+                };
+                if *current == authority {
+                    false
+                } else {
+                    *current = authority;
+                    true
+                }
+            }
+            ExposureState::Flat
+            | ExposureState::PendingEntry(_)
+            | ExposureState::EntryReconcilePending { .. }
+            | ExposureState::Managed(_)
+            | ExposureState::ExitAttempting(_)
+            | ExposureState::ExitPending(_)
+            | ExposureState::TerminalExitAwaitingPosition(_)
+            | ExposureState::ExitAuthorityRecoveryHold(_)
+            | ExposureState::UnsupportedObserved(_)
+            | ExposureState::BlindRecovery(_)
+            | ExposureState::OperationSinkUnknown(_)
+            | ExposureState::ObligationSaturated(_)
+            | ExposureState::ReplacementConflict(_) => false,
+        },
+        ExitLifecycleEvent::Residual(managed) => {
+            if matches!(
+                state,
+                ExposureState::ExitAttempting(_)
+                    | ExposureState::ExitPending(_)
+                    | ExposureState::TerminalExitAwaitingPosition(_)
+                    | ExposureState::ExitAuthorityRecoveryHold(_)
+            ) {
+                *state = ExposureState::Managed(managed);
+                true
+            } else {
+                false
+            }
+        }
+        ExitLifecycleEvent::ReleaseFlat => {
+            if matches!(
+                state,
+                ExposureState::ExitAttempting(_)
+                    | ExposureState::ExitPending(_)
+                    | ExposureState::TerminalExitAwaitingPosition(_)
+                    | ExposureState::ExitAuthorityRecoveryHold(_)
+            ) {
+                *state = ExposureState::Flat;
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+
+fn reduce_retained_exit_lifecycle_with_provenance(
+    state: &mut ExposureState,
+    event: ExitLifecycleEvent,
+) -> (bool, Option<ReleasedExitProvenance>) {
+    let provenance = released_exit_provenance(state);
+    let changed = reduce_retained_exit_lifecycle(state, event);
+    let released = changed
+        && matches!(
+            state,
+            ExposureState::Flat | ExposureState::Managed(_) | ExposureState::PendingEntry(_)
+        );
+    (changed, released.then_some(provenance).flatten())
+}
+
+fn sink_unknown_resolution_state(
+    unknown: &OperationSinkUnknownState,
+    resolution: SinkUnknownResolution,
+) -> ExposureState {
+    match resolution {
+        SinkUnknownResolution::Submitted => match &unknown.attempted {
+            RouteOperationPayload::Entry(pending) => ExposureState::PendingEntry(pending.clone()),
+            RouteOperationPayload::Exit(attempt) => {
+                ExposureState::ExitPending(attempt.clone().into_pending())
+            }
+        },
+        SinkUnknownResolution::Terminal { residual } => {
+            residual.map_or(ExposureState::Flat, ExposureState::Managed)
+        }
+        SinkUnknownResolution::Filled { managed } => ExposureState::Managed(managed),
+        SinkUnknownResolution::ProvenAbsent => (*unknown.prior).clone(),
+    }
+}
+
+fn rebase_state_episode(
+    state: &mut ExposureState,
+    before: &PositionEpisodeFingerprint,
+    rebased: &ManagedPositionContext,
+) -> bool {
+    match state {
+        ExposureState::Managed(context) => rebase_managed_context(context, before, rebased),
+        ExposureState::ExitAttempting(attempt) => {
+            if &attempt.managed.episode != before || attempt.authority.episode() != *before {
+                return false;
+            }
+            if !attempt
+                .authority
+                .rebase_episode(before, rebased.episode.clone())
+            {
+                return false;
+            }
+            rebase_managed_context(&mut attempt.managed, before, rebased)
+        }
+        ExposureState::ExitPending(exit) | ExposureState::TerminalExitAwaitingPosition(exit) => {
+            if &exit.position.episode != before || exit.authority.episode() != *before {
+                return false;
+            }
+            if !exit
+                .authority
+                .rebase_episode(before, rebased.episode.clone())
+            {
+                return false;
+            }
+            rebase_managed_context(&mut exit.position, before, rebased)
+        }
+        ExposureState::ExitAuthorityRecoveryHold(hold) => {
+            if &hold.position.episode != before {
+                return false;
+            }
+            if let ExitAuthorityRecoveryPlan::Resume(authority) = &mut hold.plan
+                && (authority.episode() != *before
+                    || !authority.rebase_episode(before, rebased.episode.clone()))
+            {
+                return false;
+            }
+            rebase_managed_context(&mut hold.position, before, rebased)
+        }
+        ExposureState::UnsupportedObserved(observed) => {
+            rebase_managed_context(&mut observed.context, before, rebased)
+        }
+        ExposureState::BlindRecovery(recovery) => recovery
+            .retained_authority_mut()
+            .is_some_and(|retained| rebase_state_episode(retained, before, rebased)),
+        ExposureState::OperationSinkUnknown(unknown) => {
+            rebase_state_episode(&mut unknown.prior, before, rebased)
+        }
+        ExposureState::ObligationSaturated(saturated) => {
+            rebase_state_episode(&mut saturated.retained, before, rebased)
+        }
+        ExposureState::ReplacementConflict(conflict) => {
+            let retained = rebase_managed_context(&mut conflict.retained, before, rebased);
+            let candidate = rebase_managed_context(&mut conflict.candidate, before, rebased);
+            if retained {
+                conflict.retained_close_seen = false;
+            }
+            retained || candidate
+        }
+        ExposureState::Flat
+        | ExposureState::PendingEntry(_)
+        | ExposureState::EntryReconcilePending { .. } => false,
+    }
+}
+
+fn correction_close_state_episode(
+    state: &mut ExposureState,
+    before: &PositionEpisodeFingerprint,
+) -> bool {
+    match state {
+        ExposureState::Managed(context) if &context.episode == before => {
+            let next = context
+                .pending_entry
+                .clone()
+                .map_or(ExposureState::Flat, ExposureState::PendingEntry);
+            *state = next;
+            true
+        }
+        ExposureState::ExitAttempting(attempt) if &attempt.managed.episode == before => {
+            let next = attempt
+                .managed
+                .pending_entry
+                .clone()
+                .map_or(ExposureState::Flat, ExposureState::PendingEntry);
+            *state = next;
+            true
+        }
+        ExposureState::ExitPending(exit) | ExposureState::TerminalExitAwaitingPosition(exit)
+            if &exit.position.episode == before =>
+        {
+            let next = exit
+                .position
+                .pending_entry
+                .clone()
+                .map_or(ExposureState::Flat, ExposureState::PendingEntry);
+            *state = next;
+            true
+        }
+        ExposureState::ExitAuthorityRecoveryHold(hold) if &hold.position.episode == before => {
+            let next = hold
+                .position
+                .pending_entry
+                .clone()
+                .map_or(ExposureState::Flat, ExposureState::PendingEntry);
+            *state = next;
+            true
+        }
+        ExposureState::UnsupportedObserved(observed) if &observed.context.episode == before => {
+            *state = ExposureState::Flat;
+            true
+        }
+        ExposureState::BlindRecovery(recovery) => recovery
+            .retained_authority_mut()
+            .is_some_and(|retained| correction_close_state_episode(retained, before)),
+        ExposureState::OperationSinkUnknown(unknown) => {
+            correction_close_state_episode(&mut unknown.prior, before)
+        }
+        ExposureState::ObligationSaturated(saturated) => {
+            correction_close_state_episode(&mut saturated.retained, before)
+        }
+        ExposureState::ReplacementConflict(conflict) if &conflict.retained.episode == before => {
+            *state = if conflict.candidate_visible {
+                ExposureState::Managed(conflict.candidate.clone())
+            } else {
+                ExposureState::Flat
+            };
+            true
+        }
+        ExposureState::ReplacementConflict(conflict) if &conflict.candidate.episode == before => {
+            conflict.candidate_visible = false;
+            true
+        }
+        ExposureState::Flat
+        | ExposureState::PendingEntry(_)
+        | ExposureState::EntryReconcilePending { .. }
+        | ExposureState::Managed(_)
+        | ExposureState::ExitAttempting(_)
+        | ExposureState::ExitPending(_)
+        | ExposureState::TerminalExitAwaitingPosition(_)
+        | ExposureState::ExitAuthorityRecoveryHold(_)
+        | ExposureState::UnsupportedObserved(_)
+        | ExposureState::ReplacementConflict(_) => false,
+    }
+}
+
+fn released_exit_provenance(state: &ExposureState) -> Option<ReleasedExitProvenance> {
+    let (position, client_order_id, observed_fill_ids) = match state {
+        ExposureState::ExitAttempting(attempt) => (
+            &attempt.managed,
+            attempt.authority.client_order_id(),
+            attempt.authority.observed_fill_ids(),
+        ),
+        ExposureState::ExitPending(exit) | ExposureState::TerminalExitAwaitingPosition(exit) => (
+            &exit.position,
+            exit.client_order_id(),
+            exit.authority.observed_fill_ids(),
+        ),
+        ExposureState::ExitAuthorityRecoveryHold(hold) => {
+            let observed_fill_ids = match &hold.plan {
+                ExitAuthorityRecoveryPlan::Resume(authority) => authority.observed_fill_ids(),
+                ExitAuthorityRecoveryPlan::Reconstruct { .. } => BTreeSet::new(),
+            };
+            (&hold.position, hold.client_order_id(), observed_fill_ids)
+        }
+        ExposureState::Flat
+        | ExposureState::PendingEntry(_)
+        | ExposureState::EntryReconcilePending { .. }
+        | ExposureState::Managed(_)
+        | ExposureState::UnsupportedObserved(_)
+        | ExposureState::BlindRecovery(_)
+        | ExposureState::OperationSinkUnknown(_)
+        | ExposureState::ObligationSaturated(_)
+        | ExposureState::ReplacementConflict(_) => return None,
+    };
+    Some(ReleasedExitProvenance {
+        client_order_id,
+        episode: position.episode.clone(),
+        position: position.clone(),
+        observed_fill_ids,
+    })
 }
 
 impl ExposureState {
+    pub(super) const fn kind(&self) -> ExposureStateKind {
+        match self {
+            Self::Flat => ExposureStateKind::Flat,
+            Self::PendingEntry(_) => ExposureStateKind::PendingEntry,
+            Self::EntryReconcilePending { .. } => ExposureStateKind::EntryReconcilePending,
+            Self::Managed(_) => ExposureStateKind::Managed,
+            Self::ExitAttempting(_) => ExposureStateKind::ExitAttempting,
+            Self::ExitPending(_) => ExposureStateKind::ExitPending,
+            Self::TerminalExitAwaitingPosition(_) => {
+                ExposureStateKind::TerminalExitAwaitingPosition
+            }
+            Self::ExitAuthorityRecoveryHold(_) => ExposureStateKind::ExitAuthorityRecoveryHold,
+            Self::UnsupportedObserved(_) => ExposureStateKind::UnsupportedObserved,
+            Self::BlindRecovery(_) => ExposureStateKind::BlindRecovery,
+            Self::OperationSinkUnknown(_) => ExposureStateKind::OperationSinkUnknown,
+            Self::ObligationSaturated(_) => ExposureStateKind::ObligationSaturated,
+            Self::ReplacementConflict(_) => ExposureStateKind::ReplacementConflict,
+        }
+    }
+
     pub(super) fn pending_entry(&self) -> Option<&PendingEntryState> {
         match self {
             Self::PendingEntry(pending) | Self::EntryReconcilePending { pending, .. } => {
@@ -212,33 +3474,14 @@ impl ExposureState {
             }
             Self::Managed(position) => position.pending_entry.as_ref(),
             Self::ExitAttempting(attempt) => attempt.managed.pending_entry.as_ref(),
-            Self::ExitPending(exit) | Self::TerminalExitAwaitingPosition(exit) => exit
-                .position
-                .as_ref()
-                .and_then(|position| position.pending_entry.as_ref()),
-            Self::ExitAuthorityRecoveryHold(hold) => hold
-                .position
-                .as_ref()
-                .and_then(|position| position.pending_entry.as_ref()),
-            _ => None,
-        }
-    }
-
-    pub(super) fn pending_entry_mut(&mut self) -> Option<&mut PendingEntryState> {
-        match self {
-            Self::PendingEntry(pending) | Self::EntryReconcilePending { pending, .. } => {
-                Some(pending)
+            Self::ExitPending(exit) | Self::TerminalExitAwaitingPosition(exit) => {
+                exit.position.pending_entry.as_ref()
             }
-            Self::Managed(position) => position.pending_entry.as_mut(),
-            Self::ExitAttempting(attempt) => attempt.managed.pending_entry.as_mut(),
-            Self::ExitPending(exit) | Self::TerminalExitAwaitingPosition(exit) => exit
-                .position
-                .as_mut()
-                .and_then(|position| position.pending_entry.as_mut()),
-            Self::ExitAuthorityRecoveryHold(hold) => hold
-                .position
-                .as_mut()
-                .and_then(|position| position.pending_entry.as_mut()),
+            Self::ExitAuthorityRecoveryHold(hold) => hold.position.pending_entry.as_ref(),
+            Self::BlindRecovery(recovery) => recovery
+                .retained_authority()
+                .and_then(ExposureState::pending_entry),
+            Self::ObligationSaturated(saturated) => saturated.retained.pending_entry(),
             _ => None,
         }
     }
@@ -248,21 +3491,9 @@ impl ExposureState {
             Self::Managed(position) => Some(position),
             Self::ExitAttempting(attempt) => Some(&attempt.managed),
             Self::ExitPending(exit) | Self::TerminalExitAwaitingPosition(exit) => {
-                exit.position.as_ref()
+                Some(&exit.position)
             }
-            Self::ExitAuthorityRecoveryHold(hold) => hold.position.as_ref(),
-            _ => None,
-        }
-    }
-
-    pub(super) fn managed_position_context_mut(&mut self) -> Option<&mut ManagedPositionContext> {
-        match self {
-            Self::Managed(position) => Some(position),
-            Self::ExitAttempting(attempt) => Some(&mut attempt.managed),
-            Self::ExitPending(exit) | Self::TerminalExitAwaitingPosition(exit) => {
-                exit.position.as_mut()
-            }
-            Self::ExitAuthorityRecoveryHold(hold) => hold.position.as_mut(),
+            Self::ExitAuthorityRecoveryHold(hold) => Some(&hold.position),
             _ => None,
         }
     }
@@ -270,21 +3501,12 @@ impl ExposureState {
     pub(super) fn tracked_position_context(&self) -> Option<&ManagedPositionContext> {
         self.managed_position_context().or(match self {
             Self::UnsupportedObserved(observed) => Some(&observed.context),
+            Self::BlindRecovery(recovery) => recovery
+                .retained_authority()
+                .and_then(ExposureState::tracked_position_context),
+            Self::ObligationSaturated(saturated) => saturated.retained.tracked_position_context(),
             _ => None,
         })
-    }
-
-    pub(super) fn tracked_position_context_mut(&mut self) -> Option<&mut ManagedPositionContext> {
-        match self {
-            Self::Managed(position) => Some(position),
-            Self::ExitAttempting(attempt) => Some(&mut attempt.managed),
-            Self::ExitPending(exit) | Self::TerminalExitAwaitingPosition(exit) => {
-                exit.position.as_mut()
-            }
-            Self::ExitAuthorityRecoveryHold(hold) => hold.position.as_mut(),
-            Self::UnsupportedObserved(observed) => Some(&mut observed.context),
-            _ => None,
-        }
     }
 
     pub(super) fn held_instrument_id(&self) -> Option<InstrumentId> {
@@ -299,6 +3521,10 @@ impl ExposureState {
             Self::ExitPending(exit) | Self::TerminalExitAwaitingPosition(exit) => {
                 Some(exit.clone())
             }
+            Self::BlindRecovery(recovery) => recovery
+                .retained_authority()
+                .and_then(ExposureState::exit_pending_snapshot),
+            Self::ObligationSaturated(saturated) => saturated.retained.exit_pending_snapshot(),
             _ => None,
         }
     }
@@ -312,6 +3538,10 @@ impl ExposureState {
             Self::TerminalExitAwaitingPosition(exit) => {
                 Some((ExitLifecyclePhase::TerminalAwaitingPosition, exit.clone()))
             }
+            Self::BlindRecovery(recovery) => recovery
+                .retained_authority()
+                .and_then(ExposureState::exit_lifecycle),
+            Self::ObligationSaturated(saturated) => saturated.retained.exit_lifecycle(),
             _ => None,
         }
     }
@@ -319,7 +3549,33 @@ impl ExposureState {
     pub(super) fn exit_authority_recovery_hold(&self) -> Option<&ExitAuthorityRecoveryHoldState> {
         match self {
             Self::ExitAuthorityRecoveryHold(hold) => Some(hold),
+            Self::BlindRecovery(recovery) => recovery
+                .retained_authority()
+                .and_then(ExposureState::exit_authority_recovery_hold),
+            Self::ObligationSaturated(saturated) => {
+                saturated.retained.exit_authority_recovery_hold()
+            }
             _ => None,
+        }
+    }
+
+    pub(super) fn operation_sink_unknown(&self) -> Option<&OperationSinkUnknownState> {
+        match self {
+            Self::OperationSinkUnknown(unknown) => Some(unknown),
+            Self::BlindRecovery(recovery) => recovery
+                .retained_authority()
+                .and_then(ExposureState::operation_sink_unknown),
+            Self::ObligationSaturated(saturated) => saturated.retained.operation_sink_unknown(),
+            Self::Flat
+            | Self::PendingEntry(_)
+            | Self::EntryReconcilePending { .. }
+            | Self::Managed(_)
+            | Self::ExitAttempting(_)
+            | Self::ExitPending(_)
+            | Self::TerminalExitAwaitingPosition(_)
+            | Self::ExitAuthorityRecoveryHold(_)
+            | Self::UnsupportedObserved(_)
+            | Self::ReplacementConflict(_) => None,
         }
     }
 
@@ -334,7 +3590,10 @@ impl ExposureState {
             | Self::TerminalExitAwaitingPosition(_)
             | Self::ExitAuthorityRecoveryHold(_) => Some(ExposureOccupancy::ExitPending),
             Self::UnsupportedObserved(_) => Some(ExposureOccupancy::UnsupportedObserved),
-            Self::BlindRecovery(_) => Some(ExposureOccupancy::BlindRecovery),
+            Self::BlindRecovery(_)
+            | Self::OperationSinkUnknown(_)
+            | Self::ObligationSaturated(_)
+            | Self::ReplacementConflict(_) => Some(ExposureOccupancy::BlindRecovery),
         }
     }
 
@@ -350,32 +3609,24 @@ impl ExposureState {
                 attempt.managed.origin == ManagedPositionOrigin::RecoveryBootstrap
             }
             Self::ExitPending(exit) | Self::TerminalExitAwaitingPosition(exit) => {
-                exit.position.as_ref().is_some_and(|position| {
-                    position.origin == ManagedPositionOrigin::RecoveryBootstrap
-                })
+                exit.position.origin == ManagedPositionOrigin::RecoveryBootstrap
             }
-            Self::ExitAuthorityRecoveryHold(hold) => hold
-                .position
-                .as_ref()
-                .is_none_or(|position| position.origin == ManagedPositionOrigin::RecoveryBootstrap),
+            Self::ExitAuthorityRecoveryHold(hold) => {
+                hold.position.origin == ManagedPositionOrigin::RecoveryBootstrap
+            }
             Self::EntryReconcilePending { .. }
             | Self::UnsupportedObserved(_)
-            | Self::BlindRecovery(_) => true,
+            | Self::BlindRecovery(_)
+            | Self::OperationSinkUnknown(_)
+            | Self::ObligationSaturated(_)
+            | Self::ReplacementConflict(_) => true,
             Self::Flat | Self::PendingEntry(_) => false,
         }
     }
 
     pub(super) fn current_position_market_id(&self) -> Option<String> {
-        self.managed_position_context()
+        self.tracked_position_context()
             .and_then(|position| position.lifecycle.market_id_owned())
-            .or_else(|| {
-                self.exit_pending_snapshot()
-                    .and_then(|exit| exit.pending_exit.market_id)
-                    .or_else(|| {
-                        self.exit_authority_recovery_hold()
-                            .and_then(|hold| hold.pending_exit.market_id.clone())
-                    })
-            })
     }
 }
 

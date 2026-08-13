@@ -363,6 +363,525 @@ Polymarket models only authoritative platform fees in Slice 1. Market `mbf`/`tbf
 
 Forecast-only drift is diagnostic state, not admission authority: resting-order equivalence compares the core quote, core edge, binding, and reservation terms that authorized the order. A successful refresh replaces the stored admission with the refreshed forecast fields and returns a typed forecast-drift diagnostic without forcing cancellation. The equivalence test is paired with negative controls proving that each core quote, core edge, binding, and reservation change still produces the fail-closed refresh outcome. Shadow-PnL and manifest fixtures gain fail-closed behavioral coverage for their newly introduced contracts.
 
-## Non-goals
+## Takeover review closure: governed exit-exposure authority
+
+The takeover census of the reviewed head established that exit-lifecycle state
+is representational but ungoverned: forty-five direct exposure assignments with
+no transition authority, three divergent occupancy projections answering the
+same policy question, optional strategy-local identity duplicating the sealed
+authority handle, and unconditional adoption of NT position truth with a
+cardinality-only safety check. Every repair below changes an owner or a type;
+none adds a local conditional.
+
+### Finding-to-repair map (takeover round)
+
+| Finding | Contract owner | Task | Discriminating evidence |
+|---|---|---|---|
+| H1: exit evaluation gates on `managed_position` + `exit_pending_snapshot`, neither of which recognizes `ExitAuthorityRecoveryHold`; reachable from cold start via restart-adoption recovery failure | One occupancy authority at every boundary | Task 13 | Hold + each exit trigger yields a typed occupied rejection; the startup-created hold is covered by the same test row |
+| H2: terminal release silently returns false on absent optional strategy-local identity while the sealed handle carries it; second repro via recovered `pending_exit` never back-filled | Sealed-handle-only identity | Task 13 | The optional duplicate fields are deleted, so the silent branch is unrepresentable; release with handle-only identity succeeds |
+| H3: an `OrderFillVoided` for an untracked order force-enters a recovery hold, destroying the active exit/entry state | Governed reducer + typed quarantine | Task 13 | A stale void for a foreign client-order ID preserves the active state and records a typed quarantined outcome; the active order's later events still reconcile |
+| Census: `materialize_position_from_truth` catch-all collapses six states into `Managed` for the incoming event's position with no identity continuity check; fed by a cardinality-only NT projection | Identity-checked adoption transition | Task 13 | A position-truth event naming a different position while `Managed`/`BlindRecovery` yields a typed identity conflict, not a silent swap |
+| Census: `PositionClosed` for an untracked position is a total silent no-op | Evidence-recording unknown-event transition | Task 13 | The untracked close records typed evidence and health |
+| Census: `BlindRecovery` has no governed exit; any tradable position-truth event silently clears the quarantine | Governed re-bootstrap transition | Task 13 | Quarantine clears only through an identity-matched re-bootstrap; a foreign event leaves it in place, loudly |
+| M6: exit-to-flat release records no terminal lifecycle evidence (unlike the residual and recovery-flat siblings) | One terminal transition records evidence | Task 13 | Flat release emits terminal evidence; the negative control proves the residual path still does |
+| L12: fill-void recovery stamps the strategy's active market ID instead of the recovered position's lifecycle market | Position-lifecycle-derived identity | Task 13 | A void arriving after market roll arms cooldown on the position's market |
+| Census: the submit generation check runs only after routing, so overlapping evaluations can route twice | Generation check inside the submit reducer, before the sink | Task 13 | Two overlapping evaluations produce one routed order and one typed stale-generation outcome |
+| H4: valuation routes and TOML can construct only `Currency` origins while Hyperliquid spot-BUY protocol fees are `Asset`-denominated, so every spot BUY fails admission | Kind-tagged valuation origins | Task 14 | Spot BUY admission passes end-to-end through runtime-built routes; an unknown origin kind fails config load |
+| M5 class: resting-refresh equivalence divides every component by order-leg quantity regardless of `EconomicScope` (instance unreachable today: the `TradingEdge` gate implies `TerminalValueEntry`, which pins `position: None`) | Scope-bound comparison basis | Task 14 | A `PositionInterval` component with unchanged position passes refresh under a partial fill; a changed position fails it (paired negative control) |
+| M7: exit-vs-hold timing is fee-blind at the strategy and ungated for `RiskReduction` at admission; the admission comment claims otherwise | Shared economics seals a fee-aware exit-vs-hold result; explicit `RiskReduction` policy | Task 14 | A fee-bearing venue flips a gross-favorable/net-unfavorable exit to hold; the false comment is corrected by the explicit policy |
+| L11: Bolt truncates fees toward zero on exact decimals while pinned NT rounds half-even on floats at five decimals | Pinned-NT-aligned point accounting with a conservative debit bound | Task 14 | Numeric fixtures match NT `calculate_commission` across rounding-boundary prices; the bound remains at or above the point value |
+| L14: an absent Polymarket fee descriptor collapses to fee-free through a typed variant with no vendor evidence and no audit component | Typed unknown that fails closed | Task 14 | An absent descriptor without an explicit config assertion fails admission; the asserted fee-free path emits a proven-zero audit component |
+| M8: the quote-lifecycle FSM and requote budget advance at planning time and non-submitted outcomes never restore them; the NT-event reconciliation that would unwind them is deferred #817 surface | Shared-execution completion step: registration, FSM advance, and budget settle together via a commit-participant seam, with per-command settlement | Task 15 | Each pre-sink outcome restores FSM and budget alongside the registration abort; sink-invoked attempts commit their charge regardless of outcome; `Attempt(Submitted)` commits all three; issued cancel/modify mutations never restore; the #817 event-fence surface is neither deleted nor wired and is named as accepted scope |
+| L15 class: no load-time check that the configured OMS mode is supported by the venue's position-report capability; Hedging-mode Polymarket (and Hyperliquid) can never reconcile because both adapters pin `venue_position_id: None`, and `observe()` silently drops key misses | Load-time OMS-capability authority | Task 16 | A Hedging configuration for a client whose adapter declares no venue-position identity fails config load; Netting loads; the capability is declared per client, never matched on venue name |
+| L13, L16, L17, L18, duplicate ns-per-ms constant, fee-free-without-audit inconsistency, `observe()`/`acquire()` normalization divergence | Deletion and single sources | Task 16 | Compiler-enforced deletions, schema-doc correction, one clock constant, one key-normalization seam, parameterized fixture helpers |
+
+Dismissed with evidence, requiring no repair: the cancellation clock is already a
+single nanosecond domain with one conversion at each boundary; the
+position-authority lease key is already exact
+(client + account + instrument + hedging venue-position ID) with the concurrent
+distinct-instrument test present; the submit-admission permit already rolls back
+counters and reservations through its drop guard on every non-submitted path;
+the kill-switch planning module remains intentionally inert per the quote-only
+runtime boundary above and is not a deletion target.
+
+### One governed exposure authority
+
+The strategy's exposure state becomes a `GovernedExposure` wrapper owning a
+private `ExposureState`. The exposure module exposes exactly one transition
+entry point — an exhaustive reducer over a typed exposure event — plus
+read-only projections. The mutable projections
+(`managed_position_context_mut`, `tracked_position_context_mut`, and the
+pending-entry equivalent) are deleted: context refreshes become typed reducer
+effects that can update context data but cannot change the variant. Field
+privacy plus the absence of any mutable accessor makes both variant assignment
+and out-of-band context mutation outside the exposure module compile errors;
+there is no secondary mutation path to audit afterward.
+
+The reducer's input is a closed set of typed event families, each carrying the
+identity and provenance it claims to act for:
+
+- **Entry lifecycle**: entry submit resolution and every entry-order
+  observation (fill, cancel, reject, deny, expire) keyed by the entry
+  client-order ID.
+- **Exit lifecycle**: every tracked exit observation — fill, partial fill,
+  cancel, reject, deny, expire, cached `Voided`, and `OrderFillVoided`
+  corrections — keyed by the sealed authority's client-order identity.
+- **Historically attributed exit corrections**: an `OrderFillVoided` or cached
+  correction whose identity matches no *active* authority but resolves — via
+  retained release provenance or the authoritative cached order — to an exit
+  this strategy previously released. These are never quarantined as foreign,
+  but they do not displace a live authority either: when the exposure slot
+  holds no conflicting authority (`Flat`, or `Managed` for the same released
+  position), the correction enters the locked recovered-exit constructor with
+  the `FillVoidReopen` cause immediately, exactly as the existing post-release
+  regression requires. When any authority is active — a pending entry, an
+  active exit, a recovery hold for a different exit — or the state is
+  quarantined, the correction is recorded as a **deferred, identity-bound
+  obligation** beside the exposure state: typed, loud, keyed by the released
+  exit's identity, and accumulating that order's subsequent observations
+  (fills, corrections, cancels) so discharge always constructs from complete
+  history. An obligation discharges through the same recovered-exit
+  constructor under the same compatibility predicate that governs immediate
+  construction: only into an unoccupied slot, or `Managed` for the same
+  released position. When the blocking authority resolves into an
+  *incompatible* occupant — a pending entry that filled into position B, a
+  residual managed B after an exit release, a healed hold for B — the
+  obligation stays queued and loud, and the reducer retries discharge on
+  every subsequent transition; there is no time-based trigger and no forced
+  displacement. In `BlindRecovery` the obligation is recorded but quarantine
+  stands, and discharge follows the provenance recovery rules — a raw
+  correction never clears quarantine. The obligation set is bounded, not a
+  hot-path backlog: obligations are keyed by released-order identity and
+  idempotently compacted (a re-delivered correction for the same identity
+  updates the one obligation, never appends), retained history per obligation
+  and total obligation count carry TOML-configured limits with no code
+  defaults, and reaching either limit enters a typed, loud, non-routing
+  saturation state that preserves every active authority rather than dropping
+  or silently evicting an obligation. Cap, duplicate-delivery, and stress
+  tests prove bounded memory and per-transition cost.
+- **Untracked order events**: any order event whose identity matches neither
+  an active authority nor a historical attribution.
+- **Position truth**: opened/changed events and cache materializations. A
+  position event is a reconciliation *trigger*, not a truth payload: the
+  reducer resolves the typed canonical result — `None`, `ExactlyOne`,
+  `Multiple`, or `ProbeFailed` — through the cardinality-checked canonical
+  projection, and classifies continuity against what the current state tracks.
+- **Position closed**: tracked and untracked.
+- **Timer reconciliation**: cache-probe outcomes, hold recovery attempts, and
+  terminal-release retries.
+- **Bootstrap and adoption**: cache bootstrap, restart exit-order adoption,
+  settlement recovery, and governed NT-convergence adoption.
+- **Settlement runtime effects.**
+
+The reducer's match over state × event family is exhaustive with no catch-all
+arm. Identity continuity is defined per state: exit-carrying states key on the
+sealed handle; `PendingEntry`/`EntryReconcilePending` key on instrument and
+entry client-order ID; `UnsupportedObserved` keys on its recorded position;
+`BlindRecovery` carries a non-optional, reason-specific
+`BlindRecoveryProvenance` (see below). The corrected target matrix:
+
+| State \ Event | Exit-operation request | Submit resolution | Tracked exit observation | Historically attributed exit correction | Untracked order event | Canonical reconciliation (position truth/closed trigger) |
+|---|---|---|---|---|---|---|
+| `Flat` | rejected: unoccupied | stale-generation | n/a (none tracked) | recovered-exit constructor (`FillVoidReopen`) | quarantine | `ExactlyOne` → governed bootstrap adoption; `None` → remain; `Multiple`/`ProbeFailed` → `BlindRecovery`, loud |
+| `PendingEntry` / `EntryReconcilePending` | rejected: occupied | entry-scoped | n/a | deferred obligation; entry authority preserved | quarantine | entry authority is preserved: adoption of a different position requires entry-order terminal or cancel proof first; until then typed conflict, entry tracking retained |
+| `Managed` | granted | n/a | n/a | same released position → recovered-exit constructor; otherwise deferred obligation | quarantine | same identity → refresh context; `ExactlyOne` different → conflict fact + replacement-conflict hold, adoption only after the retained episode's own causal resolution; stale event vs canonical same → preserve; external close releases only via the close-proof conjunction; `Multiple`/`ProbeFailed` → `BlindRecovery`, loud |
+| `ExitAttempting` | rejected: occupied | advance or typed stale | reconcile | deferred obligation; attempt preserved | quarantine | refresh on same identity; divergent canonical → typed conflict, authority never displaced |
+| `ExitPending` / `TerminalExitAwaitingPosition` | rejected: occupied | stale-generation | reconcile / terminal fence | deferred obligation; authority preserved | quarantine | refresh on same identity; divergent canonical → typed conflict, authority never displaced; tracked close → terminal release with evidence |
+| `ExitAuthorityRecoveryHold` | rejected: occupied | stale-generation | update retained order history and proof floors; preserve hold | same-ID: update hold; different released exit → deferred obligation, hold preserved | quarantine | heal identity in place on compatible; divergent canonical → typed conflict, hold preserved; tracked close → recovery release with evidence |
+| `UnsupportedObserved` | rejected: occupied | stale-generation | n/a | deferred obligation | quarantine | refresh on same position; release only via the close-proof conjunction (episode `PositionClosed` + fresh `None`; either half alone preserves with awaiting health); otherwise conflict + probe-based reconciliation |
+| `BlindRecovery` | rejected: occupied | stale-generation | identity-matched: update retained authority snapshot, fills, corrections, and proof floors without clearing quarantine; foreign: quarantine | obligation recorded; quarantine stands | quarantine | recovery only via fresh canonical probe per its provenance rules; raw events never clear quarantine |
+
+"Quarantine" is a typed, evidence-recorded outcome that preserves the current
+state and every active authority; it is never an overwrite. Untracked closes
+and any event the matrix does not accept record quarantine evidence in place.
+A tracked exit observation arriving while the recovery hold is in place
+updates the hold's retained cached-order history, cumulative effective fills,
+and terminal/correction proof floors — the same immutable inputs the locked
+recovery constructor consumes — without leaving the hold, so authority
+reconstruction can never proceed from stale fills because an observation was
+dropped.
+
+Convergence is canonical reconciliation, never event adoption. A position
+event triggers the cardinality-checked canonical projection and the reducer
+acts on its typed result. `ExactlyOne` with a **different** fingerprint is
+never an immediate adoption, because the projection is only the current cache
+view and carries no causal proof that the retained episode resolved: the
+retained position enters a typed **replacement-conflict hold** — loud, and
+non-routing for new operations — until the retained episode has its own
+causal resolution. During a genuine replacement the plain close-proof
+conjunction is unsatisfiable — canonical truth is `ExactlyOne(B)`, never
+`None` — so the hold has its own atomic discharge: an exact episode-matched
+`PositionClosed(A)` **plus** a fresh `ExactlyOne(B)` matching the held
+candidate resolves A and adopts B in one governed transition, in either
+arrival order; if the candidate disappears instead, the standard conjunction
+applies. Only such a resolution discharges the hold and adopts the
+replacement with recorded provenance (prior state, adopted position, cause).
+Transient absence or occlusion of the retained position while another is
+visible therefore cannot discard it, and B's presence alone never displaces
+A. A stale event whose
+canonical truth still matches the current position preserves it; `Multiple`
+and `ProbeFailed` never adopt — they enter `BlindRecovery` loudly, preserving
+the one-position invariant. Authority-bearing states are never displaced:
+while a sealed exit authority or a working entry order is active, a divergent
+canonical view is held as typed loud conflict, and adoption waits for the
+authority's own terminal, cancel, or release proof. A permanent wedge is
+impossible because canonical reconciliation re-runs on every subsequent
+trigger; an implicit swap is impossible because adoption exists only as this
+explicit transition.
+
+`None` has an explicit contract in every state, and it is asymmetric by
+design. In `Flat` it is a no-op. In every authority-bearing or
+position-holding state — `Managed`, pending entry, active exit, terminal
+fence, recovery hold — an event-triggered empty canonical projection
+**preserves** the state and records typed awaiting/loud health: the locked
+release proofs already name cache absence as insufficient for flatness, so a
+transient empty cache can neither release exposure nor permit a second
+position, and states carrying an exit authority release to `Flat` only
+through the terminal reducer's own proofs. Only `BlindRecovery`'s
+provenance-free reasons treat a coherent fresh-probe `None` as recovery —
+there the strategy holds no local authority claim, and the probe is an
+explicit governed recovery action rather than a passive event.
+
+A plain `Managed` position with no exit authority still has a positive
+externally-closed release path, or an external or settlement close would
+occupy the slot forever. Its typed close proof is causal conjunction: a
+tracked `PositionClosed` for the exact position episode **and** a fresh
+canonical `None` confirming nothing remains open. Either input alone
+preserves `Managed` with typed awaiting health — a close event with a
+still-populated projection waits, and an empty projection with no close event
+waits. `UnsupportedObserved` releases through the same conjunction for its
+recorded position.
+
+`BlindRecoveryProvenance` is non-optional and reason-specific, and the
+classification covers the complete reachable reason set, not a sample:
+
+- **Identity-bearing** (invalid bootstrapped position, invalid live
+  position): provenance is the recorded position identity and sides; recovery
+  is identity-continuity re-bootstrap.
+- **Probe-class, provenance-free** (cache-probe failure, multiple open
+  positions, settlement-evidence recovery failure): recovery **only** from a
+  fresh canonical cache probe returning a coherent `None` or `ExactlyOne`
+  result.
+- **Restart-adoption failures** (ambiguous restart open exit orders,
+  unattributed restart open exit order): provenance is the recorded
+  ambiguous/unattributed order set; recovery re-runs restart adoption against
+  a fresh canonical probe and the authoritative order cache — never against a
+  raw event.
+- **Foreign-venue position**: provenance is the foreign instrument identity;
+  the state recovers only when a fresh strategy-scoped canonical probe no
+  longer reports the foreign position.
+
+Recovery provenance depends on the source state as well as the reason. When
+`BlindRecovery` is entered from an occupied state — a managed position,
+pending entry, or exit authority was live at entry, as in the
+settlement-recovery failure that captures a managed position, or a
+`Multiple`/`ProbeFailed` reconciliation during `Managed` — the provenance
+retains that prior authority snapshot, and a fresh `None` probe can never
+recover to `Flat`: an empty projection is not a close proof for the retained
+claim. Recovery from an occupied entry requires the retained authority's own
+causal resolution — a coherent `ExactlyOne` continuity match with the
+retained position, its terminal proof, or governed re-adoption. Fresh-`None`
+recovery to `Flat` is permitted only when quarantine was entered
+authority-free (bootstrap-time probe failures before any adoption).
+
+A raw order or position event can never clear quarantine directly in any
+class — but when quarantine was entered from an occupied state, lifecycle
+events that identity-match the **retained** authority (its fills, terminal
+events, and corrections) update the retained snapshot and proof floors
+without clearing `BlindRecovery`, exactly as the recovery hold does; the
+retained authority's proofs must be able to accumulate or the occupied-source
+recovery rule could never be satisfied. Foreign events remain quarantined. The implementation censuses every surviving `BlindRecoveryReason`
+variant against this classification; a variant that fits no class is deleted
+or reclassified in the same change, and each class carries a raw-event
+negative test plus an authorized-recovery test, with chained tests from every
+occupied source state proving a probe failure or `Multiple` followed by a
+transient fresh `None` preserves the retained authority.
+
+Boundaries do not read occupancy as a boolean. A boundary that wants to start
+work requests a typed operation start — entry, exit, bootstrap, or
+correction — and the reducer either rejects it with a typed, state-specific
+outcome (occupied by hold, occupied by pending exit, blind recovery, and so
+on) or returns a one-use operation grant with an explicit two-phase RAII
+lifecycle: minting provisionally arms the authority at an exact generation, so
+a second mint at the same generation is impossible; dropping an unconsumed
+grant — hold decision, preparation failure, evidence or admission rejection,
+unwind — performs exact-generation rollback of the arm and strands nothing.
+Consumption is operation-specific, because only routed operations reach
+shared execution: **route grants** (entry, exit) are consumed at shared
+execution's final pre-sink boundary and convert the arm into the in-flight
+attempt; **bootstrap and correction grants** are consumed atomically by the
+reducer transition they authorize — the successful transition itself settles
+the grant, and an unwound transition drops it with exact-generation rollback.
+Consumption does not end a route grant's protection: the in-flight attempt it
+becomes is itself a participant in the sink-phase transaction. An unwind
+after consumption but before the sink-invoked marker rolls the exposure arm
+back at its exact generation — no venue call happened, so nothing strands.
+An unwind after the sink-invoked marker has an unknown dispatch outcome: the
+exposure claim enters a typed, **operation-tagged sink-unknown hold** — a
+first-class reducer state with entry and exit variants, carrying the order's
+client identity and the attempt generation — rather than rolling back or
+retrying, preserving callback-wins exactly as the maker transaction does. The
+hold is non-routing and discharges only through authoritative reconciliation
+against the NT cache and order/position reports, with explicit transitions
+per outcome: submitted/accepted evidence converts it into the normal pending
+state for its operation; a terminal rejection or cancel proof rolls the
+exposure claim back per that outcome; a fill materializes through the
+standard position-truth arms; and a **proven-absent** result — authoritative
+cache/report proof the command never reached the venue — releases the arm.
+With no callback and no authoritative proof, the hold stays non-routing; it
+never wedges silently (typed loud health, timer-driven reconciliation) and
+never clears on absence of evidence alone. Each grant family carries a
+successful-consumption test plus distinct pre-consumption,
+post-consumption/pre-sink, and sink-invoked unwind tests (entry and exit
+both), plus discharge tests for each hold outcome and a
+remains-non-routing-without-proof control. Callback-wins is preserved: a synchronous callback that
+advances the generation invalidates the outstanding grant, whose drop then
+no-ops rather than rolling back the newer state. Overlapping evaluations
+therefore cannot route twice and cannot deadlock the slot — the double-route
+and the stranded-arm both die at the type level. The strategy remains
+intent-only under repository rule 9: the grant governs the strategy's own
+exposure claim, while admission, venue gating, and submission mechanics remain
+entirely in shared execution.
+
+Identity is the sealed handle. `PendingExitState` loses its optional
+position-identity and optional position-context duplicates wherever an
+authority handle exists; release, reconciliation, cooldown market attribution,
+and evidence all read the handle's non-optional accessors or the position's
+lifecycle identity. The silent-refusal branches become unrepresentable rather
+than logged.
+
+Position identity is episodic, because NT netting reuses `PositionId` for
+later positions on the same instrument. The episode is not a locally invented
+token: it is a **fingerprint derived from authoritative NT lifecycle
+fields** — instrument, `PositionId`, `opening_order_id`, and `ts_opened` —
+all of which the pinned NT carries on the cache `Position`, on
+`PositionChanged`/`PositionClosed` events, and (with `ts_opened` equal to
+`ts_event`) on `PositionOpened`. The reducer derives the fingerprint at every
+adoption or materialization and carries it in the `Managed` context, the
+sealed exit authority, release provenance, and deferred obligations. Every
+compatibility predicate — "same released position", historical attribution,
+obligation discharge, refresh continuity, and the close-proof
+conjunction — compares fingerprints, never raw `PositionId` plus instrument.
+An ordinary refresh whose event carries the same fingerprint preserves the
+episode (no reminting, so a legitimate close cannot wedge); an event carrying
+a changed fingerprint is a different episode. A delayed `PositionClosed` for
+episode A after episode B reopened under the same `PositionId` therefore
+authenticates as A's close — it can discharge A-scoped obligations or
+half-proofs but can never satisfy B's close-proof conjunction, even combined
+with a canonical `None`; and A's late corrections stay deferred until a slot
+compatible with episode A (or flat) exists.
+
+A changed fingerprint is not always a different episode: pinned NT's fill-void
+replay (`Position::apply_fill_void` → `rebuild_from_replay` →
+`reset_derived_state`, then re-application of surviving fills) lawfully
+re-derives `opening_order_id` and `ts_opened`, and replay re-derives them **per
+flat-crossing segment** — the post-replay fingerprint can belong to a later
+reopened segment, not the corrected episode. The reducer therefore has an
+**authenticated episode-rebase transition** with segment continuity, not a
+blanket rebase: an `OrderFillVoided` that binds to the retained episode's own
+recorded opening order and fill identities is an episode-correction event, and
+the reducer then proves **replay-segment continuity** — the post-replay
+position state descends from the retained episode's surviving fills without
+crossing flat into a later segment — before rebasing. Only carriers belonging
+to that continuous segment rebase, atomically: `Managed` context, sealed
+authority, release provenance, and that episode's deferred obligations. If the
+post-replay lineage crosses flat into a different segment, the retained
+episode is treated as correction-closed for its own carriers while the later
+segment remains a distinct episode under the standard isolation rules. A
+correction also **invalidates and re-floors every pre-correction close or
+terminal half-proof** for the affected episode: a stored `PositionClosed`
+half-proof from before the correction can never combine with a later canonical
+`None` to release a position the correction left open. If no fill survives,
+release follows a **correction-specific proof** bound to the voided opening
+fill rather than the exact-fingerprint conjunction. Rebase authenticates only
+through the retained episode's own order/fill identities — an event that
+matches none of them remains a different episode — so late-A-versus-reopened-B
+isolation is not weakened.
+
+The reducer's typed outcomes are evidence-domain contracts, not diagnostics:
+the exit-blocked reason set gains recovery-hold-occupied and stale-generation
+variants, and quarantine and identity-conflict outcomes are new lifecycle
+facts. Facts, codecs, the generated contract, fixtures, and round trips change
+atomically, per the existing evidence contract.
+
+All bootstrap and restart-adoption paths construct exposure through the same
+reducer events, so the startup-created recovery hold, adopted exit orders, and
+bootstrapped positions obey the same occupancy and identity rules as live
+transitions.
+
+### Economics authority closures (takeover round)
+
+Valuation-route origins become kind-tagged in both TOML and the runtime
+builder: an origin is a currency or an asset, parsed as such, and the route
+table can express every native-unit kind a provider emits. The closed-world
+check is structural — the native-unit kind enum and the route-origin
+constructor are the same type, so a new kind extends both or fails to compile.
+Admission evidence includes an end-to-end spot-BUY quote through runtime-built
+routes.
+
+Resting-refresh equivalence binds its comparison basis to `EconomicScope`:
+decision- and action-scoped components compare on the order-leg quantity basis;
+position-interval components compare on the position basis their producers
+price against. The gate's scenario coupling (`TradingEdge` implies
+`TerminalValueEntry`, which pins no position context) is today's reachability
+fence, not the correctness argument; the scope binding closes the class before
+any future scenario variant reopens it.
+
+Exit-vs-hold timing becomes a sealed, fee-aware comparison owned by shared
+economics: the strategy consumes a typed result that already nets venue fees on
+both legs, and the `RiskReduction` admission purpose carries an explicit
+policy — risk-reducing exits remain admissible regardless of edge, stated as
+policy rather than implied by a missing branch, and the admission comment that
+claimed a universal non-positive-edge rejection is corrected by the type.
+
+Polymarket point accounting aligns with pinned NT's commission arithmetic, with
+numeric behavioral fixtures at rounding boundaries, while the reserved debit
+bound remains provably at or above the point value. An absent fee descriptor is
+a typed unknown that fails closed; only an explicit configuration assertion
+selects fee-free, and that path emits a proven-zero audit component consistent
+with the carry pattern.
+
+### Maker quote transaction boundary (takeover round)
+
+The decision to submit no longer advances the leg FSM or charges the requote
+budget as a side effect of planning. Because the tracked resting registration
+already commits or aborts inside shared execution before dispatch sees the
+outcome, an outer transaction cannot merely wrap the result: shared execution
+owns one multi-participant transaction whose participants — provisional
+registration, leg FSM advance, and budget settlement — move through the same
+explicit phases:
+
+1. **Proposal**: planning mints typed proposals (leg transition, budget
+   reservation) with no side effect.
+2. **Pre-sink provisional arm**: before any sink call, every participant arms
+   provisionally at the attempt's exact generation — the registration
+   provisional record, the FSM's proposed transition, and a generation-bearing
+   per-leg budget reservation token.
+3. **Generation-checked commit/abort**: the completion step settles all
+   participants under the same generation check. No external participant runs
+   under the registry lock; settlement is ordered outside it, and the
+   synchronous-callback disposition is recorded during the arm so a terminal
+   callback arriving mid-attempt settles the FSM correctly (callback-wins,
+   the registry's existing exact-generation retirement property, extended to
+   every participant).
+4. **Sink-invoked marker**: an irreversible sink-invoked phase is recorded
+   immediately before the raw sink call. It is the accounting boundary: all
+   restoration and prepaid-token reuse applies strictly before it; once
+   crossed, the attempted command/REST charge is committed regardless of
+   outcome.
+5. **Drop guard**: an unwind before the sink-invoked phase rolls back every
+   armed participant at its exact generation or poisons loudly; it can never
+   settle one participant and strand another. An unwind **after** the
+   sink-invoked phase — panic or synchronous-callback unwind with the outcome
+   unknown — always commits the command/REST charge and poisons **only the
+   participants still armed at the transaction's generation** into the
+   non-routing reconciliation hold: the command may have been dispatched, so
+   neither a refund nor a routable state is permitted for an armed
+   participant. Precedence over callback-wins is explicit: a participant
+   already retired by a synchronous terminal callback stays retired — poison
+   never overwrites a completed callback disposition, and the charge commits
+   in every case. Pre-sink unwind, post-sink unwind, and the combined
+   sink-invoked → terminal callback → unwind sequence carry distinct tests.
+
+Settlement is per command and per leg, not blanket:
+
+- **Submit**: registration, FSM advance, and the leg's budget token commit
+  together on `Attempt(Submitted)`; every **pre-sink** outcome rolls back all
+  three. Participants settle independently once the sink is invoked:
+  `SinkRejected` aborts the registration and FSM advance but **commits** the
+  attempted command/REST charge — the venue received the call, and refunding
+  it would let repeated rejection bypass the submit and egress caps. Two-leg dispatch settles each leg's token independently and
+  phase-qualified: a submitted YES sibling keeps its charge; a
+  pre-sink-rejected NO sibling restores its token; a sink-rejected NO sibling
+  commits its charge — and the inverses hold symmetrically. No shared
+  snapshot rollback can erase a sibling's committed charge or restore a
+  sink-rejected one's. The blanket rollback rule has one carve-out: a
+  **replacement submit after a confirmed cancellation** never rolls the leg
+  back to its pre-cancel state, because the cancel already executed at the
+  venue and the sole `Canceled` event that produced the replacement proposal
+  will not recur. A non-submitted replacement outcome whose transaction
+  proves an exact abort with no retained registration enters a typed
+  replacement-pending backoff state and retries the replacement on the
+  coordinator's timed cadence until it routes or the quote lifecycle retires
+  the leg — no strand, no dependence on the unwired event fence. Charging
+  follows the sink boundary: a pre-sink replacement failure retains the
+  prepaid token for the next attempt, while a sink-rejected replacement
+  consumed a real venue call — its charge commits, and every subsequent
+  retry that reaches the sink acquires a fresh generation-bearing attempt
+  reservation, so repeated rejection is bounded by the caps rather than
+  hidden behind one prepaid token. A
+  `RollbackInvariantFailed` outcome never retries: exact cleanup was not
+  proved and another generation may remain authoritative, so the leg enters a
+  non-routing poisoned reconciliation hold that retains the prepaid token and
+  makes no sink call until governed recovery resolves it.
+- **Cancel-resubmit reprice**: the existing atomic one-submit-plus-two-REST
+  acquisition remains ONE prepaid, generation-bearing token reserved before
+  the cancel is issued; the confirmation-driven resubmit consumes the same
+  token, never a second charge, and a cancel is never issued without its
+  replacement capacity already reserved. Failures before the cancel is issued
+  release the token; after issuance, the FSM's pending advance and the token
+  survive — restoring either would permit duplicate commands or a
+  cancel-without-resubmit strand. The prepaid token covers the first cancel
+  REST call and the replacement submit only: **every other coordinator REST
+  effect** — each cancellation retry for a retryable or unobserved cancel and
+  each query attempt for a queryable missing or pending order — acquires and
+  settles its own generation-bearing REST reservation before routing, so
+  retry and query storms are bounded by the venue egress cap rather than
+  hidden inside one acquisition or exempted entirely. Reservation acquisition
+  precedes the coordinator's attempt arming: a denied reservation is a typed
+  reservation-denied outcome that enters the coordinator's backoff without
+  arming `Attempting`, without incrementing routed-attempt counters or
+  escalation, and with zero sink calls — budget denial is never laundered
+  through `OperationUnobserved`, and the generation binds the reservation to
+  the attempt so an eventually granted retry routes and is charged exactly
+  once per sink-reaching attempt. The prepaid token covers the first
+  replacement attempt only; no charging path refunds a real venue call, and
+  repeated rejection is bounded by the caps. The cap equation is defined over
+  **current emitted charges plus age-independent outstanding liabilities**: a
+  reserved token never ages out of the sliding window while outstanding,
+  later commands are denied while its capacity is reserved, and consumption
+  is an atomic zero-net conversion of the liability into an emitted
+  charge — a delayed replacement therefore always has its capacity by
+  construction. Consumption-time revalidation exists for exactly one named
+  cause — a cap or configuration generation change since reservation — and
+  that case enters the non-routing recovery state with zero sink calls; it is
+  specified and tested explicitly, not as a generic window-full failure.
+- **Modify**: pending advance commits at issuance; pre-issuance failures roll
+  back.
+
+The dormant event-fence reconciliation functions are pre-existing #817 surface
+whose module also carries load-bearing maker identity types; this slice
+neither deletes nor wires them. That accepted #817 scope is named in the
+review request per the repository's slice-scope rule.
+
+### Load-time OMS-capability authority (takeover round)
+
+Whether a venue's position reports carry venue-position identity is a declared
+adapter capability, owned where execution clients are registered. Configuration
+load rejects an OMS mode the declared capability cannot support — Hedging
+without venue-position identity — before runtime construction, for every
+client, including unselected ones. The check names capabilities, never venue
+identifiers. The position-authority feed's report-key derivation and its
+observation path normalize identity through one shared seam, so a report and a
+lease cannot disagree about what the key is. An observation whose key matches
+no active lease returns a transient typed outcome that the subscription
+handler surfaces as operator telemetry and then drops: nothing is stored, no
+key is created, and dropping the last lease still removes every snapshot and
+health record — the locked lease-bounded feed contract is unchanged.
+
+### Surface deletions and single sources (takeover round)
+
+`evidence_fixture_id` is deleted from the schema and every TOML. The schema
+document drops the deleted fee-cache field. The caller-less public
+`forecast_available` is deleted rather than fenced; the exhaustive
+evidence-domain census found no other dead public item, and its three
+feature-gated `_for_test` methods tighten to `pub(crate)` so no shippable-build
+surface remains public without a reachable caller. The duplicate
+nanoseconds-per-millisecond constant collapses to one definition. The
+shared-fixture seed helpers take the order side and position side they seed, so
+linkage assertions can no longer agree with production by construction; the
+existing hardcoded-side convenience wrappers are deleted, not aliased.
+
+
 
 This repair does not implement actual economics ledgers, supplemental venue actuals, lifecycle or transfer actuals, reporting closure, live economics publication, or live execution. Those remain outside Slice 1. It also does not claim retry durability across process death or forced process termination.

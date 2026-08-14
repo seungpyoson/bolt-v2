@@ -150,7 +150,7 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
             quantity: Some(opened.quantity.to_string()),
             ts_opened: Some(opened.ts_event.as_u64()),
             ts_closed: None,
-            realized_pnl: None,
+            realized_pnl: opened.realized_pnl.map(|value| value.to_string()),
             unrealized_pnl: None,
             ts_event: opened.ts_event.as_u64(),
             ts_init: opened.ts_init.as_u64(),
@@ -166,6 +166,7 @@ pub fn position_event_row(event: &PositionEvent) -> Result<PositionEventRow> {
                 LAST_PX_FIELD => opened.last_px.to_string(),
                 CURRENCY_FIELD => opened.currency.to_string(),
                 AVG_PX_OPEN_FIELD => opened.avg_px_open,
+                REALIZED_PNL_FIELD => opened.realized_pnl.map(|value| value.to_string()),
                 TS_EVENT_FIELD => opened.ts_event.as_u64(),
                 TS_INIT_FIELD => opened.ts_init.as_u64(),
             })

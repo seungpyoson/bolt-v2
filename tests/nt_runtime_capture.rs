@@ -620,7 +620,7 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
                     last_px: Price::from("0.51"),
                     currency: Currency::USD(),
                     avg_px_open: 0.51,
-                    realized_pnl: None,
+                    realized_pnl: Some(Money::new(-0.01, Currency::USD())),
                     event_id: UUID4::default(),
                     ts_event: 21.into(),
                     ts_init: 22.into(),
@@ -679,9 +679,11 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
             assert_eq!(position_rows.len(), 2, "{position_rows:?}");
             assert_eq!(position_rows[0].event_type, "PositionOpened");
             assert_eq!(position_rows[0].position_id, "P-001");
+            assert_eq!(position_rows[0].realized_pnl.as_deref(), Some("-0.01 USD"));
             let opened_payload: serde_json::Value =
                 serde_json::from_str(&position_rows[0].payload_json).unwrap();
             assert_eq!(opened_payload["trader_id"], "TESTER-001");
+            assert_eq!(opened_payload["realized_pnl"], "-0.01 USD");
             assert_eq!(position_rows[1].event_type, "PositionAdjusted");
             assert_eq!(position_rows[1].realized_pnl.as_deref(), Some("-0.02 USD"));
             let adjusted_payload: serde_json::Value =

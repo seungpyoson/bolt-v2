@@ -28,7 +28,10 @@ use crate::{
     },
 };
 
-use super::{PolymarketExecutionConfig, ResolvedBoltV3PolymarketSecrets};
+use super::{
+    PolymarketExecutionConfig, ResolvedBoltV3PolymarketSecrets,
+    normalize_provider_collateral_allowance_spenders,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolymarketProviderCollateralAllowanceRuntimeSourceConfig {
@@ -41,6 +44,7 @@ pub struct PolymarketProviderCollateralAllowanceInput {
     pub account_id: AccountId,
     pub collateral_currency: Currency,
     pub collateral: BalanceAllowance,
+    pub required_spenders: [String; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +60,7 @@ pub struct PolymarketProviderCollateralAllowanceRuntimeSource {
     collateral_currency: Currency,
     clob_client: PolymarketClobHttpClient,
     balance_allowance_params: GetBalanceAllowanceParams,
+    required_spenders: [String; 3],
 }
 
 impl std::fmt::Debug for PolymarketProviderCollateralAllowanceRuntimeSource {
@@ -72,6 +77,13 @@ pub fn build_polymarket_provider_collateral_allowance_runtime_source(
     resolved: &ResolvedBoltV3PolymarketSecrets,
     collateral_currency: Currency,
 ) -> Result<PolymarketProviderCollateralAllowanceRuntimeSource> {
+    let required_spenders = cfg
+        .provider_collateral_allowance_spenders
+        .as_ref()
+        .context("provider_collateral_allowance_spenders must be configured")?;
+    let required_spenders = normalize_provider_collateral_allowance_spenders(required_spenders)
+        .map_err(anyhow::Error::msg)
+        .context("validate provider collateral allowance spenders")?;
     let polymarket_secrets = PolymarketSecrets::resolve(
         Some(resolved.private_key.as_str()),
         Some(resolved.api_key.as_str().to_owned()),
@@ -96,6 +108,7 @@ pub fn build_polymarket_provider_collateral_allowance_runtime_source(
             token_id: None,
             signature_type: Some(super::nt_signature_type(cfg.signature_type)),
         },
+        required_spenders,
     })
 }
 
@@ -123,6 +136,7 @@ impl PolymarketProviderCollateralAllowanceRuntimeSource {
                 account_id: self.account_id,
                 collateral_currency: self.collateral_currency,
                 collateral,
+                required_spenders: self.required_spenders.clone(),
             },
         )
         .map_err(|error| {
@@ -143,7 +157,7 @@ pub fn build_polymarket_provider_collateral_allowance_snapshot(
     input: PolymarketProviderCollateralAllowanceInput,
 ) -> Result<ProviderCollateralAllowanceSnapshot, PolymarketProviderCollateralAllowanceBuildError> {
     let collateral_allowance = decimal_from_clob_pusd_units(
-        conservative_spendable_allowance(&input.collateral)?,
+        conservative_spendable_allowance(&input.collateral, &input.required_spenders)?,
         input.collateral_currency,
     )?;
 
@@ -159,31 +173,52 @@ pub fn build_polymarket_provider_collateral_allowance_snapshot(
 
 fn conservative_spendable_allowance(
     collateral: &BalanceAllowance,
+    required_spenders: &[String; 3],
 ) -> Result<Decimal, PolymarketProviderCollateralAllowanceBuildError> {
     if collateral.balance.is_sign_negative() {
         return Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralMoney);
     }
 
-    let mut spendable = collateral.balance;
-    let mut found_allowance = false;
+    if collateral.allowance.is_some() {
+        return Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance);
+    }
+    if collateral.allowances.is_empty() {
+        return Err(PolymarketProviderCollateralAllowanceBuildError::MissingCollateralAllowance);
+    }
 
-    if let Some(allowance) = collateral.allowance {
-        if allowance.is_sign_negative() {
+    let required_spenders = normalize_provider_collateral_allowance_spenders(required_spenders)
+        .map_err(|_| PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance)?;
+    let mut allowances_by_spender =
+        std::collections::HashMap::with_capacity(required_spenders.len());
+    for (spender, allowance) in &collateral.allowances {
+        if spender.trim() != spender {
             return Err(
                 PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance,
             );
         }
-        spendable = spendable.min(allowance);
-        found_allowance = true;
+        super::check_evm_address_syntax(spender).map_err(|_| {
+            PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance
+        })?;
+        if allowances_by_spender
+            .insert(spender.to_ascii_lowercase(), allowance)
+            .is_some()
+        {
+            return Err(
+                PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance,
+            );
+        }
+    }
+    if allowances_by_spender.len() != required_spenders.len()
+        || required_spenders
+            .iter()
+            .any(|spender| !allowances_by_spender.contains_key(spender))
+    {
+        return Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance);
     }
 
-    for allowance in collateral.allowances.values() {
+    let mut spendable = collateral.balance;
+    for allowance in allowances_by_spender.values() {
         spendable = spendable.min(parse_wire_allowance(allowance)?);
-        found_allowance = true;
-    }
-
-    if !found_allowance {
-        return Err(PolymarketProviderCollateralAllowanceBuildError::MissingCollateralAllowance);
     }
 
     Ok(spendable)
@@ -192,14 +227,6 @@ fn conservative_spendable_allowance(
 fn parse_wire_allowance(
     value: &str,
 ) -> Result<Decimal, PolymarketProviderCollateralAllowanceBuildError> {
-    if let Ok(value) = value.parse::<Decimal>() {
-        return if value.is_sign_negative() {
-            Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance)
-        } else {
-            Ok(value)
-        };
-    }
-
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance);
     }

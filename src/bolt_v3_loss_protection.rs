@@ -56,6 +56,7 @@ pub struct PositionRealizedPnlObservation {
     pub event_id: Option<String>,
     pub observed: RealizedPnlObservation,
     pub cumulative_realized_pnl: bool,
+    pub opens_position_cycle: bool,
     pub closes_position: bool,
 }
 
@@ -88,6 +89,8 @@ struct PendingHaltActions {
 struct CumulativePositionPnl {
     realized_pnl: Decimal,
     last_observed_at_unix_nanos: u64,
+    last_event_id: Option<String>,
+    prior_cycle_close_event_id: Option<String>,
 }
 
 pub struct KillSwitchLossProtection {
@@ -240,6 +243,16 @@ impl KillSwitchLossProtection {
         if !self.accept_observation_bucket(observation.observed.observed_at_unix_nanos) {
             return Ok(None);
         }
+        if observation.cumulative_realized_pnl
+            && observation
+                .event_id
+                .as_deref()
+                .is_none_or(|event_id| event_id.trim().is_empty() || event_id.trim() != event_id)
+        {
+            return self.fail_observation_integrity(
+                "cumulative position realized-PnL observation missing or invalid event_id",
+            );
+        }
         self.guard_settlement_currency(observation.observed.settlement_currency)?;
         let observed = if observation.cumulative_realized_pnl {
             let Some(observed) = self.record_cumulative_position_observation(&observation)? else {
@@ -263,14 +276,17 @@ impl KillSwitchLossProtection {
             return self.record_closed_position_observation(observation);
         }
 
+        let mut prior_cycle_close_event_id = None;
         if let Some(closed) = self.closed_position_pnl.get(&observation.position_id) {
             if observation.observed.observed_at_unix_nanos < closed.last_observed_at_unix_nanos
-                || (observation.observed.observed_at_unix_nanos
-                    == closed.last_observed_at_unix_nanos
+                || (!observation.opens_position_cycle
+                    && observation.observed.observed_at_unix_nanos
+                        == closed.last_observed_at_unix_nanos
                     && observation.observed.realized_pnl == closed.realized_pnl)
             {
                 return Ok(None);
             }
+            prior_cycle_close_event_id = closed.last_event_id.clone();
             self.closed_position_pnl.remove(&observation.position_id);
         }
 
@@ -279,6 +295,9 @@ impl KillSwitchLossProtection {
             .get(&observation.position_id)
             .cloned();
         if let Some(previous) = &previous_record {
+            if observation.event_id.is_some() && observation.event_id == previous.last_event_id {
+                return Ok(None);
+            }
             if observation.observed.observed_at_unix_nanos < previous.last_observed_at_unix_nanos {
                 return Ok(None);
             }
@@ -288,14 +307,26 @@ impl KillSwitchLossProtection {
                 return Ok(None);
             }
         }
-        let previous = previous_record
-            .map(|previous| previous.realized_pnl)
-            .unwrap_or(Decimal::ZERO);
+        let previous = if observation.opens_position_cycle {
+            Decimal::ZERO
+        } else {
+            previous_record
+                .as_ref()
+                .map(|previous| previous.realized_pnl)
+                .unwrap_or(Decimal::ZERO)
+        };
+        let prior_cycle_close_event_id = prior_cycle_close_event_id.or_else(|| {
+            previous_record
+                .as_ref()
+                .and_then(|previous| previous.prior_cycle_close_event_id.clone())
+        });
         self.cumulative_position_pnl.insert(
             observation.position_id.clone(),
             CumulativePositionPnl {
                 realized_pnl: observation.observed.realized_pnl,
                 last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+                last_event_id: observation.event_id.clone(),
+                prior_cycle_close_event_id,
             },
         );
         Ok(Some(RealizedPnlObservation {
@@ -313,6 +344,12 @@ impl KillSwitchLossProtection {
             .get(&observation.position_id)
             .cloned()
         {
+            if observation.event_id.is_some()
+                && (observation.event_id == previous.last_event_id
+                    || observation.event_id == previous.prior_cycle_close_event_id)
+            {
+                return Ok(None);
+            }
             if observation.observed.observed_at_unix_nanos < previous.last_observed_at_unix_nanos {
                 return Ok(None);
             }
@@ -323,6 +360,8 @@ impl KillSwitchLossProtection {
                 CumulativePositionPnl {
                     realized_pnl: observation.observed.realized_pnl,
                     last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+                    last_event_id: observation.event_id.clone(),
+                    prior_cycle_close_event_id: None,
                 },
             );
             if observation.observed.observed_at_unix_nanos == previous.last_observed_at_unix_nanos
@@ -342,6 +381,9 @@ impl KillSwitchLossProtection {
             .get(&observation.position_id)
             .cloned()
         {
+            if observation.event_id.is_some() && observation.event_id == previous.last_event_id {
+                return Ok(None);
+            }
             if observation.observed.observed_at_unix_nanos < previous.last_observed_at_unix_nanos {
                 return Ok(None);
             }
@@ -353,6 +395,8 @@ impl KillSwitchLossProtection {
                 CumulativePositionPnl {
                     realized_pnl: observation.observed.realized_pnl,
                     last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+                    last_event_id: observation.event_id.clone(),
+                    prior_cycle_close_event_id: None,
                 },
             );
             return Ok(Some(RealizedPnlObservation {
@@ -366,6 +410,8 @@ impl KillSwitchLossProtection {
             CumulativePositionPnl {
                 realized_pnl: observation.observed.realized_pnl,
                 last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+                last_event_id: observation.event_id.clone(),
+                prior_cycle_close_event_id: None,
             },
         );
         Ok(Some(observation.observed))
@@ -375,18 +421,14 @@ impl KillSwitchLossProtection {
         &mut self,
         observation: &PositionRealizedPnlObservation,
     ) -> anyhow::Result<bool> {
-        let Some(dedupe_key) = observation.event_id.as_deref() else {
-            let reason = "adjusted position realized-PnL observation missing event_id".to_string();
-            let failed = KillSwitchState::FailedManualIntervention {
-                halt_id: halt_id(&self.state)
-                    .unwrap_or(FAIL_CLOSED_RECOVERY_HALT_ID)
-                    .to_string(),
-                reason: reason.clone(),
-            };
-            self.admission.replace_kill_switch_state(failed.clone());
-            self.state = failed.clone();
-            self.persist_failed_state_or_invalidate(&failed)?;
-            return Err(anyhow!(reason));
+        let Some(dedupe_key) = observation
+            .event_id
+            .as_deref()
+            .filter(|event_id| !event_id.trim().is_empty() && event_id.trim() == *event_id)
+        else {
+            return self.fail_observation_integrity(
+                "adjusted position realized-PnL observation missing or invalid event_id",
+            );
         };
         if self.adjusted_position_pnl.contains_key(dedupe_key) {
             return Ok(true);
@@ -396,9 +438,24 @@ impl KillSwitchLossProtection {
             CumulativePositionPnl {
                 realized_pnl: observation.observed.realized_pnl,
                 last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+                last_event_id: observation.event_id.clone(),
+                prior_cycle_close_event_id: None,
             },
         );
         Ok(false)
+    }
+
+    fn fail_observation_integrity<T>(&mut self, reason: &str) -> anyhow::Result<T> {
+        let failed = KillSwitchState::FailedManualIntervention {
+            halt_id: halt_id(&self.state)
+                .unwrap_or(FAIL_CLOSED_RECOVERY_HALT_ID)
+                .to_string(),
+            reason: reason.to_string(),
+        };
+        self.admission.replace_kill_switch_state(failed.clone());
+        self.state = failed.clone();
+        self.persist_failed_state_or_invalidate(&failed)?;
+        Err(anyhow!(reason.to_string()))
     }
 
     pub fn record_realized_pnl(
@@ -618,6 +675,8 @@ impl KillSwitchLossProtection {
                         KillSwitchCumulativePositionPnlSnapshot {
                             realized_pnl: value.realized_pnl,
                             last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                            last_event_id: value.last_event_id.clone(),
+                            prior_cycle_close_event_id: value.prior_cycle_close_event_id.clone(),
                         },
                     )
                 })
@@ -631,6 +690,8 @@ impl KillSwitchLossProtection {
                         KillSwitchCumulativePositionPnlSnapshot {
                             realized_pnl: value.realized_pnl,
                             last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                            last_event_id: value.last_event_id.clone(),
+                            prior_cycle_close_event_id: value.prior_cycle_close_event_id.clone(),
                         },
                     )
                 })
@@ -644,6 +705,8 @@ impl KillSwitchLossProtection {
                         KillSwitchCumulativePositionPnlSnapshot {
                             realized_pnl: value.realized_pnl,
                             last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                            last_event_id: value.last_event_id.clone(),
+                            prior_cycle_close_event_id: value.prior_cycle_close_event_id.clone(),
                         },
                     )
                 })
@@ -670,6 +733,8 @@ impl KillSwitchLossProtection {
                     CumulativePositionPnl {
                         realized_pnl: value.realized_pnl,
                         last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                        last_event_id: value.last_event_id,
+                        prior_cycle_close_event_id: value.prior_cycle_close_event_id,
                     },
                 )
             })
@@ -683,6 +748,8 @@ impl KillSwitchLossProtection {
                     CumulativePositionPnl {
                         realized_pnl: value.realized_pnl,
                         last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                        last_event_id: value.last_event_id,
+                        prior_cycle_close_event_id: value.prior_cycle_close_event_id,
                     },
                 )
             })
@@ -696,6 +763,8 @@ impl KillSwitchLossProtection {
                     CumulativePositionPnl {
                         realized_pnl: value.realized_pnl,
                         last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                        last_event_id: value.last_event_id,
+                        prior_cycle_close_event_id: value.prior_cycle_close_event_id,
                     },
                 )
             })
@@ -867,7 +936,26 @@ fn position_realized_pnl_observation(
     event: &PositionEvent,
 ) -> Option<PositionRealizedPnlObservation> {
     match event {
-        PositionEvent::PositionOpened(_) => None,
+        PositionEvent::PositionOpened(opened) => {
+            let realized_pnl = opened.realized_pnl?;
+            let settlement_currency = realized_pnl.currency;
+            let realized_pnl = money_decimal(realized_pnl);
+            Some(PositionRealizedPnlObservation {
+                account_id: opened.account_id.to_string(),
+                instrument_id: opened.instrument_id.to_string(),
+                position_id: opened.position_id.to_string(),
+                event_id: Some(opened.event_id.to_string()),
+                observed: RealizedPnlObservation {
+                    source: "nt_position_opened",
+                    observed_at_unix_nanos: opened.ts_event.as_u64(),
+                    realized_pnl,
+                    settlement_currency,
+                },
+                cumulative_realized_pnl: true,
+                opens_position_cycle: true,
+                closes_position: false,
+            })
+        }
         PositionEvent::PositionChanged(changed) => {
             let realized_pnl = changed.realized_pnl?;
             let settlement_currency = realized_pnl.currency;
@@ -876,7 +964,7 @@ fn position_realized_pnl_observation(
                 account_id: changed.account_id.to_string(),
                 instrument_id: changed.instrument_id.to_string(),
                 position_id: changed.position_id.to_string(),
-                event_id: None,
+                event_id: Some(changed.event_id.to_string()),
                 observed: RealizedPnlObservation {
                     source: "nt_position_changed",
                     observed_at_unix_nanos: changed.ts_event.as_u64(),
@@ -884,6 +972,7 @@ fn position_realized_pnl_observation(
                     settlement_currency,
                 },
                 cumulative_realized_pnl: true,
+                opens_position_cycle: false,
                 closes_position: false,
             })
         }
@@ -895,7 +984,7 @@ fn position_realized_pnl_observation(
                 account_id: closed.account_id.to_string(),
                 instrument_id: closed.instrument_id.to_string(),
                 position_id: closed.position_id.to_string(),
-                event_id: None,
+                event_id: Some(closed.event_id.to_string()),
                 observed: RealizedPnlObservation {
                     source: "nt_position_closed",
                     observed_at_unix_nanos: closed.ts_event.as_u64(),
@@ -903,6 +992,7 @@ fn position_realized_pnl_observation(
                     settlement_currency,
                 },
                 cumulative_realized_pnl: true,
+                opens_position_cycle: false,
                 closes_position: true,
             })
         }
@@ -922,6 +1012,7 @@ fn position_realized_pnl_observation(
                     settlement_currency,
                 },
                 cumulative_realized_pnl: false,
+                opens_position_cycle: false,
                 closes_position: false,
             })
         }
@@ -937,7 +1028,13 @@ mod tests {
     use std::{rc::Rc, sync::Arc};
 
     use anyhow::Result;
-    use nautilus_model::types::Currency;
+    use nautilus_core::{UUID4, UnixNanos};
+    use nautilus_model::{
+        enums::{OrderSide, PositionSide},
+        events::PositionOpened,
+        identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId},
+        types::{Currency, Money, Price, Quantity},
+    };
     use rust_decimal::Decimal;
 
     use super::*;
@@ -945,6 +1042,268 @@ mod tests {
         bolt_v3_current_evidence::DecisionEvidenceRecorder,
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     };
+
+    #[test]
+    fn position_opened_realized_loss_triggers_daily_kill_switch_in_cost_currency() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+            DecisionEvidenceRecorder::recording(),
+        )));
+        let mut protection = KillSwitchLossProtection::new(
+            KillSwitchLossProtectionConfig {
+                max_utc_daily_realized_loss: Decimal::new(10, 0),
+                action_retry_interval_ms: 250,
+                action_retry_timeout_ms: 5_000,
+                account_ids: vec!["POLYMARKET-001".to_string()],
+                instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
+            },
+            admission,
+            KillSwitchStore::new(temp.path().join("kill-switch.json"), 65_536),
+            Rc::new(NoopLossActionSink),
+        )
+        .expect("loss protection should initialize");
+        let event_id = UUID4::default();
+        let event = PositionEvent::PositionOpened(PositionOpened {
+            trader_id: TraderId::from("TRADER-001"),
+            strategy_id: StrategyId::from("STRATEGY-001"),
+            instrument_id: InstrumentId::from("BTC-USD.BINANCE"),
+            position_id: PositionId::from("P-OPENED-001"),
+            account_id: AccountId::from("POLYMARKET-001"),
+            opening_order_id: ClientOrderId::from("O-OPENED-001"),
+            entry: OrderSide::Buy,
+            side: PositionSide::Long,
+            signed_qty: 1.0,
+            quantity: Quantity::from("1"),
+            last_qty: Quantity::from("1"),
+            last_px: Price::from("100"),
+            currency: Currency::USD(),
+            avg_px_open: 100.0,
+            realized_pnl: Some(Money::new(-11.0, Currency::BTC())),
+            event_id,
+            ts_event: UnixNanos::from(1_717_200_000_000_000_000),
+            ts_init: UnixNanos::from(1_717_200_000_000_000_000),
+        });
+
+        let observation = position_realized_pnl_observation(&event)
+            .expect("opening realized loss should form an observation");
+        assert!(observation.opens_position_cycle);
+        assert_eq!(observation.event_id, Some(event_id.to_string()));
+
+        let state = protection
+            .record_position_event(&event)
+            .expect("opening realized loss should be processed")
+            .expect("opening realized loss should breach the daily limit");
+
+        assert!(matches!(state, KillSwitchState::Halted { .. }));
+        assert_eq!(protection.daily_realized_pnl, Decimal::new(-11, 0));
+        assert_eq!(protection.settlement_currency, Some(Currency::BTC()));
+    }
+
+    #[test]
+    fn same_timestamp_flip_opening_loss_starts_a_new_position_cycle() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+            DecisionEvidenceRecorder::recording(),
+        )));
+        let mut protection = KillSwitchLossProtection::new(
+            KillSwitchLossProtectionConfig {
+                max_utc_daily_realized_loss: Decimal::new(20, 0),
+                action_retry_interval_ms: 250,
+                action_retry_timeout_ms: 5_000,
+                account_ids: vec!["POLYMARKET-001".to_string()],
+                instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
+            },
+            admission,
+            KillSwitchStore::new(temp.path().join("kill-switch.json"), 65_536),
+            Rc::new(NoopLossActionSink),
+        )
+        .expect("loss protection should initialize");
+        let observation =
+            |source: &'static str, event_id: &str, opens_position_cycle, closes_position| {
+                PositionRealizedPnlObservation {
+                    account_id: "POLYMARKET-001".to_string(),
+                    instrument_id: "BTC-USD.BINANCE".to_string(),
+                    position_id: "P-FLIP-001".to_string(),
+                    event_id: Some(event_id.to_string()),
+                    observed: RealizedPnlObservation {
+                        source,
+                        observed_at_unix_nanos: 1_717_200_000_000_000_000,
+                        realized_pnl: Decimal::new(-11, 0),
+                        settlement_currency: Currency::USD(),
+                    },
+                    cumulative_realized_pnl: true,
+                    opens_position_cycle,
+                    closes_position,
+                }
+            };
+
+        let first = protection
+            .record_position_realized_pnl(observation(
+                "nt_position_closed",
+                "close-event",
+                false,
+                true,
+            ))
+            .expect("closing loss should be processed");
+        assert!(first.is_none());
+        let state = protection
+            .record_position_realized_pnl(observation(
+                "nt_position_opened",
+                "open-event",
+                true,
+                false,
+            ))
+            .expect("opening loss should be processed")
+            .expect("combined flip losses should breach the daily limit");
+
+        assert!(matches!(state, KillSwitchState::Halted { .. }));
+        assert_eq!(protection.daily_realized_pnl, Decimal::new(-22, 0));
+    }
+
+    #[test]
+    fn cumulative_observation_missing_event_id_fails_closed() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+            DecisionEvidenceRecorder::recording(),
+        )));
+        let mut protection = KillSwitchLossProtection::new(
+            KillSwitchLossProtectionConfig {
+                max_utc_daily_realized_loss: Decimal::new(20, 0),
+                action_retry_interval_ms: 250,
+                action_retry_timeout_ms: 5_000,
+                account_ids: vec!["POLYMARKET-001".to_string()],
+                instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
+            },
+            Arc::clone(&admission),
+            KillSwitchStore::new(temp.path().join("kill-switch.json"), 65_536),
+            Rc::new(NoopLossActionSink),
+        )
+        .expect("loss protection should initialize");
+        let observation = PositionRealizedPnlObservation {
+            account_id: "POLYMARKET-001".to_string(),
+            instrument_id: "BTC-USD.BINANCE".to_string(),
+            position_id: "P-MISSING-EVENT-ID".to_string(),
+            event_id: None,
+            observed: RealizedPnlObservation {
+                source: "nt_position_changed",
+                observed_at_unix_nanos: 1_717_200_000_000_000_000,
+                realized_pnl: Decimal::new(-1, 0),
+                settlement_currency: Currency::USD(),
+            },
+            cumulative_realized_pnl: true,
+            opens_position_cycle: false,
+            closes_position: false,
+        };
+
+        let error = protection
+            .record_position_realized_pnl(observation)
+            .expect_err("cumulative observations without identity must fail closed");
+
+        assert!(error.to_string().contains("missing or invalid event_id"));
+        assert!(matches!(
+            protection.state,
+            KillSwitchState::FailedManualIntervention { .. }
+        ));
+    }
+
+    #[test]
+    fn stale_pre_flip_close_cannot_replace_recovered_open_cycle_baseline() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let state_path = temp.path().join("kill-switch.json");
+        let config = KillSwitchLossProtectionConfig {
+            max_utc_daily_realized_loss: Decimal::new(100, 0),
+            action_retry_interval_ms: 250,
+            action_retry_timeout_ms: 5_000,
+            account_ids: vec!["POLYMARKET-001".to_string()],
+            instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
+        };
+        let observation = |source: &'static str,
+                           event_id: &str,
+                           realized_pnl: Decimal,
+                           observed_at_unix_nanos: u64,
+                           opens_position_cycle: bool,
+                           closes_position: bool| {
+            PositionRealizedPnlObservation {
+                account_id: "POLYMARKET-001".to_string(),
+                instrument_id: "BTC-USD.BINANCE".to_string(),
+                position_id: "P-FLIP-REPLAY-001".to_string(),
+                event_id: Some(event_id.to_string()),
+                observed: RealizedPnlObservation {
+                    source,
+                    observed_at_unix_nanos,
+                    realized_pnl,
+                    settlement_currency: Currency::USD(),
+                },
+                cumulative_realized_pnl: true,
+                opens_position_cycle,
+                closes_position,
+            }
+        };
+        let close = observation(
+            "nt_position_closed",
+            "close-old",
+            Decimal::new(-11, 0),
+            1_717_200_000_000_000_000,
+            false,
+            true,
+        );
+        let open = observation(
+            "nt_position_opened",
+            "open-new",
+            Decimal::new(-11, 0),
+            1_717_200_000_000_000_000,
+            true,
+            false,
+        );
+
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+            DecisionEvidenceRecorder::recording(),
+        )));
+        let mut protection = KillSwitchLossProtection::new(
+            config.clone(),
+            admission,
+            KillSwitchStore::new(state_path.clone(), 65_536),
+            Rc::new(NoopLossActionSink),
+        )
+        .expect("loss protection should initialize");
+        protection
+            .record_position_realized_pnl(close.clone())
+            .expect("closing loss should be recorded");
+        protection
+            .record_position_realized_pnl(open)
+            .expect("flip opening loss should be recorded");
+        assert_eq!(protection.daily_realized_pnl, Decimal::new(-22, 0));
+        drop(protection);
+
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+            DecisionEvidenceRecorder::recording(),
+        )));
+        let mut recovered = KillSwitchLossProtection::new(
+            config,
+            admission,
+            KillSwitchStore::new(state_path, 65_536),
+            Rc::new(NoopLossActionSink),
+        )
+        .expect("loss protection should reinitialize");
+        recovered
+            .seed_from_store(1_717_200_000_000_000_001)
+            .expect("loss protection should recover");
+        recovered
+            .record_position_realized_pnl(close)
+            .expect("stale pre-flip close should be absorbed");
+        recovered
+            .record_position_realized_pnl(observation(
+                "nt_position_changed",
+                "change-new",
+                Decimal::new(-12, 0),
+                1_717_200_000_000_000_001,
+                false,
+                false,
+            ))
+            .expect("current-cycle change should be recorded");
+
+        assert_eq!(recovered.daily_realized_pnl, Decimal::new(-23, 0));
+    }
 
     #[test]
     fn adjusted_observation_missing_event_id_fails_closed() {
@@ -978,6 +1337,7 @@ mod tests {
                 settlement_currency: Currency::USDC(),
             },
             cumulative_realized_pnl: false,
+            opens_position_cycle: false,
             closes_position: false,
         };
 
@@ -985,11 +1345,11 @@ mod tests {
             .is_duplicate_adjusted_position_observation(&observation)
             .expect_err("missing adjusted event id should fail closed");
 
-        assert!(error.to_string().contains("missing event_id"));
+        assert!(error.to_string().contains("missing or invalid event_id"));
         assert!(matches!(
             protection.state(),
             KillSwitchState::FailedManualIntervention { reason, .. }
-                if reason.contains("missing event_id")
+                if reason.contains("missing or invalid event_id")
         ));
         assert!(matches!(
             protection
@@ -1026,6 +1386,7 @@ mod tests {
                 settlement_currency: Currency::USDC(),
             },
             cumulative_realized_pnl: false,
+            opens_position_cycle: false,
             closes_position: true,
         };
         let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(

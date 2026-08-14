@@ -1559,6 +1559,7 @@ fn settlement_pnl_observation(
             settlement_currency: Currency::USDC(),
         },
         cumulative_realized_pnl: false,
+        opens_position_cycle: false,
         closes_position: true,
     }
 }

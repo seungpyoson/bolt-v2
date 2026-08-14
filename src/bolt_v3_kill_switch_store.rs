@@ -199,6 +199,8 @@ pub struct KillSwitchLossProtectionSnapshot {
 pub struct KillSwitchCumulativePositionPnlSnapshot {
     pub realized_pnl: Decimal,
     pub last_observed_at_unix_nanos: u64,
+    pub last_event_id: Option<String>,
+    pub prior_cycle_close_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -573,6 +575,10 @@ struct PersistedKillSwitchLossProtectionSnapshot {
 struct PersistedCumulativePositionPnlSnapshot {
     realized_pnl: String,
     last_observed_at_unix_nanos: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prior_cycle_close_event_id: Option<String>,
 }
 
 fn persist_pnl_map(
@@ -585,6 +591,8 @@ fn persist_pnl_map(
                 PersistedCumulativePositionPnlSnapshot {
                     realized_pnl: value.realized_pnl.to_string(),
                     last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                    last_event_id: value.last_event_id.clone(),
+                    prior_cycle_close_event_id: value.prior_cycle_close_event_id.clone(),
                 },
             )
         })
@@ -596,11 +604,24 @@ fn restore_pnl_map(
 ) -> Result<BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>, ()> {
     let mut restored = BTreeMap::new();
     for (position_id, value) in map {
+        if value
+            .last_event_id
+            .as_deref()
+            .is_some_and(|event_id| event_id.trim().is_empty() || event_id.trim() != event_id)
+            || value
+                .prior_cycle_close_event_id
+                .as_deref()
+                .is_some_and(|event_id| event_id.trim().is_empty() || event_id.trim() != event_id)
+        {
+            return Err(());
+        }
         restored.insert(
             position_id,
             KillSwitchCumulativePositionPnlSnapshot {
                 realized_pnl: Decimal::from_str(&value.realized_pnl).map_err(|_| ())?,
                 last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                last_event_id: value.last_event_id,
+                prior_cycle_close_event_id: value.prior_cycle_close_event_id,
             },
         );
     }
@@ -629,12 +650,26 @@ impl TryFrom<PersistedKillSwitchLossProtectionSnapshot> for KillSwitchLossProtec
         let cumulative_position_pnl = restore_pnl_map(snapshot.cumulative_position_pnl)?;
         let closed_position_pnl = restore_pnl_map(snapshot.closed_position_pnl)?;
         if cumulative_position_pnl
+            .values()
+            .chain(closed_position_pnl.values())
+            .any(|value| value.last_event_id.is_none())
+        {
+            return Err(());
+        }
+        if cumulative_position_pnl
             .keys()
             .any(|position_id| closed_position_pnl.contains_key(position_id))
         {
             return Err(());
         }
         let adjusted_position_pnl = restore_pnl_map(snapshot.adjusted_position_pnl)?;
+        if closed_position_pnl
+            .values()
+            .chain(adjusted_position_pnl.values())
+            .any(|value| value.prior_cycle_close_event_id.is_some())
+        {
+            return Err(());
+        }
         let has_loss_evidence = daily_realized_pnl != Decimal::ZERO
             || !cumulative_position_pnl.is_empty()
             || !closed_position_pnl.is_empty()

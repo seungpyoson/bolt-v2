@@ -986,9 +986,16 @@ The current schema also requires these pinned adapter fields to be explicit:
 - `base_url_data_api`
 - `http_timeout_secs`
 - `fee_cache_ttl_secs`
+- `provider_collateral_allowance_poll_interval_ms`
+- `provider_collateral_allowance_spenders`
 - `transport_backend`
 
 `fee_cache_ttl_secs` is a positive integer and controls the provider fee cache lifetime.
+The provider-collateral poll interval and spender array are optional only as a pair. When polling is
+enabled, the interval must be positive and the array must contain exactly three unique EVM addresses.
+Spender strings must not contain surrounding whitespace.
+Those configured identities are the complete spender set accepted from the provider allowance map;
+missing, extra, or misidentified spender evidence fails closed.
 `transport_backend` is a string enum with current allowed value `sockudo` and maps directly to the pinned NT adapter field.
 
 #### `[clients.<identifier>.execution.on_chain_collateral]`

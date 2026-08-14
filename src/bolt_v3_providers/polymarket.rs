@@ -240,6 +240,7 @@ pub struct PolymarketExecutionConfig {
     pub retry_delay_max_ms: u64,
     pub fee_cache_ttl_secs: u64,
     pub provider_collateral_allowance_poll_interval_ms: Option<u64>,
+    pub provider_collateral_allowance_spenders: Option<[String; 3]>,
     pub transport_backend: TransportBackend,
     pub on_chain_collateral: Option<PolymarketOnChainCollateralConfig>,
 }
@@ -520,6 +521,25 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
             "clients.{key}.execution.provider_collateral_allowance_poll_interval_ms must be a positive integer"
         ));
     }
+    match (
+        execution.provider_collateral_allowance_poll_interval_ms,
+        execution.provider_collateral_allowance_spenders.as_ref(),
+    ) {
+        (Some(_), None) => errors.push(format!(
+            "clients.{key}.execution.provider_collateral_allowance_spenders must be configured when provider collateral allowance polling is configured"
+        )),
+        (None, Some(_)) => errors.push(format!(
+            "clients.{key}.execution.provider_collateral_allowance_spenders requires provider_collateral_allowance_poll_interval_ms"
+        )),
+        (_, Some(spenders)) => {
+            if let Err(message) = normalize_provider_collateral_allowance_spenders(spenders) {
+                errors.push(format!(
+                    "clients.{key}.execution.provider_collateral_allowance_spenders is invalid: {message}"
+                ));
+            }
+        }
+        (None, None) => {}
+    }
     if execution.retry_delay_initial_ms > execution.retry_delay_max_ms {
         errors.push(format!(
             "clients.{key}.execution.retry_delay_initial_ms ({}) must be <= retry_delay_max_ms ({})",
@@ -527,6 +547,25 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
         ));
     }
     errors
+}
+
+fn normalize_provider_collateral_allowance_spenders(
+    spenders: &[String; 3],
+) -> Result<[String; 3], String> {
+    let mut normalized = Vec::with_capacity(spenders.len());
+    for spender in spenders {
+        if spender.trim() != spender {
+            return Err("spender addresses must not contain surrounding whitespace".to_string());
+        }
+        check_evm_address_syntax(spender).map_err(str::to_string)?;
+        normalized.push(spender.to_ascii_lowercase());
+    }
+    if normalized.iter().collect::<BTreeSet<_>>().len() != normalized.len() {
+        return Err("spender addresses must be unique".to_string());
+    }
+    normalized
+        .try_into()
+        .map_err(|_| "exactly three spender addresses are required".to_string())
 }
 
 fn validate_on_chain_collateral(key: &str, execution: &PolymarketExecutionConfig) -> Vec<String> {

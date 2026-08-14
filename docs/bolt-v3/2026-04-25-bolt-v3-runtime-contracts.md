@@ -1240,11 +1240,12 @@ activation.
 Capital-admission reconstruction occurs only after NautilusTrader reports `Running`, which follows its
 startup reconciliation. The gate remains unreconciled and rejects submission until the reconstruction
 from the reconciled NT cache, current evidence, and provider-only collateral allowance succeeds.
-The Polymarket provider boundary accepts both the legacy singular allowance and the current
-spender-keyed allowance map. It reduces all supplied allowances and the reported balance to their
-minimum before constructing Bolt's scalar spendable-collateral authority; missing, negative, or
-malformed allowance evidence fails closed, while digit-only values above Decimal range are treated
-as unbounded only after the result has already been capped by reported balance.
+The Polymarket provider boundary rejects the legacy singular allowance because it carries no
+spender identity. The current spender-keyed map must contain exactly the three configured venue
+spender addresses. Bolt reduces those three allowances and the reported balance to their minimum
+before constructing scalar spendable-collateral authority; missing, extra, negative, malformed, or
+misidentified allowance evidence fails closed. Digit-only values above Decimal range are treated as
+unbounded only after the result has already been capped by reported balance.
 At the pinned revision NautilusTrader's Polymarket mass-status construction is not fail-closed: a venue
 open order whose instrument cannot be mapped into the instrument universe, and a venue position that
 cannot be represented as an NT quantity, are both dropped, so the returned report can be silently

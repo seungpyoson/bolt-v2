@@ -2620,9 +2620,27 @@ fn polymarket_provider_collateral_allowance_snapshot(
             collateral_currency: Currency::from("USD"),
             collateral: BalanceAllowance {
                 balance,
-                allowance: Some(allowance),
-                allowances: std::collections::HashMap::new(),
+                allowance: None,
+                allowances: std::collections::HashMap::from([
+                    (
+                        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                        allowance.to_string(),
+                    ),
+                    (
+                        "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                        allowance.to_string(),
+                    ),
+                    (
+                        "0xcccccccccccccccccccccccccccccccccccccccc".to_string(),
+                        allowance.to_string(),
+                    ),
+                ]),
             },
+            required_spenders: [
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                "0xcccccccccccccccccccccccccccccccccccccccc".to_string(),
+            ],
         },
     )
     .expect("test provider collateral allowance snapshot should be valid")

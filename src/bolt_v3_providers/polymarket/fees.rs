@@ -6,7 +6,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use futures_util::future::{BoxFuture, FutureExt};
-use nautilus_model::{enums::LiquiditySide, identifiers::InstrumentId, instruments::InstrumentAny};
+use nautilus_model::{
+    enums::LiquiditySide,
+    identifiers::InstrumentId,
+    instruments::{Instrument, InstrumentAny},
+};
 use nautilus_polymarket::execution::parse::{
     compute_commission, instrument_fee_exponent, instrument_taker_fee,
 };
@@ -16,6 +20,8 @@ use rust_decimal::Decimal;
 use crate::bolt_v3_providers::FeeProvider;
 
 const ENTRY_FEE_BPS_SCALE: i64 = 10_000;
+const NT_COMMISSION_ROUNDING_DECIMAL_PLACES: u32 = 5;
+const NT_COMMISSION_ROUNDING_RATE_MULTIPLIER: i64 = 2;
 
 trait FeeRateFetcher: Send + Sync {
     fn fetch_fee_bps<'a>(&'a self, token_id: &'a str) -> BoxFuture<'a, Result<Decimal>>;
@@ -170,9 +176,17 @@ impl FeeProvider for PolymarketClobFeeProvider {
         if entry_price <= Decimal::ZERO || entry_price >= Decimal::ONE {
             return None;
         }
+        let fee_exponent = instrument_fee_exponent(instrument);
+        if !fee_exponent.is_finite() || fee_exponent <= 0.0 {
+            return None;
+        }
+        let fee_rate = instrument_taker_fee(instrument);
+        if fee_rate.is_sign_negative() {
+            return None;
+        }
         let commission = compute_commission(
-            instrument_taker_fee(instrument),
-            instrument_fee_exponent(instrument),
+            fee_rate,
+            fee_exponent,
             Decimal::ONE,
             entry_price,
             LiquiditySide::Taker,
@@ -180,15 +194,59 @@ impl FeeProvider for PolymarketClobFeeProvider {
         if commission.is_sign_negative() {
             return None;
         }
-        Some(commission / entry_price * Decimal::from(ENTRY_FEE_BPS_SCALE))
+        commission
+            .checked_div(entry_price)?
+            .checked_mul(Decimal::from(ENTRY_FEE_BPS_SCALE))
     }
 
     fn max_entry_fee_bps(
         &self,
         instrument: &InstrumentAny,
-        _entry_price: Decimal,
+        entry_price: Decimal,
     ) -> Option<Decimal> {
-        Some(instrument_taker_fee(instrument) * Decimal::from(ENTRY_FEE_BPS_SCALE))
+        let min_price = instrument.min_price()?.as_decimal();
+        let max_price = instrument.max_price()?.as_decimal();
+        if min_price <= Decimal::ZERO
+            || max_price >= Decimal::ONE
+            || min_price > max_price
+            || entry_price < min_price
+            || entry_price > max_price
+        {
+            return None;
+        }
+        let fee_exponent = instrument_fee_exponent(instrument);
+        if !fee_exponent.is_finite() || fee_exponent <= 0.0 {
+            return None;
+        }
+        let fee_rate = instrument_taker_fee(instrument);
+        if fee_rate.is_sign_negative() {
+            return None;
+        }
+        let raw_rate_bound = fee_rate.checked_mul(Decimal::from(ENTRY_FEE_BPS_SCALE))?;
+        let mut sampled_bound = Decimal::ZERO;
+        for price in [min_price, entry_price, max_price] {
+            sampled_bound = sampled_bound.max(self.entry_fee_bps(instrument, price)?);
+        }
+        if fee_exponent > 1.0 {
+            let critical_price =
+                Decimal::try_from((fee_exponent - 1.0) / (2.0 * fee_exponent - 1.0)).ok()?;
+            if critical_price >= min_price && critical_price <= max_price {
+                sampled_bound = sampled_bound.max(self.entry_fee_bps(instrument, critical_price)?);
+            }
+        }
+        // NT rounds commission to five decimal places before converting it to basis points.
+        // One full quantum at the minimum price safely covers both a sampled round-down at
+        // the continuous maximum and a round-up elsewhere on the tradable price range.
+        let rounding_uplift_bps = Decimal::new(1, NT_COMMISSION_ROUNDING_DECIMAL_PLACES)
+            .checked_div(min_price)?
+            .checked_mul(Decimal::from(ENTRY_FEE_BPS_SCALE))?;
+        let rounded_curve_bound = sampled_bound.checked_add(rounding_uplift_bps)?;
+        // Any non-zero rounded commission had an unrounded value of at least half a
+        // quantum, so rounding can amplify its effective rate by at most two. This
+        // quantity-independent factor also covers arbitrarily small partial fills.
+        raw_rate_bound
+            .max(rounded_curve_bound)
+            .checked_mul(Decimal::from(NT_COMMISSION_ROUNDING_RATE_MULTIPLIER))
     }
 
     fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
@@ -273,8 +331,8 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
+            Some(Price::from("0.999")),
+            Some(Price::from("0.001")),
             None,
             None,
             Some(Decimal::ZERO),
@@ -352,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn max_entry_fee_bps_uses_raw_nt_fee_rate_for_cash_debit_cap() {
+    fn max_entry_fee_bps_uses_raw_nt_fee_rate_as_cash_debit_floor() {
         let clock = TestClock::new();
         let fetcher = MockFeeRateFetcher::new(vec![MockFetchResult::Success(decimal("1000"))]);
         let provider = PolymarketClobFeeProvider::new_for_tests(
@@ -363,9 +421,117 @@ mod tests {
         let instrument_id = instrument_id_for_token("token_a");
         let instrument = binary_option_with_taker_fee(instrument_id, decimal("0.07"));
 
+        let bound = provider
+            .max_entry_fee_bps(&instrument, decimal("0.27"))
+            .expect("fee bound should be computable");
+
+        assert!(bound >= decimal("700.00"), "bound={bound}");
+    }
+
+    #[test]
+    fn max_entry_fee_bps_covers_fractional_exponent_over_tradable_range() {
+        let clock = TestClock::new();
+        let fetcher = MockFeeRateFetcher::new(Vec::new());
+        let provider = PolymarketClobFeeProvider::new_for_tests(
+            Arc::new(fetcher),
+            clock.source(),
+            test_fee_cache_ttl(),
+        );
+        let instrument_id = instrument_id_for_token("token_fractional_exponent");
+        let instrument =
+            binary_option_with_taker_fee_and_exponent(instrument_id, decimal("0.03"), Some(0.5));
+        let entry_price = decimal("0.01");
+
+        let actual = provider
+            .entry_fee_bps(&instrument, entry_price)
+            .expect("fractional-exponent entry fee should be computable");
+        let bound = provider
+            .max_entry_fee_bps(&instrument, entry_price)
+            .expect("fractional-exponent entry fee bound should be computable");
+        let structural_minimum_fee = provider
+            .entry_fee_bps(&instrument, decimal("0.001"))
+            .expect("fee at the structural minimum should be computable");
+
+        assert!(bound >= actual, "bound={bound} actual={actual}");
+        assert!(
+            bound >= structural_minimum_fee,
+            "bound={bound} structural_minimum_fee={structural_minimum_fee}"
+        );
+        assert!(bound > decimal("300"), "raw rate alone is not a bound");
+    }
+
+    #[test]
+    fn max_entry_fee_bps_covers_commission_rounding_spikes() {
+        let clock = TestClock::new();
+        let fetcher = MockFeeRateFetcher::new(Vec::new());
+        let provider = PolymarketClobFeeProvider::new_for_tests(
+            Arc::new(fetcher),
+            clock.source(),
+            test_fee_cache_ttl(),
+        );
+        let instrument_id = instrument_id_for_token("token_rounding_spike");
+        let instrument =
+            binary_option_with_taker_fee_and_exponent(instrument_id, decimal("0.0001"), Some(0.5));
+        let bound = provider
+            .max_entry_fee_bps(&instrument, decimal("0.27"))
+            .expect("fractional-exponent entry fee bound should be computable");
+
+        for tick in 1..=999 {
+            let price = Decimal::new(tick, 3);
+            let actual = provider
+                .entry_fee_bps(&instrument, price)
+                .expect("fee on the configured price grid should be computable");
+            assert!(
+                bound >= actual,
+                "price={price} bound={bound} actual={actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn max_entry_fee_bps_covers_small_partial_fill_rounding() {
+        let clock = TestClock::new();
+        let fetcher = MockFeeRateFetcher::new(Vec::new());
+        let provider = PolymarketClobFeeProvider::new_for_tests(
+            Arc::new(fetcher),
+            clock.source(),
+            test_fee_cache_ttl(),
+        );
+        let instrument_id = instrument_id_for_token("token_small_partial_fill");
+        let instrument = binary_option_with_taker_fee(instrument_id, decimal("0.07"));
+        let price = decimal("0.001");
+        let size = decimal("0.072");
+        let bound = provider
+            .max_entry_fee_bps(&instrument, price)
+            .expect("fee bound should be computable");
+        let actual = compute_commission(
+            instrument_taker_fee(&instrument),
+            instrument_fee_exponent(&instrument),
+            size,
+            price,
+            LiquiditySide::Taker,
+        ) / (size * price)
+            * Decimal::from(ENTRY_FEE_BPS_SCALE);
+
+        assert!(bound >= actual, "bound={bound} actual={actual}");
+    }
+
+    #[test]
+    fn fee_bounds_fail_closed_on_decimal_overflow() {
+        let clock = TestClock::new();
+        let fetcher = MockFeeRateFetcher::new(Vec::new());
+        let provider = PolymarketClobFeeProvider::new_for_tests(
+            Arc::new(fetcher),
+            clock.source(),
+            test_fee_cache_ttl(),
+        );
+        let instrument_id = instrument_id_for_token("token_decimal_overflow");
+        let instrument = binary_option_with_taker_fee(instrument_id, Decimal::MAX);
+
+        assert_eq!(provider.entry_fee_bps(&instrument, decimal("0.50")), None);
         assert_eq!(
-            provider.max_entry_fee_bps(&instrument, decimal("0.27")),
-            Some(decimal("700.00"))
+            provider.max_entry_fee_bps(&instrument, decimal("0.50")),
+            None
         );
     }
 

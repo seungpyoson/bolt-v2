@@ -6312,6 +6312,50 @@ passphrase_ssm_path = "/bolt/polymarket/api-passphrase"
 }
 
 #[test]
+fn rejects_missing_or_duplicate_polymarket_allowance_spender_config() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let spender_block = r#"provider_collateral_allowance_spenders = [
+  "0xE111180000d2663C0091e4f400237545B87B996B",
+  "0xe2222d279d744050d28e00520010520000310F59",
+  "0xadA2005600Dec949baf300f4C6120000bDB6eAab",
+]
+"#;
+
+    let missing: BoltV3RootConfig = toml::from_str(&fixture.replace(spender_block, ""))
+        .expect("missing optional spender block should parse before validation");
+    let missing_messages = validate_root_only(&missing);
+    assert!(missing_messages.iter().any(|message| {
+        message.contains("provider_collateral_allowance_spenders")
+            && message.contains("must be configured")
+    }));
+
+    let duplicate: BoltV3RootConfig = toml::from_str(&fixture.replace(
+        "0xadA2005600Dec949baf300f4C6120000bDB6eAab",
+        "0xE111180000d2663C0091e4f400237545B87B996B",
+    ))
+    .expect("duplicate spender addresses should parse before validation");
+    let duplicate_messages = validate_root_only(&duplicate);
+    assert!(duplicate_messages.iter().any(|message| {
+        message.contains("provider_collateral_allowance_spenders")
+            && message.contains("must be unique")
+    }));
+
+    let padded: BoltV3RootConfig = toml::from_str(&fixture.replace(
+        "0xadA2005600Dec949baf300f4C6120000bDB6eAab",
+        " 0xadA2005600Dec949baf300f4C6120000bDB6eAab",
+    ))
+    .expect("padded spender address should parse before validation");
+    let padded_messages = validate_root_only(&padded);
+    assert!(padded_messages.iter().any(|message| {
+        message.contains("provider_collateral_allowance_spenders")
+            && message.contains("surrounding whitespace")
+    }));
+}
+
+#[test]
 fn rejects_unsupported_root_and_strategy_schema_versions() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
